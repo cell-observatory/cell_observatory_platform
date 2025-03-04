@@ -1,0 +1,38 @@
+Bootstrap: localimage
+From: pytorch_25.01-py3.sif
+Stage: base
+
+%environment
+export RUNNING_IN_DOCKER=TRUE
+export TERM=xterm-256color
+
+%files
+requirements.txt requirements.txt
+
+
+%post
+RUNNING_IN_DOCKER=TRUE
+TERM=xterm-256color
+echo "PS1='\e[97m\u\e[0m@\e[94m\h\e[0m:\e[35m\w\e[0m# '" >> /root/.bashrc
+
+apt-get update \
+&& apt-get install -y --no-install-recommends \
+sudo \
+htop \
+cifs-utils \
+winbind \
+smbclient \
+sshfs \
+iputils-ping \
+&& rm -rf /var/lib/apt/lists/*
+
+
+# needs to have
+# sudo mount --bind ~/.cache/pip /tmp/pip
+pip install -r requirements.txt --progress-bar off --cache-dir /tmp/pip
+
+
+%runscript
+exec /bin/bash -l -c "$@"
+%startscript
+exec /bin/bash -l -c "$@"

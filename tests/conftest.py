@@ -1,11 +1,9 @@
 from pathlib import Path
 import pytest
 
-
 @pytest.fixture(scope="session")
 def kargs():
     repo = Path.cwd()
-
     kargs = dict(
         repo=repo,
         prediction_filename_pattern=r"*[!_gt|!_realspace|!_noisefree|!_predictions_psf|!_corrected_psf|!_reconstructed_psf].tif",
@@ -34,7 +32,7 @@ def kargs():
         finetune=None,
         profile=False,
         workers=1,
-        gpu_workers=2,
-        cpu_workers=16,
+        gpu_workers=1,
+        cpu_workers=8,
     )
     return kargs

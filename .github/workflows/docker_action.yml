@@ -4,30 +4,27 @@ name: docker-ubuntu-build
 on:
   push:
     branches:
+      - '*/**'
       - '*'
     tags:
       - '*'
-  pull_request:
-    branches:
-      - 'main'
-      - 'develop'
-      - 'releases/**'
-      - 'release/**'
-      - 'release'
+
 
 # only allow one copy of this workflow to run at a time (the group specified by workflow name and branch)
 # cancel current workflows if they are running (unless on main or releases, so that we just run the latest queue'd.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: ${{ !contains(github.head_ref || github.ref_name, 'release/') || !contains(github.head_ref || github.ref_name, 'main/') }}
+  cancel-in-progress: ${{ !contains(github.head_ref || github.ref_name, 'release/') || !contains(github.head_ref || github.ref_name, 'main/') || !contains(github.head_ref || github.ref_name, 'develop/')}}
 
 env:
+  CUDA_VERSION: torch_cuda_12_8
   REGISTRY: ghcr.io  
   IMAGE_NAME: ${{ github.repository }}  # github.repository as <account>/<repo>
   DO_SIGNING: ${{ false }}
   BRANCH: ${{ github.head_ref || github.ref_name }}   # 'main' or 'develop'
-  PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings
-
+  PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings -r fEX --junit-xml=test_results/test-results  # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
+  TESTING: ${{ true }}  # skip tests if we have this branch name
+  
 jobs:
   # cleanup-job:
   #   runs-on:
@@ -45,7 +42,8 @@ jobs:
   #         rm -rf ./.??* || true
   #         ls -la ./
 
-  cleanup-job-docker-runners:
+
+  cleanup-docker-runners:
     runs-on:
       group: docker-runners
     container:
@@ -61,19 +59,13 @@ jobs:
           rm -rf ./.??* || true
           ls -la ./
 
-  build-docker:      
-    needs: cleanup-job-docker-runners
-    if: always()
-    name: docker_image_build
+  docker-build:      
+    needs: cleanup-docker-runners
     runs-on:
       group: docker-runners
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        include:
-          - CUDA_VERSION: "torch_cuda_12_8"
     steps:
       - name: Dump GitHub context
         env:
@@ -98,10 +90,9 @@ jobs:
           echo "The id of this action is: $GITHUB_ACTION"   # reference the default environment variables
           echo "The run id is: $GITHUB_RUN_ID"
           echo "The GitHub Actor's username is: $GITHUB_ACTOR"
-          echo "GitHub SHA: $GITHUB_SHA"
 
       # The repo gets volume mapped into the container automatically in test-docker
-      - name: Checkout whole repo  
+      - name: Checkout whole repo
         uses: actions/checkout@v4
         with:
           submodules: 'recursive'
@@ -118,7 +109,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          driver: docker 
+          driver: docker
 
       # Login against a Docker registry except on PR
       # https://github.com/docker/login-action
@@ -142,9 +133,9 @@ jobs:
             org.opencontainers.image.vendor=Advanced Bioimaging Center at UC Berkeley and Janelia Research Campus
           tags: |
             type=schedule
-            type=ref,suffix=_${{ matrix.CUDA_VERSION }},event=branch
-            type=ref,suffix=_${{ matrix.CUDA_VERSION }},event=tag
-            type=ref,suffix=_${{ matrix.CUDA_VERSION }},event=pr
+            type=ref,suffix=_${{ env.CUDA_VERSION }},event=branch
+            type=ref,suffix=_${{ env.CUDA_VERSION }},event=tag
+            type=ref,suffix=_${{ env.CUDA_VERSION }},event=pr
 
       - name: Build Docker image
         id: build-and-push
@@ -158,23 +149,18 @@ jobs:
           build-args: |
             BRANCH_NAME=${{ env.BRANCH }}
           no-cache-filters: |
-            pip_install
-# cache the nvidia image and setup.  Then don't cache the "pip_install" build stage where we pip install the requirements.txt              
-          target: ${{ matrix.CUDA_VERSION }}
-          
+          #  pip_install
+          # cache the nvidia image and setup.  Then don't cache the "pip_install" build stage where we pip install the requirements.txt
+          target: ${{ env.CUDA_VERSION }}
 
-  push-docker:      
-    needs: build-docker
-    name: docker_image_push
+
+  docker-push:
+    needs: docker-build
     runs-on:
       group: docker-runners
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        include:
-          - CUDA_VERSION: "torch_cuda_12_8"
     steps:
       - name: Dump GitHub context
         env:
@@ -199,10 +185,9 @@ jobs:
           echo "The id of this action is: $GITHUB_ACTION"   # reference the default environment variables
           echo "The run id is: $GITHUB_RUN_ID"
           echo "The GitHub Actor's username is: $GITHUB_ACTOR"
-          echo "GitHub SHA: $GITHUB_SHA"
 
       # The repo gets volume mapped into the container automatically in test-docker
-      - name: Checkout whole repo  
+      - name: Checkout whole repo
         uses: actions/checkout@v4
         with:
           submodules: 'recursive'
@@ -219,7 +204,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          driver: docker 
+          driver: docker
 
       # Login against a Docker registry except on PR
       # https://github.com/docker/login-action
@@ -243,12 +228,12 @@ jobs:
             org.opencontainers.image.vendor=Advanced Bioimaging Center at UC Berkeley and Janelia Research Campus
           tags: |
             type=schedule
-            type=ref,suffix=_${{ matrix.CUDA_VERSION }},event=branch
-            type=ref,suffix=_${{ matrix.CUDA_VERSION }},event=tag
-            type=ref,suffix=_${{ matrix.CUDA_VERSION }},event=pr
+            type=ref,suffix=_${{ env.CUDA_VERSION }},event=branch
+            type=ref,suffix=_${{ env.CUDA_VERSION }},event=tag
+            type=ref,suffix=_${{ env.CUDA_VERSION }},event=pr
 
       - name: Push Docker image
-        id: build-and-push
+        id: docker-push
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -257,26 +242,41 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            BRANCH_NAME=${{ env.BRANCH }}       
-          target: ${{ matrix.CUDA_VERSION }}
+            BRANCH_NAME=${{ env.BRANCH }}
+          target: ${{ env.CUDA_VERSION }}
 
-  build-apptainer:
-    needs: build-docker
+
+  sif_path:
+    runs-on:
+      group: Default  
+    outputs:
+      SIF_PATH: ${{ steps.step1.outputs.MY_PATH }}
+    steps:
+      - name: clean name of "/" characters
+        id: step1
+        run: |
+            echo "${{ github.head_ref || github.ref_name }}" | tr '/' '_'
+            {
+              echo 'MY_PATH<<EOF'
+              echo "${{ github.head_ref || github.ref_name }}" | tr '/' '_'
+              echo EOF
+            } >> "$GITHUB_OUTPUT"            
+            cat "$GITHUB_OUTPUT"
+
+
+  apptainer-build-and-test:
+    needs: sif_path
     runs-on:
       group: Default
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        include:
-          - CUDA_VERSION: "torch_cuda_12_8"
     steps:
-      # The repo gets volume mapped into the container automatically in test-docker
-      # - name: Checkout whole repo  
-      #   uses: actions/checkout@v4
-      #   with:
-      #     submodules: 'recursive'
+      # The repo gets volume mapped into the container automatically
+      - name: Checkout whole repo
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
 
       - name: List files in the directory
         run: |
@@ -291,35 +291,127 @@ jobs:
           registry: ${{ env.REGISTRY }}    # aka ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-                
-      # - name: Pull latest docker
-      #   run: |
-      #       docker pull ghcr.io/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ matrix.CUDA_VERSION }}
-
-      - name: Build Apptainer from local docker image we just pulled to a local .sif
+          
+      - name: Get bootstrap pytorch .sif from 'apptainerfile.def'
+      #  (e.g. 25.01-py3)
+        id: bootstrap_sif
         run: |
-            apptainer build --nv --force ${{ github.workspace }}/${{ github.head_ref || github.ref_name }}_${{ matrix.CUDA_VERSION }}.sif docker-daemon:ghcr.io/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ matrix.CUDA_VERSION }}
+            echo "sed -n 's/From: //p' apptainerfile.def"
+            {
+              echo 'SIF_FILE<<EOF'
+              sed -n 's/From: //p' apptainerfile.def
+              echo EOF
+            } >> "$GITHUB_OUTPUT"            
+            cat "$GITHUB_OUTPUT"
+      
+      - name: Get built sif path
+        id: built_sif_path
+        run: |
+            echo "BUILT_SIF_PATH=${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+
+      - name: Get bootstrap pytorch version from 'apptainerfile.def'
+      #  (e.g. 25.01-py3)
+        id: sif_pytorch_version
+        run: |
+            echo "SIF_PYTORCH_VERSION=$(grep -Po 'pytorch_\K.*(?=.sif)' apptainerfile.def)" >> "$GITHUB_OUTPUT"
+            cat "$GITHUB_OUTPUT"
+
+      - name: Get dockerfile pytorch version from 'Dockerfile'
+      #  (e.g. 25.01-py3)
+        id: dockerfile_pytorch_version
+        run: |
+            echo "DOCKER_PYTORCH_VERSION=$(grep -Po 'pytorch:\K.*(?= as)' Dockerfile)" >> "$GITHUB_OUTPUT"
+            cat "$GITHUB_OUTPUT"
+
+      - name: Get dockerfile pytorch image from 'Dockerfile' 
+      # (e.g. nvcr.io/nvidia/pytorch:25.01-py3)
+        id: dockerfile_pytorch_image
+        run: |
+            echo "DOCKER_PYTORCH_IMAGE=$(grep -Po 'FROM \K.*(?= as)' Dockerfile)" >> "$GITHUB_OUTPUT"
+            cat "$GITHUB_OUTPUT"
+
+      - name: Copy bootstrap SIF file 
+        continue-on-error: true # if it doesn't exist, keep going.
+        run: |
+            /bin/cp -sf ~/SIF_files/${{ steps.bootstrap_sif.outputs.SIF_FILE }} .
+
+      - name: Check that bootstrap SIF file "${{ steps.bootstrap_sif.outputs.SIF_FILE }}" exists
+        id: check_if_bootstrap_SIF_exists
+        uses: andstor/file-existence-action@v3
+        env:
+          DOCKERFILE_PYTORCH_IMAGE: ${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
+          SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
+          SIF_PYTORCH_VERSION: ${{ steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION }}
+          DOCKER_PYTORCH_VERSION: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
+        with:
+          files: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
+          ignore_case: true
+          fail: false # fail on missing files
+          
+
+      - name: Raise error if pytorch dockerfile version (${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}) and apptainerfile.def version (${{ steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION }}) disagree
+        if: ${{ ! startsWith( steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION, steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION) }}
+        env:
+          DOCKERFILE_PYTORCH_IMAGE: ${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
+          SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
+          SIF_PYTORCH_VERSION: ${{ steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION }}
+          DOCKER_PYTORCH_VERSION: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
+        uses: actions/github-script@v3
+        with:
+          script: |
+              core.setFailed('dockerfile and apptainer.def recipe do not have the same pytorch version! SIF_PYTORCH_VERSION = $SIF_PYTORCH_VERSION DOCKER_PYTORCH_VERSION = $DOCKER_PYTORCH_VERSION')
+
+      - name: If apptainer bootstrap doesn't exist, build it. (${{ steps.bootstrap_sif.outputs.SIF_FILE }} from ${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}) 
+        if: steps.check_if_bootstrap_SIF_exists.outputs.files_exists == 'false'
+        env:
+          DOCKERFILE_PYTORCH_IMAGE: ${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
+          SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
+        run: |
+            mkdir -p ~/SIF_files/  &&  apptainer build --nv --force ~/SIF_files/${{ steps.bootstrap_sif.outputs.SIF_FILE }} docker://${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
+
+      - name: Cache apptainer build
+        id: cache
+        uses: dmilkie/local-cache@main
+        with:
+          base: ~/.cache/github_action_local_cache
+          path: /home/mosaic/built_SIF
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
+
+      - name: Copy cached apptainer build if checksums pass
+        id: cached_apptainer_build
+        run: |
+            rm -f ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}
+            sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  || true
+            sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
+
+
+
+      - name: Check if built SIF file exists
+        id: check_if_built_SIF_exists
+        uses: andstor/file-existence-action@v3
+        env:
+          BUILT_SIF_FILE: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}         
+        with:
+          files: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}
+          ignore_case: true
+          fail: false # fail on missing files
+
+      - name: Build "${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" from apptainerfile.def definition file
+        if: steps.cached_apptainer_build.outputs.CHECKSUM == 'FAILED' || steps.check_if_built_SIF_exists.outputs.files_exists == 'false'
+        id: apptainer_build
+        run: |
+            /bin/cp -sf ~/SIF_files/${{ steps.bootstrap_sif.outputs.SIF_FILE }} .
+            apptainer build --nv --force ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} apptainerfile.def
+            echo "done building ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}, now copying to ~/built_SIF for caching"
+            sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
+            /bin/cp -f ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
 
       # - name: Login and Push Apptainer SIF to github
       #   run: |
-      #       ls *.si*         
-      #       apptainer remote login --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} oras://ghcr.io       
-      #       apptainer push -U ${{ github.workspace }}/${{ github.head_ref || github.ref_name }}_${{ matrix.CUDA_VERSION }}.sif oras://ghcr.io/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ matrix.CUDA_VERSION }}_sif  
+      #       ls *.si*
+      #       apptainer remote login --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} oras://ghcr.io
+      #       apptainer push -U ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif oras://ghcr.io/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ env.CUDA_VERSION }}_sif
 
-
-  test-apptainer:
-    needs: build-apptainer    
-    runs-on:
-      group: Default
-    strategy:
-      matrix:
-        include:
-          - CUDA_VERSION: "torch_cuda_12_8"
-            test_framework: "pytorch"
-      fail-fast: false  # do the other tests in the matrix even if one of them fails
-    env: 
-      APPTAINER_RUN: apptainer exec --nv ${{ github.workspace }}/${{ github.head_ref || github.ref_name }}_${{ matrix.CUDA_VERSION }}.sif
-    steps:
       - name: List files in the repository
         run: |
           ls -lhXR ${{ github.workspace }}
@@ -329,18 +421,67 @@ jobs:
           chmod -R 777 ${{ github.workspace }}
           ls -lhXR ${{ github.workspace }}
 
-      - name: investigate 
+      - name: Investigate file ownership
         run: |
           pwd
           id
           id -u
           ls -lhXR
           
+      - name: Set APPTAINER_RUN command
+        id: apptainer_run
+        run: |
+          rm -f test_results/* || true
+          echo "APPTAINER_RUN=apptainer exec --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+
       - name: pip list 
-        run: ${{ env.APPTAINER_RUN }} pip list
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip list
 
       - name: Test NVIDIA-SMI
-        run:  ${{ env.APPTAINER_RUN }} nvidia-smi
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} nvidia-smi
 
-      # - name: Test ${{ matrix.test_framework }}
-      #   run: ${{ env.APPTAINER_RUN }} ${{ env.PYTEST }} ${{ github.workspace }}/tests/test_${{ matrix.test_framework }}.py
+      - name: pytest /tests/data (excluding test_ray)
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml      tests/data -k 'not ray'
+
+      - name: pytest /tests/data/test_ray.py
+        if: ${{ env.TESTING == true }}
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data_ray.xml  tests/data/test_ray.py
+
+      - name: pytest /tests/utils
+        if: ${{ env.TESTING == true }}
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml     tests/utils
+        
+      - name: pytest /tests/models
+        if: ${{ env.TESTING == true }}
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml    tests/models
+
+      - name: pytest /tests/training
+        if: ${{ env.TESTING == true }}
+        run: |
+          /bin/cp -fr ~/opticalaberrations/dataset .  || true
+            ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml   tests/training
+            
+      - name: Surface failing tests
+        if: always()
+        uses: pmeier/pytest-results-action@main
+        with:
+          # A list of JUnit XML files, directories containing the former, and wildcard
+          # patterns to process.
+          # See @actions/glob for supported patterns.
+          path: test_results/*
+      
+          # (Optional) Add a summary of the results at the top of the report
+          summary: true
+      
+          # (Optional) Select which results should be included in the report.
+          # Follows the same syntax as `pytest -r`
+          #  Show extra test summary info as specified by chars: (f)ailed, (E)rror, (s)kipped, (x)failed, (X)passed, (p)assed, (P)assed with output, (a)ll except passed (p/P), or (A)ll.
+          #               (w)arnings are enabled by default (see --disable-warnings), 'N' can be used to reset the list. (default: 'fE').
+          display-options: fEX
+      
+          # (Optional) Fail the workflow if no JUnit XML was found.
+          fail-on-empty: true
+      
+          # (Optional) Title of the test results section in the workflow summary
+          title: Test results
+          
