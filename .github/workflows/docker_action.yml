@@ -23,7 +23,7 @@ env:
   DO_SIGNING: ${{ false }}
   BRANCH: ${{ github.head_ref || github.ref_name }}   # 'main' or 'develop'
   PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings -r fEX --junit-xml=test_results/test-results  # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
-  TESTING: ${{ !contains(github.head_ref || github.ref_name, 'use_checksum_to_cache_apptainer_sif_build')}}  # skip tests if we have this branch name
+  TESTING: ${{ true }}  # skip tests if we have this branch name
   
 jobs:
   # cleanup-job:
