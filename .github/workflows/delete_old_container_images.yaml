@@ -14,7 +14,6 @@ on:
           - info
           - warning
           - debug
-
 jobs:
   list_package_info:
     runs-on: ubuntu-latest
@@ -22,9 +21,13 @@ jobs:
     steps:
       - env:
           GH_TOKEN: ${{ secrets.cleanup_packages }}
+          ORG: ${{ github.repository_owner }}
         run: |
-          gh api /user/packages?package_type=container
-          gh api /user/packages/container/${{ github.repository }}/versions?per_page=10
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /orgs/$ORG/packages?package_type=container
+
 
   clean-ghcr:
     name: Delete old unused container images
@@ -33,9 +36,8 @@ jobs:
       - name: Delete old images
         uses: snok/container-retention-policy@v3.0.0
         with:
-          image-names: ${{ github.repository }}
-          cut-off: 1w
+          image-names: "*"      # platform, aovift, ...
+          cut-off: 1w           # package versions should be older than 1 week, to be considered
           keep-n-most-recent: 3
-          account: user
+          account: ${{ github.repository_owner }}    # Organization "cell-observatory"
           token: ${{ secrets.cleanup_packages }}
-          tag-selection: untagged

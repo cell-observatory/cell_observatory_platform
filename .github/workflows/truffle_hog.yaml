@@ -1,0 +1,20 @@
+name: 'Trufflehog: check if secrets are hardcoded in code'
+on:
+    workflow_dispatch:
+    pull_request:
+    push:
+      branches:
+        - main
+        - feature/add_truffle_hog_github_action  
+jobs:
+    scan_for_secrets:
+        runs-on: ubuntu-latest
+        steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
+          with:
+            fetch-depth: 0
+        - name: Secret Scanning
+          uses: trufflesecurity/trufflehog@main
+          with:
+            extra_args: --results=verified,unknown
