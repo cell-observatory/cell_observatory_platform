@@ -36,6 +36,5 @@ class ArgumentParserWithDefaults(argparse.ArgumentParser):
 def argparser():
     parser = ArgumentParserWithDefaults(
         formatter_class=argparse.RawTextHelpFormatter,
-        description="Copyright (c) 2021 ABC. Licensed under the BSD 2-Clause License.",
     )
     return parser
