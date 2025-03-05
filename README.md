@@ -1,10 +1,16 @@
 
-Template for docker/apptainer containers
+Cell Observatory
 ====================================================
-
+- [Copyright Notice](#copyright-notice)
 - [Docker \& Apptainer images](#docker--apptainer-images)
 - [Clone repository to your host system](#clone-repository-to-your-host-system)
 - [Running docker image](#running-docker-image)
+
+# Copyright notice
+All code and data contained within this repository are proprietary.<br> 
+Unauthorized distribution, reproduction, or use of any part of this code or data is strictly prohibited.<br>
+Copyright &copy; 2025, Cell Observatory.<br>
+All rights reserved.
 
 
 # Docker [images](https://github.com/cell-observatory/platform/pkgs/container/platform)
