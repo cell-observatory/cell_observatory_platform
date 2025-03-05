@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="test_training" type="PythonConfigurationType" factoryName="Python" folderName="tests">
+  <configuration default="false" name="test_utils" type="PythonConfigurationType" factoryName="Python" folderName="tests">
     <module name="platform" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
@@ -43,7 +43,7 @@
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="pytest" />
-    <option name="PARAMETERS" value="-s -v --disable-pytest-warnings --color=yes tests/training" />
+    <option name="PARAMETERS" value="-s -v --disable-pytest-warnings --color=yes tests/utils" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="true" />
