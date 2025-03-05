@@ -28,7 +28,9 @@ class FishDatabase:
                 .data
         )
 
+        # Metadata df, sorted using record creation time
         self.metadata = pd.DataFrame(self.metadata)
+        self.metadata = self.metadata.sort_values(by='created_at')
 
         # Open zarr files
         self.stores = []
