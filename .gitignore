@@ -1,13 +1,6 @@
-dataset/
-evaluations/
-archive/
-logs/
-profilers/
-pretrained_models/
 .idea/
 .DS_Store
 .DS_Store?
-test_data
 .env
 
 # Byte-compiled / optimized / DLL files
@@ -143,24 +136,14 @@ dmypy.json
 # Profiler
 *.pclprof
 
-examples/DM_State_510nm.csv
-src/pycharm.lnk
-src/LabVIEW_Shortcut.lnk
-src/LV_auto_batch.bat
-login.bat
-*.bat
-/examples/largefov/before_tiles/
-/examples
-src/all_coords_cache_3x361x6x64x64_float16.npy
-/src/phasenet_repo/
-/src/phasenet_repo/**/*.*
-/src/phasenet_repo/**/**/*.*
-/src/cocoa_repo/
-/src/cocoa_repo/**/*.*
-/src/cocoa_repo/**/**/*.*
-/scope_psf
-src/LV_auto_batch.bat_predict_rois
-/SyntheticPSFCache/
-/benchmarks/
-/scaling/
+# Data
+dataset/
+archive/
+logs/
+pretrained_models/
+scaling/olddata/
+scaling/data/
+test_data
+scope_psf
+SyntheticPSFCache/
 *.npy
