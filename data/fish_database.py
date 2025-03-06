@@ -17,7 +17,7 @@ class FishDatabase:
     def __init__(self, data_config: DataConfig = None,
                  force_create_db = False,
                  clean_up_db = False,
-                 exists="true"):
+                 ):
         if data_config is None:
             data_config = DataConfig()
 
@@ -41,7 +41,7 @@ class FishDatabase:
         self.metadata = (
                 db.table("prepared")
                 .select("acquisition_id", "created_at", "software_version", "output_folder", "exists")
-                .eq("exists", exists)
+                .eq("exists", "true")
                 .execute()
                 .data
         )

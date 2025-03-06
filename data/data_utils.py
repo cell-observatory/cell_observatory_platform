@@ -27,10 +27,7 @@ def index_mapper(shape: tuple[int, int, int, int, int ,int],
     else:
         raise NotImplementedError(f"color mode {data_config.color_mode} is not supported")
 
-    has_time = data_config.t is not None
-    if has_time:
-        n_time = n_time // data_config.t
-
+    n_time = n_time // data_config.t
     n_z = n_z // data_config.z
     n_y = n_y // data_config.y
     n_x = n_x // data_config.x

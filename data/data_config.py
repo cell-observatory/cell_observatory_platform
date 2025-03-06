@@ -19,13 +19,17 @@ class DataConfig:
         self.y = y
         self.x = x
         self.c = c
+        self.dim = self._determine_data_dimension()
 
         if c is None:
             self.color_mode = ColorMode.AVG
+            self.c = 1
         else:
             self.color_mode = ColorMode.MATCH
 
-        self.dim = self._determine_data_dimension()
+        if t is None:
+            self.t = 1
+
 
     def _determine_data_dimension(self):
         has_time = self.t is not None
