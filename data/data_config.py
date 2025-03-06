@@ -13,19 +13,21 @@ class ColorMode(Enum):
     # TODO: add different color modes: index, target protein etc
 
 class DataConfig:
-    def __init__(self, t = None, z = 128, y = 128, x = 128, c = None):
+    def __init__(self, t = None, z = 128, y = 128, x = 128, c = None, color_mode = ColorMode.AVG):
         self.t = t
         self.z = z
         self.y = y
         self.x = x
         self.c = c
-        self.dim = self._determine_data_dimension()
 
         if c is None:
             self.color_mode = ColorMode.AVG
             self.c = 1
         else:
             self.color_mode = ColorMode.MATCH
+            if self.c is None: raise Exception("Number of color channels must be provided for {ColorMode.MATCH} color mode")
+
+        self.dim = self._determine_data_dimension()
 
         if t is None:
             self.t = 1
@@ -33,7 +35,7 @@ class DataConfig:
 
     def _determine_data_dimension(self):
         has_time = self.t is not None
-        has_color = self.c is not None
+        has_color = self.color_mode == ColorMode.MATCH
 
         if has_time and has_color:
             return Dimension.DIM_5D_BTZYXC

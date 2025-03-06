@@ -1,12 +1,13 @@
 import os
 import logging
 import sqlite3
+import numpy as np
 import pandas as pd
 import tensorstore as ts
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
-from .data_config import DataConfig
+from .data_config import DataConfig, ColorMode
 from .data_utils import index_mapper
 
 
@@ -17,7 +18,8 @@ class FishDatabase:
     def __init__(self, data_config: DataConfig = None,
                  force_create_db = False,
                  clean_up_db = False,
-                 metadata = None
+                 metadata = None,
+                 dtype = np.uint16
                  ):
         if data_config is None:
             data_config = DataConfig()
@@ -31,10 +33,14 @@ class FishDatabase:
         self.cur = None
         self.local_db_name = None
         self.stores = []
+        self.length = 0
 
         if metadata is None:
             metadata = self._query_remote_db()
         self.metadata = metadata
+        # return if no data in database
+        if len(self.metadata) == 0:
+            return
 
         # Metadata df, sorted using record creation time
         self.metadata = pd.DataFrame(self.metadata)
@@ -126,14 +132,30 @@ class FishDatabase:
         cmd = "SELECT * FROM store_index_map where rowid = " + str(index+1)
         res = self.cur.execute(cmd)
         rowid, storeid, tile, t, z, y, x, c = res.fetchone()
+
+        # retrieve store
         store = self.stores[storeid]
 
+        # compute index slices
+        t1, t2 = z * self.data_config.t, (t + 1) * self.data_config.t
         z1, z2 = z * self.data_config.z, (z + 1) * self.data_config.z
         y1, y2 = y * self.data_config.y, (y + 1) * self.data_config.y
         x1, x2 = x * self.data_config.x, (x + 1) * self.data_config.x
-        c1, c2 = x * self.data_config.c, (c + 1) * self.data_config.c
 
-        item = store[tile, t, z1:z2, y1:y2, x1:x2, c1:c2].read().result()
+        # slice data based on color mode
+        if self.data_config.color_mode == ColorMode.MATCH:
+            c1, c2 = x * self.data_config.c, (c + 1) * self.data_config.c
+            item = store[tile, t1:t2, z1:z2, y1:y2, x1:x2, c1:c2].read().result()
+        elif self.data_config.color_mode == ColorMode.AVG:
+            item = store[tile, t1:t2, z1:z2, y1:y2, x1:x2, :].read().result()
+            if item.shape[4] > 1:
+                # cast to double before averaging
+                item = item.astype(np.double).mean(4)
+                # cast and reshape to original
+                item = item.astype(np.uint16)[..., np.newaxis]
+        else:
+            raise NotImplemented("Color mode {self.data_config.color_mode} not implemented}")
+
         return item
 
     def __del__(self):
