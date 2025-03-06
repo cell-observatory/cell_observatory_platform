@@ -16,6 +16,9 @@ class FishDatabase:
         url: str = os.environ.get("SUPABASE_URL")
         key: str = os.environ.get("SUPABASE_KEY")
 
+        assert url, f"Environment variable 'SUPABASE_URL' is unset or is empty. A local .env file could contain 'SUPABASE_URL=https://XXXXXXXXXXXXXXXXXXXX.supabase.co' and 'SUPABASE_KEY='"
+        assert key, f"Environment variable 'SUPABASE_KEY' is not set or is empty. This could be a public key that you find from the 'connect' page on supabase."
+
         # connect to the database
         db: Client = create_client(url, key)
 
