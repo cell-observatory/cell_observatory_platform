@@ -1,5 +1,6 @@
 import pytest
 import warnings
+from datetime import datetime
 warnings.filterwarnings("ignore")
 
 import tensorstore as ts
@@ -14,9 +15,10 @@ def test_construct_fish_database():
     assert fd is not None
 
 @pytest.mark.run(order=2)
-def test_indexing_fish_database():
+def test_indexing_fish_database(kargs):
     data_config = DataConfig(x=128, y=128, z=128)
-    path_to_data = '/opt/project/test_data'
+    # Create data
+    path_to_data = str(kargs['fishdb_dir'])
     spec = {
         'driver': 'zarr',
         'kvstore': {
@@ -38,6 +40,15 @@ def test_indexing_fish_database():
     test_arr = np.ones((data_config.z,data_config.y,data_config.x), dtype=np.uint16)
     dataset[0,0,0:data_config.z,0:data_config.y,0:data_config.x,0] = test_arr
 
-    fd = FishDatabase(clean_up_db=True)
+    # Create metadata
+    metadata = {
+        "acquisition_id": [1, ],
+        "created_at": [datetime(2025, 3, 6, 10, 30),],
+        "software_version": ["Petakit 1.0",],
+        "output_folder": [path_to_data, ],
+        "exists": [True, ]
+    }
+
+    fd = FishDatabase(clean_up_db=True, metadata=metadata)
     assert len(fd) == 10*200*(512//128)**2*(256/128)
     assert np.array_equal(fd[0].squeeze(), test_arr)

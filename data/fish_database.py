@@ -17,6 +17,7 @@ class FishDatabase:
     def __init__(self, data_config: DataConfig = None,
                  force_create_db = False,
                  clean_up_db = False,
+                 metadata = None
                  ):
         if data_config is None:
             data_config = DataConfig()
@@ -25,26 +26,15 @@ class FishDatabase:
         self.force_create_db = force_create_db
         self.clean_up_db = clean_up_db
 
-        # Load environment variables from .env file
-        load_dotenv()
+        # instantiate fields that will be populated later for book-keeping
+        self.con = None
+        self.cur = None
+        self.local_db_name = None
+        self.stores = []
 
-        url: str = os.environ.get("SUPABASE_URL")
-        key: str = os.environ.get("SUPABASE_KEY")
-
-        assert url, f"Environment variable 'SUPABASE_URL' is unset or is empty. A local .env file could contain 'SUPABASE_URL=https://XXXXXXXXXXXXXXXXXXXX.supabase.co' and 'SUPABASE_KEY='"
-        assert key, f"Environment variable 'SUPABASE_KEY' is not set or is empty. This could be a public key that you find from the 'connect' page on supabase."
-
-        # connect to the database
-        db: Client = create_client(url, key)
-
-        # Query metadata
-        self.metadata = (
-                db.table("prepared")
-                .select("acquisition_id", "created_at", "software_version", "output_folder", "exists")
-                .eq("exists", "true")
-                .execute()
-                .data
-        )
+        if metadata is None:
+            metadata = self._query_remote_db()
+        self.metadata = metadata
 
         # Metadata df, sorted using record creation time
         self.metadata = pd.DataFrame(self.metadata)
@@ -53,8 +43,27 @@ class FishDatabase:
         self._open_zarr_files()
         self._init_local_db()
 
+    def _query_remote_db(self):
+        # Load environment variables from .env file
+        load_dotenv()
+        url: str = os.environ.get("SUPABASE_URL")
+        key: str = os.environ.get("SUPABASE_KEY")
+        assert url, f"Environment variable 'SUPABASE_URL' is unset or is empty. A local .env file could contain 'SUPABASE_URL=https://XXXXXXXXXXXXXXXXXXXX.supabase.co' and 'SUPABASE_KEY='"
+        assert key, f"Environment variable 'SUPABASE_KEY' is not set or is empty. This could be a public key that you find from the 'connect' page on supabase."
+        # connect to the database
+        db: Client = create_client(url, key)
+        # Query metadata
+        metadata = (
+            db.table("prepared")
+            .select("acquisition_id", "created_at", "software_version", "output_folder", "exists")
+            .eq("exists", "true")
+            .execute()
+            .data
+        )
+
+        return metadata
+
     def _open_zarr_files(self):
-        self.stores = []
         for i, output_folder in enumerate(self.metadata["output_folder"]):
             spec = {'driver': 'zarr', 'kvstore': {'driver': 'file', 'path': output_folder}}
             try:
@@ -63,6 +72,7 @@ class FishDatabase:
             except Exception as e:
                 logging.info(f'File does not exist: {output_folder}. Consider updating the database.')
                 self.metadata['exists'].iloc[i] = False
+
         # only keep existing
         self.metadata = self.metadata[self.metadata['exists']]
 
@@ -127,6 +137,11 @@ class FishDatabase:
         return item
 
     def __del__(self):
-        self.con.close()
-        if self.clean_up_db:
-            os.remove(self.local_db_name)
+        if self.con:
+            self.con.close()
+
+        if self.clean_up_db and self.local_db_name is not None:
+            try:
+                os.remove(self.local_db_name)
+            except Exception as e:
+                logging.info(f'Failed to delete local db file: {self.local_db_name}.')

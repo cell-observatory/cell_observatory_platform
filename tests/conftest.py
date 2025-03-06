@@ -8,6 +8,7 @@ def kargs():
         repo=repo,
         prediction_filename_pattern=r"*[!_gt|!_realspace|!_noisefree|!_predictions_psf|!_corrected_psf|!_reconstructed_psf].tif",
         dataset=repo/"dataset/training_dataset/YuMB_lambda510/z200-y97-x97/z64-y64-x64/z15/",
+        fishdb_dir=repo/"dataset/fishdb_data/",
         outdir=repo/'pretrained_models',
         input_shape=64,
         modes=15,
