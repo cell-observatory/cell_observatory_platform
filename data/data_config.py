@@ -39,3 +39,8 @@ class DataConfig:
             return Dimension.DIM_4D_BZYXC
         else:
             return Dimension.DIM_3D_BZYX
+
+    def __repr__(self):
+        t = 1 if self.t is None else 1
+        c = 1 if self.c is None else 1
+        return f"data_config_t_{t}_z_{self.z}_y_{self.y}_x_{self.x}_dim_{self.dim.name}_color_mode_{self.color_mode.name}"

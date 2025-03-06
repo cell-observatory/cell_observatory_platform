@@ -1,15 +1,30 @@
 import os
 import logging
+import sqlite3
 import pandas as pd
 import tensorstore as ts
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
+from .data_config import DataConfig
+from .data_utils import index_mapper
+
+
 class FishDatabase:
     """
     Access the preprocessed dataset and metadata.
     """
-    def __init__(self, exists="true"):
+    def __init__(self, data_config: DataConfig = None,
+                 force_create_db = False,
+                 clean_up_db = False,
+                 exists="true"):
+        if data_config is None:
+            data_config = DataConfig()
+
+        self.data_config = data_config
+        self.force_create_db = force_create_db
+        self.clean_up_db = clean_up_db
+
         # Load environment variables from .env file
         load_dotenv()
 
@@ -35,7 +50,10 @@ class FishDatabase:
         self.metadata = pd.DataFrame(self.metadata)
         self.metadata = self.metadata.sort_values(by='created_at')
 
-        # Open zarr files
+        self._open_zarr_files()
+        self._init_local_db()
+
+    def _open_zarr_files(self):
         self.stores = []
         for i, output_folder in enumerate(self.metadata["output_folder"]):
             spec = {'driver': 'zarr', 'kvstore': {'driver': 'file', 'path': output_folder}}
@@ -45,9 +63,70 @@ class FishDatabase:
             except Exception as e:
                 logging.info(f'File does not exist: {output_folder}. Consider updating the database.')
                 self.metadata['exists'].iloc[i] = False
+        # only keep existing
+        self.metadata = self.metadata[self.metadata['exists']]
+
+    def _init_local_db(self):
+        # local db name
+        cwd = os.getcwd()
+        local_db_name = os.path.join(cwd, repr(self.data_config) + ".db")
+        self.local_db_name = local_db_name
+
+        # check db exists before .connect since it would create the db if it didn't
+        create_db = not os.path.isfile(local_db_name)
+        self.con = sqlite3.connect(local_db_name)
+        self.cur = self.con.cursor()
+
+        if create_db or self.force_create_db:
+            # if force creating db, we need to delete the existing one first
+            if self.force_create_db: os.remove(local_db_name)
+
+            # Create store_index_map table
+            # TODO: add x0 and y0 table using chunk id for middle out cropping, t and z drop last is better
+            cmd = """
+            CREATE TABLE store_index_map (
+                                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                                storeid INTEGER,
+                                tile INTEGER,
+                                t INTEGER,
+                                z INTEGER,
+                                y INTEGER,
+                                x INTEGER,
+                                c INTEGER
+                            );
+            """
+            self.cur.execute(cmd)
+
+            # Loop over each store to create index mapping
+            # TODO: filter based on fill factor here
+            for i, store in enumerate(self.stores):
+                indices = index_mapper(store.shape, self.data_config)
+                cmd = "INSERT INTO store_index_map(storeid, tile, t, z, y, x, c)  VALUES("+str(i)+",?, ?, ?, ?, ?, ?)"
+                self.cur.executemany(cmd, indices)
+
+        # update dataset length
+        res = self.cur.execute("SELECT COUNT(*) FROM store_index_map")
+        self.length = res.fetchone()[0]
 
     def __len__(self):
-        return len(self.stores)
+        return self.length
 
     def __getitem__(self, index):
-        return self.stores[index]
+        # look up corresponding indices (note SQL uses 1-based indexing for autoincremented row id)
+        cmd = "SELECT * FROM store_index_map where rowid = " + str(index+1)
+        res = self.cur.execute(cmd)
+        rowid, storeid, tile, t, z, y, x, c = res.fetchone()
+        store = self.stores[storeid]
+
+        z1, z2 = z * self.data_config.z, (z + 1) * self.data_config.z
+        y1, y2 = y * self.data_config.y, (y + 1) * self.data_config.y
+        x1, x2 = x * self.data_config.x, (x + 1) * self.data_config.x
+        c1, c2 = x * self.data_config.c, (c + 1) * self.data_config.c
+
+        item = store[tile, t, z1:z2, y1:y2, x1:x2, c1:c2].read().result()
+        return item
+
+    def __del__(self):
+        self.con.close()
+        if self.clean_up_db:
+            os.remove(self.local_db_name)
