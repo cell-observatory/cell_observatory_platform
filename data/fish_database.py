@@ -38,9 +38,16 @@ class FishDatabase:
         if metadata is None:
             metadata = self._query_remote_db()
         self.metadata = metadata
+
         # return if no data in database
         if len(self.metadata) == 0:
             return
+
+        # check required metadata fields exist
+        required_fields = ["created_at", "output_folder", "exists"]
+        for field in required_fields:
+            if field not in self.metadata:
+                raise ValueError(f"Metadata required fields are missing: {required_fields}")
 
         # Metadata df, sorted using record creation time
         self.metadata = pd.DataFrame(self.metadata)
@@ -128,11 +135,15 @@ class FishDatabase:
         return self.length
 
     def __getitem__(self, index):
+        if index >= self.length:
+            raise IndexError
         # look up corresponding indices (note SQL uses 1-based indexing for autoincremented row id)
         cmd = "SELECT * FROM store_index_map where rowid = " + str(index+1)
         res = self.cur.execute(cmd)
-        rowid, storeid, tile, t, z, y, x, c = res.fetchone()
-
+        resp = res.fetchone()
+        if resp is None:
+            return None
+        rowid, storeid, tile, t, z, y, x, c = resp
         # retrieve store
         store = self.stores[storeid]
 

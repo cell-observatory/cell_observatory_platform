@@ -18,11 +18,12 @@ def index_mapper(shape: tuple[int, int, int, int, int ,int],
     n_tile, n_time, n_z, n_y, n_x, n_c = shape
 
     # Calculate the number of batches in each store
-    color_channel_must_match = data_config.color_mode == ColorMode.MATCH
-    if color_channel_must_match and n_c != data_config.c:
+    if data_config.color_mode == ColorMode.MATCH and n_c != data_config.c:
         return None
 
-    if data_config.color_mode == ColorMode.AVG or color_channel_must_match:
+    if data_config.color_mode == ColorMode.AVG or  data_config.color_mode == ColorMode.MATCH:
+        # AVG: output will be averaged so will have a single color channel
+        # MATCH: output channel size must match input channel size, therefore color channel won't be s
         n_c = 1
     else:
         raise NotImplementedError(f"color mode {data_config.color_mode} is not supported")
