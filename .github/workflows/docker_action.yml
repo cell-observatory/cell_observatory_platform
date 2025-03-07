@@ -22,7 +22,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}  # github.repository as <account>/<repo>
   DO_SIGNING: ${{ false }}
   BRANCH: ${{ github.head_ref || github.ref_name }}   # 'main' or 'develop'
-  PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings --testmon -r fEX --junit-xml=test_results/test-results  # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
+  PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings -r fEX --junit-xml=test_results/test-results  # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
   TESTING: ${{ true }}  # skip tests if we have this branch name
   
 jobs:
@@ -460,17 +460,17 @@ jobs:
 
       - name: pytest /tests/utils
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml     tests/utils
-        
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml --testmon    tests/utils
+
       - name: pytest /tests/models
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml    tests/models
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml --testmon   tests/models
 
       - name: pytest /tests/training
         if: ${{ env.TESTING }}
         run: |
           /bin/cp -fr ~/opticalaberrations/dataset .  || true
-            ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml   tests/training
+            ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml --testmon   tests/training
             
       - name: Surface failing tests
         if: always()
