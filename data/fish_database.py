@@ -4,6 +4,7 @@ import sqlite3
 import numpy as np
 import pandas as pd
 import tensorstore as ts
+from tensorstore import TensorStore
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -28,11 +29,11 @@ class FishDatabase:
         self.force_create_db = force_create_db
         self.clean_up_db = clean_up_db
 
-        # instantiate fields that will be populated later for book-keeping
+        # instantiate fields that will be populated later for bookkeeping
         self.con = None
         self.cur = None
         self.local_db_name = None
-        self.stores = []
+        self.stores:list(TensorStore) = []    # each store is roughly an experiment
         self.length = 0
         self.dtype = dtype
 
@@ -173,7 +174,7 @@ class FishDatabase:
         _, y0, x0 = resp
 
         # compute index slices
-        t1, t2 = z * self.data_config.t, (t + 1) * self.data_config.t
+        t1, t2 = t * self.data_config.t, (t + 1) * self.data_config.t
         z1, z2 = z * self.data_config.z, (z + 1) * self.data_config.z
         y1, y2 = y * self.data_config.y, (y + 1) * self.data_config.y
         x1, x2 = x * self.data_config.x, (x + 1) * self.data_config.x
