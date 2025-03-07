@@ -39,13 +39,15 @@ def index_mapper(shape: tuple[int, int, int, int, int ,int],
 
 def middle_out_crop_start_index(shape: tuple[int, int, int, int, int ,int], batch_config : DataConfig) -> tuple[int, int]:
     """
-    Due to increased optical performance on axis, data should be cropped from middle out
+    When cropping batches out of the full Tensorstore object, we want the crops to be centered about the middle of the volume.
+    Since data will be worse when going deeper (or longer in time), for Z and T we align their offsets to the beginning (offset=zero).
+    This function returns the offset where the first crop begins. 
     Args:
         shape: Tensorstore object shape
         batch_config: DataConfig object which contains batch shape information and how to handle color channels
 
     Returns:
-        (x0, y0): Pixel offset to achieve middle out crop
+        (y0, x0): Pixel offset to achieve middle out crop
     """
     # Tensorstore object dimensions assumed to be in (N,T,Z,Y,X,C) format
     n_tile, n_time, n_z, n_y, n_x, n_c = shape
