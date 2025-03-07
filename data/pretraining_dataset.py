@@ -5,12 +5,12 @@ from .fish_database import FishDatabase
 
 
 class PretrainingDataset(Dataset):
-    def __init__(self, data_config: DataConfig = None, transform = None):
-        if data_config is None:
-            data_config = DataConfig()
+    def __init__(self, batch_config: DataConfig = None, transform = None):
+        if batch_config is None:
+            batch_config = DataConfig()
 
-        self.data_config = data_config
-        self.fds = FishDatabase(data_config = data_config)
+        self.batch_config = batch_config
+        self.fds = FishDatabase(batch_config = batch_config)
         self.transform = transform
 
     def __len__(self):
