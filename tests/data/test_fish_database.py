@@ -17,7 +17,7 @@ def test_construct_fish_database():
 
 @pytest.mark.run(order=2)
 def test_indexing_fish_database_single_store(kargs):
-    data_config = DataConfig(x=128, y=128, z=128)
+    batch_config = DataConfig(x=128, y=128, z=128)
     # Create data
     path_to_data = str(kargs['fishdb_dir'])
     spec = {
@@ -29,7 +29,7 @@ def test_indexing_fish_database_single_store(kargs):
         'metadata': {
             'dtype': '<u2',
             'shape': (10,200,512,512,256,4),
-            'chunks': (1, data_config.t, data_config.z, data_config.y, data_config.x, data_config.c),
+            'chunks': (1, batch_config.t, batch_config.z, batch_config.y, batch_config.x, batch_config.c),
             'compressor': {'blocksize': 0, 'clevel': 1, 'cname': 'zstd', 'id': 'blosc', 'shuffle': 1},
             'fill_value': 0,
             'order': 'C'
@@ -38,8 +38,8 @@ def test_indexing_fish_database_single_store(kargs):
         'delete_existing': True
     }
     dataset = ts.open(spec).result()
-    test_arr = np.ones((data_config.z,data_config.y,data_config.x,4), dtype=np.uint16)
-    dataset[0,0,0:data_config.z,0:data_config.y,0:data_config.x,:] = test_arr
+    test_arr = np.ones((batch_config.z,batch_config.y,batch_config.x,4), dtype=np.uint16)
+    dataset[0,0,0:batch_config.z,0:batch_config.y,0:batch_config.x,:] = test_arr
 
     # Create metadata
     metadata = {
@@ -91,8 +91,8 @@ def test_indexing_fish_database_single_store_batch_not_equal_chunk(kargs):
 
     # Default data color mode is implicit
     color_mode = ColorMode.AVG
-    data_config = DataConfig(t = 16, x=256, y=256, z=256, color_mode = color_mode)
-    fd = FishDatabase(clean_up_db=True, metadata=metadata, data_config=data_config)
+    batch_config = DataConfig(t = 16, x=256, y=256, z=256, color_mode = color_mode)
+    fd = FishDatabase(clean_up_db=True, metadata=metadata, batch_config=batch_config)
     assert len(fd) == 10 * (200 // 16) * int((512 // 256) ** 2)
     test_out = fd[0]
     assert np.array_equal(test_out[..., 0], test_arr[..., 0])
@@ -153,7 +153,7 @@ def test_db_cleanup():
 
 @pytest.mark.run(order=8)
 def test_indexing_multiple_stores(kargs):
-    data_config = DataConfig(x=128, y=128, z=128, color_mode=ColorMode.AVG)
+    batch_config = DataConfig(x=128, y=128, z=128, color_mode=ColorMode.AVG)
     # Create data
     paths = []
     shapes = ((10,200,512,512,256,3),
@@ -170,7 +170,7 @@ def test_indexing_multiple_stores(kargs):
             'metadata': {
                 'dtype': '<u2',
                 'shape': shapes[i],
-                'chunks': (1, data_config.t, data_config.z, data_config.y, data_config.x, data_config.c),
+                'chunks': (1, batch_config.t, batch_config.z, batch_config.y, batch_config.x, batch_config.c),
                 'compressor': {'blocksize': 0, 'clevel': 1, 'cname': 'zstd', 'id': 'blosc', 'shuffle': 1},
                 'fill_value': 0,
                 'order': 'C'
@@ -179,8 +179,8 @@ def test_indexing_multiple_stores(kargs):
             'delete_existing': True
         }
         dataset = ts.open(spec).result()
-        test_arr = np.ones((data_config.z,data_config.y,data_config.x,3), dtype=np.uint16)
-        dataset[0,0,0:data_config.z,0:data_config.y,0:data_config.x,:] = test_arr
+        test_arr = np.ones((batch_config.z,batch_config.y,batch_config.x,3), dtype=np.uint16)
+        dataset[0,0,0:batch_config.z,0:batch_config.y,0:batch_config.x,:] = test_arr
 
     # Create metadata
     metadata = {
@@ -191,7 +191,7 @@ def test_indexing_multiple_stores(kargs):
         "exists": [True, ] * 2
     }
 
-    fd = FishDatabase(clean_up_db=True, metadata=metadata, data_config=data_config)
+    fd = FishDatabase(clean_up_db=True, metadata=metadata, batch_config=batch_config)
     first_item = fd[0]
     stride = int(10 * 200 * (512 // 128) ** 2 * (256 // 128))
     second_item = fd[stride]
@@ -207,9 +207,9 @@ def test_non_existent_data_slice():
         "output_folder": ["some_path"],
         "exists": [True],
     }
-    data_config = DataConfig(x=128, y=128, z=128)
+    batch_config = DataConfig(x=128, y=128, z=128)
 
-    fd = FishDatabase(clean_up_db=True, metadata=metadata, data_config=data_config)
+    fd = FishDatabase(clean_up_db=True, metadata=metadata, batch_config=batch_config)
 
     # Try to access a non-existent slice (index out of range)
     with pytest.raises(IndexError):
