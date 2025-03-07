@@ -22,7 +22,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}  # github.repository as <account>/<repo>
   DO_SIGNING: ${{ false }}
   BRANCH: ${{ github.head_ref || github.ref_name }}   # 'main' or 'develop'
-  PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings -r fEX --junit-xml=test_results/test-results  # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
+  PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings --testmon -r fEX --junit-xml=test_results/test-results  # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
   TESTING: ${{ true }}  # skip tests if we have this branch name
   
 jobs:
@@ -274,6 +274,8 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.PRODUCTION_PROJECT_URL }}
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
+      TESTMON_DATAFILE: '/home/mosaic/TESTMON_DATAFILE'
+
     steps:
       # The repo gets volume mapped into the container automatically
       - name: Checkout whole repo
@@ -379,6 +381,14 @@ jobs:
           base: ~/.cache/github_action_local_cache
           path: /home/mosaic/built_SIF
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
+
+      - name: Cache apptainer build
+        id: cache
+        uses: dmilkie/local-cache@main
+        with:
+          base: ~/.cache/github_action_local_cache
+          path: /home/mosaic/TESTMON_DATAFILE
+          key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
 
       - name: Copy cached apptainer build if checksums pass
         id: cached_apptainer_build

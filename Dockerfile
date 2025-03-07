@@ -27,7 +27,7 @@
 # https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/rel-25-01.html#rel-25-01
 
 # for CUDA 12.x
-FROM nvcr.io/nvidia/pytorch:25.01-py3 as base
+FROM nvcr.io/nvidia/pytorch:25.01-py3 AS base
 ENV RUNNING_IN_DOCKER=TRUE
 
 # Make bash colorful https://www.baeldung.com/linux/docker-container-colored-bash-output   https://ss64.com/nt/syntax-ansi.html 
