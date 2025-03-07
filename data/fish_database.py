@@ -34,6 +34,7 @@ class FishDatabase:
         self.local_db_name = None
         self.stores = []
         self.length = 0
+        self.dtype = dtype
 
         if metadata is None:
             metadata = self._query_remote_db()
