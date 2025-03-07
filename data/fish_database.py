@@ -7,6 +7,7 @@ import tensorstore as ts
 from tensorstore import TensorStore
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from sqlite3 import Connection, Cursor
 
 from .data_config import DataConfig, ColorMode
 from .data_utils import index_mapper, middle_out_crop_start_index
@@ -16,12 +17,23 @@ class FishDatabase:
     """
     Access the preprocessed dataset and metadata.
     """
-    def __init__(self, batch_config: DataConfig = None,
+    def __init__(self,
+                 batch_config: DataConfig = None,
                  force_create_db = False,
                  clean_up_db = False,
                  metadata = None,
                  dtype = np.uint16
                  ):
+        """
+        FishDatabase constructor
+        Args:
+            batch_config: DataConfig object contains the shape information for a single batch. If None, default will be used.
+            force_create_db: Flag that determines whether the cached local sqlite3 database should be created (True) or reused (False). Default is False.
+            clean_up_db: Flag that determines whether the cached local sqlite3 database should be deleted in the FishDatabase destructor. Default is False.
+            metadata: dict that contains metadata. Required keys are ["created_at", "output_folder", "exists"]. Default behavior is to query this data from the remote database.
+            dtype: Numpy dtype that determines the output format. Default is np.uint16.
+        """
+        # Construct default DataConfig if batch_config is not provided
         if batch_config is None:
             batch_config = DataConfig()
 
@@ -30,18 +42,22 @@ class FishDatabase:
         self.clean_up_db = clean_up_db
 
         # instantiate fields that will be populated later for bookkeeping
-        self.con = None
-        self.cur = None
-        self.local_db_name = None
-        self.stores:list(TensorStore) = []    # each store is roughly an experiment
-        self.length = 0
-        self.dtype = dtype
+        self.con: Connection = None
+        self.cur: Cursor = None
+        self.local_db_name: str = None
+        self.stores:list[TensorStore] = []    # each store is roughly an experiment
+        self.length: int = 0
+        self.dtype: np.dtype = dtype
 
+        # Query metadata if not provided
+        # Pandas provides a uniform metadata interface
         if metadata is None:
             metadata = self._query_remote_db()
+        else:
+            metadata = pd.DataFrame(metadata)
         self.metadata = metadata
 
-        # return if no data in database
+        # return if no metadata
         if len(self.metadata) == 0:
             return
 
@@ -51,11 +67,16 @@ class FishDatabase:
             if field not in self.metadata:
                 raise ValueError(f"Metadata required fields are missing: {required_fields}")
 
-        # Metadata df, sorted using record creation time
+        # Sorted using record creation time. When indexing into each store or slice within a store, time
+        # should always be increasing. Doing this consistently will minimize temporal data leakage.
         self.metadata = pd.DataFrame(self.metadata)
         self.metadata = self.metadata.sort_values(by='created_at')
 
+        # Open all the zarr files provided in the metadata and save the resulting TensorStore object in the self.stores list.
+        # If a file does not exist, it is skipped.
         self._open_zarr_files()
+
+        # A local sqlite3 database is created with tables to hold index mapping and slicing information.
         self._init_local_db()
 
     @staticmethod
@@ -76,7 +97,7 @@ class FishDatabase:
             .execute()
             .data
         )
-
+        metadata = pd.DataFrame(metadata)
         return metadata
 
     def _open_zarr_files(self):
@@ -128,14 +149,14 @@ class FishDatabase:
         # Create store_index_map table
         cmd = """
             CREATE TABLE store_index_map (
-                                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-                                storeid INTEGER,
-                                tile INTEGER,
-                                t INTEGER,
-                                z INTEGER,
-                                y INTEGER,
-                                x INTEGER,
-                                c INTEGER
+                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                storeid INTEGER,
+                tile INTEGER,
+                t INTEGER,
+                z INTEGER,
+                y INTEGER,
+                x INTEGER,
+                c INTEGER
             );
             """
         self.cur.execute(cmd)
