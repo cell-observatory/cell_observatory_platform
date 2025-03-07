@@ -181,18 +181,18 @@ class FishDatabase:
         # slice data based on color mode
         if self.data_config.color_mode == ColorMode.MATCH:
             c1, c2 = x * self.data_config.c, (c + 1) * self.data_config.c
-            item = store[tile, t1:t2, z1:z2, y1+y0:y2++y0, x1+x0:x2+x0, c1:c2].read().result()
+            item = store[tile, t1:t2, z1:z2, y1+y0:y2+y0, x1+x0:x2+x0, c1:c2].read().result()
         elif self.data_config.color_mode == ColorMode.AVG:
-            item = store[tile, t1:t2, z1:z2, y1++y0:y2++y0, x1+x0:x2+x0, :].read().result()
+            item = store[tile, t1:t2, z1:z2, y1+y0:y2+y0, x1+x0:x2+x0, :].read().result()
             if item.shape[4] > 1:
                 # cast to double (implicit) before averaging
                 item = item.mean(4)
                 # cast and reshape to original
-                item = item.astype(self.dtype)[..., np.newaxis]
+                item = item[..., np.newaxis]
         else:
             raise NotImplemented("Color mode {self.data_config.color_mode} not implemented}")
 
-        return item
+        return item.astype(self.dtype)
 
     def __del__(self):
         if self.con:
