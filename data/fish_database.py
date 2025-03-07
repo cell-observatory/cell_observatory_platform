@@ -16,16 +16,16 @@ class FishDatabase:
     """
     Access the preprocessed dataset and metadata.
     """
-    def __init__(self, data_config: DataConfig = None,
+    def __init__(self, batch_config: DataConfig = None,
                  force_create_db = False,
                  clean_up_db = False,
                  metadata = None,
                  dtype = np.uint16
                  ):
-        if data_config is None:
-            data_config = DataConfig()
+        if batch_config is None:
+            batch_config = DataConfig()
 
-        self.data_config = data_config
+        self.batch_config = batch_config
         self.force_create_db = force_create_db
         self.clean_up_db = clean_up_db
 
@@ -95,7 +95,7 @@ class FishDatabase:
     def _init_local_db(self):
         # local db name
         cwd = os.getcwd()
-        local_db_name = os.path.join(cwd, repr(self.data_config) + ".db")
+        local_db_name = os.path.join(cwd, repr(self.batch_config) + ".db")
         self.local_db_name = local_db_name
 
         # check db exists before .connect since it would create the db if it didn't
@@ -112,11 +112,11 @@ class FishDatabase:
             # Loop over each store to create index mapping
             # TODO: filter based on fill factor here
             for i, store in enumerate(self.stores):
-                indices = index_mapper(store.shape, self.data_config)
+                indices = index_mapper(store.shape, self.batch_config)
                 cmd = "INSERT INTO store_index_map(storeid, tile, t, z, y, x, c)  VALUES("+str(i)+",?, ?, ?, ?, ?, ?)"
                 self.cur.executemany(cmd, indices)
 
-                y0, x0 = middle_out_crop_start_index(store.shape, self.data_config)
+                y0, x0 = middle_out_crop_start_index(store.shape, self.batch_config)
                 cmd = "INSERT INTO middle_out_table(storeid, y0, x0)  VALUES(?, ?, ?)"
                 self.cur.execute(cmd, (i, y0, x0))
 
@@ -174,16 +174,16 @@ class FishDatabase:
         _, y0, x0 = resp
 
         # compute index slices
-        t1, t2 = t * self.data_config.t, (t + 1) * self.data_config.t
-        z1, z2 = z * self.data_config.z, (z + 1) * self.data_config.z
-        y1, y2 = y * self.data_config.y, (y + 1) * self.data_config.y
-        x1, x2 = x * self.data_config.x, (x + 1) * self.data_config.x
+        t1, t2 = t * self.batch_config.t, (t + 1) * self.batch_config.t
+        z1, z2 = z * self.batch_config.z, (z + 1) * self.batch_config.z
+        y1, y2 = y * self.batch_config.y, (y + 1) * self.batch_config.y
+        x1, x2 = x * self.batch_config.x, (x + 1) * self.batch_config.x
 
         # slice data based on color mode
-        if self.data_config.color_mode == ColorMode.MATCH:
-            c1, c2 = x * self.data_config.c, (c + 1) * self.data_config.c
+        if self.batch_config.color_mode == ColorMode.MATCH:
+            c1, c2 = x * self.batch_config.c, (c + 1) * self.batch_config.c
             item = store[tile, t1:t2, z1:z2, y1+y0:y2+y0, x1+x0:x2+x0, c1:c2].read().result()
-        elif self.data_config.color_mode == ColorMode.AVG:
+        elif self.batch_config.color_mode == ColorMode.AVG:
             item = store[tile, t1:t2, z1:z2, y1+y0:y2+y0, x1+x0:x2+x0, :].read().result()
             if item.shape[4] > 1:
                 # cast to double (implicit) before averaging
@@ -191,7 +191,7 @@ class FishDatabase:
                 # cast and reshape to original
                 item = item[..., np.newaxis]
         else:
-            raise NotImplemented("Color mode {self.data_config.color_mode} not implemented}")
+            raise NotImplemented("Color mode {self.batch_config.color_mode} not implemented}")
 
         return item.astype(self.dtype)
 
