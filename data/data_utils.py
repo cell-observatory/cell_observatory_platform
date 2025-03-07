@@ -12,7 +12,7 @@ def index_mapper(shape: tuple[int, int, int, int, int ,int],
         data_config: DataConfig object which contains batch shape information and how to handle color channels
 
     Returns:
-
+        indices: list of indices that map a batch index to the tile index and {time,z,y,x,c} slices
     """
     # Tensorstore object dimensions assumed to be in (N,T,Z,Y,X,C) format
     n_tile, n_time, n_z, n_y, n_x, n_c = shape
@@ -33,4 +33,24 @@ def index_mapper(shape: tuple[int, int, int, int, int ,int],
     n_y = n_y // data_config.y
     n_x = n_x // data_config.x
 
-    return list(product(range(n_tile), range(n_time), range(n_z), range(n_y), range(n_x), range(n_c)))
+    indices = list(product(range(n_tile), range(n_time), range(n_z), range(n_y), range(n_x), range(n_c)))
+
+    return indices
+
+def middle_out_crop_start_index(shape: tuple[int, int, int, int, int ,int], data_config : DataConfig) -> tuple[int, int]:
+    """
+    Due to increased optical performance on axis, data should be cropped from middle out
+    Args:
+        shape: Tensorstore object shape
+        data_config: DataConfig object which contains batch shape information and how to handle color channels
+
+    Returns:
+        (x0, y0): Pixel offset to achieve middle out crop
+    """
+    # Tensorstore object dimensions assumed to be in (N,T,Z,Y,X,C) format
+    n_tile, n_time, n_z, n_y, n_x, n_c = shape
+
+    y0 = (n_y % data_config.y) // 2
+    x0 = (n_x % data_config.x) // 2
+
+    return y0, x0

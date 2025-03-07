@@ -8,7 +8,7 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 
 from .data_config import DataConfig, ColorMode
-from .data_utils import index_mapper
+from .data_utils import index_mapper, middle_out_crop_start_index
 
 
 class FishDatabase:
@@ -56,7 +56,8 @@ class FishDatabase:
         self._open_zarr_files()
         self._init_local_db()
 
-    def _query_remote_db(self):
+    @staticmethod
+    def _query_remote_db():
         # Load environment variables from .env file
         load_dotenv()
         url: str = os.environ.get("SUPABASE_URL")
@@ -104,9 +105,26 @@ class FishDatabase:
             # if force creating db, we need to delete the existing one first
             if self.force_create_db: os.remove(local_db_name)
 
-            # Create store_index_map table
-            # TODO: add x0 and y0 table using chunk id for middle out cropping, t and z drop last is better
-            cmd = """
+            self._create_local_db_tables()
+
+            # Loop over each store to create index mapping
+            # TODO: filter based on fill factor here
+            for i, store in enumerate(self.stores):
+                indices = index_mapper(store.shape, self.data_config)
+                cmd = "INSERT INTO store_index_map(storeid, tile, t, z, y, x, c)  VALUES("+str(i)+",?, ?, ?, ?, ?, ?)"
+                self.cur.executemany(cmd, indices)
+
+                y0, x0 = middle_out_crop_start_index(store.shape, self.data_config)
+                cmd = "INSERT INTO middle_out_table(storeid, y0, x0)  VALUES(?, ?, ?)"
+                self.cur.execute(cmd, (i, y0, x0))
+
+        # update dataset length
+        res = self.cur.execute("SELECT COUNT(*) FROM store_index_map")
+        self.length = res.fetchone()[0]
+
+    def _create_local_db_tables(self):
+        # Create store_index_map table
+        cmd = """
             CREATE TABLE store_index_map (
                                 rowid INTEGER PRIMARY KEY AUTOINCREMENT,
                                 storeid INTEGER,
@@ -116,20 +134,18 @@ class FishDatabase:
                                 y INTEGER,
                                 x INTEGER,
                                 c INTEGER
-                            );
+            );
             """
-            self.cur.execute(cmd)
-
-            # Loop over each store to create index mapping
-            # TODO: filter based on fill factor here
-            for i, store in enumerate(self.stores):
-                indices = index_mapper(store.shape, self.data_config)
-                cmd = "INSERT INTO store_index_map(storeid, tile, t, z, y, x, c)  VALUES("+str(i)+",?, ?, ?, ?, ?, ?)"
-                self.cur.executemany(cmd, indices)
-
-        # update dataset length
-        res = self.cur.execute("SELECT COUNT(*) FROM store_index_map")
-        self.length = res.fetchone()[0]
+        self.cur.execute(cmd)
+        cmd = """
+             CREATE TABLE middle_out_table (
+                storeid INTEGER UNIQUE,
+                y0 INTEGER,
+                x0 INTEGER,
+                FOREIGN KEY (storeid) REFERENCES store_index_map(storeid)
+             );
+             """
+        self.cur.execute(cmd)
 
     def __len__(self):
         return self.length
@@ -138,14 +154,22 @@ class FishDatabase:
         if index >= self.length:
             raise IndexError
         # look up corresponding indices (note SQL uses 1-based indexing for autoincremented row id)
-        cmd = "SELECT * FROM store_index_map where rowid = " + str(index+1)
-        res = self.cur.execute(cmd)
+        cmd = "SELECT * FROM store_index_map WHERE rowid = ?"
+        res = self.cur.execute(cmd, (index + 1,))
         resp = res.fetchone()
         if resp is None:
             return None
         rowid, storeid, tile, t, z, y, x, c = resp
         # retrieve store
         store = self.stores[storeid]
+
+        # get pixel offset values for y and x
+        cmd = "SELECT * FROM middle_out_table where storeid = ?"
+        res = self.cur.execute(cmd, (storeid, ))
+        resp = res.fetchone()
+        if resp is None:
+            return None
+        _, y0, x0 = resp
 
         # compute index slices
         t1, t2 = z * self.data_config.t, (t + 1) * self.data_config.t
@@ -156,9 +180,9 @@ class FishDatabase:
         # slice data based on color mode
         if self.data_config.color_mode == ColorMode.MATCH:
             c1, c2 = x * self.data_config.c, (c + 1) * self.data_config.c
-            item = store[tile, t1:t2, z1:z2, y1:y2, x1:x2, c1:c2].read().result()
+            item = store[tile, t1:t2, z1:z2, y1+y0:y2++y0, x1+x0:x2+x0, c1:c2].read().result()
         elif self.data_config.color_mode == ColorMode.AVG:
-            item = store[tile, t1:t2, z1:z2, y1:y2, x1:x2, :].read().result()
+            item = store[tile, t1:t2, z1:z2, y1++y0:y2++y0, x1+x0:x2+x0, :].read().result()
             if item.shape[4] > 1:
                 # cast to double before averaging
                 item = item.astype(np.double).mean(4)
