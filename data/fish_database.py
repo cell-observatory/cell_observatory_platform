@@ -50,11 +50,14 @@ class FishDatabase:
         self.dtype: np.dtype = dtype
 
         # Query metadata if not provided
+        # Pandas provides a uniform metadata interface
         if metadata is None:
             metadata = self._query_remote_db()
+        else:
+            metadata = pd.DataFrame(metadata)
         self.metadata = metadata
 
-        # return if no data in database
+        # return if no metadata
         if len(self.metadata) == 0:
             return
 
@@ -64,7 +67,7 @@ class FishDatabase:
             if field not in self.metadata:
                 raise ValueError(f"Metadata required fields are missing: {required_fields}")
 
-        # Metadata df, sorted using record creation time. When indexing into each store or slice within a store, time
+        # Sorted using record creation time. When indexing into each store or slice within a store, time
         # should always be increasing. Doing this consistently will minimize temporal data leakage.
         self.metadata = pd.DataFrame(self.metadata)
         self.metadata = self.metadata.sort_values(by='created_at')
@@ -94,7 +97,7 @@ class FishDatabase:
             .execute()
             .data
         )
-
+        metadata = pd.DataFrame(metadata)
         return metadata
 
     def _open_zarr_files(self):
