@@ -184,10 +184,10 @@ class FishDatabase:
         elif self.data_config.color_mode == ColorMode.AVG:
             item = store[tile, t1:t2, z1:z2, y1++y0:y2++y0, x1+x0:x2+x0, :].read().result()
             if item.shape[4] > 1:
-                # cast to double before averaging
-                item = item.astype(np.double).mean(4)
+                # cast to double (implicit) before averaging
+                item = item.mean(4)
                 # cast and reshape to original
-                item = item.astype(np.uint16)[..., np.newaxis]
+                item = item.astype(self.dtype)[..., np.newaxis]
         else:
             raise NotImplemented("Color mode {self.data_config.color_mode} not implemented}")
 
