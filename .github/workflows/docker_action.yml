@@ -271,6 +271,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      SUPABASE_URL: ${{ secrets.PRODUCTION_PROJECT_URL }}
+      SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
     steps:
       # The repo gets volume mapped into the container automatically
       - name: Checkout whole repo
