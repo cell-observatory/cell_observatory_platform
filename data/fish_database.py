@@ -146,14 +146,14 @@ class FishDatabase:
         # Create store_index_map table
         cmd = """
             CREATE TABLE store_index_map (
-                                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-                                storeid INTEGER,
-                                tile INTEGER,
-                                t INTEGER,
-                                z INTEGER,
-                                y INTEGER,
-                                x INTEGER,
-                                c INTEGER
+                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                storeid INTEGER,
+                tile INTEGER,
+                t INTEGER,
+                z INTEGER,
+                y INTEGER,
+                x INTEGER,
+                c INTEGER
             );
             """
         self.cur.execute(cmd)
