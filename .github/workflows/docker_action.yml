@@ -472,27 +472,37 @@ jobs:
           /bin/cp -fr ~/opticalaberrations/dataset .  || true
             ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml --testmon   tests/training
             
-      - name: Surface failing tests
-        if: always()
-        uses: pmeier/pytest-results-action@main
+      - name: Publish Test Report
+        uses: mikepenz/action-junit-report@v5
+        if: success() || failure() # always run even if the previous step fails
         with:
-          # A list of JUnit XML files, directories containing the former, and wildcard
-          # patterns to process.
-          # See @actions/glob for supported patterns.
-          path: test_results/*
+          report_paths: 'test_results/*.xml'
+          detailed_summary: true
+
+
+
+
+      # - name: Surface failing tests
+      #   if: always()
+      #   uses: pmeier/pytest-results-action@main
+      #   with:
+      #     # A list of JUnit XML files, directories containing the former, and wildcard
+      #     # patterns to process.
+      #     # See @actions/glob for supported patterns.
+      #     path: test_results/*
       
-          # (Optional) Add a summary of the results at the top of the report
-          summary: true
+      #     # (Optional) Add a summary of the results at the top of the report
+      #     summary: true
       
-          # (Optional) Select which results should be included in the report.
-          # Follows the same syntax as `pytest -r`
-          #  Show extra test summary info as specified by chars: (f)ailed, (E)rror, (s)kipped, (x)failed, (X)passed, (p)assed, (P)assed with output, (a)ll except passed (p/P), or (A)ll.
-          #               (w)arnings are enabled by default (see --disable-warnings), 'N' can be used to reset the list. (default: 'fE').
-          display-options: fEX
+      #     # (Optional) Select which results should be included in the report.
+      #     # Follows the same syntax as `pytest -r`
+      #     #  Show extra test summary info as specified by chars: (f)ailed, (E)rror, (s)kipped, (x)failed, (X)passed, (p)assed, (P)assed with output, (a)ll except passed (p/P), or (A)ll.
+      #     #               (w)arnings are enabled by default (see --disable-warnings), 'N' can be used to reset the list. (default: 'fE').
+      #     display-options: fEX
       
-          # (Optional) Fail the workflow if no JUnit XML was found.
-          fail-on-empty: true
+      #     # (Optional) Fail the workflow if no JUnit XML was found.
+      #     fail-on-empty: true
       
-          # (Optional) Title of the test results section in the workflow summary
-          title: Test results
+      #     # (Optional) Title of the test results section in the workflow summary
+      #     title: Test results
           
