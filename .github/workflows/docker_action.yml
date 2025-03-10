@@ -484,8 +484,6 @@ jobs:
           include_passed: true
           group_suite: false
           include_time_in_summary: true
-          simplified_summary: true
-
 
 
 
