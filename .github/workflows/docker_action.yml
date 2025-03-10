@@ -456,10 +456,11 @@ jobs:
 
       - name: pytest /tests/data (excluding test_ray)
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml      tests/data -k 'not ray'
+        # always test these as they will make sure that the supabase database is operating.
 
       - name: pytest /tests/data/test_ray.py
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data_ray.xml  tests/data/test_ray.py
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data_ray.xml --testmon tests/data/test_ray.py
 
       - name: pytest /tests/utils
         if: ${{ env.TESTING }}
