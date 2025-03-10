@@ -271,6 +271,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      checks: write
     env:
       SUPABASE_URL: ${{ secrets.PRODUCTION_PROJECT_URL }}
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
@@ -478,6 +479,7 @@ jobs:
         with:
           report_paths: 'test_results/*.xml'
           detailed_summary: true
+          include_passed: true
 
 
 
