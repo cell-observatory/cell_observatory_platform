@@ -480,6 +480,7 @@ jobs:
           report_paths: 'test_results/*.xml'
           detailed_summary: true
           include_passed: true
+          group_suite: true
 
 
 
