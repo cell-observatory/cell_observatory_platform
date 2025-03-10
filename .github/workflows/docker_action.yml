@@ -8,6 +8,8 @@ on:
       - '*'
     tags:
       - '*'
+    paths-ignore:
+      - '**.md'
 
 
 # only allow one copy of this workflow to run at a time (the group specified by workflow name and branch)
@@ -271,9 +273,12 @@ jobs:
     permissions:
       contents: read
       packages: write
+      checks: write
     env:
       SUPABASE_URL: ${{ secrets.PRODUCTION_PROJECT_URL }}
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
+      TESTMON_DATAFILE: '/home/mosaic/TESTMON_DATAFILE'
+
     steps:
       # The repo gets volume mapped into the container automatically
       - name: Checkout whole repo
@@ -373,12 +378,18 @@ jobs:
             mkdir -p ~/SIF_files/  &&  apptainer build --nv --force ~/SIF_files/${{ steps.bootstrap_sif.outputs.SIF_FILE }} docker://${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
 
       - name: Cache apptainer build
-        id: cache
         uses: dmilkie/local-cache@main
         with:
           base: ~/.cache/github_action_local_cache
           path: /home/mosaic/built_SIF
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
+
+      - name: Cache pytest testmon
+        uses: dmilkie/local-cache@main
+        with:
+          base: ~/.cache/github_action_local_cache
+          path: /home/mosaic/TESTMON_DATAFILE
+          key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
 
       - name: Copy cached apptainer build if checksums pass
         id: cached_apptainer_build
@@ -445,46 +456,60 @@ jobs:
 
       - name: pytest /tests/data (excluding test_ray)
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml      tests/data -k 'not ray'
+        # always test these as they will make sure that the supabase database is operating.
 
       - name: pytest /tests/data/test_ray.py
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data_ray.xml  tests/data/test_ray.py
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data_ray.xml --testmon tests/data/test_ray.py
 
       - name: pytest /tests/utils
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml     tests/utils
-        
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml --testmon    tests/utils
+
       - name: pytest /tests/models
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml    tests/models
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml --testmon   tests/models
 
       - name: pytest /tests/training
         if: ${{ env.TESTING }}
         run: |
           /bin/cp -fr ~/opticalaberrations/dataset .  || true
-            ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml   tests/training
+            ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml --testmon   tests/training
             
-      - name: Surface failing tests
-        if: always()
-        uses: pmeier/pytest-results-action@main
+      - name: Publish Test Report
+        uses: mikepenz/action-junit-report@v5
+        if: success() || failure() # always run even if the previous step fails
         with:
-          # A list of JUnit XML files, directories containing the former, and wildcard
-          # patterns to process.
-          # See @actions/glob for supported patterns.
-          path: test_results/*
+          report_paths: 'test_results/*.xml'
+          detailed_summary: true
+          include_passed: true
+          group_suite: false
+          include_time_in_summary: true
+
+
+
+
+      # - name: Surface failing tests
+      #   if: always()
+      #   uses: pmeier/pytest-results-action@main
+      #   with:
+      #     # A list of JUnit XML files, directories containing the former, and wildcard
+      #     # patterns to process.
+      #     # See @actions/glob for supported patterns.
+      #     path: test_results/*
       
-          # (Optional) Add a summary of the results at the top of the report
-          summary: true
+      #     # (Optional) Add a summary of the results at the top of the report
+      #     summary: true
       
-          # (Optional) Select which results should be included in the report.
-          # Follows the same syntax as `pytest -r`
-          #  Show extra test summary info as specified by chars: (f)ailed, (E)rror, (s)kipped, (x)failed, (X)passed, (p)assed, (P)assed with output, (a)ll except passed (p/P), or (A)ll.
-          #               (w)arnings are enabled by default (see --disable-warnings), 'N' can be used to reset the list. (default: 'fE').
-          display-options: fEX
+      #     # (Optional) Select which results should be included in the report.
+      #     # Follows the same syntax as `pytest -r`
+      #     #  Show extra test summary info as specified by chars: (f)ailed, (E)rror, (s)kipped, (x)failed, (X)passed, (p)assed, (P)assed with output, (a)ll except passed (p/P), or (A)ll.
+      #     #               (w)arnings are enabled by default (see --disable-warnings), 'N' can be used to reset the list. (default: 'fE').
+      #     display-options: fEX
       
-          # (Optional) Fail the workflow if no JUnit XML was found.
-          fail-on-empty: true
+      #     # (Optional) Fail the workflow if no JUnit XML was found.
+      #     fail-on-empty: true
       
-          # (Optional) Title of the test results section in the workflow summary
-          title: Test results
+      #     # (Optional) Title of the test results section in the workflow summary
+      #     title: Test results
           

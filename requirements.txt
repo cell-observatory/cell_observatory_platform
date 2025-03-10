@@ -4,6 +4,7 @@ scikit-image
 scikit-spatial
 pytest
 pytest-order
+pytest-testmon
 matplotlib>=3.8
 ujson
 zarr

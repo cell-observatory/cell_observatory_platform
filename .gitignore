@@ -164,3 +164,4 @@ src/LV_auto_batch.bat_predict_rois
 /benchmarks/
 /scaling/
 *.npy
+.testmondata
