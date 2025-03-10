@@ -8,6 +8,8 @@ on:
       - '*'
     tags:
       - '*'
+    paths-ignore:
+      - '**.md'
 
 
 # only allow one copy of this workflow to run at a time (the group specified by workflow name and branch)
