@@ -74,6 +74,7 @@ jobs:
       - name: Get all branch names
         id: get_branches
         run: |
+          git fetch --all
           echo $(git branch -r) 
           git branch -r | grep -o "feature/.*" | sed -e 's/^/!/' | tr '/' '-' > all_feature_branches_names.txt
           echo "IMAGES_FILTER=$(paste -sd " !*"  all_feature_branches_names.txt)" >> "$GITHUB_OUTPUT"
@@ -90,4 +91,4 @@ jobs:
           keep-n-most-recent: 0
           account: ${{ github.repository_owner }}    # Organization "cell-observatory"
           token: ${{ secrets.cleanup_packages }}
-          dry-run: true
+          dry-run: false
