@@ -16,6 +16,7 @@ on:
           - debug
 permissions:
   packages: write
+  contents: read
 
 jobs:
   list_package_info:
@@ -66,6 +67,10 @@ jobs:
     name: Delete removed branches
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+
       - name: Get all branch names
         id: get_branches
         run: |
