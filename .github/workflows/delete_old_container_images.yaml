@@ -74,7 +74,7 @@ jobs:
       - name: Get all branch names
         id: get_branches
         run: |
-          git branch -r | grep -o "feature/.*" | sed -e 's/^/!/' | tr '/' '-' > all_branches_names.txt
+          git branch -r | grep -o "feature/.*" | sed -e 's/^/!/' | tr '/' '-' > all_feature_branches_names.txt
           echo "IMAGES_FILTER=$(paste -sd " "  all_feature_branches_names.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Delete old untagged images
