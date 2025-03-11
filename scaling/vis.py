@@ -411,14 +411,19 @@ def plot_individual_parameters(
 
     fois = {
         f"training_h100_days_per_epoch": f"Training H100 days per epoch",
-        f"gpu_compute_cost_per_epoch": f"H100 compute cost per epoch ($2/hr)",
+        f"gpu_compute_cost_per_epoch": f"H100 compute cost per epoch ($6/hr)",
     }
+    # https://docs.coreweave.com/welcome-to-coreweave/resource-based-pricing?utm_source=adwords&utm_medium=cpc&utm_campaign=Brand%7CExact&utm_term=coreweave&gclid=Cj0KCQjwxeyxBhC7ARIsAC7dS38aYX5XvHP0UV6QeT7ez1v_VW3NUEZltZfgRmoSmLYIUZKmKAg3x4YaAvu9EALw_wcB&_gl=1*1cfgr32*_ga*MjAwMTA1Mzk1Ny4xNzA3OTI5NjM0*_ga_XKNHS53VYL*MTcxNTIwNTk1MC4yLjEuMTcxNTIwNjM4OC42MC4wLjA.#cpu-only-instance-resource-pricing
+
+    h100_per_hr = ((4.76 * 8) + (0.01 * 128) + (0.005 * 1024)) / 8
+
+
     for dataset_size in [1000000, 10000000, 100000000, 303000000]:
         df["training_h100_days_per_epoch"] = dataset_size * df["training_time_per_image"] / 3600 / 24
         df["multigpu_training_days_per_epoch"] = df["training_h100_days_per_epoch"] / df[
             "number_h100_for_batch"]
         df["multigpu_256_training_days_per_epoch"] = df["training_h100_days_per_epoch"] / 256
-        df["gpu_compute_cost_per_epoch"] = df["training_h100_days_per_epoch"] * 24 * 2
+        df["gpu_compute_cost_per_epoch"] = df["training_h100_days_per_epoch"] * 24 * h100_per_hr
 
         for y, ylabel in fois.items():
             plot_parameter_scaling(
