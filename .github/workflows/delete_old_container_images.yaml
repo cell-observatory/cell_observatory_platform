@@ -33,7 +33,7 @@ jobs:
 
 
   clean-ghcr:
-    name: Delete old unused tagged container images
+    name: Delete old tagged
     runs-on: ubuntu-latest
     steps:
       - name: Delete old tagged images
@@ -47,7 +47,7 @@ jobs:
           token: ${{ secrets.cleanup_packages }}
 
   clean-ghcr-untagged:
-    name: Delete old unused untagged container images
+    name: Delete old untagged
     runs-on: ubuntu-latest
     steps:
       - name: Delete old untagged images
@@ -59,6 +59,28 @@ jobs:
           keep-n-most-recent: 0
           account: ${{ github.repository_owner }}    # Organization "cell-observatory"
           token: ${{ secrets.cleanup_packages }}
-          dry-run: true
+          dry-run: false
 
-        
+
+  clean-ghcr-deleted-branches:
+    name: Delete removed branches
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get all branch names
+        id: get_branches
+        run: |
+          git branch -r | grep -o "feature/.*" | sed -e 's/^/!/' | tr '/' '-' > all_branches_names.txt
+          echo "IMAGES_FILTER=$(paste -sd " "  all_feature_branches_names.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Delete old untagged images
+        uses: snok/container-retention-policy@v3.0.0
+        env:
+          IMAGES_FILTER: ${{ steps.get_branches.outputs.IMAGES_FILTER }}
+        with:
+          tag-selection: untagged
+          image-names: "!develop !main !tags* !0* !1* !2* !3* ${{ steps.get_branches.outputs.IMAGES_FILTER }} *feature"      # platform, aovift, ...
+          cut-off: 1d           # package versions should be older than 1 week, to be considered
+          keep-n-most-recent: 0
+          account: ${{ github.repository_owner }}    # Organization "cell-observatory"
+          token: ${{ secrets.cleanup_packages }}
+          dry-run: true
