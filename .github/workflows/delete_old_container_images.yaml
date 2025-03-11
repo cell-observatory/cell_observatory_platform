@@ -16,7 +16,7 @@ on:
           - debug
 permissions:
   packages: write
-  
+
 jobs:
   list_package_info:
     runs-on: ubuntu-latest
@@ -33,14 +33,32 @@ jobs:
 
 
   clean-ghcr:
-    name: Delete old unused container images
+    name: Delete old unused tagged container images
     runs-on: ubuntu-latest
     steps:
-      - name: Delete old images
+      - name: Delete old tagged images
         uses: snok/container-retention-policy@v3.0.0
         with:
+          tag-selection: tagged
           image-names: "*"      # platform, aovift, ...
           cut-off: 1w           # package versions should be older than 1 week, to be considered
           keep-n-most-recent: 3
           account: ${{ github.repository_owner }}    # Organization "cell-observatory"
           token: ${{ secrets.cleanup_packages }}
+
+  clean-ghcr-untagged:
+    name: Delete old unused untagged container images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old untagged images
+        uses: snok/container-retention-policy@v3.0.0
+        with:
+          tag-selection: untagged
+          image-names: "*"      # platform, aovift, ...
+          cut-off: 1d           # package versions should be older than 1 week, to be considered
+          keep-n-most-recent: 0
+          account: ${{ github.repository_owner }}    # Organization "cell-observatory"
+          token: ${{ secrets.cleanup_packages }}
+          dry-run: true
+
+        
