@@ -83,7 +83,7 @@ jobs:
           IMAGES_FILTER: ${{ steps.get_branches.outputs.IMAGES_FILTER }}
         with:
           tag-selection: untagged
-          image-names: "!develop !main !tags* !0* !1* !2* !3* ${{ steps.get_branches.outputs.IMAGES_FILTER }} *feature"      # platform, aovift, ...
+          image-names: "!develop !main !tags* !0* !1* !2* !3* ${{ steps.get_branches.outputs.IMAGES_FILTER }} feature-*"      # platform, aovift, ...
           cut-off: 1d           # package versions should be older than 1 week, to be considered
           keep-n-most-recent: 0
           account: ${{ github.repository_owner }}    # Organization "cell-observatory"
