@@ -12,13 +12,14 @@ import seaborn as sns
 import logging
 import sys
 
+from utils.common import savesvg
+
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
 
 def plot_parameter_scaling(
         df,
@@ -51,13 +52,13 @@ def plot_parameter_scaling(
     for background in ["default", "dark_background"]:
         plt.style.use(background)
         plt.rcParams.update({
-            'font.size': 10,
-            'axes.titlesize': 12,
-            'axes.labelsize': 12,
-            'xtick.labelsize': 10,
-            'ytick.labelsize': 10,
-            'legend.fontsize': 10,
-            'xtick.major.pad': 10
+            'font.size': 12,
+            'axes.titlesize': 14,
+            'axes.labelsize': 14,
+            'xtick.labelsize': 12,
+            'ytick.labelsize': 12,
+            'legend.fontsize': 12,
+            'axes.autolimit_mode': 'round_numbers'
         })
 
         fig, ax = plt.subplots(figsize=(8, 8))
@@ -133,6 +134,9 @@ def plot_parameter_scaling(
                 arrowprops=dict(alpha=0),
             )
 
+        if y == 'dataset_size':
+            ax.set_ylim(-500, 5000)
+
         ax.grid(True, which="major", axis='both', lw=.1, ls='-', zorder=0)
         ax.grid(True, which="minor", axis='both', lw=.05, ls='-', zorder=0)
         ax.set_ylabel(ylabel)
@@ -167,7 +171,7 @@ def plot_parameter_scaling(
 
         plt.savefig(f'{savepath}.pdf', bbox_inches='tight', pad_inches=.25)
         plt.savefig(f'{savepath}.png', dpi=300, bbox_inches='tight', pad_inches=.25)
-        plt.savefig(f'{savepath}.svg', dpi=300, bbox_inches='tight', pad_inches=.25)
+        savesvg(fig, f'{savepath}.svg')
 
 
 def plot_data_parameter_scaling(
@@ -209,15 +213,14 @@ def plot_data_parameter_scaling(
     for background in ["default", "dark_background"]:
         plt.style.use(background)
         plt.rcParams.update({
-            'font.size': 10,
-            'axes.titlesize': 12,
-            'axes.labelsize': 12,
-            'xtick.labelsize': 10,
-            'ytick.labelsize': 10,
-            'legend.fontsize': 10,
-            'xtick.major.pad': 10
+            'font.size': 12,
+            'axes.titlesize': 14,
+            'axes.labelsize': 14,
+            'xtick.labelsize': 12,
+            'ytick.labelsize': 12,
+            'legend.fontsize': 12,
+            'axes.autolimit_mode': 'round_numbers'
         })
-
         fig, ax = plt.subplots(figsize=(8, 8))
 
         if published_models_only:
@@ -232,7 +235,7 @@ def plot_data_parameter_scaling(
                 [ylabel, ytwinlabel1, ytwinlabel2, ytwinlabel3],
                 # [None, 'olive', 'magenta', 'r'],
                 [None, None, None, None],
-                [0, 0, .075, .15],
+                [0, 0, .1, .2],
         )):
             if yy is not None:
                 if ii == 0:
@@ -306,7 +309,7 @@ def plot_data_parameter_scaling(
         if yscalelabel is not None:
             ann = ax.annotate(
                 yscalelabel,
-                xy=(0, 1.025),
+                xy=(0, 1.03),
                 xycoords='axes fraction',
                 clip_on=False,
                 ha='left',
@@ -362,7 +365,7 @@ def plot_data_parameter_scaling(
 
         plt.savefig(f'{savepath}.pdf', bbox_inches='tight', pad_inches=.25)
         plt.savefig(f'{savepath}.png', dpi=300, bbox_inches='tight', pad_inches=.25)
-        plt.savefig(f'{savepath}.svg', dpi=300, bbox_inches='tight', pad_inches=.25)
+        savesvg(fig, f'{savepath}.svg')
 
 
 def plot_individual_parameters(
