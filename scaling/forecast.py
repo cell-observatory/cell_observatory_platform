@@ -443,9 +443,9 @@ def main(args=None):
         for dataset_size in [1000000, 10000000, 100000000, 303000000, 1000000000]:
             e = "" if epoch == 1 else f"{epoch}_"
             df[f"training_h100_days_per_{e}epoch_{dataset_size}"] = dataset_size * df["training_time_per_image"] / 3600 / 24 * epoch
-            df[f"multigpu_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_{e}epoch_{dataset_size}"] / df["number_h100_for_batch"] * epoch
-            df[f"multigpu_256_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_{e}epoch_{dataset_size}"] / 256 * epoch
-            df[f"gpu_compute_cost_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_{e}epoch_{dataset_size}"] * 24 * h100_per_hr * epoch
+            df[f"multigpu_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] / df["number_h100_for_batch"] * epoch
+            df[f"multigpu_256_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] / 256 * epoch
+            df[f"gpu_compute_cost_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] * 24 * h100_per_hr * epoch
             df[f"memory_per_{dataset_size}"] = df[f"memory_per_image"] * dataset_size
             df[f"num_images"] = df[f"memory_per_image"] * dataset_size
 
