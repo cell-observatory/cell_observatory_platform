@@ -28,7 +28,7 @@
         <list />
       </option>
       <option name="publishAllPorts" value="false" />
-      <option name="runCliOptions" value="-u 1000 -e PYTHONUNBUFFERED=1 --entrypoint= --privileged --rm --ipc host --ipc host --gpus all" />
+      <option name="runCliOptions" value="-u 1000 -e SUPABASE_URL -e SUPABASE_KEY -e PYTHONUNBUFFERED=1 --entrypoint= --privileged --rm --ipc host --ipc host --gpus all" />
       <option name="version" value="2" />
       <option name="volumeBindings">
         <list>
@@ -43,7 +43,7 @@
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="pytest" />
-    <option name="PARAMETERS" value="-s -v --disable-pytest-warnings --color=yes tests/data/test_fish_database.py" />
+    <option name="PARAMETERS" value="-s -v --disable-pytest-warnings --color=yes --testmon  tests/data/test_fish_database.py" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="true" />

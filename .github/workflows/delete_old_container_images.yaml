@@ -14,6 +14,10 @@ on:
           - info
           - warning
           - debug
+permissions:
+  packages: write
+  contents: read
+
 jobs:
   list_package_info:
     runs-on: ubuntu-latest
@@ -30,14 +34,61 @@ jobs:
 
 
   clean-ghcr:
-    name: Delete old unused container images
+    name: Delete old tagged
     runs-on: ubuntu-latest
     steps:
-      - name: Delete old images
+      - name: Delete old tagged images
         uses: snok/container-retention-policy@v3.0.0
         with:
+          tag-selection: tagged
           image-names: "*"      # platform, aovift, ...
           cut-off: 1w           # package versions should be older than 1 week, to be considered
           keep-n-most-recent: 3
           account: ${{ github.repository_owner }}    # Organization "cell-observatory"
           token: ${{ secrets.cleanup_packages }}
+
+  clean-ghcr-untagged:
+    name: Delete old untagged
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old untagged images
+        uses: snok/container-retention-policy@v3.0.0
+        with:
+          tag-selection: untagged
+          image-names: "*"      # platform, aovift, ...
+          cut-off: 1d           # package versions should be older than 1 week, to be considered
+          keep-n-most-recent: 0
+          account: ${{ github.repository_owner }}    # Organization "cell-observatory"
+          token: ${{ secrets.cleanup_packages }}
+          dry-run: false
+
+
+  clean-ghcr-deleted-branches:
+    name: Delete removed branches
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Get all branch names
+        id: get_branches
+        run: |
+          git fetch --all
+          echo $(git branch -r) 
+          git branch -r | grep -o "feature/.*" | sed -e 's/^/!/' | tr '/' '-' > all_feature_branches_names.txt
+          echo "IMAGES_FILTER=$(paste -sd " !*"  all_feature_branches_names.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Delete old untagged images
+        uses: snok/container-retention-policy@v3.0.0
+        env:
+          IMAGES_FILTER: ${{ steps.get_branches.outputs.IMAGES_FILTER }}
+        with:
+          image-names: "*"      # platform, aovift, ...
+          tag-selection: tagged
+          image-tags: "!develop !main !tags* !0* !1* !2* !3* ${{ steps.get_branches.outputs.IMAGES_FILTER }} *feature-* "  # delete all features that are not active, ...
+          cut-off: 1d           # package versions should be older than 1 week, to be considered
+          keep-n-most-recent: 0
+          account: ${{ github.repository_owner }}    # Organization "cell-observatory"
+          token: ${{ secrets.cleanup_packages }}
+          dry-run: false

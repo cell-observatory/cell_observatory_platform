@@ -28,23 +28,6 @@ env:
   TESTING: ${{ true }}  # skip tests if we have this branch name
   
 jobs:
-  # cleanup-job:
-  #   runs-on:
-  #     group: Default
-  #   container:
-  #     image: ghcr.io/catthehacker/ubuntu:act-22.04
-  #   defaults:
-  #     run:
-  #       shell: bash
-  #   steps:
-  #     - name: 'Cleanup build folder'
-  #       run: |
-  #         ls -la ./
-  #         rm -rf ./* || true
-  #         rm -rf ./.??* || true
-  #         ls -la ./
-
-
   cleanup-docker-runners:
     runs-on:
       group: docker-runners
@@ -53,6 +36,7 @@ jobs:
     defaults:
       run:
         shell: bash
+    permissions: {}
     steps:
       - name: 'Cleanup build folder'
         run: |
@@ -250,7 +234,9 @@ jobs:
 
   sif_path:
     runs-on:
-      group: Default  
+      group: Default
+    permissions:
+      contents: read
     outputs:
       SIF_PATH: ${{ steps.step1.outputs.MY_PATH }}
     steps:
