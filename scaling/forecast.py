@@ -422,6 +422,165 @@ def scaling_vit(
     return vit_scaling
 
 
+def scaling_mae(
+    ishape={'t': 16, 'z': 128, 'y': 128, 'x': 128, 'c': 3},
+    dtype='float16',  # per channel
+    outdir=Path("../scaling/data/maes"),
+    mask_ratio=0.75
+):
+    maes_dimensions = {
+        "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
+        "2D(rgb)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
+        "3D(g)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
+        "3D(rgb)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
+        "4D(g)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
+        "4D(rgb)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']}
+    }
+    maes_encoders = {
+        "S": {"layers": 12, "heads": 6, "embedding": 384, "mlp": 1536},
+        "B": {"layers": 12, "heads": 12, "embedding": 768, "mlp": 3072},
+        "L": {"layers": 24, "heads": 16, "embedding": 1024, "mlp": 4096},
+        "H": {"layers": 32, "heads": 16, "embedding": 1280, "mlp": 5120},
+        "g": {"layers": 40, "heads": 16, "embedding": 1408, "mlp": 6144},
+        "G": {"layers": 48, "heads": 16, "embedding": 1664, "mlp": 8192},
+        "e": {"layers": 56, "heads": 16, "embedding": 1792, "mlp": 15360},
+        "22B": {"layers": 48, "heads": 48, "embedding": 6144, "mlp": 24576},
+    }
+    maes_decoders = {
+        "B": {"layers": 4, "heads": 16, "embedding": 512, "mlp": 2048},
+    }
+
+    mae_configs = {}
+    for patch in [14, 16]:
+        patches = {
+            "2D(g)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 1},
+            "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 3},
+            "3D(g)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 1},
+            "3D(rgb)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 3},
+            "4D(g)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 1},
+            "4D(rgb)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 3}
+        }
+
+        for dims in maes_dimensions.keys():
+
+            volume_size = list(maes_dimensions[dims].values())
+            patch_size = list(patches[dims].values())
+            num_encoder_tokens = profile.patchify(volume_size=volume_size, patch_size=patch_size, mask_ratio=mask_ratio)
+            num_decoder_tokens = profile.patchify(volume_size=volume_size, patch_size=patch_size, mask_ratio=0.0)
+
+            memory_per_volume = profile.data_memory_footprint(
+                volume_size=volume_size,
+                batch_size=1,
+                dtype=dtype,
+            )
+
+            for v in maes_encoders:
+                print(f"{dims} MAE {v}/{patch}")
+
+                e_layers = maes_encoders[v]["layers"]
+                e_heads = maes_encoders[v]["heads"]
+                e_embedding = maes_encoders[v]["embedding"]
+                e_mlp = maes_encoders[v]["mlp"]
+
+                d_layers = maes_decoders["B"]["layers"]
+                d_heads = maes_decoders["B"]["heads"]
+                d_embedding = maes_decoders["B"]["embedding"]
+                d_mlp = maes_decoders["B"]["mlp"]
+
+                eparams = profile.encoder_transformer_params(
+                    layers=e_layers,
+                    embed_dim=e_embedding,
+                    mlp_dim=e_mlp
+                )
+                dparams = profile.decoder_transformer_params(
+                    layers=d_layers,
+                    embed_dim=d_embedding,
+                    mlp_dim=d_mlp
+                )
+                params = eparams + dparams
+
+                eflops = profile.encoder_transformer_flops(
+                    num_tokens=num_encoder_tokens,
+                    layers=e_layers,
+                    embed_dim=e_embedding,
+                    heads=e_heads,
+                    mlp_dim=e_mlp
+                )
+                eflops_per_token = e_layers * profile.encoder_flops(1, e_embedding, e_heads, e_mlp)
+
+                dflops = profile.decoder_transformer_flops(
+                    num_tokens=num_decoder_tokens,
+                    layers=d_layers,
+                    embed_dim=d_embedding,
+                    heads=d_heads,
+                    mlp_dim=d_mlp
+                )
+                dflops_per_token = d_layers * profile.decoder_flops(1, d_embedding, d_heads, d_mlp)
+
+                flops = eflops + dflops
+                flops_per_patch = eflops_per_token + dflops_per_token
+
+                model_inference_memory = profile.transformer_inference_memory_footprint(
+                    params=params,
+                    dtype=dtype
+                )
+
+                model_training_memory = profile.transformer_training_memory_footprint(
+                    params=params,
+                    dtype=dtype
+                )
+
+                inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds")
+                training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds")
+                gflops = np.round(flops / 1e9, 3)
+                gflops_per_patch = np.round(flops_per_patch / 1e9, 3)
+
+                patches_per_volume = np.product([s // p for s, p in zip(volume_size, patch_size)])
+                pixels_per_patch = np.product(patch_size)
+                volumes_per_h100 = 80 // memory_per_volume
+
+                mae_configs[f"{dims} MAE {v}/{patch}"] = {
+                    "data": dims,
+                    "class": f"{v}/{patch}",
+                    "transformer": "autoencoder",
+                    "encoder_layers": e_layers,
+                    "encoder_heads": e_heads,
+                    "encoder_mlp": e_mlp,
+                    "encoder_embedding": e_embedding,
+                    "decoder_layers": d_layers,
+                    "decoder_heads": d_heads,
+                    "decoder_mlp": d_mlp,
+                    "decoder_embedding": d_embedding,
+                    "t": maes_dimensions[dims]["t"],
+                    "x": maes_dimensions[dims]["x"],
+                    "y": maes_dimensions[dims]["y"],
+                    "z": maes_dimensions[dims]["z"],
+                    "c": maes_dimensions[dims]["c"],
+                    "pt": patches[dims]["t"],
+                    "px": patches[dims]["x"],
+                    "py": patches[dims]["y"],
+                    "pz": patches[dims]["z"],
+                    "pc": patches[dims]["c"],
+                    "patches_per_volume": patches_per_volume,
+                    "pixels_per_patch": pixels_per_patch,
+                    "volumes_per_h100": volumes_per_h100,
+                    "memory_per_volume": memory_per_volume,
+                    "parameters": params,
+                    "inference_gflops_per_volume": gflops,
+                    "training_gflops_per_volume": 3 * gflops,
+                    "gflops_per_patch": gflops_per_patch,
+                    "model_inference_memory": model_inference_memory,
+                    "model_training_memory": model_training_memory,
+                    "inference_time_per_volume": inference_time_per_volume,
+                    "training_time_per_volume": training_time_per_volume,
+                }
+
+    mae_scaling = pd.DataFrame.from_dict(mae_configs, orient='index')
+    mae_scaling = mae_scaling.sort_values(['px', 'parameters', 'encoder_layers', 'encoder_heads'], ascending=[True, True, True, True])
+    mae_scaling.to_csv(outdir / "maes.csv")
+    return mae_scaling
+
+
 def main(args=None):
 
     timeit = time.time()
