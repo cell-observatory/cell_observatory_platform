@@ -91,10 +91,19 @@ def patchify_flops(num_tokens, patch_size, embed_dim):
     return flops
 
 
-def encoder_transformer_flops(image_size, patch_size, layers, embed_dim, heads, mlp_dim):
-    num_tokens = np.product([s // p for s, p in zip(image_size, patch_size)])
-    # num_tokens += 1  # class embedding
+def patchify(volume_size, patch_size, class_embedding=False, mask_ratio=0.):
+    num_tokens = np.product([s // p for s, p in zip(volume_size, patch_size)])
 
+    if mask_ratio > 0:
+        num_tokens = round(num_tokens * (1 - mask_ratio))
+
+    if class_embedding:
+        num_tokens += 1
+
+    return num_tokens
+
+
+def encoder_transformer_flops(num_tokens, layers, embed_dim, heads, mlp_dim):
     flops = layers * encoder_flops(num_tokens, embed_dim, heads, mlp_dim)
     # flops += patchify_flops(num_tokens, patch_size, embed_dim)
 
@@ -103,10 +112,7 @@ def encoder_transformer_flops(image_size, patch_size, layers, embed_dim, heads, 
     return flops
 
 
-def decoder_transformer_flops(image_size, patch_size, layers, embed_dim, heads, mlp_dim):
-    num_tokens = np.product([s // p for s, p in zip(image_size, patch_size)])
-    # num_tokens += 1  # class embedding
-
+def decoder_transformer_flops(num_tokens, layers, embed_dim, heads, mlp_dim):
     flops = layers * decoder_flops(num_tokens, embed_dim, heads, mlp_dim)
     # flops += patchify_flops(num_tokens, patch_size, embed_dim)
 
@@ -185,7 +191,7 @@ def transformer_training_memory_footprint(params, dtype='float32'):
     return gbytes
 
 
-def data_memory_footprint(image_size, batch_size=1, dtype='float32'):
+def data_memory_footprint(volume_size, batch_size=1, dtype='float32'):
     if dtype == 'float8':
         s = 1.0
     elif dtype == 'float16':
@@ -197,7 +203,7 @@ def data_memory_footprint(image_size, batch_size=1, dtype='float32'):
     else:
         s = 4.0
 
-    mem = int(s * batch_size * np.product(image_size))
+    mem = int(s * batch_size * np.product(volume_size))
     gbytes = mem / (1024.0 ** 3)
 
     logger.info(f"{mem:,d} B = {gbytes} GB using ({dtype})")
