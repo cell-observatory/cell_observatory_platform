@@ -40,13 +40,13 @@ def plot_parameter_scaling(
             '3D (224, 224, 112, 1, 3)',
             '2D (224, 224, 1, 1, 3)',
             'Patch (x, y, z, t, c)',
-            f'(14, 14, 14, 2, 3)',
+            f'(16, 16, 16, 2, 3)',
         ],
         published_models_legend=[
             'Data (x, y, c)',
             '2D (224, 224, 3)',
             'Patch (x, y, c)',
-            f'(14, 14, 3)',
+            f'(16, 16, 3)',
         ],
 ):
     for background in ["default", "dark_background"]:
@@ -68,7 +68,7 @@ def plot_parameter_scaling(
         else:
             data = df.loc[df['data'].str.match(r'.*\(rgb\)')]
 
-        data = data[data['px'] == 14]
+        data = data[data['px'] == 16]
 
         if published_models_only:
             g = sns.lineplot(
@@ -100,7 +100,7 @@ def plot_parameter_scaling(
                 markeredgewidth=.5
             )
 
-        d = data[(data['data'] == '2D(rgb)') & (data['px'] == 14)]
+        d = data[(data['data'] == '2D(rgb)') & (data['px'] == 16)]
 
         for line in range(0, d.shape[0]):
             xx = d[x][line]
@@ -110,7 +110,7 @@ def plot_parameter_scaling(
                 if y == 'dataset_size':
                     y_text_offset = 100
                     x_text_offset = xx * .2
-                elif y == 'training_images':
+                elif y == 'training_volumes':
                     y_text_offset = .5
                     x_text_offset = xx * .1
                 else:
@@ -128,7 +128,7 @@ def plot_parameter_scaling(
                     y_text_offset = yy * .25
 
             ax.annotate(
-                d['class'][line].strip('/14'),
+                d['class'][line].strip('/16'),
                 (xx, yy),
                 xytext=(xx - x_text_offset, yy + y_text_offset),
                 arrowprops=dict(alpha=0),
@@ -164,7 +164,7 @@ def plot_parameter_scaling(
             )
 
         if dataset_size is not None:
-            ax.set_title(f'Dataset: {dataset_size:,} images')
+            ax.set_title(f'Dataset: {dataset_size:,} volumes')
             savepath = Path(f'{outdir}/{y}_{dataset_size}_{background}')
         else:
             savepath = Path(f'{outdir}/{y}_{background}')
@@ -179,10 +179,10 @@ def plot_data_parameter_scaling(
         outdir,
         x="parameters",
         xlabel='Model size (non-embedding parameters)',
-        y="training_gflops_per_image",
-        ylabel="Training GFLOPs per image",
-        ytwin1="training_time_per_image",
-        ytwinlabel1="Training H100 seconds per image",
+        y="training_gflops_per_volume",
+        ylabel="Training GFLOPs per volume",
+        ytwin1="training_time_per_volume",
+        ytwinlabel1="Training H100 seconds per volume",
         ytwin2=None,
         ytwinlabel2=None,
         ytwin3=None,
@@ -194,6 +194,7 @@ def plot_data_parameter_scaling(
         xlog=True,
         ylog=True,
         patch_size=16,
+        cost_h100_per_hr=6,
         rgb='rgb',
         legend=[
             'Data (x, y, z, t, c)',
@@ -201,13 +202,13 @@ def plot_data_parameter_scaling(
                 '3D (224, 224, 112, 1, 3)',
                 '2D (224, 224, 1, 1, 3)',
             'Patch (x, y, z, t, c)',
-                f'(14, 14, 14, 2, 3)',
+                f'(16, 16, 16, 2, 3)',
         ],
         published_models_legend=[
             'Data (x, y, c)',
                 '2D (224, 224, 3)',
             'Patch (x, y, c)',
-                f'(14, 14, 3)',
+                f'(16, 16, 3)',
         ],
 ):
     for background in ["default", "dark_background"]:
@@ -312,7 +313,7 @@ def plot_data_parameter_scaling(
                 xy=(0, 1.03),
                 xycoords='axes fraction',
                 clip_on=False,
-                ha='left',
+                ha='center',
                 rotation=90
             )
 
@@ -326,7 +327,7 @@ def plot_data_parameter_scaling(
                 if y == 'dataset_size':
                     y_text_offset = 100
                     x_text_offset = xx * .2
-                elif y == 'training_images':
+                elif y == 'training_volumes':
                     y_text_offset = .5
                     x_text_offset = xx * .1
                 else:
@@ -358,7 +359,7 @@ def plot_data_parameter_scaling(
             ax.set_xscale('log')
 
         if dataset_size is not None:
-            ax.set_title(f'Dataset: {dataset_size:,} images')
+            ax.set_title(f'Dataset: {dataset_size:,} volumes')
             savepath = Path(f'{outdir}/{y}_{dataset_size}_{background}')
         else:
             savepath = Path(f'{outdir}/{y}_{background}')
@@ -372,6 +373,7 @@ def plot_individual_parameters(
     df,
     batch_size,
     outdir,
+    cost_h100_per_hr=6,
     rgb='rgb',
     legend=[
         'Data (x, y, z, t, c)',
@@ -379,24 +381,17 @@ def plot_individual_parameters(
         '3D (224, 224, 112, 1, 3)',
         '2D (224, 224, 1, 1, 3)',
         'Patch (x, y, z, t, c)',
-        f'(14, 14, 14, 2, 3)',
-    ],
-    published_models_legend=[
-        'Data (x, y, c)',
-        '2D (224, 224, 3)',
-        'Patch (x, y, c)',
-        f'(14, 14, 3)',
+        f'(16, 16, 16, 2, 3)',
     ],
 ):
-    df["number_h100_for_batch"] = np.ceil(
-        df["model_training_memory"] + (df["memory_per_image"] * batch_size) / 80)
+    df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
     df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
-    df["training_h100_hours_per_step"] = batch_size * df["training_time_per_image"] / 3600
-    df["training_tflops_per_image"] = df["training_gflops_per_image"] / 1000
+    df["training_h100_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
+    df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
 
     fois = {
-        f"training_gflops_per_image": f"Training GFLOPs per image",
-        f"training_time_per_image": f"Training H100 seconds per image",
+        f"training_gflops_per_volume": f"Training GFLOPs per volume",
+        f"training_time_per_volume": f"Training H100 seconds per volume",
         f"number_h100_for_batch": f"Minimum number of H100s needed for a batch ({batch_size})",
         f"cost_h100_for_batch": f"Cost of H100s needed for a batch ({batch_size}, $37,500 each)",
         f"training_h100_hours_per_step": f"Training H100 hours per batch ({batch_size})",
@@ -410,23 +405,21 @@ def plot_individual_parameters(
             xlabel="Model size (non-embedding parameters)",
             y=y,
             ylabel=ylabel,
+            legend=legend,
         )
 
     fois = {
         f"training_h100_days_per_epoch": f"Training H100 days per epoch",
-        f"gpu_compute_cost_per_epoch": f"H100 compute cost per epoch ($6/hr)",
+        f"training_h100_cost_per_epoch": f"H100 compute cost per epoch ($6/hr)",
+        f"training_tflops_per_epoch": f"Training Tera-FLOPs (TFLOPs) per epoch",
     }
-    # https://docs.coreweave.com/welcome-to-coreweave/resource-based-pricing?utm_source=adwords&utm_medium=cpc&utm_campaign=Brand%7CExact&utm_term=coreweave&gclid=Cj0KCQjwxeyxBhC7ARIsAC7dS38aYX5XvHP0UV6QeT7ez1v_VW3NUEZltZfgRmoSmLYIUZKmKAg3x4YaAvu9EALw_wcB&_gl=1*1cfgr32*_ga*MjAwMTA1Mzk1Ny4xNzA3OTI5NjM0*_ga_XKNHS53VYL*MTcxNTIwNTk1MC4yLjEuMTcxNTIwNjM4OC42MC4wLjA.#cpu-only-instance-resource-pricing
 
-    h100_per_hr = ((4.76 * 8) + (0.01 * 128) + (0.005 * 1024)) / 8
-
-
-    for dataset_size in [1000000, 10000000, 100000000, 303000000]:
-        df["training_h100_days_per_epoch"] = dataset_size * df["training_time_per_image"] / 3600 / 24
-        df["multigpu_training_days_per_epoch"] = df["training_h100_days_per_epoch"] / df[
-            "number_h100_for_batch"]
+    for dataset_size in [1000000, 1281167, 14197122, 10000000, 100000000, 303000000, 1000000000]:
+        df["training_h100_days_per_epoch"] = dataset_size * df["training_time_per_volume"] / 3600 / 24
+        df["multigpu_training_days_per_epoch"] = df["training_h100_days_per_epoch"] / df["number_h100_for_batch"]
         df["multigpu_256_training_days_per_epoch"] = df["training_h100_days_per_epoch"] / 256
-        df["gpu_compute_cost_per_epoch"] = df["training_h100_days_per_epoch"] * 24 * h100_per_hr
+        df[f"training_h100_cost_per_epoch"] = df[f"training_h100_days_per_epoch"] * 24 * cost_h100_per_hr
+        df[f"training_tflops_per_epoch"] = dataset_size * df["training_tflops_per_volume"]
 
         for y, ylabel in fois.items():
             plot_parameter_scaling(
@@ -436,43 +429,50 @@ def plot_individual_parameters(
                 xlabel="Model size (non-embedding parameters)",
                 y=y,
                 ylabel=ylabel,
-                dataset_size=dataset_size
+                dataset_size=dataset_size,
+                legend=legend,
             )
 
-    df = df.loc[df['data'].str.match(r'2D\(rgb\)')]
-    datasets = {
-        "S": {"dataset": "ImageNet-21K", "dataset_size": 14197122, "epochs": 7, "steps": 14197122 * 7 / 4096,
-              "batch_size": 4096},
-        "B": {"dataset": "ImageNet-21K", "dataset_size": 14197122, "epochs": 7, "steps": 14197122 * 7 / 4096,
-              "batch_size": 4096},
-        "L": {"dataset": "JFT-300M", "dataset_size": 303000000, "epochs": 14, "steps": 1000000, "batch_size": 4096},
-        "H": {"dataset": "JFT-300M", "dataset_size": 303000000, "epochs": 14, "steps": 1000000, "batch_size": 4096},
-        "g": {"dataset": "JFT-1B", "dataset_size": 3000000000, "epochs": 4000000 * 4096 / 3000000000, "steps": 4000000,
-              "batch_size": 4096},
-        "G": {"dataset": "JFT-3B", "dataset_size": 3000000000, "epochs": 5000000 * 4096 / 3000000000, "steps": 5000000,
-              "batch_size": 4096},
-        "e": {"dataset": "JFT-3B", "dataset_size": 3000000000, "epochs": 1000000 * 16384 / 3000000000, "steps": 1000000,
-              "batch_size": 16384},
-        "22B": {"dataset": "JFT-4B", "dataset_size": 4000000000, "epochs": 177000 * 65000 / 4000000000, "steps": 177000,
-                "batch_size": 65000},
-    }
-    cols = list(datasets['S'].keys())
-    df[cols] = np.nan
-    for k in datasets.keys():
-        idx = df.loc[df['class'].str.match(k)].index
-        df.loc[idx, cols] = datasets[k].values()
 
-    df["training_images"] = df["steps"] * df["batch_size"] // 1000000000  # convert to billions
+def plot_published_models(
+    df,
+    outdir,
+    models,
+    cost_h100_per_hr=6,
+    published_models_legend=[
+        'Data (x, y, c)',
+        '2D (224, 224, 3)',
+        'Patch (x, y, c)',
+        f'(16, 16, 3)',
+    ],
+):
+    batch_size = 65000
+    df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
+    df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
+    df["training_h100_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
+    df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
+
+    df = df.loc[df['data'].str.match(r'2D\(rgb\)')]
+    cols = list(models['S'].keys())
+    df[cols] = np.nan
+    for k in models.keys():
+        idx = df.loc[df['class'].str.match(k)].index
+        df.loc[idx, cols] = models[k].values()
+
+    df["training_volumes"] = df["steps"] * df["batch_size"] // 1000000000  # convert to billions
     df["dataset_size"] = df["dataset_size"] // 1000000  # convert to millions
-    df["training_compute"] = df[f"training_gflops_per_image"] * df["batch_size"] * df["steps"]
-    df["training_time"] = df[f"training_time_per_image"] * df["batch_size"] * df["steps"] / 3600 / 24
+    df["training_compute"] = df[f"training_tflops_per_volume"] * df["batch_size"] * df["steps"]
+    df["training_time"] = df[f"training_time_per_volume"] * df["batch_size"] * df["steps"] / 3600 / 24
+    df["training_cost"] = df[f"training_time"] * cost_h100_per_hr * 24
 
     fois = {
-        f"dataset_size": f"Training dataset size (millions of images)",
-        f"training_images": f"Training images seen (billions)",
+        f"dataset_size": f"Training dataset size (millions of volumes)",
+        f"training_volumes": f"Training volumes seen (billions)",
         f"training_time": f"Training H100 days",
-        f"training_compute": f"Training GFLOPs",
+        f"training_compute": f"Training TFLOPs",
+        f"training_cost": f"Training cost",
     }
+
     for y, ylabel in fois.items():
         plot_parameter_scaling(
             df,
@@ -482,8 +482,6 @@ def plot_individual_parameters(
             y=y,
             ylabel=ylabel,
             published_models_only=True,
-            ylog=False if y == "dataset_size" or y == "training_images" else True,
-            rgb=rgb,
-            legend=legend,
+            ylog=False if y == "dataset_size" or y == "training_volumes" else True,
             published_models_legend=published_models_legend,
         )
