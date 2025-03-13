@@ -591,58 +591,122 @@ def main(args=None):
 
     if args.arch == "published_models":
         models = {
-            "S": {
-                "dataset": "ImageNet-21K",
-                "dataset_size": 14197122,
-                "epochs": 7,
-                "steps": 14197122 * 7 / 4096,
-                "batch_size": 4096},
-            "B": {
-                "dataset": "ImageNet-21K",
-                "dataset_size": 14197122,
-                "epochs": 7,
-                "steps": 14197122 * 7 / 4096,
-                "batch_size": 4096
+            "ViT":{
+                "S": {
+                    "dataset": "ImageNet-21K",
+                    "dataset_size": 14197122,
+                    "epochs": 7,
+                    "steps": 14197122 * 7 / 4096,
+                    "batch_size": 4096
+                },
+                "B": {
+                    "dataset": "ImageNet-21K",
+                    "dataset_size": 14197122,
+                    "epochs": 7,
+                    "steps": 14197122 * 7 / 4096,
+                    "batch_size": 4096
+                },
+                "L": {
+                    "dataset": "JFT-300M",
+                    "dataset_size": 303000000,
+                    "epochs": 14,
+                    "steps": 1000000,
+                    "batch_size": 4096
+                },
+                "H": {
+                    "dataset": "JFT-300M",
+                    "dataset_size": 303000000,
+                    "epochs": 14,
+                    "steps": 1000000,
+                    "batch_size": 4096
+                },
+                "g": {"dataset": "JFT-1B",
+                      "dataset_size": 3000000000,
+                      "epochs": 4000000 * 4096 / 3000000000,
+                      "steps": 4000000,
+                      "batch_size": 4096
+                },
+                "G": {
+                    "dataset": "JFT-3B",
+                    "dataset_size": 3000000000,
+                    "epochs": 5000000 * 4096 / 3000000000,
+                    "steps": 5000000,
+                    "batch_size": 4096
+                },
+                "e": {"dataset": "JFT-3B",
+                      "dataset_size": 3000000000,
+                      "epochs": 1000000 * 16384 / 3000000000,
+                      "steps": 1000000,
+                      "batch_size": 16384
+                },
+                "22B": {
+                    "dataset": "JFT-4B",
+                    "dataset_size": 4000000000,
+                    "epochs": 177000 * 65000 / 4000000000,
+                    "steps": 177000,
+                    "batch_size": 65000
+                },
             },
-            "L": {
-                "dataset": "JFT-300M",
-                "dataset_size": 303000000,
-                "epochs": 14,
-                "steps": 1000000,
-                "batch_size": 4096},
-            "H": {
-                "dataset": "JFT-300M",
-                "dataset_size": 303000000,
-                "epochs": 14,
-                "steps": 1000000,
-                "batch_size": 4096
+            "MAE-PT":{
+                "S": {
+                    "dataset": "ImageNet-1K",
+                    "dataset_size": 1281167,
+                    "epochs": 800,
+                    "steps": 1281167 * 800 / 4096,
+                    "batch_size": 4096
+                },
+                "B": {
+                    "dataset": "ImageNet-1K",
+                    "dataset_size": 1281167,
+                    "epochs": 800,
+                    "steps": 1281167 * 800 / 4096,
+                    "batch_size": 4096
+                },
+                "L": {
+                    "dataset": "ImageNet-1K",
+                    "dataset_size": 1281167,
+                    "epochs": 800,
+                    "steps": 1281167 * 800 / 4096,
+                    "batch_size": 4096
+                },
+                "H": {
+                    "dataset": "ImageNet-1K",
+                    "dataset_size": 1281167,
+                    "epochs": 800,
+                    "steps": 1281167 * 800 / 4096,
+                    "batch_size": 4096
+                },
             },
-            "g": {"dataset": "JFT-1B",
-                  "dataset_size": 3000000000,
-                  "epochs": 4000000 * 4096 / 3000000000,
-                  "steps": 4000000,
-                  "batch_size": 4096
-                  },
-            "G": {
-                "dataset": "JFT-3B",
-                "dataset_size": 3000000000,
-                "epochs": 5000000 * 4096 / 3000000000,
-                "steps": 5000000,
-                "batch_size": 4096
-            },
-            "e": {"dataset": "JFT-3B",
-                  "dataset_size": 3000000000,
-                  "epochs": 1000000 * 16384 / 3000000000,
-                  "steps": 1000000,
-                  "batch_size": 16384
-                  },
-            "22B": {
-                "dataset": "JFT-4B",
-                "dataset_size": 4000000000,
-                "epochs": 177000 * 65000 / 4000000000,
-                "steps": 177000,
-                "batch_size": 65000
-            },
+            "MAE-FT": {
+                "S": {
+                    "dataset": "ImageNet-1K",
+                    "dataset_size": 1281167,
+                    "epochs": 50,
+                    "steps": 1281167 * 50 / 4096,
+                    "batch_size": 4096
+                },
+                "B": {
+                    "dataset": "ImageNet-1K",
+                    "dataset_size": 1281167,
+                    "epochs": 50,
+                    "steps": 1281167 * 50 / 4096,
+                    "batch_size": 4096
+                },
+                "L": {
+                    "dataset": "ImageNet-1K",
+                    "dataset_size": 1281167,
+                    "epochs": 50,
+                    "steps": 1281167 * 50 / 4096,
+                    "batch_size": 4096
+                },
+                "H": {
+                    "dataset": "ImageNet-1K",
+                    "dataset_size": 1281167,
+                    "epochs": 50,
+                    "steps": 1281167 * 50 / 4096,
+                    "batch_size": 4096
+                },
+            }
         }
 
         df = scaling_vit(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir)
