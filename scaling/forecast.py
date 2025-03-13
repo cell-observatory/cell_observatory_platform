@@ -42,8 +42,18 @@ def parse_args(args):
     )
 
     parser.add_argument(
-        "--arch", type=str, default='vit', choices=["vit", "transformer"],
+        "--arch", type=str, default='vit', choices=["published_models", "vit", "mae", "transformer"],
         help='architecture to use'
+    )
+
+    parser.add_argument(
+        "--mask_ratio", type=float, default=0.0,
+        help='mask ratio for mae pretraining'
+    )
+
+    parser.add_argument(
+        "--cost_h100_per_hr", type=float, default=49.24/8,
+        help='https://www.coreweave.com/pricing'
     )
 
     parser.add_argument(
@@ -52,7 +62,7 @@ def parse_args(args):
     )
 
     parser.add_argument(
-        "--batch_size", default=4096, type=int, help="number of images per batch"
+        "--batch_size", default=4096, type=int, help="number of volumes per batch"
     )
 
     return parser.parse_known_args(args)[0]
@@ -137,11 +147,12 @@ def scaling_transformer(
 
         for dims in dimensions.keys():
 
-            image_size = list(dimensions[dims].values())
+            volume_size = list(dimensions[dims].values())
             patch_size = list(patches[dims].values())
+            num_tokens = profile.patchify(volume_size=volume_size, patch_size=patch_size)
 
-            memory_per_image = profile.data_memory_footprint(
-                image_size=image_size,
+            memory_per_volume = profile.data_memory_footprint(
+                volume_size=volume_size,
                 batch_size=1,
                 dtype=dtype,
             )
@@ -161,8 +172,7 @@ def scaling_transformer(
                             mlp_dim=mlp
                         )
                         flops = profile.encoder_transformer_flops(
-                            image_size=image_size,
-                            patch_size=patch_size,
+                            num_tokens=num_tokens,
                             layers=layers,
                             embed_dim=embedding,
                             heads=heads,
@@ -176,8 +186,7 @@ def scaling_transformer(
                             mlp_dim=mlp
                         )
                         flops = profile.decoder_transformer_flops(
-                            image_size=image_size,
-                            patch_size=patch_size,
+                            num_tokens=num_tokens,
                             layers=layers,
                             embed_dim=embedding,
                             heads=heads,
@@ -198,8 +207,7 @@ def scaling_transformer(
                         params = eparams + dparams
 
                         eflops = profile.encoder_transformer_flops(
-                            image_size=image_size,
-                            patch_size=patch_size,
+                            num_tokens=num_tokens,
                             layers=layers,
                             embed_dim=embedding,
                             heads=heads,
@@ -208,8 +216,7 @@ def scaling_transformer(
                         eflops_per_token = layers * profile.encoder_flops(1, embedding, heads, mlp)
 
                         dflops = profile.decoder_transformer_flops(
-                            image_size=image_size,
-                            patch_size=patch_size,
+                            num_tokens=num_tokens,
                             layers=layers,
                             embed_dim=embedding,
                             heads=heads,
@@ -233,17 +240,17 @@ def scaling_transformer(
                         dtype=dtype
                     )
 
-                    inference_time_per_image = profile.compute_time(flops=flops, gpu="H100", unit="seconds")
-                    training_time_per_image = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds")
+                    inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds")
+                    training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds")
 
-                    patches_per_image = np.product([s // p for s, p in zip(image_size, patch_size)])
+                    patches_per_volume = np.product([s // p for s, p in zip(volume_size, patch_size)])
                     pixels_per_patch = np.product(patch_size)
-                    images_per_h100 = 80 // memory_per_image
+                    volumes_per_h100 = 80 // memory_per_volume
 
                     transformer_configs[f"{dims} {c}/{patch} {transformer}"] = {
                         "data": dims,
                         "class": f"{c}/{patch}",
-                        "transformer": "encoder",
+                        "transformer": transformer,
                         "layers": layers,
                         "heads": heads,
                         "mlp": mlp,
@@ -258,18 +265,18 @@ def scaling_transformer(
                         "py": patches[dims]["y"],
                         "pz": patches[dims]["z"],
                         "pc": patches[dims]["c"],
-                        "patches_per_image": patches_per_image,
+                        "patches_per_volume": patches_per_volume,
                         "pixels_per_patch": pixels_per_patch,
-                        "images_per_h100": images_per_h100,
-                        "memory_per_image": memory_per_image,
+                        "volumes_per_h100": volumes_per_h100,
+                        "memory_per_volume": memory_per_volume,
                         "parameters": params,
-                        "inference_gflops_per_image": gflops,
-                        "training_gflops_per_image": 3 * gflops,
+                        "inference_gflops_per_volume": gflops,
+                        "training_gflops_per_volume": 3 * gflops,
                         "gflops_per_patch": gflops_per_patch,
                         "model_inference_memory": model_inference_memory,
                         "model_training_memory": model_training_memory,
-                        "inference_time_per_image": inference_time_per_image,
-                        "training_time_per_image": training_time_per_image,
+                        "inference_time_per_volume": inference_time_per_volume,
+                        "training_time_per_volume": training_time_per_volume,
                     }
 
     transformer_scaling = pd.DataFrame.from_dict(transformer_configs, orient='index')
@@ -316,11 +323,12 @@ def scaling_vit(
 
         for dims in vit_dimensions.keys():
 
-            image_size = list(vit_dimensions[dims].values())
+            volume_size = list(vit_dimensions[dims].values())
             patch_size = list(patches[dims].values())
+            num_tokens = profile.patchify(volume_size=volume_size, patch_size=patch_size)
 
-            memory_per_image = profile.data_memory_footprint(
-                image_size=image_size,
+            memory_per_volume = profile.data_memory_footprint(
+                volume_size=volume_size,
                 batch_size=1,
                 dtype=dtype,
             )
@@ -339,8 +347,7 @@ def scaling_vit(
                     mlp_dim=mlp
                 )
                 flops = profile.encoder_transformer_flops(
-                    image_size=image_size,
-                    patch_size=patch_size,
+                    num_tokens=num_tokens,
                     layers=layers,
                     embed_dim=embedding,
                     heads=heads,
@@ -358,14 +365,14 @@ def scaling_vit(
                     dtype=dtype
                 )
 
-                inference_time_per_image = profile.compute_time(flops=flops, gpu="H100", unit="seconds")
-                training_time_per_image = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds")
+                inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds")
+                training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds")
                 gflops = np.round(flops / 1e9, 3)
                 gflops_per_patch = np.round(flops_per_patch / 1e9, 3)
 
-                patches_per_image = np.product([s // p for s, p in zip(image_size, patch_size)])
+                patches_per_volume = np.product([s // p for s, p in zip(volume_size, patch_size)])
                 pixels_per_patch = np.product(patch_size)
-                images_per_h100 = 80 // memory_per_image
+                volumes_per_h100 = 80 // memory_per_volume
 
                 """
                     ViT L/16: https://arxiv.org/pdf/2010.11929.pdf (table 6)
@@ -374,8 +381,8 @@ def scaling_vit(
                     dataset = 303,000,000
                     TPUv3 peak FLOPS = 123 * 10**12
 
-                    training_time_per_image = (783 * 10^18) / 7 / 303,000,000 / (123 * 10**12)
-                    training_time_per_image = 0.00300134543
+                    training_time_per_volume = (783 * 10^18) / 7 / 303,000,000 / (123 * 10**12)
+                    training_time_per_volume = 0.00300134543
                 """
                 vit_configs[f"{dims} ViT {v}/{patch}"] = {
                     "data": dims,
@@ -395,18 +402,18 @@ def scaling_vit(
                     "py": patches[dims]["y"],
                     "pz": patches[dims]["z"],
                     "pc": patches[dims]["c"],
-                    "patches_per_image": patches_per_image,
+                    "patches_per_volume": patches_per_volume,
                     "pixels_per_patch": pixels_per_patch,
-                    "images_per_h100": images_per_h100,
-                    "memory_per_image": memory_per_image,
+                    "volumes_per_h100": volumes_per_h100,
+                    "memory_per_volume": memory_per_volume,
                     "parameters": params,
-                    "inference_gflops_per_image": gflops,
-                    "training_gflops_per_image": 3 * gflops,
+                    "inference_gflops_per_volume": gflops,
+                    "training_gflops_per_volume": 3 * gflops,
                     "gflops_per_patch": gflops_per_patch,
                     "model_inference_memory": model_inference_memory,
                     "model_training_memory": model_training_memory,
-                    "inference_time_per_image": inference_time_per_image,
-                    "training_time_per_image": training_time_per_image,
+                    "inference_time_per_volume": inference_time_per_volume,
+                    "training_time_per_volume": training_time_per_volume,
                 }
 
     vit_scaling = pd.DataFrame.from_dict(vit_configs, orient='index')
