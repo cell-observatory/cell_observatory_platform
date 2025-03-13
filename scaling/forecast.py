@@ -429,130 +429,169 @@ def main(args=None):
     logger.info(args)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
-    summary = args.outdir / "summary"
-    summary.mkdir(parents=True, exist_ok=True)
 
-    if args.arch == "vit":
+    if args.arch == "published_models":
+        models = {
+            "S": {
+                "dataset": "ImageNet-21K",
+                "dataset_size": 14197122,
+                "epochs": 7,
+                "steps": 14197122 * 7 / 4096,
+                "batch_size": 4096},
+            "B": {
+                "dataset": "ImageNet-21K",
+                "dataset_size": 14197122,
+                "epochs": 7,
+                "steps": 14197122 * 7 / 4096,
+                "batch_size": 4096
+            },
+            "L": {
+                "dataset": "JFT-300M",
+                "dataset_size": 303000000,
+                "epochs": 14,
+                "steps": 1000000,
+                "batch_size": 4096},
+            "H": {
+                "dataset": "JFT-300M",
+                "dataset_size": 303000000,
+                "epochs": 14,
+                "steps": 1000000,
+                "batch_size": 4096
+            },
+            "g": {"dataset": "JFT-1B",
+                  "dataset_size": 3000000000,
+                  "epochs": 4000000 * 4096 / 3000000000,
+                  "steps": 4000000,
+                  "batch_size": 4096
+                  },
+            "G": {
+                "dataset": "JFT-3B",
+                "dataset_size": 3000000000,
+                "epochs": 5000000 * 4096 / 3000000000,
+                "steps": 5000000,
+                "batch_size": 4096
+            },
+            "e": {"dataset": "JFT-3B",
+                  "dataset_size": 3000000000,
+                  "epochs": 1000000 * 16384 / 3000000000,
+                  "steps": 1000000,
+                  "batch_size": 16384
+                  },
+            "22B": {
+                "dataset": "JFT-4B",
+                "dataset_size": 4000000000,
+                "epochs": 177000 * 65000 / 4000000000,
+                "steps": 177000,
+                "batch_size": 65000
+            },
+        }
+
         df = scaling_vit(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir)
-    elif args.arch == "transformer":
-        df = scaling_transformer(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir)
+        vis.plot_published_models(
+            df,
+            outdir=args.outdir,
+            models=models,
+            cost_h100_per_hr=args.cost_h100_per_hr
+        )
+    else:
+        summary = args.outdir / "summary"
+        summary.mkdir(parents=True, exist_ok=True)
 
-    # https://docs.coreweave.com/welcome-to-coreweave/resource-based-pricing?utm_source=adwords&utm_medium=cpc&utm_campaign=Brand%7CExact&utm_term=coreweave&gclid=Cj0KCQjwxeyxBhC7ARIsAC7dS38aYX5XvHP0UV6QeT7ez1v_VW3NUEZltZfgRmoSmLYIUZKmKAg3x4YaAvu9EALw_wcB&_gl=1*1cfgr32*_ga*MjAwMTA1Mzk1Ny4xNzA3OTI5NjM0*_ga_XKNHS53VYL*MTcxNTIwNTk1MC4yLjEuMTcxNTIwNjM4OC42MC4wLjA.#cpu-only-instance-resource-pricing
-
-    h100_per_hr = ((4.76 * 8) + (0.01 * 128) + (0.005 * 1024)) / 8
-
-    df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_image"] * args.batch_size) / 80)
-    df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
-    df["training_h100_hours_per_step"] = args.batch_size * df["training_time_per_image"] / 3600
-    df["training_tflops_per_image"] = df["training_gflops_per_image"] / 1000
-
-    for epoch in [1, 100, 300, 500]:
-        for dataset_size in [1000000, 10000000, 100000000, 303000000, 1000000000]:
-            e = "" if epoch == 1 else f"{epoch}_"
-            df[f"training_h100_days_per_{e}epoch_{dataset_size}"] = dataset_size * df["training_time_per_image"] / 3600 / 24 * epoch
-            df[f"multigpu_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] / df["number_h100_for_batch"] * epoch
-            df[f"multigpu_256_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] / 256 * epoch
-            df[f"gpu_compute_cost_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] * 24 * h100_per_hr * epoch
-            df[f"memory_per_{dataset_size}"] = df[f"memory_per_image"] * dataset_size
-            df[f"num_images"] = df[f"memory_per_image"] * dataset_size
+        if args.arch == "vit":
+            df = scaling_vit(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir)
+        elif args.arch == "mae":
+            df = scaling_mae(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mask_ratio=args.mask_ratio)
+        elif args.arch == "transformer":
+            df = scaling_transformer(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir)
 
 
-    vis.plot_data_parameter_scaling(
-        df,
-        outdir=summary,
-        x="parameters",
-        xlabel="Model size (non-embedding parameters)",
-        y="number_h100_for_batch",
-        ylabel=f"Minimum number of H100s needed for a batch ({args.batch_size})",
-        ytwin1="cost_h100_for_batch",
-        ytwinlabel1=f"Cost of H100s needed for a batch ({args.batch_size}, $37,500 each)",
-        published_models_only=False,
-        ylog=True,
-        patch_size=args.ipatch["x"],
-        rgb='rgb' if args.rgb else 'g',
-        legend=[
-            'Data (x, y, z, t, c)',
+        df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * args.batch_size) / 80)
+        df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
+        df["training_h100_hours_per_step"] = args.batch_size * df["training_time_per_volume"] / 3600
+        df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
+
+        for epoch in [1, 100, 300, 500]:
+            for dataset_size in [1000000, 1281167, 14197122, 10000000, 100000000, 303000000, 1000000000]:
+                e = "" if epoch == 1 else f"{epoch}_"
+                df[f"training_h100_days_per_{e}epoch_{dataset_size}"] = dataset_size * df["training_time_per_volume"] / 3600 / 24 * epoch
+                df[f"multigpu_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] / df["number_h100_for_batch"] * epoch
+                df[f"multigpu_256_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] / 256 * epoch
+                df[f"training_h100_cost_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] * 24 * args.cost_h100_per_hr * epoch
+                df[f"training_tflops_per_{e}epoch_{dataset_size}"] = df[f"training_tflops_per_volume"] * dataset_size * epoch
+                df[f"memory_per_{dataset_size}"] = df[f"memory_per_volume"] * dataset_size
+                df[f"num_volumes"] = df[f"memory_per_volume"] * dataset_size
+
+        vis.plot_data_parameter_scaling(
+            df,
+            outdir=summary,
+            x="parameters",
+            xlabel="Model size (non-embedding parameters)",
+            y="number_h100_for_batch",
+            ylabel=f"Minimum number of H100s needed for a batch ({args.batch_size})",
+            ytwin1="cost_h100_for_batch",
+            ytwinlabel1=f"Cost of H100s needed for a batch ({args.batch_size}, $37,500 each)",
+            published_models_only=False,
+            ylog=True,
+            patch_size=args.ipatch["x"],
+            cost_h100_per_hr=args.cost_h100_per_hr,
+            rgb='rgb' if args.rgb else 'g',
+            legend=[
+                'Data (x, y, z, t, c)',
+                    f'4D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
+                    f'3D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
+                    f'2D ({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {3 if args.rgb else 1})',
+                'Patch (x, y, z, t, c)',
+                    f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
+            ]
+        )
+
+        for var in ['days', 'cost']:
+            for epoch in [1, 100, 300, 500]:
+                e = "" if epoch == 1 else f"{epoch}_"
+                vis.plot_data_parameter_scaling(
+                    df,
+                    outdir=summary,
+                    x="parameters",
+                    xlabel="Model size (non-embedding parameters)",
+                    y=f"training_h100_{var}_per_{e}epoch_1000000",
+                    ylabel=f"Training H100 {var} per epoch" if epoch == 1 else f"Training H100 {var} for ({epoch}) epoch(s)",
+                    yscalelabel="1M",
+                    ytwin1=f"training_h100_{var}_per_{e}epoch_10000000",
+                    ytwinlabel1=f"10M",
+                    ytwin2=f"training_h100_{var}_per_{e}epoch_100000000",
+                    ytwinlabel2=f"100M",
+                    ytwin3=f"training_h100_{var}_per_{e}epoch_100000000",
+                    ytwinlabel3=f"1B",
+                    published_models_only=False,
+                    ylog=True,
+                    patch_size=args.ipatch["x"],
+                    rgb='rgb' if args.rgb else 'g',
+                    legend=[
+                        'Data (x, y, z, t, c)',
+                            f'4D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
+                            f'3D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
+                            f'2D ({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {3 if args.rgb else 1})',
+                        'Patch (x, y, z, t, c)',
+                            f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
+                    ]
+                )
+
+        vis.plot_individual_parameters(
+            df,
+            batch_size=args.batch_size,
+            outdir=args.outdir,
+            cost_h100_per_hr=args.cost_h100_per_hr,
+            rgb='rgb' if args.rgb else 'g',
+            legend=[
+                'Data (x, y, z, t, c)',
                 f'4D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
                 f'3D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
                 f'2D ({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {3 if args.rgb else 1})',
-            'Patch (x, y, z, t, c)',
+                'Patch (x, y, z, t, c)',
                 f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
-        ]
-    )
-
-    for epoch in [1, 100, 300, 500]:
-        e = "" if epoch == 1 else f"{epoch}_"
-        vis.plot_data_parameter_scaling(
-            df,
-            outdir=summary,
-            x="parameters",
-            xlabel="Model size (non-embedding parameters)",
-            y=f"training_h100_days_per_{e}epoch_1000000",
-            ylabel=f"Training H100 days per epoch" if epoch == 1 else f"Training H100 days for ({epoch}) epoch(s)",
-            ytwin1=f"training_h100_days_per_{e}epoch_10000000",
-            ytwinlabel1=f"10M",
-            ytwin2=f"training_h100_days_per_{e}epoch_100000000",
-            ytwinlabel2=f"100M",
-            ytwin3=f"training_h100_days_per_{e}epoch_1000000000",
-            ytwinlabel3=f"1B",
-            yscalelabel="1M",
-            published_models_only=False,
-            ylog=True,
-            patch_size=args.ipatch["x"],
-            rgb='rgb' if args.rgb else 'g',
-            legend=[
-                'Data (x, y, z, t, c)',
-                    f'4D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
-                    f'3D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
-                    f'2D ({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {3 if args.rgb else 1})',
-                'Patch (x, y, z, t, c)',
-                    f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
             ]
         )
 
-        vis.plot_data_parameter_scaling(
-            df,
-            outdir=summary,
-            x="parameters",
-            xlabel="Model size (non-embedding parameters)",
-            y=f"gpu_compute_cost_per_{e}epoch_1000000",
-            ylabel="Training H100 cost per epoch" if epoch == 1 else f"Training H100 cost for ({epoch}) epoch(s)",
-            ytwin1=f"gpu_compute_cost_per_{e}epoch_10000000",
-            ytwinlabel1=f"10M",
-            ytwin2=f"gpu_compute_cost_per_{e}epoch_100000000",
-            ytwinlabel2=f"100M",
-            ytwin3=f"gpu_compute_cost_per_{e}epoch_1000000000",
-            ytwinlabel3=f"1B",
-            yscalelabel="1M",
-            published_models_only=False,
-            ylog=True,
-            patch_size=args.ipatch["x"],
-            rgb='rgb' if args.rgb else 'g',
-            legend=[
-                'Data (x, y, z, t, c)',
-                    f'4D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
-                    f'3D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
-                    f'2D ({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {3 if args.rgb else 1})',
-                'Patch (x, y, z, t, c)',
-                    f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
-            ]
-        )
-
-    
-    vis.plot_individual_parameters(
-        df,
-        batch_size=args.batch_size,
-        outdir=args.outdir,
-        rgb='rgb' if args.rgb else 'g',
-        legend=[
-            'Data (x, y, z, t, c)',
-            f'4D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
-            f'3D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
-            f'2D ({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {3 if args.rgb else 1})',
-            'Patch (x, y, z, t, c)',
-            f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
-        ]
-    )
     logger.info(f"Total time elapsed: {time.time() - timeit:.2f} sec.")
 
 
