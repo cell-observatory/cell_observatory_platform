@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="mae_analysis" type="PythonConfigurationType" factoryName="Python" folderName="scaling">
+  <configuration default="false" name="mae_ssl_analysis" type="PythonConfigurationType" factoryName="Python" folderName="scaling">
     <module name="platform" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
@@ -43,7 +43,7 @@
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/scaling/forecast.py" />
-    <option name="PARAMETERS" value="--arch mae --outdir /opt/project/scaling/data/maes --dtype float16 --batch_size 4096" />
+    <option name="PARAMETERS" value="--arch mae_ssl --outdir /opt/project/scaling/data/maes/ssl --dtype float16 --batch_size 4096" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
