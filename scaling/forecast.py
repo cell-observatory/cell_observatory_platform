@@ -82,6 +82,11 @@ def scaling_transformer(
         "4D(rgb)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']}
     }
     configs = {
+        "1b": {"layers": 1, "heads": 16, "embedding": 128, "mlp": 512},
+        "2b": {"layers": 2, "heads": 16, "embedding": 256, "mlp": 1024},
+        "4b": {"layers": 4, "heads": 16, "embedding": 512, "mlp": 2048},
+        "8b": {"layers": 8, "heads": 16, "embedding": 768, "mlp": 3072},
+        "T": {"layers": 12, "heads": 3, "embedding": 192, "mlp": 768},
         "S": {"layers": 12, "heads": 6, "embedding": 384, "mlp": 1536},
         "B": {"layers": 12, "heads": 12, "embedding": 768, "mlp": 3072},
         "L": {"layers": 24, "heads": 16, "embedding": 1024, "mlp": 4096},
