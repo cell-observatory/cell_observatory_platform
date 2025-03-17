@@ -805,7 +805,7 @@ def main(args=None):
                     "batch_size": 65000
                 },
             },
-            "MAE-PT":{
+            "MAE-SSL":{
                 "S": {
                     "dataset": "ImageNet-1K",
                     "dataset_size": 1281167,
@@ -893,7 +893,7 @@ def main(args=None):
         df["training_h100_hours_per_step"] = args.batch_size * df["training_time_per_volume"] / 3600
         df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
 
-        for epoch in [1, 100, 300, 500]:
+        for epoch in [1, 50, 100, 300, 500, 800, 1000]:
             for dataset_size in [1000000, 1281167, 14197122, 10000000, 100000000, 303000000, 1000000000]:
                 e = "" if epoch == 1 else f"{epoch}_"
                 df[f"training_h100_days_per_{e}epoch_{dataset_size}"] = dataset_size * df["training_time_per_volume"] / 3600 / 24 * epoch
