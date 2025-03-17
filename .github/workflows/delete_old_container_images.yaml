@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Delete old tagged images
-        uses: snok/container-retention-policy@v3.0.0
+        uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
         with:
           tag-selection: tagged
           image-names: "*"      # platform, aovift, ...
@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Delete old untagged images
-        uses: snok/container-retention-policy@v3.0.0
+        uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
         with:
           tag-selection: untagged
           image-names: "*"      # platform, aovift, ...
@@ -80,7 +80,7 @@ jobs:
           echo "IMAGES_FILTER=$(paste -sd " !*"  all_feature_branches_names.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Delete old untagged images
-        uses: snok/container-retention-policy@v3.0.0
+        uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
         env:
           IMAGES_FILTER: ${{ steps.get_branches.outputs.IMAGES_FILTER }}
         with:

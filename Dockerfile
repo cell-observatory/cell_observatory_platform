@@ -2,6 +2,7 @@
 # docker buildx build . --tag ghcr.io/cell-observatory/platform:main_torch_cuda_12_8 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8 --progress=plain --no-cache-filter pip_install
 #
 # to run on a ubuntu system:
+# install nvidia driver (distro=ubuntu2204 && arch=x86_64 && arch_ext=amd64) then follow https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/index.html#ubuntu-installation and Network Repository Installation
 # install docker: https://docs.docker.com/engine/install/ubuntu/
 # set docker permissions for non-root: https://docs.docker.com/engine/install/linux-postinstall/ 
 # install nvidia container toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
