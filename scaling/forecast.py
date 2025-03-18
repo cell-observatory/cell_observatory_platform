@@ -404,13 +404,15 @@ def scaling_mae_ssl(
         "B": {"layers": 12, "heads": 12, "embedding": 768, "mlp": 3072},
         "L": {"layers": 24, "heads": 16, "embedding": 1024, "mlp": 4096},
         "H": {"layers": 32, "heads": 16, "embedding": 1280, "mlp": 5120},
+        "2B": {"layers": 24, "heads": 32, "embedding": 2560, "mlp": 10240},
+        "6B": {"layers": 32, "heads": 32, "embedding": 4096, "mlp": 16384},
         "g": {"layers": 40, "heads": 16, "embedding": 1408, "mlp": 6144},
         "G": {"layers": 48, "heads": 16, "embedding": 1664, "mlp": 8192},
         "e": {"layers": 56, "heads": 16, "embedding": 1792, "mlp": 15360},
         "22B": {"layers": 48, "heads": 48, "embedding": 6144, "mlp": 24576},
     }
     maes_decoders = {
-        "B": {"layers": 4, "heads": 16, "embedding": 512, "mlp": 2048},
+        "B": {"layers": 8, "heads": 16, "embedding": 512, "mlp": 2048},
     }
 
     mae_configs = {}
@@ -563,6 +565,8 @@ def scaling_mae_ft(
         "B": {"layers": 12, "heads": 12, "embedding": 768, "mlp": 3072},
         "L": {"layers": 24, "heads": 16, "embedding": 1024, "mlp": 4096},
         "H": {"layers": 32, "heads": 16, "embedding": 1280, "mlp": 5120},
+        "2B": {"layers": 24, "heads": 32, "embedding": 2560, "mlp": 10240},
+        "6B": {"layers": 32, "heads": 32, "embedding": 4096, "mlp": 16384},
         "g": {"layers": 40, "heads": 16, "embedding": 1408, "mlp": 6144},
         "G": {"layers": 48, "heads": 16, "embedding": 1664, "mlp": 8192},
         "e": {"layers": 56, "heads": 16, "embedding": 1792, "mlp": 15360},
@@ -751,6 +755,7 @@ def main(args=None):
         models = {
             "ViT":{
                 "S": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
                     "dataset": "ImageNet-21K",
                     "dataset_size": 14197122,
                     "epochs": 7,
@@ -758,6 +763,7 @@ def main(args=None):
                     "batch_size": 4096
                 },
                 "B": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
                     "dataset": "ImageNet-21K",
                     "dataset_size": 14197122,
                     "epochs": 7,
@@ -765,6 +771,7 @@ def main(args=None):
                     "batch_size": 4096
                 },
                 "L": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
                     "dataset": "JFT-300M",
                     "dataset_size": 303000000,
                     "epochs": 14,
@@ -772,32 +779,39 @@ def main(args=None):
                     "batch_size": 4096
                 },
                 "H": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
                     "dataset": "JFT-300M",
                     "dataset_size": 303000000,
                     "epochs": 14,
                     "steps": 1000000,
                     "batch_size": 4096
                 },
-                "g": {"dataset": "JFT-1B",
-                      "dataset_size": 3000000000,
-                      "epochs": 4000000 * 4096 / 3000000000,
-                      "steps": 4000000,
-                      "batch_size": 4096
+                "g": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
+                    "dataset": "JFT-1B",
+                    "dataset_size": 3000000000,
+                    "epochs": 4000000 * 4096 / 3000000000,
+                    "steps": 4000000,
+                    "batch_size": 4096
                 },
                 "G": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
                     "dataset": "JFT-3B",
                     "dataset_size": 3000000000,
                     "epochs": 5000000 * 4096 / 3000000000,
                     "steps": 5000000,
                     "batch_size": 4096
                 },
-                "e": {"dataset": "JFT-3B",
-                      "dataset_size": 3000000000,
-                      "epochs": 1000000 * 16384 / 3000000000,
-                      "steps": 1000000,
-                      "batch_size": 16384
+                "e": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
+                    "dataset": "JFT-3B",
+                    "dataset_size": 3000000000,
+                    "epochs": 1000000 * 16384 / 3000000000,
+                    "steps": 1000000,
+                    "batch_size": 16384
                 },
                 "22B": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
                     "dataset": "JFT-4B",
                     "dataset_size": 4000000000,
                     "epochs": 177000 * 65000 / 4000000000,
@@ -807,73 +821,159 @@ def main(args=None):
             },
             "MAE-SSL":{
                 "S": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
                     "dataset": "ImageNet-1K",
                     "dataset_size": 1281167,
-                    "epochs": 800,
-                    "steps": 1281167 * 800 / 4096,
-                    "batch_size": 4096
+                    "epochs": 1600,
+                    "steps": 1281167 * 1600 / 4096,
+                    "batch_size": 4096,
+                    "mask_ratio": 0.75
                 },
                 "B": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
                     "dataset": "ImageNet-1K",
                     "dataset_size": 1281167,
-                    "epochs": 800,
-                    "steps": 1281167 * 800 / 4096,
-                    "batch_size": 4096
+                    "epochs": 1600,
+                    "steps": 1281167 * 1600 / 4096,
+                    "batch_size": 4096,
+                    "mask_ratio": 0.75
                 },
                 "L": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
                     "dataset": "ImageNet-1K",
                     "dataset_size": 1281167,
-                    "epochs": 800,
-                    "steps": 1281167 * 800 / 4096,
-                    "batch_size": 4096
+                    "epochs": 1600,
+                    "steps": 1281167 * 1600 / 4096,
+                    "batch_size": 4096,
+                    "mask_ratio": 0.75
                 },
                 "H": {
-                    "dataset": "ImageNet-1K",
-                    "dataset_size": 1281167,
-                    "epochs": 800,
-                    "steps": 1281167 * 800 / 4096,
-                    "batch_size": 4096
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
+                    "dataset": "Instagram-3B",
+                    "dataset_size": 3000000000,
+                    "epochs": 1,
+                    "steps": 3000000000 * 1 / 4096,
+                    "batch_size": 4096,
+                    "mask_ratio": 0.75
+                },
+                "2B": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
+                    "dataset": "Instagram-3B",
+                    "dataset_size": 3000000000,
+                    "epochs": 4,
+                    "steps": 3000000000 * 4 / 4096,
+                    "batch_size": 4096,
+                    "mask_ratio": 0.75
+                },
+                "6B": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
+                    "dataset": "Instagram-3B",
+                    "dataset_size": 3000000000,
+                    "epochs": 4,
+                    "steps": 3000000000 * 4 / 4096,
+                    "batch_size": 4096,
+                    "mask_ratio": 0.75
                 },
             },
             "MAE-FT": {
                 "S": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 518, 'x': 518, 'c': 3},
                     "dataset": "ImageNet-1K",
                     "dataset_size": 1281167,
                     "epochs": 50,
-                    "steps": 1281167 * 50 / 4096,
-                    "batch_size": 4096
+                    "steps": 1281167 * 50 / 1024,
+                    "batch_size": 1024
                 },
                 "B": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 518, 'x': 518, 'c': 3},
                     "dataset": "ImageNet-1K",
                     "dataset_size": 1281167,
                     "epochs": 50,
-                    "steps": 1281167 * 50 / 4096,
-                    "batch_size": 4096
+                    "steps": 1281167 * 100 / 1024,
+                    "batch_size": 1024
                 },
                 "L": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 518, 'x': 518, 'c': 3},
                     "dataset": "ImageNet-1K",
                     "dataset_size": 1281167,
                     "epochs": 50,
-                    "steps": 1281167 * 50 / 4096,
-                    "batch_size": 4096
+                    "steps": 1281167 * 50 / 1024,
+                    "batch_size": 1024
                 },
                 "H": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 518, 'x': 518, 'c': 3},
                     "dataset": "ImageNet-1K",
                     "dataset_size": 1281167,
                     "epochs": 50,
-                    "steps": 1281167 * 50 / 4096,
-                    "batch_size": 4096
+                    "steps": 1281167 * 50 / 1024,
+                    "batch_size": 1024
+                },
+                "2B": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 518, 'x': 518, 'c': 3},
+                    "dataset": "ImageNet-1K",
+                    "dataset_size": 1281167,
+                    "epochs": 50,
+                    "steps": 1281167 * 50 / 1024,
+                    "batch_size": 1024
+                },
+                "6B": {
+                    "ishape": {'t': 1, 'z': 1, 'y': 518, 'x': 518, 'c': 3},
+                    "dataset": "ImageNet-1K",
+                    "dataset_size": 1281167,
+                    "epochs": 50,
+                    "steps": 1281167 * 50 / 1024,
+                    "batch_size": 1024
                 },
             }
         }
 
-        df = scaling_vit(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir)
-        vis.plot_published_models(
-            df,
-            outdir=args.outdir,
-            models=models,
-            cost_h100_per_hr=args.cost_h100_per_hr
-        )
+        for m in models.keys():
+            out = args.outdir / m
+            out.mkdir(parents=True, exist_ok=True)
+
+            if m == "ViT":
+                df = scaling_vit(
+                    ishape=models[m]['S']['ishape'],
+                    dtype=args.dtype,
+                    outdir=out
+                )
+            elif m == "MAE-SSL":
+                df = scaling_mae_ssl(
+                    ishape=models[m]['S']['ishape'],
+                    dtype=args.dtype,
+                    outdir=out,
+                    mask_ratio=models[m]['S']['mask_ratio']
+                )
+
+            elif m == "MAE-FT":
+                df = scaling_mae_ft(
+                    ishape=models[m]['S']['ishape'],
+                    dtype=args.dtype,
+                    outdir=out,
+                )
+
+            df = df.loc[df['data'].str.match(r'2D\(rgb\)')]
+
+            for p in [14, 16]:
+                for v, d in models[m].items():
+                    idx = df.loc[df['class'].str.match(f"{v}/{p}")].index
+                    for col, val in d.items():
+                        if col == "ishape":
+                            df.loc[idx, val.keys()] = val.values()
+                        else:
+                            if col not in df.columns:
+                                df[col] = np.nan
+                            df.loc[idx, col] = val
+
+            df.to_csv(out / f"published_models.csv")
+
+            vis.plot_published_models(
+                df,
+                outdir=out,
+                models=models[m],
+                cost_h100_per_hr=args.cost_h100_per_hr
+            )
+
     else:
         summary = args.outdir / "summary"
         summary.mkdir(parents=True, exist_ok=True)

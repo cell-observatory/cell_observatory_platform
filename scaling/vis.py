@@ -452,41 +452,35 @@ def plot_published_models(
     df["training_h100_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
     df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
 
-    df = df.loc[df['data'].str.match(r'2D\(rgb\)')]
+    cols = list(models['S'].keys())
+    df[cols] = np.nan
+    for k in models.keys():
+        idx = df.loc[df['class'].str.match(k)].index
+        df.loc[idx, cols] = models[k].values()
 
-    for m in ['ViT', 'MAE-PT', 'MAE-FT']:
-        cols = list(models[m]['S'].keys())
-        df[cols] = np.nan
-        for k in models[m].keys():
-            idx = df.loc[df['class'].str.match(k)].index
-            df.loc[idx, cols] = models[m][k].values()
+    df["training_volumes"] = df["steps"] * df["batch_size"] // 1000000000  # convert to billions
+    df["dataset_size"] = df["dataset_size"] // 1000000  # convert to millions
+    df["training_compute"] = df[f"training_tflops_per_volume"] * df["batch_size"] * df["steps"]
+    df["training_time"] = df[f"training_time_per_volume"] * df["batch_size"] * df["steps"] / 3600 / 24
+    df["training_cost"] = df[f"training_time"] * cost_h100_per_hr * 24
 
-        df["training_volumes"] = df["steps"] * df["batch_size"] // 1000000000  # convert to billions
-        df["dataset_size"] = df["dataset_size"] // 1000000  # convert to millions
-        df["training_compute"] = df[f"training_tflops_per_volume"] * df["batch_size"] * df["steps"]
-        df["training_time"] = df[f"training_time_per_volume"] * df["batch_size"] * df["steps"] / 3600 / 24
-        df["training_cost"] = df[f"training_time"] * cost_h100_per_hr * 24
+    fois = {
+        f"dataset_size": f"Training dataset size (millions of volumes)",
+        f"training_volumes": f"Training volumes seen (billions)",
+        f"training_time": f"Training H100 days",
+        f"training_compute": f"Training TFLOPs",
+        f"training_cost": f"Training cost",
+    }
 
-        fois = {
-            f"dataset_size": f"Training dataset size (millions of volumes)",
-            f"training_volumes": f"Training volumes seen (billions)",
-            f"training_time": f"Training H100 days",
-            f"training_compute": f"Training TFLOPs",
-            f"training_cost": f"Training cost",
-        }
-
-        out = outdir / m
-        out.mkdir(parents=True, exist_ok=True)
-
-        for y, ylabel in fois.items():
-            plot_parameter_scaling(
-                df,
-                outdir=out,
-                x="parameters",
-                xlabel="Model size (non-embedding parameters)",
-                y=y,
-                ylabel=ylabel,
-                published_models_only=True,
-                ylog=False if y == "dataset_size" or y == "training_volumes" else True,
-                published_models_legend=published_models_legend,
-            )
+    for y, ylabel in fois.items():
+        plot_parameter_scaling(
+            df,
+            outdir=outdir,
+            x="parameters",
+            xlabel="Model size (non-embedding parameters)",
+            y=y,
+            ylabel=ylabel,
+            published_models_only=True,
+            ylog=False if y == "dataset_size" or y == "training_volumes" else True,
+            published_models_legend=published_models_legend,
+        )
