@@ -27,12 +27,17 @@ logger = logging.getLogger(__name__)
 def parse_args(args):
     parser = cli.argparser()
 
+
     parser.add_argument(
-        "--ishape", default={'t': 16, 'z': 128, 'y': 128, 'x': 128, 'c': 3}, type=dict,
+        "--order", default='t-z-y-x-c', help='order of dimensions', type=str,
     )
 
     parser.add_argument(
-        "--ipatch", default={'t': 2, 'z': 16, 'y': 16, 'x': 16, 'c': 3}, type=dict,
+        "--ishape", default='16-128-128-128-3', help='input shape', type=str,
+    )
+
+    parser.add_argument(
+        "--ipatch", default='2-16-16-16-3', help='patch size', type=str,
     )
 
     parser.add_argument("--rgb", action="store_true")
@@ -748,6 +753,14 @@ def main(args=None):
     timeit = time.time()
     args = parse_args(args)
     logger.info(args)
+
+    args.ishape = {
+        o: int(i) for o, i in zip(args.order.split('-'), args.ishape.split('-'))
+    } if isinstance(args.ishape, str) else args.ishape
+
+    args.ipatch = {
+        o: int(i) for o, i in zip(args.order.split('-'), args.ipatch.split('-'))
+    } if isinstance(args.ipatch, str) else args.ipatch
 
     args.outdir.mkdir(parents=True, exist_ok=True)
 
