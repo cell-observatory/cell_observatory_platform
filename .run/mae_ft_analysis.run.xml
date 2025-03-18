@@ -43,7 +43,7 @@
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/scaling/forecast.py" />
-    <option name="PARAMETERS" value="--arch mae_ft --outdir /opt/project/scaling/data/maes/ft --dtype float16 --batch_size 4096 --ishape 32-512-512-512-3" />
+    <option name="PARAMETERS" value="--arch mae_ft --outdir /opt/project/scaling/data/maes/ft --dtype float16 --batch_size 4096" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
