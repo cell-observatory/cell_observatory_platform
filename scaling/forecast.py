@@ -578,7 +578,7 @@ def scaling_mae_ft(
         "22B": {"layers": 48, "heads": 48, "embedding": 6144, "mlp": 24576},
     }
     maes_decoders = {
-        "B": {"layers": 4, "heads": 16, "embedding": 512, "mlp": 2048},
+        "B": {"layers": 8, "heads": 16, "embedding": 512, "mlp": 2048},
     }
 
     mae_configs = {}
