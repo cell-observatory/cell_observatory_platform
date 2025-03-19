@@ -128,7 +128,7 @@ def plot_parameter_scaling(
                     y_text_offset = yy * .25
 
             ax.annotate(
-                d['class'][line].strip('/16'),
+                d['class'][line].rstrip('/16'),
                 (xx, yy),
                 xytext=(xx - x_text_offset, yy + y_text_offset),
                 arrowprops=dict(alpha=0),
@@ -137,8 +137,8 @@ def plot_parameter_scaling(
         if y == 'dataset_size':
             ax.set_ylim(-500, 5000)
 
-        ax.grid(True, which="major", axis='both', lw=.1, ls='-', zorder=0)
-        ax.grid(True, which="minor", axis='both', lw=.05, ls='-', zorder=0)
+        ax.grid(True, which="major", axis='both', lw=.05, ls='-', zorder=0)
+        ax.grid(True, which="minor", axis='both', lw=.01, ls='-', zorder=0)
         ax.set_ylabel(ylabel)
         ax.set_xlabel(xlabel)
 
@@ -344,15 +344,16 @@ def plot_data_parameter_scaling(
                 else:
                     y_text_offset = yy * .25
 
+            label = d['class'][line].strip(f'/{patch_size}')
             ax.annotate(
-                d['class'][line].strip(f'/{patch_size}'),
+                label,
                 (xx, yy),
-                xytext=(xx - x_text_offset, yy + y_text_offset),
+                xytext=(xx - x_text_offset, yy + y_text_offset * (-1 if label == 'G' else 1)),
                 arrowprops=dict(alpha=0),
             )
 
-        ax.grid(True, which="major", axis='both', lw=.1, ls='-', zorder=0)
-        ax.grid(True, which="minor", axis='both', lw=.05, ls='-', zorder=0)
+        ax.grid(True, which="major", axis='both', lw=.05, ls='-', zorder=0)
+        ax.grid(True, which="minor", axis='both', lw=.01, ls='-', zorder=0)
         ax.set_xlabel(xlabel)
 
         if xlog:

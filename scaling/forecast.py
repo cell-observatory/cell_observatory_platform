@@ -417,7 +417,7 @@ def scaling_mae_ssl(
         "22B": {"layers": 48, "heads": 48, "embedding": 6144, "mlp": 24576},
     }
     maes_decoders = {
-        "B": {"layers": 8, "heads": 16, "embedding": 512, "mlp": 2048},
+        "default": {"layers": 8, "heads": 16, "embedding": 512, "mlp": 2048},
     }
 
     mae_configs = {}
@@ -452,10 +452,10 @@ def scaling_mae_ssl(
                 e_embedding = maes_encoders[v]["embedding"]
                 e_mlp = maes_encoders[v]["mlp"]
 
-                d_layers = maes_decoders["B"]["layers"]
-                d_heads = maes_decoders["B"]["heads"]
-                d_embedding = maes_decoders["B"]["embedding"]
-                d_mlp = maes_decoders["B"]["mlp"]
+                d_layers = maes_decoders["default"]["layers"]
+                d_heads = maes_decoders["default"]["heads"]
+                d_embedding = maes_decoders["default"]["embedding"]
+                d_mlp = maes_decoders["default"]["mlp"]
 
                 eparams = profile.encoder_transformer_params(
                     layers=e_layers,
@@ -578,7 +578,7 @@ def scaling_mae_ft(
         "22B": {"layers": 48, "heads": 48, "embedding": 6144, "mlp": 24576},
     }
     maes_decoders = {
-        "B": {"layers": 8, "heads": 16, "embedding": 512, "mlp": 2048},
+        "default": {"layers": 8, "heads": 16, "embedding": 512, "mlp": 2048},
     }
 
     mae_configs = {}
@@ -613,10 +613,10 @@ def scaling_mae_ft(
                 e_embedding = maes_encoders[v]["embedding"]
                 e_mlp = maes_encoders[v]["mlp"]
 
-                d_layers = maes_decoders["B"]["layers"]
-                d_heads = maes_decoders["B"]["heads"]
-                d_embedding = maes_decoders["B"]["embedding"]
-                d_mlp = maes_decoders["B"]["mlp"]
+                d_layers = maes_decoders["default"]["layers"]
+                d_heads = maes_decoders["default"]["heads"]
+                d_embedding = maes_decoders["default"]["embedding"]
+                d_mlp = maes_decoders["default"]["mlp"]
 
                 eparams = profile.encoder_transformer_params(
                     layers=e_layers,
@@ -902,7 +902,7 @@ def main(args=None):
                     "dataset": "ImageNet-1K",
                     "dataset_size": 1281167,
                     "epochs": 50,
-                    "steps": 1281167 * 100 / 1024,
+                    "steps": 1281167 * 50 / 1024,
                     "batch_size": 1024
                 },
                 "L": {
