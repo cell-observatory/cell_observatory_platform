@@ -344,7 +344,7 @@ def plot_data_parameter_scaling(
                 else:
                     y_text_offset = yy * .25
 
-            label = d['class'][line].strip(f'/{patch_size}')
+            label = d['class'][line].rstrip(f'/{patch_size}')
             ax.annotate(
                 label,
                 (xx, yy),
