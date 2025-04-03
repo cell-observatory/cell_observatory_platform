@@ -47,7 +47,7 @@ def parse_args(args):
     )
 
     parser.add_argument(
-        "--arch", type=str, default='vit', choices=["published_models", "vit", "mae_ssl", "mae_ft", "transformer"],
+        "--arch", type=str, default='vit', choices=["powerlaw", "published_models", "vit", "mae_ssl", "mae_ft", "transformer"],
         help='architecture to use'
     )
 
@@ -764,7 +764,10 @@ def main(args=None):
 
     args.outdir.mkdir(parents=True, exist_ok=True)
 
-    if args.arch == "published_models":
+    if args.arch == "powerlaw":
+        vis.plot_powerlaw(args.outdir)
+
+    elif args.arch == "published_models":
         models = {
             "ViT":{
                 "S": {

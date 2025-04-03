@@ -485,3 +485,45 @@ def plot_published_models(
             ylog=False if y == "dataset_size" or y == "training_volumes" else True,
             published_models_legend=published_models_legend,
         )
+
+
+def plot_powerlaw(outdir):
+    plt.rcParams.update({
+        'font.size': 12,
+        'axes.titlesize': 14,
+        'axes.labelsize': 14,
+        'xtick.labelsize': 12,
+        'ytick.labelsize': 12,
+        'legend.fontsize': 12,
+        'axes.autolimit_mode': 'round_numbers'
+    })
+
+    # Generate x values
+    x = np.linspace(1, 1000, 1000)
+
+    exponents = np.arange(0, 3.1, .25).tolist()
+    cmap = plt.get_cmap('nipy_spectral_r')
+    colors = [cmap(i / (len(exponents) - 1)) for i in range(len(exponents))]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # Plot for each exponent
+    for i, a in enumerate(exponents):
+        plt.loglog(x, x ** (-a), label=f'α = {a}' if i % 1 == 0 else '', color=colors[exponents.index(a)])
+
+    ax.set_xlabel('$x$')
+    ax.set_ylabel('$E(x)$')
+
+    ax.legend(title='', loc='lower left', frameon=False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+
+    ax.set_xlim(x.min(), x.max())
+    ax.set_ylim(None, 10 ** 0)
+
+    ax.grid(True, which="major", axis='both', lw=.05, ls='-', zorder=0)
+    plt.savefig(f'{outdir}/powerlaw.pdf', bbox_inches='tight', pad_inches=.25)
+    plt.savefig(f'{outdir}/powerlaw.png', dpi=300, bbox_inches='tight', pad_inches=.25)
+    savesvg(fig, f'{outdir}/powerlaw.svg')
