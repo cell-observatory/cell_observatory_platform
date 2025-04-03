@@ -52,6 +52,7 @@ def plot_parameter_scaling(
     for background in ["default", "dark_background"]:
         plt.style.use(background)
         plt.rcParams.update({
+            'font.family': 'Helvetica',
             'font.size': 12,
             'axes.titlesize': 14,
             'axes.labelsize': 14,
@@ -214,6 +215,7 @@ def plot_data_parameter_scaling(
     for background in ["default", "dark_background"]:
         plt.style.use(background)
         plt.rcParams.update({
+            'font.family': 'Helvetica',
             'font.size': 12,
             'axes.titlesize': 14,
             'axes.labelsize': 14,
@@ -488,42 +490,46 @@ def plot_published_models(
 
 
 def plot_powerlaw(outdir):
-    plt.rcParams.update({
-        'font.size': 12,
-        'axes.titlesize': 14,
-        'axes.labelsize': 14,
-        'xtick.labelsize': 12,
-        'ytick.labelsize': 12,
-        'legend.fontsize': 12,
-        'axes.autolimit_mode': 'round_numbers'
-    })
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
 
-    # Generate x values
-    x = np.linspace(1, 10**6, 1000)
+        plt.rcParams.update({
+            'font.family': 'Helvetica',
+            'font.size': 12,
+            'axes.titlesize': 14,
+            'axes.labelsize': 14,
+            'xtick.labelsize': 12,
+            'ytick.labelsize': 12,
+            'legend.fontsize': 12,
+            'axes.autolimit_mode': 'round_numbers'
+        })
 
-    exponents = np.arange(0, 1.1, .1).tolist()
-    cmap = plt.get_cmap('nipy_spectral_r')
-    colors = [cmap(i / (len(exponents) - 1)) for i in range(len(exponents))]
+        # Generate x values
+        x = np.linspace(1, 10**6, 1000)
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+        exponents = np.arange(0, 1.1, .1).tolist()
+        cmap = plt.get_cmap('nipy_spectral_r')
+        colors = [cmap(i / (len(exponents) - 1)) for i in range(len(exponents))]
 
-    # Plot for each exponent
-    for i, a in enumerate(exponents):
-        plt.loglog(x, x ** (-a), label=f'α={round(a, 2)}', color=colors[exponents.index(a)])
+        fig, ax = plt.subplots(figsize=(8, 6))
 
-    ax.set_xlabel('$x$')
-    ax.set_ylabel('$E(x)$')
+        # Plot for each exponent
+        for i, a in enumerate(exponents):
+            plt.loglog(x, x ** (-a), label=f'α={round(a, 2)}', color=colors[exponents.index(a)])
 
-    ax.legend(title='$ E(x) = x^{{-\\alpha}}$', loc='lower left', frameon=False)
-    ax.spines['right'].set_visible(False)
-    # ax.spines['left'].set_visible(False)
-    ax.spines['top'].set_visible(False)
-    # ax.spines['bottom'].set_visible(False)
+        ax.set_xlabel('$x$')
+        ax.set_ylabel('$E(x)$')
 
-    ax.set_xlim(x.min(), x.max())
-    ax.set_ylim(None, 1)
+        ax.legend(title='$ E(x) = x^{{-\\alpha}}$', loc='lower left', frameon=False)
+        ax.spines['right'].set_visible(False)
+        # ax.spines['left'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+        # ax.spines['bottom'].set_visible(False)
 
-    ax.grid(True, which="major", axis='both', lw=.05, ls='-', zorder=0)
-    plt.savefig(f'{outdir}/powerlaw.pdf', bbox_inches='tight', pad_inches=.25)
-    plt.savefig(f'{outdir}/powerlaw.png', dpi=300, bbox_inches='tight', pad_inches=.25)
-    savesvg(fig, f'{outdir}/powerlaw.svg')
+        ax.set_xlim(x.min(), x.max())
+        ax.set_ylim(None, 1)
+
+        ax.grid(True, which="major", axis='both', lw=.05, ls='-', zorder=0)
+        plt.savefig(f'{outdir}/powerlaw_{background}.pdf', bbox_inches='tight', pad_inches=.25)
+        plt.savefig(f'{outdir}/powerlaw_{background}.png', dpi=300, bbox_inches='tight', pad_inches=.25)
+        savesvg(fig, f'{outdir}/powerlaw_{background}.svg')
