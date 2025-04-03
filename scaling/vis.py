@@ -509,12 +509,12 @@ def plot_powerlaw(outdir):
 
     # Plot for each exponent
     for i, a in enumerate(exponents):
-        plt.loglog(x, x ** (-a), label=f'α = {a}' if i % 1 == 0 else '', color=colors[exponents.index(a)])
+        plt.loglog(x, x ** (-a), label=f'α={round(a, 2)}', color=colors[exponents.index(a)])
 
     ax.set_xlabel('$x$')
     ax.set_ylabel('$E(x)$')
 
-    ax.legend(title='', loc='lower left', frameon=False)
+    ax.legend(title='$ E(x) = x^{{-\\alpha}}$', loc='lower left', frameon=False)
     ax.spines['right'].set_visible(False)
     ax.spines['left'].set_visible(False)
     ax.spines['top'].set_visible(False)
