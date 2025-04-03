@@ -529,6 +529,29 @@ def plot_powerlaw(outdir):
         ax.set_xlim(x.min(), x.max())
         ax.set_ylim(None, 1)
 
+
+        ax.annotate(
+            '',
+            xy=(.2, .01),
+            xytext=(.2, .6),
+            xycoords='axes fraction',
+            textcoords='axes fraction',
+            arrowprops=dict(arrowstyle='->', color='black', linewidth=2),
+            ha='center', va='center',
+            rotation=90
+        )
+
+        ax.annotate(
+            'Faster rates of diminishing returns',
+            xy=(.22, .01),
+            xytext=(.22, .3),
+            xycoords='axes fraction',
+            textcoords='axes fraction',
+            ha='center', va='center',
+            rotation=270,
+            fontsize=10
+        )
+
         ax.grid(True, which="major", axis='both', lw=.05, ls='-', zorder=0)
         plt.savefig(f'{outdir}/powerlaw_{background}.pdf', bbox_inches='tight', pad_inches=.25)
         plt.savefig(f'{outdir}/powerlaw_{background}.png', dpi=300, bbox_inches='tight', pad_inches=.25)
