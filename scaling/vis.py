@@ -499,9 +499,9 @@ def plot_powerlaw(outdir):
     })
 
     # Generate x values
-    x = np.linspace(1, 1000, 1000)
+    x = np.linspace(1, 10**6, 1000)
 
-    exponents = np.arange(0, 3.1, .25).tolist()
+    exponents = np.arange(0, 1.1, .1).tolist()
     cmap = plt.get_cmap('nipy_spectral_r')
     colors = [cmap(i / (len(exponents) - 1)) for i in range(len(exponents))]
 
@@ -516,12 +516,12 @@ def plot_powerlaw(outdir):
 
     ax.legend(title='$ E(x) = x^{{-\\alpha}}$', loc='lower left', frameon=False)
     ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(False)
+    # ax.spines['left'].set_visible(False)
     ax.spines['top'].set_visible(False)
-    ax.spines['bottom'].set_visible(False)
+    # ax.spines['bottom'].set_visible(False)
 
     ax.set_xlim(x.min(), x.max())
-    ax.set_ylim(None, 10 ** 0)
+    ax.set_ylim(None, 1)
 
     ax.grid(True, which="major", axis='both', lw=.05, ls='-', zorder=0)
     plt.savefig(f'{outdir}/powerlaw.pdf', bbox_inches='tight', pad_inches=.25)
