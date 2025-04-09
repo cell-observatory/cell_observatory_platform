@@ -513,14 +513,30 @@ def plot_powerlaw(outdir):
         colors = [cmap(i / (len(exponents) - 1)) for i in range(len(exponents))]
 
         fig, (ax, axe) = plt.subplots(figsize=(14, 6), ncols=2)
+        opt = 7
+        epsilon = 2
 
         # Plot for each exponent
         for i, a in enumerate(exponents):
             lx = x ** (-a)
             ex = 100 * x ** (-a)
 
-            ax.loglog(x, lx, label=f'α={round(a, 2)}', color=colors[exponents.index(a)])
-            axe.loglog(x, ex, color=colors[exponents.index(a)])
+            ax.loglog(x, lx, label=f'α={round(a, 2)}', color=colors[i])
+            axe.loglog(x, ex, color=colors[i])
+
+            intersection_x = (opt / 100) ** (-1 / a) if a != 0 else float('inf')
+            if x.min() <= intersection_x <= x.max():
+                axe.annotate(
+                    f'Diminishing returns for $x \\to \infty$' if a == .2 else f'',
+                    xy=(intersection_x, opt),
+                    xytext=(0, -45) if a == .2 else (0, -35),
+                    textcoords='offset points',
+                    arrowprops=dict(arrowstyle='->', color=colors[i]),
+                    color=colors[i],
+                    ha='center',
+                    va='center',
+                    zorder=15
+                )
 
         ax.set_xlabel('$x$')
         axe.set_xlabel('$x$')
@@ -536,13 +552,17 @@ def plot_powerlaw(outdir):
         axe.set_xlim(x.min(), x.max())
         ax.set_ylim(None, 1)
         axe.set_ylim(1, 100)
-        axe.set_yticks([1, 2, 3, 4, 5, 10, 20, 30, 40, 50, 60, 80, 100])
-        axe.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, loc: "{:.0f}%".format(x)))
+        axe.set_yticks([1, 2, 3, 4, 5, 6, 7 , 8, 9, 10, 20, 30, 40, 50, 60, 80, 100])
+        axe.set_yticklabels(['0', '$\\epsilon$', '', '', '', '', '$x_{opt}$', '', '', '10', '20', '30', '40', '50', '60', '80', '100'])
 
-        axe.fill_between(x, 0, 5, zorder=10, hatch='/')
-        axe.axhline(5, color='black', linestyle='--', zorder=10)
+        axe.fill_between(x, epsilon, opt, zorder=10, color='whitesmoke', alpha=.95)
+        axe.axhline(opt, color='k', linestyle='--', zorder=10)
+        axe.fill_between(x, 0, epsilon, zorder=10, hatch='/')
+        axe.axhline(epsilon, color='k', linestyle=':', zorder=10)
+
+
         ax.legend(title='$L(x) = x^{{-\\alpha}}$', loc='lower left', frameon=False)
-        axe.legend(title='$E(x) = 100 \\times x^{{-\\alpha}}$', loc='upper right', frameon=False)
+        axe.legend(title='$E(x) = x^{{-\\alpha}}$', loc='upper right', frameon=False)
         ax.annotate(
             '',
             xy=(.26, .01),
@@ -550,7 +570,8 @@ def plot_powerlaw(outdir):
             xycoords='axes fraction',
             textcoords='axes fraction',
             arrowprops=dict(arrowstyle='->', color='black', linewidth=2),
-            ha='center', va='center',
+            ha='center',
+            va='center',
             rotation=90
         )
         ax.annotate(
@@ -559,24 +580,25 @@ def plot_powerlaw(outdir):
             xytext=(.28, .3),
             xycoords='axes fraction',
             textcoords='axes fraction',
-            ha='center', va='center',
+            ha='center',
+            va='center',
             rotation=270,
             fontsize=10
         )
         axe.annotate(
-            'Irreducible error $\epsilon$',
+            'Irreducible error $\\epsilon$',
             xy=(.5, .01),
-            xytext=(.5, .2),
+            xytext=(.5, .17),
             xycoords='axes fraction',
             textcoords='axes fraction',
-            color='white',
+            color='k',
             ha='center',
             va='center',
             zorder=10,
-            fontsize=16
+            fontsize=12
         )
-
-        ax.grid(True, which="major", axis='both', lw=.05, ls='-', zorder=0)
+        ax.grid(True, which="both", axis='both', lw=.05, ls='-', zorder=0)
+        axe.grid(True, which="both", axis='both', lw=.05, ls='-', zorder=0)
         plt.savefig(f'{outdir}/powerlaw_{background}.pdf', bbox_inches='tight', pad_inches=.25)
         plt.savefig(f'{outdir}/powerlaw_{background}.png', dpi=300, bbox_inches='tight', pad_inches=.25)
         savesvg(fig, f'{outdir}/powerlaw_{background}.svg')
