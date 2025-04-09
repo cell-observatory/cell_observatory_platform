@@ -501,55 +501,79 @@ def plot_powerlaw(outdir):
             'xtick.labelsize': 12,
             'ytick.labelsize': 12,
             'legend.fontsize': 12,
-            'axes.autolimit_mode': 'round_numbers'
+            'axes.autolimit_mode': 'round_numbers',
+            'hatch.color': 'k'
         })
 
         # Generate x values
-        x = np.linspace(1, 10**6, 1000)
+        x = np.linspace(1, 10**12, 1000)
 
         exponents = np.arange(0, 1.1, .1).tolist()
         cmap = plt.get_cmap('nipy_spectral_r')
         colors = [cmap(i / (len(exponents) - 1)) for i in range(len(exponents))]
 
-        fig, ax = plt.subplots(figsize=(8, 6))
+        fig, (ax, axe) = plt.subplots(figsize=(14, 6), ncols=2)
 
         # Plot for each exponent
         for i, a in enumerate(exponents):
-            plt.loglog(x, x ** (-a), label=f'α={round(a, 2)}', color=colors[exponents.index(a)])
+            lx = x ** (-a)
+            ex = 100 * x ** (-a)
+
+            ax.loglog(x, lx, label=f'α={round(a, 2)}', color=colors[exponents.index(a)])
+            axe.loglog(x, ex, color=colors[exponents.index(a)])
 
         ax.set_xlabel('$x$')
-        ax.set_ylabel('$E(x)$')
+        axe.set_xlabel('$x$')
+        ax.set_ylabel('Pretraining $L(x)$')
+        axe.set_ylabel('Benchmark $E(x)$')
 
-        ax.legend(title='$ E(x) = x^{{-\\alpha}}$', loc='lower left', frameon=False)
         ax.spines['right'].set_visible(False)
-        # ax.spines['left'].set_visible(False)
+        axe.spines['right'].set_visible(False)
         ax.spines['top'].set_visible(False)
-        # ax.spines['bottom'].set_visible(False)
+        axe.spines['top'].set_visible(False)
 
         ax.set_xlim(x.min(), x.max())
+        axe.set_xlim(x.min(), x.max())
         ax.set_ylim(None, 1)
+        axe.set_ylim(1, 100)
+        axe.set_yticks([1, 2, 3, 4, 5, 10, 20, 30, 40, 50, 60, 80, 100])
+        axe.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, loc: "{:.0f}%".format(x)))
 
-
+        axe.fill_between(x, 0, 5, zorder=10, hatch='/')
+        axe.axhline(5, color='black', linestyle='--', zorder=10)
+        ax.legend(title='$L(x) = x^{{-\\alpha}}$', loc='lower left', frameon=False)
+        axe.legend(title='$E(x) = 100 \\times x^{{-\\alpha}}$', loc='upper right', frameon=False)
         ax.annotate(
             '',
-            xy=(.2, .01),
-            xytext=(.2, .6),
+            xy=(.26, .01),
+            xytext=(.26, .6),
             xycoords='axes fraction',
             textcoords='axes fraction',
             arrowprops=dict(arrowstyle='->', color='black', linewidth=2),
             ha='center', va='center',
             rotation=90
         )
-
         ax.annotate(
             'Faster rates of diminishing returns',
-            xy=(.22, .01),
-            xytext=(.22, .3),
+            xy=(.28, .01),
+            xytext=(.28, .3),
             xycoords='axes fraction',
             textcoords='axes fraction',
             ha='center', va='center',
             rotation=270,
             fontsize=10
+        )
+        axe.annotate(
+            'Irreducible error $\epsilon$',
+            xy=(.5, .01),
+            xytext=(.5, .2),
+            xycoords='axes fraction',
+            textcoords='axes fraction',
+            color='white',
+            ha='center',
+            va='center',
+            zorder=10,
+            fontsize=16
         )
 
         ax.grid(True, which="major", axis='both', lw=.05, ls='-', zorder=0)
