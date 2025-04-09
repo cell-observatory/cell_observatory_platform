@@ -513,8 +513,9 @@ def plot_powerlaw(outdir):
         colors = [cmap(i / (len(exponents) - 1)) for i in range(len(exponents))]
 
         fig, (ax, axe) = plt.subplots(figsize=(14, 6), ncols=2)
-        opt = 7
+        opt = 6
         epsilon = 2
+        baseline = 6
 
         # Plot for each exponent
         for i, a in enumerate(exponents):
@@ -523,6 +524,37 @@ def plot_powerlaw(outdir):
 
             ax.loglog(x, lx, label=f'α={round(a, 2)}', color=colors[i])
             axe.loglog(x, ex, color=colors[i])
+
+            # Annotate value of every major tick for a = 0.1
+            if a == 0.1:
+                for xx in range(baseline, 14, 1):
+                    bvv = 100 * (10**baseline)**(-a)
+                    vv = 100 * (10**xx)**(-a)
+                    ifold = bvv / vv
+                    xfold = 10**xx / 10**baseline
+
+                    axe.scatter(10**xx, vv, color=colors[i], zorder=30)
+                    axe.annotate(
+                        f'$\\times${ifold:.1f}',
+                        xy=(10**xx, vv),
+                        xytext=(5, 15),
+                        textcoords='offset points',
+                        ha='center',
+                        va='center',
+                        color=colors[i],
+                        zorder=20
+                    )
+                    # axe.annotate(
+                    #     f'$\\times10^{{{np.log10(xfold):.0f}}}x$' if xx >= 9 else f'$\\times{xfold:.0f}x$',
+                    #     xy=(10**xx, vv),
+                    #     xytext=(5, 30),
+                    #     textcoords='offset points',
+                    #     ha='center',
+                    #     va='center',
+                    #     color='k',
+                    #     zorder=20
+                    # )
+                    axe.vlines(10**xx, 0, vv, color='gray', linestyle='--', linewidth=0.5, zorder=20)
 
             intersection_x = (opt / 100) ** (-1 / a) if a != 0 else float('inf')
             if x.min() <= intersection_x <= x.max():
@@ -553,9 +585,9 @@ def plot_powerlaw(outdir):
         ax.set_ylim(None, 1)
         axe.set_ylim(1, 100)
         axe.set_yticks([1, 2, 3, 4, 5, 6, 7 , 8, 9, 10, 20, 30, 40, 50, 60, 80, 100])
-        axe.set_yticklabels(['0', '$\\epsilon$', '', '', '', '', '$x_{opt}$', '', '', '10', '20', '30', '40', '50', '60', '80', '100'])
+        axe.set_yticklabels(['0', '$\\epsilon$', '', '', '', '$x_{opt}$', '', '', '', '10', '20', '30', '40', '50', '60', '80', '100'])
 
-        axe.fill_between(x, epsilon, opt, zorder=10, color='whitesmoke', alpha=.95)
+        axe.fill_between(x, epsilon, opt, zorder=10, color='whitesmoke')
         axe.axhline(opt, color='k', linestyle='--', zorder=10)
         axe.fill_between(x, 0, epsilon, zorder=10, hatch='/')
         axe.axhline(epsilon, color='k', linestyle=':', zorder=10)
