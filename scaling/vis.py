@@ -505,9 +505,7 @@ def plot_powerlaw(outdir):
             'hatch.color': 'k'
         })
 
-        # Generate x values
-        x = np.linspace(1, 10**12, 1000)
-
+        x = np.logspace(0, 12, 10)
         exponents = np.arange(0, 1.1, .1).tolist()
         cmap = plt.get_cmap('nipy_spectral_r')
         colors = [cmap(i / (len(exponents) - 1)) for i in range(len(exponents))]
@@ -522,10 +520,29 @@ def plot_powerlaw(outdir):
             lx = x ** (-a)
             ex = 100 * x ** (-a)
 
+            try:
+                idx = sum(ex <= opt-1)
+                if idx > 0:
+                    ex[len(x)-idx:] = (opt - 1) + np.random.rand(idx)
+
+                    if a == .2:
+                        axe.annotate(
+                            f'Diminishing returns for $x \\to \infty$' if a == .2 else f'',
+                            xy=(x[idx], opt),
+                            xytext=(0, -45) if a == .2 else (0, -35),
+                            textcoords='offset points',
+                            arrowprops=dict(arrowstyle='->', color=colors[i]),
+                            color=colors[i],
+                            ha='center',
+                            va='center',
+                            zorder=15
+                        )
+            except IndexError:
+                pass
+
             ax.loglog(x, lx, label=f'α={round(a, 2)}', color=colors[i])
             axe.loglog(x, ex, color=colors[i])
 
-            # Annotate value of every major tick for a = 0.1
             if a == 0.1:
                 for xx in range(baseline, 14, 1):
                     bvv = 100 * (10**baseline)**(-a)
@@ -556,20 +573,6 @@ def plot_powerlaw(outdir):
                     # )
                     axe.vlines(10**xx, 0, vv, color='gray', linestyle='--', linewidth=0.5, zorder=20)
 
-            intersection_x = (opt / 100) ** (-1 / a) if a != 0 else float('inf')
-            if x.min() <= intersection_x <= x.max():
-                axe.annotate(
-                    f'Diminishing returns for $x \\to \infty$' if a == .2 else f'',
-                    xy=(intersection_x, opt),
-                    xytext=(0, -45) if a == .2 else (0, -35),
-                    textcoords='offset points',
-                    arrowprops=dict(arrowstyle='->', color=colors[i]),
-                    color=colors[i],
-                    ha='center',
-                    va='center',
-                    zorder=15
-                )
-
         ax.set_xlabel('$x$')
         axe.set_xlabel('$x$')
         ax.set_ylabel('Pretraining $L(x)$')
@@ -585,46 +588,57 @@ def plot_powerlaw(outdir):
         ax.set_ylim(None, 1)
         axe.set_ylim(1, 100)
         axe.set_yticks([1, 2, 3, 4, 5, 6, 7 , 8, 9, 10, 20, 30, 40, 50, 60, 80, 100])
-        axe.set_yticklabels(['0', '$\\epsilon$', '', '', '', '$x_{opt}$', '', '', '', '10', '20', '30', '40', '50', '60', '80', '100'])
+        axe.set_yticklabels(['0', '$\\epsilon$', '', '', '', '', '', '', '', '10', '20', '30', '40', '50', '60', '80', '100'])
 
-        axe.fill_between(x, epsilon, opt, zorder=10, color='whitesmoke')
-        axe.axhline(opt, color='k', linestyle='--', zorder=10)
+        axe.fill_between(x, epsilon, opt, zorder=10, color='whitesmoke', alpha=.5)
+        axe.axhline(opt+.25, color='k', linestyle='--', zorder=10)
         axe.fill_between(x, 0, epsilon, zorder=10, hatch='/')
         axe.axhline(epsilon, color='k', linestyle=':', zorder=10)
 
 
         ax.legend(title='$L(x) = x^{{-\\alpha}}$', loc='lower left', frameon=False)
-        axe.legend(title='$E(x) = x^{{-\\alpha}}$', loc='upper right', frameon=False)
-        ax.annotate(
-            '',
-            xy=(.26, .01),
-            xytext=(.26, .6),
+        axe.legend(title='$E(x) = 100 \\cdot x^{{-\\alpha}}$', loc='upper right', frameon=False)
+        # ax.annotate(
+        #     '',
+        #     xy=(.26, .01),
+        #     xytext=(.26, .6),
+        #     xycoords='axes fraction',
+        #     textcoords='axes fraction',
+        #     arrowprops=dict(arrowstyle='->', color='black', linewidth=2),
+        #     ha='center',
+        #     va='center',
+        #     rotation=90
+        # )
+        # ax.annotate(
+        #     'Faster rates of diminishing returns',
+        #     xy=(.28, .01),
+        #     xytext=(.28, .3),
+        #     xycoords='axes fraction',
+        #     textcoords='axes fraction',
+        #     ha='center',
+        #     va='center',
+        #     rotation=270,
+        #     fontsize=10
+        # )
+        axe.annotate(
+            'Saturation',
+            xy=(-.03, .01),
+            xytext=(-.03, .3),
             xycoords='axes fraction',
             textcoords='axes fraction',
-            arrowprops=dict(arrowstyle='->', color='black', linewidth=2),
             ha='center',
             va='center',
-            rotation=90
-        )
-        ax.annotate(
-            'Faster rates of diminishing returns',
-            xy=(.28, .01),
-            xytext=(.28, .3),
-            xycoords='axes fraction',
-            textcoords='axes fraction',
-            ha='center',
-            va='center',
-            rotation=270,
+            rotation=90,
             fontsize=10
         )
         axe.annotate(
-            'Irreducible error $\\epsilon$',
-            xy=(.5, .01),
-            xytext=(.5, .17),
+            'Irreducible error',
+            xy=(.01, .01),
+            xytext=(.01, .17),
             xycoords='axes fraction',
             textcoords='axes fraction',
             color='k',
-            ha='center',
+            ha='left',
             va='center',
             zorder=10,
             fontsize=12
