@@ -515,7 +515,6 @@ def plot_powerlaw(outdir):
         epsilon = 2
         baseline = 6
 
-        # Plot for each exponent
         for i, a in enumerate(exponents):
             lx = x ** (-a)
             ex = 100 * x ** (-a)
@@ -648,3 +647,66 @@ def plot_powerlaw(outdir):
         plt.savefig(f'{outdir}/powerlaw_{background}.pdf', bbox_inches='tight', pad_inches=.25)
         plt.savefig(f'{outdir}/powerlaw_{background}.png', dpi=300, bbox_inches='tight', pad_inches=.25)
         savesvg(fig, f'{outdir}/powerlaw_{background}.svg')
+
+
+def plot_gpt_vit(outdir):
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
+
+        plt.rcParams.update({
+            'font.family': 'Helvetica',
+            'font.size': 12,
+            'axes.titlesize': 14,
+            'axes.labelsize': 14,
+            'xtick.labelsize': 12,
+            'ytick.labelsize': 12,
+            'legend.fontsize': 12,
+            'axes.autolimit_mode': 'round_numbers',
+            'hatch.color': 'k'
+        })
+
+        x = np.logspace(0, 12, 10)
+
+        fig, (ax, axg, axe) = plt.subplots(figsize=(18, 6), ncols=3)
+
+        ax.loglog(x, (x/2.3*10**8) ** (-0.048), label='$L = {\dfrac{C}{2.3 \cdot 10^{8}}}^{{-0.048}}$', color='C0')
+        axg.loglog(x, 2.64 + (x / 1.6 * 10 ** -8) ** (-0.16), label='$L = 2.64 + {\dfrac{C}{1.6 \cdot 10^{-8}}}^{{-0.16}}$', color='C1')
+        axe.loglog(x, 100 * (0.09 + 0.26 * (x + 0.01) ** (-0.35)), label='$E = 0.09 + 0.26 (C + 0.01)^{{-0.35}}$', color='C2')
+
+        axe.set_ylabel('ImageNet finetune error rate (%)')
+        axe.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}%'))
+
+        ax.set_xlabel('Compute')
+        axg.set_xlabel('Compute')
+        axe.set_xlabel('Compute')
+        ax.set_ylabel('Loss')
+        axg.set_ylabel('Loss')
+        axe.set_ylabel('ImageNet finetune error rate')
+
+        ax.spines['right'].set_visible(False)
+        axg.spines['right'].set_visible(False)
+        axe.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+        axg.spines['top'].set_visible(False)
+        axe.spines['top'].set_visible(False)
+
+        ax.set_xlim(x.min(), x.max())
+        axe.set_xlim(x.min(), x.max())
+        ax.set_ylim(10**-1, 1)
+
+        axg.set_ylim(1, 10**2)
+
+        axe.set_yticks([5, 6, 7, 8, 9, 10, 20, 30, 40, 50])
+        axe.set_ylim(5, 50)
+
+        ax.legend(title="GPT [Kaplan et al. 2020] (Language)",loc='upper left', frameon=False)
+        axg.legend(title="GPT [Henighan et al. 2020] (Image/16)", loc='upper left', frameon=False)
+        axe.legend(title="ViT [Zhai et al. 2022] (Image/16)", loc='upper left', frameon=False)
+
+        ax.grid(True, which="both", axis='both', lw=.05, ls='-', zorder=0)
+        axg.grid(True, which="both", axis='both', lw=.05, ls='-', zorder=0)
+        axe.grid(True, which="both", axis='both', lw=.05, ls='-', zorder=0)
+
+        plt.savefig(f'{outdir}/gpt_vit_{background}.pdf', bbox_inches='tight', pad_inches=.25)
+        plt.savefig(f'{outdir}/gpt_vit_{background}.png', dpi=300, bbox_inches='tight', pad_inches=.25)
+        savesvg(fig, f'{outdir}/gpt_vit_{background}.svg')
