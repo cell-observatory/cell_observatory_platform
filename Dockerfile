@@ -2,8 +2,10 @@
 # docker buildx build . --tag ghcr.io/cell-observatory/platform:main_torch_cuda_12_8 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8 --progress=plain --no-cache-filter pip_install
 #
 # to run on a ubuntu system:
+# install nvidia driver (distro=ubuntu2204 && arch=x86_64 && arch_ext=amd64) then follow https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/index.html#ubuntu-installation and Network Repository Installation
 # install docker: https://docs.docker.com/engine/install/ubuntu/
 # set docker permissions for non-root: https://docs.docker.com/engine/install/linux-postinstall/ 
+# install apptainer latest version from https://apptainer.org/docs/admin/main/installation.html#install-debian-packages  older version from here https://apptainer.org/docs/admin/main/installation.html#install-ubuntu-packages  
 # install nvidia container toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
 # install github self-hosted runner: https://github.com/cell-observatory/platform/settings/actions/runners/new?arch=x64&os=linux
 # make github self-hosted runner as a service: https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/configuring-the-self-hosted-runner-application-as-a-service
@@ -27,7 +29,7 @@
 # https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/rel-25-01.html#rel-25-01
 
 # for CUDA 12.x
-FROM nvcr.io/nvidia/pytorch:25.01-py3 as base
+FROM nvcr.io/nvidia/pytorch:25.01-py3 AS base
 ENV RUNNING_IN_DOCKER=TRUE
 
 # Make bash colorful https://www.baeldung.com/linux/docker-container-colored-bash-output   https://ss64.com/nt/syntax-ansi.html 

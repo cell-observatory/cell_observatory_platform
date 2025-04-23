@@ -147,3 +147,16 @@ test_data
 scope_psf
 SyntheticPSFCache/
 *.npy
+examples/DM_State_510nm.csv
+src/pycharm.lnk
+src/LabVIEW_Shortcut.lnk
+src/LV_auto_batch.bat
+login.bat
+*.bat
+/scope_psf
+src/LV_auto_batch.bat_predict_rois
+/SyntheticPSFCache/
+/benchmarks/
+/scaling/
+*.npy
+.testmondata

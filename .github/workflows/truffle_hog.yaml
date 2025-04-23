@@ -5,9 +5,13 @@ on:
     push:
       branches:
         - main
-        - feature/add_truffle_hog_github_action  
+        - feature/add_truffle_hog_github_action
+
+    
 jobs:
     scan_for_secrets:
+        permissions:
+          contents: read
         runs-on: ubuntu-latest
         steps:
         - name: Checkout code
