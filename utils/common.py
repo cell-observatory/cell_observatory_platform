@@ -372,3 +372,31 @@ def load_pickle(path):
 def save_pickle(x, path):
     with open(path, 'wb') as f:
         pickle.dump(x, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def savesvg(
+    fig: plt.Figure,
+    savepath: Union[Path, str],
+    top: float = 0.9,
+    bottom: float = 0.1,
+    left: float = 0.1,
+    right: float = 0.9,
+    hspace: float = 0.35,
+    wspace: float = 0.1
+):
+
+    plt.subplots_adjust(top=top, bottom=bottom, left=left, right=right, hspace=hspace, wspace=wspace)
+    plt.savefig(savepath, bbox_inches='tight', dpi=300, pad_inches=.25)
+
+    if Path(savepath).suffix == '.svg':
+        # Read in the file
+        with open(savepath, 'r', encoding="utf-8") as f:
+            filedata = f.read()
+
+        # Replace the target string
+        filedata = re.sub('height="[0-9]+(\.[0-9]+)pt"', '', filedata)
+        filedata = re.sub('width="[0-9]+(\.[0-9]+)pt"', '', filedata)
+
+        # Write the file out again
+        with open(savepath, 'w', encoding="utf-8") as f:
+            f.write(filedata)
