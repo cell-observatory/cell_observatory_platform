@@ -10,6 +10,7 @@ line-profiler==4.2.0
 line-profiler-pycharm==1.2.0
 matplotlib==3.8.1
 numba==0.60.0
+numpy==1.26.4
 nvidia-pyindex==1.0.9
 nvidia-pytriton==0.5.14
 nvitop
@@ -27,7 +28,9 @@ ray[all]==2.44.1
 scikit-image==0.25.2
 scikit-learn==1.6.1
 scikit-spatial==8.1.0
+scipy==1.14.1
 seaborn==0.13.2
+setuptools==79.0.1
 supabase==2.13.0
 tensorstore==0.1.72
 tifffile==2023.9.18
