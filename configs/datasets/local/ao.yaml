@@ -1,0 +1,24 @@
+name: test_training_dataset
+datadir: /opt/project/dataset/training/YuMB_lambda510/z64-y64-x64/z15
+
+input_shape: [6, 64, 64, 1]
+split: null
+
+modes: 15
+distribution: '/'
+embedding_option: 'spatial_planes'
+filename_pattern: '*[!_gt|!_realspace|!_noisefree|!_predictions_psf|!_corrected_psf|!_reconstructed_psf].tif'
+max_amplitude: 1.0
+photons_range: [1, 10000000]
+npoints_range: [1, 5]
+input_coverage: 1.0
+
+metadata: false # (img & zern) else (amps, photons, counts, peak2peak, umRMS, npoints, avg_min_distance, filename)
+lls_defocus: false
+defocus_only: false
+
+iotf: null
+return_dataloader: true
+samplelimit: null
+collate_fn: null
+dtype: fp16

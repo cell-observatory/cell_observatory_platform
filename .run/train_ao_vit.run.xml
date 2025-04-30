@@ -1,6 +1,6 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="train_convnext" type="PythonConfigurationType" factoryName="Python" folderName="train">
-    <module name="opticalaberrations" />
+  <configuration default="false" name="train_ao_vit" type="PythonConfigurationType" factoryName="Python" folderName="train">
+    <module name="platform" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
     <option name="PARENT_ENVS" value="true" />
@@ -8,9 +8,8 @@
       <env name="PYTHONUNBUFFERED" value="1" />
     </envs>
     <option name="SDK_HOME" value="" />
-    <option name="SDK_NAME" value="Remote Python 3.12.3 Docker (ghcr.io/cell-observatory/platform:develop_torch_cuda_12_8)" />
-    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/src" />
-    <option name="IS_MODULE_SDK" value="false" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <option name="IS_MODULE_SDK" value="true" />
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <EXTENSION ID="DockerContainerSettingsRunConfigurationExtension">
@@ -43,8 +42,8 @@
       </option>
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
-    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/train.py" />
-    <option name="PARAMETERS" value="--epochs 5 --warmup 2 --cooldown 1 --batch_size 512 --modes 15 --network convnext-base --outdir /opt/project/pretrained_models/baseline-base --dataset /opt/project/dataset/training/YuMB_lambda510/z64-y64-x64/z15 --gpu_workers 2 --cpu_workers 32" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/training/train.py" />
+    <option name="PARAMETERS" value="--config-name ao_vit.yaml clusters=local/supernova" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
