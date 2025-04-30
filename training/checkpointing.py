@@ -14,15 +14,7 @@ from torch.optim import Optimizer
 from deepspeed.runtime.engine import DeepSpeedEngine
 from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
 
-_DTYPES = {
-    "float32": torch.float32,
-    "fp32": torch.float32,
-    "float16": torch.float16,
-    "fp16": torch.float16,
-    "bfloat16": torch.bfloat16,
-    "bf16": torch.bfloat16,
-}
-
+from data.data_types import TORCH_DTYPES
 
 def _strip_prefix(state_dict: dict, prefix: str = "module.") -> dict:
     """
@@ -64,11 +56,11 @@ def load_checkpoint(
 
     if dtype is not None:
         try:
-            target_dtype = _DTYPES[dtype]
+            target_dtype = TORCH_DTYPES[dtype]
         except KeyError:
-            raise ValueError(f"Unsupported dtype '{dtype}'. Valid: {list(_DTYPES)}")
+            raise ValueError(f"Unsupported dtype '{dtype}'. Valid: {list(TORCH_DTYPES)}")
 
-    if getattr(config.deepspeed_config.zero_optimization, "stage", None) == 3:
+    if getattr(config.deepspeed.zero_optimization, "stage", None) == 3:
         # load_checkpoint returns a tuple (load_dir, client_states) with load_dir
         # not being None if the checkpoint was loaded successfully
         load_path, _ = model_engine.load_checkpoint(checkpointdir, tag=f"{ckpt_suffix}_model")
