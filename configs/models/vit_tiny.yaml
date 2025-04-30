@@ -1,0 +1,16 @@
+_target_: models.vit.ViT
+input_shape: [1, 6, 64, 64, 1]
+modes: 15
+lateral_patch_size: 16
+axial_patch_size: 1
+embed_dim: 192
+depth: 12
+num_heads: 3
+mlp_ratio: 4.0
+proj_drop_rate: 0.0
+att_drop_rate: 0.0
+drop_path_rate: 0.1
+init_std: 0.02
+fixed_dropout_depth: false
+global_pool: 'avgmax'
+use_conv_proj: false

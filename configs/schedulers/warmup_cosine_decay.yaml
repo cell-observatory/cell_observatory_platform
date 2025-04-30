@@ -1,0 +1,4 @@
+epochs: 500
+warmup: 25
+cooldown: 50
+fixedlr: false
