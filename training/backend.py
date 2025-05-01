@@ -458,7 +458,7 @@ def pixel_reconstruction(config: DictConfig):
         val_dataloader = None
 
     print(config.clusters.num_workers)
-    steps_per_epoch = int(np.ceil(len(train_dataloader)  / (config['gpu_workers'] * config['workers'])))
+    steps_per_epoch = int(np.ceil(len(train_dataloader)  / config.clusters.num_workers))
 
     train_dataloader = raytorch.prepare_data_loader(train_dataloader)
 
@@ -512,7 +512,7 @@ def pixel_reconstruction(config: DictConfig):
             with_modules=True,
         ) if config['profile'] else nullcontext() as profiler:
 
-            for epoch in range(starting_epoch, config['epochs']):
+            for epoch in range(starting_epoch, config.schedulers.epochs):
 
                 if ray_context.get_world_size() > 1:
                     train_dataloader.sampler.set_epoch(epoch)
@@ -616,113 +616,76 @@ def pixel_reconstruction(config: DictConfig):
                 report(metrics=epoch_logbook[epoch], checkpoint=checkpoint)
 
 
-#TODO hydra config integration
 def joint_embedding_prediction(config: DictConfig):
     restored, latest_checkpoint, best_loss, overall_step, starting_epoch, step_logbook, epoch_logbook = restore_model(config)
 
-    collate_fn = masking.MaskCollator(
-        input_shape=config['inputs'],
-        lateral_patch_size=config['patches'] if type(config['patches']) == int else config['patches'][0],
-        axial_patch_size=1,
-        lateral_range=(0.2, 0.8),
-        axial_range=(1.0, 1.0),
-        num_blocks=8,
-        patchify_scheme='blocks',
-    )
+    # collate_fn = masking.MaskCollator(
+    #     input_shape=config['inputs'],
+    #     lateral_patch_size=config['patches'] if type(config['patches']) == int else config['patches'][0],
+    #     axial_patch_size=1,
+    #     lateral_range=(0.2, 0.8),
+    #     axial_range=(1.0, 1.0),
+    #     num_blocks=8,
+    #     patchify_scheme='blocks',
+    # )
 
-    train_dataloader = ao_dataset.collect_dataset(
-        config['dataset'],
-        metadata=False,
-        modes=config['pmodes'],
-        distribution=config['distribution'],
-        embedding=config['embedding'],
-        samplelimit=config['samplelimit'],
-        max_amplitude=config['max_amplitude'],
-        photons_range=(config['min_photons'], config['max_photons']),
-        cpu_workers=config['cpu_workers'],
-        gpu_workers=config['gpu_workers'],
-        model_input_shape=config['inputs'],
-        batch_size=config['batch_size'],
-        dtype=_DTYPES[config['amp']],
-        # collate_fn=collate_fn
-    )
-    steps_per_epoch = int(np.ceil(len(train_dataloader)  / (config['gpu_workers'] * config['workers'])))
+    if config.datasets.split:
+        train_dataloader, val_dataloader = ao_dataset.collect_dataset(config)
+    else:
+        train_dataloader = ao_dataset.collect_dataset(config)
+        val_dataloader = None
+
+    print(config.clusters.num_workers)
+    steps_per_epoch = int(np.ceil(len(train_dataloader)  / config.clusters.num_workers))
 
     train_dataloader = raytorch.prepare_data_loader(train_dataloader)
 
-    if config['network'].startswith('jepa'):
-        model = JEPA(
-            model_template=config['network'],
-            input_shape=config['inputs'],
-            embed_dim=config['hidden_size'],
-            lateral_patch_size=config['patches'] if type(config['patches']) == int else config['patches'][0],
-            axial_patch_size=1,
-            num_heads=config['heads'] if type(config['heads']) == int else config['heads'][0],
-            depth=config['repeats'] if type(config['repeats']) == int else config['repeats'][0],
-            proj_drop_rate=config['dropout'],
-            fixed_dropout_depth=config['fixed_dropout_depth'],
-        )
-        block = Encoder
-    else:
-        raise Exception(f'Network "{config["network"]}" is unknown.')
+    model = build_dependency_graph_and_instantiate(config.models)
 
     summarize_model(
         model=model,
-        inputs=config['inputs'],
-        batch_size=config['batch_size'],
-        logdir=config['logdir'],
+        inputs=(config.batch_size, *config.models.input_shape[1:]),
+        batch_size=config.batch_size,
+        logdir=config.logdir,
     )
 
     opt = get_optimizer(
         params=model.parameters(),
-        config=config,
-        optimizer=config['opt'],
+        config=config.optimizers,
+        optimizer=config.optimizers.opt,
         steps_per_epoch=steps_per_epoch
     )
 
     scheduler = get_lr_scheduler(
         opt=opt,
-        config=config,
+        config=config.schedulers,
         steps_per_epoch=steps_per_epoch
     )
 
     # linearly increase lr from ema[0] to ema[1]
-    total_steps = config['epochs'] * steps_per_epoch
+    total_steps = config.schedulers.epochs * steps_per_epoch
     ema_scheduler = (
-        config['ema'][0] + i * (config['ema'][1]-config['ema'][0]) / total_steps
+        config.schedulers.ema[0] + i * (config.schedulers.ema[1] - config.schedulers.ema[0]) / total_steps
         for i in range(total_steps+1)
     )
 
     model, opt, _, _ = initialize(
         model=model,
         optimizer=opt,
-        config=config.deepspeed,
+        config=OmegaConf.to_container(config.deepspeed, resolve=True)
     )
 
-    if config['finetune'] is not None:
-        logger.info(f"Finetuning pretrained model @ {config['finetune']}")
-        model_state = torch.load(config['finetune'].glob("*model.bin"))
-        model.load_state_dict(model_state)
+    if restored or config.load_checkpointdir is not None:
+        _load_checkpoint(
+            model_engine=model,
+            opt=opt,
+            config=config,
+            logger=logger,
+            latest_checkpoint=latest_checkpoint,
+        )
 
-        optimizer_state = torch.load(config['finetune'].glob("*optimizer.bin"))
-        opt.load_state_dict(optimizer_state)
-
-    elif restored:
-        checkpoint = get_checkpoint()
-        if checkpoint:
-            with checkpoint.as_directory() as checkpointdir:
-                logger.info(f"Loading pretrained model @ {latest_checkpoint} -> {checkpointdir}")
-
-                model_state = torch.load(config['checkpointdir'] / f"best_model.bin")
-                model.load_state_dict(model_state)
-
-                optimizer_state = torch.load(config['checkpointdir'] / f"best_optimizer.bin")
-                opt.load_state_dict(optimizer_state)
-
-    es = EarlyStoppingCallback(min_delta=1e-4, patience=10)
     ray_context = get_context()
     loss_nans = 0
-
     with torch.autograd.set_detect_anomaly(True, check_nan=False):
 
         with torch.profiler.profile(
@@ -735,20 +698,18 @@ def joint_embedding_prediction(config: DictConfig):
             with_modules=True,
         ) if config['profile'] else nullcontext() as profiler:
 
-            for epoch in range(starting_epoch, config['epochs']):
+            for epoch in range(starting_epoch, config.schedulers.epochs):
 
                 if ray_context.get_world_size() > 1:
                     train_dataloader.sampler.set_epoch(epoch)
 
                 epoch_time = time.time()
                 loss = 0.
-
                 step_times, step_utilization, step_vram = [], [], []
-                for step, batch in enumerate(train_dataloader):
-                    inputs, zernikes = batch
 
+                for step, (inputs, targets) in enumerate(train_dataloader):
                     step_time = time.time()
-                    lr = opt.param_groups[0]["lr"]
+                    lr_value = opt.param_groups[0]["lr"]
 
                     step_loss = model(inputs)
 
@@ -767,9 +728,7 @@ def joint_embedding_prediction(config: DictConfig):
 
                     cuda_util = torch.cuda.utilization()
                     cuda_vram = torch.cuda.max_memory_allocated() / (1024 ** 3)
-
                     loss += step_loss.detach().float()
-
                     overall_step += 1
                     step_timer = time.time() - step_time
 
@@ -778,8 +737,8 @@ def joint_embedding_prediction(config: DictConfig):
                     step_vram.append(cuda_vram)
 
                     step_logbook[overall_step] = {
-                        "step_loss": step_loss,
-                        "step_lr": lr,
+                        "step_loss": step_loss.detach().float(),
+                        "step_lr": lr_value,
                         "step_timer": step_timer,
                         "cuda_vram": cuda_vram,
                         "step_utilization": cuda_util,
@@ -787,61 +746,59 @@ def joint_embedding_prediction(config: DictConfig):
 
                 mem_log = torch.cuda.memory_summary()
                 logger.info(mem_log)
-                with Path(config['logdir'] / 'memory.log').open('w') as f:
-                    f.write(str(mem_log))
+
+                if is_main_process():
+                    with (Path(config.logdir) / 'memory.log').open('w') as f:
+                        f.write(str(mem_log))
 
                 loss = loss.item() / steps_per_epoch
-                step_timer = np.mean(step_times)
+                step_timer_avg = np.mean(step_times)
                 epoch_timer = time.time() - epoch_time
-                remaining_epochs = config['epochs'] - (epoch + 1)
+                remaining_epochs = config.schedulers.epochs - (epoch + 1)
                 eta = epoch_timer * remaining_epochs / 3600
-                cuda_utilization = np.mean(step_utilization)
-                cuda_memory_allocated = np.mean(step_vram)
+                cuda_utilization_avg = np.mean(step_utilization)
+                cuda_memory_allocated_avg = np.mean(step_vram)
                 max_cuda_memory_allocated = torch.cuda.max_memory_allocated() / (1024 ** 3)
 
-                logger.info(f"│ training_epoch:                 \t {epoch+1}/{config['epochs']}")
-                logger.info(f"│ epoch_loss:                     \t {loss:.4g}")
-                logger.info(f"│ epoch_lr:                       \t {lr:.4g}")
-                logger.info(f"│ cuda_utilization:               \t {cuda_utilization:.0f}%")
-                logger.info(f"│ cuda_memory_allocated:          \t {cuda_memory_allocated:.4g} GB")
-                logger.info(f"│ max_cuda_memory_allocated:      \t {max_cuda_memory_allocated:.4g} GB")
-                logger.info(f"│ step_timer:                     \t {step_timer * 1000:.0f}ms")
-                logger.info(f"│ epoch_timer:                    \t {epoch_timer:.0f}s")
-                logger.info(f"│ ETA:                            \t {eta:.2f}h")
+                logger.info(f"│ training_epoch: {epoch + 1}/{config.schedulers.epochs}")
+                logger.info(f"│ epoch_loss: {loss:.4g}")
+                logger.info(f"│ epoch_lr: {lr_value:.4g}")
+                logger.info(f"│ cuda_utilization: {cuda_utilization_avg:.0f}%")
+                logger.info(f"│ cuda_memory_allocated: {cuda_memory_allocated_avg:.4g} GB")
+                logger.info(f"│ max_cuda_memory_allocated: {max_cuda_memory_allocated:.4g} GB")
+                logger.info(f"│ step_timer: {step_timer_avg * 1000:.0f}ms")
+                logger.info(f"│ epoch_timer: {epoch_timer:.0f}s")
+                logger.info(f"│ ETA: {eta:.2f}h")
 
                 epoch_logbook[epoch] = {
                     "loss": loss,
-                    "epoch_lr": lr,
-                    "cuda_utilization": cuda_utilization,
-                    "cuda_memory_allocated": cuda_memory_allocated,
+                    "lr": lr_value,
+                    "cuda_utilization": cuda_utilization_avg,
+                    "cuda_memory_allocated": cuda_memory_allocated_avg,
                     "max_cuda_memory_allocated": max_cuda_memory_allocated,
-                    "step_timer": step_timer,
+                    "step_timer": step_timer_avg,
                     "epoch_timer": epoch_timer,
+                    "eta": eta,
                 }
-                df = pd.DataFrame.from_dict(epoch_logbook, orient='index')
-                df.to_csv(config['logdir'] / 'logbook.csv')
 
-                df = pd.DataFrame.from_dict(step_logbook, orient='index')
-                df.to_csv(config['logdir'] / 'steplogbook.csv')
-
-                with config['outdir'] / 'checkpoints' as checkpointdir:
-                    if loss < best_loss:
-                        best_loss = loss
-                        torch.save(model.state_dict(), config['checkpointdir'] / f"best_model.bin")
-                        torch.save(opt.state_dict(), config['checkpointdir'] / f"best_optimizer.bin")
-
-                    checkpoint = Checkpoint.from_directory(checkpointdir)
-                    report(metrics=epoch_logbook[epoch], checkpoint=checkpoint)
+                if loss < best_loss:
+                    best_loss = loss
+                    model.save_checkpoint(config.checkpointdir, tag="best_model")
 
                 if is_main_process():
+                    pd.DataFrame.from_dict(epoch_logbook, orient='index').to_csv(Path(config.logdir) / 'logbook.csv')
+                    pd.DataFrame.from_dict(step_logbook, orient='index').to_csv(Path(config.logdir) / 'steplogbook.csv')
+
                     logger.info(epoch_logbook[epoch])
 
-                if config['profile']:
-                    profiler.step()
+                    if config.profile:
+                        profiler.step()
 
-            with config['outdir'] / 'checkpoints' as checkpointdir:
-                torch.save(model.state_dict(), config['checkpointdir'] / f"last_model.bin")
-                torch.save(opt.state_dict(), config['checkpointdir'] / f"last_optimizer.bin")
+                # save model weights for latest model every checkpoint_update_interval epochs
+                if (epoch + 1) % config.checkpoint_update_interval == 0:
+                    model.save_checkpoint(config.checkpointdir, tag="latest_model")
 
-                checkpoint = Checkpoint.from_directory(checkpointdir)
+                # update latest model every checkpoint_update_interval epochs and best model
+                checkpoint = Checkpoint.from_directory(config.checkpointdir) if is_main_process() else None
+                # report must be called on all ranks, else hangs
                 report(metrics=epoch_logbook[epoch], checkpoint=checkpoint)
