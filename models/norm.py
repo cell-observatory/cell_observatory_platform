@@ -14,16 +14,16 @@ logger = logging.getLogger(__name__)
 
 
 def get_norm(norm: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'LayerNorm'):
-    if norm == "RmsNorm" or isinstance(norm, RmsNorm):
+    if norm == "RmsNorm" or type(norm) == type(RmsNorm):
         return RmsNorm
 
-    elif norm == "LayerNorm" or isinstance(norm, nn.LayerNorm):
+    elif norm == "LayerNorm" or type(norm) == type(nn.LayerNorm):
         return nn.LayerNorm
 
-    elif norm == "SyncBatchNorm" or isinstance(norm, nn.SyncBatchNorm):
+    elif norm == "SyncBatchNorm" or type(norm) == type(nn.SyncBatchNorm):
         return nn.SyncBatchNorm
 
-    elif norm == "GroupNorm" or isinstance(norm, nn.GroupNorm):
+    elif norm == "GroupNorm" or type(norm) == type(nn.GroupNorm):
         return nn.GroupNorm
 
     else:
