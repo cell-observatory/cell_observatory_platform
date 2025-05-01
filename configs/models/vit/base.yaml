@@ -4,9 +4,9 @@ input_shape: [1, 128, 128, 128, 1]
 modes: 15
 lateral_patch_size: 16
 axial_patch_size: 1
-embed_dim: 192
+embed_dim: 768
 depth: 12
-num_heads: 3
+num_heads: 12
 mlp_ratio: 4.0
 proj_drop_rate: 0.0
 att_drop_rate: 0.0
