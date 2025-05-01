@@ -15,10 +15,10 @@ logger = logging.getLogger(__name__)
 
 
 def get_mlp(ff: Union[Module, Literal['Mlp', 'SwiGLU']] = 'Mlp'):
-    if ff == "Mlp" or isinstance(ff, Mlp):
+    if ff == "Mlp" or type(ff) == type(Mlp):
         return Mlp
 
-    elif ff == "SwiGLU" or isinstance(ff, SwiGLU):
+    elif ff == "SwiGLU" or type(ff) == type(SwiGLU):
         return SwiGLU
 
     else:
