@@ -2,7 +2,7 @@ defaults:
   - _self_
   - clusters: local/test                     # configs/clusters/local/test.yaml
   - datasets: local/ao                       # configs/datasets/local/ao.yaml
-  - models: vit_tiny                         # configs/models/local.yaml
+  - models: vit/tiny                         # configs/models/vit/tiny.yaml
   - deepspeed: zero3                         # configs/deepspeed/zero3.yaml
   - optimizers: lamb                         # configs/optimizers/lamb.yaml
   - schedulers: test_warmup_cosine_decay     # configs/schedulers/warmup_cosine_decay.yaml
