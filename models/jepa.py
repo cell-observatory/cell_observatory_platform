@@ -1,15 +1,16 @@
 import logging
 import sys
 from copy import deepcopy
-from functools import partial
-from typing import Literal
+from typing import Literal, Union
 
 import torch
 import torch.nn as nn
 from deepspeed.runtime.zero import GatheredParameters
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
-from timm.layers import RmsNorm, SwiGLU
 
+from models.norm import get_norm
+from models.activation import get_activation
+from models.mlp import get_mlp
 from models.maskedencoder import MaskedEncoder
 from models.maskedpredictor import MaskedPredictor
 from training.masking import mask_random_patches, apply_masks
@@ -102,6 +103,7 @@ class JEPA(nn.Module):
             'jepa-giant',
             'jepa-gigantic'
         ] = 'jepa',
+        input_fmt='BZYXC',
         input_shape=(1, 6, 64, 64, 1),
         lateral_patch_size=16,
         axial_patch_size=1,
@@ -145,6 +147,7 @@ class JEPA(nn.Module):
             self.predictor_num_heads = predictor_num_heads
             self.mlp_ratio = mlp_ratio
 
+        self.input_fmt = input_fmt
         self.input_shape = input_shape
         self.img_size = input_shape[-2]
         self.in_chans = input_shape[-1]
@@ -161,12 +164,13 @@ class JEPA(nn.Module):
         self.window_mask_shape = window_mask_shape
 
         self.init_std = init_std
-        self.norm_layer = norm_layer
-        self.act_layer = act_layer
-        self.mlp_layer = mlp_layer
+
+        self.norm_layer = get_norm(norm_layer)
+        self.act_layer = get_activation(act_layer)
+        self.mlp_layer = get_mlp(mlp_layer)
 
         self.input_encoder = MaskedEncoder(
-            input_fmt="BZYXC",
+            input_fmt=self.input_fmt,
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
@@ -192,7 +196,7 @@ class JEPA(nn.Module):
             param.requires_grad = False
 
         self.target_predictor = MaskedPredictor(
-            input_fmt="BZYXC",
+            input_fmt=self.input_fmt,
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
