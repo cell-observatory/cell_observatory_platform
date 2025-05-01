@@ -5,4 +5,3 @@ ld: null # optional layer decay
 clip_grad: 0.5
 betas: [0.9, 0.99]
 eps: 1e-08
-ema: [0.998, 1.0]

@@ -2,3 +2,4 @@ epochs: 500
 warmup: 25
 cooldown: 50
 fixedlr: false
+ema: [0.998, 1.0]
