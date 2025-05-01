@@ -69,6 +69,24 @@ CONFIGS = {
         'predictor_num_heads': 12,
         'mlp_ratio': 4,
     },
+    'jepa-2billion': {
+        'embed_dim': 2560,
+        'predictor_embed_dim': 512,
+        'depth': 24,
+        'predictor_depth': 8,
+        'num_heads': 32,
+        'predictor_num_heads': 8,
+        'mlp_ratio': 4,
+    },
+    'jepa-6billion': {
+        'embed_dim': 4096,
+        'predictor_embed_dim': 512,
+        'depth': 32,
+        'predictor_depth': 8,
+        'num_heads': 32,
+        'predictor_num_heads': 8,
+        'mlp_ratio': 4,
+    },
     'jepa-giant': {
         'embed_dim': 1408,
         'predictor_embed_dim': 512,
@@ -86,6 +104,15 @@ CONFIGS = {
         'num_heads': 16,
         'predictor_num_heads': 16,
         'mlp_ratio': 64/13,
+    },
+    'jepa-enormous': {
+        'embed_dim': 1792,
+        'predictor_embed_dim': 1024,
+        'depth': 56,
+        'predictor_depth': 16,
+        'num_heads': 16,
+        'predictor_num_heads': 16,
+        'mlp_ratio': 8.5714285714,
     }
 }
 
@@ -119,9 +146,9 @@ class JEPA(nn.Module):
         drop_path_rate=0.1,
         init_std=0.02,
         fixed_dropout_depth=False,
-        norm_layer: nn.Module = partial(RmsNorm, eps=1e-5),
-        act_layer: nn.Module = nn.SiLU,
-        mlp_layer: nn.Module = SwiGLU,
+        norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
+        act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
+        mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
         use_conv_proj=False,
         mask_ratio=.9,
         window_mask_shape=None,
@@ -272,5 +299,6 @@ class JEPA(nn.Module):
         loss = torch.abs(targets - predictions)
         loss = loss.mean(dim=-1)  # mean loss per patch
         loss = loss.sum() / masks.sum()
+        loss = loss.to(targets.dtype)
         return loss
 
