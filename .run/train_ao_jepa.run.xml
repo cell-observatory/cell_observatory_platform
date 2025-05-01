@@ -1,6 +1,6 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="train_mae" type="PythonConfigurationType" factoryName="Python" folderName="train">
-    <module name="opticalaberrations" />
+  <configuration default="false" name="train_ao_jepa" type="PythonConfigurationType" factoryName="Python" folderName="train">
+    <module name="platform" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
     <option name="PARENT_ENVS" value="true" />
@@ -8,7 +8,7 @@
       <env name="PYTHONUNBUFFERED" value="1" />
     </envs>
     <option name="SDK_HOME" value="" />
-    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/src" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
     <option name="IS_MODULE_SDK" value="true" />
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
@@ -42,8 +42,8 @@
       </option>
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
-    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/train.py" />
-    <option name="PARAMETERS" value="--batch_size 512 --modes 15 --patches 16 --epochs 5 --warmup 2 --cooldown 1 --network mae-base --outdir /opt/project/pretrained_models/mae-base --dataset /opt/project/dataset/training/YuMB_lambda510/z64-y64-x64/z15 --gpu_workers 2 --cpu_workers 32 --mae" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/training/train.py" />
+    <option name="PARAMETERS" value="--config-name ao_jepa.yaml" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
