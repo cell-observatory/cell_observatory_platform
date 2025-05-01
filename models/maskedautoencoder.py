@@ -66,6 +66,24 @@ CONFIGS = {
         'decoder_num_heads': 8,
         'mlp_ratio': 4,
     },
+    'mae-2billion': {
+        'embed_dim': 2560,
+        'decoder_embed_dim': 512,
+        'depth': 24,
+        'decoder_depth': 8,
+        'num_heads': 32,
+        'decoder_num_heads': 8,
+        'mlp_ratio': 4,
+    },
+    'mae-6billion': {
+        'embed_dim': 4096,
+        'decoder_embed_dim': 512,
+        'depth': 32,
+        'decoder_depth': 8,
+        'num_heads': 32,
+        'decoder_num_heads': 8,
+        'mlp_ratio': 4,
+    },
     'mae-giant': {
         'embed_dim': 1408,
         'decoder_embed_dim': 512,
@@ -83,6 +101,15 @@ CONFIGS = {
         'num_heads': 16,
         'decoder_num_heads': 16,
         'mlp_ratio': 64/13,
+    },
+    'mae-enormous': {
+        'embed_dim': 1792,
+        'decoder_embed_dim': 1024,
+        'depth': 56,
+        'decoder_depth': 16,
+        'num_heads': 16,
+        'decoder_num_heads': 16,
+        'mlp_ratio': 8.5714285714,
     }
 }
 
@@ -237,7 +264,9 @@ class MaskedAutoEncoder(nn.Module):
         # compute loss over masked patches
         targets = apply_masks(patches, masks=target_masks)
         predictions = apply_masks(x, masks=target_masks)
+
         loss = (targets - predictions) ** 2
         loss = loss.mean(dim=-1)  # mean loss per patch
         loss = loss.sum() / masks.sum()
+        loss = loss.to(targets.dtype)
         return loss
