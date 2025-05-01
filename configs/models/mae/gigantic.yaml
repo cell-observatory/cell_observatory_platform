@@ -1,0 +1,27 @@
+_target_: models.maskedautoencoder.MaskedAutoEncoder
+input_fmt: BZYXC
+input_shape: [1, 128, 128, 128, 1]
+modes: 15
+lateral_patch_size: 16
+axial_patch_size: 1
+
+embed_dim: 1664
+decoder_embed_dim: 1024
+depth: 48
+decoder_depth: 16
+num_heads: 16
+decoder_num_heads: 16
+mlp_ratio: 4.9230769231
+
+proj_drop_rate: 0.0
+att_drop_rate: 0.0
+drop_path_rate: 0.1
+init_std: 0.02
+fixed_dropout_depth: false
+use_conv_proj: false
+norm_layer: RmsNorm
+act_layer: SiLU
+mlp_layer: SwiGLU
+
+mask_ratio: 0.75
+window_mask_shape: null
