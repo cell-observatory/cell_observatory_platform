@@ -1,12 +1,13 @@
 import logging
 import sys
-from functools import partial
-from typing import Literal
+from typing import Literal, Union
 
 import torch
 import torch.nn as nn
-from timm.layers import RmsNorm, SwiGLU
 
+from models.norm import get_norm
+from models.activation import get_activation
+from models.mlp import get_mlp
 from models.encoder import Encoder
 from models.patch_embeddings import PosEmbedding
 
@@ -49,6 +50,18 @@ CONFIGS = {
         'num_heads': 16,
         'mlp_ratio': 4,
     },
+    'mp-2billion': {
+        'embed_dim': 2560,
+        'depth': 24,
+        'num_heads': 32,
+        'mlp_ratio': 4,
+    },
+    'mp-6billion': {
+        'embed_dim': 4096,
+        'depth': 32,
+        'num_heads': 32,
+        'mlp_ratio': 4,
+    },
     'mp-giant': {
         'embed_dim': 1408,
         'depth': 40,
@@ -60,6 +73,12 @@ CONFIGS = {
         'depth': 48,
         'num_heads': 16,
         'mlp_ratio': 64/13,
+    },
+    'mp-enormous': {
+        'embed_dim': 1792,
+        'depth': 56,
+        'num_heads': 16,
+        'mlp_ratio': 8.5714285714,
     }
 }
 
@@ -77,6 +96,7 @@ class MaskedPredictor(nn.Module):
             'mp-giant',
             'mp-gigantic'
         ] = 'mp',
+        input_fmt='BZYXC',
         input_shape=(1, 6, 64, 64, 1),
         lateral_patch_size=16,
         axial_patch_size=1,
@@ -91,9 +111,9 @@ class MaskedPredictor(nn.Module):
         drop_path_rate=0.1,
         init_std=0.02,
         fixed_dropout_depth=False,
-        norm_layer: nn.Module = partial(RmsNorm, eps=1e-5),
-        act_layer: nn.Module = nn.SiLU,
-        mlp_layer: nn.Module = SwiGLU,
+        norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
+        act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
+        mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
         **kwargs,
     ):
         super().__init__()
@@ -112,6 +132,8 @@ class MaskedPredictor(nn.Module):
 
         self.input_embed_dim = input_embed_dim
         self.output_embed_dim = output_embed_dim
+
+        self.input_fmt = input_fmt
         self.input_shape = input_shape
         self.img_size = input_shape[-2]
         self.in_chans = input_shape[-1]
@@ -126,10 +148,12 @@ class MaskedPredictor(nn.Module):
         self.fixed_dropout_depth = fixed_dropout_depth
 
         self.init_std = init_std
-        self.norm_layer = norm_layer
-        self.act_layer = act_layer
-        self.mlp_layer = mlp_layer
-        self.norm = norm_layer(self.embed_dim) if norm_layer is not None else nn.Identity()
+
+        self.norm_layer = get_norm(norm_layer)
+        self.act_layer = get_activation(act_layer)
+        self.mlp_layer = get_mlp(mlp_layer)
+
+        self.norm = self.norm_layer(self.embed_dim) if norm_layer is not None else nn.Identity()
 
         self.token_param = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
 
@@ -146,6 +170,7 @@ class MaskedPredictor(nn.Module):
         )
 
         self.pos_embedding = PosEmbedding(
+            input_fmt=self.input_fmt,
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,

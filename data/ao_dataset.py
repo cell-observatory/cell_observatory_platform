@@ -4,7 +4,6 @@ import sys
 from functools import partial
 from multiprocessing import Manager
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -16,9 +15,12 @@ from tifffile import TiffFile
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
 
+from omegaconf import DictConfig
+
 from utils.preprocessing import resize_with_crop_or_pad
 from utils.common import multiprocess
 from utils.fourier_embeddings import fourier_embeddings
+from data.data_types import TORCH_DTYPES
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -432,82 +434,49 @@ class DataFinder(Dataset):
 
 
 @profile
-def collect_dataset(
-    datadir,
-    split=None,
-    multiplier=1,
-    batch_size=1,
-    distribution='/',
-    embedding='',
-    modes=-1,
-    samplelimit=None,
-    max_amplitude=1.,
-    input_coverage=1.,
-    embedding_option='spatial_planes',
-    photons_range=None,
-    npoints_range=None,
-    iotf=None,
-    metadata=False,
-    lls_defocus: bool = False,
-    defocus_only: bool = False,
-    filename_pattern: str = r"*[!_gt|!_realspace|!_noisefree|!_predictions_psf|!_corrected_psf|!_reconstructed_psf].tif",
-    cpu_workers: int = -1,
-    gpu_workers: int = 1,
-    model_input_shape: tuple = (6, 64, 64, 1),
-    return_dataloader: bool = True,
-    collate_fn: Callable = None,
-    dtype=torch.float32
-):
-    """
-    Returns:
-        metadata=True -> (amps, photons, counts, peak2peak, umRMS, npoints, avg_min_distance, filename)
-        metadata=False-> img & zern
-    """
-
+def collect_dataset(config: DictConfig):
     dataset = DataFinder(
-        datadir=datadir,
-        distribution=distribution,
-        embedding=embedding,
-        modes=modes,
-        samplelimit=samplelimit,
-        max_amplitude=max_amplitude,
-        input_coverage=input_coverage,
-        embedding_option=embedding_option,
-        photons_range=photons_range,
-        npoints_range=npoints_range,
-        iotf=iotf,
-        metadata=metadata,
-        lls_defocus=lls_defocus,
-        defocus_only=defocus_only,
-        filename_pattern=filename_pattern,
-        cpu_workers=cpu_workers,
-        model_input_shape=model_input_shape,
-        dtype=dtype
+        datadir=Path(config.datasets.datadir),
+        distribution=config.datasets.distribution,
+        modes=config.datasets.modes,
+        samplelimit=config.datasets.samplelimit,
+        max_amplitude=config.datasets.max_amplitude,
+        input_coverage=config.datasets.input_coverage,
+        embedding_option=config.datasets.embedding_option,
+        photons_range=config.datasets.photons_range,
+        npoints_range=config.datasets.npoints_range,
+        iotf=config.datasets.iotf,
+        metadata=config.datasets.metadata,
+        lls_defocus=config.datasets.lls_defocus,
+        defocus_only=config.datasets.defocus_only,
+        filename_pattern=config.datasets.filename_pattern,
+        dtype=TORCH_DTYPES[config.datasets.dtype].value,
+        cpu_workers=config.clusters.cpu_workers,
     )
 
-    if return_dataloader:
-        if split is not None:
-            val_size = round(len(dataset) * split)
+    if config.datasets.return_dataloader:
+        if config.datasets.split is not None:
+            val_size = round(len(dataset) * config.datasets.split)
             train, val = random_split(dataset, lengths=[len(dataset) - val_size, val_size])
 
             train = DataLoader(
                 train,
-                collate_fn=collate_fn,
-                batch_size=batch_size,
+                collate_fn=config.datasets.collate_fn,
+                batch_size=config.clusters.worker_batch_size,
                 shuffle=False,
                 pin_memory=True,
-                num_workers=gpu_workers,
+                num_workers=config.clusters.gpu_workers,
                 prefetch_factor=2,
                 persistent_workers=False,
                 sampler=DistributedSampler(dataset)
             )
             val = DataLoader(
                 val,
-                collate_fn=collate_fn,
-                batch_size=batch_size,
+                collate_fn=config.datasets.collate_fn,
+                batch_size=config.clusters.worker_batch_size,
                 shuffle=False,
                 pin_memory=True,
-                num_workers=gpu_workers,
+                num_workers=config.clusters.gpu_workers,
                 prefetch_factor=2,
                 persistent_workers=False,
                 sampler=DistributedSampler(dataset)
@@ -525,18 +494,18 @@ def collect_dataset(
 
             data = DataLoader(
                 dataset,
-                collate_fn=collate_fn,
-                batch_size=batch_size,
+                collate_fn=config.datasets.collate_fn,
+                batch_size=config.clusters.worker_batch_size,
                 shuffle=False,
                 pin_memory=True,
-                num_workers=gpu_workers,
+                num_workers=config.clusters.gpu_workers,
                 prefetch_factor=2,
                 persistent_workers=False,
                 sampler=DistributedSampler(dataset)
             )
 
             try:
-                if not metadata:
+                if not config.datasets.metadata:
                     i = next(iter(data))
                     logger.info(f"Input: {i[0].shape}")
 

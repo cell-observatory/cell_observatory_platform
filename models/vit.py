@@ -1,13 +1,15 @@
 import logging
 import sys
-from functools import partial
-from typing import Literal
+from typing import Literal, Union
 
 import torch
 import torch.nn as nn
-from timm.layers import AttentionPoolLatent, Mlp
+from timm.layers import AttentionPoolLatent
 from timm.models.vision_transformer import global_pool_nlc
 
+from models.norm import get_norm
+from models.activation import get_activation
+from models.mlp import get_mlp
 from models.encoder import Encoder
 from models.patch_embeddings import ConvPatchEmbedding, PatchEmbedding, PosEmbedding
 
@@ -50,6 +52,18 @@ CONFIGS = {
         'num_heads': 16,
         'mlp_ratio': 4,
     },
+    'vit-2billion': {
+        'embed_dim': 2560,
+        'depth': 24,
+        'num_heads': 32,
+        'mlp_ratio': 4,
+    },
+    'vit-6billion': {
+        'embed_dim': 4096,
+        'depth': 32,
+        'num_heads': 32,
+        'mlp_ratio': 4,
+    },
     'vit-giant': {
         'embed_dim': 1408,
         'depth': 40,
@@ -61,6 +75,12 @@ CONFIGS = {
         'depth': 48,
         'num_heads': 16,
         'mlp_ratio': 64/13,
+    },
+    'vit-enormous': {
+        'embed_dim': 1792,
+        'depth': 56,
+        'num_heads': 16,
+        'mlp_ratio': 8.5714285714,
     }
 }
 
@@ -78,6 +98,7 @@ class ViT(nn.Module):
             'vit-giant',
             'vit-gigantic'
         ] = 'vit',
+        input_fmt='BZYXC',
         input_shape=(1, 6, 64, 64, 1),
         modes=15,
         lateral_patch_size=16,
@@ -92,9 +113,9 @@ class ViT(nn.Module):
         init_std=0.02,
         fixed_dropout_depth=False,
         global_pool: Literal['', 'avg', 'avgmax', 'max', 'token', 'map'] = 'avgmax',
-        norm_layer: nn.Module = partial(nn.LayerNorm, eps=1e-5),
-        act_layer = nn.GELU,
-        mlp_layer = Mlp,
+        norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'LayerNorm',
+        act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'GELU',
+        mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'Mlp',
         use_conv_proj=False,
         **kwargs,
     ):
@@ -112,6 +133,7 @@ class ViT(nn.Module):
             self.num_heads = num_heads
             self.mlp_ratio = mlp_ratio
 
+        self.input_fmt = input_fmt
         self.input_shape = input_shape
         self.img_size = input_shape[-2]
         self.in_chans = input_shape[-1]
@@ -127,10 +149,12 @@ class ViT(nn.Module):
 
         self.init_std = init_std
         self.global_pool = global_pool
-        self.norm_layer = norm_layer
-        self.act_layer = act_layer
-        self.mlp_layer = mlp_layer
-        self.norm = norm_layer(self.embed_dim) if norm_layer is not None else nn.Identity()
+
+        self.norm_layer = get_norm(norm_layer)
+        self.act_layer = get_activation(act_layer)
+        self.mlp_layer = get_mlp(mlp_layer)
+
+        self.norm = self.norm_layer(self.embed_dim) if norm_layer is not None else nn.Identity()
 
         if use_conv_proj:
             self.patch_embedding = ConvPatchEmbedding(
@@ -141,7 +165,7 @@ class ViT(nn.Module):
             )
         else:
             self.patch_embedding = PatchEmbedding(
-                input_fmt="BZYXC",
+                input_fmt=self.input_fmt ,
                 input_shape=self.input_shape,
                 lateral_patch_size=self.lateral_patch_size,
                 axial_patch_size=self.axial_patch_size,
@@ -150,7 +174,7 @@ class ViT(nn.Module):
             )
 
         self.pos_embedding = PosEmbedding(
-            input_fmt="BZYXC",
+            input_fmt=self.input_fmt,
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
@@ -181,7 +205,7 @@ class ViT(nn.Module):
                 self.embed_dim,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
-                norm_layer=norm_layer,
+                norm_layer=self.norm_layer,
             )
         else:
             self.att_pool = None

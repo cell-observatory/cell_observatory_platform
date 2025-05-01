@@ -1,0 +1,20 @@
+_target_: models.vit.ViT
+input_fmt: BZYXC
+input_shape: [1, 128, 128, 128, 1]
+modes: 15
+lateral_patch_size: 16
+axial_patch_size: 1
+embed_dim: 1664
+depth: 48
+num_heads: 16
+mlp_ratio: 4.9230769231
+proj_drop_rate: 0.0
+att_drop_rate: 0.0
+drop_path_rate: 0.1
+init_std: 0.02
+fixed_dropout_depth: false
+global_pool: avgmax
+use_conv_proj: false
+norm_layer: LayerNorm
+act_layer: GELU
+mlp_layer: Mlp

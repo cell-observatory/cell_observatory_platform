@@ -1,15 +1,16 @@
 import logging
 import sys
 from copy import deepcopy
-from functools import partial
-from typing import Literal
+from typing import Literal, Union
 
 import torch
 import torch.nn as nn
 from deepspeed.runtime.zero import GatheredParameters
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
-from timm.layers import RmsNorm, SwiGLU
 
+from models.norm import get_norm
+from models.activation import get_activation
+from models.mlp import get_mlp
 from models.maskedencoder import MaskedEncoder
 from models.maskedpredictor import MaskedPredictor
 from training.masking import mask_random_patches, apply_masks
@@ -68,6 +69,24 @@ CONFIGS = {
         'predictor_num_heads': 12,
         'mlp_ratio': 4,
     },
+    'jepa-2billion': {
+        'embed_dim': 2560,
+        'predictor_embed_dim': 512,
+        'depth': 24,
+        'predictor_depth': 8,
+        'num_heads': 32,
+        'predictor_num_heads': 8,
+        'mlp_ratio': 4,
+    },
+    'jepa-6billion': {
+        'embed_dim': 4096,
+        'predictor_embed_dim': 512,
+        'depth': 32,
+        'predictor_depth': 8,
+        'num_heads': 32,
+        'predictor_num_heads': 8,
+        'mlp_ratio': 4,
+    },
     'jepa-giant': {
         'embed_dim': 1408,
         'predictor_embed_dim': 512,
@@ -85,6 +104,15 @@ CONFIGS = {
         'num_heads': 16,
         'predictor_num_heads': 16,
         'mlp_ratio': 64/13,
+    },
+    'jepa-enormous': {
+        'embed_dim': 1792,
+        'predictor_embed_dim': 1024,
+        'depth': 56,
+        'predictor_depth': 16,
+        'num_heads': 16,
+        'predictor_num_heads': 16,
+        'mlp_ratio': 8.5714285714,
     }
 }
 
@@ -102,6 +130,7 @@ class JEPA(nn.Module):
             'jepa-giant',
             'jepa-gigantic'
         ] = 'jepa',
+        input_fmt='BZYXC',
         input_shape=(1, 6, 64, 64, 1),
         lateral_patch_size=16,
         axial_patch_size=1,
@@ -117,9 +146,9 @@ class JEPA(nn.Module):
         drop_path_rate=0.1,
         init_std=0.02,
         fixed_dropout_depth=False,
-        norm_layer: nn.Module = partial(RmsNorm, eps=1e-5),
-        act_layer: nn.Module = nn.SiLU,
-        mlp_layer: nn.Module = SwiGLU,
+        norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
+        act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
+        mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
         use_conv_proj=False,
         mask_ratio=.9,
         window_mask_shape=None,
@@ -145,6 +174,7 @@ class JEPA(nn.Module):
             self.predictor_num_heads = predictor_num_heads
             self.mlp_ratio = mlp_ratio
 
+        self.input_fmt = input_fmt
         self.input_shape = input_shape
         self.img_size = input_shape[-2]
         self.in_chans = input_shape[-1]
@@ -161,12 +191,13 @@ class JEPA(nn.Module):
         self.window_mask_shape = window_mask_shape
 
         self.init_std = init_std
-        self.norm_layer = norm_layer
-        self.act_layer = act_layer
-        self.mlp_layer = mlp_layer
+
+        self.norm_layer = get_norm(norm_layer)
+        self.act_layer = get_activation(act_layer)
+        self.mlp_layer = get_mlp(mlp_layer)
 
         self.input_encoder = MaskedEncoder(
-            input_fmt="BZYXC",
+            input_fmt=self.input_fmt,
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
@@ -192,7 +223,7 @@ class JEPA(nn.Module):
             param.requires_grad = False
 
         self.target_predictor = MaskedPredictor(
-            input_fmt="BZYXC",
+            input_fmt=self.input_fmt,
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
@@ -268,5 +299,6 @@ class JEPA(nn.Module):
         loss = torch.abs(targets - predictions)
         loss = loss.mean(dim=-1)  # mean loss per patch
         loss = loss.sum() / masks.sum()
+        loss = loss.to(targets.dtype)
         return loss
 
