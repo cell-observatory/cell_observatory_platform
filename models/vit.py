@@ -80,6 +80,7 @@ class ViT(nn.Module):
             'vit-giant',
             'vit-gigantic'
         ] = 'vit',
+        input_fmt='BZYXC',
         input_shape=(1, 6, 64, 64, 1),
         modes=15,
         lateral_patch_size=16,
@@ -114,6 +115,7 @@ class ViT(nn.Module):
             self.num_heads = num_heads
             self.mlp_ratio = mlp_ratio
 
+        self.input_fmt = input_fmt
         self.input_shape = input_shape
         self.img_size = input_shape[-2]
         self.in_chans = input_shape[-1]
@@ -145,7 +147,7 @@ class ViT(nn.Module):
             )
         else:
             self.patch_embedding = PatchEmbedding(
-                input_fmt="BZYXC",
+                input_fmt=self.input_fmt ,
                 input_shape=self.input_shape,
                 lateral_patch_size=self.lateral_patch_size,
                 axial_patch_size=self.axial_patch_size,
@@ -154,7 +156,7 @@ class ViT(nn.Module):
             )
 
         self.pos_embedding = PosEmbedding(
-            input_fmt="BZYXC",
+            input_fmt=self.input_fmt,
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
