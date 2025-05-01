@@ -95,9 +95,9 @@ class ViT(nn.Module):
         init_std=0.02,
         fixed_dropout_depth=False,
         global_pool: Literal['', 'avg', 'avgmax', 'max', 'token', 'map'] = 'avgmax',
-        norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
-        act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
-        mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
+        norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'LayerNorm',
+        act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'GELU',
+        mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'Mlp',
         use_conv_proj=False,
         **kwargs,
     ):
@@ -187,7 +187,7 @@ class ViT(nn.Module):
                 self.embed_dim,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
-                norm_layer=norm_layer,
+                norm_layer=self.norm_layer,
             )
         else:
             self.att_pool = None
