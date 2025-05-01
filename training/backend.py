@@ -35,7 +35,7 @@ from data import ao_dataset
 from training import masking
 from training.checkpointing import load_checkpoint
 from training.earlystopping import EarlyStoppingCallback
-from registry import build_dependency_graph_and_instantiate
+from training.registry import build_dependency_graph_and_instantiate
 from data.data_types import TORCH_DTYPES
 
 logger = logging.getLogger("ray")
