@@ -1,0 +1,50 @@
+# @package _global_
+
+defaults:
+  - clusters: local/test                     # configs/clusters/local/test.yaml
+  - datasets: local/ao                       # configs/datasets/local/ao.yaml
+  - models: baseline/tiny                    # configs/models/baseline/tiny.yaml
+  - deepspeed: zero3                         # configs/deepspeed/zero3.yaml
+  - optimizers: lamb                         # configs/optimizers/lamb.yaml
+  - schedulers: test_warmup_cosine_decay     # configs/schedulers/warmup_cosine_decay.yaml
+  - _self_
+
+paradigm: training.backend.supervised
+
+outdir: /opt/project/pretrained_models/baseline-tiny
+logdir: ${outdir}/logs
+checkpointdir: ${outdir}/checkpoints
+
+# Override shape
+models:
+  input_fmt: BZYXC
+  input_shape: [1, 6, 64, 64, 1]
+
+checkpoint_update_interval: 1 # save checkpoint every N epochs
+load_checkpointdir: null # specify if we want to load a checkpoint from a previous run that is not latest local run
+profile: false
+
+batch_size: 512
+
+### Ray configs
+run_config:
+  log_to_file: true
+  storage_path: ${outdir}
+  checkpoint_config:
+    num_to_keep: 3
+    checkpoint_score_attribute: loss
+    checkpoint_score_order: min
+  failure_config:
+    max_failures: 0
+
+torch_config:
+  timeout_s: 3600
+
+scaling_config:
+  use_gpu: true
+  num_workers: null
+  resources_per_worker:
+    CPU: null
+    GPU: 1
+  trainer_resources:
+    CPU: 1 # 1 cpu core for the training coordinator
