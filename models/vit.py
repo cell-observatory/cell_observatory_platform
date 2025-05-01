@@ -1,13 +1,15 @@
 import logging
 import sys
-from functools import partial
-from typing import Literal
+from typing import Literal, Union
 
 import torch
 import torch.nn as nn
-from timm.layers import AttentionPoolLatent, Mlp
+from timm.layers import AttentionPoolLatent
 from timm.models.vision_transformer import global_pool_nlc
 
+from models.norm import get_norm
+from models.activation import get_activation
+from models.mlp import get_mlp
 from models.encoder import Encoder
 from models.patch_embeddings import ConvPatchEmbedding, PatchEmbedding, PosEmbedding
 
@@ -92,9 +94,9 @@ class ViT(nn.Module):
         init_std=0.02,
         fixed_dropout_depth=False,
         global_pool: Literal['', 'avg', 'avgmax', 'max', 'token', 'map'] = 'avgmax',
-        norm_layer: nn.Module = partial(nn.LayerNorm, eps=1e-5),
-        act_layer = nn.GELU,
-        mlp_layer = Mlp,
+        norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
+        act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
+        mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
         use_conv_proj=False,
         **kwargs,
     ):
@@ -127,10 +129,12 @@ class ViT(nn.Module):
 
         self.init_std = init_std
         self.global_pool = global_pool
-        self.norm_layer = norm_layer
-        self.act_layer = act_layer
-        self.mlp_layer = mlp_layer
-        self.norm = norm_layer(self.embed_dim) if norm_layer is not None else nn.Identity()
+
+        self.norm_layer = get_norm(norm_layer)
+        self.act_layer = get_activation(act_layer)
+        self.mlp_layer = get_mlp(mlp_layer)
+
+        self.norm = self.norm_layer(self.embed_dim) if norm_layer is not None else nn.Identity()
 
         if use_conv_proj:
             self.patch_embedding = ConvPatchEmbedding(
