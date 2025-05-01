@@ -3,7 +3,7 @@
 defaults:
   - clusters: local/test                     # configs/clusters/local/test.yaml
   - datasets: local/ao                       # configs/datasets/local/ao.yaml
-  - models: vit/giant                         # configs/models/vit/tiny.yaml
+  - models: vit/tiny                         # configs/models/vit/tiny.yaml
   - deepspeed: zero3                         # configs/deepspeed/zero3.yaml
   - optimizers: lamb                         # configs/optimizers/lamb.yaml
   - schedulers: test_warmup_cosine_decay     # configs/schedulers/warmup_cosine_decay.yaml
@@ -11,7 +11,7 @@ defaults:
 
 paradigm: training.backend.supervised
 
-outdir: /opt/project/pretrained_models/vit-giant
+outdir: /opt/project/pretrained_models/vit-tiny
 logdir: ${outdir}/logs
 checkpointdir: ${outdir}/checkpoints
 
