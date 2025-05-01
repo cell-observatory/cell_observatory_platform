@@ -52,6 +52,18 @@ CONFIGS = {
         'num_heads': 16,
         'mlp_ratio': 4,
     },
+    'vit-2billion': {
+        'embed_dim': 2560,
+        'depth': 24,
+        'num_heads': 32,
+        'mlp_ratio': 4,
+    },
+    'vit-6billion': {
+        'embed_dim': 4096,
+        'depth': 32,
+        'num_heads': 32,
+        'mlp_ratio': 4,
+    },
     'vit-giant': {
         'embed_dim': 1408,
         'depth': 40,
@@ -63,6 +75,12 @@ CONFIGS = {
         'depth': 48,
         'num_heads': 16,
         'mlp_ratio': 64/13,
+    },
+    'vit-enormous': {
+        'embed_dim': 1792,
+        'depth': 56,
+        'num_heads': 16,
+        'mlp_ratio': 8.5714285714,
     }
 }
 
