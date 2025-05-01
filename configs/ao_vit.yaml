@@ -19,6 +19,7 @@ checkpointdir: ${outdir}/checkpoints
 models:
   input_fmt: BZYXC
   input_shape: [1, 6, 64, 64, 1]
+  modes: 15 # number of zernikes modes to predict
 
 checkpoint_update_interval: 1 # save checkpoint every N epochs
 load_checkpointdir: null # specify if we want to load a checkpoint from a previous run that is not latest local run
