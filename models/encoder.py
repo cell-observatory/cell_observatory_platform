@@ -1,12 +1,14 @@
 import logging
 import sys
-from functools import partial
+from typing import Literal, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
-from timm.layers import RmsNorm, SwiGLU
 
+from models.norm import get_norm
+from models.activation import get_activation
+from models.mlp import get_mlp
 from models.transformer import Transformer
 
 logging.basicConfig(
@@ -29,9 +31,9 @@ class Encoder(nn.Module):
         drop_path_rate=0.1,
         init_std=0.02,
         fixed_dropout_depth=False,
-        norm_layer: nn.Module = partial(RmsNorm, eps=1e-5),
-        act_layer: nn.Module = nn.SiLU,
-        mlp_layer: nn.Module = SwiGLU,
+        norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
+        act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
+        mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
         activation_checkpointing: bool = False,
         **kwargs,
     ):
@@ -51,9 +53,9 @@ class Encoder(nn.Module):
         if not fixed_dropout_depth and self.drop_path_rate > 0.0:
             dpr = np.linspace(0, self.drop_path_rate, self.depth)
 
-        self.norm_layer = norm_layer
-        self.act_layer = act_layer
-        self.mlp_layer = mlp_layer
+        self.norm_layer = get_norm(norm_layer)
+        self.act_layer = get_activation(act_layer)
+        self.mlp_layer = get_mlp(mlp_layer)
 
         self.transformer_blocks = nn.ModuleList([
             Transformer(
