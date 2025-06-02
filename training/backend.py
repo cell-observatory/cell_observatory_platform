@@ -18,7 +18,7 @@ from deepspeed.ops.adam import FusedAdam
 from deepspeed.ops.lamb import FusedLamb
 
 import ray.train.torch as raytorch
-from ray.train import Checkpoint, report, get_context, get_checkpoint
+from ray.train import Checkpoint, report, get_checkpoint
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -31,22 +31,14 @@ import pandas as pd
 from pathlib import Path
 from contextlib import nullcontext
 
-from data import ao_dataset
-from training import masking
 from training.checkpointing import load_checkpoint
-from training.earlystopping import EarlyStoppingCallback
 from training.registry import build_dependency_graph_and_instantiate
+from utils import context
+from data.dataloaders import get_dataloader
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.DEBUG)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
-
-
-def is_main_process():
-    return get_context().get_world_rank() == 0
-
-def process_rank():
-    return get_context().get_world_rank()
 
 
 def summarize_model(model: nn.Module, inputs: tuple, batch_size: int, logdir: Path):
@@ -282,9 +274,9 @@ def supervised(config: DictConfig):
     restored, latest_checkpoint, best_loss, overall_step, starting_epoch, step_logbook, epoch_logbook = restore_model(config)
 
     if config.datasets.split:
-        train_dataloader, val_dataloader = ao_dataset.collect_dataset(config)
+        train_dataloader, val_dataloader = get_dataloader(config)
     else:
-        train_dataloader = ao_dataset.collect_dataset(config)
+        train_dataloader = get_dataloader(config)
         val_dataloader = None
 
     print(config.clusters.num_workers)
@@ -329,7 +321,7 @@ def supervised(config: DictConfig):
             latest_checkpoint=latest_checkpoint,
         )
 
-    ray_context = get_context()
+    ray_context = context.get_context_manager()
     loss_fn = nn.MSELoss(reduction='sum')
     loss_nans = 0
 
@@ -391,7 +383,7 @@ def supervised(config: DictConfig):
                 mem_log = torch.cuda.memory_summary()
                 logger.info(mem_log)
 
-                if is_main_process():
+                if context.is_main_process():
                     with (Path(config.logdir) / 'memory.log').open('w') as f:
                         f.write(str(mem_log))
 
@@ -429,7 +421,7 @@ def supervised(config: DictConfig):
                     best_loss = loss
                     model.save_checkpoint(config.checkpointdir, tag="best_model")
 
-                if is_main_process():
+                if context.is_main_process():
                     pd.DataFrame.from_dict(epoch_logbook, orient='index').to_csv(Path(config.logdir) / 'logbook.csv')
                     pd.DataFrame.from_dict(step_logbook, orient='index').to_csv(Path(config.logdir) / 'steplogbook.csv')
 
@@ -443,7 +435,7 @@ def supervised(config: DictConfig):
                     model.save_checkpoint(config.checkpointdir, tag="latest_model")
 
                 # update latest model every checkpoint_update_interval epochs and best model
-                checkpoint = Checkpoint.from_directory(config.checkpointdir) if is_main_process() else None
+                checkpoint = Checkpoint.from_directory(config.checkpointdir) if context.is_main_process() else None
                 # report must be called on all ranks, else hangs
                 report(metrics=epoch_logbook[epoch], checkpoint=checkpoint)
 
@@ -452,9 +444,9 @@ def pixel_reconstruction(config: DictConfig):
     restored, latest_checkpoint, best_loss, overall_step, starting_epoch, step_logbook, epoch_logbook = restore_model(config)
 
     if config.datasets.split:
-        train_dataloader, val_dataloader = ao_dataset.collect_dataset(config)
+        train_dataloader, val_dataloader = get_dataloader(config)
     else:
-        train_dataloader = ao_dataset.collect_dataset(config)
+        train_dataloader = get_dataloader(config)
         val_dataloader = None
 
     print(config.clusters.num_workers)
@@ -499,7 +491,7 @@ def pixel_reconstruction(config: DictConfig):
             latest_checkpoint=latest_checkpoint,
         )
 
-    ray_context = get_context()
+    ray_context = context.get_context_manager()
     loss_nans = 0
     with torch.autograd.set_detect_anomaly(True, check_nan=False):
         with torch.profiler.profile(
@@ -559,7 +551,7 @@ def pixel_reconstruction(config: DictConfig):
                 mem_log = torch.cuda.memory_summary()
                 logger.info(mem_log)
 
-                if is_main_process():
+                if context.is_main_process():
                     with (Path(config.logdir) / 'memory.log').open('w') as f:
                         f.write(str(mem_log))
 
@@ -597,7 +589,7 @@ def pixel_reconstruction(config: DictConfig):
                     best_loss = loss
                     model.save_checkpoint(config.checkpointdir, tag="best_model")
 
-                if is_main_process():
+                if context.is_main_process():
                     pd.DataFrame.from_dict(epoch_logbook, orient='index').to_csv(Path(config.logdir) / 'logbook.csv')
                     pd.DataFrame.from_dict(step_logbook, orient='index').to_csv(Path(config.logdir) / 'steplogbook.csv')
 
@@ -611,7 +603,7 @@ def pixel_reconstruction(config: DictConfig):
                     model.save_checkpoint(config.checkpointdir, tag="latest_model")
 
                 # update latest model every checkpoint_update_interval epochs and best model
-                checkpoint = Checkpoint.from_directory(config.checkpointdir) if is_main_process() else None
+                checkpoint = Checkpoint.from_directory(config.checkpointdir) if context.is_main_process() else None
                 # report must be called on all ranks, else hangs
                 report(metrics=epoch_logbook[epoch], checkpoint=checkpoint)
 
@@ -630,9 +622,9 @@ def joint_embedding_prediction(config: DictConfig):
     # )
 
     if config.datasets.split:
-        train_dataloader, val_dataloader = ao_dataset.collect_dataset(config)
+        train_dataloader, val_dataloader = get_dataloader(config)
     else:
-        train_dataloader = ao_dataset.collect_dataset(config)
+        train_dataloader = get_dataloader(config)
         val_dataloader = None
 
     print(config.clusters.num_workers)
@@ -684,7 +676,7 @@ def joint_embedding_prediction(config: DictConfig):
             latest_checkpoint=latest_checkpoint,
         )
 
-    ray_context = get_context()
+    ray_context = context.get_context_manager()
     loss_nans = 0
     with torch.autograd.set_detect_anomaly(True, check_nan=False):
 
@@ -747,7 +739,7 @@ def joint_embedding_prediction(config: DictConfig):
                 mem_log = torch.cuda.memory_summary()
                 logger.info(mem_log)
 
-                if is_main_process():
+                if context.is_main_process():
                     with (Path(config.logdir) / 'memory.log').open('w') as f:
                         f.write(str(mem_log))
 
@@ -785,7 +777,7 @@ def joint_embedding_prediction(config: DictConfig):
                     best_loss = loss
                     model.save_checkpoint(config.checkpointdir, tag="best_model")
 
-                if is_main_process():
+                if context.is_main_process():
                     pd.DataFrame.from_dict(epoch_logbook, orient='index').to_csv(Path(config.logdir) / 'logbook.csv')
                     pd.DataFrame.from_dict(step_logbook, orient='index').to_csv(Path(config.logdir) / 'steplogbook.csv')
 
@@ -799,6 +791,6 @@ def joint_embedding_prediction(config: DictConfig):
                     model.save_checkpoint(config.checkpointdir, tag="latest_model")
 
                 # update latest model every checkpoint_update_interval epochs and best model
-                checkpoint = Checkpoint.from_directory(config.checkpointdir) if is_main_process() else None
+                checkpoint = Checkpoint.from_directory(config.checkpointdir) if context.is_main_process() else None
                 # report must be called on all ranks, else hangs
                 report(metrics=epoch_logbook[epoch], checkpoint=checkpoint)
