@@ -40,3 +40,5 @@ torchvision==0.19.1
 tqdm==4.67.1
 ujson==5.10.0
 zarr==3.0.7
+diffusers>=0.25.0
+ipdb==0.13.13
