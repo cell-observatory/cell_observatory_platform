@@ -147,7 +147,7 @@ class MULTICHANNEL_4D_HYPERCUBE(Enum):
 
     def get_spatial_shape(self, tensor: torch.Tensor) -> Tuple:
         d = self.get_image_shape_dict(tensor)
-        return (d['t'], d['z'], d['y'], d['x'])
+        return (d['z'], d['y'], d['x'])
 
     def get_temporal_shape(self, tensor: torch.Tensor) -> Tuple:
         d = self.get_image_shape_dict(tensor)
