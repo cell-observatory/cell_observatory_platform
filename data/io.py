@@ -2,7 +2,8 @@ import sys
 import logging
 from pathlib import Path
 from typing import Tuple
-
+import inspect
+import functools
 import torch
 import numpy as np
 import tensorstore as ts
@@ -176,3 +177,22 @@ def get_shape_from_file_tiff(image_path: str) -> tuple:
         # .shape might be (Z,Y,X), (C,Z,Y,X), (T,Z,Y,X) or (T,C,Z,Y,X), etc.
         return tif.series[0].shape
 
+
+def record_init(fn):
+    """
+    Decorator for __init__ methods.  Captures every arg/kwarg you passed
+    (with defaults) into self._init_args.
+    """
+    sig = inspect.signature(fn)
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        bound = sig.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        init_args = {
+            name: value
+            for name, value in bound.arguments.items()
+            if name != "self"
+        }
+        self._init_args = init_args
+        return fn(self, *args, **kwargs)
+    return wrapper

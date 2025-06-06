@@ -2,8 +2,7 @@ import sys
 import logging
 import torch
 from enum import Enum
-from typing import Tuple
-
+from typing import Tuple, Dict
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -35,7 +34,57 @@ class MULTICHANNEL_3D_HYPERCUBE(Enum):
     def axes(self) -> Tuple[str, ...]:
         return tuple(self.value)  # e.g. ("C","Z","Y","X")
 
+    def get_image_shape_tuple(self, tensor: torch.Tensor) -> Tuple:
+        has_batch = tensor.ndim == 5  # (N, Z/T, Y, X, C)
+        shape = tensor.shape #eg (512, 128, 128, 128, 2)
+
+        if self is MULTICHANNEL_3D_HYPERCUBE.ZYXC or self is MULTICHANNEL_3D_HYPERCUBE.TYXC:
+            return shape[1:-1] if has_batch else shape[:-1] #eg (128, 128, 128)
+
+        elif self is MULTICHANNEL_3D_HYPERCUBE.CZYX or self is MULTICHANNEL_3D_HYPERCUBE.CTYX:
+            return shape[-3:]
+
+        else:
+            raise NotImplementedError(f"Unsupported layout {shape}")
+
+    def get_image_shape_dict(self, tensor: torch.Tensor) -> Dict:
+        has_batch = tensor.ndim == 5  # (N, Z/T, Y, X, C)
+        shape = tensor.shape #eg (512, 128, 128, 128, 2)
+
+        if self is MULTICHANNEL_3D_HYPERCUBE.ZYXC:
+            return dict(z=shape[1], y=shape[2], x=shape[3]) if has_batch else dict(z=shape[0], y=shape[1], x=shape[2])
+
+        elif self is MULTICHANNEL_3D_HYPERCUBE.TYXC:
+            return dict(t=shape[1], y=shape[2], x=shape[3]) if has_batch else dict(t=shape[0], y=shape[1], x=shape[2])
+
+        elif self is MULTICHANNEL_3D_HYPERCUBE.CZYX:
+            return dict(z=shape[-3], y=shape[-2], x=shape[-1])
+
+        elif self is MULTICHANNEL_3D_HYPERCUBE.CTYX:
+            return dict(t=shape[-3], y=shape[-2], x=shape[-1])
+        else:
+            raise NotImplementedError(f"Unsupported layout {shape}")
+
+    def get_spatial_shape(self, tensor: torch.Tensor) -> Tuple:
+        d = self.get_image_shape_dict(tensor)
+
+        if self is MULTICHANNEL_3D_HYPERCUBE.ZYXC:
+            return (d['z'], d['y'], d['x'])
+        elif self is MULTICHANNEL_3D_HYPERCUBE.TYXC:
+            return (d['y'], d['x'])
+        else:
+            raise ValueError(f'Tensor has an unsupported layout {self}')
+
+    def get_temporal_shape(self, tensor: torch.Tensor) -> Tuple:
+        d = self.get_image_shape_dict(tensor)
+
+        if self is MULTICHANNEL_3D_HYPERCUBE.TYXC:
+            return d['t']
+        else:
+            raise ValueError(f'Tensor does not have a temporal dim {self}')
+
     def to_channel_first(self, tensor: torch.Tensor) -> torch.Tensor:
+
         if self is MULTICHANNEL_3D_HYPERCUBE.CZYX or self is MULTICHANNEL_3D_HYPERCUBE.CTYX:
             return tensor  # already correct
 
@@ -68,6 +117,41 @@ class MULTICHANNEL_4D_HYPERCUBE(Enum):
     @property
     def axes(self) -> Tuple[str, ...]:
         return tuple(self.value)  # e.g. ("C","T","Z","Y","X")
+
+    def get_image_shape_tuple(self, tensor: torch.Tensor) -> Tuple:
+        has_batch = tensor.ndim == 6  # (N, T, Z, Y, X, C)
+        shape = tensor.shape #eg (512, 16, 128, 128, 128, 2)
+
+        if self is MULTICHANNEL_4D_HYPERCUBE.TZYXC:
+            return shape[1:-1] if has_batch else shape[:-1] #eg (16, 128, 128, 128)
+
+        elif self is MULTICHANNEL_4D_HYPERCUBE.CTZYX:
+            return shape[-4:]
+
+        else:
+            raise NotImplementedError(f"Unsupported layout {shape}")
+
+    def get_image_shape_dict(self, tensor: torch.Tensor) -> Dict:
+        has_batch = tensor.ndim == 6  # (N, T, Z, Y, X, C)
+        shape = tensor.shape  # eg (512, 16, 128, 128, 128, 2)
+
+        if self is MULTICHANNEL_4D_HYPERCUBE.TZYXC:
+            return dict(t=shape[1], z=shape[2], y=shape[3], x=shape[4]) \
+                if has_batch else dict(t=shape[0], z=shape[1], y=shape[2], x=shape[3])
+
+        elif self is MULTICHANNEL_4D_HYPERCUBE.CTZYX:
+            return dict(t=shape[-4], z=shape[-3], y=shape[-2], x=shape[-1])
+
+        else:
+            raise NotImplementedError(f"Unsupported layout {shape}")
+
+    def get_spatial_shape(self, tensor: torch.Tensor) -> Tuple:
+        d = self.get_image_shape_dict(tensor)
+        return (d['z'], d['y'], d['x'])
+
+    def get_temporal_shape(self, tensor: torch.Tensor) -> Tuple:
+        d = self.get_image_shape_dict(tensor)
+        return d['t']
 
     def to_channel_first(self, tensor: torch.Tensor) -> torch.Tensor:
         if self is MULTICHANNEL_4D_HYPERCUBE.CTZYX:
