@@ -76,7 +76,7 @@ class MULTICHANNEL_3D_HYPERCUBE(Enum):
         else:
             raise NotImplementedError(f"Unsupported layout {shape}")
 
-    def get_spatial_shape(self, tensor: torch.Tensor) -> Tuple:
+    def get_spatial_shape(self, tensor: torch.Tensor) -> Tuple[int, int, int] | Tuple[int, int]:
         d = self.get_image_shape_dict(tensor)
 
         if self is MULTICHANNEL_3D_HYPERCUBE.ZYXC:
@@ -174,7 +174,7 @@ class MULTICHANNEL_4D_HYPERCUBE(Enum):
         else:
             raise NotImplementedError(f"Unsupported layout {shape}")
 
-    def get_spatial_shape(self, tensor: torch.Tensor) -> Tuple:
+    def get_spatial_shape(self, tensor: torch.Tensor) -> Tuple[int, int, int]:
         d = self.get_image_shape_dict(tensor)
         return (d['z'], d['y'], d['x'])
 
