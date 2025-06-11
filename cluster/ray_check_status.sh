@@ -28,7 +28,7 @@ while true; do
 
   if [ $elapsed -gt $TIMEOUT ]; then
       echo "Timeout after $TIMEOUT seconds"
-      ray stop --force
+    #   ray stop --force
       exit 1
   fi
 
@@ -38,7 +38,7 @@ while true; do
 
   if [ $status -ne 0 ]; then
       echo "Cluster status command failed with exit code $status"
-      ray stop --force
+    #   ray stop --force
       exit 1
   fi
 
@@ -52,4 +52,4 @@ while true; do
   sleep 1
 done
 
-$check
+echo "Cluster is ready with $ready/$required node(s)"
