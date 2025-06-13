@@ -231,6 +231,11 @@ jobs:
             BRANCH_NAME=${{ env.BRANCH }}
           target: ${{ env.CUDA_VERSION }}
 
+      - id: get-build-name
+        run: |
+          imageName=${{ fromJSON(steps.docker-push.outputs.metadata)['image.name'] }}
+          echo "::set-output name=image_name::$imageName"
+
 
   sif_path:
     runs-on:
@@ -384,8 +389,17 @@ jobs:
             sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  || true
             sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
 
-
-
+  build_SIF_file_from_apptainerfile:
+    needs: apptainer-build-and-test
+    runs-on:
+      group: Default
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+    outputs:
+      output1: ${{ steps.apptainer_build_definition_file.outcome }}
+    steps:
       - name: Check if built SIF file exists
         id: check_if_built_SIF_exists
         uses: andstor/file-existence-action@076e0072799f4942c8bc574a82233e1e4d13e9d6   # "version 3.0"
@@ -408,13 +422,24 @@ jobs:
             mkdir -p ~/built_SIF
             sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
             /bin/cp -f ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
+      
 
-            
-      - name: Build "${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" from docker://${{ env.REGISTRY }}/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ env.CUDA_VERSION }}
+  build_SIF_file_from_dockerimage:
+    if: needs.build_SIF_file_from_apptainerfile.outputs.output1 != 'success' 
+    # if the apptainer build from the definition file failed, then we will try to build from the docker image.
+    runs-on:
+      group: Default
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+    needs: [docker-build, docker-push, sif_path, apptainer-build-and-test, build_SIF_file_from_apptainerfile]
+    steps:          
+      - name: Build "${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" from docker://${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}
         if: steps.apptainer_build_definition_file.outcome != 'success'
         id: apptainer_build_docker_image
         run: |
-            apptainer build --nv --force ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} docker://${{ env.REGISTRY }}/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ env.CUDA_VERSION }} 
+            apptainer build --nv --force ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} docker://${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }} 
                         
             echo "done building ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}, now copying to ~/built_SIF for caching"
             mkdir -p ~/built_SIF
@@ -428,6 +453,20 @@ jobs:
       #       apptainer remote login --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} oras://ghcr.io
       #       apptainer push -U ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif oras://ghcr.io/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ env.CUDA_VERSION }}_sif
 
+
+  apptainer-test:
+    needs: [build_SIF_file_from_dockerimage, build_SIF_file_from_apptainerfile]
+    runs-on:
+      group: Default
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+    env:
+      SUPABASE_URL: ${{ secrets.PRODUCTION_PROJECT_URL }}
+      SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
+      TESTMON_DATAFILE: '/home/mosaic/TESTMON_DATAFILE'
+    steps:
       - name: List files in the repository
         run: |
           ls -lhXR ${{ github.workspace }}
