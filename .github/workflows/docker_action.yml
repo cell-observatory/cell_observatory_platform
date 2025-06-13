@@ -398,14 +398,29 @@ jobs:
 
       - name: Build "${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" from apptainerfile.def definition file
         if: steps.cached_apptainer_build.outputs.CHECKSUM == 'FAILED' || steps.check_if_built_SIF_exists.outputs.files_exists == 'false'
-        id: apptainer_build
+        id: apptainer_build_definition_file
+        continue-on-error: true
         run: |
             /bin/cp -sf ~/SIF_files/${{ steps.bootstrap_sif.outputs.SIF_FILE }} .
             apptainer build --nv --force ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} apptainerfile.def
+                        
             echo "done building ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}, now copying to ~/built_SIF for caching"
             mkdir -p ~/built_SIF
             sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
             /bin/cp -f ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
+
+            
+      - name: Build "${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" from docker://${{ env.REGISTRY }}/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ env.CUDA_VERSION }}
+        if: steps.apptainer_build_definition_file.outcome != 'success'
+        id: apptainer_build_docker_image
+        run: |
+            apptainer build --nv --force ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} docker://${{ env.REGISTRY }}/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ env.CUDA_VERSION }} 
+                        
+            echo "done building ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}, now copying to ~/built_SIF for caching"
+            mkdir -p ~/built_SIF
+            sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
+            /bin/cp -f ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
+      # on error build from the apptainer.def file, we will build the SIF file from the docker image, if that doesn't work go to the (local) docker image.
 
       # - name: Login and Push Apptainer SIF to github
       #   run: |
