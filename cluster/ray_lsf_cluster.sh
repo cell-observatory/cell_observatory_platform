@@ -3,43 +3,16 @@ export NCCL_DEBUG_SUBSYS=GRAPH
 export RAY_DEDUP_LOGS=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-while getopts ":e:b:n:c:g:o:w:" option;do
-    case "${option}" in
-    e) e=${OPTARG}
-       env=$e
-       echo env=$env
-    ;;
-    b) b=${OPTARG}
-       bind=$b
-       echo bind=$bind
-    ;;
-    n) n=${OPTARG}
-       nodes=$n
-       echo nodes=$nodes
-    ;;
-    c) c=${OPTARG}
-       cpus=$c
-       echo cpus=$cpus
-    ;;
-    g) g=${OPTARG}
-       gpus=$g
-       echo gpus=$gpus
-    ;;
-    o) o=${OPTARG}
-        outdir=$o
-    ;;
-    w) w=${OPTARG}
-        workload=$w
-    ;;
-    *) echo "Did not supply the correct arguments"
-    ;;
-    esac
-done
+# parse args from `args_parser.sh` getopts
+source ./args_parser.sh
 
 tmpdir=/tmp/symlink_$(uuidgen | cut -d "-" -f5)
 echo "Create symlink: $outdir -> $tmpdir"
 
 ############################## SETUP PORTS
+
+# for debugging
+set -x
 
 #bias to selection of higher range ports
 function getfreeport()
@@ -73,13 +46,9 @@ export head_node
 export head_node_ip
 export cluster_address
 
-head_cpus=$(( cpus + 1 )) # 1 cpu core for the training coordinator
-apptainer exec --userns --nv --bind $bind --bind $outdir:$tmpdir $env ./ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir &
+apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+  $env ./ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir &
 sleep 10
-
-############################## RUN METRICS
-
-# apptainer exec --userns --nv --bind $bind --bind $outdir:$tmpdir $env ray metrics launch-prometheus
 
 ############################## ADD WORKER NODES
 
@@ -89,7 +58,30 @@ for i in $(seq 1 $num_workers)
 do
     mkdir -p "${outdir}/ray_worker_${i}"
     echo "Adding worker: ${outdir}/ray_worker_${i}"
-    job="bsub -cwd "$(pwd)" -q $LSB_QUEUE -J "${outdir}/ray_worker_${i}" -n $cpus -gpu "num=$gpus:mode=shared" -o "${outdir}/ray_worker_${i}.log" apptainer exec --userns --nv --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir $env ./ray_start_worker.sh -a $cluster_address -c $cpus -g $gpus -t $tmpdir"
+    if [[ "$exclusive" == "true" ]]; then
+        echo "Exclusive mode is enabled"
+        job="bsub -cwd "$(pwd)" \
+            -q $partition \
+            -J "${outdir}/ray_worker_${i}" \
+            -x \
+            -n $cpus \
+            -gpu "num=$gpus:mode=shared" \
+            -o "${outdir}/ray_worker_${i}.log" \
+            apptainer exec --userns --nv \
+              --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
+                $env ./ray_start_worker.sh -a $cluster_address -c $cpus -g $gpus -t $tmpdir"
+    else
+        job="bsub -cwd "$(pwd)" \
+            -q $partition \
+            -J "${outdir}/ray_worker_${i}" \
+            -n $cpus \
+            -gpu "num=$gpus:mode=shared" \
+            -o "${outdir}/ray_worker_${i}.log" \
+            apptainer exec --userns --nv \
+              --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
+                $env ./ray_start_worker.sh -a $cluster_address -c $cpus -g $gpus -t $tmpdir"
+    fi
+
     echo $job
     $job
 
@@ -107,25 +99,31 @@ done
 
 ############################## CHECK STATUS
 
-apptainer exec --userns --nv --bind $bind --bind $outdir:$tmpdir $env ./ray_check_status.sh -a $cluster_address -r $nodes
+# add exit trap to ensure cleanup on script exit
+# this will ensure that we stop the Ray cluster and cancel worker jobs
+# even if the script fails at any point henceforth
+cleanup() {
+    ec=$? # exit code of the last command that triggered the trap
+    echo "running cleanup (exit code: $ec)"
+
+    # stop Ray on the head node
+    apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
+
+    # cancel worker jobs (if still queued/running)
+    for jid in "${worker_ids[@]}"
+    do
+        bkill $jid
+    done
+
+    # on failure (non-zero exit) also cancel the head-node job
+    [[ $ec -ne 0 ]] && bkill "$LSB_JOBID" || true
+}
+trap cleanup EXIT
+
+apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ./ray_check_status.sh -a $cluster_address -r $nodes
 
 ############################## RUN WORKLOAD
 
-echo "Running user workload"
-echo $workload
-apptainer exec --userns --nv --bind $bind --bind $outdir:$tmpdir $env $workload
-
-############################## CLEANUP
-
-echo "Stop ray"
-ps aux | grep prometheus | awk '{print $2}' | xargs kill -9
-apptainer exec --userns --nv --bind $bind --bind $outdir:$tmpdir $env ray stop --force
-
-echo "Shutting down the Job"
-
-for jid in "${worker_ids[@]}"
-do
-    bkill $jid
-done
-
-bkill $LSB_JOBID
+echo "Running user tasks"
+echo $tasks
+apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks
