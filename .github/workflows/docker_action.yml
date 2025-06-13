@@ -464,6 +464,10 @@ jobs:
 
   apptainer-test:
     needs: [build_SIF_file_from_dockerimage, build_SIF_file_from_apptainerfile, sif_path]
+    if: |
+      always() && 
+      (needs.build_SIF_file_from_dockerimage.result == 'skipped' || needs.build_SIF_file_from_dockerimage.result == 'success') &&
+      (needs.build_SIF_file_from_apptainerfile.result == 'skipped' || needs.build_SIF_file_from_apptainerfile.result == 'success')
     runs-on:
       group: Default
     permissions:
