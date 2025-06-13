@@ -314,14 +314,14 @@ jobs:
       #  (e.g. 25.01-py3)
         id: dockerfile_pytorch_version
         run: |
-            echo "DOCKER_PYTORCH_VERSION=$(grep -Po 'pytorch:\K.*(?= as)' Dockerfile)" >> "$GITHUB_OUTPUT"
+            echo "DOCKER_PYTORCH_VERSION=$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
             cat "$GITHUB_OUTPUT"
 
       - name: Get dockerfile pytorch image from 'Dockerfile' 
       # (e.g. nvcr.io/nvidia/pytorch:25.01-py3)
         id: dockerfile_pytorch_image
         run: |
-            echo "DOCKER_PYTORCH_IMAGE=$(grep -Po 'FROM \K.*(?= as)' Dockerfile)" >> "$GITHUB_OUTPUT"
+            echo "DOCKER_PYTORCH_IMAGE=$(grep -Po -m 1 'FROM \K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
             cat "$GITHUB_OUTPUT"
 
       - name: Copy bootstrap SIF file 
