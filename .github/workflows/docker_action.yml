@@ -434,7 +434,7 @@ jobs:
       
 
   build_SIF_file_from_dockerimage:
-    if: needs.build_SIF_file_from_apptainerfile.outputs.output1 != 'success' 
+    if: needs.build_SIF_file_from_apptainerfile.outputs.output1 == 'failure' 
     # if the apptainer build from the definition file failed, then we will try to build from the docker image.
     runs-on:
       group: Default
