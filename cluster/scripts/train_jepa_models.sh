@@ -51,6 +51,14 @@ if [ $PARTITION = 'gpu_h100' ];then
         echo "Waiting for [$AVAL/$NODES] nodes to be available"
         AVAL=$(bhosts -o "host_name run:-6"  h100s | grep -w "0" | awk '{print $1}' | wc -l)
     done
+elif [ $PARTITION = 'gpu_h100' ];then
+    AVAL=$(bhosts -o "host_name run:-6"  h100s | grep -w "0" | awk '{print $1}' | wc -l)
+    while [ $AVAL -lt $NODES ]
+    do
+        sleep 1
+        echo "Waiting for [$AVAL/$NODES] nodes to be available"
+        AVAL=$(bhosts -o "host_name run:-6"  h100s | grep -w "0" | awk '{print $1}' | wc -l)
+    done
 elif [ $PARTITION = 'gpu_a100' ];then
     AVAL=$(bhosts -o "host_name run:-6"  a100s | grep -w "0" | awk '{print $1}' | wc -l)
     while [ $AVAL -lt $NODES ]
