@@ -1,9 +1,0 @@
-partition: gpu_h200
-workers: 1 # number of worker nodes
-gpu_workers: 8 # number of gpus per worker
-cpu_workers: 32 # number of cpu cores per worker (num gpus per worker * number of cpu cores per gpu)
-distributed_sampler: true # use distributed sampler for training (standard for Ray/DDP)
-max_worker_heartbeat_timeout: 2 # in minutes (to prevent indefinite hang if one process fails)
-num_workers: ${eval:'${clusters.workers} * ${clusters.gpu_workers}'}  # total number of GPUS across all nodes
-worker_batch_size: ${eval:'${batch_size} // ${num_workers}'} # batch size for each gpu
-cpus_per_gpu: ${eval:'${clusters.cpu_workers} // ${clusters.gpu_workers}'}
