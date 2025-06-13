@@ -147,6 +147,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      IMAGENAME: ${{ steps.get-build-name.outputs.IMAGENAME }}
     steps:
       - name: Dump GitHub context
         env:
@@ -233,9 +235,7 @@ jobs:
 
       - id: get-build-name
         run: |
-          imageName=${{ fromJSON(steps.docker-push.outputs.metadata)['image.name'] }}
-          echo "::set-output name=image_name::$imageName"
-
+          echo "IMAGENAME=${{ fromJSON(steps.docker-push.outputs.metadata)['image.name'] }}" >> "$GITHUB_OUTPUT"
 
   sif_path:
     runs-on:
@@ -444,10 +444,10 @@ jobs:
       checks: write
     needs: [docker-build, docker-push, sif_path, apptainer-build-and-test, build_SIF_file_from_apptainerfile]
     steps:          
-      - name: Build "${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" from docker://${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}
+      - name: Build "${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" from docker://${{ needs.docker-push.outputs.IMAGENAME }}
         id: apptainer_build_docker_image
         run: |
-            apptainer build --nv --force ${{ needs.apptainer-build-and-test.outputs.BUILT_SIF_PATH }} docker://${{ env.REGISTRY }}/${{ github.repository }}:${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }} 
+            apptainer build --nv --force ${{ needs.apptainer-build-and-test.outputs.BUILT_SIF_PATH }} docker://${{ needs.docker-push.outputs.IMAGENAME }}
                         
             echo "done building ${{ needs.apptainer-build-and-test.outputs.BUILT_SIF_PATH }}, now copying to ~/built_SIF for caching"
             mkdir -p ~/built_SIF
