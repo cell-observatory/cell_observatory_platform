@@ -1,6 +1,6 @@
 import shlex
 from pathlib import Path
-from subprocess import call
+from subprocess import call, run
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -123,6 +123,18 @@ def main(cfg: DictConfig):
             sjob_worker_nodes.append(f"-o {outdir}/training_job.log")
 
         sjob_worker_nodes.append(f"{q(ray_wrap)}")
+
+        print("Checking available Janelia cluster resources...")
+        try:
+            aval = run(
+                ['bash', 'check_available_janelia_nodes.sh'],
+                check=True,
+                text=True,
+                shell=True
+            )
+            print("Requested resource are available now!")
+        except Exception as e:
+            print(f"Error running resource check: {e}")
 
         print("Submitting lsf job with configuration:")
         print(sjob_worker_nodes)
