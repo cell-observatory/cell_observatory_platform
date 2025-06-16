@@ -377,27 +377,6 @@ jobs:
         run: |
             mkdir -p ~/SIF_files/  &&  apptainer build --nv --force ~/SIF_files/${{ steps.bootstrap_sif.outputs.SIF_FILE }} docker://${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
 
-      - name: Cache apptainer build
-        uses: dmilkie/local-cache@main
-        with:
-          base: ~/.cache/github_action_local_cache
-          path: /home/mosaic/built_SIF
-          key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
-
-      - name: Cache pytest testmon
-        uses: dmilkie/local-cache@main
-        with:
-          base: ~/.cache/github_action_local_cache
-          path: /home/mosaic/TESTMON_DATAFILE
-          key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
-
-      - name: Copy cached apptainer build if checksums pass
-        id: cached_apptainer_build
-        run: |
-            rm -f ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}
-            sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  || true
-            sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
-
   build_SIF_file_from_apptainerfile:
     needs: apptainer-get-caches
     runs-on:
@@ -409,6 +388,13 @@ jobs:
     outputs:
       output1: ${{ steps.apptainer_build_definition_file.outcome }}
     steps:
+      - name: Cache apptainer build
+        uses: dmilkie/local-cache@main
+        with:
+          base: ~/.cache/github_action_local_cache
+          path: /home/mosaic/built_SIF
+          key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
+
       - name: Check if built SIF file exists
         id: check_if_built_SIF_exists
         uses: andstor/file-existence-action@076e0072799f4942c8bc574a82233e1e4d13e9d6   # "version 3.0"
@@ -431,6 +417,13 @@ jobs:
             mkdir -p ~/built_SIF
             sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
             /bin/cp -f ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
+
+      - name: Copy cached apptainer build if checksums pass
+        id: cached_apptainer_build
+        run: |
+            rm -f ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}
+            sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  || true
+            sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
       
 
   build_SIF_file_from_dockerimage:
@@ -443,7 +436,14 @@ jobs:
       packages: write
       checks: write
     needs: [docker-build, docker-push, sif_path, apptainer-get-caches, build_SIF_file_from_apptainerfile]
-    steps:          
+    steps:
+      - name: Cache apptainer build
+        uses: dmilkie/local-cache@main
+        with:
+          base: ~/.cache/github_action_local_cache
+          path: /home/mosaic/built_SIF
+          key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
+
       - name: Build "${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" from docker://${{ needs.docker-push.outputs.IMAGENAME }}
         id: apptainer_build_docker_image
         run: |
@@ -453,6 +453,13 @@ jobs:
             mkdir -p ~/built_SIF
             sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
             /bin/cp -f ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
+
+      - name: Copy cached apptainer build if checksums pass
+        id: cached_apptainer_build
+        run: |
+            rm -f ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}
+            sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  || true
+            sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
       # on error build from the apptainer.def file, we will build the SIF file from the docker image, if that doesn't work go to the (local) docker image.
 
       # - name: Login and Push Apptainer SIF to github
@@ -479,6 +486,21 @@ jobs:
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
       TESTMON_DATAFILE: '/home/mosaic/TESTMON_DATAFILE'
     steps:
+
+      - name: Cache apptainer build
+        uses: dmilkie/local-cache@main
+        with:
+          base: ~/.cache/github_action_local_cache
+          path: /home/mosaic/built_SIF
+          key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
+      
+      - name: Cache pytest testmon
+        uses: dmilkie/local-cache@main
+        with:
+          base: ~/.cache/github_action_local_cache
+          path: /home/mosaic/TESTMON_DATAFILE
+          key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
+          
       - name: List files in the repository
         run: |
           ls -lhXR ${{ github.workspace }}
@@ -529,7 +551,7 @@ jobs:
           group_suite: false
           include_time_in_summary: true
 
-  List_cache_folder:
+  list_cache_folder:
     if: always() # always list the cache folder, even if the build failed.
     runs-on:
       group: Default
@@ -538,6 +560,9 @@ jobs:
     - name: List cache folder
       run: |
         ls -lhXR ~/.cache/github_action_local_cache
+    - name: List built_SIF folder
+      run: |
+        ls -lhXR /home/mosaic/built_SIF
 
       # - name: Surface failing tests
       #   if: always()
