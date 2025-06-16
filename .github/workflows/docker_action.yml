@@ -490,7 +490,7 @@ jobs:
         with:
           base: ~/.cache/github_action_local_cache
           path: /home/mosaic/built_SIF
-          key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
       
       - name: Cache pytest testmon
         uses: dmilkie/local-cache@main
