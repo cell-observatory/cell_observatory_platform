@@ -248,6 +248,7 @@ jobs:
       - name: clean name of "/" characters
         id: step1
         run: |
+            mkdir -p ~/.cache/TESTMON
             echo "${{ github.head_ref || github.ref_name }}" | tr '/' '_'
             {
               echo 'MY_PATH<<EOF'
