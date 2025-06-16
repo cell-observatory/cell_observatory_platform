@@ -1,16 +1,10 @@
 
 Cell Observatory
 ====================================================
-- [Copyright Notice](#copyright-notice)
 - [Docker \& Apptainer images](#docker--apptainer-images)
 - [Clone repository to your host system](#clone-repository-to-your-host-system)
 - [Running docker image](#running-docker-image)
-
-# Copyright notice
-All code and data contained within this repository are proprietary.<br> 
-Unauthorized distribution, reproduction, or use of any part of this code or data is strictly prohibited.<br>
-Copyright &copy; 2025, Cell Observatory.<br>
-All rights reserved.
+- [License](#license)
 
 
 # Docker [images](https://github.com/cell-observatory/platform/pkgs/container/platform)
@@ -45,3 +39,13 @@ Running an image on a cluster typically requires an Apptainer version of the ima
 ```shell
 apptainer pull --force develop_torch_cuda_12_8.sif docker://ghcr.io/cell-observatory/platform:develop_torch_cuda_12_8
 ```
+
+# License
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+   [Apache License 2.0](LICENSE)
+
+Copyright 2025 Cell Observatory.
