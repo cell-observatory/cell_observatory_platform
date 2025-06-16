@@ -275,9 +275,7 @@ jobs:
       SIF_PYTORCH_VERSION: ${{ steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION }}
       DOCKER_PYTORCH_VERSION: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
       DOCKER_PYTORCH_IMAGE: ${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
-      CHECKSUM: ${{ steps.cached_apptainer_build.outputs.CHECKSUM }}
-
-      
+      # CHECKSUM: ${{ steps.cached_apptainer_build.outputs.CHECKSUM }}
 
     steps:
       # The repo gets volume mapped into the container automatically
@@ -395,6 +393,13 @@ jobs:
           path: /home/mosaic/built_SIF
           key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
 
+      - name: Copy cached apptainer build if checksums pass
+        id: cached_apptainer_build
+        run: |
+            rm -f ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH}}
+            sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH}}  || true
+            sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
+
       - name: Check if built SIF file exists
         id: check_if_built_SIF_exists
         uses: andstor/file-existence-action@076e0072799f4942c8bc574a82233e1e4d13e9d6   # "version 3.0"
@@ -406,7 +411,7 @@ jobs:
           fail: false # fail on missing files
 
       - name: Build "${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH}}" from apptainerfile.def definition file
-        if: needs.apptainer-get-caches.outputs.CHECKSUM == 'FAILED' || steps.check_if_built_SIF_exists.outputs.files_exists == 'false'
+        if: steps.cached_apptainer_build.outputs.CHECKSUM == 'FAILED' || steps.check_if_built_SIF_exists.outputs.files_exists == 'false'
         id: apptainer_build_definition_file
         continue-on-error: true
         run: |
@@ -418,13 +423,6 @@ jobs:
             sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
             /bin/cp -f ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
 
-      - name: Copy cached apptainer build if checksums pass
-        id: cached_apptainer_build
-        run: |
-            rm -f ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}
-            sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  || true
-            sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
-      
 
   build_SIF_file_from_dockerimage:
     if: needs.build_SIF_file_from_apptainerfile.outputs.output1 == 'failure' 
@@ -457,8 +455,8 @@ jobs:
       - name: Copy cached apptainer build if checksums pass
         id: cached_apptainer_build
         run: |
-            rm -f ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}
-            sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  || true
+            rm -f ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH}}
+            sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH}}  || true
             sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
       # on error build from the apptainer.def file, we will build the SIF file from the docker image, if that doesn't work go to the (local) docker image.
 
