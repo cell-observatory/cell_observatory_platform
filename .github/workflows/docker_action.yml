@@ -244,7 +244,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      SIF_PATH: ${{ steps.step1.outputs.MY_PATH }}
+      SIF_PATH: ${{ steps.step1.outputs.MY_PATH }} # SIF_PATH: feature_github_actions_updates
     steps:
       - name: clean name of "/" characters
         id: step1
@@ -256,6 +256,7 @@ jobs:
               echo EOF
             } >> "$GITHUB_OUTPUT"            
             cat "$GITHUB_OUTPUT"
+            
 
 
   apptainer-get-caches:
@@ -270,8 +271,8 @@ jobs:
       SUPABASE_URL: ${{ secrets.PRODUCTION_PROJECT_URL }}
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
     outputs:
-      BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}
-      SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
+      BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  # BUILT_SIF_FILE: /home/mosaic/Desktop/actions-runner/_work/platform/platform/feature_github_actions_updates_torch_cuda_12_8.sif
+      SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}   
       SIF_PYTORCH_VERSION: ${{ steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION }}
       DOCKER_PYTORCH_VERSION: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
       DOCKER_PYTORCH_IMAGE: ${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
@@ -389,14 +390,14 @@ jobs:
       - name: Cache apptainer build
         uses: dmilkie/local-cache@main
         with:
-          base: ~/.cache/github_action_local_cache
           path: /home/mosaic/built_SIF
           key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
 
       - name: Copy cached apptainer build if checksums pass
         id: cached_apptainer_build
+        # remove old sif file in repo directory.  Then copy from cached version if it exists and checksum passes.
         run: |
-            rm -f ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH}}
+            rm -f ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH}}  
             sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH}}  || true
             sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
 
@@ -435,10 +436,9 @@ jobs:
       checks: write
     needs: [docker-build, docker-push, sif_path, apptainer-get-caches, build_SIF_file_from_apptainerfile]
     steps:
-      - name: Cache apptainer build
+      - name: Cache folder ~/built_SIF
         uses: dmilkie/local-cache@main
         with:
-          base: ~/.cache/github_action_local_cache
           path: /home/mosaic/built_SIF
           key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
 
@@ -452,7 +452,7 @@ jobs:
             sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
             /bin/cp -f ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
 
-      - name: Copy cached apptainer build if checksums pass
+      - name: Copy apptainer build if checksums pass
         id: cached_apptainer_build
         run: |
             rm -f ${{ needs.apptainer-get-caches.outputs.BUILT_SIF_PATH}}
@@ -482,15 +482,7 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.PRODUCTION_PROJECT_URL }}
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
-    steps:
-
-      # - name: Cache apptainer build
-      #   uses: dmilkie/local-cache@main
-      #   with:
-      #     base: ~/.cache/github_action_local_cache
-      #     path: /home/mosaic/built_SIF
-      #     key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
-      
+    steps:      
       - name: Cache pytest testmon
         uses: actions/cache@v4
         with:
