@@ -387,13 +387,14 @@ jobs:
     outputs:
       output1: ${{ steps.apptainer_build_definition_file.outcome }}
     steps:
-      - name: Cache apptainer build
-        uses: dmilkie/local-cache@main
+      - name: Cache folder ~/built_SIF
+        # uses: dmilkie/local-cache@main
+        uses: MasterworksIO/action-local-cache@2
         with:
-          base: /home/mosaic/.cache/github_action_local_cache
+          # base: /home/mosaic/.cache/github_action_local_cache
           path: /home/mosaic/built_SIF
           key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
-
+          
       - name: Copy cached apptainer build if checksums pass
         id: cached_apptainer_build
         # remove old sif file in repo directory.  Then copy from cached version if it exists and checksum passes.
@@ -438,9 +439,10 @@ jobs:
     needs: [docker-build, docker-push, sif_path, apptainer-get-caches, build_SIF_file_from_apptainerfile]
     steps:
       - name: Cache folder ~/built_SIF
-        uses: dmilkie/local-cache@main
+        # uses: dmilkie/local-cache@main
+        uses: MasterworksIO/action-local-cache@2
         with:
-          base: /home/mosaic/.cache/github_action_local_cache
+          # base: /home/mosaic/.cache/github_action_local_cache
           path: /home/mosaic/built_SIF
           key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
 
