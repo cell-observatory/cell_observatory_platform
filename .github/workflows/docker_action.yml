@@ -569,12 +569,16 @@ jobs:
     needs: [apptainer-test]
     steps:
     - name: List cache folder
+      continue-on-error: true
       run: |
-        ls -alhXR ~/.cache/github_action_local_cache
+        ls -alhXR ~/.cache/github_action_local_cache 
+      
     - name: List cache folder
+      continue-on-error: true
       run: |
         ls -alhXR ~/.cache/TESTMON
     - name: List built_SIF folder
+      continue-on-error: true
       run: |
         ls -alhXR /home/mosaic/built_SIF
     
