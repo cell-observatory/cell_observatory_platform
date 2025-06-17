@@ -492,9 +492,8 @@ jobs:
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
       
       - name: Cache pytest testmon
-        uses: dmilkie/local-cache@main
+        uses: actions/cache@v4
         with:
-          base: ~/.cache/github_action_local_cache
           path: ${{ env.TESTMON_DATAFILE }}
           key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
           
@@ -560,8 +559,13 @@ jobs:
 
   list_cache_folder:
     if: always() # always list the cache folder, even if the build failed.
+    permissions:
+      contents: read
+      packages: write
+      checks: write
     runs-on:
       group: Default
+    continue-on-error: true
     needs: [apptainer-test]
     steps:
     - name: List cache folder
@@ -573,6 +577,7 @@ jobs:
     - name: List built_SIF folder
       run: |
         ls -alhXR /home/mosaic/built_SIF
+    
 
       # - name: Surface failing tests
       #   if: always()
