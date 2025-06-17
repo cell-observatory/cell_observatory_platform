@@ -380,7 +380,7 @@ jobs:
     runs-on:
       group: Default
     permissions:
-      contents: read
+      contents: write
       packages: write
       checks: write
     outputs:
@@ -430,7 +430,7 @@ jobs:
     runs-on:
       group: Default
     permissions:
-      contents: read
+      contents: write
       packages: write
       checks: write
     needs: [docker-build, docker-push, sif_path, apptainer-get-caches, build_SIF_file_from_apptainerfile]
@@ -476,7 +476,7 @@ jobs:
     runs-on:
       group: Default
     permissions:
-      contents: read
+      contents: write
       packages: write
       checks: write
     env:
@@ -519,7 +519,7 @@ jobs:
         id: apptainer_run
         run: |
           rm -f test_results/* || true
-          echo "APPTAINER_RUN=apptainer exec --no-home --bind ~/.cache/TESTMON/ --bind ~/.cache/github_action_local_cache --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_RUN=apptainer exec --userns --no-home --bind ~/.cache/TESTMON/ --bind ~/.cache/github_action_local_cache --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
 
       - name: pip list 
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip list
