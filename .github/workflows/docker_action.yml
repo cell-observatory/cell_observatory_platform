@@ -472,6 +472,7 @@ jobs:
       #       apptainer push -U ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif oras://ghcr.io/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ env.CUDA_VERSION }}_sif
 
 
+  # if you rename "apptainer-test" to "test", you must also rename this in the branch protection rules. https://github.com/cell-observatory/platform/settings/branch_protection_rules/60118126
   apptainer-test:
     needs: [build_SIF_file_from_dockerimage, build_SIF_file_from_apptainerfile, sif_path]
     if: |
@@ -570,11 +571,11 @@ jobs:
       run: |
         ls -alhXR ${{ runner.tool_cache }}
       
-    - name: List cache folder
+    - name: List ~/.cache/TESTMON folder
       continue-on-error: true
       run: |
         ls -alhXR ~/.cache/TESTMON
-    - name: List built_SIF folder
+    - name: List /home/mosaic/built_SIF folder
       continue-on-error: true
       run: |
         ls -alhXR /home/mosaic/built_SIF
