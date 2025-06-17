@@ -24,7 +24,7 @@ docker_image: null # docker is not supported on most clusters use apptainer inst
 apptainer_image: /clusterfs/nvme/thayer/develop_torch_cuda_12_8.sif # (path to *.sif file if applicable)
 python_env: python # python executable to use (if not using apptainer)
 mount_path: /clusterfs
-repo_name: platform
+repo_name: cell_observatory_platform
 repo_path: ${mount_path}/nvme/thayer/${repo_name}
 script: ${repo_path}/training/train.py
 ray_script: ${repo_path}/clusters/ray_slurm_cluster.sh

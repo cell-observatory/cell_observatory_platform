@@ -270,7 +270,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.PRODUCTION_PROJECT_URL }}
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
     outputs:
-      BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  # BUILT_SIF_FILE: /home/mosaic/Desktop/actions-runner/_work/platform/platform/feature_github_actions_updates_torch_cuda_12_8.sif
+      BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  # BUILT_SIF_FILE: /home/mosaic/Desktop/actions-runner/_work/cell_observatory_platform/cell_observatory_platform/feature_github_actions_updates_torch_cuda_12_8.sif
       SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}   
       SIF_PYTORCH_VERSION: ${{ steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION }}
       DOCKER_PYTORCH_VERSION: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
@@ -472,7 +472,7 @@ jobs:
       #       apptainer push -U ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif oras://ghcr.io/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ env.CUDA_VERSION }}_sif
 
 
-  # if you rename "apptainer-test" to "test", you must also rename this in the branch protection rules. https://github.com/cell-observatory/platform/settings/branch_protection_rules/60118126
+  # if you rename "apptainer-test" to "test", you must also rename this in the branch protection rules. https://github.com/cell-observatory/cell_observatory_platform/settings/branch_protection_rules/60118126
   apptainer-test:
     needs: [build_SIF_file_from_dockerimage, build_SIF_file_from_apptainerfile, sif_path]
     if: |

@@ -1,14 +1,14 @@
 """
 https://github.com/facebookresearch/ConvNeXt-V2/blob/main/pretrained_models/convnextv2.py
 
-# Copyright (c) Meta Platforms, Inc. and affiliates.
+# Copyright (c) Meta cell_observatory_platforms, Inc. and affiliates.
 
 # All rights reserved.
 
 MIT License
 =======================================================================
 
-Copyright (c) Meta Platforms, Inc. and affiliates.
+Copyright (c) Meta cell_observatory_platforms, Inc. and affiliates.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
