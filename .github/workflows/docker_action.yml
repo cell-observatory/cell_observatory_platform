@@ -524,7 +524,7 @@ jobs:
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
 
       - name: print testmon 
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/cache/TESTMON
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
 
       - name: pip list 
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip list
@@ -545,7 +545,7 @@ jobs:
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml --testmon   tests/models
 
       - name: print testmon2 
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/cache/TESTMON
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
       
 
       - name: Publish Test Report
