@@ -26,6 +26,7 @@ env:
   BRANCH: ${{ github.head_ref || github.ref_name }}   # 'main' or 'develop'
   PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings -r fEX --junit-xml=test_results/test-results  # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
   TESTING: ${{ true }}  # skip tests if we have this branch name
+  TESTMON_DATAFILE: ~/.cache/TESTMON/.testmondata  # where testmon stores its data file
   
 jobs:
   cleanup-docker-runners:
@@ -248,7 +249,6 @@ jobs:
       - name: clean name of "/" characters
         id: step1
         run: |
-            mkdir -p ~/.cache/TESTMON
             echo "${{ github.head_ref || github.ref_name }}" | tr '/' '_'
             {
               echo 'MY_PATH<<EOF'
@@ -269,7 +269,6 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.PRODUCTION_PROJECT_URL }}
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
-      TESTMON_DATAFILE: '~/.cache/TESTMON/TESTMON_DATAFILE'
     outputs:
       BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}
       SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
@@ -483,7 +482,6 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.PRODUCTION_PROJECT_URL }}
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
-      TESTMON_DATAFILE: '~/.cache/TESTMON/TESTMON_DATAFILE'
     steps:
 
       - name: Cache apptainer build
@@ -497,7 +495,7 @@ jobs:
         uses: dmilkie/local-cache@main
         with:
           base: ~/.cache/github_action_local_cache
-          path: ~/.cache/TESTMON/TESTMON_DATAFILE
+          path: ${{ env.TESTMON_DATAFILE }}
           key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
           
       - name: List files in the repository
@@ -520,7 +518,13 @@ jobs:
         id: apptainer_run
         run: |
           rm -f test_results/* || true
-          echo "APPTAINER_RUN=apptainer exec --userns --no-home --bind ~/.cache/TESTMON --bind ~/.cache/github_action_local_cache --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_RUN=apptainer exec --userns --no-home --bind ~/.cache/TESTMON --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+  
+      - name: print environment variables
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
+
+      - name: print testmon 
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/cache/TESTMON
 
       - name: pip list 
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip list
@@ -540,6 +544,10 @@ jobs:
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml --testmon   tests/models
 
+      - name: print testmon2 
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/cache/TESTMON
+      
+
       - name: Publish Test Report
         uses: mikepenz/action-junit-report@97744eca465b8df9e6e33271cb155003f85327f1  # "v5"
         if: success() || failure() # always run even if the previous step fails
@@ -558,10 +566,13 @@ jobs:
     steps:
     - name: List cache folder
       run: |
-        ls -lhXR ~/.cache/github_action_local_cache
+        ls -alhXR ~/.cache/github_action_local_cache
+    - name: List cache folder
+      run: |
+        ls -alhXR ~/.cache/TESTMON
     - name: List built_SIF folder
       run: |
-        ls -lhXR /home/mosaic/built_SIF
+        ls -alhXR /home/mosaic/built_SIF
 
       # - name: Surface failing tests
       #   if: always()
