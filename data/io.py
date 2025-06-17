@@ -86,7 +86,7 @@ def save_file(image_path: str, data: np.ndarray, **kwargs) -> None:
         raise ValueError(f"Unsupported file format for {image_path}")
 
 
-# NOTE: taken from ml-data-platform
+# NOTE: taken from ml-data-cell_observatory_platform
 def create_zarr_spec(zarr_version, path, data_shape, shard_cube_shape, chunk_shape, num_timepoints_per_image):
 
     if zarr_version == 'zarr3':

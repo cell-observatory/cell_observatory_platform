@@ -4,11 +4,11 @@ defaults:
 launcher_type: local # type of launcher to use
 
 job_name: test
-docker_image: ghcr.io/cell-observatory/platform:develop_torch_cuda_12_8
+docker_image: ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
 apptainer_image: null # (path to *.sif file if applicable)
 python_env: python # python executable to use (if not using apptainer)
 mount_path: ~/
-repo_name: platform
+repo_name: cell_observatory_platform
 repo_path: ${mount_path}/${repo_name}
 script: ${repo_path}/training/train.py
 ray_script: ${repo_path}/clusters/ray_local_cluster.sh

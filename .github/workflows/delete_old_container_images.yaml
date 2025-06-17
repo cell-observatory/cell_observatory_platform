@@ -41,7 +41,7 @@ jobs:
         uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
         with:
           tag-selection: tagged
-          image-names: "*"      # platform, aovift, ...
+          image-names: "*"      # cell_observatory_platform, aovift, ...
           cut-off: 1w           # package versions should be older than 1 week, to be considered
           keep-n-most-recent: 3
           account: ${{ github.repository_owner }}    # Organization "cell-observatory"
@@ -55,7 +55,7 @@ jobs:
         uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
         with:
           tag-selection: untagged
-          image-names: "*"      # platform, aovift, ...
+          image-names: "*"      # cell_observatory_platform, aovift, ...
           cut-off: 1d           # package versions should be older than 1 week, to be considered
           keep-n-most-recent: 0
           account: ${{ github.repository_owner }}    # Organization "cell-observatory"
@@ -84,7 +84,7 @@ jobs:
         env:
           IMAGES_FILTER: ${{ steps.get_branches.outputs.IMAGES_FILTER }}
         with:
-          image-names: "*"      # platform, aovift, ...
+          image-names: "*"      # cell_observatory_platform, aovift, ...
           tag-selection: tagged
           image-tags: "!develop !main !tags* !0* !1* !2* !3* ${{ steps.get_branches.outputs.IMAGES_FILTER }} *feature-* "  # delete all features that are not active, ...
           cut-off: 1d           # package versions should be older than 1 week, to be considered

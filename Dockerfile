@@ -1,5 +1,5 @@
 # to build the torch_cuda_12_8 image:
-# docker buildx build . --tag ghcr.io/cell-observatory/platform:main_torch_cuda_12_8 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8 --progress=plain --no-cache-filter pip_install
+# docker buildx build . --tag ghcr.io/cell-observatory/cell_observatory_platform:main_torch_cuda_12_8 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8 --progress=plain --no-cache-filter pip_install
 #
 # to run on a ubuntu system:
 # install nvidia driver (distro=ubuntu2204 && arch=x86_64 && arch_ext=amd64) then follow https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/index.html#ubuntu-installation and Network Repository Installation
@@ -7,7 +7,7 @@
 # set docker permissions for non-root: https://docs.docker.com/engine/install/linux-postinstall/ 
 # install apptainer latest version from https://apptainer.org/docs/admin/main/installation.html#install-debian-packages  older version from here https://apptainer.org/docs/admin/main/installation.html#install-ubuntu-packages  
 # install nvidia container toolkit: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
-# install github self-hosted runner: https://github.com/cell-observatory/platform/settings/actions/runners/new?arch=x64&os=linux
+# install github self-hosted runner: https://github.com/cell-observatory/cell_observatory_platform/settings/actions/runners/new?arch=x64&os=linux
 # make github self-hosted runner as a service: https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/configuring-the-self-hosted-runner-application-as-a-service
 # docker system prune
 # container's user is different than github action's user, so change permissions of folder like this: sudo chmod 777 /home/mosaic/Desktop/actions-runner/_work -R
@@ -17,11 +17,11 @@
 
 # this works to mount using ssh keys
 # to mount clusterfs using ssh keys (1. copy keys from /.ssh on host to /sshkey in container, 2. make mount point and change permissions for local user, 3. sshfs with that key and no user input):
-# docker run --rm -it --gpus all --ipc=host --cap-add=SYS_ADMIN --privileged=true --security-opt seccomp=unconfined --ulimit memlock=-1 --ulimit stack=67108864  -u 1000 -v ${HOME}/.ssh:/sshkey -v ${PWD}:/app/platform  ghcr.io/cell-observatory/platform:main_torch_cuda_12_8 /bin/bash
+# docker run --rm -it --gpus all --ipc=host --cap-add=SYS_ADMIN --privileged=true --security-opt seccomp=unconfined --ulimit memlock=-1 --ulimit stack=67108864  -u 1000 -v ${HOME}/.ssh:/sshkey -v ${PWD}:/app/cell_observatory_platform  ghcr.io/cell-observatory/cell_observatory_platform:main_torch_cuda_12_8 /bin/bash
 # sudo mkdir /clusterfs; sudo chmod a+wrx /clusterfs/; sudo chown 1000:1000 -R /sshkey/; sshfs thayeralshaabi@login.abc.berkeley.edu:/clusterfs  /clusterfs -o IdentityFile=/sshkey/id_rsa -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null
 
 # this works to make an apptainer version
-# docker run --rm kaczmarj/apptainer pull main_torch_cuda_12_8.sif docker://ghcr.io/cell-observatory/platform:main_torch_cuda_12_8
+# docker run --rm kaczmarj/apptainer pull main_torch_cuda_12_8.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:main_torch_cuda_12_8
 
 # Pass in a target when building to choose the Image with the version you want: --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8
 # For github actions, this is how we will build multiple docker images.

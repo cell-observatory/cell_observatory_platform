@@ -213,7 +213,7 @@ def data_memory_footprint(volume_size, batch_size=1, dtype='float32'):
 def compute_time(flops, gpu="H100", unit="seconds"):
     """
     Google benchmark
-    https://github.com/GoogleCloudPlatform/vertex-ai-samples/blob/main/community-content/vertex_model_garden/benchmarking_reports/jax_vit_benchmarking_report.md
+    https://github.com/GoogleCloudcell_observatory_platform/vertex-ai-samples/blob/main/community-content/vertex_model_garden/benchmarking_reports/jax_vit_benchmarking_report.md
     # g/14 533, GFLOPs, 1066 training GFLOPs
     # GFLOPS = GFLOPs / sec/img/GPU
     """

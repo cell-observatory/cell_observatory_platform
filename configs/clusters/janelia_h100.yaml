@@ -19,7 +19,7 @@ docker_image: null # docker is not supported on most clusters use apptainer inst
 apptainer_image: /groups/betzig/betziglab/thayer/develop_torch_cuda_12_8.sif # (path to *.sif file if applicable)
 python_env: python # python executable to use (if not using apptainer)
 mount_path: /groups/betzig/betziglab
-repo_name: platform
+repo_name: cell_observatory_platform
 repo_path: ${mount_path}/thayer/${repo_name}
 script: ${repo_path}/training/train.py
 ray_script: ${repo_path}/clusters/ray_lsf_cluster.sh
