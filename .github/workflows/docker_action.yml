@@ -392,9 +392,10 @@ jobs:
         uses: MasterworksIO/action-local-cache@2
         with:
           # base: /home/mosaic/.cache/github_action_local_cache
+          strategy: copy
           path: /home/mosaic/built_SIF
           key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
-          
+
       - name: Copy cached apptainer build if checksums pass
         id: cached_apptainer_build
         # remove old sif file in repo directory.  Then copy from cached version if it exists and checksum passes.
@@ -443,6 +444,7 @@ jobs:
         uses: MasterworksIO/action-local-cache@2
         with:
           # base: /home/mosaic/.cache/github_action_local_cache
+          strategy: copy
           path: /home/mosaic/built_SIF
           key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
 
