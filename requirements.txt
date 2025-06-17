@@ -1,5 +1,6 @@
 astropy==7.0.1
 bpytop
+connectorx==0.4.3
 deepspeed==0.16.5
 diffusers[torch]
 fvcore==0.1.5.post20221221
