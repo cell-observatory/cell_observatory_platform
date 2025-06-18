@@ -5,9 +5,10 @@ from typing import Any, Callable, Optional, Sequence, Mapping, Dict
 
 from torch.utils.data import Dataset
 
+from data.databases.supabase_database import SupabaseDatabase
 from data.structures.data_sample import DataSample
-from data.databases.supabase_database import SupaDB
 from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
+
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -47,7 +48,7 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
 
     def __init__(
             self,
-            db: SupaDB,
+            db: SupabaseDatabase,
             layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE,
             transforms: Optional[Sequence] = None,
     ):
