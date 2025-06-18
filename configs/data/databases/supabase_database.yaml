@@ -2,3 +2,6 @@ defaults:
   - _self_
 
 _target_: data.databases.supabase_database.SupabaseDatabase
+
+
+dbname: 'staging'
