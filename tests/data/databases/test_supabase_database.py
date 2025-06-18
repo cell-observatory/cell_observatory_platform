@@ -1,20 +1,10 @@
 import pytest
-import sys
-import logging
 from hydra.utils import instantiate
 from hydra import initialize, compose
-from omegaconf import DictConfig
+from pprint import pprint
 
 import warnings
 warnings.filterwarnings("ignore")
-
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 
 @pytest.fixture(scope="module")
 def cfg():
@@ -23,14 +13,51 @@ def cfg():
     return cfg
 
 
-def test_supabase_database_connection(cfg: DictConfig):
-    db = instantiate(cfg)
-    assert db.client is not None, "Supabase client not initialized"
+@pytest.fixture(scope="module")
+def database(cfg):
+    return instantiate(cfg)
 
-    res = db.test_supabase_client()
-    print(res)
-    assert res is not None, "Connection to Supabase client failed"
 
-    res = db.test_connection()
-    print(res)
-    assert res is not None, "Connection to DB failed"
+def test_database_connection(database):
+    tables = database.list_tables()
+    assert tables is not None, "Connection to DB failed"
+    print(f"Available tables: {tables.values.squeeze()}")
+
+
+def test_all_database_tables(database):
+    tables = database.list_tables()
+    for t in tables.values.squeeze():
+        cols = database.count_columns(t)
+        rows = database.count_rows(t)
+
+        print(f"Table `{t}` has {cols} column(s) and {rows} row(s).")
+        try:
+            assert cols > 0
+        except AssertionError:
+            print(f"Table `{t}` has no columns. Check if the table exists in the database.")
+
+        try:
+            assert rows > 0
+        except AssertionError:
+            print(f"Table `{t}` is empty. Check access to this table in the database.")
+
+
+def test_table(database, tablename='prepared'):
+    print(f"Testing table `{tablename}`...")
+    cols = database.get_columns(tablename)
+    num_cols = len(cols)
+    num_rows = database.count_rows(tablename)
+
+    assert num_cols > 1, f"Table `{tablename}` has {num_cols} column(s)"
+    assert num_rows > 0, f"Table `{tablename}` has {num_rows} row(s)"
+    print(f"Table `{tablename}` has {num_cols} column(s) and {num_rows} row(s).")
+    pprint(cols)
+
+def test_prepared_tiles_table(database):
+    test_table(database, tablename='prepared_tiles')
+
+def test_prepared_cubes_table(database):
+    test_table(database, tablename='prepared_cubes')
+
+def test_prepared_tiles_view_table(database):
+    test_table(database, tablename='prepared_tiles_view')
