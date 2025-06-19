@@ -2,6 +2,8 @@ import pytest
 from hydra.utils import instantiate
 from hydra import initialize, compose
 from pprint import pprint
+import pandas as pd
+import numpy as np
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -61,3 +63,31 @@ def test_prepared_cubes_table(database):
 
 def test_prepared_tiles_view_table(database):
     test_table(database, tablename='prepared_tiles_view')
+
+def test_get_3d_multichannel_hypercubes(database):
+    table = database.get_3d_multichannel_hypercubes(max_tiles=1)
+    print(database.get_3d_multichannel_hypercubes_query)
+    print(table)
+    pd.testing.assert_series_equal(
+        table['channel_size'],
+        table['channels'].apply(len),
+        check_dtype=False,
+        check_names=False,
+    )
+
+def test_get_4d_multichannel_hypercubes(database):
+    table = database.get_4d_multichannel_hypercubes(max_tiles=1)
+    print(database.get_4d_multichannel_hypercubes_query)
+    print(table)
+    pd.testing.assert_series_equal(
+        table['channel_size'],
+        table['channels'].apply(len),
+        check_dtype=False,
+        check_names=False,
+    )
+    pd.testing.assert_series_equal(
+        table['time_size'],
+        table['timepoints'].apply(len),
+        check_dtype=False,
+        check_names=False,
+    )
