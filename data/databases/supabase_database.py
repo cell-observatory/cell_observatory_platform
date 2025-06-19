@@ -28,8 +28,11 @@ class SupabaseDatabase:
         self.database_url = self._load_uri()
 
     def _load_uri(self):
-        assert Path(self.dotenv_path).exists(), f"{self.dotenv_path} was not found"
-        load_dotenv(self.dotenv_path, verbose=True)
+
+        if 'SUPABASE_STAGING_URI' not in os.environ or 'SUPABASE_PROD_URI' not in os.environ:
+            assert Path(self.dotenv_path).exists(), f"{self.dotenv_path} was not found"
+            logger.info(f"Loading additional environment variables from {self.dotenv_path}")
+            load_dotenv(self.dotenv_path, verbose=True)
 
         if self.dbname == 'staging':
             uri = os.environ.get("SUPABASE_STAGING_URI")
@@ -38,8 +41,7 @@ class SupabaseDatabase:
         else:
             raise ValueError(f"Unknown database name: {self.dbname}")
 
-        assert uri is not None, "SUPABASE_URI_* environment variable not set in .env file"
-
+        assert uri is not None, "SUPABASE_URI_* environment variable not set"
         return uri
 
     def execute_query(self, query: str) -> pd.DataFrame:
