@@ -47,16 +47,16 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
     """Base class for all datasets."""
 
     def __init__(
-            self,
-            db: SupabaseDatabase,
-            layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE,
-            transforms: Optional[Sequence] = None,
+        self,
+        db: SupabaseDatabase,
+        input_layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE,
+        transforms: Optional[Sequence] = None,
     ):
         super().__init__()
 
 
         self.db = db
-        self.layout = layout
+        self.input_layout = input_layout
         self._process_tables()
 
         self._index = None
