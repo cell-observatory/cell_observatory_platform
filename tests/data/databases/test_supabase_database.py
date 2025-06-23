@@ -267,3 +267,20 @@ def test_hypercubes_list_filters(database):
 
     assert table['prepared_id'].isin(roi_list).all(), f"Only ROIs in {roi_list} should be returned"
     assert table['tile_name'].isin(tile_list).all(), f"Only tiles in {tile_list} should be returned"
+
+def test_hypercubes_age_filter(database):
+    hpf_list = [72]
+    table = database.create_multichannel_hypercube_table(
+        hpf_list=hpf_list,
+        num_timepoints=16,
+        max_hypercubes=100
+    )
+    print(database.last_query)
+    print(table)
+
+    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
+    assert (table['time_size'] == 16).all(), "All time sizes should be 32"
+    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+
+    assert table['hpf'].isin(hpf_list).all(), f"Only hpf in {hpf_list} should be returned"
+    assert table.shape[0] == 100, "Only 100 hypercubes should be returned"
