@@ -68,21 +68,8 @@ def test_prepared_tiles_table(database):
 def test_prepared_cubes_table(database):
     test_table(database, table_name='prepared_cubes')
 
-def test_get_32_128_128_128_2_hypercubes(database):
-    table = database.get_32_128_128_128_2_hypercubes(max_hypercubes=10)
-    print(database.last_query)
-    print(table)
-    assert table.shape[0] == 10, "Only ten rows should be returned"
-
-    pd.testing.assert_series_equal(
-        table['time_size'],
-        table['timepoints_ch_0'].apply(len),
-        check_dtype=False,
-        check_names=False,
-    )
-
 def test_create_1_128_128_128_2_hypercubes(database):
-    table = database.create_multichannel_hypercube_table(num_timepoints=1, max_hypercubes=1000)
+    table = database.create_t_128_128_128_2_hypercubes(num_timepoints=1, max_hypercubes=1000)
     print(database.last_query)
     print(table)
 
@@ -100,7 +87,7 @@ def test_create_1_128_128_128_2_hypercubes(database):
     )
 
 def test_create_2_128_128_128_2_hypercubes(database):
-    table = database.create_multichannel_hypercube_table(num_timepoints=2, max_hypercubes=1000)
+    table = database.create_t_128_128_128_2_hypercubes(num_timepoints=2, max_hypercubes=1000)
     print(database.last_query)
     print(table)
 
@@ -118,7 +105,7 @@ def test_create_2_128_128_128_2_hypercubes(database):
     )
 
 def test_create_4_128_128_128_2_hypercubes(database):
-    table = database.create_multichannel_hypercube_table(num_timepoints=4, max_hypercubes=1000)
+    table = database.create_t_128_128_128_2_hypercubes(num_timepoints=4, max_hypercubes=1000)
     print(database.last_query)
     print(table)
 
@@ -136,7 +123,7 @@ def test_create_4_128_128_128_2_hypercubes(database):
     )
 
 def test_create_8_128_128_128_2_hypercubes(database):
-    table = database.create_multichannel_hypercube_table(num_timepoints=8, max_hypercubes=1000)
+    table = database.create_t_128_128_128_2_hypercubes(num_timepoints=8, max_hypercubes=1000)
     print(database.last_query)
     print(table)
 
@@ -154,7 +141,7 @@ def test_create_8_128_128_128_2_hypercubes(database):
     )
 
 def test_create_16_128_128_128_2_hypercubes(database):
-    table = database.create_multichannel_hypercube_table(num_timepoints=16, max_hypercubes=1000)
+    table = database.create_t_128_128_128_2_hypercubes(num_timepoints=16, max_hypercubes=1000)
     print(database.last_query)
     print(table)
 
@@ -172,7 +159,7 @@ def test_create_16_128_128_128_2_hypercubes(database):
     )
 
 def test_create_32_128_128_128_2_hypercubes(database):
-    table = database.create_multichannel_hypercube_table(num_timepoints=32, max_hypercubes=1000)
+    table = database.create_t_128_128_128_2_hypercubes(num_timepoints=32, max_hypercubes=1000)
     print(database.last_query)
     print(table)
 
@@ -190,7 +177,7 @@ def test_create_32_128_128_128_2_hypercubes(database):
     )
 
 def test_hypercubes_max_roi_filter(database):
-    table = database.create_multichannel_hypercube_table(num_timepoints=16, max_rois=1)
+    table = database.create_t_128_128_128_2_hypercubes(num_timepoints=16, max_rois=1)
     print(database.last_query)
     print(table)
 
@@ -202,7 +189,7 @@ def test_hypercubes_max_roi_filter(database):
     assert len(table['tile_name'].unique()) > 1, "More than one tile should be returned"
 
 def test_hypercubes_max_tiles_filter(database):
-    table = database.create_multichannel_hypercube_table(num_timepoints=16, max_tiles=10)
+    table = database.create_t_128_128_128_2_hypercubes(num_timepoints=16, max_tiles=10)
     print(database.last_query)
     print(table)
 
@@ -213,7 +200,7 @@ def test_hypercubes_max_tiles_filter(database):
     assert len(table['tile_name'].unique()) == 10, "Only ten tiles should be returned"
 
 def test_hypercubes_max_hypercubes_filter(database):
-    table = database.create_multichannel_hypercube_table(num_timepoints=16, max_hypercubes=100)
+    table = database.create_t_128_128_128_2_hypercubes(num_timepoints=16, max_hypercubes=100)
     print(database.last_query)
     print(table)
 
@@ -225,7 +212,7 @@ def test_hypercubes_max_hypercubes_filter(database):
 
 def test_hypercubes_list_roi_filter(database):
     roi_list = [312]
-    table = database.create_multichannel_hypercube_table(num_timepoints=16, roi_list=roi_list)
+    table = database.create_t_128_128_128_2_hypercubes(num_timepoints=16, roi_list=roi_list)
     print(database.last_query)
     print(table)
 
@@ -239,7 +226,7 @@ def test_hypercubes_list_roi_filter(database):
 def test_hypercubes_list_tiles_filter(database):
     tile_list = ['000x_000y_000z.zarr', '000x_000y_001z.zarr', '000x_000y_002z.zarr']
 
-    table = database.create_multichannel_hypercube_table(num_timepoints=16, tile_list=tile_list)
+    table = database.create_t_128_128_128_2_hypercubes(num_timepoints=16, tile_list=tile_list)
     print(database.last_query)
     print(table)
 
@@ -253,7 +240,7 @@ def test_hypercubes_list_filters(database):
     roi_list = [312]
     tile_list = ['000x_000y_000z.zarr', '000x_000y_001z.zarr', '000x_000y_002z.zarr']
 
-    table = database.create_multichannel_hypercube_table(
+    table = database.create_t_128_128_128_2_hypercubes(
         num_timepoints=16,
         roi_list=[312],
         tile_list=['000x_000y_000z.zarr', '000x_000y_001z.zarr', '000x_000y_002z.zarr']
@@ -270,7 +257,7 @@ def test_hypercubes_list_filters(database):
 
 def test_hypercubes_age_filter(database):
     hpf_list = [72]
-    table = database.create_multichannel_hypercube_table(
+    table = database.create_t_128_128_128_2_hypercubes(
         hpf_list=hpf_list,
         num_timepoints=16,
         max_hypercubes=100
@@ -284,3 +271,16 @@ def test_hypercubes_age_filter(database):
 
     assert table['hpf'].isin(hpf_list).all(), f"Only hpf in {hpf_list} should be returned"
     assert table.shape[0] == 100, "Only 100 hypercubes should be returned"
+
+def test_get_t_128_128_128_2_hypercubes(database):
+    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=1, max_hypercubes=10)
+    print(database.last_query)
+    print(table)
+    assert table.shape[0] == 10, "Only ten rows should be returned"
+
+    pd.testing.assert_series_equal(
+        table['time_size'],
+        table['timepoints_ch_0'].apply(len),
+        check_dtype=False,
+        check_names=False,
+    )

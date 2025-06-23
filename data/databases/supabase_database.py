@@ -20,12 +20,27 @@ logger = logging.getLogger(__name__)
 class SupabaseDatabase:
     def __init__(
         self,
+        num_timepoints: Optional[int] = 1,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        max_hypercubes: Optional[int] = None,
+        hpf_list: Optional[Iterable[int]] = None,
+        roi_list: Optional[Iterable[int]] = None,
+        tile_list: Optional[Iterable[str]] = None,
         dbname: Literal['staging', 'production'] = 'staging',
         dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
     ):
         self.dbname = dbname
         self.dotenv_path = dotenv_path
         self.database_url = self._load_uri()
+        self.num_timepoints = num_timepoints
+        self.max_rois = max_rois
+        self.max_tiles = max_tiles
+        self.max_hypercubes = max_hypercubes
+        self.hpf_list = hpf_list
+        self.roi_list = roi_list
+        self.tile_list = tile_list
+
 
     def _load_uri(self):
 
@@ -193,7 +208,8 @@ class SupabaseDatabase:
         logger.info(f"Using filters: {filters}")
         return filters
 
-    def _query_hypercubes(
+
+    def _query_t_128_128_128_2_hypercube_view(
         self,
         table_name: str,
         table_name_shortcut: str = 'hc',
@@ -244,44 +260,11 @@ class SupabaseDatabase:
             {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
         """
 
-
-    def get_32_128_128_128_2_hypercubes(
-        self,
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
-        max_hypercubes: Optional[int] = None,
-        hpf_list: Optional[Iterable[int]] = None,
-        roi_list: Optional[Iterable[int]] = None,
-        tile_list: Optional[Iterable[str]] = None,
-    ) -> pd.DataFrame:
-
-        self.last_query = self._query_hypercubes(
-            table_name='prepared_32_128_128_128_2_hypercube_view',
-            num_timepoints=32,
-            max_rois=max_rois,
-            max_tiles=max_tiles,
-            max_hypercubes=max_hypercubes,
-            hpf_list=hpf_list,
-            roi_list=roi_list,
-            tile_list=tile_list
-        )
-
-        logger.info(f"Executing query: {self.last_query}")
-        table = self.execute_query(self.last_query)
-        return table
-
-
-    def create_multichannel_hypercube_table(
+    def _create_t_128_128_128_2_hypercube_view(
         self,
         num_timepoints: Optional[int] = 1,
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
         max_hypercubes: Optional[int] = None,
-        hpf_list: Optional[Iterable[int]] = None,
-        roi_list: Optional[Iterable[int]] = None,
-        tile_list: Optional[Iterable[str]] = None,
-    ) -> pd.DataFrame:
-
+    ) -> str:
         prepared_cubes_column_names = [
             'prepared_id',
             'tile_name',
@@ -299,7 +282,7 @@ class SupabaseDatabase:
             'metadata_tile_json',
         ]
 
-        self.table_query = f"""
+        return f"""
             SELECT
                 {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
                 {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
@@ -320,18 +303,54 @@ class SupabaseDatabase:
             {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
         """
 
-        self.last_query = self._query_hypercubes(
-            table_name=f"({self.table_query})",
-            num_timepoints=num_timepoints,
-            max_rois=max_rois,
-            max_tiles=max_tiles,
-            max_hypercubes=max_hypercubes,
-            hpf_list=hpf_list,
-            roi_list=roi_list,
-            tile_list=tile_list
-        )
+    def get_t_128_128_128_2_hypercubes(
+        self,
+        num_timepoints: Optional[int] = 1,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        max_hypercubes: Optional[int] = None,
+        hpf_list: Optional[Iterable[int]] = None,
+        roi_list: Optional[Iterable[int]] = None,
+        tile_list: Optional[Iterable[str]] = None,
+    ) -> pd.DataFrame:
 
-        logger.info(f"Executing query: {self.last_query}")
-        table = self.execute_query(self.last_query)
-        return table
+        table_name = f'prepared_{num_timepoints}_128_128_128_2_hypercube_view'
+
+        try:
+            self.last_query = self._query_t_128_128_128_2_hypercube_view(
+                table_name=table_name,
+                num_timepoints=32,
+                max_rois=max_rois,
+                max_tiles=max_tiles,
+                max_hypercubes=max_hypercubes,
+                hpf_list=hpf_list,
+                roi_list=roi_list,
+                tile_list=tile_list
+            )
+
+            logger.info(f"Executing query: {self.last_query}")
+            table = self.execute_query(self.last_query)
+            return table
+
+        except Exception as e:
+
+            self.table_query = self._create_t_128_128_128_2_hypercube_view(
+                num_timepoints=num_timepoints,
+                max_hypercubes=max_hypercubes
+            )
+
+            self.last_query = self._query_t_128_128_128_2_hypercube_view(
+                table_name=f"({self.table_query})",
+                num_timepoints=num_timepoints,
+                max_rois=max_rois,
+                max_tiles=max_tiles,
+                max_hypercubes=max_hypercubes,
+                hpf_list=hpf_list,
+                roi_list=roi_list,
+                tile_list=tile_list
+            )
+
+            logger.info(f"Executing query: {self.last_query}")
+            table = self.execute_query(self.last_query)
+            return table
 
