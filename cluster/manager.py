@@ -1,10 +1,15 @@
+import os
 import shlex
 from pathlib import Path
 from subprocess import call, run
 
 import hydra
+from dotenv import load_dotenv
 from omegaconf import DictConfig, OmegaConf
 from hydra.core.hydra_config import HydraConfig
+
+from omegaconf import DictConfig, OmegaConf
+OmegaConf.register_new_resolver("eval", eval)
 
 def q(x: str) -> str:
     """Shortcut for shlex.quote."""
@@ -20,9 +25,15 @@ def main(cfg: DictConfig):
     config_name = hydra_cfg.job.config_name
     print(f"Running with config: {config_name}")
 
-    outdir = Path(f"{cfg.outdir}/{config_name}").resolve()
+    outdir = Path(cfg.outdir).resolve()
     outdir.mkdir(exist_ok=True, parents=True)
     print(f"Output directory for training job: {outdir}")
+
+    load_dotenv(cfg.env.env_path)
+    env_flags = " ".join(
+        f"--env {q(k)}={q(os.environ[k])}"
+        for k in cfg.env.env_keys
+    )
 
     # bind path is --bind <host_path> : <container_path>
     if hasattr(cfg.clusters, "mount_path") and cfg.clusters.mount_path is not None:
@@ -31,6 +42,15 @@ def main(cfg: DictConfig):
 
     assert (cfg.clusters.apptainer_image is None) != (cfg.clusters.docker_image is None), \
         "Either apptainer_image or docker_image must be specified, but not both"
+    
+    if cfg.clusters.apptainer_image is not None:
+        # use apptainer for running the job
+        image = cfg.clusters.apptainer_image
+    elif cfg.clusters.docker_image is not None:
+        # else use docker for running the job
+        image = cfg.clusters.docker_image
+    else:
+        raise ValueError("Either apptainer_image or docker_image must be specified in the configuration.")
 
     task = f"{cfg.clusters.python_env} {cfg.clusters.script} --config-name {config_name}"
 
@@ -38,7 +58,8 @@ def main(cfg: DictConfig):
         f" bash {q(cfg.clusters.ray_script)} "
         f"-b {q(str(bind))} "
         f"-c {q(cfg.clusters.cpus_per_worker)} "
-        f"-e {q(cfg.clusters.python_env)}"
+        f"-e {q(image)} "
+        f"-f {q(env_flags)} "
         f"-g {q(cfg.clusters.gpus_per_worker)} "
         f"-m {q(cfg.clusters.mem_per_worker)} "
         f"-o {q(str(outdir))} "

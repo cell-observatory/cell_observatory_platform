@@ -73,9 +73,9 @@ torch_config:
 
 scaling_config:
   use_gpu: true
-  num_workers: null # set automatically
+  num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
   resources_per_worker:
-    CPU: null # set automatically
+    CPU: ${clusters.cpus_per_gpu}
     GPU: 1
   trainer_resources:
     CPU: 1 # an additional cpu core for the training coordinator

@@ -4,7 +4,8 @@ export RAY_DEDUP_LOGS=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # parse args from `args_parser.sh` getopts
-source ./args_parser.sh
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$DIR/args_parser.sh"
 
 tmpdir=/tmp/symlink_$(uuidgen | cut -d "-" -f5)
 echo "Create symlink: $outdir -> $tmpdir"
@@ -44,16 +45,14 @@ export cluster_address
 
 ############################## START HEAD NODE
 
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ./ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir &
+apptainer exec --userns --nv $env_flags --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir &
 sleep 10
 
 rpids=$(pgrep -u $USER ray)
 echo "Ray head node PID:"
 echo $rpids
 
-
 ############################## CHECK STATUS
-
 
 # add exit trap to ensure cleanup on script exit
 # this will ensure that we stop the Ray cluster and cancel worker jobs
@@ -67,10 +66,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ./ray_check_status.sh -a $cluster_address -r 1
+echo apptainer exec --userns --nv $env_flags --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r 1
 
 ############################## RUN WORKLOAD
 
 echo "Running user tasks"
 echo $tasks
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks
+apptainer exec --userns --nv $env_flags --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks

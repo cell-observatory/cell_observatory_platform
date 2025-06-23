@@ -8,12 +8,13 @@ import torch.nn as nn
 from deepspeed.runtime.zero import GatheredParameters
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 
-from models.norm import get_norm
-from models.activation import get_activation
 from models.mlp import get_mlp
+from models.norm import get_norm
+from models.base_model import BaseModel
+from models.activation import get_activation
 from models.maskedencoder import MaskedEncoder
 from models.maskedpredictor import MaskedPredictor
-from training.masking import mask_random_patches, apply_masks
+from data.masking.mask_generator import apply_masks
 
 logging.basicConfig(
 	stream=sys.stdout,
@@ -117,7 +118,7 @@ CONFIGS = {
 }
 
 
-class JEPA(nn.Module):
+class JEPA(BaseModel):
     def __init__(
         self,
         model_template: Literal[
@@ -134,6 +135,7 @@ class JEPA(nn.Module):
         input_shape=(1, 6, 64, 64, 1),
         lateral_patch_size=16,
         axial_patch_size=1,
+        temporal_patch_size=1,
         embed_dim=768,
         predictor_embed_dim=256,
         depth=12,
@@ -182,6 +184,7 @@ class JEPA(nn.Module):
 
         self.axial_patch_size = axial_patch_size
         self.lateral_patch_size = lateral_patch_size
+        self.temporal_patch_size = temporal_patch_size
 
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
@@ -201,6 +204,7 @@ class JEPA(nn.Module):
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
+            temporal_patch_size=self.temporal_patch_size,
             channels=self.in_chans,
             embed_dim=self.embed_dim,
             depth=self.depth,
@@ -227,6 +231,7 @@ class JEPA(nn.Module):
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
+            temporal_patch_size=self.temporal_patch_size,
             channels=self.in_chans,
             input_embed_dim=self.embed_dim,
             output_embed_dim=self.embed_dim,
@@ -274,13 +279,10 @@ class JEPA(nn.Module):
     def get_num_patches(self):
         return self.input_encoder.pos_embedding.num_patches
 
-    def forward(self, inputs):
-        masks, context_masks, target_masks, original_patch_indices = mask_random_patches(
-            inputs=inputs,
-            num_patches=self.get_num_patches(),
-            ratio=self.mask_ratio,
-            window_mask_shape=self.window_mask_shape
-        )
+    def _forward(self, data_sample: dict):
+        inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
+        masks, context_masks = meta['masks'][0], meta['context_masks'][0]
+        target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
 
         embedding, patches = self.input_encoder(inputs, masks=context_masks)
         predictions = self.target_predictor(
@@ -300,5 +302,8 @@ class JEPA(nn.Module):
         loss = loss.mean(dim=-1)  # mean loss per patch
         loss = loss.sum() / masks.sum()
         loss = loss.to(targets.dtype)
-        return loss
+        loss_dict = {
+            "step_loss": loss,
+        }
+        return loss_dict, predictions
 

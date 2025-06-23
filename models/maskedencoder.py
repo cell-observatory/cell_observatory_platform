@@ -10,7 +10,7 @@ from models.activation import get_activation
 from models.mlp import get_mlp
 from models.encoder import Encoder
 from models.patch_embeddings import ConvPatchEmbedding, PatchEmbedding, PosEmbedding
-from training.masking import apply_masks
+from cell_observatory_platform.data.masking.mask_generator import apply_masks
 
 logging.basicConfig(
 	stream=sys.stdout,
@@ -101,6 +101,7 @@ class MaskedEncoder(nn.Module):
         input_shape=(1, 6, 64, 64, 1),
         lateral_patch_size=16,
         axial_patch_size=1,
+        temporal_patch_size=1,
         embed_dim=768,
         depth=12,
         num_heads=12,
@@ -138,6 +139,7 @@ class MaskedEncoder(nn.Module):
 
         self.axial_patch_size = axial_patch_size
         self.lateral_patch_size = lateral_patch_size
+        self.temporal_patch_size = temporal_patch_size
 
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
@@ -157,6 +159,7 @@ class MaskedEncoder(nn.Module):
                 input_shape=self.input_shape,
                 lateral_patch_size=self.lateral_patch_size,
                 axial_patch_size=self.axial_patch_size,
+                temporal_patch_size=self.temporal_patch_size,
                 embed_dim=self.embed_dim,
             )
         else:
@@ -165,6 +168,7 @@ class MaskedEncoder(nn.Module):
                 input_shape=self.input_shape,
                 lateral_patch_size=self.lateral_patch_size,
                 axial_patch_size=self.axial_patch_size,
+                temporal_patch_size=self.temporal_patch_size,
                 embed_dim=self.embed_dim,
                 channels=self.in_chans,
             )
@@ -174,6 +178,7 @@ class MaskedEncoder(nn.Module):
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
+            temporal_patch_size=self.temporal_patch_size,
             embed_dim=self.embed_dim,
             channels=self.in_chans,
             cls_token=False

@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-from training.backend import summarize_model
+from training.utils import summarize_model
 from models.convnext import ConvNeXtV2
 
 @pytest.mark.run(order=1)

@@ -35,6 +35,7 @@ while getopts ":i:p:d:c:g:t:" option;do
     esac
 done
 
+mkdir -p /tmp/ray
 cluster_address="$ip:$port"
 
 echo "Starting ray head node @ $(hostname) => $cluster_address with CPUs[$cpus] & GPUs [$gpus]"

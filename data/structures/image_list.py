@@ -1,19 +1,17 @@
-import sys
-import logging
-from typing import Any, List, Tuple, Optional, Dict
+"""
+Adopted with Apache License 2.0 from
+https://github.com/facebookresearch/detectron2/blob/main/detectron2/structures/image_list.py
+"""
+
+
+from itertools import chain
+from typing import Any, List, Tuple, Optional, Dict, Sequence
 
 import torch
 from torch import device
 
-from data.io import record_init
-from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
-
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+from cell_observatory_platform.data.io import record_init
+from cell_observatory_platform.data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
 
 
 class ImageList:
@@ -100,13 +98,13 @@ class ImageList:
         """ Access the individual image in its original size. """
         s = self.image_sizes[idx]
 
-        if self.layout == MULTICHANNEL_3D_HYPERCUBE:
+        if isinstance(self.layout, MULTICHANNEL_3D_HYPERCUBE):
             if self.layout.is_channel_first():
                 return self.tensor[idx, :, :s[0], :s[1], :s[2]]
             else:
                 return self.tensor[idx, :s[0], :s[1], :s[2]]
 
-        elif self.layout == MULTICHANNEL_4D_HYPERCUBE:
+        elif isinstance(self.layout, MULTICHANNEL_4D_HYPERCUBE):
             if self.layout.is_channel_first():
                 return self.tensor[idx, :, :s[0], :s[1], :s[2], :s[3]]
             else:
@@ -140,7 +138,7 @@ class ImageList:
         )
 
     def get_image_stats(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.layout == MULTICHANNEL_3D_HYPERCUBE:
+        if isinstance(self.layout, MULTICHANNEL_3D_HYPERCUBE):
             if self.layout.is_channel_first(): # (B, C, D, H, W)
                 mean = self.tensor.mean(dim=(2, 3, 4), keepdim=True)
                 std = self.tensor.std(dim=(2, 3, 4), keepdim=True)
@@ -148,7 +146,7 @@ class ImageList:
                 mean = self.tensor.mean(dim=(1, 2, 3), keepdim=True)
                 std = self.tensor.std(dim=(1, 2, 3), keepdim=True)
 
-        elif self.layout == MULTICHANNEL_4D_HYPERCUBE:
+        elif isinstance(self.layout, MULTICHANNEL_4D_HYPERCUBE):
             if self.layout.is_channel_first(): # (B, C, T, D, H, W)
                 mean = self.tensor.mean(dim=(2, 3, 4, 5), keepdim=True)
                 std = self.tensor.std(dim=(2, 3, 4, 5), keepdim=True)
@@ -161,7 +159,6 @@ class ImageList:
 
         return mean, std
 
-
     @staticmethod
     def from_tensors(
         tensors: List[torch.Tensor],
@@ -171,10 +168,6 @@ class ImageList:
         padding_constraints: Optional[Dict[str, int]] = None,
     ) -> "ImageList":
         """
-        Adopted with Apache License 2.0 from
-        https://github.com/facebookresearch/detectron2/blob/main/detectron2/structures/image_list.py
-        Changed it to support 3D/4D data.
-
         Args:
         tensors: a tuple or list of `torch.Tensor`, Each tuple is ([t, d], h, w, c) or (c, [t, d], h, w).
             The Tensors will be padded to the same shape with `pad_value`.
@@ -257,3 +250,42 @@ class ImageList:
                         padded_tensor[i, :, :s[0], :s[1], :s[2]].copy_(img)
 
         return ImageList(padded_tensor.contiguous(), image_sizes=image_sizes, layout=layout)
+
+
+def cat_image_lists(
+        image_lists: Sequence[ImageList],
+        pad_value: float = 0.0,
+        padding_constraints: Optional[Dict[str, int]] = None,
+        size_divisibility: int = 0,
+) -> ImageList:
+    """Concatenate multiple :class:`ImageList`s along the batch axis.
+
+    All inputs must use the **same** `layout`.
+
+    Args:
+        image_lists : Sequence[ImageList]
+        pad_value   : float
+            Value to pad with when images differ in spatial size.
+
+    Returns:
+        One ImageList batched object with ``N1+N2+...`` images.
+    """
+    layout = image_lists[0].layout
+    if any(il.layout != layout for il in image_lists):
+        raise ValueError("All ImageList objects must share the same layout")
+    
+    shapes = {il.tensor.shape for il in image_lists}
+    if len(shapes) == 1:                                   
+        # e.g. (N_total, (T), C, D, H, W) OR # (N_total, (T), D, H, W, C)
+        batched = torch.cat([il.tensor for il in image_lists], dim=0)  
+        image_sizes = list(chain.from_iterable(il.image_sizes for il in image_lists))
+        return ImageList(batched, image_sizes, layout=layout)
+
+    tensors = [img for il in image_lists for img in il]
+    return ImageList.from_tensors(
+        tensors=tensors,
+        layout=layout,
+        pad_value=pad_value,
+        padding_constraints=padding_constraints,
+        size_divisibility=size_divisibility,
+    )

@@ -1,0 +1,5 @@
+defaults:
+  - _self_
+
+transforms_list:
+  - _target_: cell_observatory_platform.data.transforms.normalize.Normalize

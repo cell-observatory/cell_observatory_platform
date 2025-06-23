@@ -1,0 +1,22 @@
+defaults:
+  - databases: supabase_database  # Loads configs/datasets/databases/supabase_database.yaml
+  - masking: mask_generator       # Loads configs/datasets/masking/mask_generator.yaml
+  - transforms: transforms        # Loads configs/datasets/transforms/transforms.yaml
+  - _self_
+
+# mainly used by other configs but determined here for ease of access
+batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+input_shape: [32, 128, 128, 128, 2] 
+patch_shape: [4, 16, 16, 16]
+
+split: 0.1
+dataloader_type: torch
+return_dataloader: true
+distributed_sampler: true
+collate_fn: ${datasets.masking.collate_fn}
+
+dataset:
+  _target_: cell_observatory_platform.data.datasets.pretrain_dataset.PretrainDataset
+  layout: 
+    _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
+    value: TZYXC

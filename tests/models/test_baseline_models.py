@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-from training.backend import summarize_model
+from training.utils import summarize_model
 from models.baseline import Baseline
 
 @pytest.mark.run(order=1)
