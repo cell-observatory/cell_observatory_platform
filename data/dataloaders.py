@@ -1,13 +1,19 @@
+import os
 import sys
 import logging
 
 from torch.utils.data import DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
 
-from omegaconf import DictConfig
-from hydra.utils import instantiate, get_method
+from hydra.utils import instantiate
+from omegaconf import DictConfig, OmegaConf
+if (hasattr(OmegaConf, "has_resolver") and  \
+    not OmegaConf.has_resolver("eval")):
+    OmegaConf.register_new_resolver("eval", eval)
 
-from utils.context import process_rank, barrier
+import ray.train.torch as raytorch
+
+from cell_observatory_platform.utils.context import process_rank, barrier
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -23,10 +29,10 @@ def build_dataset(cfg, transforms=None):
         # initial write/setup of *.feather, *.db, etc.
         # if it does not already exist
         _ = instantiate(cfg.datasets.databases)
-    barrier()
+    barrier(device_ids=int(os.environ.get("LOCAL_RANK")))
     # all ranks read local database table and instantiate
     # database and dataset classes
-    db = instantiate(cfg.datasets.databases, force_create_db=False)
+    db = instantiate(cfg.datasets.databases)
     dataset = instantiate(
         cfg.datasets.dataset,
         db=db,
@@ -37,12 +43,13 @@ def build_dataset(cfg, transforms=None):
 
 def get_dataloader(config: DictConfig):
     if config.datasets.dataloader_type == "torch":
-        transforms = [instantiate(t) for t in config.transforms.transforms_list] if config.transforms.transforms_list else None
+        transforms = [instantiate(t) for t in config.datasets.transforms.transforms_list] \
+                        if config.datasets.transforms.transforms_list else None
 
         dataset = build_dataset(config, transforms)
 
         if config.datasets.return_dataloader:
-            collate_fn = get_method(config.datasets.collate_fn)
+            collate_fn = instantiate(config.datasets.collate_fn)
             db_worker_init_fn = dataset.worker_init_fn
 
             if config.datasets.split is not None:
@@ -52,7 +59,7 @@ def get_dataloader(config: DictConfig):
                 train = DataLoader(
                     train,
                     collate_fn=collate_fn,
-                    batch_size=config.clusters.worker_batch_size,
+                    batch_size=config.clusters.batch_size_per_gpu,
                     shuffle=False,
                     pin_memory=True,
                     num_workers=config.clusters.cpus_per_worker,
@@ -68,7 +75,7 @@ def get_dataloader(config: DictConfig):
                 val = DataLoader(
                     val,
                     collate_fn=collate_fn,
-                    batch_size=config.clusters.worker_batch_size,
+                    batch_size=config.clusters.batch_size_per_gpu,
                     shuffle=False,
                     pin_memory=True,
                     num_workers=config.clusters.cpus_per_worker,
@@ -80,13 +87,17 @@ def get_dataloader(config: DictConfig):
                     drop_last=True
                 )
 
+                if config.distributed_framework == "ray":
+                    train = raytorch.prepare_data_loader(train)
+                    val = raytorch.prepare_data_loader(val)
+
                 return train, val
 
             else:
                 dataloader = DataLoader(
                     dataset,
                     collate_fn=collate_fn,
-                    batch_size=config.clusters.worker_batch_size,
+                    batch_size=config.clusters.batch_size_per_gpu,
                     shuffle=False,
                     pin_memory=True,
                     num_workers=config.clusters.cpus_per_worker,
@@ -99,7 +110,10 @@ def get_dataloader(config: DictConfig):
                     drop_last=True,
                 )
 
-                return dataloader
+                if config.distributed_framework == "ray":
+                    dataloader = raytorch.prepare_data_loader(dataloader)
+
+                return dataloader, None
         else:
             return dataset
 

@@ -144,7 +144,7 @@ class MULTICHANNEL_4D_HYPERCUBE(Enum):
         return self is MULTICHANNEL_4D_HYPERCUBE.TZYXC
 
     def has_temporal_dim(self) -> bool:
-        return self is MULTICHANNEL_4D_HYPERCUBE.CTZYX
+        return True
 
     def get_image_shape_tuple(self, tensor: torch.Tensor) -> Tuple:
 

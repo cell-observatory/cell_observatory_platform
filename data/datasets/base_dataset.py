@@ -4,10 +4,13 @@ import logging
 from typing import Any, Callable, Optional, Sequence, Mapping, Dict
 
 from torch.utils.data import Dataset
+from torch.utils.data._utils.collate import \
+    default_collate as torch_default_collate
 
-from data.structures.data_sample import DataSample
-from data.databases.supabase_database import SupaDB
-from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
+from cell_observatory_platform.data.structures.data_sample import DataSample
+from cell_observatory_platform.data.databases.supabase_database import SupabaseDatabase
+from cell_observatory_platform.data.structures.image_list import cat_image_lists
+from cell_observatory_platform.data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -15,6 +18,83 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+# from: https://github.com/open-mmlab/mmengine/main/mmengine/dataset/utils.py
+def default_collate(data_batch: Sequence) -> Any:
+    """
+    Convert list of data sampled from dataset into
+    a batch of data, of type consistent with 
+    the type of each element in ``data_batch``.
+
+    Args:
+        data_batch (Sequence): Data sampled from dataset.
+
+    Returns:
+        Any: Data in the same format as the data element 
+        of ``data_batch``, of which tensors have been 
+        stacked, and ndarray, int, float have been
+        converted to tensors, etc.
+    """  
+    # NOTE: we assume the each data element in data_batch
+    #       is of the same type
+    data_item = data_batch[0]
+    data_item_type = type(data_item)
+
+    # recursive collate
+    if isinstance(data_item, (str, bytes)):
+        return data_batch
+    elif isinstance(data_item, tuple) and hasattr(data_item, '_fields'):
+        # named tuple
+        # we transpose the batch to get a tuple of lists
+        # recursively collate each list, then lastly
+        # rebuild same named tuple type
+        return data_item_type(*(default_collate(samples)
+                                for samples in zip(*data_batch)))
+    elif isinstance(data_item, Sequence):
+        # check to make sure that the elements 
+        # in batch have consistent size
+        it = iter(data_batch)
+        data_item_size = len(next(it))
+        if not all(len(data_item) == data_item_size for data_item in it):
+            raise RuntimeError(
+                'each data_itement in list of batch should be of equal size')
+        
+        # from [(a, b), (c, d)] to [(a, c), (b, d)]
+        transposed = list(zip(*data_batch))
+
+        # from [(a, c), (b, d)] to [collated[a, c], collated[b, d]]
+        if isinstance(data_item, tuple):
+            # compatible with Pytorch
+            return [default_collate(samples)
+                    for samples in transposed]  
+        else:
+            try:
+                return data_item_type(
+                    [default_collate(samples) for samples in transposed])
+            except TypeError:
+                # sequence type may not support `__init__(iterable)`
+                # (e.g., `range`). Fall back to list.
+                return [default_collate(samples) for samples in transposed]
+    elif isinstance(data_item, Mapping):
+        # [{"img": img1, "label": label1},
+        #  {"img": img2, "label": label2}]
+        # to {"img": collate[img1, img2], "label": collate[label1, label2]}
+        return data_item_type({
+            key: default_collate([d[key] for d in data_batch])
+            for key in data_item
+        })
+    else:
+        return torch_default_collate(data_batch)
+
+
+# each Dataset class defines its own collate function
+def collate_base_dataset(samples: list[DataSample]) -> DataSample:
+    metainfo = default_collate([s.metainfo for s in samples])
+    batch = DataSample(metainfo=metainfo)
+    batched_img = cat_image_lists(image_lists=[s.data_tensor for s in samples])
+    batch.data_tensor = batched_img
+    return batch.to_dict()
 
 
 class Transformations:
@@ -47,12 +127,11 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
 
     def __init__(
             self,
-            db: SupaDB,
+            db: SupabaseDatabase,
             layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE,
             transforms: Optional[Sequence] = None,
     ):
         super().__init__()
-
 
         self.db = db
         self.layout = layout

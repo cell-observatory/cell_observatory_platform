@@ -5,12 +5,14 @@ from typing import Literal, Union
 import torch
 import torch.nn as nn
 
-from models.norm import get_norm
-from models.activation import get_activation
 from models.mlp import get_mlp
+from models.norm import get_norm
+from models.base_model import BaseModel
+from models.preprocessor import PreProcessor
+from models.activation import get_activation
 from models.maskedencoder import MaskedEncoder
 from models.maskedpredictor import MaskedPredictor
-from training.masking import mask_random_patches, apply_masks
+from cell_observatory_platform.data.masking.mask_generator import apply_masks
 
 logging.basicConfig(
 	stream=sys.stdout,
@@ -114,9 +116,10 @@ CONFIGS = {
 }
 
 
-class MaskedAutoEncoder(nn.Module):
+class MaskedAutoEncoder(BaseModel):
     def __init__(
         self,
+        preprocessor: PreProcessor,
         model_template: Literal[
             'mae', # custom use `embed_dim`, `decoder_embed_dim`, `depth`, `num_heads` and `mlp_ratio` to config model
             'mae-tiny',
@@ -131,6 +134,7 @@ class MaskedAutoEncoder(nn.Module):
         input_shape=(1, 6, 64, 64, 1),
         lateral_patch_size=16,
         axial_patch_size=1,
+        temporal_patch_size=1,
         embed_dim=768,
         decoder_embed_dim=256,
         depth=12,
@@ -151,7 +155,7 @@ class MaskedAutoEncoder(nn.Module):
         window_mask_shape=None,
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(preprocessor=preprocessor)
 
         if model_template in CONFIGS.keys():
             config = CONFIGS[model_template]
@@ -179,6 +183,7 @@ class MaskedAutoEncoder(nn.Module):
 
         self.axial_patch_size = axial_patch_size
         self.lateral_patch_size = lateral_patch_size
+        self.temporal_patch_size = temporal_patch_size
 
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
@@ -198,6 +203,7 @@ class MaskedAutoEncoder(nn.Module):
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
+            temporal_patch_size=self.temporal_patch_size,
             channels=self.in_chans,
             embed_dim=self.embed_dim,
             depth=self.depth,
@@ -220,6 +226,7 @@ class MaskedAutoEncoder(nn.Module):
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
+            temporal_patch_size=self.temporal_patch_size,
             channels=self.in_chans,
             input_embed_dim=self.embed_dim,
             output_embed_dim=self.masked_encoder.patch_embedding.pixels_per_patch,
@@ -250,13 +257,10 @@ class MaskedAutoEncoder(nn.Module):
     def get_num_patches(self):
         return self.masked_encoder.pos_embedding.num_patches
 
-    def forward(self, inputs):
-        masks, context_masks, target_masks, original_patch_indices = mask_random_patches(
-            inputs=inputs,
-            num_patches=self.get_num_patches(),
-            ratio=self.mask_ratio,
-            window_mask_shape=self.window_mask_shape
-        )
+    def _forward(self, data_sample: dict):
+        inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
+        masks, context_masks = meta['masks'][0], meta['context_masks'][0]
+        target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
 
         x, patches = self.masked_encoder(inputs, masks=context_masks)
         x = self.masked_decoder(x, original_patch_indices=original_patch_indices, target_masks=target_masks)
@@ -269,4 +273,7 @@ class MaskedAutoEncoder(nn.Module):
         loss = loss.mean(dim=-1)  # mean loss per patch
         loss = loss.sum() / masks.sum()
         loss = loss.to(targets.dtype)
-        return loss
+        loss_dict = {
+            "step_loss": loss,
+        }
+        return loss_dict, predictions

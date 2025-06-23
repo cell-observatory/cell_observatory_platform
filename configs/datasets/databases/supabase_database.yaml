@@ -1,0 +1,4 @@
+defaults:
+  - _self_
+
+_target_: cell_observatory_platform.data.databases.supabase_database.SupabaseDatabase

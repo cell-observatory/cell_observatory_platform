@@ -35,4 +35,5 @@ torchvision==0.19.1
 transformers[torch] 
 tqdm==4.67.1
 ujson==5.10.0
+wandb==0.20.1
 zarr==3.0.8
