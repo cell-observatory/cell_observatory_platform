@@ -28,6 +28,8 @@ def test_database_connection(database):
 
 def test_all_database_tables(database):
     tables = database.list_tables()
+    print(f"Available tables: {tables.values.squeeze()}")
+
     for t in tables.values.squeeze():
         cols = database.count_columns(t)
         rows = database.count_rows(t)
@@ -43,26 +45,28 @@ def test_all_database_tables(database):
         except AssertionError:
             print(f"Table `{t}` is empty. Check access to this table in the database.")
 
-
-def test_table(database, tablename='prepared'):
-    print(f"Testing table `{tablename}`...")
-    cols = database.get_columns(tablename)
+def test_table(database, table_name='prepared'):
+    print(f"Testing table `{table_name}`...")
+    cols = database.get_columns(table_name)
     num_cols = len(cols)
-    num_rows = database.count_rows(tablename)
+    num_rows = database.count_rows(table_name)
 
-    assert num_cols > 1, f"Table `{tablename}` has {num_cols} column(s)"
-    assert num_rows > 0, f"Table `{tablename}` has {num_rows} row(s)"
-    print(f"Table `{tablename}` has {num_cols} column(s) and {num_rows} row(s).")
+    assert num_cols > 1, f"Table `{table_name}` has {num_cols} column(s)"
+    assert num_rows > 0, f"Table `{table_name}` has {num_rows} row(s)"
+    print(f"Table `{table_name}` has {num_cols} column(s) and {num_rows} row(s).")
     pprint(cols)
 
+def test_g_sheet_master_imaging_list_table(database):
+    test_table(database, table_name='g_sheet_master_imaging_list')
+
+def test_prepared_table(database):
+    test_table(database, table_name='prepared')
+
 def test_prepared_tiles_table(database):
-    test_table(database, tablename='prepared_tiles')
+    test_table(database, table_name='prepared_tiles')
 
 def test_prepared_cubes_table(database):
-    test_table(database, tablename='prepared_cubes')
-
-def test_prepared_tiles_view_table(database):
-    test_table(database, tablename='prepared_tiles_view')
+    test_table(database, table_name='prepared_cubes')
 
 def test_get_32_128_128_128_2_hypercubes_with_10_rows(database):
     table = database.get_32_128_128_128_2_hypercubes(max_rows=10)
@@ -76,7 +80,6 @@ def test_get_32_128_128_128_2_hypercubes_with_10_rows(database):
         check_dtype=False,
         check_names=False,
     )
-
 
 def test_get_32_128_128_128_2_hypercubes_with_one_roi(database):
     table = database.get_32_128_128_128_2_hypercubes(max_rois=1)
@@ -114,6 +117,114 @@ def test_get_32_128_128_128_2_hypercubes_with_ten_tile(database):
 
     assert len(table['prepared_id'].unique()) == 1, "Only one ROI should be returned"
     assert len(table['tile_name'].unique()) == 10, "Only ten tiles should be returned"
+
+    pd.testing.assert_series_equal(
+        table['time_size'],
+        table['timepoints_ch_0'].apply(len),
+        check_dtype=False,
+        check_names=False,
+    )
+
+def test_create_1_128_128_128_2_hypercubes(database):
+    table = database.create_multichannel_hypercube_table(num_timepoints=1, max_rows=1000)
+    print(database.last_query)
+    print(table)
+
+    assert table.shape[0] == 1000, "Only ten rows should be returned"
+
+    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
+    assert (table['time_size'] == 1).all(), "All time sizes should be 1"
+    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+
+    pd.testing.assert_series_equal(
+        table['time_size'],
+        table['timepoints_ch_0'].apply(len),
+        check_dtype=False,
+        check_names=False,
+    )
+
+def test_create_2_128_128_128_2_hypercubes(database):
+    table = database.create_multichannel_hypercube_table(num_timepoints=2, max_rows=1000)
+    print(database.last_query)
+    print(table)
+
+    assert table.shape[0] == 1000, "Only ten rows should be returned"
+
+    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
+    assert (table['time_size'] == 2).all(), "All time sizes should be 2"
+    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+
+    pd.testing.assert_series_equal(
+        table['time_size'],
+        table['timepoints_ch_0'].apply(len),
+        check_dtype=False,
+        check_names=False,
+    )
+
+def test_create_4_128_128_128_2_hypercubes(database):
+    table = database.create_multichannel_hypercube_table(num_timepoints=4, max_rows=1000)
+    print(database.last_query)
+    print(table)
+
+    assert table.shape[0] == 1000, "Only ten rows should be returned"
+
+    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
+    assert (table['time_size'] == 4).all(), "All time sizes should be 4"
+    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+
+    pd.testing.assert_series_equal(
+        table['time_size'],
+        table['timepoints_ch_0'].apply(len),
+        check_dtype=False,
+        check_names=False,
+    )
+
+def test_create_8_128_128_128_2_hypercubes(database):
+    table = database.create_multichannel_hypercube_table(num_timepoints=8, max_rows=1000)
+    print(database.last_query)
+    print(table)
+
+    assert table.shape[0] == 1000, "Only ten rows should be returned"
+
+    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
+    assert (table['time_size'] == 8).all(), "All time sizes should be 8"
+    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+
+    pd.testing.assert_series_equal(
+        table['time_size'],
+        table['timepoints_ch_0'].apply(len),
+        check_dtype=False,
+        check_names=False,
+    )
+
+def test_create_16_128_128_128_2_hypercubes(database):
+    table = database.create_multichannel_hypercube_table(num_timepoints=16, max_rows=1000)
+    print(database.last_query)
+    print(table)
+
+    assert table.shape[0] == 1000, "Only ten rows should be returned"
+
+    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
+    assert (table['time_size'] == 16).all(), "All time sizes should be 16"
+    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+
+    pd.testing.assert_series_equal(
+        table['time_size'],
+        table['timepoints_ch_0'].apply(len),
+        check_dtype=False,
+        check_names=False,
+    )
+
+def test_create_32_128_128_128_2_hypercubes(database):
+    table = database.create_multichannel_hypercube_table(num_timepoints=32, max_rows=1000)
+    print(database.last_query)
+    print(table)
+
+    assert table.shape[0] == 1000, "Only ten rows should be returned"
+
+    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
+    assert (table['time_size'] == 32).all(), "All time sizes should be 32"
+    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
 
     pd.testing.assert_series_equal(
         table['time_size'],
