@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Optional, Any, List, Literal
+from typing import Optional, Any, List, Literal, Iterable
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -73,147 +73,105 @@ class SupabaseDatabase:
 
     def get_random_rois(self, num_rois: int = 1) -> List[int]:
         query = f"""
-            SELECT DISTINCT ON (prepared_id) prepared_id, tile_name 
+            SELECT DISTINCT ON (prepared_id) prepared_id 
             FROM prepared_tiles_view 
             LIMIT {num_rois}
         """
-        return self.execute_query(query).values.tolist()
+        return self.execute_query(query).values.squeeze().tolist()
 
     def get_random_tiles(self, num_tiles: int = 1) -> List[int]:
-        query = f"""
-            SELECT DISTINCT ON (tile_name) prepared_id, tile_name 
-            FROM prepared_tiles_view 
-            LIMIT {num_tiles}
-        """
-        return self.execute_query(query).values.tolist()
-
-    def get_random_rois_and_tiles(self, num_tiles: int = 1) -> List[int]:
         query = f"""
             SELECT DISTINCT ON (prepared_id, tile_name) prepared_id, tile_name 
             FROM prepared_tiles_view 
             LIMIT {num_tiles}
         """
-        return self.execute_query(query).values.tolist()
+        return self.execute_query(query).values.squeeze().tolist()
+
+    def _choose_filter(
+        self,
+        rois: Optional[List[int|str]] = None,
+        tiles: Optional[List[str]] = None,
+        table_name: str = 'ptv'
+    ) -> str:
+        if rois is not None and tiles is not None:
+            return f"WHERE {table_name}.prepared_id IN {rois} AND {table_name}.tile_name IN {tiles}"
+        elif rois is not None:
+            return f"WHERE {table_name}.prepared_id IN {rois}"
+        elif tiles is not None:
+            return f"WHERE AND {table_name}.tile_name IN {tiles}"
+        else:
+            return ''
 
 
-    def sql_filter(
+    def _limit_filter(
         self,
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
+        table_name: str = 'ptv'
     ) -> str:
         if max_rois is None and max_tiles is None:
             return ''
         else:
-            if max_rois is not None and max_tiles is not None:
-                unique_rois, unique_tiles = zip(*self.get_random_rois_and_tiles(max_tiles))
-            elif max_rois is not None:
-                unique_rois, unique_tiles = zip(*self.get_random_rois(max_rois))
+            if max_rois is not None:
+                unique_rois = self.get_random_rois(max_rois)
+                if isinstance(unique_rois, Iterable):
+                    filters = f"WHERE {table_name}.prepared_id IN {unique_rois}"
+                else:
+                    filters = f"WHERE {table_name}.prepared_id IN ('{unique_rois}')"
             else:
-                unique_rois, unique_tiles = zip(*self.get_random_tiles(max_tiles))
+                if max_tiles > 1:
+                    unique_rois, unique_tiles = zip(*self.get_random_tiles(max_tiles))
+                else:
+                    unique_rois, unique_tiles = self.get_random_tiles(max_tiles)
+                print(unique_rois, unique_tiles)
 
-            if max_tiles > 1:
-                filters = f"WHERE ptv.prepared_id IN {unique_rois} AND ptv.tile_name IN {unique_tiles}"
-            else:
-                filters = f"WHERE ptv.prepared_id IN ('{unique_rois[0]}') AND ptv.tile_name IN ('{unique_tiles[0]}')"
 
+                if isinstance(unique_tiles, Iterable) and isinstance(unique_rois, Iterable):
+                    filters = f"WHERE {table_name}.prepared_id IN {unique_rois} " \
+                              f"AND {table_name}.tile_name IN {unique_tiles}"
+                else:
+                    filters =  f"WHERE {table_name}.prepared_id IN ('{unique_rois}') " \
+                               f"AND {table_name}.tile_name IN ('{unique_tiles}')"
+
+        logger.info(f"Using filters: {filters}")
         return filters
 
 
-    def get_3d_multichannel_hypercubes(
+    def get_32_128_128_128_2_hypercubes(
         self,
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
         max_rows: Optional[int] = None
     ) -> pd.DataFrame:
-        prepared_cubes_column_names = [
-            'prepared_id',
-            'tile_name',
-            'time',
-            'x_start',
-            'y_start',
-            'z_start',
-            'occupancy_ratio',
-        ]
-        prepared_tiles_view_column_names = [
-            'channel_size',
-            'cube_size',
-            'time_size',
-            'server_folder',
-            'output_folder',
-            'metadata_json',
-            'metadata_tile_json',
-        ]
-
-        self.get_3d_multichannel_hypercubes_query = f"""
-            SELECT
-                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
-                STRING_AGG(pc.channel::text, ',' ORDER BY pc.time, pc.channel) AS channels,
-                STRING_AGG(pc.channel_target::text, ',' ORDER BY pc.time, pc.channel_target) AS channel_targets
-            FROM prepared_cubes pc
-            JOIN prepared_tiles_view ptv
-            ON pc.prepared_id = ptv.prepared_id AND pc.tile_name = ptv.tile_name
-            {self.sql_filter(max_rois=max_rois, max_tiles=max_tiles)} 
-            GROUP BY
-                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])}
-            {f"LIMIT {max_rows}" if max_rows is not None else ''}
-        """
-
-        logger.info(f"Executing query: {self.get_3d_multichannel_hypercubes_query}")
-        table = self.execute_query(self.get_3d_multichannel_hypercubes_query)
-        table['channels'] = table['channels'].apply(lambda x: x.split(',') if pd.notna(x) and x else [])
-        table['channel_targets'] = table['channel_targets'].apply(lambda x: x.split(',') if pd.notna(x) and x else [])
-
-        return table
-
-
-    def get_4d_multichannel_hypercubes(
-        self,
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
-        max_rows: Optional[int] = None
-    ) -> pd.DataFrame:
-        prepared_cubes_column_names = [
+        column_names = [
             'prepared_id',
             'tile_name',
             'x_start',
             'y_start',
             'z_start',
-            'occupancy_ratio',
-        ]
-        prepared_tiles_view_column_names = [
+            'time_start',
             'channel_size',
             'cube_size',
             'time_size',
+            'hpf',
             'server_folder',
             'output_folder',
             'metadata_json',
             'metadata_tile_json',
+            'occupancy_ratios_ch_0',
+            'occupancy_ratios_ch_1'
         ]
 
-        self.get_4d_multichannel_hypercubes_query = f"""
+        self.last_query = f"""
             SELECT
-                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
-                STRING_AGG(pc.time::text, ',' ORDER BY pc.time) AS timepoints,
-                STRING_AGG(pc.channel::text, ',' ORDER BY pc.time, pc.channel) AS channels,
-                STRING_AGG(pc.channel_target::text, ',' ORDER BY pc.time, pc.channel_target) AS channel_targets
-            FROM prepared_cubes pc
-            JOIN prepared_tiles_view ptv
-            ON pc.prepared_id = ptv.prepared_id AND pc.tile_name = ptv.tile_name
-            {self.sql_filter(max_rois=max_rois, max_tiles=max_tiles)} 
-            GROUP BY
-                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])}
+                {', '.join([f'hc.{col}' for col in column_names])},
+                hc.timepoints[:32] as timepoints_ch_0,
+                hc.timepoints[32+1:] as timepoints_ch_1
+            FROM prepared_32_128_128_128_2_hypercube_view hc
+            {self._limit_filter(max_rois=max_rois, max_tiles=max_tiles, table_name='hc')} 
             {f"LIMIT {max_rows}" if max_rows is not None else ''}
         """
 
-        logger.info(f"Executing query: {self.get_4d_multichannel_hypercubes_query}")
-        table = self.execute_query(self.get_4d_multichannel_hypercubes_query)
-
-        table['timepoints'] = table['timepoints'].apply(lambda x: x.split(',') if pd.notna(x) and x else [])
-        table['channels'] = table['channels'].apply(lambda x: x.split(',') if pd.notna(x) and x else [])
-        table['channel_targets'] = table['channel_targets'].apply(lambda x: x.split(',') if pd.notna(x) and x else [])
-
+        logger.info(f"Executing query: {self.last_query}")
+        table = self.execute_query(self.last_query)
         return table
