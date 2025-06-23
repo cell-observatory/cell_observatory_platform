@@ -56,19 +56,24 @@ class SupabaseDatabase:
     def list_tables(self) -> Any:
         return self.execute_query("SELECT tablename FROM pg_tables WHERE schemaname = 'public';")
 
+
     def list_views(self) -> Any:
         return self.execute_query("SELECT viewname FROM pg_views WHERE schemaname = 'public';")
 
+
     def get_table(self, table_name: str) -> Any:
         return self.execute_query(f"SELECT * FROM {table_name};")
+
 
     def get_columns(self, table_name: str) -> List[str]:
         return self.execute_query(
             f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}';"
         ).column_name.to_list()
 
+
     def count_rows(self, table_name: str) -> int:
         return self.execute_query(f"SELECT COUNT(*) FROM {table_name};").iloc[0, 0]
+
 
     def count_columns(self, table_name: str) -> int:
         return len(self.get_columns(table_name))
@@ -82,6 +87,7 @@ class SupabaseDatabase:
         """
         return self.execute_query(query).values.squeeze().tolist()
 
+
     def get_random_tiles(self, num_tiles: int = 1) -> List[int]:
         query = f"""
             SELECT DISTINCT ON (prepared_id, tile_name) prepared_id, tile_name 
@@ -90,18 +96,27 @@ class SupabaseDatabase:
         """
         return self.execute_query(query).values.squeeze().tolist()
 
+
     def _choose_filter(
         self,
-        rois: Optional[List[int|str]] = None,
-        tiles: Optional[List[str]] = None,
+        rois: Optional[Iterable[int|str]] = None,
+        tiles: Optional[Iterable[str]] = None,
         table_name: str = 'ptv'
     ) -> str:
+
+        if rois is not None:
+            rois = tuple(rois) if len(rois) > 1 else f"({rois[0]})"
+
+        if tiles is not None:
+            tiles = tuple(tiles) if len(tiles) > 1 else f"({tiles[0]})"
+
+
         if rois is not None and tiles is not None:
             return f"WHERE {table_name}.prepared_id IN {rois} AND {table_name}.tile_name IN {tiles}"
         elif rois is not None:
             return f"WHERE {table_name}.prepared_id IN {rois}"
         elif tiles is not None:
-            return f"WHERE AND {table_name}.tile_name IN {tiles}"
+            return f"WHERE {table_name}.tile_name IN {tiles}"
         else:
             return ''
 
@@ -143,10 +158,13 @@ class SupabaseDatabase:
     def _query_hypercubes(
         self,
         table_name: str,
+        table_name_shortcut: str = 'hc',
         num_timepoints: Optional[int] = 32,
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
-        max_rows: Optional[int] = None
+        max_hypercubes: Optional[int] = None,
+        roi_list: Optional[Iterable[int]] = None,
+        tile_list: Optional[Iterable[str]] = None,
     ) -> str:
         column_names = [
             'prepared_id',
@@ -164,16 +182,22 @@ class SupabaseDatabase:
             'metadata_json',
             'metadata_tile_json',
         ]
+
+        if roi_list is not None or tile_list is not None:
+            filters = self._choose_filter(rois=roi_list, tiles=tile_list, table_name=table_name_shortcut)
+        else:
+            filters = self._limit_filter(max_rois=max_rois, max_tiles=max_tiles, table_name=table_name_shortcut)
+
         return f"""
             SELECT
-                {', '.join([f'hc.{col}' for col in column_names])},
-                hc.occupancy_ratios[:{num_timepoints}] as occupancy_ratios_ch_0,
-                hc.occupancy_ratios[{num_timepoints}+1:] as occupancy_ratios_ch_1,
-                hc.timepoints[:{num_timepoints}] as timepoints_ch_0,
-                hc.timepoints[{num_timepoints}+1:] as timepoints_ch_1
-            FROM {table_name} hc
-            {self._limit_filter(max_rois=max_rois, max_tiles=max_tiles, table_name='hc')} 
-            {f"LIMIT {max_rows}" if max_rows is not None else ''}
+                {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])},
+                {table_name_shortcut}.occupancy_ratios[:{num_timepoints}] as occupancy_ratios_ch_0,
+                {table_name_shortcut}.occupancy_ratios[{num_timepoints}+1:] as occupancy_ratios_ch_1,
+                {table_name_shortcut}.timepoints[:{num_timepoints}] as timepoints_ch_0,
+                {table_name_shortcut}.timepoints[{num_timepoints}+1:] as timepoints_ch_1
+            FROM {table_name} {table_name_shortcut}
+            {filters} 
+            {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
         """
 
 
@@ -181,7 +205,9 @@ class SupabaseDatabase:
         self,
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
-        max_rows: Optional[int] = None
+        max_hypercubes: Optional[int] = None,
+        roi_list: Optional[Iterable[int]] = None,
+        tile_list: Optional[Iterable[str]] = None,
     ) -> pd.DataFrame:
 
         self.last_query = self._query_hypercubes(
@@ -189,7 +215,9 @@ class SupabaseDatabase:
             num_timepoints=32,
             max_rois=max_rois,
             max_tiles=max_tiles,
-            max_rows=max_rows
+            max_hypercubes=max_hypercubes,
+            roi_list=roi_list,
+            tile_list=tile_list
         )
 
         logger.info(f"Executing query: {self.last_query}")
@@ -202,7 +230,9 @@ class SupabaseDatabase:
         num_timepoints: Optional[int] = 1,
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
-        max_rows: Optional[int] = None
+        max_hypercubes: Optional[int] = None,
+        roi_list: Optional[Iterable[int]] = None,
+        tile_list: Optional[Iterable[str]] = None,
     ) -> pd.DataFrame:
 
         prepared_cubes_column_names = [
@@ -240,7 +270,7 @@ class SupabaseDatabase:
                 {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
                 {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
                 (div(pc.time::numeric, {num_timepoints}::numeric))
-            {f"LIMIT {max_rows}" if max_rows is not None else ''}
+            {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
         """
 
         self.last_query = self._query_hypercubes(
@@ -248,7 +278,9 @@ class SupabaseDatabase:
             num_timepoints=num_timepoints,
             max_rois=max_rois,
             max_tiles=max_tiles,
-            max_rows=max_rows
+            max_hypercubes=max_hypercubes,
+            roi_list=roi_list,
+            tile_list=tile_list
         )
 
         logger.info(f"Executing query: {self.last_query}")

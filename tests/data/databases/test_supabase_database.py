@@ -201,6 +201,28 @@ def test_hypercubes_max_roi_filter(database):
     assert len(table['prepared_id'].unique()) == 1, "Only one ROI should be returned"
     assert len(table['tile_name'].unique()) > 1, "More than one tile should be returned"
 
+def test_hypercubes_max_tiles_filter(database):
+    table = database.create_multichannel_hypercube_table(num_timepoints=16, max_tiles=10)
+    print(database.last_query)
+    print(table)
+
+    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
+    assert (table['time_size'] == 16).all(), "All time sizes should be 32"
+    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+
+    assert len(table['tile_name'].unique()) == 10, "Only ten tiles should be returned"
+
+def test_hypercubes_max_hypercubes_filter(database):
+    table = database.create_multichannel_hypercube_table(num_timepoints=16, max_hypercubes=100)
+    print(database.last_query)
+    print(table)
+
+    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
+    assert (table['time_size'] == 16).all(), "All time sizes should be 32"
+    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+
+    assert table.shape[0] == 100, "Only 100 hypercubes should be returned"
+
 def test_hypercubes_list_roi_filter(database):
     roi_list = [312]
     table = database.create_multichannel_hypercube_table(num_timepoints=16, roi_list=roi_list)
