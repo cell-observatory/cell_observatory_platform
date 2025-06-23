@@ -44,6 +44,7 @@ class SupabaseDatabase:
         assert uri is not None, "SUPABASE_URI_* environment variable not set"
         return uri
 
+
     def execute_query(self, query: str) -> pd.DataFrame:
         try:
             result = cx.read_sql(conn=self.database_url, query=query)
@@ -52,6 +53,7 @@ class SupabaseDatabase:
         except Exception as e:
             logger.error(f"Failed to execute query: {e}")
             raise
+
 
     def list_tables(self) -> Any:
         return self.execute_query("SELECT tablename FROM pg_tables WHERE schemaname = 'public';")
@@ -104,12 +106,13 @@ class SupabaseDatabase:
         table_name: str = 'ptv'
     ) -> str:
 
+        assert rois is not None or tiles is not None, "At least one of rois or tiles must be provided"
+
         if rois is not None:
             rois = tuple(rois) if len(rois) > 1 else f"({rois[0]})"
 
         if tiles is not None:
             tiles = tuple(tiles) if len(tiles) > 1 else f"({tiles[0]})"
-
 
         if rois is not None and tiles is not None:
             return f"WHERE {table_name}.prepared_id IN {rois} AND {table_name}.tile_name IN {tiles}"
@@ -117,8 +120,6 @@ class SupabaseDatabase:
             return f"WHERE {table_name}.prepared_id IN {rois}"
         elif tiles is not None:
             return f"WHERE {table_name}.tile_name IN {tiles}"
-        else:
-            return ''
 
 
     def _limit_filter(
@@ -127,33 +128,70 @@ class SupabaseDatabase:
         max_tiles: Optional[int] = None,
         table_name: str = 'ptv'
     ) -> str:
-        if max_rois is None and max_tiles is None:
-            return ''
-        else:
-            if max_rois is not None:
-                unique_rois = self.get_random_rois(max_rois)
-                if isinstance(unique_rois, Iterable):
-                    filters = f"WHERE {table_name}.prepared_id IN {unique_rois}"
-                else:
-                    filters = f"WHERE {table_name}.prepared_id IN ('{unique_rois}')"
+        assert max_rois is not None or max_tiles is not None, "At least one of max_rois or max_tiles must be provided"
+
+        if max_rois is not None:
+            unique_rois = self.get_random_rois(max_rois)
+            if isinstance(unique_rois, Iterable):
+                filters = f"WHERE {table_name}.prepared_id IN {unique_rois}"
             else:
-                if max_tiles > 1:
-                    unique_rois, unique_tiles = zip(*self.get_random_tiles(max_tiles))
-                else:
-                    unique_rois, unique_tiles = self.get_random_tiles(max_tiles)
-                print(unique_rois, unique_tiles)
+                filters = f"WHERE {table_name}.prepared_id IN ('{unique_rois}')"
+        else:
+            if max_tiles > 1:
+                unique_rois, unique_tiles = zip(*self.get_random_tiles(max_tiles))
+            else:
+                unique_rois, unique_tiles = self.get_random_tiles(max_tiles)
+            print(unique_rois, unique_tiles)
 
 
-                if isinstance(unique_tiles, Iterable) and isinstance(unique_rois, Iterable):
-                    filters = f"WHERE {table_name}.prepared_id IN {unique_rois} " \
-                              f"AND {table_name}.tile_name IN {unique_tiles}"
-                else:
-                    filters =  f"WHERE {table_name}.prepared_id IN ('{unique_rois}') " \
-                               f"AND {table_name}.tile_name IN ('{unique_tiles}')"
+            if isinstance(unique_tiles, Iterable) and isinstance(unique_rois, Iterable):
+                filters = f"WHERE {table_name}.prepared_id IN {unique_rois} " \
+                          f"AND {table_name}.tile_name IN {unique_tiles}"
+            else:
+                filters =  f"WHERE {table_name}.prepared_id IN ('{unique_rois}') " \
+                           f"AND {table_name}.tile_name IN ('{unique_tiles}')"
+        return filters
+
+
+    def _age_filter(
+        self,
+        hpfs: Iterable[int],
+        table_name: str = 'ptv'
+    ) -> str:
+        assert hpfs is not None, "hpfs must be provided"
+
+        hpfs = tuple(hpfs) if len(hpfs) > 1 else f"({hpfs[0]})"
+        return f"WHERE {table_name}.hpf IN {hpfs}"
+
+
+    def _filters_to_string(
+        self,
+        table_name: str,
+        table_name_shortcut: str = 'hc',
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        hpf_list: Optional[Iterable[int]] = None,
+        roi_list: Optional[Iterable[int]] = None,
+        tile_list: Optional[Iterable[str]] = None,
+    ) -> str:
+
+        if roi_list is not None or tile_list is not None:
+            filters = self._choose_filter(rois=roi_list, tiles=tile_list, table_name=table_name_shortcut)
+        elif max_rois is not None or max_tiles is not None:
+            filters = self._limit_filter(max_rois=max_rois, max_tiles=max_tiles, table_name=table_name_shortcut)
+        else:
+            filters = ''
+
+        if hpf_list is not None:
+            if filters == '':
+                filters = self._age_filter(hpfs=hpf_list, table_name=table_name_shortcut)
+            else:
+                filters += self._age_filter(
+                    hpfs=hpf_list, table_name=table_name_shortcut
+                ).replace( 'WHERE', 'AND')
 
         logger.info(f"Using filters: {filters}")
         return filters
-
 
     def _query_hypercubes(
         self,
@@ -163,6 +201,7 @@ class SupabaseDatabase:
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
         max_hypercubes: Optional[int] = None,
+        hpf_list: Optional[Iterable[int]] = None,
         roi_list: Optional[Iterable[int]] = None,
         tile_list: Optional[Iterable[str]] = None,
     ) -> str:
@@ -183,10 +222,15 @@ class SupabaseDatabase:
             'metadata_tile_json',
         ]
 
-        if roi_list is not None or tile_list is not None:
-            filters = self._choose_filter(rois=roi_list, tiles=tile_list, table_name=table_name_shortcut)
-        else:
-            filters = self._limit_filter(max_rois=max_rois, max_tiles=max_tiles, table_name=table_name_shortcut)
+        filters = self._filters_to_string(
+            table_name=table_name,
+            table_name_shortcut=table_name_shortcut,
+            max_rois=max_rois,
+            max_tiles=max_tiles,
+            hpf_list=hpf_list,
+            roi_list=roi_list,
+            tile_list=tile_list,
+        )
 
         return f"""
             SELECT
@@ -206,6 +250,7 @@ class SupabaseDatabase:
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
         max_hypercubes: Optional[int] = None,
+        hpf_list: Optional[Iterable[int]] = None,
         roi_list: Optional[Iterable[int]] = None,
         tile_list: Optional[Iterable[str]] = None,
     ) -> pd.DataFrame:
@@ -216,6 +261,7 @@ class SupabaseDatabase:
             max_rois=max_rois,
             max_tiles=max_tiles,
             max_hypercubes=max_hypercubes,
+            hpf_list=hpf_list,
             roi_list=roi_list,
             tile_list=tile_list
         )
@@ -231,6 +277,7 @@ class SupabaseDatabase:
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
         max_hypercubes: Optional[int] = None,
+        hpf_list: Optional[Iterable[int]] = None,
         roi_list: Optional[Iterable[int]] = None,
         tile_list: Optional[Iterable[str]] = None,
     ) -> pd.DataFrame:
@@ -279,6 +326,7 @@ class SupabaseDatabase:
             max_rois=max_rois,
             max_tiles=max_tiles,
             max_hypercubes=max_hypercubes,
+            hpf_list=hpf_list,
             roi_list=roi_list,
             tile_list=tile_list
         )
