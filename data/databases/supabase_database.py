@@ -275,6 +275,11 @@ class SupabaseDatabase:
             'output_folder',
             'metadata_json',
             'metadata_tile_json',
+            'channel_patterns',
+            'json_excite_map_total',
+            'unique_targets',
+            'imaged_locations',
+            'date_crossed',
         ]
 
         filters = self._filters_to_string(
@@ -319,6 +324,11 @@ class SupabaseDatabase:
             'output_folder',
             'metadata_json',
             'metadata_tile_json',
+            'channel_patterns',
+            'json_excite_map_total',
+            'unique_targets',
+            'imaged_locations',
+            'date_crossed',
         ]
 
         return f"""
