@@ -29,10 +29,34 @@ class SupabaseDatabase:
         tile_list: Optional[Iterable[str]] = None,
         dbname: Literal['staging', 'production'] = 'staging',
         dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
+        verbose: bool = False,
+        fetch_hypercubes_dataframe: bool = True
     ):
+        """
+        A class for accessing Supabase database and retrieving hypercubes.
+        The class is only setup to work with the a hypercube view of `Tx128x128x128x2` (TZYXC).
+        It'll check database for existing views or create them if they don't exist based on the given `num_timepoints`.
+        The results are stored in a pandas dataframe `self.hypercubes_dataframe`
+        unless `fetch_hypercubes_dataframe` is set to False.
+
+        Args:
+            num_timepoints: number of timepoints for each hypercube
+            max_rois: maximum number of ROIs (each ROI can have dozens of tiles)
+            max_tiles: maximum number of tiles (each tile can have thousands of hypercubes)
+            max_hypercubes: maximum number of hypercubes to return
+            hpf_list: list of specific HPFs (hours-post-fertilization in hours) to filter
+            roi_list: list of specific ROIs to filter
+            tile_list: list of specific tiles to filter
+            dbname: database name ('staging' or 'production')
+            dotenv_path: path to .env file with URIs to access Supabase
+            verbose: whether to print debug messages
+            fetch_hypercubes_dataframe: this will automatically initialize the database based on the provided parameters
+                (only turn off for debugging or if the database is already initialized)
+
+        # TODO: Only works for `Tx128x128x128x2`, need to extend class to work with other hypercube sizes
+        """
         self.dbname = dbname
         self.dotenv_path = dotenv_path
-        self.database_url = self._load_uri()
         self.num_timepoints = num_timepoints
         self.max_rois = max_rois
         self.max_tiles = max_tiles
@@ -40,13 +64,30 @@ class SupabaseDatabase:
         self.hpf_list = hpf_list
         self.roi_list = roi_list
         self.tile_list = tile_list
+        self.verbose = verbose
+        self.fetch_hypercubes_dataframe = fetch_hypercubes_dataframe
 
+        self.database_url = self._load_uri()
+
+        if self.fetch_hypercubes_dataframe:
+            self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
+                num_timepoints=num_timepoints,
+                max_rois=max_rois,
+                max_tiles=max_tiles,
+                max_hypercubes=max_hypercubes,
+                hpf_list=hpf_list,
+                roi_list=roi_list,
+                tile_list=tile_list
+            )
+        else:
+            self.hypercubes_dataframe = None
 
     def _load_uri(self):
 
         if 'SUPABASE_STAGING_URI' not in os.environ or 'SUPABASE_PROD_URI' not in os.environ:
             assert Path(self.dotenv_path).exists(), f"{self.dotenv_path} was not found"
-            logger.info(f"Loading additional environment variables from {self.dotenv_path}")
+            if self.verbose:
+                print(f"Loading additional environment variables from {self.dotenv_path}")
             load_dotenv(self.dotenv_path, verbose=True)
 
         if self.dbname == 'staging':
@@ -63,7 +104,6 @@ class SupabaseDatabase:
     def execute_query(self, query: str) -> pd.DataFrame:
         try:
             result = cx.read_sql(conn=self.database_url, query=query)
-            logger.info(f"Query executed successfully. Returned {len(result)} rows.")
             return result
         except Exception as e:
             logger.error(f"Failed to execute query: {e}")
@@ -148,7 +188,7 @@ class SupabaseDatabase:
         if max_rois is not None:
             unique_rois = self.get_random_rois(max_rois)
             if isinstance(unique_rois, Iterable):
-                filters = f"WHERE {table_name}.prepared_id IN {unique_rois}"
+                filters = f"WHERE {table_name}.prepared_id IN {tuple(unique_rois)}"
             else:
                 filters = f"WHERE {table_name}.prepared_id IN ('{unique_rois}')"
         else:
@@ -156,12 +196,10 @@ class SupabaseDatabase:
                 unique_rois, unique_tiles = zip(*self.get_random_tiles(max_tiles))
             else:
                 unique_rois, unique_tiles = self.get_random_tiles(max_tiles)
-            print(unique_rois, unique_tiles)
-
 
             if isinstance(unique_tiles, Iterable) and isinstance(unique_rois, Iterable):
-                filters = f"WHERE {table_name}.prepared_id IN {unique_rois} " \
-                          f"AND {table_name}.tile_name IN {unique_tiles}"
+                filters = f"WHERE {table_name}.prepared_id IN {tuple(unique_rois)} " \
+                          f"AND {table_name}.tile_name IN {tuple(unique_tiles)}"
             else:
                 filters =  f"WHERE {table_name}.prepared_id IN ('{unique_rois}') " \
                            f"AND {table_name}.tile_name IN ('{unique_tiles}')"
@@ -203,9 +241,10 @@ class SupabaseDatabase:
             else:
                 filters += self._age_filter(
                     hpfs=hpf_list, table_name=table_name_shortcut
-                ).replace( 'WHERE', 'AND')
+                ).replace( 'WHERE', ' AND ')
 
-        logger.info(f"Using filters: {filters}")
+        if self.verbose:
+            print(f"Using filters: {filters}")
         return filters
 
 
@@ -319,7 +358,7 @@ class SupabaseDatabase:
         try:
             self.last_query = self._query_t_128_128_128_2_hypercube_view(
                 table_name=table_name,
-                num_timepoints=32,
+                num_timepoints=num_timepoints,
                 max_rois=max_rois,
                 max_tiles=max_tiles,
                 max_hypercubes=max_hypercubes,
@@ -328,7 +367,8 @@ class SupabaseDatabase:
                 tile_list=tile_list
             )
 
-            logger.info(f"Executing query: {self.last_query}")
+            if self.verbose:
+                print(f"Executing query: {self.last_query}")
             table = self.execute_query(self.last_query)
             return table
 
@@ -350,7 +390,8 @@ class SupabaseDatabase:
                 tile_list=tile_list
             )
 
-            logger.info(f"Executing query: {self.last_query}")
+            if self.verbose:
+                print(f"Executing query: {self.last_query}")
             table = self.execute_query(self.last_query)
             return table
 
