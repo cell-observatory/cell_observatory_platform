@@ -56,19 +56,22 @@ class SupabaseDatabase:
     def list_tables(self) -> Any:
         return self.execute_query("SELECT tablename FROM pg_tables WHERE schemaname = 'public';")
 
-    def get_table(self, tablename: str) -> Any:
-        return self.execute_query(f"SELECT * FROM {tablename};")
+    def list_views(self) -> Any:
+        return self.execute_query("SELECT viewname FROM pg_views WHERE schemaname = 'public';")
 
-    def get_columns(self, tablename: str) -> List[str]:
+    def get_table(self, table_name: str) -> Any:
+        return self.execute_query(f"SELECT * FROM {table_name};")
+
+    def get_columns(self, table_name: str) -> List[str]:
         return self.execute_query(
-            f"SELECT column_name FROM information_schema.columns WHERE table_name = '{tablename}';"
+            f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}';"
         ).column_name.to_list()
 
-    def count_rows(self, tablename: str) -> int:
-        return self.execute_query(f"SELECT COUNT(*) FROM {tablename};").iloc[0, 0]
+    def count_rows(self, table_name: str) -> int:
+        return self.execute_query(f"SELECT COUNT(*) FROM {table_name};").iloc[0, 0]
 
-    def count_columns(self, tablename: str) -> int:
-        return len(self.get_columns(tablename))
+    def count_columns(self, table_name: str) -> int:
+        return len(self.get_columns(table_name))
 
 
     def get_random_rois(self, num_rois: int = 1) -> List[int]:
@@ -137,12 +140,14 @@ class SupabaseDatabase:
         return filters
 
 
-    def get_32_128_128_128_2_hypercubes(
+    def _query_hypercubes(
         self,
+        table_name: str,
+        num_timepoints: Optional[int] = 32,
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
         max_rows: Optional[int] = None
-    ) -> pd.DataFrame:
+    ) -> str:
         column_names = [
             'prepared_id',
             'tile_name',
@@ -158,20 +163,95 @@ class SupabaseDatabase:
             'output_folder',
             'metadata_json',
             'metadata_tile_json',
-            'occupancy_ratios_ch_0',
-            'occupancy_ratios_ch_1'
         ]
-
-        self.last_query = f"""
+        return f"""
             SELECT
                 {', '.join([f'hc.{col}' for col in column_names])},
-                hc.timepoints[:32] as timepoints_ch_0,
-                hc.timepoints[32+1:] as timepoints_ch_1
-            FROM prepared_32_128_128_128_2_hypercube_view hc
+                hc.occupancy_ratios[:{num_timepoints}] as occupancy_ratios_ch_0,
+                hc.occupancy_ratios[{num_timepoints}+1:] as occupancy_ratios_ch_1,
+                hc.timepoints[:{num_timepoints}] as timepoints_ch_0,
+                hc.timepoints[{num_timepoints}+1:] as timepoints_ch_1
+            FROM {table_name} hc
             {self._limit_filter(max_rois=max_rois, max_tiles=max_tiles, table_name='hc')} 
             {f"LIMIT {max_rows}" if max_rows is not None else ''}
         """
 
+
+    def get_32_128_128_128_2_hypercubes(
+        self,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        max_rows: Optional[int] = None
+    ) -> pd.DataFrame:
+
+        self.last_query = self._query_hypercubes(
+            table_name='prepared_32_128_128_128_2_hypercube_view',
+            num_timepoints=32,
+            max_rois=max_rois,
+            max_tiles=max_tiles,
+            max_rows=max_rows
+        )
+
         logger.info(f"Executing query: {self.last_query}")
         table = self.execute_query(self.last_query)
         return table
+
+
+    def create_multichannel_hypercube_table(
+        self,
+        num_timepoints: Optional[int] = 1,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        max_rows: Optional[int] = None
+    ) -> pd.DataFrame:
+
+        prepared_cubes_column_names = [
+            'prepared_id',
+            'tile_name',
+            'x_start',
+            'y_start',
+            'z_start',
+        ]
+        prepared_tiles_view_column_names = [
+            'hpf',
+            'channel_size',
+            'cube_size',
+            'server_folder',
+            'output_folder',
+            'metadata_json',
+            'metadata_tile_json',
+        ]
+
+        self.table_query = f"""
+            SELECT
+                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
+                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
+                array_length(array_agg(pc.occupancy_ratio), 1) / ptv.channel_size as time_size,
+                div(pc.time::numeric, {num_timepoints}::numeric) * {num_timepoints}::numeric as time_start,
+                array_agg(pc.occupancy_ratio ORDER BY pc.channel, pc.time) as occupancy_ratios,
+                string_agg(pc.channel_target, ','::text ORDER BY pc.channel, pc.time) as channel_targets,
+                array_agg(pc.time ORDER BY pc.channel, pc.time) as timepoints
+            FROM prepared_cubes pc
+            JOIN prepared_tiles_view ptv
+            ON (pc.prepared_id, pc.tile_name) = (ptv.prepared_id, ptv.tile_name)
+            WHERE
+                ptv.cube_size = 128 AND ptv.channel_size = 2
+            GROUP BY
+                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
+                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
+                (div(pc.time::numeric, {num_timepoints}::numeric))
+            {f"LIMIT {max_rows}" if max_rows is not None else ''}
+        """
+
+        self.last_query = self._query_hypercubes(
+            table_name=f"({self.table_query})",
+            num_timepoints=num_timepoints,
+            max_rois=max_rois,
+            max_tiles=max_tiles,
+            max_rows=max_rows
+        )
+
+        logger.info(f"Executing query: {self.last_query}")
+        table = self.execute_query(self.last_query)
+        return table
+
