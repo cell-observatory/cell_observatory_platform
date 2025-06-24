@@ -2,6 +2,7 @@ import sys
 import ujson
 import logging
 from pathlib import Path
+from typing import Optional, Tuple
 
 from omegaconf import DictConfig
 
@@ -206,12 +207,16 @@ def resume_run(trainer, config: DictConfig):
 def summarize_model(model: nn.Module, 
                     inputs: tuple, 
                     batch_size: int, 
-                    logdir: Path
+                    logdir: Path,
+                    input_data: Optional[dict] = None
 ):
     model_logbook = {}
     model_stats = summary(
         model=model,
-        input_size=inputs,
+        # we should only specify one of input_size 
+        # or input_data
+        input_size=inputs if input_data is None else None,
+        input_data=input_data,
         depth=5,
         col_width=25,
         col_names=["kernel_size", "output_size", "num_params"],
@@ -221,7 +226,10 @@ def summarize_model(model: nn.Module,
     )
     train_stats = summary(
         model=model,
-        input_size=inputs,
+        # we should only specify one of input_size 
+        # or input_data
+        input_size=inputs if input_data is None else None,
+        input_data=input_data,
         depth=5,
         col_width=25,
         col_names=["kernel_size", "output_size", "num_params"],

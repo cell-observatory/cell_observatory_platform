@@ -7,7 +7,7 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
-
+from tests.conftest import get_input_data
 from training.utils import summarize_model
 from models.maskedautoencoder import MaskedAutoEncoder
 
@@ -42,9 +42,12 @@ def test_mae_custom(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -77,9 +80,12 @@ def test_mae_tiny(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -112,9 +118,12 @@ def test_mae_small(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -147,9 +156,12 @@ def test_mae_base(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -182,9 +194,12 @@ def test_mae_large(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -217,9 +232,12 @@ def test_mae_huge(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
