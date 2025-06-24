@@ -13,7 +13,7 @@ if (hasattr(OmegaConf, "has_resolver") and  \
 
 import ray.train.torch as raytorch
 
-from cell_observatory_platform.utils.context import process_rank, barrier
+from utils.context import process_rank, barrier
 
 logging.basicConfig(
     stream=sys.stdout,

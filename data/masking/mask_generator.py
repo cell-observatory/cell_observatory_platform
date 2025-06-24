@@ -7,7 +7,7 @@ from hydra.utils import get_method
 import torch
 
 from multiprocessing import Value
-from cell_observatory_platform.data.data_shapes import (
+from data.data_shapes import (
     MULTICHANNEL_3D_HYPERCUBE,
     MULTICHANNEL_4D_HYPERCUBE
 )

@@ -7,10 +7,9 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from torch.utils.data._utils.collate import default_collate as torch_default_collate
 
-from cell_observatory_platform.data.structures.data_sample import DataSample
-from cell_observatory_platform.data.databases.supabase_database import SupabaseDatabase
-from cell_observatory_platform.data.structures.image_list import cat_image_lists
-from cell_observatory_platform.data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
+from data.structures.data_sample import DataSample
+from data.structures.image_list import cat_image_lists
+from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
 
 logging.basicConfig(
     stream=sys.stdout,

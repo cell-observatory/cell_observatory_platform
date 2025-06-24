@@ -10,7 +10,7 @@ from models.activation import get_activation
 from models.mlp import get_mlp
 from models.encoder import Encoder
 from models.patch_embeddings import ConvPatchEmbedding, PatchEmbedding, PosEmbedding
-from cell_observatory_platform.data.masking.mask_generator import apply_masks
+from data.masking.mask_generator import apply_masks
 
 logging.basicConfig(
 	stream=sys.stdout,
