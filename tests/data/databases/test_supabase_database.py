@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore")
 
 @pytest.fixture(scope="module")
 def cfg():
-    with initialize(config_path="../../../configs/data/databases"):
+    with initialize(config_path="../../../configs/datasets/databases"):
         cfg = compose(config_name="supabase_database")
     return cfg
 

@@ -1,11 +1,13 @@
 import abc
 import sys
 import logging
+import ujson
 from typing import Any, Callable, Optional, Sequence, Mapping, Dict
+from pathlib import Path
+import pandas as pd
 
 from torch.utils.data import Dataset
 
-from data.databases.supabase_database import SupabaseDatabase
 from data.structures.data_sample import DataSample
 from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
 
@@ -48,16 +50,14 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
 
     def __init__(
         self,
-        db: SupabaseDatabase,
+        hypercubes_dataframe_path: Path,
         input_layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE,
         transforms: Optional[Sequence] = None,
     ):
         super().__init__()
 
-
-        self.db = db
         self.input_layout = input_layout
-        self._process_tables()
+        self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(hypercubes_dataframe_path)
 
         self._index = None
         self._build_index()
@@ -65,9 +65,13 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         self.transforms = Transformations(transforms)
 
     @abc.abstractmethod
-    def _process_tables(self) -> None:
-        """Process tables in the database."""
-        pass
+    def _process_tables(self, hypercubes_dataframe_path) -> (pd.DataFrame, Dict):
+
+        hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
+        with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
+            configs = ujson.load(f)
+
+        return hypercubes, configs
 
     @abc.abstractmethod
     def _build_index(self) -> None:
