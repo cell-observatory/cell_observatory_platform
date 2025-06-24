@@ -137,6 +137,7 @@ dmypy.json
 *.pclprof
 
 # Data
+/databases
 outputs/
 dataset/
 archive/
