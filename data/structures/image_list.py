@@ -1,9 +1,5 @@
-"""
-Adopted with Apache License 2.0 from
-https://github.com/facebookresearch/detectron2/blob/main/detectron2/structures/image_list.py
-"""
-
-
+import sys
+import logging
 from itertools import chain
 from typing import Any, List, Tuple, Optional, Dict, Sequence
 
@@ -12,6 +8,13 @@ from torch import device
 
 from data.io import record_init
 from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
+
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 class ImageList:
@@ -168,6 +171,10 @@ class ImageList:
         padding_constraints: Optional[Dict[str, int]] = None,
     ) -> "ImageList":
         """
+        Adopted with Apache License 2.0 from
+        https://github.com/facebookresearch/detectron2/blob/main/detectron2/structures/image_list.py
+        Changed it to support 3D/4D data.
+
         Args:
         tensors: a tuple or list of `torch.Tensor`, Each tuple is ([t, d], h, w, c) or (c, [t, d], h, w).
             The Tensors will be padded to the same shape with `pad_value`.
