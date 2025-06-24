@@ -26,16 +26,13 @@ logger = logging.getLogger(__name__)
 def build_dataset(cfg, transforms=None):
     rank = process_rank()
     if rank == 0:
-        # initial write/setup of *.feather, *.db, etc.
-        # if it does not already exist
-        _ = instantiate(cfg.datasets.databases)
+        # initialize supabase wrapper once
+        db = instantiate(cfg.datasets.databases)
     barrier(device_ids=int(os.environ.get("LOCAL_RANK")))
-    # all ranks read local database table and instantiate
-    # database and dataset classes
-    db = instantiate(cfg.datasets.databases)
+
     dataset = instantiate(
         cfg.datasets.dataset,
-        db=db,
+        hypercubes_dataframe_path=db.hypercubes_dataframe_path,
         transforms=transforms
     )
     return dataset

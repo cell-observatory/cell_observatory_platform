@@ -2,10 +2,10 @@ import abc
 import sys
 import logging
 from typing import Any, Callable, Optional, Sequence, Mapping, Dict
+from pathlib import Path
 
 from torch.utils.data import Dataset
-from torch.utils.data._utils.collate import \
-    default_collate as torch_default_collate
+from torch.utils.data._utils.collate import default_collate as torch_default_collate
 
 from cell_observatory_platform.data.structures.data_sample import DataSample
 from cell_observatory_platform.data.databases.supabase_database import SupabaseDatabase
@@ -126,16 +126,15 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
     """Base class for all datasets."""
 
     def __init__(
-            self,
-            db: SupabaseDatabase,
-            layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE,
-            transforms: Optional[Sequence] = None,
+        self,
+        hypercubes_dataframe_path: Path,
+        input_layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE,
+        transforms: Optional[Sequence] = None,
     ):
         super().__init__()
 
-        self.db = db
-        self.layout = layout
-        self._process_tables()
+        self.input_layout = input_layout
+        self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(hypercubes_dataframe_path)
 
         self._index = None
         self._build_index()
@@ -143,9 +142,14 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         self.transforms = Transformations(transforms)
 
     @abc.abstractmethod
-    def _process_tables(self) -> None:
-        """Process tables in the database."""
-        pass
+    def _process_tables(self, hypercubes_dataframe_path) -> (pd.DataFrame, Dict):
+
+        hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
+        with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
+            configs = ujson.load(f)
+
+        return hypercubes, configs
+
 
     @abc.abstractmethod
     def _build_index(self) -> None:
