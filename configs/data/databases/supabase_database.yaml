@@ -15,3 +15,4 @@ roi_list: null # list of specific ROIs to filter
 tile_list: null # list of specific tiles to filter
 verbose: true # to print debug messages
 fetch_hypercubes_dataframe: true # automatically initialize the database based on the provided parameters
+hypercubes_dataframe_path: null # path to the hypercubes dataframe (path/to/repo/databases/default_hypercubes_dataframe.csv)
