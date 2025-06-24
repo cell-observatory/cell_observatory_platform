@@ -3,6 +3,7 @@ from hydra.utils import instantiate
 from hydra import initialize, compose
 from omegaconf import OmegaConf
 from pprint import pprint
+from pathlib import Path
 import pandas as pd
 
 import warnings
@@ -84,7 +85,7 @@ def test_create_1_128_128_128_2_hypercubes(database):
 
     pd.testing.assert_series_equal(
         table['time_size'],
-        table['timepoints_ch_0'].apply(len),
+        table['occupancy_ratios_ch_0'].apply(len),
         check_dtype=False,
         check_names=False,
     )
@@ -102,7 +103,7 @@ def test_create_2_128_128_128_2_hypercubes(database):
 
     pd.testing.assert_series_equal(
         table['time_size'],
-        table['timepoints_ch_0'].apply(len),
+        table['occupancy_ratios_ch_0'].apply(len),
         check_dtype=False,
         check_names=False,
     )
@@ -120,7 +121,7 @@ def test_create_4_128_128_128_2_hypercubes(database):
 
     pd.testing.assert_series_equal(
         table['time_size'],
-        table['timepoints_ch_0'].apply(len),
+        table['occupancy_ratios_ch_0'].apply(len),
         check_dtype=False,
         check_names=False,
     )
@@ -138,7 +139,7 @@ def test_create_8_128_128_128_2_hypercubes(database):
 
     pd.testing.assert_series_equal(
         table['time_size'],
-        table['timepoints_ch_0'].apply(len),
+        table['occupancy_ratios_ch_0'].apply(len),
         check_dtype=False,
         check_names=False,
     )
@@ -156,7 +157,7 @@ def test_create_16_128_128_128_2_hypercubes(database):
 
     pd.testing.assert_series_equal(
         table['time_size'],
-        table['timepoints_ch_0'].apply(len),
+        table['occupancy_ratios_ch_0'].apply(len),
         check_dtype=False,
         check_names=False,
     )
@@ -174,7 +175,7 @@ def test_create_32_128_128_128_2_hypercubes(database):
 
     pd.testing.assert_series_equal(
         table['time_size'],
-        table['timepoints_ch_0'].apply(len),
+        table['occupancy_ratios_ch_0'].apply(len),
         check_dtype=False,
         check_names=False,
     )
@@ -293,7 +294,7 @@ def test_get_t_128_128_128_2_hypercubes(database):
 
     pd.testing.assert_series_equal(
         table['time_size'],
-        table['timepoints_ch_0'].apply(len),
+        table['occupancy_ratios_ch_0'].apply(len),
         check_dtype=False,
         check_names=False,
     )
@@ -302,7 +303,9 @@ def test_1_128_128_128_2_hypercubes_database(cfg):
     cfg.num_timepoints = 1
     cfg.max_hypercubes = 100
     cfg.fetch_hypercubes_dataframe = True
+    cfg.hypercubes_dataframe_path = Path(__file__).parent.parent.parent.parent / 'databases' / 'test_1_128_128_128_2_hypercubes_database.csv'
 
+    print(cfg.hypercubes_dataframe_path)
     print(f"Initializing database...")
     pprint(OmegaConf.to_container(cfg, resolve=True))
 
@@ -317,6 +320,7 @@ def test_16_128_128_128_2_hypercubes_database(cfg):
     cfg.num_timepoints = 16
     cfg.max_hypercubes = 100
     cfg.fetch_hypercubes_dataframe = True
+    cfg.hypercubes_dataframe_path = Path(__file__).parent.parent.parent.parent / 'databases' / 'test_16_128_128_128_2_hypercubes_database.csv'
 
     print(f"Initializing database...")
     pprint(OmegaConf.to_container(cfg, resolve=True))
@@ -335,6 +339,7 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(cfg):
     cfg.hpf_list = [72]
     cfg.max_hypercubes = 100
     cfg.fetch_hypercubes_dataframe = True
+    cfg.hypercubes_dataframe_path = Path(__file__).parent.parent.parent.parent / 'databases' / 'test_16_128_128_128_2_hypercubes_database_with_filters.csv'
 
     print(f"Initializing database...")
     pprint(OmegaConf.to_container(cfg, resolve=True))
