@@ -10,8 +10,8 @@ from typing import Any, List, Tuple, Optional, Dict, Sequence
 import torch
 from torch import device
 
-from cell_observatory_platform.data.io import record_init
-from cell_observatory_platform.data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
+from data.io import record_init
+from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
 
 
 class ImageList:

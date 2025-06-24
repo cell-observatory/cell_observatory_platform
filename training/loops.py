@@ -23,8 +23,8 @@ from training.utils import (
     get_steps_per_epoch,
     resume_run
 )
-from cell_observatory_platform.training.hooks import HookBase
-from cell_observatory_platform.utils.context import inference_context
+from training.hooks import HookBase
+from utils.context import inference_context
 from training.loggers import EventRecorder
 from data.dataloaders import get_dataloader
 from training.registry import build_dependency_graph_and_instantiate

@@ -23,9 +23,9 @@ from fvcore.common.timer import Timer
 
 from ray.train import Checkpoint, report
 
-from cell_observatory_platform.training.loggers import EventWriter
-from cell_observatory_platform.training.utils import summarize_model
-from cell_observatory_platform.utils.context import is_main_process, gather_and_reduce
+from training.loggers import EventWriter
+from training.utils import summarize_model
+from utils.context import is_main_process, gather_and_reduce
 
 
 logging.basicConfig(

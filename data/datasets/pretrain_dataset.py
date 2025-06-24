@@ -4,10 +4,10 @@ from typing import Dict, Any
 import torch
 from torch.utils.data import get_worker_info
 
-from cell_observatory_platform.data.io import read_zarr
-from cell_observatory_platform.data.structures.data_sample import DataSample
-from cell_observatory_platform.data.structures.image_list import ImageList, cat_image_lists
-from cell_observatory_platform.data.datasets.base_dataset import BaseDataset, default_collate
+from data.io import read_zarr
+from data.structures.data_sample import DataSample
+from data.structures.image_list import ImageList, cat_image_lists
+from data.datasets.base_dataset import BaseDataset, default_collate
 
 
 def collate_pretrain_dataset(samples: list["DataSample"]) -> "DataSample":

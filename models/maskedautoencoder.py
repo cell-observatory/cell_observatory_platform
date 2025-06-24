@@ -10,7 +10,7 @@ from models.norm import get_norm
 from models.activation import get_activation
 from models.maskedencoder import MaskedEncoder
 from models.maskedpredictor import MaskedPredictor
-from cell_observatory_platform.data.masking.mask_generator import apply_masks
+from data.masking.mask_generator import apply_masks
 
 logging.basicConfig(
 	stream=sys.stdout,
