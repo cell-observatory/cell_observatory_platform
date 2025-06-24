@@ -7,9 +7,11 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
+from tests.conftest import get_input_data
 
 from training.utils import summarize_model
 from models.jepa import JEPA
+
 
 @pytest.mark.run(order=1)
 def test_jepa_custom(kargs):
@@ -42,9 +44,12 @@ def test_jepa_custom(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -67,7 +72,6 @@ def test_jepa_tiny(kargs):
     logdir = outdir / 'logs'
     logdir.mkdir(exist_ok=True, parents=True)
 
-
     model = JEPA(
         model_template='jepa-tiny',
         input_shape=inputs,
@@ -77,9 +81,12 @@ def test_jepa_tiny(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -102,7 +109,6 @@ def test_jepa_small(kargs):
     logdir = outdir / 'logs'
     logdir.mkdir(exist_ok=True, parents=True)
 
-
     model = JEPA(
         model_template='jepa-small',
         input_shape=inputs,
@@ -112,9 +118,12 @@ def test_jepa_small(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -137,7 +146,6 @@ def test_jepa_base(kargs):
     logdir = outdir / 'logs'
     logdir.mkdir(exist_ok=True, parents=True)
 
-
     model = JEPA(
         model_template='jepa-base',
         input_shape=inputs,
@@ -147,9 +155,12 @@ def test_jepa_base(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -172,7 +183,6 @@ def test_jepa_large(kargs):
     logdir = outdir / 'logs'
     logdir.mkdir(exist_ok=True, parents=True)
 
-
     model = JEPA(
         model_template='jepa-large',
         input_shape=inputs,
@@ -182,9 +192,12 @@ def test_jepa_large(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -207,7 +220,6 @@ def test_jepa_huge(kargs):
     logdir = outdir / 'logs'
     logdir.mkdir(exist_ok=True, parents=True)
 
-
     model = JEPA(
         model_template='jepa-huge',
         input_shape=inputs,
@@ -217,9 +229,12 @@ def test_jepa_huge(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )

@@ -186,7 +186,6 @@ class MaskGenerator(object):
         else:
             t = 1
 
-        # sample spatial block mask scale
         _rand_axial = torch.rand(1, generator=generator).item()
         min_axial, max_axial = self.axial_mask_scale
         axial_mask_scale = min_axial + _rand_axial * (max_axial - min_axial)

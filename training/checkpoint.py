@@ -13,7 +13,6 @@ import torch
 
 from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
 
-from models.base_model import BaseModel
 from data.data_types import TORCH_DTYPES
 from cell_observatory_platform.utils.context import is_main_process, get_world_size, barrier
 
@@ -140,17 +139,18 @@ class CheckpointManager:
             module = getattr(self.model, "module", self.model)
             module.to(TORCH_DTYPES[self.load_dtype].value)
 
-        # unwrap DDP .module naming if necessary
-        base = getattr(self.model, "module", self.model)
+        if self.activation_checkpoint_modules is not None \
+            or self.freeze_modules is not None:
+            # TODO: currently assumes that the model has
+            #      `activation_checkpoint` and `freeze` methods
+            # unwrap DDP .module naming if necessary
+            base = getattr(self.model, "module", self.model)
 
-        assert isinstance(base, BaseModel), \
-            "Model must be an instance of BaseModel or its subclass."
+            if self.activation_checkpoint_modules:
+                base.activation_checkpoint(base, self.activation_checkpoint_modules)
 
-        if self.activation_checkpoint_modules:
-            base.activation_checkpoint(base, self.activation_checkpoint_modules)
-
-        if self.freeze_modules:
-            base.freeze(self.freeze_modules)
+            if self.freeze_modules:
+                base.freeze(self.freeze_modules)
 
         return ckpt_path, client_state
     

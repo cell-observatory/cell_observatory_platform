@@ -7,8 +7,6 @@ import torch.nn as nn
 
 from models.mlp import get_mlp
 from models.norm import get_norm
-from models.base_model import BaseModel
-from models.preprocessor import PreProcessor
 from models.activation import get_activation
 from models.maskedencoder import MaskedEncoder
 from models.maskedpredictor import MaskedPredictor
@@ -116,10 +114,9 @@ CONFIGS = {
 }
 
 
-class MaskedAutoEncoder(BaseModel):
+class MaskedAutoEncoder(nn.Module):
     def __init__(
         self,
-        preprocessor: PreProcessor,
         model_template: Literal[
             'mae', # custom use `embed_dim`, `decoder_embed_dim`, `depth`, `num_heads` and `mlp_ratio` to config model
             'mae-tiny',
@@ -155,7 +152,7 @@ class MaskedAutoEncoder(BaseModel):
         window_mask_shape=None,
         **kwargs,
     ):
-        super().__init__(preprocessor=preprocessor)
+        super().__init__()
 
         if model_template in CONFIGS.keys():
             config = CONFIGS[model_template]
@@ -257,7 +254,7 @@ class MaskedAutoEncoder(BaseModel):
     def get_num_patches(self):
         return self.masked_encoder.pos_embedding.num_patches
 
-    def _forward(self, data_sample: dict):
+    def forward(self, data_sample: dict):
         inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
         masks, context_masks = meta['masks'][0], meta['context_masks'][0]
         target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]

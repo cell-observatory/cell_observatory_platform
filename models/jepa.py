@@ -10,7 +10,6 @@ from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 
 from models.mlp import get_mlp
 from models.norm import get_norm
-from models.base_model import BaseModel
 from models.activation import get_activation
 from models.maskedencoder import MaskedEncoder
 from models.maskedpredictor import MaskedPredictor
@@ -118,7 +117,7 @@ CONFIGS = {
 }
 
 
-class JEPA(BaseModel):
+class JEPA(nn.Module):
     def __init__(
         self,
         model_template: Literal[
@@ -279,7 +278,7 @@ class JEPA(BaseModel):
     def get_num_patches(self):
         return self.input_encoder.pos_embedding.num_patches
 
-    def _forward(self, data_sample: dict):
+    def forward(self, data_sample: dict):
         inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
         masks, context_masks = meta['masks'][0], meta['context_masks'][0]
         target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]

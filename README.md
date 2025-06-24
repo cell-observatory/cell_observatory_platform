@@ -19,9 +19,7 @@
   - [Structures](#structures)
   - [Databases](#databases)
   - [Datasets](#datasets)
-- [Models](#models)
-  - [Base Model](#base-model)
-
+  
 # Installation
 
 ## Docker [images](https://github.com/cell-observatory/cell_observatory_platform/pkgs/container/cell_observatory_platform)
@@ -270,9 +268,3 @@ defaults:
 ## Evaluators
 
 **`DatasetEvaluator:`** Abstract base class defining three key methods: `reset()` for initialization, `process()` for accumulating predictions during evaluation, and `evaluate()` for computing final metrics and returning results as dictionaries.
-
-## Models
-
-### Base Model
-
-**`BaseModel:`** Abstract `PyTorch` module that all models inherit from, containing common functionality such as freezing/unfreezing layers and activation checkpointing.
