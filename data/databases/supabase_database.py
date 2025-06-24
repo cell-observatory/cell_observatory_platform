@@ -154,203 +154,17 @@ class SupabaseDatabase:
         return self.execute_query(query).values.squeeze().tolist()
 
 
-    def _choose_filter(
-        self,
-        rois: Optional[Iterable[int|str]] = None,
-        tiles: Optional[Iterable[str]] = None,
-        table_name: str = 'ptv'
-    ) -> str:
-
-        assert rois is not None or tiles is not None, "At least one of rois or tiles must be provided"
-
-        if rois is not None:
-            rois = tuple(rois) if len(rois) > 1 else f"({rois[0]})"
-
-        if tiles is not None:
-            tiles = tuple(tiles) if len(tiles) > 1 else f"({tiles[0]})"
-
-        if rois is not None and tiles is not None:
-            return f"WHERE {table_name}.prepared_id IN {rois} AND {table_name}.tile_name IN {tiles}"
-        elif rois is not None:
-            return f"WHERE {table_name}.prepared_id IN {rois}"
-        elif tiles is not None:
-            return f"WHERE {table_name}.tile_name IN {tiles}"
-
-
-    def _limit_filter(
-        self,
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
-        table_name: str = 'ptv'
-    ) -> str:
-        assert max_rois is not None or max_tiles is not None, "At least one of max_rois or max_tiles must be provided"
-
-        if max_rois is not None:
-            unique_rois = self.get_random_rois(max_rois)
-            if isinstance(unique_rois, Iterable):
-                filters = f"WHERE {table_name}.prepared_id IN {tuple(unique_rois)}"
-            else:
-                filters = f"WHERE {table_name}.prepared_id IN ('{unique_rois}')"
-        else:
-            if max_tiles > 1:
-                unique_rois, unique_tiles = zip(*self.get_random_tiles(max_tiles))
-            else:
-                unique_rois, unique_tiles = self.get_random_tiles(max_tiles)
-
-            if isinstance(unique_tiles, Iterable) and isinstance(unique_rois, Iterable):
-                filters = f"WHERE {table_name}.prepared_id IN {tuple(unique_rois)} " \
-                          f"AND {table_name}.tile_name IN {tuple(unique_tiles)}"
-            else:
-                filters =  f"WHERE {table_name}.prepared_id IN ('{unique_rois}') " \
-                           f"AND {table_name}.tile_name IN ('{unique_tiles}')"
-        return filters
-
-
-    def _age_filter(
-        self,
-        hpfs: Iterable[int],
-        table_name: str = 'ptv'
-    ) -> str:
-        assert hpfs is not None, "hpfs must be provided"
-
-        hpfs = tuple(hpfs) if len(hpfs) > 1 else f"({hpfs[0]})"
-        return f"WHERE {table_name}.hpf IN {hpfs}"
-
-
-    def _filters_to_string(
-        self,
-        table_name: str,
-        table_name_shortcut: str = 'hc',
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
-        hpf_list: Optional[Iterable[int]] = None,
-        roi_list: Optional[Iterable[int]] = None,
-        tile_list: Optional[Iterable[str]] = None,
-    ) -> str:
-
-        if roi_list is not None or tile_list is not None:
-            filters = self._choose_filter(rois=roi_list, tiles=tile_list, table_name=table_name_shortcut)
-        elif max_rois is not None or max_tiles is not None:
-            filters = self._limit_filter(max_rois=max_rois, max_tiles=max_tiles, table_name=table_name_shortcut)
-        else:
-            filters = ''
-
-        if hpf_list is not None:
-            if filters == '':
-                filters = self._age_filter(hpfs=hpf_list, table_name=table_name_shortcut)
-            else:
-                filters += self._age_filter(
-                    hpfs=hpf_list, table_name=table_name_shortcut
-                ).replace( 'WHERE', ' AND ')
-
-        if self.verbose:
-            print(f"Using filters: {filters}")
-        return filters
-
-
-    def _query_t_128_128_128_2_hypercube_view(
-        self,
-        table_name: str,
-        table_name_shortcut: str = 'hc',
-        num_timepoints: Optional[int] = 32,
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
-        max_hypercubes: Optional[int] = None,
-        hpf_list: Optional[Iterable[int]] = None,
-        roi_list: Optional[Iterable[int]] = None,
-        tile_list: Optional[Iterable[str]] = None,
-    ) -> str:
-        column_names = [
-            'prepared_id',
-            'tile_name',
-            'x_start',
-            'y_start',
-            'z_start',
-            'time_start',
-            'channel_size',
-            'cube_size',
-            'time_size',
-            'hpf',
-            'server_folder',
-            'output_folder',
-            'metadata_json',
-            'metadata_tile_json',
-            'channel_patterns',
-            'json_excite_map_total',
-            'unique_targets',
-            'imaged_locations',
-            'date_crossed',
-        ]
-
-        filters = self._filters_to_string(
-            table_name=table_name,
-            table_name_shortcut=table_name_shortcut,
-            max_rois=max_rois,
-            max_tiles=max_tiles,
-            hpf_list=hpf_list,
-            roi_list=roi_list,
-            tile_list=tile_list,
-        )
-
-        return f"""
-            SELECT
-                {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])},
-                {table_name_shortcut}.occupancy_ratios[:{num_timepoints}] as occupancy_ratios_ch_0,
-                {table_name_shortcut}.occupancy_ratios[{num_timepoints}+1:] as occupancy_ratios_ch_1,
-                {table_name_shortcut}.timepoints[:{num_timepoints}] as timepoints_ch_0,
-                {table_name_shortcut}.timepoints[{num_timepoints}+1:] as timepoints_ch_1
-            FROM {table_name} {table_name_shortcut}
-            {filters} 
-            {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
+    def check_view_exists(self, table_name: str) -> bool:
+        query =  f"""
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                AND table_name = '{table_name}'
+            )
         """
+        return self.execute_query(query).values.squeeze().tolist()
 
-    def _create_t_128_128_128_2_hypercube_view(
-        self,
-        num_timepoints: Optional[int] = 1,
-        max_hypercubes: Optional[int] = None,
-    ) -> str:
-        prepared_cubes_column_names = [
-            'prepared_id',
-            'tile_name',
-            'x_start',
-            'y_start',
-            'z_start',
-        ]
-        prepared_tiles_view_column_names = [
-            'hpf',
-            'channel_size',
-            'cube_size',
-            'server_folder',
-            'output_folder',
-            'metadata_json',
-            'metadata_tile_json',
-            'channel_patterns',
-            'json_excite_map_total',
-            'unique_targets',
-            'imaged_locations',
-            'date_crossed',
-        ]
-
-        return f"""
-            SELECT
-                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
-                array_length(array_agg(pc.occupancy_ratio), 1) / ptv.channel_size as time_size,
-                div(pc.time::numeric, {num_timepoints}::numeric) * {num_timepoints}::numeric as time_start,
-                array_agg(pc.occupancy_ratio ORDER BY pc.channel, pc.time) as occupancy_ratios,
-                string_agg(pc.channel_target, ','::text ORDER BY pc.channel, pc.time) as channel_targets,
-                array_agg(pc.time ORDER BY pc.channel, pc.time) as timepoints
-            FROM prepared_cubes pc
-            JOIN prepared_tiles_view ptv
-            ON (pc.prepared_id, pc.tile_name) = (ptv.prepared_id, ptv.tile_name)
-            WHERE
-                ptv.cube_size = 128 AND ptv.channel_size = 2
-            GROUP BY
-                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
-                (div(pc.time::numeric, {num_timepoints}::numeric))
-            {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
-        """
 
     def get_t_128_128_128_2_hypercubes(
         self,
@@ -361,11 +175,15 @@ class SupabaseDatabase:
         hpf_list: Optional[Iterable[int]] = None,
         roi_list: Optional[Iterable[int]] = None,
         tile_list: Optional[Iterable[str]] = None,
+        hypercubes_dataframe_path: Optional[Path] = None
     ) -> pd.DataFrame:
 
         table_name = f'prepared_{num_timepoints}_128_128_128_2_hypercube_view'
+        if self.check_view_exists(table_name):
 
-        try:
+            if self.verbose:
+                print(f"Using table: {table_name} from the {self.dbname}.")
+
             self.last_query = self._query_t_128_128_128_2_hypercube_view(
                 table_name=table_name,
                 num_timepoints=num_timepoints,
@@ -376,13 +194,10 @@ class SupabaseDatabase:
                 roi_list=roi_list,
                 tile_list=tile_list
             )
+        else:
 
             if self.verbose:
-                print(f"Executing query: {self.last_query}")
-            table = self.execute_query(self.last_query)
-            return table
-
-        except Exception as e:
+                print(f"Table: {table_name} not found in the {self.dbname}. Creating a new view...")
 
             self.table_query = self._create_t_128_128_128_2_hypercube_view(
                 num_timepoints=num_timepoints,
@@ -400,8 +215,12 @@ class SupabaseDatabase:
                 tile_list=tile_list
             )
 
-            if self.verbose:
-                print(f"Executing query: {self.last_query}")
-            table = self.execute_query(self.last_query)
-            return table
+        if self.verbose:
+            print(f"Executing query: {self.last_query}")
 
+        table = self.execute_query(self.last_query)
+
+        if hypercubes_dataframe_path is not None:
+            self.save_hypercubes_dataframe(table, hypercubes_dataframe_path=hypercubes_dataframe_path)
+
+        return table
