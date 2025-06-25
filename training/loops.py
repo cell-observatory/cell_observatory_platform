@@ -17,7 +17,7 @@ from ray.train import get_context
 import torch
 from deepspeed import initialize
 
-from training.utils import (
+from training.helpers import (
     get_optimizer,
     get_lr_scheduler,
     get_steps_per_epoch,

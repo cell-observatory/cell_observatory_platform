@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-from training.utils import summarize_model
+from training.helpers import summarize_model
 from models.baseline import Baseline
 from tests.conftest import get_input_data, kargs
 

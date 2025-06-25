@@ -7,7 +7,7 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
-from training.utils import summarize_model
+from training.helpers import summarize_model
 from models.jepa import JEPA
 from tests.conftest import get_masked_input_data, kargs
 
