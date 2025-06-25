@@ -230,7 +230,9 @@ class ConvNeXtV2(nn.Module):
             x = self.stages[i](x)
         return self.norm(x.mean([-3, -2, -1]))  # global average pooling, (N, C, Z, Y, X) -> (N, C)
 
-    def forward(self, x):
+    def forward(self, data_sample: dict):
+        x, meta = data_sample['data_tensor'], data_sample['metainfo']
+
         x = torch.permute(x, (0, -1, 1, 2, 3))  # (B, Z, Y, X, C) -> (B, C, Z, Y, X)
         x = self.forward_features(x)
         x = self.regressor(x)
