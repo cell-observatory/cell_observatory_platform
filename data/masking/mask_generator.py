@@ -149,20 +149,33 @@ class MaskGenerator(object):
 
     def _get_input_shape_patches(self, input_shape, patch_shape, layout):
         axis_to_value = dict(zip(layout.value, input_shape))
+
         t = axis_to_value.get("T", 1)
-        z, y, x = axis_to_value.get("Z", 1), axis_to_value.get("Y", 1), axis_to_value.get("X", 1)
+        z = axis_to_value.get("Z", 1)
+        y = axis_to_value.get("Y", 1)
+        x = axis_to_value.get("X", 1)
 
-        if t > 1:
+        if t > 1 and z > 1:
             time = t // patch_shape[0] 
-        else:
-            time = 1
-        if z > 1:
             depth = z // patch_shape[1]
-        else:
+            height = y // patch_shape[2] 
+            width = x // patch_shape[3]
+        elif t > 1 and z == 1:
+            time = t // patch_shape[0]
             depth = 1
+            height = y // patch_shape[1]
+            width = x // patch_shape[2]
+        elif t == 1 and z > 1:
+            time = 1
+            depth = z // patch_shape[0]
+            height = y // patch_shape[1]
+            width = x // patch_shape[2]
+        else:
+            raise ValueError(
+                f"Invalid input shape {input_shape} and patch shape {patch_shape} for layout {layout}. "
+                "Expected at least one of time or depth to be greater than 1."
+            )
 
-        height = y // patch_shape[2] 
-        width = x // patch_shape[3]
         return time, depth, height, width
 
     # we step with iteration counter
@@ -252,17 +265,27 @@ class MaskGenerator(object):
                 
                 # we use the opposite convention here for masking/unmasking where
                 # the mask is 1 for unmasked patches
-                mask_ctx = torch.ones((self.time, self.depth, self.height, self.width), dtype=torch.int32)
+                if self.time > 1 and self.depth > 1:
+                    mask_ctx = torch.ones((self.time, self.depth, self.height, self.width), dtype=torch.int32)
+                elif self.time > 1 and self.depth == 1:
+                    mask_ctx = torch.ones((self.time, self.height, self.width), dtype=torch.int32)
+                elif self.time == 1 and self.depth > 1:
+                    mask_ctx = torch.ones((self.depth, self.height, self.width), dtype=torch.int32)
+                else:
+                    raise ValueError("Invalid input shape for masking. "
+                                     "Expected at least one of time or depth to be greater than 1.")
+
                 for _ in range(self.num_blocks):
                     mask_ctx *= self._sample_block_mask(block_size)
                 mask_ctx = mask_ctx.flatten()
+                
                 # we include this step to ensure we maintain the same
                 # convention for all block modes i.e. that the mask is 1 
                 # for unmasked patches and 0 for masked patches
                 mask_ctx = 1 - mask_ctx 
 
                 context_idx = torch.nonzero(mask_ctx == 0, as_tuple=False).squeeze(1)
-                target_idx  = torch.nonzero(mask_ctx == 1, as_tuple=False).squeeze(1)
+                target_idx = torch.nonzero(mask_ctx == 1, as_tuple=False).squeeze(1)
 
                 empty_context = len(context_idx) == 0
                 if not empty_context:
@@ -332,7 +355,10 @@ class MaskGenerator(object):
             # stride per T time step is S  
             ctx_idx = (ctx[:, None, :]  + time_offsets).reshape(B, -1)
             tgt_idx = (tgt[:, None, :]  + time_offsets).reshape(B, -1)
-            orig_idx = (orig[:, None, :] + time_offsets).reshape(B, -1)
+            
+            perm = torch.cat([ctx_idx, tgt_idx], dim=1)   
+            orig_idx = torch.argsort(perm, dim=1)
+            
             return masks, ctx_idx, tgt_idx, orig_idx
 
         else:
