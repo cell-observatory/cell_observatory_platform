@@ -7,7 +7,7 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
-from training.utils import summarize_model
+from training.helpers import summarize_model
 from models.maskedautoencoder import MaskedAutoEncoder
 from tests.conftest import get_masked_input_data, kargs
 

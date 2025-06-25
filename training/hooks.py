@@ -24,7 +24,7 @@ from fvcore.common.timer import Timer
 from ray.train import Checkpoint, report
 
 from training.loggers import EventWriter
-from training.utils import summarize_model
+from training.helpers import summarize_model
 from utils.context import is_main_process, gather_and_reduce
 
 

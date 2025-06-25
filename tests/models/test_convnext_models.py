@@ -8,7 +8,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-from training.utils import summarize_model
+from training.helpers import summarize_model
 from models.convnext import ConvNeXtV2
 from tests.conftest import get_input_data, kargs
 
