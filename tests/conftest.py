@@ -8,9 +8,6 @@ def kargs():
     repo = Path.cwd()
     kargs = dict(
         repo=repo,
-        prediction_filename_pattern=r"*[!_gt|!_realspace|!_noisefree|!_predictions_psf|!_corrected_psf|!_reconstructed_psf].tif",
-        dataset=repo/"dataset/training_dataset/YuMB_lambda510/z200-y97-x97/z64-y64-x64/z15/",
-        fishdb_dir=repo/"dataset/fishdb_data/",
         outdir=repo/'pretrained_models',
         input_shape=64,
         modes=15,
@@ -42,6 +39,11 @@ def kargs():
 
 
 def get_input_data(model, inputs):
+    input_data = ({"data_tensor": torch.randn(*inputs), "metainfo": {}},)
+    return input_data
+
+
+def get_masked_input_data(model, inputs):
     n_patches = model.get_num_patches()
     context_len = int(n_patches * (1 - model.mask_ratio))
     context_idx = torch.arange(context_len, dtype=torch.long).unsqueeze(0)

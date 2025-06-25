@@ -204,11 +204,12 @@ def resume_run(trainer, config: DictConfig):
     return best_loss, iter, epoch
 
 
-def summarize_model(model: nn.Module, 
-                    inputs: tuple, 
-                    batch_size: int, 
-                    logdir: Path,
-                    input_data: Optional[dict] = None
+def summarize_model(
+    model: nn.Module,
+    inputs: tuple,
+    batch_size: int,
+    logdir: Path,
+    input_data: Optional[dict] = None
 ):
     model_logbook = {}
     model_stats = summary(
