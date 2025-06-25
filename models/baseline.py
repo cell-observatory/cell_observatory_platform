@@ -239,7 +239,9 @@ class Baseline(nn.Module):
         x = self.head_drop(x)
         return self.head(x)
 
-    def forward(self, inputs):
+    def forward(self, data_sample: dict):
+        inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
+
         x = self.patch_embedding(inputs)
         x += self.pos_embedding(inputs)
 
