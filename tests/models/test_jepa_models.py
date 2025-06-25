@@ -7,11 +7,9 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
-from tests.conftest import get_input_data
-
 from training.utils import summarize_model
 from models.jepa import JEPA
-
+from tests.conftest import get_masked_input_data, kargs
 
 @pytest.mark.run(order=1)
 def test_jepa_custom(kargs):
@@ -44,7 +42,7 @@ def test_jepa_custom(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,
@@ -81,7 +79,7 @@ def test_jepa_tiny(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,
@@ -118,7 +116,7 @@ def test_jepa_small(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,
@@ -155,7 +153,7 @@ def test_jepa_base(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,
@@ -192,7 +190,7 @@ def test_jepa_large(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,
@@ -229,7 +227,7 @@ def test_jepa_huge(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,

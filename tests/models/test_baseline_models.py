@@ -10,6 +10,7 @@ warnings.filterwarnings("ignore")
 
 from training.utils import summarize_model
 from models.baseline import Baseline
+from tests.conftest import get_input_data, kargs
 
 @pytest.mark.run(order=1)
 def test_baseline_custom(kargs):
@@ -42,9 +43,12 @@ def test_baseline_custom(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -77,9 +81,12 @@ def test_baseline_tiny(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -112,9 +119,12 @@ def test_baseline_small(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -147,9 +157,12 @@ def test_baseline_base(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -182,9 +195,12 @@ def test_baseline_large(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -217,9 +233,12 @@ def test_baseline_huge(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )

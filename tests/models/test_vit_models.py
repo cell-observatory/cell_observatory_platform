@@ -7,9 +7,9 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
-
 from training.utils import summarize_model
 from models.vit import ViT
+from tests.conftest import get_input_data, kargs
 
 @pytest.mark.run(order=1)
 def test_vit_custom(kargs):
@@ -42,9 +42,12 @@ def test_vit_custom(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -77,9 +80,12 @@ def test_vit_tiny(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -112,13 +118,15 @@ def test_vit_small(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
-
 
 @pytest.mark.run(order=4)
 def test_vit_base(kargs):
@@ -147,9 +155,12 @@ def test_vit_base(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -182,13 +193,15 @@ def test_vit_large(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
-
 
 @pytest.mark.run(order=6)
 def test_vit_huge(kargs):
@@ -217,9 +230,12 @@ def test_vit_huge(kargs):
         fixed_dropout_depth=kargs['fixed_dropout_depth'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )

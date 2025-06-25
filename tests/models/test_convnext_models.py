@@ -10,6 +10,7 @@ warnings.filterwarnings("ignore")
 
 from training.utils import summarize_model
 from models.convnext import ConvNeXtV2
+from tests.conftest import get_input_data, kargs
 
 @pytest.mark.run(order=1)
 def test_convnext_custom(kargs):
@@ -37,9 +38,12 @@ def test_convnext_custom(kargs):
         dims=(96, 192, 384, 768),
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -69,9 +73,12 @@ def test_convnext_tiny(kargs):
         modes=kargs['modes'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -101,9 +108,12 @@ def test_convnext_small(kargs):
         modes=kargs['modes'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
@@ -133,13 +143,15 @@ def test_convnext_base(kargs):
         modes=kargs['modes'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
-
 
 @pytest.mark.run(order=5)
 def test_convnext_large(kargs):
@@ -165,9 +177,12 @@ def test_convnext_large(kargs):
         modes=kargs['modes'],
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
+        input_data=input_data,
         batch_size=kargs['batch_size'],
         logdir=logdir,
     )
