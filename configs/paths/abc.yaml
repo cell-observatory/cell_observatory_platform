@@ -1,0 +1,15 @@
+docker_image: null
+apptainer_image: /clusterfs/nvme/hph/env_images/develop_torch_cuda_12_8_ops3d_v2.sif
+repo_path: ${oc.env:PROJECT_DIR}
+data_path: /clusterfs
+
+# Relative paths inside the container (docker/apptainer)
+workdir: /workspace/${oc.env:REPO_NAME}
+dotenv_path: ${.workdir}/.env
+runner_script: ${.workdir}/training/runner.py
+ray_script: ${.workdir}/cluster/ray_local_cluster.sh
+
+# Absolute paths for the host
+outdir: ${oc.env:PROJECT_DIR}/pretrained_models
+resume_checkpointdir: null
+pretrained_checkpointdir: null
