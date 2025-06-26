@@ -4,15 +4,15 @@ defaults:
 logdir: ${outdir}/logs
 
 event_writers_list:
-  _target_: cell_observatory_platform.training.loggers.EventWriterList
+  _target_: training.loggers.EventWriterList
   
 event_writers:
-    - _target_: cell_observatory_platform.training.loggers.LocalEventWriter
+    - _target_: training.loggers.LocalEventWriter
       save_dir: ${loggers.logdir}
       step_scalars_prefix: step_logbook
       epoch_scalars_prefix: epoch_logbook
       scalars_save_format: csv
-    - _target_: cell_observatory_platform.training.loggers.WandBEventWriter
+    - _target_: training.loggers.WandBEventWriter
       project: cell_observatory_test
       # entity: cell-observatory
       # save directory for W&B logs
@@ -54,4 +54,4 @@ event_writers:
         # - eta
 
 event_recorder:
-  _target_: cell_observatory_platform.training.loggers.EventRecorder
+  _target_: training.loggers.EventRecorder

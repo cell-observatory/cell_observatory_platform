@@ -34,16 +34,16 @@ datasets:
   input_shape: [32, 128, 128, 128, 2] 
   patch_shape: [4, 16, 16, 16]
 
-  split: 0.5
+  split: 0.1
   dataloader_type: torch
   return_dataloader: true
   distributed_sampler: true
   collate_fn: ${datasets.masking.collate_fn}
   
   dataset:
-    _target_: cell_observatory_platform.data.datasets.pretrain_dataset.PretrainDataset
-    layout: 
-      _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
+    _target_: data.datasets.pretrain_dataset.PretrainDataset/
+    input_layout: 
+      _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
       value: TZYXC
 
 # model
@@ -52,7 +52,7 @@ models:
   preprocessor: null
     # _target_: models.preprocessor.PreProcessor
     # sample_object:
-    #   _target_: cell_observatory_platform.data.structures.data_sample.DataSample
+    #   _target_: data.structures.data_sample.DataSample
   input_fmt: BTZYXC
   input_shape: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
   temporal_patch_size: ${datasets.patch_shape.0}
@@ -94,7 +94,7 @@ checkpoint:
     checkpoint_score_order: min
   
   checkpoint_manager:
-    _target_: cell_observatory_platform.training.checkpoint.CheckpointManager
+    _target_: training.checkpoint.CheckpointManager
     pretrained_checkpointdir: null
     resume_checkpointdir: /clusterfs/nvme/segment_4d/test_17/checkpoints
     save_checkpointdir: ${outdir}/checkpoints # directory to save checkpoints
@@ -112,7 +112,7 @@ evaluation:
   val_metric: val_step_loss
   val_mode: lt # mode for the validation metric, can be 'gt' or 'lt'
   evaluator:
-    _target_: cell_observatory_platform.evaluation.base_evaluation.BaseEvaluator
+    _target_: evaluation.base_evaluation.BaseEvaluator
     training_metrics:
       - "step_loss": "mean"
 
@@ -120,7 +120,7 @@ evaluation:
 loggers:
   logdir: ${outdir}/logs
   event_writers:
-    - _target_: cell_observatory_platform.training.loggers.LocalEventWriter
+    - _target_: training.loggers.LocalEventWriter
       save_dir: ${loggers.logdir}
       step_scalars_prefix: step_logbook
       epoch_scalars_prefix: epoch_logbook
@@ -129,22 +129,22 @@ loggers:
 # hooks
 hooks:
   hooks_list:
-  - _target_: cell_observatory_platform.training.hooks.SamplerSetter
-  - _target_: cell_observatory_platform.training.hooks.LRScheduler
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
+  - _target_: training.hooks.SamplerSetter
+  - _target_: training.hooks.LRScheduler
+  - _target_: training.hooks.IterationTimer
     warmup_iter: 1
-  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  - _target_: training.hooks.PeriodicWriter
     period: 1000
-  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+  - _target_: training.hooks.PeriodicCheckpointer
     period: 1000
     file_prefix: latest_model
-  # - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-  #   checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+  - _target_: training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: training.hooks.BestMetricSaver
     metric_name: ${evaluation.val_metric}
     compare_fn: ${evaluation.val_mode}
     eval_after_validation: true
-  - _target_: cell_observatory_platform.training.hooks.EMASchedulerHook
+  - _target_: training.hooks.EMASchedulerHook
     ema_start: ${schedulers.ema.0}
     ema_end: ${schedulers.ema.1}
 
@@ -169,7 +169,7 @@ distributed_framework: ray
 job_type: train # train or test
 
 # trainer type
-trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+trainer: training.loops.EpochBasedTrainer
 
 # training quantization
 quantization: float16 # data type for training, options: float32, float16

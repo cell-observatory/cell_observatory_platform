@@ -2,11 +2,11 @@ defaults:
   - _self_
 
 collate_fn:
-  _target_: cell_observatory_platform.data.masking.mask_generator.MaskCollator
-  base_collator: cell_observatory_platform.data.datasets.pretrain_dataset.collate_pretrain_dataset
+  _target_: data.masking.mask_generator.MaskCollator
+  base_collator: data.datasets.pretrain_dataset.collate_pretrain_dataset
   mask_generators:
-    - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
-      layout: ${datasets.dataset.layout}
+    - _target_: data.masking.mask_generator.MaskGenerator
+      layout: ${datasets.dataset.input_layout}
       input_shape: ${datasets.input_shape}
       patch_shape: ${datasets.patch_shape}
 
@@ -21,5 +21,5 @@ collate_fn:
       channels_to_mask: null
       time_downsample_pattern: null
       mask_mode: 
-        _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+        _target_: data.masking.mask_generator.MaskModes
         value: "random"
