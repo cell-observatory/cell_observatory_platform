@@ -27,10 +27,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def get_lr_scheduler(opt: torch.optim.Optimizer, 
-                     steps_per_epoch: int, 
-                     config: DictConfig, 
-                     decay: str = 'cosine'
+def get_lr_scheduler(
+    opt: torch.optim.Optimizer,
+    steps_per_epoch: int,
+    config: DictConfig,
+    decay: str = 'cosine'
 ):
     if config.schedulers.fixedlr:
         scheduler = LinearLR(
@@ -69,11 +70,12 @@ def get_lr_scheduler(opt: torch.optim.Optimizer,
     return scheduler
 
 
-def get_optimizer(params, 
-                  config: DictConfig, 
-                  optimizer: str, 
-                  steps_per_epoch: int, 
-                  deepspeed_scheduler: bool = False
+def get_optimizer(
+    params,
+    config: DictConfig,
+    optimizer: str,
+    steps_per_epoch: int,
+    deepspeed_scheduler: bool = False
 ):
     if optimizer == 'adamw':
         opt = FusedAdam(
@@ -197,7 +199,7 @@ def resume_run(trainer, config: DictConfig):
         Path(config.loggers.logdir).mkdir(exist_ok=True, parents=True)
         Path(config.checkpoint.checkpoint_manager.save_checkpointdir).mkdir(exist_ok=True, parents=True)
 
-        logger.info(f"Output dir: {config.outdir}")
+        logger.info(f"Output dir: {config.paths.outdir}")
         logger.info(f"Log dir: {config.loggers.logdir}")
         logger.info(f"Checkpoint save dir: {config.checkpoint.checkpoint_manager.save_checkpointdir}")
     

@@ -5,19 +5,37 @@ from subprocess import call, run
 
 import hydra
 from dotenv import load_dotenv
-from omegaconf import DictConfig, OmegaConf
 from hydra.core.hydra_config import HydraConfig
-
 from omegaconf import DictConfig, OmegaConf
 OmegaConf.register_new_resolver("eval", eval)
+
+from training import runner
+
+# Update environment variables
+os.environ["HYDRA_FULL_ERROR"] = "1"
+os.environ["RAY_DEDUP_LOGS"] = "0"
+os.environ["NCCL_DEBUG"] = "TRACE"
+os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
+os.environ["NCCL_DEBUG_SUBSYS"] = "GRAPH"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+os.environ["NCCL_CUMEM_ENABLE"] = "0"
+os.environ["NCCL_CROSS_NIC"] = "1"
+os.environ["NCCL_P2P_LEVEL"] = "NVL"
+os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "3600"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+load_dotenv(verbose=True)
 
 def q(x: str) -> str:
     """Shortcut for shlex.quote."""
     return shlex.quote(str(x))
 
 # modify Hydra config on cmd line to use different models
-@hydra.main(config_path="../configs")
+@hydra.main(config_path="configs", config_name="pretrain_mae_local")
 def main(cfg: DictConfig):
+    # load extra env variables
+    load_dotenv(cfg.paths.dotenv_path, verbose=True)
+
     # print full configuration (for debugging)
     print("\n" + OmegaConf.to_yaml(cfg))
 
@@ -25,41 +43,34 @@ def main(cfg: DictConfig):
     config_name = hydra_cfg.job.config_name
     print(f"Running with config: {config_name}")
 
-    outdir = Path(cfg.outdir).resolve()
+    outdir = Path(cfg.paths.outdir).resolve()
     outdir.mkdir(exist_ok=True, parents=True)
     print(f"Output directory for training job: {outdir}")
 
-    load_dotenv(cfg.env.env_path)
-    env_flags = " ".join(
-        f"--env {q(k)}={q(os.environ[k])}"
-        for k in cfg.env.env_keys
-    )
-
     # bind path is --bind <host_path> : <container_path>
-    if hasattr(cfg.clusters, "mount_path") and cfg.clusters.mount_path is not None:
-        bind = f'{cfg.clusters.mount_path}:{cfg.clusters.mount_path}'
-        workspace = f'{cfg.clusters.repo_path}:/workspace/{cfg.clusters.repo_name}'
+    if hasattr(cfg.paths, "data_path") and cfg.paths.data_path is not None:
+        bind = f'{cfg.paths.data_path}:{cfg.paths.data_path}'
+        workspace = f'{cfg.paths.repo_path}:{cfg.paths.workdir}'
 
-    assert (cfg.clusters.apptainer_image is None) != (cfg.clusters.docker_image is None), \
+    assert (cfg.paths.apptainer_image is None) != (cfg.paths.docker_image is None), \
         "Either apptainer_image or docker_image must be specified, but not both"
     
-    if cfg.clusters.apptainer_image is not None:
+    if cfg.paths.apptainer_image is not None:
         # use apptainer for running the job
-        image = cfg.clusters.apptainer_image
-    elif cfg.clusters.docker_image is not None:
+        image = cfg.paths.apptainer_image
+    elif cfg.paths.docker_image is not None:
         # else use docker for running the job
-        image = cfg.clusters.docker_image
+        image = cfg.paths.docker_image
     else:
         raise ValueError("Either apptainer_image or docker_image must be specified in the configuration.")
 
-    task = f"{cfg.clusters.python_env} {cfg.clusters.script} --config-name {config_name}"
+    task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {config_name}"
 
     ray_wrap = (
-        f" bash {q(cfg.clusters.ray_script)} "
+        f" bash {q(cfg.paths.ray_script)} "
         f"-b {q(str(bind))} "
         f"-c {q(cfg.clusters.cpus_per_worker)} "
         f"-e {q(image)} "
-        f"-f {q(env_flags)} "
         f"-g {q(cfg.clusters.gpus_per_worker)} "
         f"-m {q(cfg.clusters.mem_per_worker)} "
         f"-o {q(str(outdir))} "
@@ -70,10 +81,11 @@ def main(cfg: DictConfig):
         f"-z {q(cfg.clusters.head_node_cpus)} "
     )
 
-    if cfg.clusters.launcher_type == "local":  # for running jobs on your local workstation with a job scheduler
-        print("Submitting local training job with configuration:")
-        print(ray_wrap)
-        call([ray_wrap], shell=True)
+    if cfg.clusters.launcher_type == "local":  # for running jobs on your local workstation without a job scheduler
+        print("Running local training job with configuration:")
+        runner.main(cfg)
+        # print(ray_wrap)
+        # call([ray_wrap], shell=True)
 
     elif cfg.clusters.launcher_type == "slurm":
 
