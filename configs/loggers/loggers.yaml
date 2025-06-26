@@ -1,7 +1,7 @@
 defaults:
   - _self_
 
-logdir: ${outdir}/logs
+logdir: ${paths.outdir}/logs
 
 event_writers_list:
   _target_: training.loggers.EventWriterList
