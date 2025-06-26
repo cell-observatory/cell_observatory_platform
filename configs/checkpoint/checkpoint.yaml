@@ -14,7 +14,7 @@ ray_checkpoint_config:
   checkpoint_score_order: min
 
 checkpoint_manager:
-  _target_: cell_observatory_platform.training.checkpoint.CheckpointManager
+  _target_: training.checkpoint.CheckpointManager
   resume_checkpointdir: /clusterfs/nvme/segment_4d/test_17/checkpoints
   pretrained_checkpointdir: null
   save_checkpointdir: ${outdir}/checkpoints # directory to save checkpoints

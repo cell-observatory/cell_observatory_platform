@@ -16,7 +16,7 @@ distributed_sampler: true
 collate_fn: ${datasets.masking.collate_fn}
 
 dataset:
-  _target_: cell_observatory_platform.data.datasets.pretrain_dataset.PretrainDataset
-  layout: 
-    _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
+  _target_: data.datasets.pretrain_dataset.PretrainDataset
+  input_layout: 
+    _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
     value: TZYXC
