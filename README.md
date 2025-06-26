@@ -5,21 +5,20 @@
 - [Installation](#installation)
    - [Docker \& Apptainer images](#docker--apptainer-images)
    - [Clone repository to your host system](#clone-repository-to-your-host-system)
-   - [Running docker image](#running-docker-image)
-   - [License](#license)
-- [Get Started](#get-started)
-  - [Local Setup](#local-setup)
-    - [Training](#training)
-    - [Evaluation](#evaluation)
-  - [Cluster Setup](#cluster-setup)
-    - [Training](#training-1)
-    - [Evaluation](#evaluation-1)
-- [Model Configurations](#configurations)
+- [Running docker image](#running-docker-image)
+- [Get started](#get-started)
+  - [Local setup](#local-setup)
+  - [Cluster setup](#cluster-setup)
+- [Configuration layout](#configuration-layout)
+  - [Model configurations](#model-configurations)
+  - [Adding new models](#adding-new-models)
 - [Data Pipeline](#data-pipeline)
   - [Structures](#structures)
   - [Databases](#databases)
   - [Datasets](#datasets)
-  
+- [License](#license)
+
+
 # Installation
 
 ## Docker [images](https://github.com/cell-observatory/cell_observatory_platform/pkgs/container/cell_observatory_platform)
@@ -41,11 +40,28 @@ git pull --recurse-submodules
 **Note:** If you want to run a local version of the image, see the [Dockerfile](https://github.com/cell-observatory/cell_observatory_platform/blob/main/Dockerfile)
 
 
-## Running docker image
+## Setup environment variables
+Rename `.env.example` file to `.env` which will be automatically loaded into the container and will be gitignored
+
+```shell
+SUPABASE_USER=REPLACE_ME_WITH_YOUR_SUPABASE_USERNAME
+SUPABASE_PASS=REPLACE_ME_WITH_YOUR_SUPABASE_PASSWORD
+SUPABASE_STAGING_ID=REPLACE_ME_WITH_YOUR_SUPABASE_STAGING_ID
+SUPABASE_PROD_ID=REPLACE_ME_WITH_YOUR_SUPABASE_PROD_ID
+WANDB_API_KEY=REPLACE_ME_WITH_YOUR_WANDB_API_KEY
+
+SUPABASE_STAGING_URI="postgresql://${SUPABASE_USER}.${SUPABASE_STAGING_ID}:${SUPABASE_PASS}@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
+SUPABASE_PROD_URI="postgresql://${SUPABASE_USER}.${SUPABASE_PROD_ID}:${SUPABASE_PASS}@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
+
+REPO_NAME: cell_observatory_platform  # TODO: replace with your repo name if you renamed it
+PROJECT_DIR=REPLACE_ME_WITH_YOUR_REPO_DIR
+````
+
+# Running docker image
 
 To run docker image, cd to repo directory or replace `$(pwd)` with your local path for the repository.
 ```shell
-docker run --network host -u 1000 --privileged -v $(pwd):/app/cell_observatory_platform -w /app/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -it --rm  --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8 bash
+docker run --network host -u 1000 --privileged -v $(pwd):/workspace/cell_observatory_platform -w /workspace/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -it --rm  --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8 bash
 ```
 
 ## Running docker image on a cluster via Apptainer
@@ -55,45 +71,33 @@ Running an image on a cluster typically requires an Apptainer version of the ima
 apptainer pull --force develop_torch_cuda_12_8.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
 ```
 
-## License
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at:
+# Get started
 
-   [Apache License 2.0](LICENSE)
+## Local setup
 
-Copyright 2025 Cell Observatory.
+The local job config lives in **`configs/**/*.yaml`**. 
+Edit just the handful of lines below, then launch the job.
 
-# Get Started
-
-### Local Setup
-
-The local job config lives in **`configs/clusters/local.yaml`**. Edit just the handful of lines below, then launch the job.
-
-#### 1. Edit `local.yaml`
-
+### 1. Update your paths in `configs/paths/local.yaml`
 ```yaml
-# ── JOB-SPECIFIC PATHS ──────────────────────────────────────────────
-docker_image:       /ABS/PATH/TO/my_image.sif   
-repo_path:          /ABS/PATH/TO/Repo/       
-repo_name:          cell_observatory_platform       
-mount_path:         /ABS/PATH/TO/PROJECT/DATA
-script:             /ABS/PATH/TO/clusters/manager.py       
-ray_script:         /ABS/PATH/TO/clusters              
-outdir:             /ABS/PATH/TO/outdir                            
-
-# ── RESOURCE REQUESTS ──────────────────────────────────────────────
-batch_size:          1
-worker_nodes:        1                 
-gpus_per_worker:     4                 
-cpus_per_gpu:        4                 
-mem_per_cpu:         31G               
-
-...
+docker_image: ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
+apptainer_image: null # replace with path to apptainer image if using apptainer otherwise use docker
+outdir: ${oc.env:PROJECT_DIR}/pretrained_models
+resume_checkpointdir: null
+pretrained_checkpointdir: null
 ```
 
-#### 2. Run local training job with `manager.py`
+### 2. Edit resource requirements in `configs/clusters/local.yaml`
+```yaml
+batch_size:          1
+worker_nodes:        1                 
+gpus_per_worker:     1                 
+cpus_per_gpu:        4                 
+mem_per_cpu:         16G
+```
+
+### 3. Run local training job with `manager.py`
 Run the local job using the `manager.py` script, which will pick up the Hydra config and launch the Ray job:
 
 ```bash
@@ -101,67 +105,65 @@ Run the local job using the `manager.py` script, which will pick up the Hydra co
 python cluster/manager.py --config-name=my_run_config.yaml
 ```
 
-#### 3. Run local evaluation job with `manager.py`
-To run a local evaluation job using the `manager.py` script, edit your training config `my_run_config.yaml` and set the `job_type` to `test`. Then run the same command:
+## Cluster setup
 
-```bash
-# Set config and then run with `manager.py`:
-python cluster/manager.py --config-name=my_run_config.yaml
-```
+Running a job on a cluster is very similar to the local setup. 
+You need to override the `defaults` in your `my_run_config.yaml` file. 
+We have some examples below for SLURM and LSF in 
+`configs/paths/*.yaml` and `configs/clusters/*.yaml`.
 
-### Cluster Setup
-
-#### Cluster Setup — Ray-on-SLURM/LSF
-
-The Ray-on-SLURM cluster config lives in **`configs/cluster/abc_a100.yaml`, `configs/cluster/janelia_a100.yaml`**. Edit just the handful of lines below, then launch the job.
-
-#### 1. Edit `slurm_multinode.yaml`
-
+### SLURM Setup
 ```yaml
-# ── JOB-SPECIFIC PATHS ──────────────────────────────────────────────
-docker_image:       null   
-apptainer_image:    /ABS/PATH/TO/my_image.sif 
-repo_path:          /ABS/PATH/TO/Repo/       
-repo_name:          cell_observatory_platform       
-mount_path:         /ABS/PATH/TO/PROJECT/DATA
-script:             /ABS/PATH/TO/clusters/manager.py       
-ray_script:         /ABS/PATH/TO/clusters              
-outdir:             /ABS/PATH/TO/outdir                            
-
-# ── RESOURCE REQUESTS ──────────────────────────────────────────────
-batch_size:          1
-worker_nodes:        1                 
-gpus_per_worker:     4                 
-cpus_per_gpu:        4                 
-mem_per_cpu:         31G    
-
-# Optional overrides
-exclusive:   true          # true -> whole nodes; false -> shared nodes
-
-...
+defaults:
+  - clusters: abc_a100   # configs/clusters/abc_a100.yaml
+  - paths: abc           # configs/paths/abc.yaml
 ```
 
-#### 2. Run local training job with `manager.py`
-Run the local job using the `manager.py` script, which will pick up the Hydra config and launch the Ray job:
-
-```bash
-# Set config and then run with `manager.py`:
-python clusters/manager.py --config-name=my_run_config.yaml
+### LSF Setup
+```yaml
+defaults:
+  - clusters: janelia_h100   # configs/clusters/janelia_h100.yaml
+  - paths: janelia      # configs/paths/janelia.yaml
 ```
 
-#### 3. Run local evaluation job with `manager.py`
-To run a local evaluation job using the `manager.py` script, edit your training config `my_run_config.yaml` and set the `job_type` to `test`. Then run the same command:
+# Configuration layout
 
-```bash
-# Set config and then run with `manager.py`:
-python clusters/manager.py --config-name=my_run_config.yaml
-```
+Here's what each configuration subdirectory handles:
 
-## Model Configurations with Hydra
+- **[`configs/models/`](configs/models)**
+  - Defines complete model specifications (e.g., `JEPA` and `MAE` model architectures).
+- **[`configs/hooks/`](configs/hooks)**
+  - Defines training hooks for logging, checkpointing, and other custom training behaviors.
+- **[`configs/datasets/`](configs/datasets)**
+  - Defines dataset classes and parameters.
+- **[`configs/losses/`](configs/losses)**
+  - Defines loss functions used in training.
+- **[`configs/transforms/`](configs/transforms)**
+  - Defines data augmentation and preprocessing pipelines and parameters.
+- **[`configs/optimizers/`](configs/optimizers)**
+  - Defines optimizer configurations (e.g., AdamW, SGD).
+- **[`configs/schedulers/`](configs/schedulers)**
+  - Defines learning rate schedulers (e.g., StepLR, CosineAnnealing).
+- **[`configs/checkpoint/`](configs/checkpoint)**
+  - Defines checkpointing configurations for saving and loading model states.
+- **[`configs/logging/`](configs/logging)**
+  - Defines logging configurations for training and evaluation metrics.
+- **[`configs/deepspeed/`](configs/deepspeed)**
+  - Defines DeepSpeed configurations for distributed training.
+- **[`configs/clusters/`](configs/clusters)**
+  - Defines cluster configurations for distributed training (e.g., Ray-on-SLURM).
+- **[`configs/loggers/`](configs/loggers)**
+  - Defines logging configurations for experiment tracking (e.g., WandB, TensorBoard).
+- **[`configs/trainer/`](configs/trainer)**
+  - Defines the training loop and configurations for training models.
+- **[`configs/evaluation/`](configs/evaluation)**
+  - Defines evaluation configurations for assessing model performance on validation/test datasets.
+
+## Model configurations
 
 We use [Hydra](https://hydra.cc/) for managing experiment configurations. Hydra allows you to construct experiments by composing modular YAML files.
 
-### 1. Select Base Configurations
+### 1. Select base configurations
 
 Use the `defaults:` list to select the base YAML configurations for your experiment:
 
@@ -174,78 +176,44 @@ defaults:
   - _self_            # load this file’s overrides last
 ```
 
-### 2. Override Only What You Need
+### 2. Override only what uou need
 
 Hydra handles overrides, allowing precise experiment adjustments. Scalars and lists are replaced outright, whereas dictionaries are merged recursively (only specified keys change).
 
 Example overrides in your main config file:
 
 ```yaml
-# Change batch size
+clusters:
+  batch_size: 128 # total batch size
+
 datasets:
-  batch_size: 4
-
-# Swap out backbone model
-backbone_target: segmentation.models.backbones.resnet.ResNet
-backbone_out_channels: 2048
-
-# Adjust RPN anchor sizes
+  input_shape: [32, 128, 128, 128, 2]
+  patch_shape: [4, 16, 16, 16]
+  split: 0.1 # train/val split
+  dataset:
+  _target_: data.datasets.pretrain_dataset.PretrainDataset
+  input_layout: 
+    _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
+    value: TZYXC
+      
 models:
-  rpn_anchor_generator:
-    sizes:
-      - [16, 32, 64]
-      - [32, 64, 128]
+  _target_: models.jepa.JEPA
 ```
 
-### 3. Configuration Directory Structure & Usage
 
-Here's what each configuration subdirectory handles:
-
-- **`models/`**
-  - Defines complete model specifications (e.g., `JEPA` and `MAE` model architectures).
-- **`hooks/`**
-  - Defines training hooks for logging, checkpointing, and other custom training behaviors.
-- **`datasets/`**
-  - Defines dataset classes and parameters.
-- **`losses/`**
-  - Defines loss functions used in training.
-- **`transforms/`**
-  - Defines data augmentation and preprocessing pipelines and parameters.
-- **`optimizers/`**
-  - Defines optimizer configurations (e.g., AdamW, SGD).
-- **`schedulers/`**
-  - Defines learning rate schedulers (e.g., StepLR, CosineAnnealing).
-- **`checkpoint/`**
-  - Defines checkpointing configurations for saving and loading model states.
-- **`logging/`**
-  - Defines logging configurations for training and evaluation metrics.
-- **`deepspeed/`**
-  - Defines DeepSpeed configurations for distributed training.
-- **`clusters/`**
-  - Defines cluster configurations for distributed training (e.g., Ray-on-SLURM).
-- **`loggers/`**
-  - Defines logging configurations for experiment tracking (e.g., WandB, TensorBoard).
-- **`trainer/`**
-  - Defines the training loop and configurations for training models.
-- **`evaluation/`**
-  - Defines evaluation configurations for assessing model performance on validation/test datasets.
-
-### 4. Extend or Add New Modules
+## Adding new models
 
 Add a new YAML under the proper group, e.g. `configs/models/backbones/my_new_backbone.yaml`. To support a brand‑new model or dataset, just drop in your new small YAML and reference it in your `defaults:` block.
 
 ```yaml
 defaults:
   - models/backbones: my_new_backbone
-  ...
-  ...
-  ...
   - _self_
 ```
 
-## Data Pipeline
+# Data Pipeline
 
-### Structures
+## Structures
 
 • **`ImageList:`** A tensor container that holds images of varying sizes as a single padded tensor, storing original image sizes, layout information (`CZYX` vs `ZYXC` etc.), and providing methods for standardization and batch operations.
 
@@ -253,11 +221,11 @@ defaults:
 
 • **`DataSample:`** Inherits from `BaseDataElement` that contains an `ImageList` object for data tensors and class methods `from_dict` and `to_dict` for serialization and deserialization.
 
-### Databases
+## Databases
 
-**`Database (Abstract):`** Base class defining the interface for database implementations, including methods for querying data and metadata.
+**`SuperDatabase:`** Base class defining the interface for database implementations, including methods for querying data and metadata.
 
-### Datasets
+## Datasets
 
 **`BaseDataset:`** Abstract `PyTorch` dataset class that takes local data tables from `Database` class and creates fast indexes through four key methods: `_process_tables()` filters data, `_build_index()` converts DataFrames to list of dicts for `O(1)` access, `_load_sample()` reads image data using zarr handles, and `_collate()` converts raw data into structured objects.
 
@@ -268,3 +236,14 @@ defaults:
 ## Evaluators
 
 **`DatasetEvaluator:`** Abstract base class defining three key methods: `reset()` for initialization, `process()` for accumulating predictions during evaluation, and `evaluate()` for computing final metrics and returning results as dictionaries.
+
+
+# License
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at:
+
+   [Apache License 2.0](LICENSE)
+
+Copyright 2025 Cell Observatory.
