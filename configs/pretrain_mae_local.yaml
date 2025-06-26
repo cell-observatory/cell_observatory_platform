@@ -1,0 +1,101 @@
+defaults:
+  - clusters: local                          # configs/clusters/local.yaml
+  - paths: local                             # configs/paths/local.yaml
+  - datasets: pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
+  - models: mae/tiny                         # configs/models/mae/tiny.yaml
+  - hooks: hooks                             # configs/hooks/hooks.yaml
+  - checkpoint: checkpoint                   # configs/checkpoint/checkpoint.yaml
+  - loggers: loggers                         # configs/loggers/loggers.yaml
+  - evaluation: base_evaluator               # configs/evaluation/base_evaluator.yaml
+  - deepspeed: zero3                         # configs/deepspeed/zero3.yaml
+  - optimizers: lamb                         # configs/optimizers/lamb.yaml
+  - schedulers: warmup_cosine_decay          # configs/schedulers/warmup_cosine_decay.yaml
+  - _self_
+
+
+# experiment name (used for logging)
+experiment_name: experiment_pretrain_mae
+
+# task
+task: pretrain_mae
+
+# Model type
+network: mae
+
+# engine type
+engine: deepspeed
+
+# distributed framework
+distributed_framework: ray
+
+# job type
+job_type: train # train or test
+
+# trainer type
+trainer: training.loops.EpochBasedTrainer
+
+# training quantization
+quantization: float16 # data type for training, options: float32, float16
+
+
+# overrides
+# --------------------------------------------------------------------------------
+
+#paths:
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.repo_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+
+
+# clusters
+clusters:
+  batch_size: 128 # total batch size
+
+# data 
+datasets:
+  # mainly used by other configs but determined here for ease of access
+  batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  input_shape: [32, 128, 128, 128, 2]
+  patch_shape: [4, 16, 16, 16]
+
+  split: 0.1
+  dataloader_type: torch
+  return_dataloader: true
+  distributed_sampler: true
+  collate_fn: ${datasets.masking.collate_fn}
+  
+  dataset:
+    _target_: data.datasets.pretrain_dataset.PretrainDataset
+    input_layout: 
+      _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
+      value: TZYXC
+
+# model
+models:
+  _target_: models.maskedautoencoder.MaskedAutoEncoder
+  preprocessor: null
+    # _target_: models.preprocessor.PreProcessor
+    # sample_object:
+    #   _target_: data.structures.data_sample.DataSample
+  input_fmt: BTZYXC
+  input_shape: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
+  temporal_patch_size: ${datasets.patch_shape.0}
+  lateral_patch_size: ${datasets.patch_shape.1}
+  axial_patch_size: ${datasets.patch_shape.2}
+
+
+# evaluation
+evaluation:
+  val_begin: 0
+  val_interval: 1
+  # used by BestMetricSaver to save best metric
+  # needs to match one of metrics saved per epoch by loss_dict
+  # in the training loop or evaluator.evaluate() in the evaluation loop
+  val_metric: val_step_loss
+  val_mode: lt # mode for the validation metric, can be 'gt' or 'lt'
+  evaluator:
+    _target_: evaluation.base_evaluation.BaseEvaluator
+    training_metrics:
+      - "step_loss": "mean"
