@@ -1,15 +1,17 @@
 docker_image: ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
 apptainer_image: null
-repo_path: ${oc.env:PROJECT_DIR}
-data_path: ~/
+repo_path: ${oc.env:REPO_DIR}
+data_path: ${oc.env:PROJECT_DIR}
 
 # Relative paths inside the container (docker/apptainer)
 workdir: /workspace/${oc.env:REPO_NAME}
 dotenv_path: ${.workdir}/.env
 runner_script: ${.workdir}/training/runner.py
-ray_script: ${.workdir}/cluster/ray_local_cluster.sh
+# called outside the container hence using REPO_DIR
+ray_script: ${oc.env:REPO_DIR}/cluster/ray_local_cluster.sh 
 
-# Absolute paths for the host
+# Absolute paths for the host, set this to PROJECT_DIR
+# or REPO_DIR depending on your preference
 outdir: ${oc.env:PROJECT_DIR}/pretrained_models
 resume_checkpointdir: null
 pretrained_checkpointdir: null

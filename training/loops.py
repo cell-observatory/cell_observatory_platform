@@ -244,7 +244,7 @@ class EpochBasedTrainer(BaseTrainer):
         # get_dataloader() returns a tuple of dataloaders
         # (train_dataloader, val_dataloader) where
         # val_dataloader is None if no validation set is provided
-        self.train_dataloader, self.val_dataloader = get_dataloader(cfg) 
+        self.train_dataloader, self.val_dataloader = get_dataloader(cfg)
 
         self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
             train_dataloader=self.train_dataloader,
@@ -294,10 +294,7 @@ class EpochBasedTrainer(BaseTrainer):
             # a pre-existing model (e.g. for fine-tuning) instead of
             # for resuming a job that failed due to training instability.
             # should only be used with resume_run=False.
-            self.checkpoint_manager.load(
-                load_checkpointdir=cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir,
-                load_dtype=cfg.checkpoint.load_dtype
-            )
+            self.checkpoint_manager.load()
 
         # if resume job, gather the state from the checkpoint
         # else intialize outdir, logdir, and checkpointdir

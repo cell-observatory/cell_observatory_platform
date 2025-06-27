@@ -7,7 +7,6 @@ hooks_list:
 - _target_: training.hooks.IterationTimer
   warmup_iter: 1
 - _target_: training.hooks.PeriodicWriter
-  period: 1
 - _target_: training.hooks.PeriodicCheckpointer
   period: 1
   file_prefix: latest_model

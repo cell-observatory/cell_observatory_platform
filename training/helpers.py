@@ -184,8 +184,8 @@ def resume_model_state(config: DictConfig, checkpoint_manager):
 
 
 def resume_run(trainer, config: DictConfig):
-    Path(config.outdir).mkdir(exist_ok=True, parents=True)
-    if config.checkpoint.resume_run:
+    Path(config.paths.outdir).mkdir(exist_ok=True, parents=True)
+    if config.paths.resume_checkpointdir:
         best_loss, iter, epoch = resume_model_state(config, 
                                     checkpoint_manager=trainer.checkpoint_manager)        
         trainer.event_recorder.resume(

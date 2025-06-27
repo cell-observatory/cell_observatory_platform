@@ -1,8 +1,6 @@
 import os
-import re
 import sys
 import logging
-import warnings
 import subprocess
 from pathlib import Path 
 
@@ -11,11 +9,10 @@ from typing import Dict, Optional, Union, Literal, List
 
 import torch 
 
-from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
+from deepspeed.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
 
 from data.data_types import TORCH_DTYPES
-from utils.context import is_main_process, get_world_size, barrier
-
+from utils.context import is_main_process, barrier
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -28,40 +25,42 @@ logger = logging.getLogger(__name__)
 class CheckpointManager:
     def __init__(self,
                  model: torch.nn.Module, 
+                 zero_stage: int,
+                 load_universal_checkpoint: bool,
                  save_checkpointdir: Union[str, Path],
                  resume_checkpointdir: Optional[Union[str, Path]] = None,
                  pretrained_checkpointdir: Optional[Union[str, Path]] = None,
                  engine: Literal["deepspeed"] = "deepspeed", 
-                 # TODO: some of these variables can also be
-                 #       passed in the load() fn. 
                  checkpoint_tag: str = "best_model",
                  load_dtype: Optional[Literal["fp16", "bf16"]] = None,
-                 max_keep: Optional[int] = None,
                  state_dict_filter: Optional[List[str]] = None,
                  freeze_modules: Optional[Union[str, List[str]]] = None,
                  activation_checkpoint_modules: Optional[Union[str, List[str]]] = None
     ):
         self.model = model
         self.engine = engine
+        self.zero_stage = zero_stage
         self.load_dtype = load_dtype
         self.checkpoint_tag = checkpoint_tag
+        self.load_universal_checkpoint = load_universal_checkpoint
 
         assert not (resume_checkpointdir is not None and \
             pretrained_checkpointdir is not None), \
             "Cannot specify both `resume_checkpointdir` and `pretrained_checkpointdir`. " \
             "Please choose one of them or neither." 
         
+        self.resume_checkpointdir = resume_checkpointdir
+        self.pretrained_checkpointdir = pretrained_checkpointdir
+
         if resume_checkpointdir is not None:
             self.load_checkpointdir = Path(resume_checkpointdir)
-        if pretrained_checkpointdir is not None:
+        elif pretrained_checkpointdir is not None:
             self.load_checkpointdir = Path(pretrained_checkpointdir)
+        else:
+            self.load_checkpointdir = None
+        
         self.save_checkpointdir = Path(save_checkpointdir) \
             if isinstance(save_checkpointdir, str) else save_checkpointdir
-        
-        assert self.load_checkpointdir.is_dir(), f"Checkpoint \
-            directory does not exist: {self.load_checkpointdir}"
-
-        self.max_keep = max_keep
 
         self.freeze_modules = freeze_modules
         self.activation_checkpoint_modules = activation_checkpoint_modules
@@ -70,16 +69,16 @@ class CheckpointManager:
 
     def save(self, 
              prefix: str, 
-             epoch: int = None,
-             iter: int = None, 
-             best_loss: Optional[float] = None,
+             save_epoch: int = None,
+             save_step: int = None, 
+             save_best_loss: Optional[float] = None,
     ):
         self.save_checkpointdir.mkdir(parents=True, exist_ok=True)
         if self.engine == "deepspeed":
             client_state = {
-                "epoch": epoch,
-                "iter": iter,
-                "best_loss": best_loss
+                "epoch": save_epoch,
+                "iter": save_step,
+                "best_loss": save_best_loss
             }
             self.model.save_checkpoint(self.save_checkpointdir, client_state=client_state, tag=prefix)
         else:
@@ -87,52 +86,77 @@ class CheckpointManager:
                 "other engines not implemented yet.")
 
     def load(self):  
-        world_size = get_world_size()
-        num_ckpt_shards = self._infer_ckpt_shards_num(
-            ckpt_dir=os.path.join(self.load_checkpointdir, self.checkpoint_tag),
-            pattern=r"mp_rank_.+_model_states\.pt$$"
-        )
+        assert self.load_checkpointdir is not None, \
+            "No checkpoint directory specified for loading. " \
+            "Please set `resume_checkpointdir` or `pretrained_checkpointdir`."
+        
+        ckpt_zero_stage = self._get_zero_stage(os.path.join(self.load_checkpointdir, 
+                                                    self.checkpoint_tag))
 
         if self.state_dict_filter is not None and self.engine == "deepspeed":
             custom_filter_fn = self._state_dict_filter_fn
         else:
             custom_filter_fn = None
 
-        if num_ckpt_shards > 1 and num_ckpt_shards != world_size:
-            if self.engine == "deepspeed":
-                if is_main_process():
-                    warnings.warn(
-                        "Loading a checkpoint with DeepSpeed where number of processes. " \
-                        "does not match the number of checkpoint shards. " \
-                        "Converting to a standard checkpoint and saving to disk."
-                    )
-                    self._convert_zero_checkpoint_to_universal(
-                        input_folder=os.path.join(self.load_checkpointdir, 
-                                                    self.checkpoint_tag),
-                        output_folder=os.path.join(self.load_checkpointdir, 
-                                                   f"{self.checkpoint_tag}_universal"),
-                    )
-                
-                barrier()
-                
+        # we do not currently support loading ZeRO-0 checkpoints
+        # into ZeRO-1/2/3 models
+        if (self.zero_stage == 0 and ckpt_zero_stage != 0) or \
+            (self.zero_stage != 0 and ckpt_zero_stage == 0):
+            raise ValueError(
+                f"Cannot load a ZeRO-0 checkpoint into a \
+                    ZeRO-{self.zero_stage} model. "
+            )
+
+        # if we are resuming from a checkpoint that has an identical zero stage 
+        # and zero configuration, which is specified by setting 
+        # `load_universal_checkpoint` to False and `resume_checkpointdir` to a valid path
+        # we can load the checkpoint directly with the load_checkpoint API      
+        elif self.resume_checkpointdir is not None and not self.load_universal_checkpoint:
+            ckpt_path, client_state = self.model.load_checkpoint(self.load_checkpointdir, 
+                                          self.checkpoint_tag, 
+                                          custom_load_fn=custom_filter_fn)
+        
+        # if we are resuming from a checkpoint that has a different zero configuration
+        # we first attempt to find an existing universal checkpoint to load.
+        # if it does not exist, we convert the ZeRO-1/2/3 checkpoint to a universal
+        # checkpoint and then load it. this is the new prefered way to ensure that 
+        # the state of the model is loaded correctly when restarting a job with a different
+        # zero stage or configuration. see: https://arxiv.org/pdf/2406.18820
+        else:
+            assert self.model.load_universal_checkpoint(), \
+                "Model does not support loading universal checkpoints. " \
+                "Please set `allow_universal_conversion` to True in " \
+                "DeepSpeed Config."
+            
+            universal_checkpointdir = self.load_checkpointdir / f"{self.checkpoint_tag}_universal"
+
+            if universal_checkpointdir.exists() and any(universal_checkpointdir.iterdir()):
+                logger.info(f"Loading universal checkpoint from existing directory \
+                        {self.load_checkpointdir / f'{self.checkpoint_tag}_universal'}")
                 ckpt_path, client_state = self.model.load_checkpoint(
-                    load_dir=self.load_checkpointdir,
+                    self.load_checkpointdir, 
                     tag=f"{self.checkpoint_tag}_universal",
                     custom_load_fn=custom_filter_fn
                 )
             else:
-                raise NotImplementedError("Loading checkpoints for " \
-                    "other engines not implemented yet.")
-        else:
-            if self.engine == "deepspeed":
-                ckpt_path, client_state = self.model.load_checkpoint(
-                    load_dir=self.load_checkpointdir,
-                    tag=self.checkpoint_tag,
-                    custom_load_fn=custom_filter_fn,
+
+                logger.info(f"Converting ZeRO-0 checkpoint to universal format: \
+                    {universal_checkpointdir}"
+                    "NOTE: this will create a new checkpoint \
+                    with the tag `{self.checkpoint_tag}_universal` in the same directory."
                 )
-            else:
-                raise NotImplementedError("Loading checkpoints for " \
-                    "other engines not implemented yet.")
+
+                if is_main_process():
+                    self._convert_zero_checkpoint_to_universal(
+                        src=self.load_checkpointdir / self.checkpoint_tag,
+                        dst=self.load_checkpointdir / f"{self.checkpoint_tag}_universal"
+                    )
+                
+                barrier()
+
+                ckpt_path, client_state = self.model.load_checkpoint(self.load_checkpointdir, 
+                                        tag=f"{self.checkpoint_tag}_universal",
+                                        custom_load_fn=custom_filter_fn)
 
         # get target dtype if specified
         if self.load_dtype is not None:
@@ -141,9 +165,8 @@ class CheckpointManager:
 
         if self.activation_checkpoint_modules is not None \
             or self.freeze_modules is not None:
-            # TODO: currently assumes that the model has
+            # NOTE: assumes that the model has
             #      `activation_checkpoint` and `freeze` methods
-            # unwrap DDP .module naming if necessary
             base = getattr(self.model, "module", self.model)
 
             if self.activation_checkpoint_modules:
@@ -173,21 +196,16 @@ class CheckpointManager:
         if unexpected:
             logger.warning(f"[CheckpointManager] unexpected keys after filter: {unexpected}")
 
-    def _infer_ckpt_shards_num(self, 
-                               ckpt_dir: Union[str, Path], 
-                               pattern: str = r"mp_rank_.+_model_states\.pt$$",
-    ) -> int:
-        """
-        Infer the number of checkpoint shards in a directory.
-        """
-        ckpt_dir = Path(ckpt_dir)
-        if not ckpt_dir.is_dir():
-            raise ValueError(f"Checkpoint directory does not exist: {ckpt_dir}")
-
-        # find all files that match the pattern
-        regex = re.compile(pattern)
-        ckpt_files = [f for f in ckpt_dir.iterdir() if regex.match(f.name)]
-        return len(ckpt_files)
+    def _get_zero_stage(self, ckpt_dir: Union[str, Path]) -> int:
+        """Return ZeRO stage (0-3) from any DeepSpeed checkpoint tag folder."""
+        tag_dir = Path(ckpt_dir)
+        # see https://github.com/deepspeedai/DeepSpeed/deepspeed/checkpoint/constants.py
+        # for naming used in DeepSpeed checkpoint nomenclature
+        f = next(tag_dir.glob("*_model_states.pt"))
+        z = torch.load(f, map_location="cpu")
+        stage = z["ds_config"]["zero_optimization"]["stage"]
+        del z  # free memory
+        return stage
 
     def _prefix_aware_load_state_dict(self, 
                                       state_dict: Dict[str, torch.Tensor], 
@@ -233,29 +251,30 @@ class CheckpointManager:
             return new_state
         else:
             return state_dict
-        
-    def _convert_zero_checkpoint_to_universal(self, input_folder, output_folder):
+
+    def _convert_zero_checkpoint_to_universal(self, 
+                                              src: Path, 
+                                              dst: Path):
         """
         Convert a DeepSpeed Zero Stage 3 checkpoint to a standard checkpoint
         that may be loaded more flexibly.
         """
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
+        if not dst.exists():
+            os.makedirs(dst)
+
         cmd = [
             sys.executable, "-m", "deepspeed.checkpoint.ds_to_universal",
-            "--input_folder", str(input_folder),
-            "--output_folder", str(output_folder)
+            "--input_folder", str(src),
+            "--output_folder", str(dst),
+            "--inject_missing_state"
         ]
-        subprocess.check_call(cmd)
-        
 
-# useful utility function to convert a deepspeed 
-# zero stage 3 checkpoint to a standard checkpoint
-def convert_zero_checkpoint(checkpoint_path: str, 
-                            output_dir: str, 
-                            tag: str = "best_model", 
-                            ckpt_prefix: str = "best"
-):
-    state = get_fp32_state_dict_from_zero_checkpoint(checkpoint_path, tag)
-    output_path = os.path.join(output_dir, f"{ckpt_prefix}_model.bin")
-    torch.save(state, output_path)
+        subprocess.check_call(cmd)
+
+    # useful utility function to convert a deepspeed 
+    # zero stage 3 checkpoint to a standard checkpoint
+    def convert_zero_checkpoint(checkpoint_dir: str, tag: str = "best_model"):
+        checkpoint_path = os.path.join(checkpoint_dir, tag)
+        output_path = os.path.join(checkpoint_path, f"{tag}_universal")
+        convert_zero_checkpoint_to_fp32_state_dict(checkpoint_dir=checkpoint_path,
+                                                           output_dir=output_path)

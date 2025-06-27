@@ -142,15 +142,12 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
 
         self.transforms = Transformations(transforms)
 
-    @abc.abstractmethod
-    def _process_tables(self, hypercubes_dataframe_path) -> (pd.DataFrame, Dict):
-
+    def _process_tables(self, hypercubes_dataframe_path) -> tuple[pd.DataFrame, Dict]:
         hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
         with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
             configs = ujson.load(f)
 
         return hypercubes, configs
-
 
     @abc.abstractmethod
     def _build_index(self) -> None:

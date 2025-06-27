@@ -3,23 +3,23 @@ defaults:
 
 # for resuming training from previous checkpoint
 resume_run: false # whether to resume from a previous run
-checkpoint_tag: latest_model
 
 # used by Ray Report
 ray_checkpoint_config:
   num_to_keep: 3
-  checkpoint_score_attribute: ${evaluation.val_metric}
-  checkpoint_score_order: min
+  checkpoint_score_attribute: best_loss
+  checkpoint_score_order: ${evaluation.val_mode} # 'min' or 'max'
 
 checkpoint_manager:
   _target_: training.checkpoint.CheckpointManager
+  load_universal_checkpoint: ${deepspeed.checkpoint.load_universal} # whether to load a universal checkpoint, set in conjunction with checkpoint_manager
   resume_checkpointdir: ${paths.resume_checkpointdir}
   pretrained_checkpointdir: ${paths.pretrained_checkpointdir}
+  zero_stage: ${deepspeed.zero_optimization.stage} # ZeRO stage to use
   save_checkpointdir: ${paths.outdir}/checkpoints # directory to save checkpoints
   load_dtype: ${quantization}
   checkpoint_tag: latest_model
   engine: ${engine} # engine to use for training
-  max_keep: 3 # maximum number of checkpoints to keep
   # provide list of dotted module paths
   # to freeze/activation checkpoint/load selectively
   freeze_modules: null

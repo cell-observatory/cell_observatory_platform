@@ -431,32 +431,27 @@ class IterationTimer(HookBase):
 class PeriodicWriter(HookBase):
     """
     Write events with EventWriters periodically.
-    It is executed every ``period`` iterations/epochs
-    and after the last epoch.
     """
 
-    def __init__(self, writers, period):
+    def __init__(self, writers):
         """
         Args:
             writers (list[EventWriter]): a list of EventWriter instances
                 to write events to.
-            period (int): the period of writing events, in epochs.
         """
         super().__init__()
-        self._period = period
+        # TODO: do we want to have an option to only write every
+        #       `period` epochs? 
         self._writers = writers
         
         for w in self._writers.writers:
             assert isinstance(w, EventWriter), "All writers must be EventWriter instances."
 
     def after_epoch(self):
-        if (self.trainer._epoch + 1) % self._period == 0:
-            self._writers.write()
-
-            self.trainer.event_recorder.clear()
+        self._writers.write()
+        self.trainer.event_recorder.clear()
 
     def after_train(self):
-        self._writers.write()
         self._writers.close()
 
     def after_test(self):
@@ -482,9 +477,9 @@ class PeriodicCheckpointer(HookBase):
         """
         if (self.trainer._epoch + 1) % self.period == 0:
             self.trainer.checkpoint_manager.save(prefix=self.file_prefix, 
-                                                 epoch=self.trainer._epoch + 1,
-                                                 best_loss=self.trainer.best_metric,
-                                                 iter=self.trainer._iter)
+                                                 save_epoch=self.trainer._epoch + 1,
+                                                 save_best_loss=self.trainer.best_metric,
+                                                 save_step=self.trainer._iter)
         
     def after_train(self):
         """
@@ -492,23 +487,25 @@ class PeriodicCheckpointer(HookBase):
         """
         if self.trainer._epoch + 1 >= self.trainer._max_epochs:
             self.trainer.checkpoint_manager.save(prefix=self.file_prefix, 
-                                                 epoch=self.trainer._epoch + 1,
-                                                 best_loss=self.trainer.best_metric,
-                                                 iter=self.trainer._iter)
+                                                 save_epoch=self.trainer._epoch + 1,
+                                                 save_best_loss=self.trainer.best_metric,
+                                                 save_step=self.trainer._iter)
 
 
 class BestCheckpointer(HookBase):
-    def __init__(self, checkpointdir: Union[str, Path]):
+    def __init__(self, checkpointdir: Union[str, Path], period=1):
         super().__init__()
+        self.period = period
         self.checkpoint_dir = Path(checkpointdir)
     
     def after_validation(self):
-        checkpoint = Checkpoint.from_directory(self.checkpoint_dir)  \
-            if is_main_process() else None
-        report(metrics={"best_loss": self.trainer.best_metric, 
-                        "iter": self.trainer._iter, 
-                        "epoch": self.trainer._epoch + 1}, 
-                        checkpoint=checkpoint)
+        if (self.trainer._epoch + 1) % self.period == 0:
+            checkpoint = Checkpoint.from_directory(self.checkpoint_dir)  \
+                if is_main_process() else None
+            report(metrics={"best_loss": self.trainer.best_metric, 
+                            "save_step": self.trainer._iter, 
+                            "save_epoch": self.trainer._epoch + 1}, 
+                            checkpoint=checkpoint)
 
 
 class TorchMemoryStats(HookBase):
@@ -637,13 +634,13 @@ class ModelSummaryHook(HookBase):
 class BestMetricSaver(HookBase):
     def __init__(self, 
                  metric_name: str, 
-                 compare_fn: Literal["gt", "lt"] = "lt",
+                 compare_fn: Literal["max", "min"] = "min",
                  eval_after_validation: bool = True, 
                  period: int = 1
     ):
         super().__init__()
         self.metric_name = metric_name
-        self.compare_fn = operator.gt if compare_fn == "gt" else operator.lt
+        self.compare_fn = operator.gt if compare_fn == "max" else operator.lt
         
         self.eval_after_validation = eval_after_validation
         self.period = period
@@ -792,18 +789,18 @@ class EarlyStopHook(HookBase):
     def __init__(self, 
                 patience, 
                 stopping_threshold,
-                mode: Literal["lt", "gt"],
+                mode: Literal["min", "max"],
                 metric_name: Optional[str] = None,
     ):
         super().__init__()
 
         self.metric_name = metric_name
-        if mode == "lt":
+        if mode == "min":
             self.compare_fn = operator.lt
-        elif mode == "gt":
+        elif mode == "max":
             self.compare_fn = operator.gt
         else:
-            raise ValueError(f"Invalid mode: {mode}. Use 'lt' or 'gt'.")
+            raise ValueError(f"Invalid mode: {mode}. Use 'min' or 'max'.")
 
         self.wait_count = 0
         self.patience = patience
