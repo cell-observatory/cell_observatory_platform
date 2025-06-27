@@ -1,6 +1,6 @@
 docker_image: null
 apptainer_image: /groups/betzig/betziglab/thayer/develop_torch_cuda_12_8.sif
-repo_path: ${oc.env:PROJECT_DIR}
+repo_path: ${oc.env:REPO_DIR}
 data_path: /groups/betzig/betziglab
 
 # Relative paths inside the container (docker/apptainer)

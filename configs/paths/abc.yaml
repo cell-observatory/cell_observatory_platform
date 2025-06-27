@@ -1,6 +1,6 @@
 docker_image: null
 apptainer_image: /clusterfs/nvme/hph/env_images/develop_torch_cuda_12_8_ops3d_v2.sif
-repo_path: ${oc.env:PROJECT_DIR}
+repo_path: ${oc.env:REPO_DIR}
 data_path: /clusterfs
 
 # Relative paths inside the container (docker/apptainer)
