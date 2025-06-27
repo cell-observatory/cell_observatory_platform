@@ -36,11 +36,12 @@ class EventRecorder:
         
         self._reduce_methods: dict[str, str] = {}
 
-    def put_scalar(self, 
-                    name, 
-                    value, 
-                    scope: Literal["step", "epoch"] = "step", 
-                    reduce_method: str | None = "mean"
+    def put_scalar(
+        self,
+        name,
+        value,
+        scope: Literal["step", "epoch"] = "step",
+        reduce_method: str | None = "mean"
     ):
         # we need to reduce per rank and per step to get epoch averages
         # either we set this dynamically or we have a config with 
@@ -53,11 +54,12 @@ class EventRecorder:
         elif scope == "epoch":
             self._epoch_scalars[name].append((value, self._iter, self._epoch))
 
-    def put_scalars(self, 
-                    scope="step", 
-                    reduce_method="mean", 
-                    prefix=None, 
-                    **kwargs
+    def put_scalars(
+        self,
+        scope="step",
+        reduce_method="mean",
+        prefix=None,
+        **kwargs
     ):
         for k, v in kwargs.items():
             assert isinstance(v, (int, float)), \
@@ -185,12 +187,13 @@ class EventWriter:
 
         return step_scalars, epoch_scalars
 
-    def _gather_scalars(self, 
-                        scalars: Dict[str, List[Tuple[float, int, int]]], 
-                        rank: int, 
-                        world: int, 
-                        distributed: bool = True,
-                        keep_steps_data: bool = False
+    def _gather_scalars(
+        self,
+        scalars: Dict[str, List[Tuple[float, int, int]]],
+        rank: int,
+        world: int,
+        distributed: bool = True,
+        keep_steps_data: bool = False
     ):
         if distributed and world > 1:
             gathered = [None] * world
@@ -281,9 +284,10 @@ class EventWriter:
             raise ValueError(f"Unknown reduce method: {reduce_method!r}")
 
     @abstractmethod
-    def _write_scalar_impl(self, 
-                            scalar_dict: Dict[str, List[Tuple[float, int, int]]], 
-                            scope: Literal["step", "epoch"] = "step"
+    def _write_scalar_impl(
+        self,
+        scalar_dict: Dict[str, List[Tuple[float, int, int]]],
+        scope: Literal["step", "epoch"] = "step"
     ):
         pass
 
@@ -308,12 +312,13 @@ class LocalEventWriter(EventWriter):
     """
     A local event writer that writes events to disk.
     """
-    def __init__(self, 
-                 event_recorder: EventRecorder, 
-                 save_dir: str | Path, 
-                 step_scalars_prefix: str,
-                 epoch_scalars_prefix: str,
-                 scalars_save_format: Literal["csv"] = "csv"
+    def __init__(
+        self,
+        event_recorder: EventRecorder,
+        save_dir: str | Path,
+        step_scalars_prefix: str,
+        epoch_scalars_prefix: str,
+        scalars_save_format: Literal["csv"] = "csv"
     ):
         self.event_recorder = event_recorder
 
@@ -348,9 +353,9 @@ class LocalEventWriter(EventWriter):
                 )
 
             else:
-                raise NotImplementedError(f"Unsupported scalars_save_format: "
-                                        f"{self.scalars_save_format}. "
-                                        f"Supported formats: 'csv'.")
+                raise NotImplementedError(
+                    f"Unsupported scalars_save_format: {self.scalars_save_format}. Supported formats: 'csv'."
+                )
 
         barrier()
 
@@ -368,18 +373,19 @@ class LocalEventWriter(EventWriter):
 
 
 class WandBEventWriter(EventWriter):
-    def __init__(self, 
-                 event_recorder: EventRecorder, 
-                 project: str,
-                 dir: str | Path,
-                 scalar_keys: List[str],
-                 entity: str | None = None,
-                 name: str | None = None,
-                 tags: List[str] | None = None,
-                 resume_from: str | None = None,
-                 id: str | None = None,  
-                 notes: str | None = None, 
-                 force: bool = True
+    def __init__(
+        self,
+        event_recorder: EventRecorder,
+        project: str,
+        dir: str | Path,
+        scalar_keys: List[str],
+        entity: str | None = None,
+        name: str | None = None,
+        tags: List[str] | None = None,
+        resume_from: str | None = None,
+        id: str | None = None,
+        notes: str | None = None,
+        force: bool = True
     ):
         wandb.login()
 
@@ -397,12 +403,15 @@ class WandBEventWriter(EventWriter):
         self.scalar_keys = scalar_keys
         self.step_table = wandb.Table(columns=["iter", "epoch", *scalar_keys],  log_mode="INCREMENTAL")
         self.epoch_table = wandb.Table(columns=["iter", *scalar_keys], log_mode="INCREMENTAL")
-        self.run.log({"step_logbook":  self.step_table,
-                      "epoch_logbook": self.epoch_table})
+        self.run.log({
+            "step_logbook":  self.step_table,
+            "epoch_logbook": self.epoch_table
+        })
         
-    def _write_scalar_impl(self, 
-                           scalar_dict, 
-                           scope: Literal["step", "epoch"] = "step"
+    def _write_scalar_impl(
+        self,
+        scalar_dict,
+        scope: Literal["step", "epoch"] = "step"
     ):
         if process_rank() == 0:
             if not scalar_dict:
@@ -442,8 +451,9 @@ class WandBEventWriter(EventWriter):
 
 
 class EventWriterList(EventWriter):
-    def __init__(self, 
-                 writers: List[EventWriter]
+    def __init__(
+        self,
+        writers: List[EventWriter]
     ):
         self.writers = writers
         self.event_recorder = writers[0].event_recorder
