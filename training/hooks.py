@@ -476,20 +476,24 @@ class PeriodicCheckpointer(HookBase):
         Checkpointing is done after each epoch.
         """
         if (self.trainer._epoch + 1) % self.period == 0:
-            self.trainer.checkpoint_manager.save(prefix=self.file_prefix, 
-                                                 save_epoch=self.trainer._epoch + 1,
-                                                 save_best_loss=self.trainer.best_metric,
-                                                 save_step=self.trainer._iter)
+            self.trainer.checkpoint_manager.save(
+                prefix=self.file_prefix,
+                save_epoch=self.trainer._epoch + 1,
+                save_best_loss=self.trainer.best_metric,
+                save_step=self.trainer._iter
+            )
         
     def after_train(self):
         """
         Checkpointing is done after the last epoch.
         """
         if self.trainer._epoch + 1 >= self.trainer._max_epochs:
-            self.trainer.checkpoint_manager.save(prefix=self.file_prefix, 
-                                                 save_epoch=self.trainer._epoch + 1,
-                                                 save_best_loss=self.trainer.best_metric,
-                                                 save_step=self.trainer._iter)
+            self.trainer.checkpoint_manager.save(
+                prefix=self.file_prefix,
+                save_epoch=self.trainer._epoch + 1,
+                save_best_loss=self.trainer.best_metric,
+                save_step=self.trainer._iter
+            )
 
 
 class BestCheckpointer(HookBase):
@@ -502,10 +506,14 @@ class BestCheckpointer(HookBase):
         if (self.trainer._epoch + 1) % self.period == 0:
             checkpoint = Checkpoint.from_directory(self.checkpoint_dir)  \
                 if is_main_process() else None
-            report(metrics={"best_loss": self.trainer.best_metric, 
-                            "save_step": self.trainer._iter, 
-                            "save_epoch": self.trainer._epoch + 1}, 
-                            checkpoint=checkpoint)
+            report(
+                metrics={
+                    "best_loss": self.trainer.best_metric,
+                    "save_step": self.trainer._iter,
+                    "save_epoch": self.trainer._epoch + 1
+                },
+                checkpoint=checkpoint
+            )
 
 
 class TorchMemoryStats(HookBase):
@@ -513,11 +521,12 @@ class TorchMemoryStats(HookBase):
     Writes pytorch's cuda memory statistics periodically.
     """
 
-    def __init__(self, 
-                 step_period=20, 
-                 epoch_period=1, 
-                 max_runs=10, 
-                 logdir=None
+    def __init__(
+        self,
+        step_period=20,
+        epoch_period=1,
+        max_runs=10,
+        logdir=None
     ):
         """
         Args:
@@ -608,10 +617,11 @@ class ModelSummaryHook(HookBase):
     It is executed once at the beginning of training.
     """
 
-    def __init__(self, 
-                 logdir: Union[str, Path], 
-                 input_shape: tuple[int], 
-                 batch_size: int
+    def __init__(
+        self,
+        logdir: Union[str, Path],
+        input_shape: tuple[int],
+        batch_size: int
     ):
         super().__init__()
         self._logdir = Path(logdir)
@@ -632,11 +642,12 @@ class ModelSummaryHook(HookBase):
 
 
 class BestMetricSaver(HookBase):
-    def __init__(self, 
-                 metric_name: str, 
-                 compare_fn: Literal["max", "min"] = "min",
-                 eval_after_validation: bool = True, 
-                 period: int = 1
+    def __init__(
+        self,
+        metric_name: str,
+        compare_fn: Literal["max", "min"] = "min",
+        eval_after_validation: bool = True,
+        period: int = 1
     ):
         super().__init__()
         self.metric_name = metric_name
@@ -718,11 +729,12 @@ class TorchProfiler(HookBase):
         "CUDA": torch.profiler.ProfilerActivity.CUDA
     }
 
-    def __init__(self, 
-                 output_dir,
-                 schedule: dict | None = None,
-                 activities: Sequence[ProfilerActivity | str] | None = None,
-                 save_tensorboard=True
+    def __init__(
+        self,
+        output_dir,
+        schedule: dict | None = None,
+        activities: Sequence[ProfilerActivity | str] | None = None,
+        save_tensorboard=True
     ):
         """
         Args:
@@ -734,14 +746,11 @@ class TorchProfiler(HookBase):
         self._activities = tuple(
             a if isinstance(a, ProfilerActivity)
             else self.TorchProfilerActivities[a.upper()]
-            for a in (activities or (ProfilerActivity.CPU,
-                                     ProfilerActivity.CUDA))
+            for a in (activities or (ProfilerActivity.CPU, ProfilerActivity.CUDA))
         )
 
-        self._wait, self._warmup = schedule.get("wait"), \
-                                        schedule.get("warmup") 
-        self._active, self._repeat = schedule.get("active"), \
-                                        schedule.get("repeat") 
+        self._wait, self._warmup = schedule.get("wait"), schedule.get("warmup")
+        self._active, self._repeat = schedule.get("active"), schedule.get("repeat")
 
         self._output_dir = output_dir
         self.profile_times = (self._wait + self._warmup + self._active) * self._repeat
@@ -786,11 +795,12 @@ class EarlyStopHook(HookBase):
     for a certain number of epochs.
     """
 
-    def __init__(self, 
-                patience, 
-                stopping_threshold,
-                mode: Literal["min", "max"],
-                metric_name: Optional[str] = None,
+    def __init__(
+        self,
+        patience,
+        stopping_threshold,
+        mode: Literal["min", "max"],
+        metric_name: Optional[str] = None,
     ):
         super().__init__()
 
@@ -822,8 +832,7 @@ class EarlyStopHook(HookBase):
             )
         
         latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
-        latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, \
-                                                            device="cuda")).item()
+        latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, device="cuda")).item()
 
         if math.isnan(latest_metric_val) or math.isinf(latest_metric_val):
             raise ValueError(
@@ -834,8 +843,10 @@ class EarlyStopHook(HookBase):
         
         if self.compare_fn(metric_diff, self.stopping_threshold):
             self.wait_count += 1
-            logger.info(f"Validation metric {self.metric_name} did not improve. "
-                        f"Wait count: {self.wait_count}/{self.patience}.")
+            logger.info(
+                f"Validation metric {self.metric_name} did not improve. "
+                f"Wait count: {self.wait_count}/{self.patience}."
+            )
             if self.wait_count >= self.patience:
                 logger.info("Early stopping triggered.")
                 # setting stop_training to True
