@@ -3,11 +3,7 @@ import numpy as np
 import warnings
 warnings.filterwarnings("ignore")
 
-import pytest
-
-
-@pytest.mark.run(order=1)
-def test_cupy(kargs):
+def test_cupy():
     # Create a NumPy array
     a = np.array([1, 2, 3])
 
