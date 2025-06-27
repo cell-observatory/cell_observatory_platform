@@ -54,7 +54,7 @@ SUPABASE_STAGING_URI="postgresql://${SUPABASE_USER}.${SUPABASE_STAGING_ID}:${SUP
 SUPABASE_PROD_URI="postgresql://${SUPABASE_USER}.${SUPABASE_PROD_ID}:${SUPABASE_PASS}@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
 
 REPO_NAME: cell_observatory_platform  # TODO: replace with your repo name if you renamed it
-PROJECT_DIR=REPLACE_ME_WITH_YOUR_REPO_DIR
+DATA_DIR=REPLACE_ME_WITH_YOUR_REPO_DIR_OR_DATA_DIR
 ````
 
 # Running docker image
@@ -76,25 +76,26 @@ apptainer pull --force develop_torch_cuda_12_8.sif docker://ghcr.io/cell-observa
 
 ## Local setup
 
-The local job config lives in **`configs/**/*.yaml`**. 
+The local job config lives in `configs/pretrain_mae_local.yaml`. 
 Edit just the handful of lines below, then launch the job.
 
-### 1. Update your paths in `configs/paths/local.yaml`
+### 1. Update your paths
 ```yaml
-docker_image: ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
-apptainer_image: null # replace with path to apptainer image if using apptainer otherwise use docker
-outdir: ${oc.env:PROJECT_DIR}/pretrained_models
-resume_checkpointdir: null
-pretrained_checkpointdir: null
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null 
+  pretrained_checkpointdir: null
 ```
 
-### 2. Edit resource requirements in `configs/clusters/local.yaml`
+### 2. Edit resource requirements
 ```yaml
-batch_size:          1
-worker_nodes:        1                 
-gpus_per_worker:     1                 
-cpus_per_gpu:        4                 
-mem_per_cpu:         16G
+clusters:
+  batch_size: 2 # total batch size
+  worker_nodes: 1 # number of worker nodes
+  gpus_per_worker: 1 # number of gpus per worker node
+  cpus_per_gpu: 4 # number of cpu cores per gpu
+  mem_per_cpu: 16000 # ram per cpu core
 ```
 
 ### 3. Run local training job with `manager.py`
@@ -102,7 +103,7 @@ Run the local job using the `manager.py` script, which will pick up the Hydra co
 
 ```bash
 # Set config and then run with `manager.py`:
-python cluster/manager.py --config-name=my_run_config.yaml
+python cluster/manager.py --config-name=configs/pretrain_mae_local.yaml
 ```
 
 ## Cluster setup
