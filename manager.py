@@ -1,5 +1,6 @@
 import os
 import shlex
+import sys
 from pathlib import Path
 from subprocess import call, run
 
@@ -10,6 +11,7 @@ from omegaconf import DictConfig, OmegaConf
 OmegaConf.register_new_resolver("eval", eval)
 
 from training import runner
+from utils.container import get_container_info
 
 # Update environment variables
 os.environ["HYDRA_FULL_ERROR"] = "1"
@@ -33,6 +35,25 @@ def q(x: str) -> str:
 # modify Hydra config on cmd line to use different models
 @hydra.main(config_path="configs", config_name="pretrain_mae_local")
 def main(cfg: DictConfig):
+
+    container_info = get_container_info()
+    print(f"Container type: {container_info['container_type']}")
+
+    assert cfg.paths.outdir is not None, f"Missing output directory: {cfg.paths.outdir}"
+
+    assert Path(cfg.paths.data_path) in Path(cfg.paths.outdir).parents, \
+        f"Output directory [{cfg.paths.outdir}] not in data path [{cfg.paths.data_path}]"
+
+    if container_info['container_type'] == 'native':
+        for k in ['runner_script']:
+            cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
+
+    else: # running in a docker/apptainer
+        [print(f"\t{k}: {v}") for k, v in container_info['container_details'].items()]
+
+        for k in ['outdir', 'ray_script', 'runner_script', 'dotenv_path']:
+            cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
+
     # load extra env variables
     load_dotenv(cfg.paths.dotenv_path, verbose=True)
 
@@ -40,9 +61,12 @@ def main(cfg: DictConfig):
     print("\n" + OmegaConf.to_yaml(cfg))
 
     hydra_cfg = HydraConfig.get()
+
     config_name = hydra_cfg.job.config_name
     print(f"Running with config: {config_name}")
 
+    print(f"Current working directory: {Path.cwd()}")
+    print(f"Creating output directory: {cfg.paths.outdir}...")
     outdir = Path(cfg.paths.outdir).resolve()
     outdir.mkdir(exist_ok=True, parents=True)
     print(f"Output directory for training job: {outdir}")
@@ -82,10 +106,13 @@ def main(cfg: DictConfig):
     )
 
     if cfg.clusters.launcher_type == "local":  # for running jobs on your local workstation without a job scheduler
-        print("Running local training job with configuration:")
-        # runner.main(cfg)
-        # print(ray_wrap)
-        call([ray_wrap], shell=True)
+        if container_info['ide_type'] is None:
+            print("Running local training job with configuration:")
+            print(ray_wrap)
+            call([ray_wrap], shell=True)
+        else:
+            print(f"Running in {container_info['ide_type']} IDE in {container_info['container_type']} environment")
+            runner.main(cfg)
 
     elif cfg.clusters.launcher_type == "slurm":
 
