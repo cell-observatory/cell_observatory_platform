@@ -9,7 +9,7 @@ defaults:
   - evaluation: base_evaluator               # configs/evaluation/base_evaluator.yaml
   - deepspeed: zero3                         # configs/deepspeed/zero3.yaml
   - optimizers: lamb                         # configs/optimizers/lamb.yaml
-  - schedulers: warmup_cosine_decay          # configs/schedulers/warmup_cosine_decay.yaml
+  - schedulers: test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
   - _self_
 
 
@@ -44,20 +44,25 @@ quantization: float16 # data type for training, options: float32, float16
 #paths:
 paths:
   # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.repo_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null 
   pretrained_checkpointdir: null
-
+  docker_image: /clusterfs/nvme/hph/env_images/develop_torch_cuda_12_8_ops3d_v2.sif
+  dotenv_path: /clusterfs/nvme/hph/git_managed/cell_observatory_platform/.env
 
 # clusters
 clusters:
-  batch_size: 128 # total batch size
+  batch_size: 2 # total batch size
+  worker_nodes: 1 # number of worker nodes
+  gpus_per_worker: 2 # number of gpus per worker node
+  cpus_per_gpu: 4 # number of cpu cores per gpu
+  mem_per_cpu: 31000 # ram per cpu core
 
 # data 
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-  input_shape: [32, 128, 128, 128, 2]
+  input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
 
   split: 0.1
@@ -75,16 +80,24 @@ datasets:
 # model
 models:
   _target_: models.maskedautoencoder.MaskedAutoEncoder
-  preprocessor: null
-    # _target_: models.preprocessor.PreProcessor
-    # sample_object:
-    #   _target_: data.structures.data_sample.DataSample
   input_fmt: BTZYXC
   input_shape: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
   temporal_patch_size: ${datasets.patch_shape.0}
   lateral_patch_size: ${datasets.patch_shape.1}
   axial_patch_size: ${datasets.patch_shape.2}
 
+# checkpoint
+checkpoint:
+  checkpoint_manager:
+    checkpoint_tag: latest_model
+    load_universal_checkpoint: ${deepspeed.checkpoint.load_universal}
+
+# deepspeed
+deepspeed:
+  zero_optimization:
+    stage: 1
+  checkpoint:
+    load_universal: true
 
 # evaluation
 evaluation:
@@ -94,7 +107,7 @@ evaluation:
   # needs to match one of metrics saved per epoch by loss_dict
   # in the training loop or evaluator.evaluate() in the evaluation loop
   val_metric: val_step_loss
-  val_mode: lt # mode for the validation metric, can be 'gt' or 'lt'
+  val_mode: min # mode for the validation metric, can be 'max' or 'min'
   evaluator:
     _target_: evaluation.base_evaluation.BaseEvaluator
     training_metrics:

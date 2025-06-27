@@ -4,7 +4,7 @@ defaults:
 val_begin: 0
 val_interval: 1
 val_metric: val_step_loss 
-val_mode: lt # 'gt' or 'lt'
+val_mode: min # 'min' or 'max'
 
 evaluator:
   _target_: evaluation.base_evaluation.BaseEvaluator

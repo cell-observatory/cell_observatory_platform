@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# USAGE: bash /clusterfs/nvme/hph/git_managed/cell_observatory_platform/training/training.sh
+# USAGE: bash /clusterfs/nvme/hph/git_managed/cell_observatory_platform/scripts/training.sh
 
-# CFG="pretrain_mae.yaml"
-CFG="pretrain_jepa.yaml"
+CFG="pretrain_mae_local.yaml"
+# CFG="pretrain_jepa_local.yaml"
 
-python3 /clusterfs/nvme/hph/git_managed/cell_observatory_platform/cluster/manager.py --config-name=${CFG}
+python3 /clusterfs/nvme/hph/git_managed/cell_observatory_platform/manager.py --config-name=${CFG}

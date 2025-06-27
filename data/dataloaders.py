@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+from pathlib import Path
 
 from torch.utils.data import DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
@@ -32,7 +33,7 @@ def build_dataset(cfg, transforms=None):
 
     dataset = instantiate(
         cfg.datasets.dataset,
-        hypercubes_dataframe_path=db.hypercubes_dataframe_path,
+        hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
         transforms=transforms
     )
     return dataset

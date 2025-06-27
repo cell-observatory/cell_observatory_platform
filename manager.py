@@ -83,9 +83,9 @@ def main(cfg: DictConfig):
 
     if cfg.clusters.launcher_type == "local":  # for running jobs on your local workstation without a job scheduler
         print("Running local training job with configuration:")
-        runner.main(cfg)
+        # runner.main(cfg)
         # print(ray_wrap)
-        # call([ray_wrap], shell=True)
+        call([ray_wrap], shell=True)
 
     elif cfg.clusters.launcher_type == "slurm":
 

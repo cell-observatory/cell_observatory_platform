@@ -83,8 +83,7 @@ def main(cfg: DictConfig):
         init(
             address=f"{address}:{port}",
             log_to_driver=True,
-            runtime_env={k: v for k, v in os.environ.items()},
-            _system_config={"worker_heartbeat_timeout_ms": cfg.clusters.max_worker_heartbeat_timeout},
+            runtime_env={k: v for k, v in os.environ.items()}
         )
 
     else:

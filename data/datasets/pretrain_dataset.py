@@ -33,9 +33,9 @@ class PretrainDataset(BaseDataset):
         paths = {
             os.path.join(sf, of, tn)
             for sf, of, tn in 
-            zip(self.db.data_table["server_folder"], 
-                self.db.data_table["output_folder"], 
-                self.db.data_table["tile_name"]
+            zip(self.hypercubes_dataframe["server_folder"], 
+                self.hypercubes_dataframe["output_folder"], 
+                self.hypercubes_dataframe["tile_name"]
             )
         }
         self._zarr_handles_data = {
@@ -43,15 +43,9 @@ class PretrainDataset(BaseDataset):
             for p in paths
         }
 
-    def _process_tables(self) -> None:
-        # no-op for now, consider potentially filtering
-        # data_table based on some criteria here or
-        # removing method
-        return self.db.data_table
-
     def _build_index(self) -> None:
         # convert df into a list of Python dicts
-        self._index = self.db.data_table.to_dict(orient="records")
+        self._index = self.hypercubes_dataframe.to_dict(orient="records")
 
     def _load_sample(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         """Read raw image crop into memory."""
@@ -60,17 +54,16 @@ class PretrainDataset(BaseDataset):
                                                            meta["tile_name"])]
         
         t, c = slice(meta["time_start"], meta["time_start"] + meta["time_size"]), slice(0, meta["channel_size"])
-        z = slice(meta["z_start"], meta["z_start"] + meta["cube_size"])
+        z = slice(meta["z_start"]-28, meta["z_start"] + meta["cube_size"]-28)
         y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
-        x = slice(meta["x_start"], meta["x_start"] + meta["cube_size"])
-
-        img = data_tensor[t, z, y, x, c].read().result()  
+        x = slice(meta["x_start"]-14, meta["x_start"] + meta["cube_size"]-14)
+        img = data_tensor[t, z, y, x, c].read().result()
         return dict(meta=meta, image=img)
 
     def _collate(self, _data: Dict[str, Any]) -> DataSample:
         img_tensor = torch.tensor(_data["image"], dtype=torch.float32).clone() 
         img_sample = ImageList(img_tensor,
-                                layout=self.layout,
+                                layout=self.input_layout,
                                 image_sizes=[img_tensor.shape])
         
         sample = DataSample(metainfo=_data["meta"])

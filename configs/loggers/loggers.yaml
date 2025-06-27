@@ -21,7 +21,7 @@ event_writers:
       dir: ${loggers.logdir}
       name: ${experiment_name}
       tags: 
-        - finetune
+        - pretrain
         - ${network}
         - ${job_type}
         - ${trainer}
@@ -37,7 +37,7 @@ event_writers:
       # if the id does not exist, a new run will 
       # be created
       id: null
-      notes: "First test run for finetune logging"
+      notes: "First test run for wandb logging"
       # force=True implies user must be logged in to W&B
       # otherwise if force=False, W&B will log
       # locally and not upload to W&B
@@ -47,11 +47,11 @@ event_writers:
         - val_step_time
         - step_loss
         - lr
-        # - max_reserved_mem
-        # - reserved_mem
-        # - max_allocated_mem
-        # - allocated_mem
-        # - eta
+    #     - max_reserved_mem
+    #     - reserved_mem
+    #     - max_allocated_mem
+    #     - allocated_mem
+        - eta
 
 event_recorder:
   _target_: training.loggers.EventRecorder
