@@ -1,15 +1,19 @@
 docker_image: null
 apptainer_image: /clusterfs/nvme/hph/env_images/develop_torch_cuda_12_8_ops3d_v2.sif
+
+# No need to change anything below
+# --------------------------------------------------------------------------------
 repo_path: ${oc.env:REPO_DIR}
 data_path: /clusterfs
+workdir: /workspace/${oc.env:REPO_NAME} # mapping your repo path to this path inside the container
 
-# Relative paths inside the container (docker/apptainer)
-workdir: /workspace/${oc.env:REPO_NAME}
-dotenv_path: ${.workdir}/.env
-runner_script: ${.workdir}/training/runner.py
-ray_script: ${.workdir}/cluster/ray_local_cluster.sh
+# Relative paths will be updated in manager.py based on the running environment
+ray_script: ${oc.env:REPO_DIR}/cluster/ray_local_cluster.sh
+runner_script: ${oc.env:REPO_DIR}/training/runner.py
+dotenv_path: ${oc.env:REPO_DIR}/.env
 
-# Absolute paths for the host
-outdir: ${oc.env:PROJECT_DIR}/pretrained_models
+# Keep them null to be set automatically or change in the main config file
+# --------------------------------------------------------------------------------
 resume_checkpointdir: null
 pretrained_checkpointdir: null
+outdir: null
