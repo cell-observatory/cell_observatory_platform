@@ -158,7 +158,7 @@ def resume_model_state(config: DictConfig, checkpoint_manager):
     epochs_left = config.schedulers.epochs - starting_epoch
 
     if epochs_left <= 0:
-        raise ValueError(
+        logger.error(
             f"No epochs left to train. Starting epoch {starting_epoch} "
             f"exceeds total epochs {config.schedulers.epochs}."
         )
