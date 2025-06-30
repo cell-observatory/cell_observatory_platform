@@ -1,7 +1,7 @@
 defaults:
   - _self_
 
-job_name: test
+job_name: ${experiment_name}
 launcher_type: local # type of launcher to use
 partition: null   # partition to submit the job to
 qos: null   # qos for the job
