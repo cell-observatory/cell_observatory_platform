@@ -20,7 +20,7 @@ python_env: python # python executable to use (if not using apptainer)
 
 batch_size: 4096 # total batch size
 
-worker_nodes: 2 # number of worker nodes
+worker_nodes: 1 # number of worker nodes
 gpus_per_worker: 8 # number of gpus per worker node
 cpus_per_gpu: 4 # number of cpu cores per gpu
 mem_per_cpu: 40000 # ram per cpu core

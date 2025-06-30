@@ -76,7 +76,7 @@ apptainer pull --force develop_torch_cuda_12_8.sif docker://ghcr.io/cell-observa
 
 ## Local setup
 
-The local job config lives in `configs/pretrain_mae_local.yaml`. 
+The local job config lives in `configs/test_pretrain_4d_mae_local.yaml`. 
 Edit just the handful of lines below, then launch the job.
 
 ### 1. Update your paths
@@ -103,7 +103,7 @@ Run the local job using the `manager.py` script, which will pick up the Hydra co
 
 ```bash
 # Set config and then run with `manager.py`:
-python cluster/manager.py --config-name=configs/pretrain_mae_local.yaml
+python cluster/manager.py --config-name=configs/test_pretrain_4d_mae_local.yaml
 ```
 
 ## Cluster setup

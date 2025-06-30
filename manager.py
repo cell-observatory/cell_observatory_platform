@@ -33,7 +33,7 @@ def q(x: str) -> str:
     return shlex.quote(str(x))
 
 # modify Hydra config on cmd line to use different models
-@hydra.main(config_path="configs", config_name="pretrain_mae_local")
+@hydra.main(config_path="configs", config_name="test_pretrain_4d_mae_local")
 def main(cfg: DictConfig):
 
     container_info = get_container_info()
