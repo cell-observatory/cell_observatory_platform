@@ -1,6 +1,6 @@
 #!/bin/bash
 
-while getopts ":b:c:e:g:m:n:o:p:s:t:x:z:" option; do
+while getopts ":b:c:e:g:m:n:o:p:s:t:x:y:z:" option; do
     case "${option}" in
     b)  bind=${OPTARG} ;;
     c)  cpus=${OPTARG} ;;
@@ -12,7 +12,8 @@ while getopts ":b:c:e:g:m:n:o:p:s:t:x:z:" option; do
     p)  partition=${OPTARG} ;;
     s)  workspace=${OPTARG} ;;
     t)  tasks=${OPTARG} ;;
-    x)  exclusive=true ;;
+    x)  exclusive=${OPTARG} ;;
+    y)  head_gpus=${OPTARG} ;;
     z)  head_cpus=${OPTARG} ;;
     *) echo "Did not supply the correct arguments"; exit 1 ;;
     esac

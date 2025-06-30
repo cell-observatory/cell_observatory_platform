@@ -19,6 +19,8 @@ def cfg():
 @pytest.fixture(scope="module")
 def database(cfg):
     cfg.fetch_hypercubes_dataframe = False
+    cfg.num_timepoints = 16
+    cfg.hypercubes_dataframe_path = None
     pprint(OmegaConf.to_container(cfg, resolve=True))
     print(f"Initializing database...")
     return instantiate(cfg)

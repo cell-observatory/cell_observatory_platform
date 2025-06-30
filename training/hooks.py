@@ -25,7 +25,8 @@ from ray.train import Checkpoint, report
 
 from training.loggers import EventWriter
 from training.helpers import summarize_model
-from utils.context import is_main_process, gather_and_reduce
+from tests.helpers import get_masked_input_data
+from utils.context import is_main_process, gather_and_reduce, process_rank
 
 
 logging.basicConfig(
@@ -315,7 +316,7 @@ class IterationTimer(HookBase):
         # +1 because we're in after_step, the current step is done
         # but not yet counted
         iter_done = self.trainer._iter - self.trainer.start_iter + 1
-        if iter_done >= self._warmup_iter:
+        if iter_done > self._warmup_iter:
             sec = self._step_timer.seconds()
             self.trainer.event_recorder.put_scalars(step_time=sec)
         else:
@@ -340,7 +341,7 @@ class IterationTimer(HookBase):
 
         remaining_epochs = self.trainer._max_epochs - (self.trainer._epoch + 1)
         eta = sec * remaining_epochs / 3600
-        self.trainer.event_recorder.put_scalars(eta=eta)
+        self.trainer.event_recorder.put_scalars(eta=eta, scope="epoch")
 
     def before_validation(self):
         # stop epoch timer
@@ -414,7 +415,7 @@ class IterationTimer(HookBase):
         # +1 because we're in after_step, the current step is done
         # but not yet counted
         iter_done = self.trainer._iter - self.trainer.start_iter + 1
-        if iter_done >= self._warmup_iter:
+        if iter_done > self._warmup_iter:
             sec = self._test_timer.seconds()
             self.trainer.event_recorder.put_scalars(test_step_time=sec)
         else:
@@ -523,9 +524,8 @@ class TorchMemoryStats(HookBase):
 
     def __init__(
         self,
-        step_period=20,
+        step_period=50,
         epoch_period=1,
-        max_runs=10,
         logdir=None
     ):
         """
@@ -537,16 +537,15 @@ class TorchMemoryStats(HookBase):
         self._step_period = step_period
         self._epoch_period = epoch_period
 
-        self._max_runs = max_runs
-        self._runs = 0
-
         self._logdir = Path(logdir) / 'memory' 
         self._logdir.mkdir(parents=True, exist_ok=True)
 
+    def before_train(self):
+        assert self._step_period < self.trainer.steps_per_epoch, \
+            f"Step period {self._step_period} must be less than " \
+            f"steps per epoch {self.trainer.steps_per_epoch}."
+    
     def after_step(self, data_sample, outputs, loss_dict):
-        if self._runs > self._max_runs:
-            return
-
         if (self.trainer._iter + 1) % self._step_period == 0:
             if torch.cuda.is_available():
                 max_reserved_gb = torch.cuda.max_memory_reserved() / (1024 ** 3)
@@ -561,7 +560,6 @@ class TorchMemoryStats(HookBase):
                     allocated_mem=allocated_gb,
                 )
 
-                self._runs += 1
                 torch.cuda.reset_peak_memory_stats()
 
     def after_epoch(self):
@@ -578,9 +576,6 @@ class TorchMemoryStats(HookBase):
         """
         Write memory stats after each test step.
         """
-        if self._runs > self._max_runs:
-            return
-
         if (self.trainer._iter + 1) % self._step_period == 0:
             if torch.cuda.is_available():
                 max_reserved_gb = torch.cuda.max_memory_reserved() / (1024 ** 3)
@@ -595,7 +590,6 @@ class TorchMemoryStats(HookBase):
                     allocated_mem=allocated_gb,
                 )
 
-                self._runs += 1
                 torch.cuda.reset_peak_memory_stats()
 
     def after_test(self):
@@ -619,23 +613,26 @@ class ModelSummaryHook(HookBase):
 
     def __init__(
         self,
+        batch_size: int,
         logdir: Union[str, Path],
-        input_shape: tuple[int],
-        batch_size: int
+        inputs: tuple[int]
     ):
         super().__init__()
+        os.makedirs(logdir, exist_ok=True)
         self._logdir = Path(logdir)
-        assert self._logdir.is_dir(), f"Log directory does \
-            not exist: {self._logdir}"
 
+        self.inputs = inputs
         self.batch_size = batch_size
-        self.input_shape = input_shape
 
     def before_train(self):
         if is_main_process():
+            input_data = get_masked_input_data(self.trainer.model, 
+                                               self.inputs,
+                                               device=self.trainer.model.device)
             summarize_model(
+                inputs=None,
                 model=self.trainer.model,
-                inputs=self.input_shape,
+                input_data=input_data,
                 batch_size=self.batch_size,
                 logdir=self._logdir
             )
@@ -758,7 +755,8 @@ class TorchProfiler(HookBase):
 
         os.makedirs(os.path.join(output_dir, "log"), exist_ok=True)
         self._on_trace_ready = (
-            torch.profiler.tensorboard_trace_handler(os.path.join(output_dir, "log"))
+            torch.profiler.tensorboard_trace_handler(dir_name=os.path.join(output_dir, "log"),
+                                                     worker_name=f"worker_{process_rank()}")
             if save_tensorboard else None
         )
 

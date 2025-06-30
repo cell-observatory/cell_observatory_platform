@@ -42,15 +42,19 @@ event_writers:
       # otherwise if force=False, W&B will log
       # locally and not upload to W&B
       force: true
-      scalar_keys:
+      step_scalar_keys:
         - step_time
         - val_step_time
         - step_loss
         - lr
-    #     - max_reserved_mem
-    #     - reserved_mem
-    #     - max_allocated_mem
-    #     - allocated_mem
+      epoch_scalar_keys:
+        - epoch_time
+        - step_time
+        - val_time
+        - val_step_time
+        - val_step_loss
+        - step_loss
+        - lr
         - eta
 
 event_recorder:

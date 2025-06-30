@@ -10,7 +10,8 @@ warnings.filterwarnings("ignore")
 
 from training.helpers import summarize_model
 from models.baseline import Baseline
-from tests.conftest import get_input_data, kargs
+from tests.conftest import kargs
+from tests.helpers import get_input_data
 
 @pytest.mark.run(order=1)
 def test_baseline_custom(kargs):

@@ -1,6 +1,7 @@
 import os
 import shlex
 import sys
+import subprocess
 from pathlib import Path
 from subprocess import call, run
 
@@ -26,6 +27,10 @@ os.environ["NCCL_CROSS_NIC"] = "1"
 os.environ["NCCL_P2P_LEVEL"] = "NVL"
 os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "3600"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# TODO: do we want to do this or:
+# load_dotenv(Path(__file__).parent / ".env", verbose=True)?
+# below will load the .env file from pwd vs above will load
+# from repo root
 load_dotenv(verbose=True)
 
 def q(x: str) -> str:
@@ -43,6 +48,11 @@ def main(cfg: DictConfig):
 
     assert Path(cfg.paths.data_path) in Path(cfg.paths.outdir).parents, \
         f"Output directory [{cfg.paths.outdir}] not in data path [{cfg.paths.data_path}]"
+
+    assert cfg.clusters.batch_size % cfg.clusters.worker_nodes == 0, (
+        f"batch_size {cfg.clusters.batch_size} must divide evenly among "
+        f"{cfg.clusters.worker_nodes} worker nodes"
+    )
 
     if container_info['container_type'] == 'native':
         for k in ['runner_script']:
@@ -87,6 +97,11 @@ def main(cfg: DictConfig):
         image = cfg.paths.docker_image
     else:
         raise ValueError("Either apptainer_image or docker_image must be specified in the configuration.")
+    
+    if cfg.clusters.launcher_type == "slurm":
+        cfg.paths.ray_script = cfg.paths.ray_script.replace("ray_local_cluster.sh", "ray_slurm_cluster.sh")
+    elif cfg.clusters.launcher_type == "lsf":
+        cfg.paths.ray_script = cfg.paths.ray_script.replace("ray_local_cluster.sh", "ray_lsf_cluster.sh")
 
     task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {config_name}"
 
@@ -97,11 +112,13 @@ def main(cfg: DictConfig):
         f"-e {q(image)} "
         f"-g {q(cfg.clusters.gpus_per_worker)} "
         f"-m {q(cfg.clusters.mem_per_worker)} "
+        f"-n {q(cfg.clusters.worker_nodes)} "
         f"-o {q(str(outdir))} "
         f"-p {q(cfg.clusters.partition)} "
         f"-s {q(str(workspace))} "
         f"-t {q(task)} "
         f"-x {q(cfg.clusters.exclusive)} "
+        f"-y {q(cfg.clusters.head_node_gpus)} "
         f"-z {q(cfg.clusters.head_node_cpus)} "
     )
 
@@ -127,8 +144,8 @@ def main(cfg: DictConfig):
             sjob_worker_nodes.append(f"--ntasks 1")
             sjob_worker_nodes.append(f"--nodes 1")
             sjob_worker_nodes.append(f"--cpus-per-task={cfg.clusters.head_node_cpus}")
-            sjob_worker_nodes.append(f"--gres=gpu:={cfg.clusters.gpus_per_worker}")
-            sjob_worker_nodes.append(f"--mem={cfg.clusters.mem_per_worker}")
+            sjob_worker_nodes.append(f"--gres=gpu:{cfg.clusters.head_node_gpus}")
+            sjob_worker_nodes.append(f"--mem={cfg.clusters.head_node_mem}")
 
 
         if cfg.clusters.constraint is not None:
@@ -141,10 +158,10 @@ def main(cfg: DictConfig):
             sjob_worker_nodes.append(f"--dependency={cfg.clusters.job_name}")
 
         if cfg.clusters.timelimit is not None:
-            sjob_worker_nodes.append(f" --time={cfg.clusters.timelimit}")
+            sjob_worker_nodes.append(f"--time={cfg.clusters.timelimit}")
 
         if cfg.clusters.job_name is not None:
-            sjob_worker_nodes.append(f" --job-name={cfg.clusters.job_name}")
+            sjob_worker_nodes.append(f"--job-name={cfg.clusters.job_name}")
             sjob_worker_nodes.append(f"--output={outdir / cfg.clusters.job_name}.log")
         else:
             sjob_worker_nodes.append(f"--job-name=training_job")
@@ -154,8 +171,9 @@ def main(cfg: DictConfig):
         sjob_worker_nodes.append(f"--wrap={q(ray_wrap)}")
 
         print("Submitting slurm job with configuration:")
-        print(sjob_worker_nodes)
-        call(sjob_worker_nodes, shell=True)
+        cmd = " ".join(sjob_worker_nodes)
+        print(cmd)
+        subprocess.run(cmd, shell=True, check=True)
 
     elif cfg.clusters.launcher_type == "lsf":
 
