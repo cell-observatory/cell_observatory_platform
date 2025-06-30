@@ -3,12 +3,8 @@ import sys
 import pytest
 import logging
 from pathlib import Path
-from typing import Optional
-
-import torch
 
 from dotenv import load_dotenv
-from omegaconf import DictConfig
 from hydra.utils import get_method
 from hydra import compose, initialize
 from omegaconf import OmegaConf, DictConfig
@@ -32,17 +28,13 @@ logger = logging.getLogger(__name__)
 # keeping this until we migrate models 
 # tests to config setup
 @pytest.fixture(scope="session")
-def kargs():
-    repo = Path.cwd()
-    kargs = dict(
+def models_kargs():
+    repo = Path(__file__).resolve().parent.parent
+    models_kargs = dict(
         repo=repo,
-        prediction_filename_pattern=r"*[!_gt|!_realspace|!_noisefree|!_predictions_psf|!_corrected_psf|!_reconstructed_psf].tif",
-        dataset=repo/"dataset/training_dataset/YuMB_lambda510/z200-y97-x97/z64-y64-x64/z15/",
-        fishdb_dir=repo/"dataset/fishdb_data/",
         outdir=repo/'pretrained_models',
-        input_shape=64,
         modes=15,
-        batch_size=512,
+        batch_size=2,
         hidden_size=768,
         patches=32,
         heads=16,
@@ -66,7 +58,7 @@ def kargs():
         gpu_workers=1,
         cpu_workers=8,
     )
-    return kargs
+    return models_kargs
 
 
 @pytest.fixture(scope="session")
@@ -75,6 +67,7 @@ def config() -> DictConfig:
     load_dotenv(repo_root, verbose=True)
     with initialize(config_path="../configs"):
         cfg = compose(config_name="tests")
+    cfg.paths.repo_path = repo_root
     return cfg
 
 
