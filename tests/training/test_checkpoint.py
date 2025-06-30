@@ -15,7 +15,7 @@ from tests.conftest import distributed_test, config
 # train function to use, this should stay inside
 # the setup_ray_cluster function to prevent serialization issues
 def _test_ckpt_dist(config: DictConfig):
-    from tests.conftest import get_masked_input_data
+    from tests.helpers import get_masked_input_data
     trainer_cls = get_class(config.trainer)
     trainer_per_worker = trainer_cls(config)
 
