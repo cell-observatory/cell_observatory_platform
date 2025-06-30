@@ -9,7 +9,7 @@ warnings.filterwarnings("ignore")
 
 from training.helpers import summarize_model
 from models.jepa import JEPA
-from tests.conftest import get_masked_input_data, kargs
+from tests.helpers import get_masked_input_data
 
 @pytest.mark.run(order=1)
 def test_jepa_custom(kargs):

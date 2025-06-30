@@ -39,15 +39,15 @@ def is_apptainer_running():
     except (FileNotFoundError, PermissionError):
         pass
 
-    apptainer_paths = [
-        '/.singularity.d',
-        '/singularity',
-        '/.apptainer.d'
-    ]
+    # apptainer_paths = [
+    #     '/.singularity.d',
+    #     '/singularity',
+    #     '/.apptainer.d'
+    # ]
 
-    for path in apptainer_paths:
-        if Path(path).exists():
-            return True
+    # for path in apptainer_paths:
+    #     if Path(path).exists():
+    #         return True
 
     return False
 

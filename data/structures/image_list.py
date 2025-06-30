@@ -195,8 +195,10 @@ class ImageList:
         for t in tensors:
             assert isinstance(t, torch.Tensor), type(t)
 
-        image_sizes = [layout.get_spatial_shape(im) for im in tensors] # List[Tuple[:]]
-        image_sizes_tensor = [torch.as_tensor(x) for x in image_sizes]
+        # TODO: needs more testing
+        image_sizes = [layout.get_image_shape_tuple(im) for im in tensors]
+        image_sizes_spatial = [layout.get_spatial_shape(im) for im in tensors] # List[Tuple[:]]
+        image_sizes_tensor = [torch.as_tensor(x) for x in image_sizes_spatial]
         max_size = torch.stack(image_sizes_tensor).max(0).values  # List[Nx:] -> (N, :) -> (:,)
 
         if padding_constraints is not None:

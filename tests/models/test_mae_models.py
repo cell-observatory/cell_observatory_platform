@@ -9,7 +9,7 @@ warnings.filterwarnings("ignore")
 
 from training.helpers import summarize_model
 from models.maskedautoencoder import MaskedAutoEncoder
-from tests.conftest import get_masked_input_data, kargs
+from tests.helpers import get_masked_input_data
 
 @pytest.mark.run(order=1)
 def test_mae_custom(kargs):

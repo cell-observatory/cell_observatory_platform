@@ -208,9 +208,9 @@ def resume_run(trainer, config: DictConfig):
 
 def summarize_model(
     model: nn.Module,
-    inputs: tuple,
     batch_size: int,
     logdir: Path,
+    inputs: Optional[tuple] = None,
     input_data: Optional[dict] = None
 ):
     model_logbook = {}

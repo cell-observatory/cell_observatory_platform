@@ -16,7 +16,7 @@ defaults:
 #        For example, on a node with 4 gpus, we will create 4 actors that all live within the same cgroup
 #        specified by the original allocation.
 
-job_name: test
+job_name: ${experiment_name}
 launcher_type: slurm # type of launcher to use
 partition: abc_a100   # partition to submit the job to
 qos: abc_high   # qos for the job
@@ -33,11 +33,12 @@ cpus_per_worker: ${eval:'${clusters.gpus_per_worker} * ${clusters.cpus_per_gpu}'
 mem_per_worker: ${eval:'${clusters.cpus_per_worker} * ${clusters.mem_per_cpu}'}
 total_gpus: ${eval:'${clusters.worker_nodes} * ${clusters.gpus_per_worker}'}  # total number of GPUS across all nodes
 total_cpus: ${eval:'${clusters.worker_nodes} * ${clusters.cpus_per_worker}'}  # total number of CPUS across all nodes
-batch_per_gpu: ${eval:'${batch_size} // ${total_gpus}'} # batch size for each gpu
+batch_size_per_gpu: ${eval:'${clusters.batch_size} // ${clusters.total_gpus}'} # batch size for each gpu
 # an additional cpu core will be automatically allocated on the headnode for the training coordinator
-cpus_for_training_coordinator: 0
-head_node_cpus: ${eval:'${clusters.cpus_per_worker} * ${clusters.cpus_for_training_coordinator}'}
-
+cpus_for_training_coordinator: 1
+head_node_cpus: ${eval:'${clusters.cpus_per_worker} + ${clusters.cpus_for_training_coordinator}'}
+head_node_gpus: ${clusters.gpus_per_worker} # number of gpus on the head node (usually gpus per worker)
+head_node_mem: ${clusters.mem_per_worker} # memory on the head node (usually mem per worker)
 
 exclusive: null   # whether to use exclusive node allocation (not recommended)
 nodelist: null    # list of specific nodes to use
@@ -67,4 +68,4 @@ scaling_config:
     CPU: ${clusters.cpus_per_gpu}
     GPU: 1
   trainer_resources:
-    CPU: 1 # an additional cpu core for the training coordinator
+    CPU: ${clusters.cpus_for_training_coordinator} # an additional cpu core for the training coordinator

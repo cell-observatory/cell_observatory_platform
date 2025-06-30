@@ -15,7 +15,7 @@ collate_fn:
       temporal_mask_scale: 0.5
 
       aspect_ratio_scale_hw: 0.5
-      random_masking_ratio: 0.7
+      random_masking_ratio: 0.75
       num_blocks: 2
 
       channels_to_mask: null

@@ -44,7 +44,7 @@ quantization: float16 # data type for training, options: float32, float16
 #paths:
 paths:
   # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  outdir: ${paths.data_path}/nvme/segment_4d/${experiment_name}
 
 # clusters
 clusters:
