@@ -45,6 +45,7 @@ quantization: float16 # data type for training, options: float32, float16
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  server_folder_path: ~/groups/betzig/betziglab/CellObservatoryData
   resume_checkpointdir: null 
   pretrained_checkpointdir: null
 
