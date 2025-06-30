@@ -1,6 +1,6 @@
 #!/bin/bash
 
-while getopts ":b:c:e:g:m:n:o:p:s:t:x:y:z:" option; do
+while getopts ":b:c:e:g:m:n:o:p:s:t:j:x:y:z:" option; do
     case "${option}" in
     b)  bind=${OPTARG} ;;
     c)  cpus=${OPTARG} ;;
@@ -12,6 +12,7 @@ while getopts ":b:c:e:g:m:n:o:p:s:t:x:y:z:" option; do
     p)  partition=${OPTARG} ;;
     s)  workspace=${OPTARG} ;;
     t)  tasks=${OPTARG} ;;
+    j)  jobname=${OPTARG} ;;
     x)  exclusive=${OPTARG} ;;
     y)  head_gpus=${OPTARG} ;;
     z)  head_cpus=${OPTARG} ;;

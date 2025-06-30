@@ -63,7 +63,7 @@ do
     if [[ "$exclusive" == "true" ]]; then
         echo "Exclusive mode is enabled"
         jid=$(sbatch  --partition $partition \
-                --job-name="ray_worker_${i}" \
+                --job-name="${jobname}_ray_worker_${i}" \
                 --nodes 1 \
                 --ntasks 1 \
                 --exclusive \
@@ -71,11 +71,12 @@ do
                 --export=ALL \
                 --wrap="apptainer exec --userns --nv \
                   --bind $workspace  --bind $bind --bind $outdir/ray_worker_logs/ray_worker_${i}:$tmpdir \
-                  $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh -a $cluster_address -c $cpus -g $gpus -t $tmpdir" \
+                  $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+                  -a $cluster_address -c $cpus -g $gpus -t $tmpdir" \
                 | awk '{print $4}')
     else
         jid=$(sbatch  --partition $partition \
-                --job-name="ray_worker_${i}" \
+                --job-name="${jobname}_ray_worker_${i}" \
                 --nodes 1 \
                 --ntasks 1 \
                 --cpus-per-task=$cpus \
@@ -85,12 +86,13 @@ do
                 --export=ALL \
                 --wrap="apptainer exec --userns --nv \
                   --bind $workspace --bind $bind --bind $outdir/ray_worker_logs/ray_worker_${i}:$tmpdir \
-                  $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh -a $cluster_address -c $cpus -g $gpus -t $tmpdir" \
+                  $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+                  -a $cluster_address -c $cpus -g $gpus -t $tmpdir" \
                 | awk '{print $4}')
     fi
 
     worker_ids+=($jid)
-    echo "Running ray_worker_${i} @ ${jid}"
+    echo "Running ${jobname}_ray_worker_${i} @ ${jid}"
 done
 
 ############################## CHECK STATUS
