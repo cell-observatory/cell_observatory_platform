@@ -5,7 +5,7 @@ from data.structures.data_sample import DataSample
 from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE
 
 
-def test_data_sample_roundtrip():
+def test_data_sample():
     # build an ImageList
     layout = MULTICHANNEL_3D_HYPERCUBE.ZYXC
     img1 = torch.randn(2, 4, 4, 1)
