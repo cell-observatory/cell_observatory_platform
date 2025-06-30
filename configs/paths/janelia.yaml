@@ -5,6 +5,7 @@ apptainer_image: /groups/betzig/betziglab/thayer/develop_torch_cuda_12_8.sif
 # --------------------------------------------------------------------------------
 repo_path: ${oc.env:REPO_DIR}
 data_path: /groups/betzig/betziglab
+server_folder_path: /groups/betzig/betziglab/CellObservatoryData
 workdir: /workspace/${oc.env:REPO_NAME} # mapping your repo path to this path inside the container
 
 # Relative paths will be updated in manager.py based on the running environment

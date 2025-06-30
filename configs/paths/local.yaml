@@ -3,6 +3,7 @@ apptainer_image: null
 
 # No need to change anything below
 # --------------------------------------------------------------------------------
+server_folder_path: ~/groups/betzig/betziglab/CellObservatoryData
 repo_path: ${oc.env:REPO_DIR}
 data_path: ${oc.env:DATA_DIR}
 workdir: /workspace/${oc.env:REPO_NAME} # mapping your repo path to this path inside the container
