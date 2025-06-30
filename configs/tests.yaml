@@ -1,6 +1,6 @@
 defaults:
   - clusters: local                          # configs/clusters/local.yaml
-  - paths: abc                               # configs/paths/abc.yaml
+  - paths: local                             # configs/paths/local.yaml
   - datasets: pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
   - models: mae/tiny                         # configs/models/mae/tiny.yaml
   - hooks: hooks                             # configs/hooks/hooks.yaml
@@ -44,7 +44,7 @@ quantization: float16 # data type for training, options: float32, float16
 #paths:
 paths:
   # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.data_path}/nvme/segment_4d/tests/${experiment_name}
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
   resume_checkpointdir: null 
   pretrained_checkpointdir: null
 
@@ -151,7 +151,7 @@ hooks:
       - CPU
     save_tensorboard: true
   - _target_: training.hooks.TorchMemoryStats
-    step_period: 100
+    step_period: 5
     epoch_period: 1
     logdir: ${loggers.logdir}
   - _target_: training.hooks.BestMetricSaver
