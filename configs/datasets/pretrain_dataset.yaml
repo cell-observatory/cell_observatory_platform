@@ -17,6 +17,7 @@ collate_fn: ${datasets.masking.collate_fn}
 
 dataset:
   _target_: data.datasets.pretrain_dataset.PretrainDataset
+  server_folder_path: ${paths.server_folder_path}
   input_layout: 
     _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
     value: TZYXC

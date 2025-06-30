@@ -26,7 +26,7 @@ def _test_dataloader_dist(config):
     return {"success": True}
 
 
-def test_loggers(config):
+def test_dataloader(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
 

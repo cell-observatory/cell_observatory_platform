@@ -5,6 +5,7 @@ apptainer_image: /clusterfs/nvme/hph/env_images/develop_torch_cuda_12_8_ops3d_v2
 # --------------------------------------------------------------------------------
 repo_path: ${oc.env:REPO_DIR}
 data_path: /clusterfs
+server_folder_path: /clusterfs/vast/Data/cell_observatory_training_datasets
 workdir: /workspace/${oc.env:REPO_NAME} # mapping your repo path to this path inside the container
 
 # Relative paths will be updated in manager.py based on the running environment
