@@ -1,9 +1,9 @@
 defaults:
-  - paths: local                             # configs/paths/local.yaml
+  - paths: abc                               # configs/paths/abc.yaml
   - hydra: overrides                         # configs/hydra/overrides.yaml (not working)
-  - clusters: local                          # configs/clusters/local.yaml
+  - clusters: abc_a100                       # configs/clusters/abc_a100.yaml
   - datasets: pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
-  - models: jepa/tiny                         # configs/models/jepa/tiny.yaml
+  - models: mae/base                         # configs/models/mae/base.yaml
   - hooks: hooks                             # configs/hooks/hooks.yaml
   - checkpoint: checkpoint                   # configs/checkpoint/checkpoint.yaml
   - loggers: loggers                         # configs/loggers/loggers.yaml
@@ -13,14 +13,15 @@ defaults:
   - schedulers: test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
   - _self_
 
+
 # experiment name (used for logging)
-experiment_name: experiment_pretrain_jepa
+experiment_name: experiment_pretrain_mae
 
 # task
-task: pretrain_jepa
+task: pretrain_mae
 
 # Model type
-network: jepa
+network: mae
 
 # engine type
 engine: deepspeed
@@ -41,20 +42,11 @@ quantization: float16 # data type for training, options: float32, float16
 # overrides
 # --------------------------------------------------------------------------------
 
-#paths:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/nvme/segment_4d/${experiment_name}
 
-# clusters
-clusters:
-  batch_size: 2 # total batch size
-  worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 2 # number of gpus per worker node
-  cpus_per_gpu: 4 # number of cpu cores per gpu
-  mem_per_cpu: 31000 # ram per cpu core
 
-# data 
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
@@ -62,10 +54,6 @@ datasets:
   patch_shape: [4, 16, 16, 16]
 
   split: 0.1
-  dataloader_type: torch
-  return_dataloader: true
-  distributed_sampler: true
-  collate_fn: ${datasets.masking.collate_fn}
   
   dataset:
     _target_: data.datasets.pretrain_dataset.PretrainDataset
@@ -73,13 +61,12 @@ datasets:
       _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
       value: TZYXC
 
-# model
+  databases:
+    max_hypercubes: 200
+
+
 models:
-  _target_: models.jepa.JEPA
-  preprocessor: null
-    # _target_: models.preprocessor.PreProcessor
-    # sample_object:
-    #   _target_: data.structures.data_sample.DataSample
+  _target_: models.maskedautoencoder.MaskedAutoEncoder
   input_fmt: BTZYXC
   input_shape: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
   temporal_patch_size: ${datasets.patch_shape.0}
@@ -87,7 +74,6 @@ models:
   axial_patch_size: ${datasets.patch_shape.2}
 
 
-# evaluation
 evaluation:
   val_begin: 0
   val_interval: 1

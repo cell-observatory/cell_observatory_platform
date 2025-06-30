@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="pretrain_mae_local" type="PythonConfigurationType" factoryName="Python" folderName="train">
+  <configuration default="false" name="test_pretrain_4d_mae_local" type="PythonConfigurationType" factoryName="Python" folderName="train">
     <module name="cell_observatory_platform" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
@@ -43,7 +43,7 @@
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/manager.py" />
-    <option name="PARAMETERS" value="--config-name pretrain_mae_local.yaml" />
+    <option name="PARAMETERS" value="--config-name test_pretrain_4d_mae_local.yaml" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
