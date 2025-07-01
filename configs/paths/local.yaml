@@ -5,7 +5,7 @@ apptainer_image: null
 # --------------------------------------------------------------------------------
 repo_path: ${oc.env:REPO_DIR}
 data_path: ${oc.env:DATA_DIR}
-server_folder_path: /groups/betzig/betziglab/CellObservatoryData
+server_folder_path: ${oc.env:STORAGE_SERVER_DIR}
 workdir: /workspace/${oc.env:REPO_NAME} # mapping your repo path to this path inside the container
 
 # Relative paths will be updated in manager.py based on the running environment

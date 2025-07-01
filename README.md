@@ -55,6 +55,7 @@ SUPABASE_PROD_URI="postgresql://${SUPABASE_USER}.${SUPABASE_PROD_ID}:${SUPABASE_
 
 REPO_NAME: cell_observatory_platform  # TODO: replace with your repo name if you renamed it
 DATA_DIR=REPLACE_ME_WITH_YOUR_REPO_DIR_OR_DATA_DIR
+STORAGE_SERVER_DIR=REPLACE_ME_WITH_YOUR_STORAGE_SERVER_DIR_WHERE_DATA_SERVER_IS_MOUNTED
 ````
 
 # Running docker image

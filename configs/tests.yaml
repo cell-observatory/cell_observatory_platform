@@ -45,7 +45,6 @@ quantization: float16 # data type for training, options: float32, float16
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  server_folder_path: /groups/betzig/betziglab/CellObservatoryData
   resume_checkpointdir: null 
   pretrained_checkpointdir: null
 
@@ -55,7 +54,7 @@ clusters:
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 4 # number of cpu cores per gpu
-  mem_per_cpu: 31000 # ram per cpu core
+  mem_per_cpu: 16000 # ram per cpu core
 
 # data 
 datasets:
