@@ -128,7 +128,7 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
 
     def __init__(
         self,
-        hypercubes_dataframe_path: Path,
+        hypercubes_dataframe_path: str | Path,
         input_layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE,
         transforms: Optional[Sequence] = None,
         server_folder_path: Optional[Path] = None,
@@ -145,7 +145,8 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
 
         self.input_layout = input_layout
         self.server_folder_path = server_folder_path
-        self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(hypercubes_dataframe_path)
+        self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
+        self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(self.hypercubes_dataframe_path)
 
         self._index = None
         self._build_index()
@@ -157,7 +158,8 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
             configs = ujson.load(f)
 
-        hypercubes['server_folder'] = self.server_folder_path
+        if self.server_folder_path is not None:
+            hypercubes['server_folder'] = self.server_folder_path
         return hypercubes, configs
 
     @abc.abstractmethod

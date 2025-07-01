@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 import torch
 from torch.utils.data import get_worker_info
@@ -47,17 +47,19 @@ class PretrainDataset(BaseDataset):
         # convert df into a list of Python dicts
         self._index = self.hypercubes_dataframe.to_dict(orient="records")
 
-    def _load_sample(self, meta: Dict[str, Any]) -> Dict[str, Any]:
-        """Read raw image crop into memory."""
-        data_tensor = self._zarr_handles_data[os.path.join(meta["server_folder"], 
-                                                           meta["output_folder"], 
-                                                           meta["tile_name"])]
-        
+    def _slice_hypercube(self, data_tensor, meta: Dict[str, Any]) -> Tuple[int]:
         t, c = slice(meta["time_start"], meta["time_start"] + meta["time_size"]), slice(0, meta["channel_size"])
         z = slice(meta["z_start"]-28, meta["z_start"] + meta["cube_size"]-28)
         y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
         x = slice(meta["x_start"]-14, meta["x_start"] + meta["cube_size"]-14)
-        img = data_tensor[t, z, y, x, c].read().result()
+        return data_tensor[t, z, y, x, c].read().result()
+
+    def _load_sample(self, meta: Dict[str, Any]) -> Dict[str, Any]:
+        """Read raw image crop into memory."""
+        data_tensor = self._zarr_handles_data[
+            os.path.join(meta["server_folder"], meta["output_folder"], meta["tile_name"])
+        ]
+        img = self._slice_hypercube(data_tensor, meta)
         return dict(meta=meta, image=img)
 
     def _collate(self, _data: Dict[str, Any]) -> DataSample:

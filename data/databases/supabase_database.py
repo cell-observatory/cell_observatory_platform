@@ -62,7 +62,7 @@ class SupabaseDatabase:
         if hypercubes_dataframe_path is None:
             self.hypercubes_dataframe_path = Path(__file__).parent.parent.parent / 'databases' / 'default_hypercubes_dataframe.csv'
         else:
-            os.makedirs(os.path.dirname(hypercubes_dataframe_path), exist_ok=True)
+            Path(hypercubes_dataframe_path).parent.mkdir(parents=True, exist_ok=True)
             self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
 
         self.dbname = dbname
