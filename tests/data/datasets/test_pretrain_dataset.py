@@ -33,11 +33,11 @@ def test_dataloader(config):
     with open_dict(config):
         config.experiment_name = "test_dataloader"
         config.paths.resume_checkpointdir = None
-        
+
         config.clusters.worker_nodes = 1
-        config.clusters.gpus_per_worker = torch.cuda.device_count() 
+        config.clusters.gpus_per_worker = torch.cuda.device_count()
         config.clusters.cpus_per_gpu = 4
-        config.clusters.mem_per_cpu = 31000
+        config.clusters.mem_per_cpu = 16000
 
     metrics = distributed_test(cfg=config, test="tests.data.datasets.test_pretrain_dataset._test_dataloader_dist")
     assert metrics.get("success", True), "Distributed dataloader test failed"
