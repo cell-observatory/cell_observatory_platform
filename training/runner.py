@@ -21,6 +21,35 @@ logger.setLevel(logging.DEBUG)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
 
 
+def initialize_session(cfg: DictConfig):
+    if 'head_node_ip' in os.environ and 'port' in os.environ:
+        address = os.environ["head_node_ip"]
+        port = os.environ["port"]
+
+        logger.info(f"Connecting to address: {address}")
+        init(
+            address=f"{address}:{port}",
+            log_to_driver=True,
+            runtime_env={k: v for k, v in os.environ.items()}
+        )
+
+    else:
+        logger.info(f"Starting a new local ray cluster")
+        init(
+            log_to_driver=True,
+            runtime_env={k: v for k, v in os.environ.items()},
+            num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
+            num_gpus=cfg.clusters.total_gpus,
+            ignore_reinit_error=True
+        )
+
+    logger.info('\nResources available to this Ray cluster:')
+    for resource, count in cluster_resources().items():
+        logger.info(f'{resource}: {count}')
+
+    return cluster_resources().items()
+
+
 def run_session(cfg: DictConfig):
 
     if torch.cuda.is_available():
@@ -75,32 +104,8 @@ def main(cfg: DictConfig):
     #                                ray_slurm_cluster.sh
     # depending on the cluster Hydra configuration
 
-    if 'head_node_ip' in os.environ and 'port' in os.environ:
-        address = os.environ["head_node_ip"]
-        port = os.environ["port"]
-
-        logger.info(f"Connecting to address: {address}")
-        init(
-            address=f"{address}:{port}",
-            log_to_driver=True,
-            runtime_env={k: v for k, v in os.environ.items()}
-        )
-
-    else:
-        logger.info(f"Starting a new local ray cluster")
-        init(
-            log_to_driver=True,
-            runtime_env={k: v for k, v in os.environ.items()},
-            num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
-            num_gpus=cfg.clusters.total_gpus,
-            ignore_reinit_error=True
-        )
-
-    logger.info('\nResources available to this Ray cluster:')
-    for resource, count in cluster_resources().items():
-        logger.info(f'{resource}: {count}')
-
-    run_session(cfg)
+    cluster_resources = initialize_session(cfg)
+    result = run_session(cfg)
 
     logger.info(f"Total time elapsed: {time.time() - timeit:.2f} sec.")
     sys.exit(0)
