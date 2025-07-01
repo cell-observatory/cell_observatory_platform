@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from hydra.utils import get_method
 from hydra import compose, initialize
 from omegaconf import OmegaConf, DictConfig
+
 try:
     OmegaConf.register_new_resolver("eval", eval)
 except ValueError:
@@ -17,12 +18,16 @@ from ray import init, cluster_resources
 from ray.train.torch import TorchTrainer, TorchConfig
 from ray.train import ScalingConfig, RunConfig, FailureConfig, CheckpointConfig
 
+from utils.container import get_container_info
+
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", verbose=True)
 
 
 # keeping this until we migrate models 
@@ -63,11 +68,38 @@ def models_kargs():
 
 @pytest.fixture(scope="session")
 def config() -> DictConfig:
-    repo_root = Path(__file__).resolve().parent.parent
-    load_dotenv(repo_root, verbose=True)
     with initialize(config_path="../configs"):
         cfg = compose(config_name="tests")
-    cfg.paths.repo_path = repo_root
+
+    container_info = get_container_info()
+    print(f"Container type: {container_info['container_type']}")
+
+    assert cfg.paths.outdir is not None, f"Missing output directory: {cfg.paths.outdir}"
+
+    assert Path(cfg.paths.data_path) in Path(cfg.paths.outdir).parents, \
+        f"Output directory [{cfg.paths.outdir}] not in data path [{cfg.paths.data_path}]"
+
+    assert cfg.clusters.batch_size % cfg.clusters.worker_nodes == 0, (
+        f"batch_size {cfg.clusters.batch_size} must divide evenly among "
+        f"{cfg.clusters.worker_nodes} worker nodes"
+    )
+
+    if container_info['container_type'] == 'native':
+        for k in ['runner_script']:
+            cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
+
+    else:  # running in a docker/apptainer
+        [print(f"\t{k}: {v}") for k, v in container_info['container_details'].items()]
+
+        for k in ['outdir', 'ray_script', 'runner_script', 'dotenv_path']:
+            cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
+
+    # load extra env variables
+    load_dotenv(cfg.paths.dotenv_path, verbose=True)
+
+    # print full configuration (for debugging)
+    print("\n" + OmegaConf.to_yaml(cfg))
+
     return cfg
 
 
