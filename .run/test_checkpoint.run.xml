@@ -27,8 +27,8 @@
       <option name="portBindings">
         <list />
       </option>
-      <option name="publishAllPorts" value="false" />
-      <option name="runCliOptions" value="-u 1000 -e PYTHONUNBUFFERED=1 --entrypoint= --privileged --rm --ipc host --ipc host --gpus all" />
+      <option name="publishAllPorts" value="true" />
+      <option name="runCliOptions" value="-u 1000 -e PYTHONUNBUFFERED=1 --entrypoint= --privileged --rm --ipc host --gpus all" />
       <option name="version" value="2" />
       <option name="volumeBindings">
         <list>
@@ -36,6 +36,12 @@
             <option name="containerPath" value="/workspace/cell_observatory_platform" />
             <option name="editable" value="true" />
             <option name="hostPath" value="$PROJECT_DIR$" />
+            <option name="readOnly" value="false" />
+          </DockerVolumeBindingImpl>
+          <DockerVolumeBindingImpl>
+            <option name="containerPath" value="/groups/betzig/betziglab" />
+            <option name="editable" value="true" />
+            <option name="hostPath" value="/groups/betzig/betziglab" />
             <option name="readOnly" value="false" />
           </DockerVolumeBindingImpl>
         </list>
