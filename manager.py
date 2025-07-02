@@ -60,6 +60,9 @@ def main(cfg: DictConfig):
             cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
 
     # load extra env variables
+    assert cfg.paths.dotenv_path is not None and Path(cfg.paths.dotenv_path).exists(), \
+        f"Missing dotenv path: {cfg.paths.dotenv_path}"
+
     load_dotenv(cfg.paths.dotenv_path, verbose=True)
 
     # print full configuration (for debugging)
