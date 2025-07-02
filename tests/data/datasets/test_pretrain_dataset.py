@@ -1,29 +1,11 @@
 import pytest
+from hydra.utils import instantiate
+from omegaconf import open_dict
 
 import torch
+from torch.utils.data import DataLoader
 
-from omegaconf import open_dict
-from hydra.utils import get_class
-
-from tests.conftest import distributed_test, config
-
-
-def _test_dataloader_dist(config):
-    trainer_cls = get_class(config.trainer)
-    trainer = trainer_cls(config)
-
-    for idx, data_sample in enumerate(trainer.train_dataloader):
-        assert isinstance(data_sample, dict), \
-            f"Data sample {idx} is not a dict, got {type(data_sample)}"
-        assert "data_tensor" in data_sample and isinstance(data_sample["data_tensor"], torch.Tensor), \
-            f"Data sample {idx} does not contain 'data_tensor' key or it is not a tensor, got {type(data_sample['data_tensor'])}"
-        assert "metainfo" in data_sample and isinstance(data_sample["metainfo"], dict), \
-            f"Data sample {idx} does not contain 'metainfo' key or it is not a dict, got {type(data_sample['metainfo'])}"
-
-        if idx >= 5:
-            break
-
-    return {"success": True}
+from tests.conftest import config
 
 
 def test_dataloader(config):
@@ -32,12 +14,34 @@ def test_dataloader(config):
 
     with open_dict(config):
         config.experiment_name = "test_dataloader"
-        config.paths.resume_checkpointdir = None
 
-        config.clusters.worker_nodes = 1
-        config.clusters.gpus_per_worker = torch.cuda.device_count()
-        config.clusters.cpus_per_gpu = 4
-        config.clusters.mem_per_cpu = 16000
+    database = instantiate(config.datasets.databases)
+    assert database is not None
 
-    metrics = distributed_test(cfg=config, test="tests.data.datasets.test_pretrain_dataset._test_dataloader_dist")
-    assert metrics.get("success", True), "Distributed dataloader test failed"
+    dataset = instantiate(config.datasets.dataset)
+
+    dataloader = DataLoader(
+        dataset,
+        collate_fn=instantiate(config.datasets.collate_fn),
+        batch_size=config.clusters.batch_size_per_gpu,
+        shuffle=False,
+        pin_memory=True,
+        num_workers=config.clusters.cpus_per_worker,
+        prefetch_factor=2,
+        persistent_workers=False,
+        worker_init_fn=dataset.worker_init_fn,
+        drop_last=True,
+    )
+
+    for idx, data_sample in enumerate(dataloader):
+        assert isinstance(data_sample, dict), \
+            f"Data sample {idx} is not a dict, got {type(data_sample)}"
+
+        assert "data_tensor" in data_sample and isinstance(data_sample["data_tensor"], torch.Tensor), \
+            f"Data sample {idx} does not contain 'data_tensor' key or it is not a tensor, got {type(data_sample['data_tensor'])}"
+
+        assert "metainfo" in data_sample and isinstance(data_sample["metainfo"], dict), \
+            f"Data sample {idx} does not contain 'metainfo' key or it is not a dict, got {type(data_sample['metainfo'])}"
+
+        if idx >= 5:
+            break
