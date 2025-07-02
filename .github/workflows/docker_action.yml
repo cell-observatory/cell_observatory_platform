@@ -533,13 +533,13 @@ jobs:
       - name: Test NVIDIA-SMI
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} nvidia-smi
 
-      - name: pytest /tests/data
-        if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml --testmon tests/data
-
       - name: pytest /tests/utils
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml --testmon    tests/utils
+
+      - name: pytest /tests/data
+        if: ${{ env.TESTING }}
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml --testmon tests/data
 
       - name: pytest /tests/models
         if: ${{ env.TESTING }}
