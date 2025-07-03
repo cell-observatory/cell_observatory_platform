@@ -355,3 +355,35 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(cfg):
     assert len(table['tile_name'].unique()) <= cfg.max_tiles, f"Only {cfg.max_tiles} tiles should be returned"
     assert table.shape[0] <= cfg.max_hypercubes, f"Only {cfg.max_hypercubes} hypercubes should be returned"
     assert table['hpf'].isin(cfg.hpf_list).all(), f"Only hpf in {cfg.hpf_list} should be returned"
+
+def test_16_128_128_128_2_hypercubes_database_10k(cfg):
+    cfg.num_timepoints = 16
+    cfg.max_hypercubes = 10000
+    cfg.fetch_hypercubes_dataframe = True
+    cfg.hypercubes_dataframe_path = Path(__file__).parent.parent.parent.parent / 'databases' / 'test_16_128_128_128_2_hypercubes_database_10k.csv'
+
+    print(f"Initializing database...")
+    pprint(OmegaConf.to_container(cfg, resolve=True))
+
+    database = instantiate(cfg)
+    table = database.hypercubes_dataframe
+    print(table)
+
+    assert (table['time_size'] == cfg.num_timepoints).all(), f"All time sizes should be {cfg.num_timepoints}"
+    assert table.shape[0] <= cfg.max_hypercubes, f"Only {cfg.max_hypercubes} hypercubes should be returned"
+
+def test_16_128_128_128_2_hypercubes_database_100k(cfg):
+    cfg.num_timepoints = 16
+    cfg.max_hypercubes = 100000
+    cfg.fetch_hypercubes_dataframe = True
+    cfg.hypercubes_dataframe_path = Path(__file__).parent.parent.parent.parent / 'databases' / 'test_16_128_128_128_2_hypercubes_database_100k.csv'
+
+    print(f"Initializing database...")
+    pprint(OmegaConf.to_container(cfg, resolve=True))
+
+    database = instantiate(cfg)
+    table = database.hypercubes_dataframe
+    print(table)
+
+    assert (table['time_size'] == cfg.num_timepoints).all(), f"All time sizes should be {cfg.num_timepoints}"
+    assert table.shape[0] <= cfg.max_hypercubes, f"Only {cfg.max_hypercubes} hypercubes should be returned"
