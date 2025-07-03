@@ -62,7 +62,6 @@ class SupabaseDatabase:
         if hypercubes_dataframe_path is None:
             self.hypercubes_dataframe_path = Path(__file__).parent.parent.parent / 'databases' / 'default_hypercubes_dataframe.csv'
         else:
-            Path(hypercubes_dataframe_path).parent.mkdir(parents=True, exist_ok=True)
             self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
 
         self.dbname = dbname
@@ -89,7 +88,7 @@ class SupabaseDatabase:
                 roi_list=roi_list,
                 tile_list=tile_list
             )
-            self.save_hypercubes_dataframe()
+            self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
         else:
             self.hypercubes_dataframe = None
 
@@ -307,15 +306,13 @@ class SupabaseDatabase:
             {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
         """
 
-    def save_hypercubes_dataframe(self, hypercubes_dataframe_path: Optional[Path] = None):
-        if hypercubes_dataframe_path is not None:
-            self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
-
-        self.hypercubes_dataframe_path.parent.mkdir(parents=True, exist_ok=True)
+    def save_hypercubes_dataframe(self, hypercubes_dataframe_path: Path):
+        hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
+        hypercubes_dataframe_path.parent.mkdir(parents=True, exist_ok=True)
 
         if self.hypercubes_dataframe is not None:
-            self.hypercubes_dataframe.to_csv(self.hypercubes_dataframe_path, index=True, header=True)
-            print(f"Saved hypercubes dataframe to {self.hypercubes_dataframe_path}")
+            self.hypercubes_dataframe.to_csv(hypercubes_dataframe_path, index=True, header=True)
+            print(f"Saved hypercubes dataframe to {hypercubes_dataframe_path}")
         else:
             raise ValueError('Cannot save hypercubes dataframe `self.hypercubes_dataframe` is empty.')
 
