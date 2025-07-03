@@ -109,5 +109,5 @@ def test_data_pipeline(config):
         config.clusters.cpus_per_gpu = 4
         config.clusters.mem_per_cpu = 31000
 
-    metrics = distributed_test(cfg=config, test="tests.data.datasets.test_pretrain_dataset._test_dataloader_dist")
+    metrics = distributed_test(cfg=config, test="tests.data.test_pretrain_dataset._test_dataloader_dist")
     assert metrics.get("success", True), "Distributed dataloader test failed"
