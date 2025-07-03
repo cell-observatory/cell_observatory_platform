@@ -61,15 +61,17 @@ datasets:
   patch_shape: [4, 16, 16, 16]
 
   split: 0.1
+
+  max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+  max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+  max_hypercubes: 1000 # maximum number of hypercubes to return
+
   
   dataset:
     _target_: data.datasets.pretrain_dataset.PretrainDataset
     input_layout: 
       _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
       value: TZYXC
-
-  databases:
-    max_hypercubes: 200
 
 
 models:
