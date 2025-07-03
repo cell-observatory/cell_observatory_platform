@@ -6,9 +6,9 @@ dbname: 'staging'
 
 num_timepoints: ${datasets.input_shape.0} # number of timepoints for each hypercube
 
-max_rois: ${datasets.max_rois} # maximum number of ROIs (each ROI can have dozens of tiles)
-max_tiles: ${datasets.max_tiles} # maximum number of tiles (each tile can have thousands of hypercubes)
-max_hypercubes: ${datasets.max_hypercubes} # maximum number of hypercubes to return
+max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+max_hypercubes: 100 # maximum number of hypercubes to return
 
 hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
 roi_list: null # list of specific ROIs to filter
