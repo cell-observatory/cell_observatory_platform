@@ -154,6 +154,9 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         self.transforms = Transformations(transforms)
 
     def _process_tables(self, hypercubes_dataframe_path) -> tuple[pd.DataFrame, Dict]:
+        if not hypercubes_dataframe_path.exists():
+            raise FileNotFoundError(f"{hypercubes_dataframe_path} does not exist")
+
         hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
         with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
             configs = ujson.load(f)

@@ -1,36 +1,31 @@
 import pytest
 from hydra.utils import instantiate
-from hydra import initialize, compose
 from omegaconf import OmegaConf
 from pprint import pprint
 from pathlib import Path
 import pandas as pd
 
+from tests.conftest import config
+
 import warnings
 warnings.filterwarnings("ignore")
 
-@pytest.fixture(scope="module")
-def cfg():
-    with initialize(config_path="../../configs/datasets/databases"):
-        cfg = compose(config_name="supabase_database")
-    return cfg
-
 
 @pytest.fixture(scope="module")
-def database(cfg):
-    cfg.fetch_hypercubes_dataframe = False
-    cfg.num_timepoints = 16
-    cfg.hypercubes_dataframe_path = None
-    pprint(OmegaConf.to_container(cfg, resolve=True))
+def database(config):
+    config.experiment_name = "test_database"
+    config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / "database/hypercubes_dataframe.csv"
+    pprint(OmegaConf.to_container(config, resolve=True))
+
     print(f"Initializing database...")
-    return instantiate(cfg)
+    return instantiate(config.datasets.databases)
 
 
 def test_database_connection(database):
     tables = database.list_tables()
     assert tables is not None, "Connection to DB failed"
     print(f"Available tables: {tables.values.squeeze()}")
-
 
 def test_all_database_tables(database):
     tables = database.list_tables()
@@ -301,89 +296,94 @@ def test_get_t_128_128_128_2_hypercubes(database):
         check_names=False,
     )
 
-def test_1_128_128_128_2_hypercubes_database(cfg):
-    cfg.num_timepoints = 1
-    cfg.max_hypercubes = 100
-    cfg.fetch_hypercubes_dataframe = True
-    cfg.hypercubes_dataframe_path = Path(__file__).parent.parent.parent.parent / 'databases' / 'test_1_128_128_128_2_hypercubes_database.csv'
+def test_1_128_128_128_2_hypercubes_database(config):
+    config.experiment_name = "test_1_128_128_128_2_hypercubes_database"
+    config.datasets.databases.num_timepoints = 1
+    config.datasets.databases.max_hypercubes = 100
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
-    print(cfg.hypercubes_dataframe_path)
+    print(config.datasets.databases.hypercubes_dataframe_path)
     print(f"Initializing database...")
-    pprint(OmegaConf.to_container(cfg, resolve=True))
+    pprint(OmegaConf.to_container(config, resolve=True))
 
-    database = instantiate(cfg)
+    database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
     print(table)
 
-    assert (table['time_size'] == cfg.num_timepoints).all(), f"All time sizes should be {cfg.num_timepoints}"
-    assert table.shape[0] <= cfg.max_hypercubes, f"Only {cfg.max_hypercubes} hypercubes should be returned"
+    assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
+    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
 
-def test_16_128_128_128_2_hypercubes_database(cfg):
-    cfg.num_timepoints = 16
-    cfg.max_hypercubes = 100
-    cfg.fetch_hypercubes_dataframe = True
-    cfg.hypercubes_dataframe_path = Path(__file__).parent.parent.parent.parent / 'databases' / 'test_16_128_128_128_2_hypercubes_database.csv'
+def test_16_128_128_128_2_hypercubes_database(config):
+    config.experiment_name = "test_16_128_128_128_2_hypercubes_database"
+    config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.max_hypercubes = 100
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
-    pprint(OmegaConf.to_container(cfg, resolve=True))
+    pprint(OmegaConf.to_container(config, resolve=True))
 
-    database = instantiate(cfg)
+    database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
     print(table)
 
-    assert (table['time_size'] == cfg.num_timepoints).all(), f"All time sizes should be {cfg.num_timepoints}"
-    assert table.shape[0] <= cfg.max_hypercubes, f"Only {cfg.max_hypercubes} hypercubes should be returned"
+    assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
+    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
 
-def test_16_128_128_128_2_hypercubes_database_with_filters(cfg):
-    cfg.num_timepoints = 16
-    cfg.max_rois = 2
-    cfg.max_tiles = 2
-    cfg.hpf_list = [72]
-    cfg.max_hypercubes = 100
-    cfg.fetch_hypercubes_dataframe = True
-    cfg.hypercubes_dataframe_path = Path(__file__).parent.parent.parent.parent / 'databases' / 'test_16_128_128_128_2_hypercubes_database_with_filters.csv'
+def test_16_128_128_128_2_hypercubes_database_with_filters(config):
+    config.experiment_name = "test_16_128_128_128_2_hypercubes_database_with_filters"
+    config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.max_rois = 2
+    config.datasets.databases.max_tiles = 2
+    config.datasets.databases.hpf_list = [72]
+    config.datasets.databases.max_hypercubes = 100
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
-    pprint(OmegaConf.to_container(cfg, resolve=True))
+    pprint(OmegaConf.to_container(config, resolve=True))
 
-    database = instantiate(cfg)
+    database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
     print(table)
 
-    assert (table['time_size'] == cfg.num_timepoints).all(), f"All time sizes should be {cfg.num_timepoints}"
-    assert len(table['prepared_id'].unique()) <= cfg.max_rois, f"Only {cfg.max_rois} ROI should be returned"
-    assert len(table['tile_name'].unique()) <= cfg.max_tiles, f"Only {cfg.max_tiles} tiles should be returned"
-    assert table.shape[0] <= cfg.max_hypercubes, f"Only {cfg.max_hypercubes} hypercubes should be returned"
-    assert table['hpf'].isin(cfg.hpf_list).all(), f"Only hpf in {cfg.hpf_list} should be returned"
+    assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
+    assert len(table['prepared_id'].unique()) <= config.datasets.databases.max_rois, f"Only {config.datasets.databases.max_rois} ROI should be returned"
+    assert len(table['tile_name'].unique()) <= config.datasets.databases.max_tiles, f"Only {config.datasets.databases.max_tiles} tiles should be returned"
+    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table['hpf'].isin(config.datasets.databases.hpf_list).all(), f"Only hpf in {config.datasets.databases.hpf_list} should be returned"
 
-def test_16_128_128_128_2_hypercubes_database_10k(cfg):
-    cfg.num_timepoints = 16
-    cfg.max_hypercubes = 10000
-    cfg.fetch_hypercubes_dataframe = True
-    cfg.hypercubes_dataframe_path = Path(__file__).parent.parent.parent.parent / 'databases' / 'test_16_128_128_128_2_hypercubes_database_10k.csv'
+def test_16_128_128_128_2_hypercubes_database_10k(config):
+    config.experiment_name = "test_16_128_128_128_2_hypercubes_database_10k"
+    config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.max_hypercubes = 10000
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
-    pprint(OmegaConf.to_container(cfg, resolve=True))
+    pprint(OmegaConf.to_container(config, resolve=True))
 
-    database = instantiate(cfg)
+    database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
     print(table)
 
-    assert (table['time_size'] == cfg.num_timepoints).all(), f"All time sizes should be {cfg.num_timepoints}"
-    assert table.shape[0] <= cfg.max_hypercubes, f"Only {cfg.max_hypercubes} hypercubes should be returned"
+    assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
+    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
 
-def test_16_128_128_128_2_hypercubes_database_100k(cfg):
-    cfg.num_timepoints = 16
-    cfg.max_hypercubes = 100000
-    cfg.fetch_hypercubes_dataframe = True
-    cfg.hypercubes_dataframe_path = Path(__file__).parent.parent.parent.parent / 'databases' / 'test_16_128_128_128_2_hypercubes_database_100k.csv'
+def test_16_128_128_128_2_hypercubes_database_100k(config):
+    config.experiment_name = "test_16_128_128_128_2_hypercubes_database_100k"
+    config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.max_hypercubes = 100000
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
-    pprint(OmegaConf.to_container(cfg, resolve=True))
+    pprint(OmegaConf.to_container(config, resolve=True))
 
-    database = instantiate(cfg)
+    database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
     print(table)
 
-    assert (table['time_size'] == cfg.num_timepoints).all(), f"All time sizes should be {cfg.num_timepoints}"
-    assert table.shape[0] <= cfg.max_hypercubes, f"Only {cfg.max_hypercubes} hypercubes should be returned"
+    assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
+    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
