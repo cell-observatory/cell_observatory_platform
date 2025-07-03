@@ -493,10 +493,10 @@ jobs:
       SUPABASE_STAGING_URI: ${{ secrets.SUPABASE_STAGING_URI }}
       SUPABASE_PROD_URI: ${{ secrets.SUPABASE_PROD_URI }}
       WANDB_API_KEY: ${{ secrets.SUPABASE_PROD_URI }}
-      STORAGE_SERVER_DIR: ${{ secrets.STORAGE_SERVER_DIR }}
       REPO_NAME: $(basename ${{ github.repository }})
       REPO_DIR: ${{ github.workspace }}
       DATA_DIR: ${{ github.workspace }}
+      STORAGE_SERVER_DIR: /groups/betzig/betziglab/CellObservatoryData
     steps:
       - name: Cache pytest .testmondata
         uses: actions/cache@v4
