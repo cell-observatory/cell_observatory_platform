@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="test_training" type="PythonConfigurationType" factoryName="Python" folderName="tests">
+  <configuration default="false" name="test_training" type="PythonConfigurationType" factoryName="Python" folderName="pytests">
     <module name="cell_observatory_platform" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
