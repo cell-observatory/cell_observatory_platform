@@ -519,12 +519,17 @@ jobs:
           id
           id -u
           ls -lhXR
-          
+
+      - name: Set APPTAINER_BINDS
+        id: apptainer_binds
+        run: |
+          echo "APPTAINER_BINDS=--bind ${{ github.workspace }}:/workspace/${{ env.REPO_NAME }} --bind ${{ env.STORAGE_SERVER_DIR }} --bind ~/.cache/TESTMON --cwd /workspace/${{ env.REPO_NAME }}" >> "$GITHUB_OUTPUT"
+
       - name: Set APPTAINER_RUN command
         id: apptainer_run
         run: |
           rm -f test_results/* || true
-          echo "APPTAINER_RUN=apptainer exec --userns --no-home --bind ~/.cache/TESTMON --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_RUN=apptainer exec --userns --no-home ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
   
       - name: print environment variables
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
@@ -544,7 +549,7 @@ jobs:
 
       - name: pytest /tests/data
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml --testmon tests/data
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml --testmon     tests/data
 
       - name: pytest /tests/models
         if: ${{ env.TESTING }}
