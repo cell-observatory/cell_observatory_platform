@@ -45,7 +45,7 @@ export cluster_address
 
 ############################## START HEAD NODE
 
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir &
+apptainer exec --userns --nv --cwd /workspace/cell_observatory_platform --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir &
 sleep 10
 
 rpids=$(pgrep -u $USER ray)
@@ -62,14 +62,14 @@ cleanup() {
     echo "running cleanup (exit code: $ec)"
 
     # stop Ray on the head node
-    apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
+    apptainer exec --userns --nv --cwd /workspace/cell_observatory_platform --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
 }
 trap cleanup EXIT
 
-echo apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r 1
+echo apptainer exec --userns --nv --cwd /workspace/cell_observatory_platform --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r 1
 
 ############################## RUN WORKLOAD
 
 echo "Running user tasks"
 echo $tasks
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks
+apptainer exec --userns --nv --cwd /workspace/cell_observatory_platform --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks
