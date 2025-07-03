@@ -1,8 +1,6 @@
-import os
+
 import pytest
-
 import torch
-
 from omegaconf import open_dict
 from hydra.utils import get_class
 
@@ -29,6 +27,8 @@ def test_loops(config):
         config.clusters.gpus_per_worker = torch.cuda.device_count()
         config.clusters.cpus_per_gpu = 4
         config.clusters.mem_per_cpu = 31000
+
+        config.datasets.max_hypercubes = 10000
 
     metrics = distributed_test(cfg=config, test="tests.training.test_loops._test_loops_dist")
     assert metrics.get("success", False), "Distributed loops test failed"
