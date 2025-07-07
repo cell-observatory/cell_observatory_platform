@@ -34,7 +34,8 @@ class SupabaseDatabase:
         fetch_hypercubes_dataframe: bool = True,
         hypercubes_dataframe_path: Optional[Path] = None,
         use_cached_hypercubes_dataframe: Optional[bool] = False,
-        protocol: Literal["binary", "csv", "cursor"] = "binary"
+        protocol: Literal["binary", "csv", "cursor"] = "binary",
+        max_partitions: Optional[int] = 16,
     ):
         """
         A class for accessing Supabase database and retrieving hypercubes.
@@ -59,6 +60,7 @@ class SupabaseDatabase:
             hypercubes_dataframe_path: path to save hypercubes dataframe
             use_cached_hypercubes_dataframe: if True, will use the cached hypercubes dataframe from the given path
             protocol: The protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+            max_partitions: The maximum number of threads to fetch queries at once
             
         # TODO: Only works for `Tx128x128x128x2`, need to extend class to work with other hypercube sizes
         """
@@ -81,6 +83,7 @@ class SupabaseDatabase:
         self.fetch_hypercubes_dataframe = fetch_hypercubes_dataframe
         self.use_cached_hypercubes_dataframe = use_cached_hypercubes_dataframe
         self.protocol = protocol
+        self.max_partitions = max_partitions
 
         self._database_url = self._load_uri()
 
@@ -101,7 +104,7 @@ class SupabaseDatabase:
                 )
 
                 # this is a hack to check that dataloading works correctly
-                # remove when DB is updated fix the output_folder paths
+                # TODO: remove when DB is updated fix the output_folder paths
                 self.hypercubes_dataframe["output_folder"] = (
                     self.hypercubes_dataframe["output_folder"]
                         .str.replace(r"/6/9/", "/7/4/", regex=True)
@@ -235,8 +238,9 @@ class SupabaseDatabase:
         hpf_list: Optional[Iterable[int]] = None,
         roi_list: Optional[Iterable[int]] = None,
         tile_list: Optional[Iterable[str]] = None,
-    ) -> str:
+    ) -> List[str]:
         column_names = [
+            'first_pc_id',
             'prepared_id',
             'tile_name',
             'x_start',
@@ -269,13 +273,28 @@ class SupabaseDatabase:
             tile_list=tile_list,
         )
 
-        return f"""
-            SELECT
-                {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
-            FROM {table_name} {table_name_shortcut}
-            {filters} 
-            {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
-        """
+        max_rows = self.count_rows(table_name=table_name)
+
+        if max_hypercubes is not None and max_hypercubes > max_rows:
+            max_hypercubes = max_rows
+
+        # select max number of partitions that divides the number of rows in each partition evenly
+        partition_num = max([i for i in range(1, self.max_partitions+1) if max_hypercubes % i == 0]) if max_hypercubes is not None else 1
+        print(f"Using {partition_num} partitions to query.")
+
+        rows_per_partition = max_hypercubes // partition_num
+        return [
+            f"""
+                SELECT
+                    {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
+                FROM {table_name} {table_name_shortcut}
+                ORDER BY first_pc_id DESC
+                {filters} 
+                LIMIT {rows_per_partition}
+                OFFSET {rows_per_partition * i}
+            """
+            for i in range(partition_num)
+        ]
 
 
     def _create_t_128_128_128_2_hypercube_view(
@@ -493,7 +512,8 @@ class SupabaseDatabase:
             )
 
         if self.verbose:
-            print(f"Executing query: {self.last_query}")
+            print(f"Executing query:")
+            print('\n'.join(self.last_query) if isinstance(self.last_query, list) else self.last_query)
 
         table = self.execute_query(self.last_query)
 
