@@ -357,10 +357,18 @@ class SupabaseDatabase:
         print(f"Saved hypercubes dataframe configs to {self.hypercubes_dataframe_path.with_suffix('.json')}")
 
 
-    def execute_query(self, query: str) -> pd.DataFrame:
+    def execute_query(self, query: str | List[str]) -> pd.DataFrame:
         try:
-            result = cx.read_sql(conn=self._database_url, query=query, protocol=self.protocol)
-            return result
+            # avoid the costly COUNT query for pandas by using arrow as an intermediate step
+            # https://sfu-db.github.io/connector-x/freq_questions.html
+            result = cx.read_sql(
+                conn=self._database_url,
+                query=query,
+                protocol=self.protocol,
+                return_type="arrow",
+            )
+            df = result.to_pandas(split_blocks=False, date_as_object=False)
+            return df
         except Exception as e:
             logger.error(f"Failed to execute query: {e}")
             raise
