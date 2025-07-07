@@ -59,6 +59,12 @@ def main(cfg: DictConfig):
         for k in ['outdir', 'ray_script', 'runner_script', 'dotenv_path']:
             cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
 
+    # TODO need to look into why the abc cluster only works with the cursor protocol
+    if Path('/clusterfs').exists():
+        cfg.datasets.databases.protocol = 'cursor'
+    else:
+        cfg.datasets.databases.protocol = 'binary'
+
     # load extra env variables
     # assert cfg.paths.dotenv_path is not None and Path(cfg.paths.dotenv_path).exists(), \
     #     f"Missing dotenv path: {cfg.paths.dotenv_path}"
