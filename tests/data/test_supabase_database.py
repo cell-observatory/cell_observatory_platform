@@ -369,7 +369,12 @@ def test_16_128_128_128_2_hypercubes_database_10k(config):
     print(table)
 
     assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
+
     assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+
+    assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique value"
+
+    assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
 
 def test_16_128_128_128_2_hypercubes_database_100k(config):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_100k"
@@ -386,4 +391,9 @@ def test_16_128_128_128_2_hypercubes_database_100k(config):
     print(table)
 
     assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
+
     assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+
+    assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique values"
+
+    assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
