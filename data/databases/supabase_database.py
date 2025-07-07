@@ -35,7 +35,7 @@ class SupabaseDatabase:
         hypercubes_dataframe_path: Optional[Path] = None,
         use_cached_hypercubes_dataframe: Optional[bool] = False,
         protocol: Literal["binary", "csv", "cursor"] = "binary",
-        max_partitions: Optional[int] = 16,
+        max_partitions: Optional[int] = 10,
     ):
         """
         A class for accessing Supabase database and retrieving hypercubes.
