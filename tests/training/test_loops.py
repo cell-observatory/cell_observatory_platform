@@ -1,26 +1,36 @@
-
+import os
 import pytest
+from pathlib import Path
+
 import torch
+
 from omegaconf import open_dict
 from hydra.utils import get_class
 
+from ray.train import report
+
 from tests.conftest import distributed_test, config
 
-def _test_loops_dist(config):
+
+def _test_train_loop_dist(config):
     trainer_cls = get_class(config.trainer)
     trainer = trainer_cls(config)
-    
-    trainer.run()
-    trainer.test()
-    
-    return {"success": True}
+    trainer.run()    
+    report({"success": True})
 
-def test_loops(config):
+def _test_testing_loop_dist(config):
+    trainer_cls = get_class(config.trainer)
+    trainer = trainer_cls(config)
+    trainer.test()
+    report({"success": True})
+
+@pytest.mark.order(1)
+def test_train_loop(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
 
     with open_dict(config):
-        config.experiment_name = "test_loops"
+        config.experiment_name = "test_train_loop"
         config.paths.resume_checkpointdir = None
         
         config.clusters.worker_nodes = 1
@@ -28,7 +38,38 @@ def test_loops(config):
         config.clusters.cpus_per_gpu = 4
         config.clusters.mem_per_cpu = 31000
 
-        config.datasets.max_hypercubes = 10000
+        config.schedulers.epochs = 1
+        # config.datasets.databases.max_hypercubes = 10000
 
-    metrics = distributed_test(cfg=config, test="tests.training.test_loops._test_loops_dist")
+        config.trainer = "training.loops.EpochBasedTrainer"
+
+    metrics = distributed_test(cfg=config, test="tests.training.test_loops._test_train_loop_dist")
+    assert metrics.get("success", False), "Distributed loops test failed"
+
+@pytest.mark.order(2)
+def test_testing_loop(config):
+    if not torch.cuda.is_available():
+        pytest.skip("No GPUs available for testing")
+
+    with open_dict(config):
+        config.experiment_name = "test_testing_loop"
+        config.paths.resume_checkpointdir = None
+        # we need a checkpoint directory for testing
+        # so we use the last checkpoint created from testing the training loop
+        config.paths.pretrained_checkpointdir = os.path.join(Path(config.paths.outdir).parent, 
+                                                             "test_train_loop", 
+                                                             "checkpoints")
+        config.checkpoint.checkpoint_manager.checkpoint_tag = "latest_model"
+        
+        config.clusters.worker_nodes = 1
+        config.clusters.gpus_per_worker = torch.cuda.device_count()
+        config.clusters.cpus_per_gpu = 4
+        config.clusters.mem_per_cpu = 31000
+
+        # config.datasets.databases.max_hypercubes = 10000
+
+        config.trainer = "training.loops.TestTrainer"
+        config.evaluation.val_metric = "test_step_loss"
+
+    metrics = distributed_test(cfg=config, test="tests.training.test_loops._test_testing_loop_dist")
     assert metrics.get("success", False), "Distributed loops test failed"

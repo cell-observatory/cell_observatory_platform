@@ -23,7 +23,6 @@ def _test_hooks_dist(cfg):
         IterationTimer,
         PeriodicWriter,
         TorchMemoryStats,
-        ModelSummaryHook,
         BestMetricSaver,
         TorchProfiler,
         EarlyStopHook,
@@ -48,8 +47,6 @@ def _test_hooks_dist(cfg):
             periodic = hook
         elif isinstance(hook, TorchMemoryStats):
             mem_hook = hook
-        elif isinstance(hook, ModelSummaryHook):
-            ms_hook = hook
         elif isinstance(hook, BestMetricSaver):
             saver = hook
         elif isinstance(hook, TorchProfiler):
@@ -300,6 +297,7 @@ def _test_hooks_dist(cfg):
     
     trainer._epoch = 0
     mem_hook.after_epoch()
+    barrier()
     epoch_log_file = logdir / "0.log"
     # check if the epoch log file exists and contains data
     epoch_ok = epoch_log_file.exists() and epoch_log_file.stat().st_size > 0
@@ -332,6 +330,7 @@ def _test_hooks_dist(cfg):
     # ------------------------------------------------------------------ #
     
     mem_hook.after_test()
+    barrier()
     test_log_file = logdir / "test" / "memory_test.log"
     test_ok = test_log_file.exists() and test_log_file.stat().st_size > 0
 
@@ -339,19 +338,6 @@ def _test_hooks_dist(cfg):
         raise ValueError(
             "TorchMemoryStats hook did not log expected test data. "
         )
-
-    # ---- ---- ---- ModelSummaryHook tests ---- ---- ----
-
-    # fire the normal before_train chain so the hook runs
-    ms_hook.before_train()
-
-    if process_rank() == 0:
-        written_files = [p for p in ms_hook._logdir.iterdir() if p.is_file()]
-        if not written_files or all(f.stat().st_size == 0 for f in written_files):
-            raise ValueError(
-                "ModelSummaryHook did not write any files. "
-                "Check the log directory for details."
-            )
 
     # ---- ---- ---- BestMetricSaver tests ---- ---- ----
 

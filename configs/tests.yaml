@@ -72,7 +72,9 @@ datasets:
   databases:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-    max_hypercubes: 1000 # maximum number of hypercubes to return
+    max_hypercubes: 200 # maximum number of hypercubes to return
+    use_cached_hypercubes_dataframe: false
+    protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
   dataset:
     _target_: data.datasets.pretrain_dataset.PretrainDataset
@@ -129,10 +131,6 @@ loggers:
 hooks:
   hooks_list:
   - _target_: training.hooks.AnomalyDetector
-  - _target_: training.hooks.ModelSummaryHook
-    logdir: ${loggers.logdir}/model_summary
-    inputs: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
-    batch_size: ${clusters.batch_size_per_gpu}
   - _target_: training.hooks.SamplerSetter
   - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer

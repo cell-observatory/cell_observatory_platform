@@ -7,9 +7,10 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
+from tests.conftest import models_kargs
 from training.helpers import summarize_model
-from models.maskedautoencoder import MaskedAutoEncoder
 from tests.helpers import get_masked_input_data
+from models.maskedautoencoder import MaskedAutoEncoder
 
 
 def test_mae_custom(models_kargs):

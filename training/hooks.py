@@ -603,39 +603,38 @@ class TorchMemoryStats(HookBase):
                 f.write(str(mem_log))
 
 
-# TODO: support for saving table to 
-#       wandb/tensorboard
-class ModelSummaryHook(HookBase):
-    """
-    A hook that summarizes the model architecture and parameters.
-    It is executed once at the beginning of training.
-    """
+# NOTE: currently causes a hang if used during 
+#       multi-GPU training, will be moved
+# class ModelSummaryHook(HookBase):
+#     """
+#     A hook that summarizes the model architecture and parameters.
+#     It is executed once at the beginning of training.
+#     """
 
-    def __init__(
-        self,
-        batch_size: int,
-        logdir: Union[str, Path],
-        inputs: tuple[int]
-    ):
-        super().__init__()
-        os.makedirs(logdir, exist_ok=True)
-        self._logdir = Path(logdir)
+#     def __init__(
+#         self,
+#         batch_size: int,
+#         logdir: Union[str, Path],
+#         inputs: tuple[int]
+#     ):
+#         super().__init__()
+#         os.makedirs(logdir, exist_ok=True)
+#         self._logdir = Path(logdir)
 
-        self.inputs = inputs
-        self.batch_size = batch_size
+#         self.inputs = inputs
+#         self.batch_size = batch_size
 
-    def before_train(self):
-        if is_main_process():
-            input_data = get_masked_input_data(self.trainer.model, 
-                                               self.inputs,
-                                               device=self.trainer.model.device)
-            summarize_model(
-                inputs=None,
-                model=self.trainer.model,
-                input_data=input_data,
-                batch_size=self.batch_size,
-                logdir=self._logdir
-            )
+#     def before_train(self):
+#         input_data = get_masked_input_data(self.trainer.model, 
+#                                             self.inputs,
+#                                             device=self.trainer.model.device)
+#         summarize_model(
+#             inputs=None,
+#             model=self.trainer.model,
+#             input_data=input_data,
+#             batch_size=self.batch_size,
+#             logdir=self._logdir
+#         )
 
 
 class BestMetricSaver(HookBase):
