@@ -16,3 +16,5 @@ tile_list: null # list of specific tiles to filter
 verbose: true # to print debug messages
 fetch_hypercubes_dataframe: true # automatically initialize the database based on the provided parameters
 hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv # path to the hypercubes dataframe (path/to/repo/databases/default_hypercubes_dataframe.csv)
+use_cached_hypercubes_dataframe: false # if True, will use the cached hypercubes dataframe from the given path
+protocol: binary # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')

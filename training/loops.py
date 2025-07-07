@@ -413,12 +413,27 @@ class TestTrainer(BaseTrainer):
         # initialize dataset and dataloader
         self.test_dataloader, _ = get_dataloader(cfg)
 
+        self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
+            train_dataloader=self.test_dataloader,
+            val_dataloader=None,
+            config=cfg
+        )
+
         # initialize model
         model = build_dependency_graph_and_instantiate(cfg.models)
 
+        # initialize optimizer
+        opt, _ = get_optimizer(
+            params=model.parameters(),
+            config=cfg,
+            optimizer=cfg.optimizers.opt,
+            steps_per_epoch=self.steps_per_epoch
+        )
+
         # initialize deepspeed
-        self.model, _, _, _ = initialize(
+        self.model, self.opt, _, _ = initialize(
             model=model,
+            optimizer=opt,
             config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
 

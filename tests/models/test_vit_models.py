@@ -7,9 +7,10 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
-from training.helpers import summarize_model
 from models.vit import ViT
 from tests.helpers import get_input_data
+from tests.conftest import models_kargs
+from training.helpers import summarize_model
 
 
 def test_vit_custom(models_kargs):

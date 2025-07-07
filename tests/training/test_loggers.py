@@ -1,5 +1,6 @@
 import os
 import pytest
+from pathlib import Path
 
 import torch
 
@@ -31,6 +32,20 @@ def _test_loggers_dist(cfg: DictConfig):
 
     step_csv = writer.step_scalars_savepath
     epoch_csv = writer.epoch_scalars_savepath
+    
+    assert Path(step_csv).parent.exists(), \
+        f"Step scalars directory does not exist: {Path(step_csv).parent}"
+    assert Path(epoch_csv).parent.exists(), \
+        f"Epoch scalars directory does not exist: {Path(epoch_csv).parent}"
+
+    if Path(step_csv).exists() and Path(step_csv).is_file() and Path(step_csv).match("*.csv"):
+        # remove old step scalars CSV if it exists
+        Path(step_csv).unlink()
+        print("Step scalars CSV removed from previous test runs.")
+    if Path(epoch_csv).exists() and Path(epoch_csv).is_file() and Path(epoch_csv).match("*.csv"):
+        # remove old epoch scalars CSV if it exists
+        Path(epoch_csv).unlink()
+        print("Epoch scalars CSV removed from previous test runs.")
 
     # test putting scalars
     n_steps = 3

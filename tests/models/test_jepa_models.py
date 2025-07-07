@@ -9,6 +9,7 @@ warnings.filterwarnings("ignore")
 
 from training.helpers import summarize_model
 from models.jepa import JEPA
+from tests.conftest import models_kargs
 from tests.helpers import get_masked_input_data
 
 

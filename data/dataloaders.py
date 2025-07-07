@@ -60,8 +60,8 @@ def get_dataloader(config: DictConfig):
                     batch_size=config.clusters.batch_size_per_gpu,
                     shuffle=False,
                     pin_memory=True,
-                    num_workers=config.clusters.cpus_per_worker,
-                    prefetch_factor=2,
+                    num_workers=config.datasets.num_workers,
+                    prefetch_factor=config.datasets.prefetch_factor,
                     persistent_workers=False,
                     sampler=DistributedSampler(train, drop_last=True)
                         if config.datasets.distributed_sampler else None,
@@ -76,8 +76,8 @@ def get_dataloader(config: DictConfig):
                     batch_size=config.clusters.batch_size_per_gpu,
                     shuffle=False,
                     pin_memory=True,
-                    num_workers=config.clusters.cpus_per_worker,
-                    prefetch_factor=2,
+                    num_workers=config.datasets.num_workers,
+                    prefetch_factor=config.datasets.prefetch_factor,
                     persistent_workers=False,
                     sampler=DistributedSampler(val, shuffle=False, drop_last=True)
                         if config.datasets.distributed_sampler else None,
@@ -98,8 +98,8 @@ def get_dataloader(config: DictConfig):
                     batch_size=config.clusters.batch_size_per_gpu,
                     shuffle=False,
                     pin_memory=True,
-                    num_workers=config.clusters.cpus_per_worker,
-                    prefetch_factor=2,
+                    num_workers=config.datasets.num_workers,
+                    prefetch_factor=config.datasets.prefetch_factor,
                     persistent_workers=False,
                     # handle cases where we want to run on a single GPU without distributed environment
                     sampler=DistributedSampler(dataset, drop_last=True)

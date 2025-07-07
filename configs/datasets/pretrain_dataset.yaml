@@ -14,6 +14,8 @@ dataloader_type: torch
 return_dataloader: true
 distributed_sampler: true
 collate_fn: ${datasets.masking.collate_fn}
+prefetch_factor: 2 # prefetch factor for the dataloader
+num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
 
 databases:
   max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)

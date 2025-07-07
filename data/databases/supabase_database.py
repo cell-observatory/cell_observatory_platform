@@ -33,6 +33,8 @@ class SupabaseDatabase:
         verbose: bool = False,
         fetch_hypercubes_dataframe: bool = True,
         hypercubes_dataframe_path: Optional[Path] = None,
+        use_cached_hypercubes_dataframe: Optional[bool] = False,
+        protocol: Literal["binary", "csv", "cursor"] = "binary"
     ):
         """
         A class for accessing Supabase database and retrieving hypercubes.
@@ -55,7 +57,9 @@ class SupabaseDatabase:
             fetch_hypercubes_dataframe: this will automatically initialize the database based on the provided parameters
                 (only turn off for debugging or if the database is already initialized)
             hypercubes_dataframe_path: path to save hypercubes dataframe
-
+            use_cached_hypercubes_dataframe: if True, will use the cached hypercubes dataframe from the given path
+            protocol: The protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+            
         # TODO: Only works for `Tx128x128x128x2`, need to extend class to work with other hypercube sizes
         """
 
@@ -75,20 +79,35 @@ class SupabaseDatabase:
         self.tile_list = tile_list
         self.verbose = verbose
         self.fetch_hypercubes_dataframe = fetch_hypercubes_dataframe
+        self.use_cached_hypercubes_dataframe = use_cached_hypercubes_dataframe
+        self.protocol = protocol
 
         self._database_url = self._load_uri()
 
         if self.fetch_hypercubes_dataframe:
-            self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
-                num_timepoints=num_timepoints,
-                max_rois=max_rois,
-                max_tiles=max_tiles,
-                max_hypercubes=max_hypercubes,
-                hpf_list=hpf_list,
-                roi_list=roi_list,
-                tile_list=tile_list
-            )
-            self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
+            # if use_cached_hypercubes_dataframe is True, it is assumed that
+            # hypercubes_dataframe_path points at a valid CSV file
+            if self.use_cached_hypercubes_dataframe:
+                self.hypercubes_dataframe = pd.read_csv(self.hypercubes_dataframe_path)
+            else:
+                self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
+                    num_timepoints=num_timepoints,
+                    max_rois=max_rois,
+                    max_tiles=max_tiles,
+                    max_hypercubes=max_hypercubes,
+                    hpf_list=hpf_list,
+                    roi_list=roi_list,
+                    tile_list=tile_list
+                )
+
+                # this is a hack to check that dataloading works correctly
+                # remove when DB is updated fix the output_folder paths
+                self.hypercubes_dataframe["output_folder"] = (
+                    self.hypercubes_dataframe["output_folder"]
+                        .str.replace(r"/6/9/", "/7/4/", regex=True)
+                )
+
+                self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
         else:
             self.hypercubes_dataframe = None
 
@@ -340,7 +359,7 @@ class SupabaseDatabase:
 
     def execute_query(self, query: str) -> pd.DataFrame:
         try:
-            result = cx.read_sql(conn=self._database_url, query=query)
+            result = cx.read_sql(conn=self._database_url, query=query, protocol=self.protocol)
             return result
         except Exception as e:
             logger.error(f"Failed to execute query: {e}")
