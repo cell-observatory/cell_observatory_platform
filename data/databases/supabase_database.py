@@ -305,24 +305,37 @@ class SupabaseDatabase:
         ]
 
         return f"""
-            SELECT
-                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
-                array_length(array_agg(pc.occupancy_ratio), 1) / ptv.channel_size as time_size,
-                div(pc.time::numeric, {num_timepoints}::numeric) * {num_timepoints}::numeric as time_start,
-                array_agg(pc.occupancy_ratio ORDER BY pc.channel, pc.time) as occupancy_ratios,
-                string_agg(pc.channel_target, ','::text ORDER BY pc.channel, pc.time) as channel_targets,
-                array_agg(pc.time ORDER BY pc.channel, pc.time) as timepoints
-            FROM prepared_cubes pc
-            JOIN prepared_tiles_view ptv
-            ON (pc.prepared_id, pc.tile_name) = (ptv.prepared_id, ptv.tile_name)
-            WHERE
-                ptv.cube_size = 128 AND ptv.channel_size = 2
-            GROUP BY
-                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
-                (div(pc.time::numeric, {num_timepoints}::numeric))
-            {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
+            SELECT 
+                first_pc_id,
+                time_start,
+                time_size,
+                {', '.join([f'{col}' for col in prepared_cubes_column_names + prepared_tiles_view_column_names])},
+                occupancy_ratios[:{num_timepoints}] as occupancy_ratios_ch_0,
+                occupancy_ratios[{num_timepoints} + 1:] as occupancy_ratios_ch_1,
+                channel_targets,
+                timepoints
+            FROM
+            (
+                SELECT
+                    min(pc.id) as first_pc_id,
+                    {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
+                    {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
+                    array_length(array_agg(pc.occupancy_ratio), 1) / ptv.channel_size as time_size,
+                    div(pc.time::numeric, {num_timepoints}::numeric) * {num_timepoints}::numeric as time_start,
+                    array_agg(pc.occupancy_ratio ORDER BY pc.channel, pc.time) as occupancy_ratios,
+                    string_agg(pc.channel_target, ','::text ORDER BY pc.channel, pc.time) as channel_targets,
+                    array_agg(pc.time ORDER BY pc.channel, pc.time) as timepoints
+                FROM prepared_cubes pc
+                JOIN prepared_tiles_view ptv
+                ON (pc.prepared_id, pc.tile_name) = (ptv.prepared_id, ptv.tile_name)
+                WHERE
+                    ptv.cube_size = 128 AND ptv.channel_size = 2
+                GROUP BY
+                    {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
+                    {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
+                    (div(pc.time::numeric, {num_timepoints}::numeric))
+                {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
+            ) hypercubes
         """
 
     def save_hypercubes_dataframe(self, hypercubes_dataframe_path: Path):
