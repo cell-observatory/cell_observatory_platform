@@ -518,7 +518,7 @@ class SupabaseDatabase:
             )
 
         if self.verbose:
-            print(f"Executing query:")
+            print(f"Executing query with protocol: {self.protocol}")
             print('\n'.join(self.last_query) if isinstance(self.last_query, list) else self.last_query)
 
         table = self.execute_query(self.last_query)

@@ -8,6 +8,8 @@ from hydra.utils import get_class
 import torch
 from torch.utils.data import DataLoader
 
+from ray.train import report
+
 from tests.conftest import distributed_test, config
 
 
@@ -93,7 +95,7 @@ def _test_dataloader_dist(config):
         if idx >= 5:
             break
 
-    return {"success": True}
+    return report({"success": True})
 
 
 def test_data_pipeline(config):
@@ -110,4 +112,4 @@ def test_data_pipeline(config):
         config.clusters.mem_per_cpu = 31000
 
     metrics = distributed_test(cfg=config, test="tests.data.test_pretrain_dataset._test_dataloader_dist")
-    assert metrics.get("success", True), "Distributed dataloader test failed"
+    assert metrics.get("success", False), "Distributed dataloader test failed"

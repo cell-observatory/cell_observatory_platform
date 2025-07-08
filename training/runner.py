@@ -12,9 +12,10 @@ from ray.train.torch import TorchTrainer, TorchConfig
 from ray.train import ScalingConfig, CheckpointConfig, RunConfig, FailureConfig
 
 import hydra
+from hydra.utils import get_method
 from omegaconf import DictConfig, OmegaConf
-
-from training.loops import train_loop_per_worker
+if not OmegaConf.has_resolver("eval"):
+    OmegaConf.register_new_resolver("eval", eval)
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.DEBUG)
@@ -74,7 +75,7 @@ def run_session(cfg: DictConfig):
     torch_config = TorchConfig(timeout_s=cfg.clusters.torch_config.timeout_s)
 
     trainer = TorchTrainer(
-        train_loop_per_worker=train_loop_per_worker,
+        train_loop_per_worker=get_method(cfg.loop_per_worker_script),
         train_loop_config=cfg,
         run_config=run_config,
         scaling_config=scaling_config,

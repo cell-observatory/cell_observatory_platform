@@ -35,6 +35,9 @@ job_type: train # train or test
 # trainer type
 trainer: training.loops.EpochBasedTrainer
 
+# benchmark loop to run for each worker
+loop_per_worker_script: training.loops.train_loop_per_worker
+
 # training quantization
 quantization: float16 # data type for training, options: float32, float16
 

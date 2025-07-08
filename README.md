@@ -178,7 +178,7 @@ defaults:
   - _self_            # load this file’s overrides last
 ```
 
-### 2. Override only what uou need
+### 2. Override only what you need
 
 Hydra handles overrides, allowing precise experiment adjustments. Scalars and lists are replaced outright, whereas dictionaries are merged recursively (only specified keys change).
 
