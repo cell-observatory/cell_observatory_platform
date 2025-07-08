@@ -1,0 +1,84 @@
+# @package _global_
+defaults:
+  - /paths/abc
+  - /clusters/abc_a100
+  - /datasets/pretrain_dataset
+  - /checkpoint/checkpoint
+  - /evaluation/base_evaluator
+  - _self_
+
+# number of batches to run benchmark for and
+# number of warmup batches to run before measuring performance
+warmup: ${eval:"(${benchmark_params.num_workers}[-1]*${benchmark_params.prefetch_factors}[-1]) + 1"}
+num_batches: 50
+
+# where to save the benchmark results
+csv_out: ${paths.data_path}/pretrained_models/benchmarks_test/dataloaders/results/results.csv
+
+# benchmark loop to run for each worker
+loop_per_worker_script: scripts.benchmark_dataloaders.bench_dataloader
+
+# experiment name
+experiment_name: benchmark_dataloaders_4d
+
+# this is poorly named but this will prevent
+# dataloaders from being automatically wrapped
+# with prepare_data_loader by Ray which 
+# allows us to control moving data
+# to device manually 
+distributed_framework: manual
+
+# overrides
+# --------------------------------------------------------------------------------
+
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/pretrained_models/benchmarks_test/dataloaders/runs
+
+datasets:
+  input_shape: [16, 128, 128, 128, 2]
+  patch_shape: [4, 16, 16, 16]
+
+  split: 0.0 # no split for benchmarking
+  
+  dataset:
+    _target_: data.datasets.pretrain_dataset.PretrainDataset
+    input_layout: 
+      _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
+      value: TZYXC
+
+  databases:
+    max_hypercubes: 100000
+    use_cached_hypercubes_dataframe: true # use cached hypercubes dataframe for faster loading
+    protocol: cursor
+
+clusters:
+  launcher_type: local # type of launcher to use
+
+  worker_nodes: 1 # number of worker nodes
+  gpus_per_worker: 1 # number of gpus per worker node
+  cpus_per_gpu: 4 # number of cpu cores per gpu
+  # NOTE: to ensure that we can benchmark the dataloaders
+  #       without running into memory issues.
+  mem_per_cpu: 124000 # ram per cpu core
+
+# Intra-Node Benchmarking Configuration (will sweep Cartesian product of the lists for a given cluster size)
+# ----------------------------------------------------------------------------------------------------------
+
+benchmark_params:
+  batch_size: [1, 2, 4, 8, 16] # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
+  num_workers: [4] # 4, 8
+  prefetch_factors: [1] # 1, 2, 4, 8
+
+# Plotting Configuration
+# --------------------------------------------------------------------------------
+
+plotting:
+  # group by column for plotting
+  group_by: batch_size
+
+  # optional: best configuration to plot
+  # if not provided, will plot the mean of all configurations
+  plot_best_config: 
+    dataloader_num_workers: 4
+    dataloader_prefetch_factor: 2
