@@ -464,10 +464,7 @@ def test_hooks(config):
     with open_dict(config):
         config.experiment_name = "test_hooks"
         config.paths.resume_checkpointdir = None
-        config.clusters.worker_nodes = 1
-        config.clusters.gpus_per_worker = torch.cuda.device_count()
-        config.clusters.cpus_per_gpu = 4
-        config.clusters.mem_per_cpu = 31000
+
 
     metrics = distributed_test(cfg=config, test="tests.training.test_hooks._test_hooks_dist")
     assert metrics.get("success", False), "Distributed hooks test failed"

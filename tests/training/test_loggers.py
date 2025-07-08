@@ -108,11 +108,7 @@ def test_loggers(config):
     with open_dict(config):
         config.experiment_name = "test_event_logging"
         config.paths.resume_checkpointdir = None
-        
-        config.clusters.worker_nodes = 1
-        config.clusters.gpus_per_worker = torch.cuda.device_count() 
-        config.clusters.cpus_per_gpu = 4
-        config.clusters.mem_per_cpu = 31000
+
         config.loggers.event_writers = [
             w for w in config.loggers.event_writers
             if w._target_.endswith(".LocalEventWriter")

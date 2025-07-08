@@ -32,11 +32,6 @@ def test_train_loop(config):
     with open_dict(config):
         config.experiment_name = "test_train_loop"
         config.paths.resume_checkpointdir = None
-        
-        config.clusters.worker_nodes = 1
-        config.clusters.gpus_per_worker = torch.cuda.device_count()
-        config.clusters.cpus_per_gpu = 4
-        config.clusters.mem_per_cpu = 31000
 
         config.schedulers.epochs = 1
         # config.datasets.databases.max_hypercubes = 10000
@@ -60,13 +55,6 @@ def test_testing_loop(config):
                                                              "test_train_loop", 
                                                              "checkpoints")
         config.checkpoint.checkpoint_manager.checkpoint_tag = "latest_model"
-        
-        config.clusters.worker_nodes = 1
-        config.clusters.gpus_per_worker = torch.cuda.device_count()
-        config.clusters.cpus_per_gpu = 4
-        config.clusters.mem_per_cpu = 31000
-
-        # config.datasets.databases.max_hypercubes = 10000
 
         config.trainer = "training.loops.TestTrainer"
         config.evaluation.val_metric = "test_step_loss"
