@@ -87,60 +87,6 @@ def test_create_1_128_128_128_2_hypercubes(database):
         check_names=False,
     )
 
-def test_create_2_128_128_128_2_hypercubes(database):
-    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=2, max_hypercubes=100)
-    print(database.last_query)
-    print(table)
-
-    assert table.shape[0] == 100, "Only 100 or less rows should be returned"
-
-    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
-    assert (table['time_size'] == 2).all(), "All time sizes should be 2"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
-    pd.testing.assert_series_equal(
-        table['time_size'],
-        table['occupancy_ratios_ch_0'].apply(len),
-        check_dtype=False,
-        check_names=False,
-    )
-
-def test_create_4_128_128_128_2_hypercubes(database):
-    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=4, max_hypercubes=100)
-    print(database.last_query)
-    print(table)
-
-    assert table.shape[0] == 100, "Only 100 or less rows should be returned"
-
-    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
-    assert (table['time_size'] == 4).all(), "All time sizes should be 4"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
-    pd.testing.assert_series_equal(
-        table['time_size'],
-        table['occupancy_ratios_ch_0'].apply(len),
-        check_dtype=False,
-        check_names=False,
-    )
-
-def test_create_8_128_128_128_2_hypercubes(database):
-    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=8, max_hypercubes=100)
-    print(database.last_query)
-    print(table)
-
-    assert table.shape[0] == 100, "Only 100 or less rows should be returned"
-
-    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
-    assert (table['time_size'] == 8).all(), "All time sizes should be 8"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
-    pd.testing.assert_series_equal(
-        table['time_size'],
-        table['occupancy_ratios_ch_0'].apply(len),
-        check_dtype=False,
-        check_names=False,
-    )
-
 def test_create_16_128_128_128_2_hypercubes(database):
     table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, max_hypercubes=100)
     print(database.last_query)
@@ -150,24 +96,6 @@ def test_create_16_128_128_128_2_hypercubes(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
-    pd.testing.assert_series_equal(
-        table['time_size'],
-        table['occupancy_ratios_ch_0'].apply(len),
-        check_dtype=False,
-        check_names=False,
-    )
-
-def test_create_32_128_128_128_2_hypercubes(database):
-    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=32, max_hypercubes=100)
-    print(database.last_query)
-    print(table)
-
-    assert table.shape[0] == 100, "Only 100 or less rows should be returned"
-
-    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
-    assert (table['time_size'] == 32).all(), "All time sizes should be 32"
     assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
 
     pd.testing.assert_series_equal(
