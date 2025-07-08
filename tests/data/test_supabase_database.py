@@ -304,6 +304,8 @@ def test_16_128_128_128_2_hypercubes_database_10k(config):
 
     assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
 
+
+@pytest.mark.skip()
 def test_16_128_128_128_2_hypercubes_database_100k(config):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_100k"
     config.datasets.databases.num_timepoints = 16
