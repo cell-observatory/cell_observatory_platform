@@ -119,17 +119,15 @@ def bench_dataloader(cfg):
         logger.info("CUDA memory before run: "
                     f"{torch.cuda.memory_allocated() / 1e9:.3f} GB")
 
-        try:
-            stats = _measure_loader(loader, 
-                                    num_batches=num_batches, 
-                                    warmup=cfg.warmup, 
-                                    batch_size=batch_size)
-        finally:
-            if hasattr(loader, "_shutdown_workers"):
-                loader._shutdown_workers()
-            del loader
-            torch.cuda.empty_cache()
-            gc.collect()
+        stats = _measure_loader(loader, 
+                                num_batches=num_batches, 
+                                warmup=cfg.warmup, 
+                                batch_size=batch_size)
+        if hasattr(loader, "_shutdown_workers"):
+            loader._shutdown_workers()
+        del loader
+        torch.cuda.empty_cache()
+        gc.collect()
 
         torch.cuda.synchronize()
         max_mem_allocated = torch.cuda.max_memory_allocated()
