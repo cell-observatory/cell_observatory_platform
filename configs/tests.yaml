@@ -77,7 +77,7 @@ datasets:
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
     max_hypercubes: 200 # maximum number of hypercubes to return
     use_cached_hypercubes_dataframe: false
-    protocol: binary # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+    protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
   dataset:
     _target_: data.datasets.pretrain_dataset.PretrainDataset
