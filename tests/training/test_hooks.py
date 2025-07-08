@@ -1,7 +1,6 @@
 import pytest
-
 import torch
-
+import os
 from omegaconf import open_dict
 from hydra.utils import get_class
 
@@ -220,10 +219,17 @@ def _test_hooks_dist(cfg):
         f"Expected epoch time to be between 0.1 and 0.3, got {epoch_time[0][0]}"
 
     # ---- ---- ---- PeriodicWriter tests ---- ---- ----
-    
+
     local_writer = periodic._writers.writers[0]
     assert isinstance(local_writer, LocalEventWriter), \
         "Expected LocalEventWriter for testing PeriodicWriter"
+
+    # clearout logs
+    if Path(local_writer.step_scalars_savepath).exists():
+        os.remove(local_writer.step_scalars_savepath)
+
+    if Path(local_writer.epoch_scalars_savepath).exists():
+        os.remove(local_writer.epoch_scalars_savepath)
 
     # inject dummy scalars
     trainer._iter  = 0
@@ -243,6 +249,8 @@ def _test_hooks_dist(cfg):
     if process_rank() == 0:
         step_csv = local_writer.step_scalars_savepath
         epoch_csv = local_writer.epoch_scalars_savepath
+        print(f"step CSV: {step_csv}")
+        print(f"epoch CSV: {epoch_csv}")
 
         if not (step_csv.exists() and epoch_csv.exists()):
             raise FileNotFoundError(
@@ -344,6 +352,13 @@ def _test_hooks_dist(cfg):
     metric_name = saver.metric_name
     recorder = trainer.event_recorder
 
+    # clearout logs
+    if Path(local_writer.step_scalars_savepath).exists():
+        os.remove(local_writer.step_scalars_savepath)
+
+    if Path(local_writer.epoch_scalars_savepath).exists():
+        os.remove(local_writer.epoch_scalars_savepath)
+
     def _log_epoch_scalar(val):
         recorder._iter = trainer._iter
         recorder._epoch = trainer._epoch
@@ -424,6 +439,14 @@ def _test_hooks_dist(cfg):
     metric = ehook.metric_name
     ehook.patience = 2
     threshold = ehook.stopping_threshold
+
+    # clearout logs
+    if Path(local_writer.step_scalars_savepath).exists():
+        os.remove(local_writer.step_scalars_savepath)
+
+    if Path(local_writer.epoch_scalars_savepath).exists():
+        os.remove(local_writer.epoch_scalars_savepath)
+
 
     def _run_epoch(ep_idx, value):
         trainer._epoch = ep_idx
