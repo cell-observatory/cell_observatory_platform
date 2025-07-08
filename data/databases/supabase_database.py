@@ -275,12 +275,18 @@ class SupabaseDatabase:
 
         max_rows = self.count_rows(table_name=table_name)
 
-        if max_hypercubes is not None and max_hypercubes > max_rows:
+        if max_hypercubes is None:
             max_hypercubes = max_rows
 
-        # select max number of partitions that divides the number of rows in each partition evenly
-        partition_num = max([i for i in range(1, self.max_partitions+1) if max_hypercubes % i == 0]) if max_hypercubes is not None else 1
-        print(f"Using {partition_num} partitions to query.")
+        if max_hypercubes > max_rows:
+            max_hypercubes = max_rows
+
+        if max_hypercubes > 1000:
+            # select max number of partitions that divides the number of rows in each partition evenly
+            partition_num = max([i for i in range(1, self.max_partitions+1) if max_hypercubes % i == 0]) if max_hypercubes is not None else 1
+            print(f"Using {partition_num} partitions to query.")
+        else:
+            partition_num = 1
 
         rows_per_partition = max_hypercubes // partition_num
         return [
@@ -288,8 +294,8 @@ class SupabaseDatabase:
                 SELECT
                     {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
                 FROM {table_name} {table_name_shortcut}
-                ORDER BY first_pc_id DESC
                 {filters} 
+                ORDER BY first_pc_id DESC
                 LIMIT {rows_per_partition}
                 OFFSET {rows_per_partition * i}
             """
