@@ -523,7 +523,7 @@ jobs:
       - name: Set APPTAINER_BINDS
         id: apptainer_binds
         run: |
-          echo "APPTAINER_BINDS=--bind ${{ github.workspace }}:/workspace/${{ env.REPO_NAME }} --bind ${{ env.STORAGE_SERVER_DIR }} --bind ~/.cache/TESTMON --cwd /workspace/${{ env.REPO_NAME }}" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_BINDS=--bind ${{ github.workspace }}:/workspace/${{ env.REPO_NAME }} --bind ${{ env.STORAGE_SERVER_DIR }} --bind ~/.cache/ --cwd /workspace/${{ env.REPO_NAME }}" >> "$GITHUB_OUTPUT"
 
       - name: Set APPTAINER_RUN command
         id: apptainer_run
