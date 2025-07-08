@@ -63,10 +63,12 @@ class PretrainDataset(BaseDataset):
         return dict(meta=meta, image=img)
 
     def _collate(self, _data: Dict[str, Any]) -> DataSample:
-        img_tensor = torch.tensor(_data["image"], dtype=torch.float32).clone() 
-        img_sample = ImageList(img_tensor,
-                                layout=self.input_layout,
-                                image_sizes=[img_tensor.shape])
+        img_tensor = torch.tensor(_data["image"])
+        img_sample = ImageList(
+            img_tensor,
+            layout=self.input_layout,
+            image_sizes=[img_tensor.shape]
+        )
         
         sample = DataSample(metainfo=_data["meta"])
         sample.data_tensor = img_sample
