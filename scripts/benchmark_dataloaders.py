@@ -2,6 +2,7 @@ import gc
 import sys
 import time
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 
 import pandas as pd
@@ -43,42 +44,54 @@ def move_to_device(batch, device):
         return batch
 
 
-def _measure_loader(loader, num_batches, warmup, batch_size):
-    time_disk2ram = 0.0
-    time_ram2vram = 0.0
-    total = 0.0
+def _measure_loader(loader, num_batches, batch_size, cfg, profile=False):
 
-    it = iter(loader)
+    with torch.profiler.profile(
+        activities=[torch.profiler.ProfilerActivity.CUDA, torch.profiler.ProfilerActivity.CPU],
+        record_shapes=True,
+        profile_memory=True,
+        with_flops=True,
+        with_modules=True,
+    ) if profile else nullcontext() as prof:
 
-    # warmup
-    for _ in range(warmup):
-        next(it)
+        time_disk2ram = 0.0
+        time_ram2vram = 0.0
+        total = 0.0
 
-    for _ in range(num_batches):
-        # disk to RAM
-        t0 = time.perf_counter()
-        batch = next(it)
-        t1 = time.perf_counter()
+        it = iter(loader)
 
-        # RAM to VRAM
-        batch_cuda = move_to_device(batch, "cuda")
-        torch.cuda.synchronize()
-        t2 = time.perf_counter()
+        # warmup
+        for _ in range(cfg.warmup):
+            next(it)
 
-        time_disk2ram += (t1 - t0)
-        time_ram2vram += (t2 - t1)
-        total += (t2 - t0)
+        for _ in range(num_batches):
+            # disk to RAM
+            t0 = time.perf_counter()
+            batch = next(it)
+            t1 = time.perf_counter()
 
-    # average over number of batches 
-    # TODO: should we report average per batch
-    #       or per image?
-    time_disk2ram_per_batch = time_disk2ram / num_batches
-    time_ram2vram_per_batch = time_ram2vram / num_batches
-    total_per_batch = total / num_batches
-    
-    disk2ram_fps = num_batches / time_disk2ram
-    ram2vram_fps = num_batches / time_ram2vram
-    total_fps = num_batches / total
+            # RAM to VRAM
+            batch_cuda = move_to_device(batch, "cuda")
+            torch.cuda.synchronize()
+            t2 = time.perf_counter()
+
+            time_disk2ram += (t1 - t0)
+            time_ram2vram += (t2 - t1)
+            total += (t2 - t0)
+
+        # average over number of batches
+        # TODO: should we report average per batch
+        #       or per image?
+        time_disk2ram_per_batch = time_disk2ram / num_batches
+        time_ram2vram_per_batch = time_ram2vram / num_batches
+        total_per_batch = total / num_batches
+
+        disk2ram_fps = num_batches / time_disk2ram
+        ram2vram_fps = num_batches / time_ram2vram
+        total_fps = num_batches / total
+
+    if prof is not None:
+        prof.export_chrome_trace(cfg.csv_out.replace(".csv", ".json"))
 
     return dict(
         time_disk2ram_per_batch = time_disk2ram_per_batch,
@@ -91,74 +104,76 @@ def _measure_loader(loader, num_batches, warmup, batch_size):
 
 
 def bench_dataloader(cfg):
+
     results = []
     benchmark_configurations = [
-            (b,w,p) 
+            (b,w,p)
             for b, w, p in product(
                 list(cfg.benchmark_params.batch_size),
                 list(cfg.benchmark_params.num_workers),
                 list(cfg.benchmark_params.prefetch_factors))
     ]
     for (batch_size, num_workers, prefetch_factor) in benchmark_configurations:
-        with open_dict(cfg):
-            cfg.clusters.batch_size_per_gpu = int(batch_size)
-            cfg.datasets.num_workers = int(num_workers)
-            cfg.datasets.prefetch_factor = int(prefetch_factor)
+            with open_dict(cfg):
+                cfg.clusters.batch_size_per_gpu = int(batch_size)
+                cfg.datasets.num_workers = int(num_workers)
+                cfg.datasets.prefetch_factor = int(prefetch_factor)
 
-        loader, _ = get_dataloader(cfg)
-        num_batches = min(cfg.num_batches, len(loader) - cfg.warmup)
+            loader, _ = get_dataloader(cfg)
+            num_batches = min(cfg.num_batches, len(loader) - cfg.warmup)
 
-        logger.info("Benchmarking dataloader with config:" 
-                    f"batch size {batch_size}..."
-                    f"num_workers {num_workers}, "
-                    f"prefetch_factor {prefetch_factor}"
-        )
+            logger.info("Benchmarking dataloader with config:" 
+                        f"batch size {batch_size}..."
+                        f"num_workers {num_workers}, "
+                        f"prefetch_factor {prefetch_factor}"
+            )
 
-        torch.cuda.reset_peak_memory_stats()
-        torch.cuda.synchronize()
-        logger.info("CUDA memory before run: "
-                    f"{torch.cuda.memory_allocated() / 1e9:.3f} GB")
+            torch.cuda.reset_peak_memory_stats()
+            torch.cuda.synchronize()
+            logger.info("CUDA memory before run: "
+                        f"{torch.cuda.memory_allocated() / 1e9:.3f} GB")
 
-        stats = _measure_loader(loader, 
-                                num_batches=num_batches, 
-                                warmup=cfg.warmup, 
-                                batch_size=batch_size)
-        if hasattr(loader, "_shutdown_workers"):
-            loader._shutdown_workers()
-        del loader
-        torch.cuda.empty_cache()
-        gc.collect()
+            stats = _measure_loader(
+                loader,
+                num_batches=num_batches,
+                batch_size=batch_size,
+                cfg=cfg
+            )
+            if hasattr(loader, "_shutdown_workers"):
+                loader._shutdown_workers()
+            del loader
+            torch.cuda.empty_cache()
+            gc.collect()
 
-        torch.cuda.synchronize()
-        max_mem_allocated = torch.cuda.max_memory_allocated()
-        logger.info("CUDA peak memory during run: "
-                    f"{max_mem_allocated / 1e9:.3f} GB")
+            torch.cuda.synchronize()
+            max_mem_allocated = torch.cuda.max_memory_allocated()
+            logger.info("CUDA peak memory during run: "
+                        f"{max_mem_allocated / 1e9:.3f} GB")
 
-        logger.info(f"Benchmark results for config: {stats}")
+            logger.info(f"Benchmark results for config: {stats}")
 
-        flush()
+            flush()
 
-        stats.update(
-            batch_size = batch_size,
-            gpus_per_worker = cfg.clusters.scaling_config.resources_per_worker.GPU,
-            cpus_per_worker = cfg.clusters.scaling_config.resources_per_worker.CPU,
-            dataloader_num_workers = num_workers,
-            dataloader_prefetch_factor = prefetch_factor,
-            input_shape= cfg.datasets.input_shape,
-            rank = process_rank(),
-            max_memory_allocated_gb = max_mem_allocated / 1e9,  # in GB
-        )
-        
-        results.append(stats)  
+            stats.update(
+                batch_size = batch_size,
+                gpus_per_worker = cfg.clusters.scaling_config.resources_per_worker.GPU,
+                cpus_per_worker = cfg.clusters.scaling_config.resources_per_worker.CPU,
+                dataloader_num_workers = num_workers,
+                dataloader_prefetch_factor = prefetch_factor,
+                input_shape= cfg.datasets.input_shape,
+                rank = process_rank(),
+                max_memory_allocated_gb = max_mem_allocated / 1e9,  # in GB
+            )
 
-    logger.info(f"Saving benchmark results to {cfg.csv_out}")
+            results.append(stats)
 
-    # only rank-0 writes
-    if is_main_process():
-        csv_pth = Path(cfg.csv_out)
-        csv_pth.parent.mkdir(parents=True, exist_ok=True)
-        df = pd.DataFrame(results)
-        df.to_csv(csv_pth, mode="a" if csv_pth.exists() else "w",
-                header=not csv_pth.exists(), index=False)
+            logger.info(f"Saving benchmark results to {cfg.csv_out}")
+
+            # only rank-0 writes
+            if is_main_process():
+                csv_pth = Path(cfg.csv_out)
+                csv_pth.parent.mkdir(parents=True, exist_ok=True)
+                df = pd.DataFrame(results)
+                df.to_csv(csv_pth, mode="a" if csv_pth.exists() else "w", header=not csv_pth.exists(), index=False)
 
     return stats
