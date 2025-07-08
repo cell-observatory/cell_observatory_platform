@@ -81,12 +81,13 @@ def _test_dataloader_dist(config):
             f"Data sample {idx} does not contain 'metainfo' key or it is not a dict, got {type(data_sample['metainfo'])}"
 
         expected_shape = (
-            data_sample['metainfo']["time_size"],
-            data_sample['metainfo']["cube_size"],
-            data_sample['metainfo']["cube_size"],
-            data_sample['metainfo']["cube_size"],
-            data_sample['metainfo']["channel_size"]
+            data_sample['metainfo']["time_size"][0].item(),
+            data_sample['metainfo']["cube_size"][0].item(),
+            data_sample['metainfo']["cube_size"][0].item(),
+            data_sample['metainfo']["cube_size"][0].item(),
+            data_sample['metainfo']["channel_size"][0].item()
         )
+
         assert data_sample['data_tensor'][0].shape == expected_shape, \
             f"Data tensor shape {data_sample['data_tensor'][0].shape} does not match expected shape {expected_shape}"
 
@@ -103,11 +104,6 @@ def test_data_pipeline(config):
     with open_dict(config):
         config.experiment_name = "test_data_pipeline"
         config.paths.resume_checkpointdir = None
-
-        config.clusters.worker_nodes = 1
-        config.clusters.gpus_per_worker = torch.cuda.device_count()
-        config.clusters.cpus_per_gpu = 4
-        config.clusters.mem_per_cpu = 31000
 
     metrics = distributed_test(cfg=config, test="tests.data.test_pretrain_dataset._test_dataloader_dist")
     assert metrics.get("success", True), "Distributed dataloader test failed"
