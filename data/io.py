@@ -48,14 +48,16 @@ def read_tiff(image_path: str) -> np.ndarray:
 
     return img.astype(np.float32)
 
+# TODO: pass an argument change dtype
 def read_zarr(image_path: str, zarr_driver: str = "zarr3") -> np.ndarray:
     """ Read a Zarr file and return the data as a NumPy array """
     spec = {
         "driver": zarr_driver,
         "kvstore": {"driver": "file", "path": image_path},
+        "dtype": ts.uint16
     }
     ds = ts.open(spec, read=True).result()
-    return ds
+    return ts.cast(ds, ts.float16)
 
 
 def read_file(image_path: str | Path, **kwargs) -> str:
