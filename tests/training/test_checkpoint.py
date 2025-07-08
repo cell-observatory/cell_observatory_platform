@@ -93,7 +93,7 @@ def test_checkpoint_save(config, zero_stage: int):
         # need >=2 for testing zero stages > 0
         config.clusters.gpus_per_worker = 2
         config.clusters.cpus_per_gpu = 4
-        config.clusters.mem_per_cpu = 31000
+
 
         config.save_checkpoint = True
     
@@ -121,7 +121,7 @@ def test_checkpoint_load(config, zero_stage_src: int, zero_stage_dst: int):
         # need >=2 for testing zero stages > 0
         config.clusters.gpus_per_worker = 2
         config.clusters.cpus_per_gpu = 4
-        config.clusters.mem_per_cpu = 31000
+
         
         config.deepspeed.checkpoint.load_universal = True
 

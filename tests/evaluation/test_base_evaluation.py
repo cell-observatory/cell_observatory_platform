@@ -52,11 +52,6 @@ def test_evaluation(config):
         config.experiment_name = "test_evaluation"
         config.paths.resume_checkpointdir = None
         
-        config.clusters.worker_nodes = 1
-        config.clusters.gpus_per_worker = 1
-        config.clusters.cpus_per_gpu = 4
-        config.clusters.mem_per_cpu = 16000
-        
         config.evaluation.evaluator._target_ = "evaluation.base_evaluation.BaseEvaluator" 
         config.evaluation.evaluator.training_metrics = [{"step_loss": "mean"}]
 

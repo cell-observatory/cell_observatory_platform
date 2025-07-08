@@ -71,9 +71,8 @@ def test_context(config):
         config.paths.resume_checkpointdir = None
         
         config.clusters.worker_nodes = 1
-        config.clusters.gpus_per_worker = torch.cuda.device_count() 
+        config.clusters.gpus_per_worker = 2
         config.clusters.cpus_per_gpu = 4
-        config.clusters.mem_per_cpu = 31000
 
     metrics = distributed_test(cfg=config, test="tests.utils.test_context._test_context")
     assert metrics.get("success", True), "Distributed context test failed"
