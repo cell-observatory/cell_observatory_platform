@@ -1,7 +1,7 @@
 # @package _global_
 defaults:
-  - /paths/abc
-  - /clusters/abc_a100
+  - /paths/local
+  - /clusters/local
   - /datasets/pretrain_dataset
   - /checkpoint/checkpoint
   - /evaluation/base_evaluator
@@ -13,7 +13,7 @@ warmup: ${eval:"(${benchmark_params.num_workers}[-1]*${benchmark_params.prefetch
 num_batches: 50
 
 # where to save the benchmark results
-csv_out: ${paths.data_path}/pretrained_models/benchmarks_test/dataloaders/results/results.csv
+csv_out: ${paths.outdir}/results/results.csv
 
 # benchmark loop to run for each worker
 loop_per_worker_script: scripts.benchmark_dataloaders.bench_dataloader
@@ -66,8 +66,8 @@ clusters:
 # ----------------------------------------------------------------------------------------------------------
 
 benchmark_params:
-  batch_size: [1, 2, 4, 8, 16] # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
-  num_workers: [4] # 4, 8
+  batch_size: [1, 2, 4, 8, 16, 32] # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
+  num_workers: [8] # 4, 8
   prefetch_factors: [1] # 1, 2, 4, 8
 
 # Plotting Configuration
@@ -80,5 +80,5 @@ plotting:
   # optional: best configuration to plot
   # if not provided, will plot the mean of all configurations
   plot_best_config: 
-    dataloader_num_workers: 4
-    dataloader_prefetch_factor: 2
+    dataloader_num_workers: 8
+    dataloader_prefetch_factor: 1
