@@ -17,6 +17,7 @@ from ray.train import get_context
 import torch
 from deepspeed import initialize
 
+from data.data_types import TORCH_DTYPES
 from training.helpers import (
     get_optimizer,
     get_lr_scheduler,
@@ -308,6 +309,8 @@ class EpochBasedTrainer(BaseTrainer):
 
         # initialize evaluator
         self.evaluator = instantiate(cfg.evaluation.evaluator)
+
+        self.dtype = TORCH_DTYPES[cfg.dataset_dtype].value
                 
     def run(self):
         """
@@ -347,10 +350,18 @@ class EpochBasedTrainer(BaseTrainer):
         # their losses in the forward pass
         # and return a loss_dict with at least
         # a "step_loss" key together with
-        # the outputs of the model 
+        # the outputs of the model
+
+        if torch.isnan(data_sample['data_tensor']).all() or torch.isinf(data_sample['data_tensor']).all():
+            raise ValueError(f"Invalid training data: {data_sample['metainfo']}")
+
+        assert data_sample['data_tensor'].dtype == self.dtype, f"{data_sample['data_tensor'].dtype} != {self.dtype}"
+
         loss_dict, outputs = self.model(data_sample)
         self.model.backward(loss_dict["step_loss"])
         self.model.step()
+
+        # logger.info(f"step_loss: {loss_dict['step_loss']}, lr: {self.opt.param_groups[0]['lr']}")
 
         self.event_recorder.put_scalars(
             scope="step",
@@ -359,8 +370,7 @@ class EpochBasedTrainer(BaseTrainer):
             }
         )
 
-        self.after_step(data_sample=data_sample,
-                        outputs=outputs, loss_dict=loss_dict)
+        self.after_step(data_sample=data_sample, outputs=outputs, loss_dict=loss_dict)
         self._iter += 1
 
     def run_validation(self) -> None:
