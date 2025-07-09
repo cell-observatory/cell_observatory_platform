@@ -64,7 +64,7 @@ class EventRecorder:
         for k, v in kwargs.items():
             assert isinstance(v, (int, float)), \
                 f"Scalar value must be an int or float, got {type(v)} for key '{k}'"
-            if math.isnan(v):
+            if scope == "epoch" and math.isnan(v):
                 raise ValueError(f"Scalar value for key '{k}' is not finite: {v}")
             k = f"{prefix}{k}" if prefix else k
             self.put_scalar(k, v, scope=scope, reduce_method=reduce_method)
