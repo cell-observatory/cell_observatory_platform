@@ -39,7 +39,7 @@ class PretrainDataset(BaseDataset):
             )
         }
         self._zarr_handles_data = {
-            p: read_zarr(p)
+            p: read_zarr(p, dtype=self.dtype)
             for p in paths
         }
 
@@ -63,7 +63,7 @@ class PretrainDataset(BaseDataset):
         return dict(meta=meta, image=img)
 
     def _collate(self, _data: Dict[str, Any]) -> DataSample:
-        img_tensor = torch.tensor(_data["image"])
+        img_tensor = torch.from_numpy(_data["image"])
         img_sample = ImageList(
             img_tensor,
             layout=self.input_layout,

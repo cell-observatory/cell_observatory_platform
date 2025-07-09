@@ -40,6 +40,8 @@ loop_per_worker_script: training.loops.train_loop_per_worker
 # training quantization
 quantization: float16 # data type for training, options: float32, float16
 
+# dtype for training data
+dataset_dtype: float16 # data type for training, options: float32, float16
 
 # overrides
 # --------------------------------------------------------------------------------
