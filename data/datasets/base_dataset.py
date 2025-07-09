@@ -188,4 +188,4 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
     def __getitem__(self, idx: int):
         _data = self._load_sample(self._index[idx])
         data = self._collate(_data)
-        return data
+        return self.transforms(data)
