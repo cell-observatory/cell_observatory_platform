@@ -4,7 +4,8 @@ export RAY_DEDUP_LOGS=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # parse args from `args_parser.sh` getopts
-source ./args_parser.sh
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$DIR/args_parser.sh"
 
 tmpdir=/tmp/symlink_$(uuidgen | cut -d "-" -f5)
 echo "Create symlink: $outdir -> $tmpdir"
@@ -46,8 +47,7 @@ export head_node
 export head_node_ip
 export cluster_address
 
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir \
-  $env ./ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir &
+apptainer exec --userns --nv --cwd /workspace/cell_observatory_platform --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir &
 sleep 10
 
 ############################## ADD WORKER NODES
@@ -56,45 +56,47 @@ worker_ids=()
 num_workers=$((nodes - 1))
 for i in $(seq 1 $num_workers)
 do
-    mkdir -p "${outdir}/ray_worker_${i}"
-    echo "Adding worker: ${outdir}/ray_worker_${i}"
+    mkdir -p "${outdir}/ray_worker_logs/ray_worker_${i}"
+    echo "Adding worker: ${outdir}/ray_worker_logs/ray_worker_${i}"
     if [[ "$exclusive" == "true" ]]; then
         echo "Exclusive mode is enabled"
         job="bsub -cwd "$(pwd)" \
             -q $partition \
-            -J "${outdir}/ray_worker_${i}" \
+            -J "${jobname}_ray_worker_${i}" \
             -x \
             -n $cpus \
             -gpu "num=$gpus:mode=shared" \
-            -o "${outdir}/ray_worker_${i}.log" \
+            -o "${outdir}/ray_worker_logs/ray_worker_${i}.log" \
             apptainer exec --userns --nv \
-              --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
-                $env ./ray_start_worker.sh -a $cluster_address -c $cpus -g $gpus -t $tmpdir"
+              --cwd /workspace/cell_observatory_platform --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
+                $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+                -a $cluster_address -c $cpus -g $gpus -t $tmpdir"
     else
         job="bsub -cwd "$(pwd)" \
             -q $partition \
-            -J "${outdir}/ray_worker_${i}" \
+            -J "${jobname}_ray_worker_${i}" \
             -n $cpus \
             -gpu "num=$gpus:mode=shared" \
-            -o "${outdir}/ray_worker_${i}.log" \
+            -o "${outdir}/ray_worker_logs/ray_worker_${i}.log" \
             apptainer exec --userns --nv \
-              --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
-                $env ./ray_start_worker.sh -a $cluster_address -c $cpus -g $gpus -t $tmpdir"
+              --cwd /workspace/cell_observatory_platform --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
+                $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+                -a $cluster_address -c $cpus -g $gpus -t $tmpdir"
     fi
 
     echo $job
     $job
 
 
-    jid=$(bjobs -r -J "${outdir}/ray_worker_${i}" | awk 'NR==2 {print $1;}')
+    jid=$(bjobs -r -J "${jobname}_ray_worker_${i}" | awk 'NR==2 {print $1;}')
     while [ -z "$jid" ]
     do
         sleep 1
-        jid=$(bjobs -r -J "${outdir}/ray_worker_${i}" | awk 'NR==2 {print $1;}')
+        jid=$(bjobs -r -J "${jobname}_ray_worker_${i}" | awk 'NR==2 {print $1;}')
     done
 
     worker_ids+=($jid)
-    echo "Running ray_worker_${i} @ ${jid}"
+    echo "Running ${jobname}_ray_worker_${i} @ ${jid}"
 done
 
 ############################## CHECK STATUS
@@ -107,7 +109,7 @@ cleanup() {
     echo "running cleanup (exit code: $ec)"
 
     # stop Ray on the head node
-    apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
+    apptainer exec --userns --nv --cwd /workspace/cell_observatory_platform --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
 
     # cancel worker jobs (if still queued/running)
     for jid in "${worker_ids[@]}"
@@ -120,10 +122,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ./ray_check_status.sh -a $cluster_address -r $nodes
+apptainer exec --userns --nv --cwd /workspace/cell_observatory_platform --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r $nodes
 
 ############################## RUN WORKLOAD
 
 echo "Running user tasks"
 echo $tasks
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks
+apptainer exec --userns --nv --cwd /workspace/cell_observatory_platform --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks

@@ -8,19 +8,20 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-from training.backend import summarize_model
+from training.helpers import summarize_model
 from models.convnext import ConvNeXtV2
+from tests.conftest import models_kargs
+from tests.helpers import get_input_data
 
-@pytest.mark.run(order=1)
-def test_convnext_custom(kargs):
+
+def test_convnext_custom(models_kargs):
 
     # clean out existing model
-    outdir = kargs['outdir']/"pytests/convnext/custom"
+    outdir = models_kargs['outdir']/"pytests/convnext/custom"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    logger.info(f"Testing input shape: {kargs['input_shape']}")
-    inputs = (1, 6, 64, 64, 1)
+    inputs = (8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -32,29 +33,31 @@ def test_convnext_custom(kargs):
     model = ConvNeXtV2(
         model_template='convnext',
         input_shape=inputs,
-        modes=kargs['modes'],
+        modes=models_kargs['modes'],
         depths=(3, 3, 9, 3),
         dims=(96, 192, 384, 768),
     )
 
+    input_data = get_input_data(model, inputs)
+
     summarize_model(
         model=model,
         inputs=inputs,
-        batch_size=kargs['batch_size'],
+        input_data=input_data,
+        batch_size=models_kargs['batch_size'],
         logdir=logdir,
     )
 
 
-@pytest.mark.run(order=2)
-def test_convnext_tiny(kargs):
+
+def test_convnext_tiny(models_kargs):
 
     # clean out existing model
-    outdir = kargs['outdir']/"pytests/convnext/tiny"
+    outdir = models_kargs['outdir']/"pytests/convnext/tiny"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    logger.info(f"Testing input shape: {kargs['input_shape']}")
-    inputs = (1, 6, 64, 64, 1)
+    inputs = (8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -66,27 +69,29 @@ def test_convnext_tiny(kargs):
     model = ConvNeXtV2(
         model_template='convnext-tiny',
         input_shape=inputs,
-        modes=kargs['modes'],
+        modes=models_kargs['modes'],
     )
+
+    input_data = get_input_data(model, inputs)
 
     summarize_model(
         model=model,
         inputs=inputs,
-        batch_size=kargs['batch_size'],
+        input_data=input_data,
+        batch_size=models_kargs['batch_size'],
         logdir=logdir,
     )
 
 
-@pytest.mark.run(order=3)
-def test_convnext_small(kargs):
+
+def test_convnext_small(models_kargs):
 
     # clean out existing model
-    outdir = kargs['outdir']/"pytests/convnext/small"
+    outdir = models_kargs['outdir']/"pytests/convnext/small"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    logger.info(f"Testing input shape: {kargs['input_shape']}")
-    inputs = (1, 6, 64, 64, 1)
+    inputs = (8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -98,27 +103,29 @@ def test_convnext_small(kargs):
     model = ConvNeXtV2(
         model_template='convnext-small',
         input_shape=inputs,
-        modes=kargs['modes'],
+        modes=models_kargs['modes'],
     )
+
+    input_data = get_input_data(model, inputs)
 
     summarize_model(
         model=model,
         inputs=inputs,
-        batch_size=kargs['batch_size'],
+        input_data=input_data,
+        batch_size=models_kargs['batch_size'],
         logdir=logdir,
     )
 
 
-@pytest.mark.run(order=4)
-def test_convnext_base(kargs):
+
+def test_convnext_base(models_kargs):
 
     # clean out existing model
-    outdir = kargs['outdir']/"pytests/convnext/base"
+    outdir = models_kargs['outdir']/"pytests/convnext/base"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    logger.info(f"Testing input shape: {kargs['input_shape']}")
-    inputs = (1, 6, 64, 64, 1)
+    inputs = (8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -130,27 +137,28 @@ def test_convnext_base(kargs):
     model = ConvNeXtV2(
         model_template='convnext-base',
         input_shape=inputs,
-        modes=kargs['modes'],
+        modes=models_kargs['modes'],
     )
+
+    input_data = get_input_data(model, inputs)
 
     summarize_model(
         model=model,
         inputs=inputs,
-        batch_size=kargs['batch_size'],
+        input_data=input_data,
+        batch_size=models_kargs['batch_size'],
         logdir=logdir,
     )
 
 
-@pytest.mark.run(order=5)
-def test_convnext_large(kargs):
+def test_convnext_large(models_kargs):
 
     # clean out existing model
-    outdir = kargs['outdir']/"pytests/convnext/large"
+    outdir = models_kargs['outdir']/"pytests/convnext/large"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    logger.info(f"Testing input shape: {kargs['input_shape']}")
-    inputs = (1, 6, 64, 64, 1)
+    inputs = (8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -162,12 +170,15 @@ def test_convnext_large(kargs):
     model = ConvNeXtV2(
         model_template='convnext-large',
         input_shape=inputs,
-        modes=kargs['modes'],
+        modes=models_kargs['modes'],
     )
+
+    input_data = get_input_data(model, inputs)
 
     summarize_model(
         model=model,
         inputs=inputs,
-        batch_size=kargs['batch_size'],
+        input_data=input_data,
+        batch_size=models_kargs['batch_size'],
         logdir=logdir,
     )

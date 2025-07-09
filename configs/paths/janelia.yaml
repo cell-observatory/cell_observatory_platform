@@ -1,0 +1,20 @@
+docker_image: null
+apptainer_image: /groups/betzig/betziglab/thayer/develop_torch_cuda_12_8.sif
+
+# No need to change anything below
+# --------------------------------------------------------------------------------
+repo_path: ${oc.env:REPO_DIR}
+data_path: /groups/betzig/betziglab
+server_folder_path: /groups/betzig/betziglab/CellObservatoryData
+workdir: /workspace/${oc.env:REPO_NAME} # mapping your repo path to this path inside the container
+
+# Relative paths will be updated in manager.py based on the running environment
+ray_script: ${oc.env:REPO_DIR}/cluster/ray_local_cluster.sh
+runner_script: ${oc.env:REPO_DIR}/training/runner.py
+dotenv_path: ${oc.env:REPO_DIR}/.env
+
+# Keep them null to be set automatically or change in the main config file
+# --------------------------------------------------------------------------------
+resume_checkpointdir: null
+pretrained_checkpointdir: null
+outdir: null

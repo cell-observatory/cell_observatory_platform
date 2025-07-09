@@ -492,6 +492,11 @@ jobs:
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
       SUPABASE_STAGING_URI: ${{ secrets.SUPABASE_STAGING_URI }}
       SUPABASE_PROD_URI: ${{ secrets.SUPABASE_PROD_URI }}
+      WANDB_API_KEY: ${{ secrets.SUPABASE_PROD_URI }}
+      REPO_NAME: cell_observatory_platform
+      REPO_DIR: ${{ github.workspace }}
+      DATA_DIR: ${{ github.workspace }}
+      STORAGE_SERVER_DIR: /groups/betzig/betziglab/CellObservatoryData
     steps:
       - name: Cache pytest .testmondata
         uses: actions/cache@v4
@@ -514,12 +519,17 @@ jobs:
           id
           id -u
           ls -lhXR
-          
+
+      - name: Set APPTAINER_BINDS
+        id: apptainer_binds
+        run: |
+          echo "APPTAINER_BINDS=--bind ${{ github.workspace }}:/workspace/${{ env.REPO_NAME }} --bind ${{ env.STORAGE_SERVER_DIR }} --bind ~/.cache/ --cwd /workspace/${{ env.REPO_NAME }}" >> "$GITHUB_OUTPUT"
+
       - name: Set APPTAINER_RUN command
         id: apptainer_run
         run: |
           rm -f test_results/* || true
-          echo "APPTAINER_RUN=apptainer exec --userns --no-home --bind ~/.cache/TESTMON --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_RUN=apptainer exec --userns --no-home ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
   
       - name: print environment variables
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
@@ -533,17 +543,25 @@ jobs:
       - name: Test NVIDIA-SMI
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} nvidia-smi
 
+      - name: pytest /tests/utils
+        if: ${{ env.TESTING }}
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 2
+          max_attempts: 2
+          command: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml --testmon tests/utils
+
       - name: pytest /tests/data
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml --testmon tests/data
 
-      - name: pytest /tests/utils
-        if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml --testmon    tests/utils
-
       - name: pytest /tests/models
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml --testmon   tests/models
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml --testmon tests/models
+
+      - name: pytest /tests/training
+        if: ${{ env.TESTING }}
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml --testmon tests/training
 
       - name: print testmon2 
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON

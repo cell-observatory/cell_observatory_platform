@@ -1,0 +1,11 @@
+# Not working for some reason
+
+# https://hydra.cc/docs/configure_hydra/intro/
+# https://hydra.cc/docs/tutorials/basic/running_your_app/working_directory/#automatically-change-current-working-dir-to-jobs-output-dir
+# https://hydra.cc/docs/configure_hydra/workdir/#configuration-for-run
+
+#run:
+#  dir: ${paths.outdir}/runs/${now:%Y-%m-%d}_${now:%H-%M-%S}
+#sweep:
+#  dir: ${paths.outdir}/multiruns/${now:%Y-%m-%d}_${now:%H-%M-%S}
+#  subdir: ${hydra.job.num}

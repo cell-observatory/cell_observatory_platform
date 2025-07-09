@@ -1,7 +1,7 @@
 import sys
 import logging
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Literal
 import inspect
 import functools
 import torch
@@ -9,6 +9,8 @@ import numpy as np
 import tensorstore as ts
 from tifffile import TiffFile
 from skimage.io import imread, imsave
+
+from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -18,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def read_npy(image_path: str) -> np.ndarray:
+def read_npy(image_path: str, dtype: NUMPY_DTYPES | str = NUMPY_DTYPES.fp16) -> np.ndarray:
     if isinstance(image_path, torch.Tensor):
         path = Path(str(image_path.numpy(), "utf-8"))
     else:
@@ -36,37 +38,52 @@ def read_npy(image_path: str) -> np.ndarray:
     if np.isnan(np.sum(img)):
         logger.error("NaN!")
 
-    return img.astype(np.float32)
+    dtype = dtype.value if isinstance(dtype, NUMPY_DTYPES) else NUMPY_DTYPES[dtype].value
+    return img.astype(dtype)
 
 
-def read_tiff(image_path: str) -> np.ndarray:
+def read_tiff(image_path: str, dtype: NUMPY_DTYPES | str = NUMPY_DTYPES.fp16) -> np.ndarray:
     """ Read a TIFF file and return the data as a NumPy array """
     img = imread(image_path)
 
     if np.isnan(np.sum(img)):
         logger.error("NaN!")
 
-    return img.astype(np.float32)
+    dtype = dtype.value if isinstance(dtype, NUMPY_DTYPES) else NUMPY_DTYPES[dtype].value
+    return img.astype(dtype)
 
-def read_zarr(image_path: str, zarr_driver: str = "zarr3") -> np.ndarray:
+
+def read_zarr(
+    image_path: str,
+    zarr_driver: str = "zarr3",
+    dtype: TENSORSTORE_DTYPES | str = TENSORSTORE_DTYPES.fp16,
+) -> np.ndarray:
     """ Read a Zarr file and return the data as a NumPy array """
     spec = {
         "driver": zarr_driver,
         "kvstore": {"driver": "file", "path": image_path},
+        "dtype": ts.uint16
     }
+    dtype = dtype.value if isinstance(dtype, TENSORSTORE_DTYPES) else TENSORSTORE_DTYPES[dtype].value
     ds = ts.open(spec, read=True).result()
-    return ds
+    return ts.cast(ds, dtype)
 
 
-def read_file(image_path: str | Path, **kwargs) -> str:
+def read_file(
+    image_path: str | Path,
+    dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | str = NUMPY_DTYPES.fp16,
+) -> np.ndarray:
     """ Infer the file format of the image based on its extension """
     image_path = str(image_path)
 
     if image_path.endswith(".zarr"):
-        return read_zarr(image_path, **kwargs)
+        return read_zarr(image_path, dtype=dtype)
 
     elif image_path.endswith(".tiff") or image_path.endswith(".tif"):
-        return read_tiff(image_path)
+        return read_tiff(image_path, dtype=dtype)
+
+    elif image_path.endswith(".npy"):
+        return read_npy(image_path, dtype=dtype)
 
     else:
         raise ValueError(f"Unsupported file format for {image_path}")

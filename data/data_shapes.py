@@ -79,9 +79,9 @@ class MULTICHANNEL_3D_HYPERCUBE(Enum):
     def get_spatial_shape(self, tensor: torch.Tensor) -> Tuple[int, int, int] | Tuple[int, int]:
         d = self.get_image_shape_dict(tensor)
 
-        if self is MULTICHANNEL_3D_HYPERCUBE.ZYXC:
+        if self in (MULTICHANNEL_3D_HYPERCUBE.ZYXC, MULTICHANNEL_3D_HYPERCUBE.CZYX):
             return (d['z'], d['y'], d['x'])
-        elif self is MULTICHANNEL_3D_HYPERCUBE.TYXC:
+        elif self in (MULTICHANNEL_3D_HYPERCUBE.TYXC, MULTICHANNEL_3D_HYPERCUBE.CTYX):
             return (d['y'], d['x'])
         else:
             raise ValueError(f'Tensor has an unsupported layout {self}')
@@ -89,7 +89,7 @@ class MULTICHANNEL_3D_HYPERCUBE(Enum):
     def get_temporal_shape(self, tensor: torch.Tensor) -> Tuple:
         d = self.get_image_shape_dict(tensor)
 
-        if self is MULTICHANNEL_3D_HYPERCUBE.TYXC:
+        if self in (MULTICHANNEL_3D_HYPERCUBE.TYXC, MULTICHANNEL_3D_HYPERCUBE.CTYX):
             return d['t']
         else:
             raise ValueError(f'Tensor does not have a temporal dim {self}')
@@ -144,7 +144,7 @@ class MULTICHANNEL_4D_HYPERCUBE(Enum):
         return self is MULTICHANNEL_4D_HYPERCUBE.TZYXC
 
     def has_temporal_dim(self) -> bool:
-        return self is MULTICHANNEL_4D_HYPERCUBE.CTZYX
+        return True
 
     def get_image_shape_tuple(self, tensor: torch.Tensor) -> Tuple:
 

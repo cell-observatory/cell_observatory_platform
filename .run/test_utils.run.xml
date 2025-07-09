@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="test_utils" type="PythonConfigurationType" factoryName="Python" folderName="tests">
+  <configuration default="false" name="test_utils" type="PythonConfigurationType" factoryName="Python" folderName="pytests">
     <module name="cell_observatory_platform" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
@@ -33,9 +33,15 @@
       <option name="volumeBindings">
         <list>
           <DockerVolumeBindingImpl>
-            <option name="containerPath" value="/opt/project" />
+            <option name="containerPath" value="/workspace/cell_observatory_platform" />
             <option name="editable" value="true" />
             <option name="hostPath" value="$PROJECT_DIR$" />
+            <option name="readOnly" value="false" />
+          </DockerVolumeBindingImpl>
+          <DockerVolumeBindingImpl>
+            <option name="containerPath" value="/groups/betzig/betziglab" />
+            <option name="editable" value="true" />
+            <option name="hostPath" value="/groups/betzig/betziglab" />
             <option name="readOnly" value="false" />
           </DockerVolumeBindingImpl>
         </list>
@@ -43,7 +49,7 @@
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="pytest" />
-    <option name="PARAMETERS" value="-s -v --disable-pytest-warnings --color=yes tests/utils" />
+    <option name="PARAMETERS" value="-s -vv --disable-pytest-warnings --color=yes tests/utils" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="true" />

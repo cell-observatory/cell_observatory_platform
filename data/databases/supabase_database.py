@@ -33,6 +33,9 @@ class SupabaseDatabase:
         verbose: bool = False,
         fetch_hypercubes_dataframe: bool = True,
         hypercubes_dataframe_path: Optional[Path] = None,
+        use_cached_hypercubes_dataframe: Optional[bool] = False,
+        protocol: Literal["binary", "csv", "cursor"] = "binary",
+        max_partitions: Optional[int] = 10,
     ):
         """
         A class for accessing Supabase database and retrieving hypercubes.
@@ -55,7 +58,10 @@ class SupabaseDatabase:
             fetch_hypercubes_dataframe: this will automatically initialize the database based on the provided parameters
                 (only turn off for debugging or if the database is already initialized)
             hypercubes_dataframe_path: path to save hypercubes dataframe
-
+            use_cached_hypercubes_dataframe: if True, will use the cached hypercubes dataframe from the given path
+            protocol: The protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+            max_partitions: The maximum number of threads to fetch queries at once
+            
         # TODO: Only works for `Tx128x128x128x2`, need to extend class to work with other hypercube sizes
         """
 
@@ -75,20 +81,36 @@ class SupabaseDatabase:
         self.tile_list = tile_list
         self.verbose = verbose
         self.fetch_hypercubes_dataframe = fetch_hypercubes_dataframe
+        self.use_cached_hypercubes_dataframe = use_cached_hypercubes_dataframe
+        self.protocol = protocol
+        self.max_partitions = max_partitions
 
         self._database_url = self._load_uri()
 
         if self.fetch_hypercubes_dataframe:
-            self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
-                num_timepoints=num_timepoints,
-                max_rois=max_rois,
-                max_tiles=max_tiles,
-                max_hypercubes=max_hypercubes,
-                hpf_list=hpf_list,
-                roi_list=roi_list,
-                tile_list=tile_list
-            )
-            self.save_hypercubes_dataframe()
+            # if use_cached_hypercubes_dataframe is True, it is assumed that
+            # hypercubes_dataframe_path points at a valid CSV file
+            if self.use_cached_hypercubes_dataframe:
+                self.hypercubes_dataframe = pd.read_csv(self.hypercubes_dataframe_path)
+            else:
+                self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
+                    num_timepoints=num_timepoints,
+                    max_rois=max_rois,
+                    max_tiles=max_tiles,
+                    max_hypercubes=max_hypercubes,
+                    hpf_list=hpf_list,
+                    roi_list=roi_list,
+                    tile_list=tile_list
+                )
+
+                # this is a hack to check that dataloading works correctly
+                # TODO: remove when DB is updated fix the output_folder paths
+                self.hypercubes_dataframe["output_folder"] = (
+                    self.hypercubes_dataframe["output_folder"]
+                        .str.replace(r"/6/9/", "/7/4/", regex=True)
+                )
+
+                self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
         else:
             self.hypercubes_dataframe = None
 
@@ -216,8 +238,9 @@ class SupabaseDatabase:
         hpf_list: Optional[Iterable[int]] = None,
         roi_list: Optional[Iterable[int]] = None,
         tile_list: Optional[Iterable[str]] = None,
-    ) -> str:
+    ) -> List[str]:
         column_names = [
+            'first_pc_id',
             'prepared_id',
             'tile_name',
             'x_start',
@@ -250,13 +273,34 @@ class SupabaseDatabase:
             tile_list=tile_list,
         )
 
-        return f"""
-            SELECT
-                {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
-            FROM {table_name} {table_name_shortcut}
-            {filters} 
-            {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
-        """
+        max_rows = self.count_rows(table_name=table_name)
+
+        if max_hypercubes is None:
+            max_hypercubes = max_rows
+
+        if max_hypercubes > max_rows:
+            max_hypercubes = max_rows
+
+        if max_hypercubes > 1000:
+            # select max number of partitions that divides the number of rows in each partition evenly
+            partition_num = max([i for i in range(1, self.max_partitions+1) if max_hypercubes % i == 0]) if max_hypercubes is not None else 1
+            print(f"Using {partition_num} partitions to query.")
+        else:
+            partition_num = 1
+
+        rows_per_partition = max_hypercubes // partition_num
+        return [
+            f"""
+                SELECT
+                    {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
+                FROM {table_name} {table_name_shortcut}
+                {filters} 
+                ORDER BY first_pc_id DESC
+                LIMIT {rows_per_partition}
+                OFFSET {rows_per_partition * i}
+            """
+            for i in range(partition_num)
+        ]
 
 
     def _create_t_128_128_128_2_hypercube_view(
@@ -286,35 +330,46 @@ class SupabaseDatabase:
         ]
 
         return f"""
-            SELECT
-                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
-                array_length(array_agg(pc.occupancy_ratio), 1) / ptv.channel_size as time_size,
-                div(pc.time::numeric, {num_timepoints}::numeric) * {num_timepoints}::numeric as time_start,
-                array_agg(pc.occupancy_ratio ORDER BY pc.channel, pc.time) as occupancy_ratios,
-                string_agg(pc.channel_target, ','::text ORDER BY pc.channel, pc.time) as channel_targets,
-                array_agg(pc.time ORDER BY pc.channel, pc.time) as timepoints
-            FROM prepared_cubes pc
-            JOIN prepared_tiles_view ptv
-            ON (pc.prepared_id, pc.tile_name) = (ptv.prepared_id, ptv.tile_name)
-            WHERE
-                ptv.cube_size = 128 AND ptv.channel_size = 2
-            GROUP BY
-                {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
-                (div(pc.time::numeric, {num_timepoints}::numeric))
-            {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
+            SELECT 
+                first_pc_id,
+                time_start,
+                time_size,
+                {', '.join([f'{col}' for col in prepared_cubes_column_names + prepared_tiles_view_column_names])},
+                occupancy_ratios[:{num_timepoints}] as occupancy_ratios_ch_0,
+                occupancy_ratios[{num_timepoints} + 1:] as occupancy_ratios_ch_1,
+                channel_targets,
+                timepoints
+            FROM
+            (
+                SELECT
+                    min(pc.id) as first_pc_id,
+                    {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
+                    {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
+                    array_length(array_agg(pc.occupancy_ratio), 1) / ptv.channel_size as time_size,
+                    div(pc.time::numeric, {num_timepoints}::numeric) * {num_timepoints}::numeric as time_start,
+                    array_agg(pc.occupancy_ratio ORDER BY pc.channel, pc.time) as occupancy_ratios,
+                    string_agg(pc.channel_target, ','::text ORDER BY pc.channel, pc.time) as channel_targets,
+                    array_agg(pc.time ORDER BY pc.channel, pc.time) as timepoints
+                FROM prepared_cubes pc
+                JOIN prepared_tiles_view ptv
+                ON (pc.prepared_id, pc.tile_name) = (ptv.prepared_id, ptv.tile_name)
+                WHERE
+                    ptv.cube_size = 128 AND ptv.channel_size = 2
+                GROUP BY
+                    {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
+                    {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
+                    (div(pc.time::numeric, {num_timepoints}::numeric))
+                {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
+            ) hypercubes
         """
 
-    def save_hypercubes_dataframe(self, hypercubes_dataframe_path: Optional[Path] = None):
-        if hypercubes_dataframe_path is not None:
-            self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
-
-        self.hypercubes_dataframe_path.parent.mkdir(parents=True, exist_ok=True)
+    def save_hypercubes_dataframe(self, hypercubes_dataframe_path: Path):
+        hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
+        hypercubes_dataframe_path.parent.mkdir(parents=True, exist_ok=True)
 
         if self.hypercubes_dataframe is not None:
-            self.hypercubes_dataframe.to_csv(self.hypercubes_dataframe_path, index=True, header=True)
-            print(f"Saved hypercubes dataframe to {self.hypercubes_dataframe_path}")
+            self.hypercubes_dataframe.to_csv(hypercubes_dataframe_path, index=True, header=True)
+            print(f"Saved hypercubes dataframe to {hypercubes_dataframe_path}")
         else:
             raise ValueError('Cannot save hypercubes dataframe `self.hypercubes_dataframe` is empty.')
 
@@ -340,10 +395,18 @@ class SupabaseDatabase:
         print(f"Saved hypercubes dataframe configs to {self.hypercubes_dataframe_path.with_suffix('.json')}")
 
 
-    def execute_query(self, query: str) -> pd.DataFrame:
+    def execute_query(self, query: str | List[str]) -> pd.DataFrame:
         try:
-            result = cx.read_sql(conn=self._database_url, query=query)
-            return result
+            # avoid the costly COUNT query for pandas by using arrow as an intermediate step
+            # https://sfu-db.github.io/connector-x/freq_questions.html
+            result = cx.read_sql(
+                conn=self._database_url,
+                query=query,
+                protocol=self.protocol,
+                return_type="arrow",
+            )
+            df = result.to_pandas(split_blocks=False, date_as_object=False)
+            return df
         except Exception as e:
             logger.error(f"Failed to execute query: {e}")
             raise
@@ -455,7 +518,8 @@ class SupabaseDatabase:
             )
 
         if self.verbose:
-            print(f"Executing query: {self.last_query}")
+            print(f"Executing query with protocol: {self.protocol}")
+            print('\n'.join(self.last_query) if isinstance(self.last_query, list) else self.last_query)
 
         table = self.execute_query(self.last_query)
 

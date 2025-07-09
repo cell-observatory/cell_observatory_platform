@@ -7,20 +7,20 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
-
-from training.backend import summarize_model
+from tests.conftest import models_kargs
+from training.helpers import summarize_model
+from tests.helpers import get_masked_input_data
 from models.maskedautoencoder import MaskedAutoEncoder
 
-@pytest.mark.run(order=1)
-def test_mae_custom(kargs):
+
+def test_mae_custom(models_kargs):
 
     # clean out existing model
-    outdir = kargs['outdir']/"pytests/mae/custom"
+    outdir = models_kargs['outdir']/"pytests/mae/custom"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    logger.info(f"Testing input shape: {kargs['input_shape']}")
-    inputs = (1, 6, 64, 64, 1)
+    inputs = (8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -32,34 +32,36 @@ def test_mae_custom(kargs):
     model = MaskedAutoEncoder(
         model_template='mae',
         input_shape=inputs,
-        embed_dim=kargs['hidden_size'],
-        lateral_patch_size=kargs['patches'],
+        embed_dim=models_kargs['hidden_size'],
+        lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
-        num_heads=kargs['heads'],
-        depth=kargs['repeats'],
-        modes=kargs['modes'],
-        proj_drop_rate=kargs['dropout'],
-        fixed_dropout_depth=kargs['fixed_dropout_depth'],
+        num_heads=models_kargs['heads'],
+        depth=models_kargs['repeats'],
+        modes=models_kargs['modes'],
+        proj_drop_rate=models_kargs['dropout'],
+        fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
+
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,
         inputs=inputs,
-        batch_size=kargs['batch_size'],
+        input_data=input_data,
+        batch_size=models_kargs['batch_size'],
         logdir=logdir,
     )
 
 
-@pytest.mark.run(order=2)
-def test_mae_tiny(kargs):
+
+def test_mae_tiny(models_kargs):
 
     # clean out existing model
-    outdir = kargs['outdir']/"pytests/mae/tiny"
+    outdir = models_kargs['outdir']/"pytests/mae/tiny"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    logger.info(f"Testing input shape: {kargs['input_shape']}")
-    inputs = (1, 6, 64, 64, 1)
+    inputs = (8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -71,30 +73,32 @@ def test_mae_tiny(kargs):
     model = MaskedAutoEncoder(
         model_template='mae-tiny',
         input_shape=inputs,
-        lateral_patch_size=kargs['patches'],
+        lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
-        proj_drop_rate=kargs['dropout'],
-        fixed_dropout_depth=kargs['fixed_dropout_depth'],
+        proj_drop_rate=models_kargs['dropout'],
+        fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
+
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,
         inputs=inputs,
-        batch_size=kargs['batch_size'],
+        input_data=input_data,
+        batch_size=models_kargs['batch_size'],
         logdir=logdir,
     )
 
 
-@pytest.mark.run(order=3)
-def test_mae_small(kargs):
+
+def test_mae_small(models_kargs):
 
     # clean out existing model
-    outdir = kargs['outdir']/"pytests/mae/small"
+    outdir = models_kargs['outdir']/"pytests/mae/small"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    logger.info(f"Testing input shape: {kargs['input_shape']}")
-    inputs = (1, 6, 64, 64, 1)
+    inputs = (8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -106,30 +110,32 @@ def test_mae_small(kargs):
     model = MaskedAutoEncoder(
         model_template='mae-small',
         input_shape=inputs,
-        lateral_patch_size=kargs['patches'],
+        lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
-        proj_drop_rate=kargs['dropout'],
-        fixed_dropout_depth=kargs['fixed_dropout_depth'],
+        proj_drop_rate=models_kargs['dropout'],
+        fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
+
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,
         inputs=inputs,
-        batch_size=kargs['batch_size'],
+        input_data=input_data,
+        batch_size=models_kargs['batch_size'],
         logdir=logdir,
     )
 
 
-@pytest.mark.run(order=4)
-def test_mae_base(kargs):
+
+def test_mae_base(models_kargs):
 
     # clean out existing model
-    outdir = kargs['outdir']/"pytests/mae/base"
+    outdir = models_kargs['outdir']/"pytests/mae/base"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    logger.info(f"Testing input shape: {kargs['input_shape']}")
-    inputs = (1, 6, 64, 64, 1)
+    inputs = (8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -141,30 +147,32 @@ def test_mae_base(kargs):
     model = MaskedAutoEncoder(
         model_template='mae-base',
         input_shape=inputs,
-        lateral_patch_size=kargs['patches'],
+        lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
-        proj_drop_rate=kargs['dropout'],
-        fixed_dropout_depth=kargs['fixed_dropout_depth'],
+        proj_drop_rate=models_kargs['dropout'],
+        fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
+
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,
         inputs=inputs,
-        batch_size=kargs['batch_size'],
+        input_data=input_data,
+        batch_size=models_kargs['batch_size'],
         logdir=logdir,
     )
 
 
-@pytest.mark.run(order=5)
-def test_mae_large(kargs):
+
+def test_mae_large(models_kargs):
 
     # clean out existing model
-    outdir = kargs['outdir']/"pytests/mae/large"
+    outdir = models_kargs['outdir']/"pytests/mae/large"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    logger.info(f"Testing input shape: {kargs['input_shape']}")
-    inputs = (1, 6, 64, 64, 1)
+    inputs = (8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -176,30 +184,32 @@ def test_mae_large(kargs):
     model = MaskedAutoEncoder(
         model_template='mae-large',
         input_shape=inputs,
-        lateral_patch_size=kargs['patches'],
+        lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
-        proj_drop_rate=kargs['dropout'],
-        fixed_dropout_depth=kargs['fixed_dropout_depth'],
+        proj_drop_rate=models_kargs['dropout'],
+        fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
+
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,
         inputs=inputs,
-        batch_size=kargs['batch_size'],
+        input_data=input_data,
+        batch_size=models_kargs['batch_size'],
         logdir=logdir,
     )
 
 
-@pytest.mark.run(order=6)
-def test_mae_huge(kargs):
+
+def test_mae_huge(models_kargs):
 
     # clean out existing model
-    outdir = kargs['outdir']/"pytests/mae/huge"
+    outdir = models_kargs['outdir']/"pytests/mae/huge"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    logger.info(f"Testing input shape: {kargs['input_shape']}")
-    inputs = (1, 6, 64, 64, 1)
+    inputs = (8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -211,15 +221,18 @@ def test_mae_huge(kargs):
     model = MaskedAutoEncoder(
         model_template='mae-huge',
         input_shape=inputs,
-        lateral_patch_size=kargs['patches'],
+        lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
-        proj_drop_rate=kargs['dropout'],
-        fixed_dropout_depth=kargs['fixed_dropout_depth'],
+        proj_drop_rate=models_kargs['dropout'],
+        fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
+
+    input_data = get_masked_input_data(model, inputs)
 
     summarize_model(
         model=model,
         inputs=inputs,
-        batch_size=kargs['batch_size'],
+        input_data=input_data,
+        batch_size=models_kargs['batch_size'],
         logdir=logdir,
     )

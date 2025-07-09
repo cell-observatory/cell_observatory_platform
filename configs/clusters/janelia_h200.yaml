@@ -1,8 +1,6 @@
 defaults:
   - _self_
 
-launcher_type: lsf # type of launcher to use
-
 # (IMPORTANT) NOTE 1:
 #     Set the number of nodes with the desired cpus and gpus per node and let lsf allocate nodes as needed.
 #     You can set the `exclusive` if you don't want other jobs to run on the same node.
@@ -14,19 +12,11 @@ launcher_type: lsf # type of launcher to use
 #        For example, on a node with 4 gpus, we will create 4 actors that all live within the same cgroup
 #        specified by the original allocation.
 
-job_name: test
-docker_image: null # docker is not supported on most clusters use apptainer instead
-apptainer_image: /groups/betzig/betziglab/thayer/develop_torch_cuda_12_8.sif # (path to *.sif file if applicable)
-python_env: python # python executable to use (if not using apptainer)
-mount_path: /groups/betzig/betziglab
-repo_name: cell_observatory_platform
-repo_path: ${mount_path}/thayer/${repo_name}
-script: ${repo_path}/training/train.py
-ray_script: ${repo_path}/clusters/ray_lsf_cluster.sh
-outdir: ${repo_path}/pretrained_models
-
+job_name: ${experiment_name}
+launcher_type: lsf # type of launcher to use
 partition: gpu_h200   # partition to submit the job to
 qos: null   # qos for the job
+python_env: python # python executable to use (if not using apptainer)
 
 batch_size: 4096 # total batch size
 
@@ -39,11 +29,12 @@ cpus_per_worker: ${eval:'${clusters.gpus_per_worker} * ${clusters.cpus_per_gpu}'
 mem_per_worker: ${eval:'${clusters.cpus_per_worker} * ${clusters.mem_per_cpu}'}
 total_gpus: ${eval:'${clusters.worker_nodes} * ${clusters.gpus_per_worker}'}  # total number of GPUS across all nodes
 total_cpus: ${eval:'${clusters.worker_nodes} * ${clusters.cpus_per_worker}'}  # total number of CPUS across all nodes
-batch_per_gpu: ${eval:'${batch_size} // ${total_gpus}'} # batch size for each gpu
+batch_size_per_gpu: ${eval:'${clusters.batch_size} // ${clusters.total_gpus}'} # batch size for each gpu
 # an additional cpu core will be automatically allocated on the headnode for the training coordinator
-cpus_for_training_coordinator: 0
-head_node_cpus: ${eval:'${clusters.cpus_per_worker} * ${clusters.cpus_for_training_coordinator}'}
-
+cpus_for_training_coordinator: 1
+head_node_cpus: ${eval:'${clusters.cpus_per_worker} + ${clusters.cpus_for_training_coordinator}'}
+head_node_gpus: ${clusters.gpus_per_worker} # number of gpus on the head node (usually gpus per worker)
+head_node_mem: ${clusters.mem_per_worker} # memory on the head node (usually mem per worker)
 
 exclusive: null   # whether to use exclusive node allocation (not recommended)
 nodelist: null    # list of specific nodes to use
@@ -55,7 +46,7 @@ max_worker_heartbeat_timeout: 2 # in minutes (to prevent indefinite hang if one 
 # Ray ScalingConfig (some variables are set to null to be set in the training loop)
 run_config:
   log_to_file: true
-  storage_path: ${outdir}
+  storage_path: ${paths.outdir}
   checkpoint_config:
     num_to_keep: 3
     checkpoint_score_attribute: loss
@@ -68,9 +59,9 @@ torch_config:
 
 scaling_config:
   use_gpu: true
-  num_workers: null # set automatically
+  num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
   resources_per_worker:
-    CPU: null # set automatically
+    CPU: ${clusters.cpus_per_gpu}
     GPU: 1
   trainer_resources:
-    CPU: 1 # an additional cpu core for the training coordinator
+    CPU: ${clusters.cpus_for_training_coordinator} # an additional cpu core for the training coordinator

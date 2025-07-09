@@ -100,6 +100,7 @@ class MaskedPredictor(nn.Module):
         input_shape=(1, 6, 64, 64, 1),
         lateral_patch_size=16,
         axial_patch_size=1,
+        temporal_patch_size=1,
         input_embed_dim=768,
         output_embed_dim=768,
         embed_dim=384,
@@ -141,6 +142,7 @@ class MaskedPredictor(nn.Module):
 
         self.axial_patch_size = axial_patch_size
         self.lateral_patch_size = lateral_patch_size
+        self.temporal_patch_size = temporal_patch_size
 
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
@@ -174,6 +176,7 @@ class MaskedPredictor(nn.Module):
             input_shape=self.input_shape,
             lateral_patch_size=self.lateral_patch_size,
             axial_patch_size=self.axial_patch_size,
+            temporal_patch_size=self.temporal_patch_size,
             embed_dim=self.embed_dim
         )
 

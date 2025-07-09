@@ -4,7 +4,7 @@ defaults:
 _target_: data.databases.supabase_database.SupabaseDatabase
 dbname: 'staging'
 
-num_timepoints: 16 # number of timepoints for each hypercube
+num_timepoints: ${datasets.input_shape.0} # number of timepoints for each hypercube
 
 max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
 max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
@@ -15,4 +15,6 @@ roi_list: null # list of specific ROIs to filter
 tile_list: null # list of specific tiles to filter
 verbose: true # to print debug messages
 fetch_hypercubes_dataframe: true # automatically initialize the database based on the provided parameters
-hypercubes_dataframe_path: null # path to the hypercubes dataframe (path/to/repo/databases/default_hypercubes_dataframe.csv)
+hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv # path to the hypercubes dataframe (path/to/repo/databases/default_hypercubes_dataframe.csv)
+use_cached_hypercubes_dataframe: false # if True, will use the cached hypercubes dataframe from the given path
+protocol: binary # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')

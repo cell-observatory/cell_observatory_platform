@@ -1,0 +1,173 @@
+defaults:
+  - clusters: local                          # configs/clusters/local.yaml
+  - paths: local                             # configs/paths/local.yaml
+  - datasets: pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
+  - models: mae/tiny                         # configs/models/mae/tiny.yaml
+  - hooks: hooks                             # configs/hooks/hooks.yaml
+  - checkpoint: checkpoint                   # configs/checkpoint/checkpoint.yaml
+  - loggers: loggers                         # configs/loggers/loggers.yaml
+  - evaluation: base_evaluator               # configs/evaluation/base_evaluator.yaml
+  - deepspeed: zero3                         # configs/deepspeed/zero3.yaml
+  - optimizers: lamb                         # configs/optimizers/lamb.yaml
+  - schedulers: test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
+  - _self_
+
+
+# experiment name (used for logging)
+experiment_name: tests
+
+# task
+task: pretrain_mae
+
+# Model type
+network: mae
+
+# engine type
+engine: deepspeed
+
+# distributed framework
+distributed_framework: ray
+
+# job type
+job_type: train # train or test
+
+# trainer type
+trainer: training.loops.EpochBasedTrainer
+
+# benchmark loop to run for each worker
+loop_per_worker_script: training.loops.train_loop_per_worker
+
+# training quantization
+quantization: float16 # data type for training, options: float32, float16
+
+# dtype for training data
+dataset_dtype: float16 # data type for training, options: float32, float16
+
+# overrides
+# --------------------------------------------------------------------------------
+
+#paths:
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null 
+  pretrained_checkpointdir: null
+
+# clusters
+clusters:
+  batch_size: 2 # total batch size
+  worker_nodes: 1 # number of worker nodes
+  gpus_per_worker: 1 # number of gpus per worker node
+  cpus_per_gpu: 4 # number of cpu cores per gpu
+  mem_per_cpu: 16000 # ram per cpu core
+
+# data 
+datasets:
+  # mainly used by other configs but determined here for ease of access
+  batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
+  patch_shape: [4, 16, 16, 16]
+
+  split: 0.1
+  dataloader_type: torch
+  return_dataloader: true
+  distributed_sampler: true
+  collate_fn: ${datasets.masking.collate_fn}
+
+  databases:
+    max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+    max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+    max_hypercubes: 200 # maximum number of hypercubes to return
+    use_cached_hypercubes_dataframe: false
+    protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+
+  dataset:
+    _target_: data.datasets.pretrain_dataset.PretrainDataset
+    input_layout: 
+      _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
+      value: TZYXC
+
+# model
+models:
+  _target_: models.maskedautoencoder.MaskedAutoEncoder
+  input_fmt: BTZYXC
+  input_shape: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
+  temporal_patch_size: ${datasets.patch_shape.0}
+  lateral_patch_size: ${datasets.patch_shape.1}
+  axial_patch_size: ${datasets.patch_shape.2}
+
+# checkpoint
+checkpoint:
+  checkpoint_manager:
+    checkpoint_tag: latest_model
+    load_universal_checkpoint: ${deepspeed.checkpoint.load_universal}
+
+# deepspeed
+deepspeed:
+  zero_optimization:
+    stage: 1
+  checkpoint:
+    load_universal: true
+
+# evaluation
+evaluation:
+  val_begin: 0
+  val_interval: 1
+  # used by BestMetricSaver to save best metric
+  # needs to match one of metrics saved per epoch by loss_dict
+  # in the training loop or evaluator.evaluate() in the evaluation loop
+  val_metric: val_step_loss
+  val_mode: min # mode for the validation metric, can be 'max' or 'min'
+  evaluator:
+    _target_: evaluation.base_evaluation.BaseEvaluator
+    training_metrics:
+      - "step_loss": "mean"
+
+# loggers
+loggers:
+  event_writers:
+      - _target_: training.loggers.LocalEventWriter
+        save_dir: ${loggers.logdir}
+        step_scalars_prefix: step_logbook
+        epoch_scalars_prefix: epoch_logbook
+        scalars_save_format: csv
+
+# hooks
+hooks:
+  hooks_list:
+  - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.SamplerSetter
+  - _target_: training.hooks.LRScheduler
+  - _target_: training.hooks.IterationTimer
+    warmup_iter: 2
+  - _target_: training.hooks.PeriodicWriter
+  - _target_: training.hooks.PeriodicCheckpointer
+    period: 1
+    file_prefix: latest_model
+  - _target_: training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: training.hooks.TorchProfiler
+    output_dir: ${loggers.logdir}/profiler
+    schedule:
+      skip_first: 1
+      warmup: 1
+      active: 3
+      repeat: 2
+      wait: 1  
+    activities: 
+      - CUDA
+      - CPU
+    save_tensorboard: true
+  - _target_: training.hooks.TorchMemoryStats
+    step_period: 5
+    epoch_period: 1
+    logdir: ${loggers.logdir}
+  - _target_: training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true
+  - _target_: training.hooks.EarlyStopHook
+    patience: 10
+    stopping_threshold: 0.01
+    mode: ${evaluation.val_mode}
+    metric_name: ${evaluation.val_metric}

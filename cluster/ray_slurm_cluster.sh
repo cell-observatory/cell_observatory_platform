@@ -4,7 +4,8 @@ export RAY_DEDUP_LOGS=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # parse args from `args_parser.sh` getopts
-source ./args_parser.sh
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$DIR/args_parser.sh"
 
 tmpdir=/tmp/symlink_$(uuidgen | cut -d "-" -f5)
 echo "Create symlink: $outdir -> $tmpdir"
@@ -48,7 +49,7 @@ export head_node
 export head_node_ip
 export cluster_address
 
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ./ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir &
+apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir &
 sleep 10
 
 ############################## ADD WORKER NODES
@@ -57,44 +58,41 @@ worker_ids=()
 num_workers=$((nodes - 1))
 for i in $(seq 1 $num_workers)
 do
-    mkdir -p "${outdir}/ray_worker_${i}"
-    echo "Adding worker: ${outdir}/ray_worker_${i}"
+    mkdir -p "${outdir}/ray_worker_logs/ray_worker_${i}"
+    echo "Adding worker: ${outdir}/ray_worker_logs/ray_worker_${i}"
     if [[ "$exclusive" == "true" ]]; then
         echo "Exclusive mode is enabled"
-        sbatch  --partition $partition \
-                --job-name="${outdir}/ray_worker_${i}" \
+        jid=$(sbatch  --partition $partition \
+                --job-name="${jobname}_ray_worker_${i}" \
                 --nodes 1 \
                 --ntasks 1 \
                 --exclusive \
-                --output="${outdir}/ray_worker_${i}.log" \
+                --output="${outdir}/ray_worker_logs/ray_worker_${i}.log" \
                 --export=ALL \
                 --wrap="apptainer exec --userns --nv \
-                  --bind $workspace  --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
-                  $env ./ray_start_worker.sh -a $cluster_address -c $cpus -g $gpus -t $tmpdir"
+                  --bind $workspace  --bind $bind --bind $outdir/ray_worker_logs/ray_worker_${i}:$tmpdir \
+                  $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+                  -a $cluster_address -c $cpus -g $gpus -t $tmpdir" \
+                | awk '{print $4}')
     else
-        sbatch  --partition $partition \
-                --job-name="${outdir}/ray_worker_${i}" \
+        jid=$(sbatch  --partition $partition \
+                --job-name="${jobname}_ray_worker_${i}" \
                 --nodes 1 \
                 --ntasks 1 \
-                -n=$cpus \
+                --cpus-per-task=$cpus \
                 --gres=gpu:$gpus \
                 --mem=$mem \
-                --output="${outdir}/ray_worker_${i}.log" \
+                --output="${outdir}/ray_worker_logs/ray_worker_${i}.log" \
                 --export=ALL \
                 --wrap="apptainer exec --userns --nv \
-                  --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
-                  $env ./ray_start_worker.sh -a $cluster_address -c $cpus -g $gpus -t $tmpdir"
+                  --bind $workspace --bind $bind --bind $outdir/ray_worker_logs/ray_worker_${i}:$tmpdir \
+                  $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+                  -a $cluster_address -c $cpus -g $gpus -t $tmpdir" \
+                | awk '{print $4}')
     fi
 
-    jid=$(sacct -n -X --format jobid --name "${outdir}/ray_worker_${i}")
-    while [ -z "$jid" ]
-    do
-        sleep 1
-        jid=$(sacct -n -X --format jobid --name "${outdir}/ray_worker_${i}")
-    done
-
     worker_ids+=($jid)
-    echo "Running ray_worker_${i} @ ${jid}"
+    echo "Running ${jobname}_ray_worker_${i} @ ${jid}"
 done
 
 ############################## CHECK STATUS
@@ -120,7 +118,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ./ray_check_status.sh -a $cluster_address -r $nodes
+apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r $nodes
 
 ############################## RUN WORKLOAD
 

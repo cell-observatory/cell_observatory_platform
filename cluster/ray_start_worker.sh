@@ -33,12 +33,9 @@ echo $job
 $job &
 
 
-if command -v srun >/dev/null 2>&1; then
-    echo "SLURM is available on this cluster"
-    srun --version
+if [[ -n "$SLURM_JOB_ID" ]]; then
+    echo "SLURM detected (job $SLURM_JOB_ID)"
     scheduler="slurm"
-    echo "Ray worker SLURM ID: $SLURM_JOB_ID"
-
 elif command -v bsub >/dev/null 2>&1; then
     echo "LSF is available on this cluster"
     lsid
