@@ -1,6 +1,5 @@
 import os
 from typing import Dict, Any, Tuple
-
 import torch
 from torch.utils.data import get_worker_info
 
@@ -64,6 +63,10 @@ class PretrainDataset(BaseDataset):
 
     def _collate(self, _data: Dict[str, Any]) -> DataSample:
         img_tensor = torch.from_numpy(_data["image"])
+
+        if torch.isnan(img_tensor).all() or torch.isinf(img_tensor).all():
+            raise ValueError(f"Invalid training data: {_data['meta']}")
+
         img_sample = ImageList(
             img_tensor,
             layout=self.input_layout,

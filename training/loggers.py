@@ -2,11 +2,11 @@
 Adopted with Apache License 2.0 from
 https://github.com/facebookresearch/detectron2/detectron2/utils/events.py
 """
-
-
+import logging
 import os
 import math
 import itertools
+import sys
 from pathlib import Path
 from abc import abstractmethod
 from collections import defaultdict
@@ -23,6 +23,13 @@ from utils.context import (
     get_world_size,
     barrier
 )
+
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
 class EventRecorder:
@@ -64,7 +71,7 @@ class EventRecorder:
         for k, v in kwargs.items():
             assert isinstance(v, (int, float)), \
                 f"Scalar value must be an int or float, got {type(v)} for key '{k}'"
-            if scope == "epoch" and math.isnan(v):
+            if scope == "epoch" and (math.isnan(v) or math.isinf(v)):
                 raise ValueError(f"Scalar value for key '{k}' is not finite: {v}")
             k = f"{prefix}{k}" if prefix else k
             self.put_scalar(k, v, scope=scope, reduce_method=reduce_method)
@@ -339,11 +346,13 @@ class LocalEventWriter(EventWriter):
             if not scalar_dict:
                 raise ValueError("No scalars to write. "
                                 "Please ensure scalars are recorded before writing.")
+
             if self.scalars_save_format == "csv":
                 if scope == "step":
                     df = self._make_step_table(scalar_dict)
                     savepath = self.step_scalars_savepath
                 elif scope == "epoch":
+                    logger.info(f"Epoch scalars: {scalar_dict}")
                     df = self._make_epoch_table(scalar_dict)
                     savepath = self.epoch_scalars_savepath
                 df.to_csv(savepath,

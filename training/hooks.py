@@ -24,8 +24,6 @@ from fvcore.common.timer import Timer
 from ray.train import Checkpoint, report
 
 from training.loggers import EventWriter
-from training.helpers import summarize_model
-from tests.helpers import get_masked_input_data
 from utils.context import is_main_process, gather_and_reduce, process_rank
 
 
@@ -354,8 +352,7 @@ class IterationTimer(HookBase):
         # resume the epoch timer
         # after the validation loop
         sec = self._val_timer.seconds()
-        self.trainer.event_recorder.put_scalars(val_time=sec, \
-                                                scope="epoch")
+        self.trainer.event_recorder.put_scalars(val_time=sec, scope="epoch")
         self._epoch_timer.resume()
 
     def before_val_step(self):
