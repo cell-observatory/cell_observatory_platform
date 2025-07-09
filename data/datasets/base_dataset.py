@@ -12,6 +12,7 @@ from torch.utils.data._utils.collate import default_collate as torch_default_col
 from data.structures.data_sample import DataSample
 from data.structures.image_list import cat_image_lists
 from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
+from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -132,6 +133,7 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         input_layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE,
         transforms: Optional[Sequence] = None,
         server_folder_path: Optional[Path] = None,
+        dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | str = NUMPY_DTYPES.fp16,
     ):
         """
         Args:
@@ -147,6 +149,7 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         self.server_folder_path = server_folder_path
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
         self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(self.hypercubes_dataframe_path)
+        self.dtype = dtype
 
         self._index = None
         self._build_index()
@@ -185,4 +188,4 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
     def __getitem__(self, idx: int):
         _data = self._load_sample(self._index[idx])
         data = self._collate(_data)
-        return self.transforms(data)
+        return data

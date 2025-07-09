@@ -28,6 +28,9 @@ experiment_name: benchmark_dataloaders_4d
 # to device manually 
 distributed_framework: manual
 
+# dtype for training data
+dataset_dtype: float16 # data type for training, options: float32, float16
+
 # overrides
 # --------------------------------------------------------------------------------
 
@@ -57,7 +60,7 @@ clusters:
 
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 4 # number of cpu cores per gpu
+  cpus_per_gpu: 8 # number of cpu cores per gpu
   # NOTE: to ensure that we can benchmark the dataloaders
   #       without running into memory issues.
   mem_per_cpu: 124000 # ram per cpu core
