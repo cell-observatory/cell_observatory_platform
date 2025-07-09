@@ -139,7 +139,7 @@ dmypy.json
 # Data
 /databases
 outputs/
-dataset/
+/databases
 archive/
 logs/
 pretrained_models/
