@@ -1,5 +1,5 @@
 Bootstrap: localimage
-From: pytorch_25.01-py3.sif
+From: pytorch_25.06-py3.sif
 Stage: base
 
 %environment
