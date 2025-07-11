@@ -301,7 +301,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Get bootstrap pytorch .sif from 'apptainerfile.def'
-      #  (e.g. 25.01-py3)
+      #  (e.g. 25.06-py3)
         id: bootstrap_sif
         run: |
             echo "sed -n 's/From: //p' apptainerfile.def"
@@ -318,21 +318,21 @@ jobs:
             echo "BUILT_SIF_PATH=${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
 
       - name: Get bootstrap pytorch version from 'apptainerfile.def'
-      #  (e.g. 25.01-py3)
+      #  (e.g. 25.06-py3)
         id: sif_pytorch_version
         run: |
             echo "SIF_PYTORCH_VERSION=$(grep -Po 'pytorch_\K.*(?=.sif)' apptainerfile.def)" >> "$GITHUB_OUTPUT"
             cat "$GITHUB_OUTPUT"
 
       - name: Get dockerfile pytorch version from 'Dockerfile'
-      #  (e.g. 25.01-py3)
+      #  (e.g. 25.06-py3)
         id: dockerfile_pytorch_version
         run: |
             echo "DOCKER_PYTORCH_VERSION=$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
             cat "$GITHUB_OUTPUT"
 
       - name: Get dockerfile pytorch image from 'Dockerfile' 
-      # (e.g. nvcr.io/nvidia/pytorch:25.01-py3)
+      # (e.g. nvcr.io/nvidia/pytorch:25.06-py3)
         id: dockerfile_pytorch_image
         run: |
             echo "DOCKER_PYTORCH_IMAGE=$(grep -Po -m 1 'FROM \K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
