@@ -102,8 +102,11 @@ class MaskGenerator(object):
         random_masking_ratio: float = 0.7,
         channels_to_mask: Optional[Sequence[int]] = None,
         time_downsample_pattern: Optional[Sequence[int]] = None,
-        mask_mode: MaskModes = MaskModes.RANDOM
+        mask_mode: MaskModes = MaskModes.RANDOM,
+        device: str = "cuda"
     ):
+        self.device = device
+
         self.layout = layout
         
         self.input_shape = input_shape
@@ -318,7 +321,7 @@ class MaskGenerator(object):
         original_patch_indices = torch.utils.data.default_collate(original_indices_list)
         return masks, collated_masks_context, collated_masks_target, original_patch_indices
 
-    def _generate_random_mask(self, batch_size: int, space_only=False):
+    def _generate_random_mask(self, batch_size: int, space_only=False, device="cuda"):
         B, T = batch_size, self.time
         # works no matter the data layout since we set d=1 for 2D data
         S = self.depth * self.height * self.width  
@@ -328,14 +331,14 @@ class MaskGenerator(object):
         # standard MAE masking logic
         def _mask_sequence(axis_len: int):
             ctx_len = int(axis_len * (1 - self.random_masking_ratio))
-            noise = torch.rand(B, axis_len)
+            noise = torch.rand(B, axis_len, device=device)
             shuffle = torch.argsort(noise, dim=1)
             orig_idx = torch.argsort(shuffle, dim=1)
 
             ctx_idx = shuffle[:, :ctx_len]
             tgt_idx = shuffle[:, ctx_len:]
 
-            base = torch.ones_like(noise)
+            base = torch.ones_like(noise, device=device)
             base[:, :ctx_len] = 0
             base = torch.gather(base, 1, orig_idx)
             return base, ctx_idx, tgt_idx, orig_idx
@@ -349,7 +352,7 @@ class MaskGenerator(object):
             masks = base.repeat(1, T)
 
             # offsets: [0,...,T] -> [0,1*S,2*S,...,T*S]
-            time_offsets = torch.arange(T)[None, :, None] * S
+            time_offsets = torch.arange(T, device=device)[None, :, None] * S
             # (B, 1, S) + (1, T, 1) -> (B, T, S) -> (B, T*S)
             # where for (B, 1:2) all values are offset by S since the 
             # stride per T time step is S  
@@ -420,10 +423,10 @@ class MaskGenerator(object):
                 original_patch_indices = self._generate_batched_blocked_mask(generator=g, batch_size=batch_size)
         elif self.mask_mode == MaskModes.RANDOM:
             masks, context_masks, target_masks, \
-                original_patch_indices = self._generate_random_mask(batch_size = batch_size, space_only=False)   
+                original_patch_indices = self._generate_random_mask(batch_size = batch_size, space_only=False, device=self.device)   
         elif self.mask_mode == MaskModes.RANDOM_SPACE_ONLY:
             masks, context_masks, target_masks, \
-                original_patch_indices = self._generate_random_mask(batch_size = batch_size, space_only=True)
+                original_patch_indices = self._generate_random_mask(batch_size = batch_size, space_only=True, device=self.device)
         elif self.mask_mode == MaskModes.BLOCKED_PATTERNED:
             masks, context_masks, target_masks, \
                 original_patch_indices = self._generate_blocked_mask_patterned(batch_size = batch_size)
@@ -439,7 +442,7 @@ def apply_masks(x, masks, concat=True):
         for m in masks:
             mask_keep = m.unsqueeze(-1)
             if x.dim() > 2:
-                mask_keep = mask_keep.repeat(1, 1, x.size(-1))
+                mask_keep = mask_keep.expand(-1, -1, x.size(-1))
 
             output += [torch.gather(x, dim=1, index=mask_keep)]
         if not concat:
@@ -449,6 +452,6 @@ def apply_masks(x, masks, concat=True):
     else:
         indices = masks.unsqueeze(-1)
         if x.dim() > 2:
-            indices = indices.repeat(1, 1, x.size(-1))
+            indices = indices.expand(-1, -1, x.size(-1))
 
         return torch.gather(x, dim=1, index=indices)

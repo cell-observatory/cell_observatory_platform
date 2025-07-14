@@ -258,6 +258,11 @@ class EpochBasedTrainer(BaseTrainer):
         #       instead of recursive instantiation
         model = build_dependency_graph_and_instantiate(cfg.models)
 
+        # TODO: there seems to be a bug in model definitions where we  
+        #       have the model defined in a subfolder (e.g. models/abc/model.py)
+        #       this hack works for one folder deep models but should be fixed asap
+        model, = model.values() if isinstance(model, dict) else (model,)
+
         # initialize optimizer and learning rate scheduler
         opt, _ = get_optimizer(
             params=model.parameters(),
@@ -352,10 +357,11 @@ class EpochBasedTrainer(BaseTrainer):
         # a "step_loss" key together with
         # the outputs of the model
 
-        if torch.isnan(data_sample['data_tensor']).all() or torch.isinf(data_sample['data_tensor']).all():
-            raise ValueError(f"Invalid training data: {data_sample['metainfo']}")
+        # TODO: dali pipeline returns data different from Torch pipeline need to unify
+        if torch.isnan(data_sample[0]['data_tensor']).all() or torch.isinf(data_sample[0]['data_tensor']).all():
+            raise ValueError(f"Invalid training data: {data_sample[0]['metainfo']}")
 
-        assert data_sample['data_tensor'].dtype == self.dtype, f"{data_sample['data_tensor'].dtype} != {self.dtype}"
+        assert data_sample[0]['data_tensor'].dtype == self.dtype, f"{data_sample[0]['data_tensor'].dtype} != {self.dtype}"
 
         loss_dict, outputs = self.model(data_sample)
         self.model.backward(loss_dict["step_loss"])

@@ -108,11 +108,11 @@ def create_zarr_spec(zarr_version, path, data_shape, shard_cube_shape, chunk_sha
 
     if zarr_version == 'zarr3':
         if len(data_shape) == 5:
-            shard_shape = [num_timepoints_per_image, shard_cube_shape[0], shard_cube_shape[1], shard_cube_shape[2], 1]
-            chunk_shape = [num_timepoints_per_image, chunk_shape[0], chunk_shape[1], chunk_shape[2], 1]
+            shard_shape = [num_timepoints_per_image, shard_cube_shape[0], shard_cube_shape[1], shard_cube_shape[2], 2]
+            chunk_shape = [1, chunk_shape[0], chunk_shape[1], chunk_shape[2], 2]
         elif len(data_shape) == 4:
             shard_shape = [num_timepoints_per_image, shard_cube_shape[0], shard_cube_shape[1], shard_cube_shape[2]]
-            chunk_shape = [num_timepoints_per_image, chunk_shape[0], chunk_shape[1], chunk_shape[2]]
+            chunk_shape = [1, chunk_shape[0], chunk_shape[1], chunk_shape[2]]
         else:
             raise ValueError(f"Unsupported data shape length: {len(data_shape)}")
 
