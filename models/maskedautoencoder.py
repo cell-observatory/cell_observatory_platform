@@ -117,6 +117,7 @@ CONFIGS = {
 class MaskedAutoEncoder(nn.Module):
     def __init__(
         self,
+        mask_generator: nn.Module,
         model_template: Literal[
             'mae', # custom use `embed_dim`, `decoder_embed_dim`, `depth`, `num_heads` and `mlp_ratio` to config model
             'mae-tiny',
@@ -153,6 +154,8 @@ class MaskedAutoEncoder(nn.Module):
         **kwargs,
     ):
         super().__init__()
+
+        self.mask_generator = mask_generator
 
         if model_template in CONFIGS.keys():
             config = CONFIGS[model_template]
@@ -255,9 +258,13 @@ class MaskedAutoEncoder(nn.Module):
         return self.masked_encoder.pos_embedding.num_patches
 
     def forward(self, data_sample: dict):
-        inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
-        masks, context_masks = meta['masks'][0], meta['context_masks'][0]
-        target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
+        # inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
+        # masks, context_masks = meta['masks'][0], meta['context_masks'][0]
+        # target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
+
+        inputs = data_sample[0]['data_tensor']
+        masks, context_masks, target_masks, \
+                original_patch_indices, channels_to_mask = self.mask_generator(inputs.shape[0])
 
         x, patches = self.masked_encoder(inputs, masks=context_masks)
         x = self.masked_decoder(x, original_patch_indices=original_patch_indices, target_masks=target_masks)

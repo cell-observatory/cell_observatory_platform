@@ -702,6 +702,32 @@ class BestMetricSaver(HookBase):
         self._update_best_metrics(test_metric_val)
 
 
+class NsysProfilerHook(HookBase):
+    """
+    Starts Nsight Systems on step `start_iter` and stops it at `end_iter`.
+    """
+    def __init__(self, start_iter=50, end_iter=55, device="cuda:0"):
+        self.start_iter = start_iter
+        self.end_iter = end_iter
+        self.device = device
+        self.closed = False
+
+    def before_step(self):
+        if self.closed:
+            return
+        if self.trainer._iter == self.start_iter:
+            # with torch.cuda.device(self.device):
+            torch.cuda.cudart().cudaProfilerStart()
+
+    def after_step(self, *args, **kwargs):
+        if self.closed:
+            return
+        if self.trainer._iter == self.end_iter:
+            # with torch.cuda.device(self.device):
+            torch.cuda.cudart().cudaProfilerStop()
+            self.closed = True
+
+
 # TODO: support for saving trace to
 #       wandb/tensorboard
 class TorchProfiler(HookBase):
@@ -727,7 +753,9 @@ class TorchProfiler(HookBase):
         output_dir,
         schedule: dict | None = None,
         activities: Sequence[ProfilerActivity | str] | None = None,
-        save_tensorboard=True
+        save_tensorboard=True,
+        save_memory_trace: bool = True,
+        max_events_per_snapshot: int = 1000000
     ):
         """
         Args:
@@ -756,7 +784,35 @@ class TorchProfiler(HookBase):
             if save_tensorboard else None
         )
 
-    def before_train(self):        
+        self._save_memory_trace = save_memory_trace
+        self._memory_devices = [
+            f"cuda:{i}" for i in range(torch.cuda.device_count())
+        ] if torch.cuda.is_available() else []
+        self.max_mem_events_per_snapshot = max_events_per_snapshot
+
+    def _flush_traces(self) -> None:
+        """
+        Called once after the profiler is stopped.  Writes extra artefacts.
+        """
+        # if self.trainer._profiler is None:
+        #     return
+
+        if self._save_memory_trace:
+            file_prefix = f"trace_rank{process_rank()}"
+            for dev in self._memory_devices:
+                safe_dev = dev.replace(":", "")
+                path = os.path.join(self._output_dir, f"{file_prefix}_trace_{safe_dev}")
+                try:
+                    torch.cuda.memory._dump_snapshot(f"{path}.pickle")
+                except Exception as e:
+                    logger.error(f"Failed to capture memory snapshot {e}")
+            
+            torch.cuda.memory._record_memory_history(enabled=None)
+
+    def before_train(self):
+        torch.cuda.memory._record_memory_history(
+            max_entries=self.max_mem_events_per_snapshot
+        )
         self._profiler = torch.profiler.profile(
             activities=self._activities,
             schedule=torch.profiler.schedule(
@@ -764,7 +820,8 @@ class TorchProfiler(HookBase):
                 active=self._active, repeat=self._repeat),
             on_trace_ready=self._on_trace_ready,
             record_shapes=True, profile_memory=True,
-            with_stack=False, with_flops=True, with_modules=True,
+            with_stack=True, with_flops=True, 
+            with_modules=True,
         )
         self._profiler.__enter__()
 
@@ -773,6 +830,7 @@ class TorchProfiler(HookBase):
             return
         elif self.trainer._iter == self.profile_times - 1:
             self._profiler.stop()
+            self._flush_traces()
             self._closed, self._profiler = True, None
         else:
             self._profiler.step()
@@ -780,6 +838,7 @@ class TorchProfiler(HookBase):
     def after_epoch(self):
         if not self._closed:
             self._profiler.stop()
+            self._flush_traces()
             self._closed, self._profiler = True, None
 
 

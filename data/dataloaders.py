@@ -6,13 +6,15 @@ from pathlib import Path
 from torch.utils.data import DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
 
-from hydra.utils import instantiate
+from hydra.utils import instantiate, get_method
 from omegaconf import DictConfig, OmegaConf
 if (hasattr(OmegaConf, "has_resolver") and  \
     not OmegaConf.has_resolver("eval")):
     OmegaConf.register_new_resolver("eval", eval)
 
 import ray.train.torch as raytorch
+
+from nvidia.dali.plugin.pytorch import DALIGenericIterator
 
 from utils.context import process_rank, barrier
 
@@ -36,6 +38,21 @@ def build_dataset(cfg, transforms=None):
         hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
         transforms=transforms
     )
+    return dataset
+
+
+def build_dali_dataset(cfg):
+    # TODO: skipping this for now since we don't have the
+    #       SupaBase/Datasets setup for DALI yet
+    # rank = process_rank()
+    # if rank == 0:
+    #     # initialize supabase wrapper once
+    #     db = instantiate(cfg.datasets.databases)
+    # barrier(device_ids=int(os.environ.get("LOCAL_RANK")))
+
+    dataset = instantiate(cfg.datasets.dali_dataset, 
+                          ndim = len(list(cfg.datasets.input_shape)),
+                          batch_size=cfg.clusters.batch_size_per_gpu)
     return dataset
 
 
@@ -114,6 +131,37 @@ def get_dataloader(config: DictConfig):
                 return dataloader, None
         else:
             return dataset
+    
+    elif config.datasets.dataloader_type == "dali":
+        dataset = instantiate(config.datasets.dali_dataset, 
+                          ndim = len(list(config.datasets.input_shape)),
+                          batch_size=config.clusters.batch_size_per_gpu)
+
+        if config.datasets.split is not None:
+            # TODO: figure out how to handle splits with DALI dataloader
+            raise NotImplementedError(
+                f"DALI dataloader is not implemented yet with split."
+            )
+    
+        else:
+            # DALI dataloader
+            pipe = get_method(config.datasets.dali_pipeline._target_)(
+                    dataset=dataset,
+                    batch_size=config.clusters.batch_size_per_gpu,
+                    num_threads=config.datasets.num_workers,
+                    py_start_method="spawn",
+                    py_num_workers=config.datasets.num_workers,
+                    prefetch_queue_depth=config.datasets.prefetch_factor,
+                )
+            pipe.build()
+            dali_loader = DALIGenericIterator(
+                pipelines = pipe,
+                output_map = ["data_tensor"],
+                size = dataset.full_iterations * config.clusters.batch_size_per_gpu,
+                auto_reset = True,
+                last_batch_policy = instantiate(config.datasets.dali_last_batch_policy)
+            )
+            return dali_loader, None
 
     else:
         # TODO: Support Ray Dataloader with heterogeneous cluster setup

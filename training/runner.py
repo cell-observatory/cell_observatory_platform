@@ -23,6 +23,12 @@ logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INF
 
 
 def initialize_session(cfg: DictConfig):
+    nsys_env = OmegaConf.to_container(cfg.hooks.get("nsys_env", {}),
+                                      resolve=True,
+                                      enum_to_str=True)
+
+    runtime_env = { **os.environ, **nsys_env }
+
     if 'head_node_ip' in os.environ and 'port' in os.environ:
         address = os.environ["head_node_ip"]
         port = os.environ["port"]
@@ -31,14 +37,14 @@ def initialize_session(cfg: DictConfig):
         init(
             address=f"{address}:{port}",
             log_to_driver=True,
-            runtime_env={k: v for k, v in os.environ.items()}
+            runtime_env=runtime_env,
         )
 
     else:
         logger.info(f"Starting a new local ray cluster")
         init(
             log_to_driver=True,
-            runtime_env={k: v for k, v in os.environ.items()},
+            runtime_env=runtime_env,
             num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
             num_gpus=cfg.clusters.total_gpus,
             ignore_reinit_error=True

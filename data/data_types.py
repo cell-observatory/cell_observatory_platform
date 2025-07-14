@@ -4,6 +4,8 @@ import torch
 import numpy
 import tensorstore
 from enum import Enum
+from nvidia.dali import types
+
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -42,3 +44,13 @@ class TENSORSTORE_DTYPES(Enum):
 
     uint16 = tensorstore.uint16
     u16 = tensorstore.uint16
+
+class DALI_DTYPES(Enum):
+    uint16 = types.UINT16
+    u16 = types.UINT16
+
+    float16 = types.FLOAT16
+    fp16 = types.FLOAT16
+
+    float32 = types._float_types
+    fp32 = types.FLOAT
