@@ -90,5 +90,5 @@ def test_data_pipeline_dali(config):
         config.experiment_name = "test_data_pipeline_dali"
         config.paths.resume_checkpointdir = None
 
-    metrics = distributed_test(cfg=config, test="tests.data.test_pretrain_dataset._test_dataloader_dali_dist")
+    metrics = distributed_test(cfg=config, test="tests.data.test_pretrain_dataset_dali._test_dataloader_dali_dist")
     assert metrics.get("success", False), "Distributed dataloader test failed"
