@@ -35,6 +35,7 @@ torchinfo>=1.8.0
 torchvision>=0.19.1
 transformers[torch] 
 tqdm>=4.67.1
+psutil>=6.0.0
 ujson>=5.10.0
 wandb>=0.20.1
 zarr>=3.0.8
