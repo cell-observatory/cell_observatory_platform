@@ -173,7 +173,7 @@ class ConvNeXtV2(nn.Module):
             'convnext-base',
             'convnext-large',
         ] = 'convnext',
-        input_fmt='BZYXC',
+        input_fmt='TZYXC',
         input_shape=(1, 6, 64, 64, 1),
         modes=15,
         depths=(3, 3, 9, 3),
