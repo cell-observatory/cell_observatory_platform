@@ -23,11 +23,13 @@ logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INF
 
 
 def initialize_session(cfg: DictConfig):
-    nsys_env = OmegaConf.to_container(cfg.hooks.get("nsys_env", {}),
-                                      resolve=True,
-                                      enum_to_str=True)
-
-    runtime_env = { **os.environ, **nsys_env }
+    nsys_env = cfg.hooks.get("nsys_env", None)
+    
+    if nsys_env is not None:
+        nsys_env = OmegaConf.to_container(nsys_env, resolve=True, enum_to_str=True)
+        runtime_env = { **os.environ, **nsys_env }
+    else:
+        runtime_env = {**os.environ}
 
     if 'head_node_ip' in os.environ and 'port' in os.environ:
         address = os.environ["head_node_ip"]

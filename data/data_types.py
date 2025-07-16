@@ -6,13 +6,13 @@ import tensorstore
 from enum import Enum
 from nvidia.dali import types
 
-
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
 
 class TORCH_DTYPES(Enum):
     float32 = torch.float32
@@ -52,5 +52,5 @@ class DALI_DTYPES(Enum):
     float16 = types.FLOAT16
     fp16 = types.FLOAT16
 
-    float32 = types._float_types
+    float32 = types.FLOAT
     fp32 = types.FLOAT

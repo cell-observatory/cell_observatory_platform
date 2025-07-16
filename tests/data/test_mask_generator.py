@@ -51,7 +51,8 @@ def make_mask_generator():
             axial_mask_scale=axial_mask_scale,
             temporal_mask_scale=temporal_mask_scale,
             aspect_ratio_scale_hw=aspect_ratio_scale_hw,
-            num_blocks=num_blocks
+            num_blocks=num_blocks,
+            device=torch.device("cpu"),
         )
 
     return _make

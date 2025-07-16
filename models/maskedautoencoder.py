@@ -1,6 +1,6 @@
 import logging
 import sys
-from typing import Literal, Union
+from typing import Literal, Union, Dict, Tuple
 
 import torch
 import torch.nn as nn
@@ -117,7 +117,6 @@ CONFIGS = {
 class MaskedAutoEncoder(nn.Module):
     def __init__(
         self,
-        mask_generator: nn.Module,
         model_template: Literal[
             'mae', # custom use `embed_dim`, `decoder_embed_dim`, `depth`, `num_heads` and `mlp_ratio` to config model
             'mae-tiny',
@@ -154,8 +153,6 @@ class MaskedAutoEncoder(nn.Module):
         **kwargs,
     ):
         super().__init__()
-
-        self.mask_generator = mask_generator
 
         if model_template in CONFIGS.keys():
             config = CONFIGS[model_template]
@@ -258,13 +255,9 @@ class MaskedAutoEncoder(nn.Module):
         return self.masked_encoder.pos_embedding.num_patches
 
     def forward(self, data_sample: dict):
-        # inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
-        # masks, context_masks = meta['masks'][0], meta['context_masks'][0]
-        # target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
-
-        inputs = data_sample[0]['data_tensor']
-        masks, context_masks, target_masks, \
-                original_patch_indices, channels_to_mask = self.mask_generator(inputs.shape[0])
+        inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
+        masks, context_masks = meta['masks'][0], meta['context_masks'][0]
+        target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
 
         x, patches = self.masked_encoder(inputs, masks=context_masks)
         x = self.masked_decoder(x, original_patch_indices=original_patch_indices, target_masks=target_masks)
@@ -273,9 +266,15 @@ class MaskedAutoEncoder(nn.Module):
         targets = apply_masks(patches, masks=target_masks)
         predictions = apply_masks(x, masks=target_masks)
 
-        loss = (targets - predictions) ** 2
-        loss = loss.mean(dim=-1)  # mean loss per patch
-        loss = loss.sum() / masks.sum()
+        # TODO: (1) solve memory issues with loss computation
+
+        # loss = (targets - predictions) ** 2
+        # loss = loss.mean(dim=-1)  # mean loss per patch
+        # loss = loss.sum() / masks.sum()
+
+        # NOTE: potential partial fix
+        loss = nn.functional.mse_loss(predictions, targets, reduction='mean')
+        
         loss = loss.to(targets.dtype)
         loss_dict = {
             "step_loss": loss,

@@ -253,6 +253,8 @@ class EpochBasedTrainer(BaseTrainer):
             config=cfg
         )
 
+        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+
         # initialize model
         # TODO: consider migrating to BUILD() based initialization
         #       instead of recursive instantiation
@@ -315,8 +317,6 @@ class EpochBasedTrainer(BaseTrainer):
         # initialize evaluator
         self.evaluator = instantiate(cfg.evaluation.evaluator)
 
-        self.dtype = TORCH_DTYPES[cfg.dataset_dtype].value
-                
     def run(self):
         """
         Launch training.
@@ -357,16 +357,16 @@ class EpochBasedTrainer(BaseTrainer):
         # a "step_loss" key together with
         # the outputs of the model
 
-        # TODO: dali pipeline returns data different from Torch pipeline need to unify
-        if torch.isnan(data_sample[0]['data_tensor']).all() or torch.isinf(data_sample[0]['data_tensor']).all():
-            raise ValueError(f"Invalid training data: {data_sample[0]['metainfo']}")
-
-        assert data_sample[0]['data_tensor'].dtype == self.dtype, f"{data_sample[0]['data_tensor'].dtype} != {self.dtype}"
-
+        data_sample = self.preprocessor(data_sample)
         loss_dict, outputs = self.model(data_sample)
         self.model.backward(loss_dict["step_loss"])
         self.model.step()
 
+        # for short testing runs:
+        # if idx > 25:
+        #     raise RuntimeError(
+        #         f"Training stopped at step {idx} for testing."
+        #     )
         # logger.info(f"step_loss: {loss_dict['step_loss']}, lr: {self.opt.param_groups[0]['lr']}")
 
         self.event_recorder.put_scalars(
