@@ -26,7 +26,7 @@ class PretrainDatasetDali:
         dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | DALI_DTYPES | str = NUMPY_DTYPES.fp16,
     ):
         self.input_layout = input_layout
-        self.dtype = dtype.value if isinstance(dtype, DALI_DTYPES) else DALI_DTYPES[dtype].value
+        self.dtype = DALI_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
         self.server_folder_path = server_folder_path
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
@@ -87,7 +87,7 @@ class PretrainDatasetDali:
         x = slice(meta["x_start"]-14, meta["x_start"] + meta["cube_size"]-14)
         return data_tensor[t, z, y, x, c].read().result()
 
-    def _load_sample(self, meta: Dict[str, Any]) -> Dict[str, Any]:
+    def _load_sample(self, meta: Dict[str, Any]) -> np.ndarray | Dict[str, Any]:
         """Read raw image crop into memory."""
         data_tensor = self._zarr_handles_data[
             os.path.join(meta["server_folder"], meta["output_folder"], meta["tile_name"])
