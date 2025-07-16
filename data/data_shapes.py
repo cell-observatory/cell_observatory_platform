@@ -34,6 +34,10 @@ class MULTICHANNEL_3D_HYPERCUBE(Enum):
     def axes(self) -> Tuple[str, ...]:
         return tuple(self.value)  # e.g. ("C","Z","Y","X")
 
+    @property
+    def ndim(self) -> int:
+        return len(self.axes)
+
     def is_channel_first(self) -> bool:
         return self in (MULTICHANNEL_3D_HYPERCUBE.CZYX, MULTICHANNEL_3D_HYPERCUBE.CTYX)
 
@@ -136,6 +140,10 @@ class MULTICHANNEL_4D_HYPERCUBE(Enum):
     @property
     def axes(self) -> Tuple[str, ...]:
         return tuple(self.value)  # e.g. ("C","T","Z","Y","X")
+
+    @property
+    def ndim(self) -> int:
+        return len(self.axes)
 
     def is_channel_first(self) -> bool:
         return self is MULTICHANNEL_4D_HYPERCUBE.CTZYX
