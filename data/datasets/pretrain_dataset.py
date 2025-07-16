@@ -3,6 +3,7 @@ from typing import Dict, Any, Tuple
 import torch
 from torch.utils.data import get_worker_info
 
+from data.data_types import TENSORSTORE_DTYPES
 from data.io import read_zarr
 from data.structures.data_sample import DataSample
 from data.structures.image_list import ImageList, cat_image_lists
@@ -39,12 +40,13 @@ class PretrainDataset(BaseDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._zarr_handles_data = {}
+        self.dtype = self.dtype.value if isinstance(self.dtype, TENSORSTORE_DTYPES) else TENSORSTORE_DTYPES[self.dtype].value
 
     def worker_init_fn(self, worker_id):
         worker_info = get_worker_info()
         # re-open handles in this worker only 
         # important to pass to dataloader
-        paths = {
+        self.paths = {
             os.path.join(sf, of, tn)
             for sf, of, tn in 
             zip(self.hypercubes_dataframe["server_folder"], 
@@ -54,7 +56,7 @@ class PretrainDataset(BaseDataset):
         }
         self._zarr_handles_data = {
             p: read_zarr(p, dtype=self.dtype)
-            for p in paths
+            for p in self.paths
         }
 
     def _build_index(self) -> None:

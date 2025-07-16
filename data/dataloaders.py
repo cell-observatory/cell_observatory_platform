@@ -17,6 +17,7 @@ import ray.train.torch as raytorch
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 
 from utils.context import process_rank, barrier
+from data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -48,15 +49,16 @@ def build_dali_dataset(cfg):
         db = instantiate(cfg.datasets.databases)
     barrier(device_ids=int(os.environ.get("LOCAL_RANK")))
 
-    dataset = instantiate(cfg.datasets.dataset, 
-                          hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
-                          ndim=len(list(cfg.datasets.input_shape)),
-                          batch_size=cfg.clusters.batch_size_per_gpu)
+    dataset = instantiate(
+        cfg.datasets.dataset,
+        hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
+        batch_size=cfg.clusters.batch_size_per_gpu
+    )
     return dataset
 
 
 def get_dataloader(config: DictConfig):
-    if config.datasets.dataloader_type == "torch":
+    if config.datasets.dataset._target_.endswith("PretrainDataset"):
         transforms = [instantiate(t) for t in config.datasets.transforms.transforms_list] \
                         if config.datasets.transforms.transforms_list else None
 
@@ -134,7 +136,7 @@ def get_dataloader(config: DictConfig):
         else:
             return dataset
     
-    elif config.datasets.dataloader_type == "dali":
+    elif config.datasets.dataset._target_.endswith("PretrainDatasetDali"):
         dataset = build_dali_dataset(config)
 
         if config.datasets.split is not None:
@@ -145,7 +147,7 @@ def get_dataloader(config: DictConfig):
 
         else:
             # DALI dataloader
-            pipe = get_method(config.datasets.dali_pipeline._target_)(
+            pipe = pretrain_dataset_pipeline(
                     dataset=dataset,
                     batch_size=config.clusters.batch_size_per_gpu,
                     num_threads=config.datasets.num_workers,
@@ -167,4 +169,4 @@ def get_dataloader(config: DictConfig):
 
     else:
         # TODO: Support Ray Dataloader with heterogeneous cluster setup
-        raise NotImplementedError(f"Unsupported dataloader type: {config.datasets.dataloader_type}")
+        raise NotImplementedError(f"Unsupported dataloader type: {config.datasets.dataset._target_}")

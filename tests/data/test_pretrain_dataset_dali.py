@@ -12,30 +12,42 @@ from nvidia.dali.plugin.pytorch import DALIGenericIterator
 from ray.train import report
 
 from tests.conftest import distributed_test, config
+from data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
+
+def test_access_to_storage_server(config):
+    if not Path(config.paths.server_folder_path).exists():
+        raise FileNotFoundError(f"{config.paths.server_folder_path} does not exist")
 
 
-@pytest.mark.skip("Skipping distributed test for DALI dataloader while database is being updated")
+# @pytest.mark.skip("Skipping distributed test for DALI dataloader while database is being updated")
 def test_dataloader_dali(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
 
-    dataset = instantiate(config.datasets.dali_dataset, 
-                          ndim = len(list(config.datasets.input_shape)),
-                          batch_size=config.clusters.batch_size_per_gpu
+
+    database = instantiate(config.datasets.databases)
+    assert database is not None
+
+    dataset = instantiate(
+        config.datasets.dataset,
+        batch_size=config.clusters.batch_size_per_gpu
     )
-    pipe = get_method(config.datasets.dali_pipeline._target_)(
-                    dataset=dataset,
-                    batch_size=config.clusters.batch_size_per_gpu,
-                    num_threads=config.datasets.num_workers,
-                    py_start_method="spawn",
-                    py_num_workers=config.datasets.num_workers,
-                    prefetch_queue_depth=config.datasets.prefetch_factor,
+
+    pipe = pretrain_dataset_pipeline(
+        dataset=dataset,
+        batch_size=config.clusters.batch_size_per_gpu,
+        num_threads=config.datasets.num_workers,
+        py_start_method="spawn",
+        py_num_workers=config.datasets.num_workers,
+        prefetch_queue_depth=config.datasets.prefetch_factor,
+        exec_async=False,
+        exec_pipelined=True,
     )
     pipe.build()
     dataloader = DALIGenericIterator(
         pipelines = pipe,
         output_map = ["data_tensor"],
-        size = dataset.full_iterations,
+        size = dataset.full_iterations * config.clusters.batch_size_per_gpu,
         auto_reset = True,
         last_batch_policy = instantiate(config.datasets.dali_last_batch_policy)
     )
@@ -69,7 +81,7 @@ def _test_dataloader_dali_dist(config):
 
     return report({"success": True})
 
-@pytest.mark.skip("Skipping distributed test for DALI dataloader while database is being updated")
+# @pytest.mark.skip("Skipping distributed test for DALI dataloader while database is being updated")
 def test_data_pipeline_dali(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")

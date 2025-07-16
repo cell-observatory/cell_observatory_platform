@@ -11,7 +11,6 @@ input_shape: [32, 128, 128, 128, 2]
 patch_shape: [4, 16, 16, 16]
 
 split: 0.1
-dataloader_type: torch
 return_dataloader: true
 distributed_sampler: true
 
@@ -30,5 +29,5 @@ dataset:
   server_folder_path: ${paths.server_folder_path}
   hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
   input_layout: 
-    _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
-    value: TZYXC
+    _target_: ${dataset_layout}
+    value: ${dataset_layout_order}
