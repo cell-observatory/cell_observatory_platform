@@ -2,6 +2,7 @@ defaults:
   - databases: supabase_database  # Loads configs/datasets/databases/supabase_database.yaml
   - masking: mask_generator       # Loads configs/datasets/masking/mask_generator.yaml
   - transforms: transforms        # Loads configs/datasets/transforms/transforms.yaml
+  - preprocessor: torch_preprocessor    # Loads configs/datasets/preprocessor/torch_preprocessor.yaml
   - _self_
 
 # mainly used by other configs but determined here for ease of access
@@ -13,7 +14,8 @@ split: 0.1
 dataloader_type: torch
 return_dataloader: true
 distributed_sampler: true
-collate_fn: ${datasets.masking.collate_fn}
+
+collate_fn: data.datasets.pretrain_dataset.simple_collate_pretrain_dataset
 prefetch_factor: 2 # prefetch factor for the dataloader
 num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
 

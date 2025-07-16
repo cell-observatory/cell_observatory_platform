@@ -2,7 +2,7 @@
 defaults:
   - /clusters/local                          # configs/clusters/local.yaml
   - /paths/abc                               # configs/paths/abc.yaml
-  - /datasets/pretrain_dataset_dali          # configs/datasets/pretrain_dataset_dali.yaml
+  - /datasets/pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
   - /models/mae/huge                         # configs/models/mae/huge.yaml
   - /hooks/hooks                             # configs/hooks/hooks.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
@@ -14,7 +14,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: tests_dali_loader
+experiment_name: tests_torch_loader
 
 # task
 task: pretrain_mae
@@ -69,9 +69,10 @@ datasets:
   patch_shape: [4, 16, 16, 16]
 
   split: null
-  dataloader_type: dali # options: torch, dali
+  dataloader_type: torch # options: torch, dali
   return_dataloader: true
   distributed_sampler: true
+  collate_fn: data.datasets.pretrain_dataset.simple_collate_pretrain_dataset
 
   prefetch_factor: 2 # prefetch factor for the dataloader
   num_workers: ${clusters.cpus_per_worker} 
@@ -82,20 +83,6 @@ datasets:
     max_hypercubes: 1000000 # maximum number of hypercubes to return
     use_cached_hypercubes_dataframe: true
     protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
-
-  dali_last_batch_policy:
-    _target_: nvidia.dali.plugin.base_iterator.LastBatchPolicy
-    _args_:  [1] # 0=FILL, 1=DROP, 2=PARTIAL
-
-  dataset:
-    _target_: data.datasets.pretrain_dataset_dali.PretrainDatasetDali
-  
-    target_dtype: ${dataset_dtype}
-    server_folder_path: ${paths.server_folder_path}
-    hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
-
-  dali_pipeline:
-    _target_: data.datasets.pretrain_dataset_dali.pretrain_dataset_pipeline
 
 # model
 models:
@@ -116,7 +103,7 @@ checkpoint:
 # deepspeed
 deepspeed:
   zero_optimization:
-    stage: 3
+    stage: 2
   checkpoint:
     load_universal: true
 
@@ -148,8 +135,8 @@ hooks:
   nsys_env:
     nsight: 
       # image appears to be too old
-      # pytorch: autograd-shapes-nvtx
-      # cuda-memory-usage: "false"
+      pytorch: autograd-shapes-nvtx
+      cuda-memory-usage: "true"
       # OPTIONS:
       # "t": "cuda, nvtx, cuda-hw,"
       #     "cublas-verbose"
@@ -159,22 +146,23 @@ hooks:
       #     "dx11, dx11-annotations, dx12, dx12-annotations, openxr, openxr-annotations, "
       #     "oshmem, ucx, wddm, tegra-accelerators, python-gil",
       t: cuda,nvtx,cudnn,cublas,osrt
-      # s: process-tree
+      s: process-tree
       # "gpu-metrics-devices": "cuda-visible",
       capture-range: cudaProfilerApi
       capture-range-end: stop-shutdown
-      # nvtx-capture: range@domain
-      # cudabacktrace: all:10000
-      # backtrace: dwarf
+      nvtx-capture: range@domain
+      cudabacktrace: all:10000
+      backtrace: dwarf
       # "python-backtrace": "cuda",
       # "osrt-threshold": "10000",
       # "python-sampling": "true",
       # "python-sampling-frequency": "1000"
   hooks_list:
   - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.SamplerSetter
   - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer
-    warmup_iter: 10
+    warmup_iter: 2
   - _target_: training.hooks.PeriodicWriter
   - _target_: training.hooks.PeriodicCheckpointer
     period: 1
@@ -183,7 +171,7 @@ hooks:
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - _target_: training.hooks.NsysProfilerHook
     start_iter: 10
-    end_iter: 30
+    end_iter: 20
   # - _target_: training.hooks.TorchProfiler
   #   output_dir: ${loggers.logdir}/profiler
   #   schedule:
@@ -204,8 +192,8 @@ hooks:
     metric_name: ${evaluation.val_metric}
     compare_fn: ${evaluation.val_mode}
     eval_after_validation: true
-  # - _target_: training.hooks.EarlyStopHook
-  #   patience: 10
-  #   stopping_threshold: 0.01
-  #   mode: ${evaluation.val_mode}
-  #   metric_name: ${evaluation.val_metric}
+  - _target_: training.hooks.EarlyStopHook
+    patience: 10
+    stopping_threshold: 0.01
+    mode: ${evaluation.val_mode}
+    metric_name: ${evaluation.val_metric}

@@ -19,16 +19,18 @@ from utils.context import process_rank, get_world_size
 # examples/general/data_loading/parallel_external_source.html
 class PretrainDatasetDali:
     def __init__(self, 
+                 input_layout,
                  hypercubes_dataframe_path, 
-                #  server_folder_path,
+                 server_folder_path,
                  batch_size: int,
                  ndim: int = 5,
                  target_dtype: str = "float16",
     ):
         self.ndim = ndim
+        self.input_layout = input_layout
         self.target_dtype = target_dtype
 
-        self.server_folder_path = None # server_folder_path
+        self.server_folder_path = server_folder_path
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
         self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(self.hypercubes_dataframe_path)
 
@@ -51,7 +53,7 @@ class PretrainDatasetDali:
         self.shard_id = process_rank()
         self.num_shards = get_world_size()
 
-        self.shard_size = len(self.paths) // self.num_shards
+        self.shard_size = len(self.hypercubes_dataframe) // self.num_shards
         self.shard_offset = self.shard_size * self.shard_id
 
         # if the shard size is not divisible by the batch size, the last
@@ -69,26 +71,24 @@ class PretrainDatasetDali:
         if not hypercubes_dataframe_path.exists():
             raise FileNotFoundError(f"{hypercubes_dataframe_path} does not exist")
 
-        hypercubes = pd.read_csv(hypercubes_dataframe_path) # , index_col=0, header=0
-        # with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
-        #     configs = ujson.load(f)
+        hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
+        with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
+            configs = ujson.load(f)
 
-        # if self.server_folder_path is not None:
-        #     hypercubes['server_folder'] = self.server_folder_path
-        # return hypercubes, configs
-        return hypercubes, {}
+        if self.server_folder_path is not None:
+            hypercubes['server_folder'] = self.server_folder_path
+        return hypercubes, configs
     
     def _build_index(self) -> None:
         # convert df into a list of Python dicts
         self._index = self.hypercubes_dataframe.to_dict(orient="records")
 
     def _slice_hypercube(self, data_tensor, meta: Dict[str, Any]) -> Tuple[int]:
-        return data_tensor[:].read().result()
-        # t, c = slice(meta["time_start"], meta["time_start"] + meta["time_size"]), slice(0, meta["channel_size"])
-        # z = slice(meta["z_start"]-28, meta["z_start"] + meta["cube_size"]-28)
-        # y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
-        # x = slice(meta["x_start"]-14, meta["x_start"] + meta["cube_size"]-14)
-        # return data_tensor[t, z, y, x, c].read().result()
+        t, c = slice(meta["time_start"], meta["time_start"] + meta["time_size"]), slice(0, meta["channel_size"])
+        z = slice(meta["z_start"]-28, meta["z_start"] + meta["cube_size"]-28)
+        y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
+        x = slice(meta["x_start"]-14, meta["x_start"] + meta["cube_size"]-14)
+        return data_tensor[t, z, y, x, c].read().result()
 
     def _load_sample(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         """Read raw image crop into memory."""
@@ -107,7 +107,7 @@ class PretrainDatasetDali:
         if self.last_seen_epoch != sample_info.epoch_idx:
             self.last_seen_epoch = sample_info.epoch_idx
             self.perm = np.random.default_rng(seed=42 + sample_info.epoch_idx)
-            self.perm = self.perm.permutation(len(self.paths))
+            self.perm = self.perm.permutation(len(self.hypercubes_dataframe))
 
         sample_idx = self.perm[sample_info.idx_in_epoch + self.shard_offset]
         sample = self._index[sample_idx]
@@ -132,7 +132,7 @@ def pretrain_dataset_pipeline(dataset):
     
     # TODO: (1) make this more robust to 
     #       different input shapes
-    #      (2) should we do this ourselves,
+    #       (2) should we do this ourselves,
     #       or let DALI handle it?
     vol_f32 = fn.cast(vol, dtype=types.FLOAT)
     vol_norm = fn.normalize(

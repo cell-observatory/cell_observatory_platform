@@ -42,16 +42,15 @@ def build_dataset(cfg, transforms=None):
 
 
 def build_dali_dataset(cfg):
-    # TODO: skipping this for now since we don't have the
-    #       SupaBase/Datasets setup for DALI yet
-    # rank = process_rank()
-    # if rank == 0:
-    #     # initialize supabase wrapper once
-    #     db = instantiate(cfg.datasets.databases)
-    # barrier(device_ids=int(os.environ.get("LOCAL_RANK")))
+    rank = process_rank()
+    if rank == 0:
+        # initialize supabase wrapper once
+        db = instantiate(cfg.datasets.databases)
+    barrier(device_ids=int(os.environ.get("LOCAL_RANK")))
 
-    dataset = instantiate(cfg.datasets.dali_dataset, 
-                          ndim = len(list(cfg.datasets.input_shape)),
+    dataset = instantiate(cfg.datasets.dataset, 
+                          hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
+                          ndim=len(list(cfg.datasets.input_shape)),
                           batch_size=cfg.clusters.batch_size_per_gpu)
     return dataset
 
@@ -64,7 +63,10 @@ def get_dataloader(config: DictConfig):
         dataset = build_dataset(config, transforms)
 
         if config.datasets.return_dataloader:
-            collate_fn = instantiate(config.datasets.collate_fn)
+            # TODO: add support for instantiate and get_method depending on if 
+            #        collate_fn is a string or a 
+            # callable
+            collate_fn = get_method(config.datasets.collate_fn)
             db_worker_init_fn = dataset.worker_init_fn
 
             if config.datasets.split is not None:
@@ -85,7 +87,7 @@ def get_dataloader(config: DictConfig):
                     # NOTE: most of worker init functionality done by Ray
                     # see https://docs.ray.io/en/latest/_modules/ray/train/torch/train_loop_utils.html
                     worker_init_fn=db_worker_init_fn,
-                    drop_last=True
+                    drop_last=True,
                 )
                 val = DataLoader(
                     val,
@@ -133,16 +135,14 @@ def get_dataloader(config: DictConfig):
             return dataset
     
     elif config.datasets.dataloader_type == "dali":
-        dataset = instantiate(config.datasets.dali_dataset, 
-                          ndim = len(list(config.datasets.input_shape)),
-                          batch_size=config.clusters.batch_size_per_gpu)
+        dataset = build_dali_dataset(config)
 
         if config.datasets.split is not None:
             # TODO: figure out how to handle splits with DALI dataloader
             raise NotImplementedError(
                 f"DALI dataloader is not implemented yet with split."
             )
-    
+
         else:
             # DALI dataloader
             pipe = get_method(config.datasets.dali_pipeline._target_)(
@@ -152,6 +152,8 @@ def get_dataloader(config: DictConfig):
                     py_start_method="spawn",
                     py_num_workers=config.datasets.num_workers,
                     prefetch_queue_depth=config.datasets.prefetch_factor,
+                    exec_async=False,
+                    exec_pipelined=True,
                 )
             pipe.build()
             dali_loader = DALIGenericIterator(

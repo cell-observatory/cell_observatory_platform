@@ -12,10 +12,25 @@ from data.datasets.base_dataset import BaseDataset, default_collate
 def collate_pretrain_dataset(samples: list["DataSample"]) -> "DataSample":
     metainfo = default_collate([s.metainfo for s in samples])
     batch = DataSample(metainfo=metainfo)    
+    # TODO: we can't currently use this collate function since 
+    #      it's unclear if we want to do torch.stack on cpu which 
+    #       is a result of cat_image_lists
     batched_img = cat_image_lists(image_lists=[s.data_tensor for s in samples])
     batch.data_tensor = batched_img    
     return batch.to_dict()
 
+def simple_collate_pretrain_dataset(samples: list["DataSample"]) -> "DataSample":
+    """
+    Simple collate function for pretrain dataset.
+    """
+    metainfo = default_collate([s.metainfo for s in samples])
+    # no image list class until we add a helper function that doesn't stack
+    # images in the image list
+    image_list = [s.data_tensor.tensor for s in samples]
+    return {
+        'data_tensor': image_list,
+        'metainfo': metainfo,
+    }
 
 class PretrainDataset(BaseDataset):
     """

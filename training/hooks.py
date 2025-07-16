@@ -706,10 +706,10 @@ class NsysProfilerHook(HookBase):
     """
     Starts Nsight Systems on step `start_iter` and stops it at `end_iter`.
     """
-    def __init__(self, start_iter=50, end_iter=55, device="cuda:0"):
+    def __init__(self, start_iter=50, end_iter=55, shutdown_after_profile=True):
         self.start_iter = start_iter
         self.end_iter = end_iter
-        self.device = device
+        self.shutdown_after_profile = shutdown_after_profile
         self.closed = False
 
     def before_step(self):
@@ -726,6 +726,8 @@ class NsysProfilerHook(HookBase):
             # with torch.cuda.device(self.device):
             torch.cuda.cudart().cudaProfilerStop()
             self.closed = True
+            if self.shutdown_after_profile:
+                raise RuntimeError("Profiling complete — stopping training")
 
 
 # TODO: support for saving trace to
@@ -755,7 +757,8 @@ class TorchProfiler(HookBase):
         activities: Sequence[ProfilerActivity | str] | None = None,
         save_tensorboard=True,
         save_memory_trace: bool = True,
-        max_events_per_snapshot: int = 1000000
+        max_events_per_snapshot: int = 1000000,
+        shutdown_after_profile: bool = True
     ):
         """
         Args:
@@ -785,10 +788,9 @@ class TorchProfiler(HookBase):
         )
 
         self._save_memory_trace = save_memory_trace
-        self._memory_devices = [
-            f"cuda:{i}" for i in range(torch.cuda.device_count())
-        ] if torch.cuda.is_available() else []
         self.max_mem_events_per_snapshot = max_events_per_snapshot
+
+        self.shutdown_after_profile = shutdown_after_profile
 
     def _flush_traces(self) -> None:
         """
@@ -799,14 +801,12 @@ class TorchProfiler(HookBase):
 
         if self._save_memory_trace:
             file_prefix = f"trace_rank{process_rank()}"
-            for dev in self._memory_devices:
-                safe_dev = dev.replace(":", "")
-                path = os.path.join(self._output_dir, f"{file_prefix}_trace_{safe_dev}")
-                try:
-                    torch.cuda.memory._dump_snapshot(f"{path}.pickle")
-                except Exception as e:
-                    logger.error(f"Failed to capture memory snapshot {e}")
-            
+            path = os.path.join(self._output_dir, f"{file_prefix}_trace")
+            try:
+                torch.cuda.memory._dump_snapshot(f"{path}.pickle")
+            except Exception as e:
+                logger.error(f"Failed to capture memory snapshot {e}")
+        
             torch.cuda.memory._record_memory_history(enabled=None)
 
     def before_train(self):
@@ -832,6 +832,8 @@ class TorchProfiler(HookBase):
             self._profiler.stop()
             self._flush_traces()
             self._closed, self._profiler = True, None
+            if self.shutdown_after_profile:
+                raise RuntimeError("Profiling complete — stopping training")
         else:
             self._profiler.step()
 
@@ -840,6 +842,8 @@ class TorchProfiler(HookBase):
             self._profiler.stop()
             self._flush_traces()
             self._closed, self._profiler = True, None
+            if self.shutdown_after_profile:
+                raise RuntimeError("Profiling complete — stopping training")
 
 
 class EarlyStopHook(HookBase):

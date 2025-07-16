@@ -2,6 +2,7 @@ defaults:
   - databases: supabase_database  # Loads configs/datasets/databases/supabase_database.yaml
   - masking: mask_generator       # Loads configs/datasets/masking/mask_generator.yaml
   - transforms: transforms        # Loads configs/datasets/transforms/transforms.yaml
+  - preprocessor: dali_preprocessor  # Loads configs/datasets/preprocessor/dali_preprocessor.yaml
   - _self_
 
 # mainly used by other configs but determined here for ease of access
@@ -13,7 +14,7 @@ split: 0.1
 dataloader_type: dali
 return_dataloader: true
 distributed_sampler: true
-collate_fn: ${datasets.masking.collate_fn}
+collate_fn: null
 prefetch_factor: 2 # prefetch factor for the dataloader
 num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
 
@@ -26,16 +27,14 @@ dali_last_batch_policy:
   _target_: nvidia.dali.plugin.base_iterator.LastBatchPolicy
   _args_:  [1] # 0=FILL, 1=DROP, 2=PARTIAL
 
-input_layout:
-    _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
-    value: TZYXC
-
-dali_dataset:
+dataset:
   _target_: data.datasets.pretrain_dataset_dali.PretrainDatasetDali
   target_dtype: ${dataset_dtype}
-  # server_folder_path: ${paths.server_folder_path}
+  server_folder_path: ${paths.server_folder_path}
   hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
-
+  input_layout:
+    _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
+    value: TZYXC
 
 dali_pipeline:
   _target_: data.datasets.pretrain_dataset_dali.pretrain_dataset_pipeline
