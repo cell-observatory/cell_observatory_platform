@@ -156,6 +156,7 @@ def get_dataloader(config: DictConfig):
                     prefetch_queue_depth=config.datasets.prefetch_factor,
                     exec_async=False,
                     exec_pipelined=True,
+                    device_id=process_rank()
                 )
             pipe.build()
             dali_loader = DALIGenericIterator(

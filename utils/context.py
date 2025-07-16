@@ -1,3 +1,4 @@
+import os
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -66,7 +67,7 @@ def process_rank() -> int:
     if is_torch_dist_initialized():
         return dist.get_rank()
     else:
-        return 0
+        return os.getenv("LOCAL_RANK", 0)
 
 
 def get_world_size() -> int:
