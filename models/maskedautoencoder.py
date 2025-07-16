@@ -127,7 +127,7 @@ class MaskedAutoEncoder(nn.Module):
             'mae-giant',
             'mae-gigantic'
         ] = 'mae',
-        input_fmt='BZYXC',
+        input_fmt='TZYXC',
         input_shape=(1, 6, 64, 64, 1),
         lateral_patch_size=16,
         axial_patch_size=1,

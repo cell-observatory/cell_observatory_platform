@@ -14,47 +14,47 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def calc_num_patches(
-    input_fmt="BZYXC",
+    input_fmt="ZYXC",
     input_shape=(1, 6, 64, 64, 1),
     lateral_patch_size=1,
     axial_patch_size=1,
     temporal_patch_size=1,
 ):
-    if input_fmt == "BTZYXC" or input_fmt == "BTZYX":
+    if input_fmt == "TZYXC" or input_fmt == "TZYX":
         t = input_shape[1] // temporal_patch_size
         z = input_shape[2] // axial_patch_size
         y = input_shape[3] // lateral_patch_size
         x = input_shape[4] // lateral_patch_size
-        c = input_shape[-1] if input_fmt == "BTZYXC" else None
+        c = input_shape[-1] if input_fmt == "TZYXC" else None
         num_patches = t * z * y * x
 
-    elif input_fmt == "BZYXC" or input_fmt == "BZYX":
+    elif input_fmt == "ZYXC" or input_fmt == "ZYX":
         t = None
         z = input_shape[1] // axial_patch_size
         y = input_shape[2] // lateral_patch_size
         x = input_shape[3] // lateral_patch_size
-        c = input_shape[-1] if input_fmt == "BZYXC" else None
+        c = input_shape[-1] if input_fmt == "ZYXC" else None
         num_patches = z * y * x
 
-    elif input_fmt == "BTYXC" or input_fmt == "BTYX":
+    elif input_fmt == "TYXC" or input_fmt == "TYX":
         z = None
         t = input_shape[1] // temporal_patch_size
         y = input_shape[2] // lateral_patch_size
         x = input_shape[3] // lateral_patch_size
-        c = input_shape[-1] if input_fmt == "BYXC" else None
+        c = input_shape[-1] if input_fmt == "YXC" else None
         num_patches = t * y * x
 
-    elif input_fmt == "BYXC" or input_fmt == "BYX":
+    elif input_fmt == "YXC" or input_fmt == "YX":
         t, z = None, None
         y = input_shape[1] // lateral_patch_size
         x = input_shape[2] // lateral_patch_size
-        c = input_shape[-1] if input_fmt == "BYXC" else None
+        c = input_shape[-1] if input_fmt == "YXC" else None
         num_patches = y * x
 
-    elif input_fmt == "BXC" or input_fmt == "BX":
+    elif input_fmt == "XC" or input_fmt == "X":
         t, z, y = None, None, None
         x = input_shape[1] // lateral_patch_size
-        c = input_shape[-1] if input_fmt == "BX" else None
+        c = input_shape[-1] if input_fmt == "X" else None
         num_patches = x
     else:
         raise NotImplementedError
@@ -62,13 +62,13 @@ def calc_num_patches(
     return num_patches, (t, z, y, x, c)
 
 
-def bzyxc_to(x: torch.Tensor, fmt: str):
-    if fmt == "BCZYX":
+def ZYXC_to(x: torch.Tensor, fmt: str):
+    if fmt == "CZYX":
         x = torch.permute(x, (0, 4, 1, 2, 3))
-    elif fmt == "BLC":
+    elif fmt == "LC":
         x = torch.flatten(x, 2)  # -> (B, C, L)
         x = torch.transpose(x, 1, 2)
-    elif fmt == "BCL":
+    elif fmt == "CL":
         x = torch.flatten(x, 2)
     return x
 
@@ -99,16 +99,16 @@ class ConvPatchEmbedding(nn.Module):
         )
 
     def forward(self, x):
-        x = bzyxc_to(x, fmt="BCZYX") # (B, Z, Y, X, C) -> (B, C, Z, Y, X)
+        x = ZYXC_to(x, fmt="CZYX") # (B, Z, Y, X, C) -> (B, C, Z, Y, X)
         x = self.proj(x)
-        x = bzyxc_to(x, fmt="BLC")
+        x = ZYXC_to(x, fmt="LC")
         return x # (B, L, C)
 
 
 class PatchEmbedding(nn.Module):
     def __init__(
         self,
-        input_fmt="BZYXC",
+        input_fmt="ZYXC",
         input_shape=(1, 6, 64, 64, 1),
         lateral_patch_size=16,
         axial_patch_size=None,
@@ -149,7 +149,7 @@ class PatchEmbedding(nn.Module):
         b = inputs.shape[0]
         t, z, y, x, c = self.token_shape
 
-        if self.input_fmt == "BTZYXC" or self.input_fmt == "BTZYX":
+        if self.input_fmt == "TZYXC" or self.input_fmt == "TZYX":
             if reshape:
                 patches = inputs.reshape(shape=(
                     b,
@@ -166,7 +166,7 @@ class PatchEmbedding(nn.Module):
                     .unfold(3, self.lateral_patch_size, self.lateral_patch_size) \
                     .unfold(4, self.lateral_patch_size, self.lateral_patch_size) \
 
-        elif self.input_fmt == "BZYXC" or self.input_fmt == "BZYX":
+        elif self.input_fmt == "ZYXC" or self.input_fmt == "ZYX":
             if reshape:
                 patches = inputs.reshape(shape=(
                     b,
@@ -181,7 +181,7 @@ class PatchEmbedding(nn.Module):
                     .unfold(2, self.lateral_patch_size, self.lateral_patch_size) \
                     .unfold(3, self.lateral_patch_size, self.lateral_patch_size)
 
-        elif self.input_fmt == "BTYXC" or self.input_fmt == "BTYX":
+        elif self.input_fmt == "TYXC" or self.input_fmt == "TYX":
             if reshape:
                 patches = inputs.reshape(shape=(
                     b,
@@ -196,7 +196,7 @@ class PatchEmbedding(nn.Module):
                     .unfold(2, self.lateral_patch_size, self.lateral_patch_size) \
                     .unfold(3, self.lateral_patch_size, self.lateral_patch_size)
 
-        elif self.input_fmt == "BYXC" or self.input_fmt == "BYX":
+        elif self.input_fmt == "YXC" or self.input_fmt == "YX":
             if reshape:
                 patches = inputs.reshape(shape=(
                     b,
@@ -209,7 +209,7 @@ class PatchEmbedding(nn.Module):
                 patches = inputs.unfold(1, self.lateral_patch_size, self.lateral_patch_size) \
                     .unfold(2, self.lateral_patch_size, self.lateral_patch_size) \
 
-        elif self.input_fmt == "BXC" or self.input_fmt == "BX":
+        elif self.input_fmt == "XC" or self.input_fmt == "X":
             if reshape:
                 patches = inputs.reshape(shape=(
                     b,
@@ -240,7 +240,7 @@ class PatchEmbedding(nn.Module):
 class PosEmbedding(nn.Module):
     def __init__(
         self,
-        input_fmt="BZYXC",
+        input_fmt="ZYXC",
         input_shape=(1, 6, 64, 64, 1),
         lateral_patch_size=16,
         axial_patch_size=1,
@@ -277,7 +277,7 @@ class PosEmbedding(nn.Module):
         self._init_pos_embed(self.pos_embed.data)
 
     def _init_pos_embed(self, pos_embed):
-        if self.input_fmt == "BTZYXC" or self.input_fmt == "BTZYX":
+        if self.input_fmt == "TZYXC" or self.input_fmt == "TZYX":
             sincos = positional_encoding.positional_encoding_4d(
                 embed_dim=self.embed_dim,
                 temporal_sequence_length=self.input_shape[1] // self.temporal_patch_size,
@@ -285,7 +285,7 @@ class PosEmbedding(nn.Module):
                 lateral_sequence_length=self.input_shape[3] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
-        elif self.input_fmt == "BZYXC" or self.input_fmt == "BZYX":
+        elif self.input_fmt == "ZYXC" or self.input_fmt == "ZYX":
             sincos = positional_encoding.positional_encoding_3d(
                 embed_dim=self.embed_dim,
                 temporal_sequence_length=None,
@@ -294,7 +294,7 @@ class PosEmbedding(nn.Module):
                 cls_token=self.cls_token,
             )
 
-        elif self.input_fmt == "BTYXC" or self.input_fmt == "BTYX":
+        elif self.input_fmt == "TYXC" or self.input_fmt == "TYX":
             sincos = positional_encoding.positional_encoding_3d(
                 embed_dim=self.embed_dim,
                 axial_sequence_length=None,
@@ -303,14 +303,14 @@ class PosEmbedding(nn.Module):
                 cls_token=self.cls_token,
             )
 
-        elif self.input_fmt == "BYXC" or self.input_fmt == "BYX":
+        elif self.input_fmt == "YXC" or self.input_fmt == "YX":
             sincos = positional_encoding.positional_encoding_2d(
                 embed_dim=self.embed_dim,
                 lateral_sequence_length=self.input_shape[1] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
-        elif self.input_fmt == "BXC" or self.input_fmt == "BX":
+        elif self.input_fmt == "XC" or self.input_fmt == "X":
             sincos = positional_encoding.positional_encoding_1d(
                 embed_dim=self.embed_dim,
                 sequence_length=self.input_shape[1] // self.lateral_patch_size,
@@ -327,7 +327,7 @@ class PosEmbedding(nn.Module):
         pos_embed.copy_(torch.from_numpy(sincos).float().unsqueeze(0))
 
     def interpolate_positional_encoding(self, x, pos_embed):
-        if self.input_fmt == "BTZYXC" or self.input_fmt == "BTZYX":
+        if self.input_fmt == "TZYXC" or self.input_fmt == "TZYX":
             temporal_sequence_length = self.input_shape[1] // self.temporal_patch_size
             axial_sequence_length = self.input_shape[2] // self.axial_patch_size
             lateral_sequence_length = self.input_shape[3] // self.lateral_patch_size
@@ -361,7 +361,7 @@ class PosEmbedding(nn.Module):
                 )
                 pos_embed = pos_embed.view(1, -1, self.embed_dim)
 
-        elif self.input_fmt == "BZYXC" or self.input_fmt == "BZYX":
+        elif self.input_fmt == "ZYXC" or self.input_fmt == "ZYX":
             axial_sequence_length = self.input_shape[1] // self.axial_patch_size
             lateral_sequence_length = self.input_shape[2] // self.lateral_patch_size
 
@@ -391,7 +391,7 @@ class PosEmbedding(nn.Module):
                 )
                 pos_embed = pos_embed.view(1, -1, self.embed_dim)
 
-        elif self.input_fmt == "BTYXC" or self.input_fmt == "BTYX":
+        elif self.input_fmt == "TYXC" or self.input_fmt == "TYX":
             temporal_sequence_length = self.input_shape[1] // self.temporal_patch_size
             lateral_sequence_length = self.input_shape[2] // self.lateral_patch_size
 
@@ -422,7 +422,7 @@ class PosEmbedding(nn.Module):
 
                 pos_embed = pos_embed.view(1, -1, self.embed_dim)
 
-        elif self.input_fmt == "BYXC" or self.input_fmt == "BYX":
+        elif self.input_fmt == "YXC" or self.input_fmt == "YX":
             lateral_sequence_length = self.input_shape[1] // self.lateral_patch_size
 
             Y = x.shape[1] // self.lateral_patch_size
@@ -448,7 +448,7 @@ class PosEmbedding(nn.Module):
                 )
                 pos_embed = pos_embed.view(1, -1, self.embed_dim)
 
-        elif self.input_fmt == "BXC" or self.input_fmt == "BX":
+        elif self.input_fmt == "XC" or self.input_fmt == "X":
             lateral_sequence_length = self.input_shape[1] // self.lateral_patch_size
 
             X = x.shape[1] // self.lateral_patch_size

@@ -1,5 +1,5 @@
 _target_: models.convnext.ConvNeXtV2
-input_fmt: BZYXC
+input_fmt: ${dataset_layout_order}
 input_shape: [1, 128, 128, 128, 1]
 modes: 15
 depths: [3, 3, 27, 3]

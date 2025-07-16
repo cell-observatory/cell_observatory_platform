@@ -1,9 +1,9 @@
 _target_: models.baseline.Baseline
-input_fmt: BZYXC
-input_shape: [1, 128, 128, 128, 1]
-modes: 15
-lateral_patch_size: 16
-axial_patch_size: 1
+input_fmt: ${dataset_layout_order}
+input_shape: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
+temporal_patch_size: ${datasets.patch_shape.0}
+lateral_patch_size: ${datasets.patch_shape.1}
+axial_patch_size: ${datasets.patch_shape.2}
 embed_dim: 1024
 depth: 24
 num_heads: 16

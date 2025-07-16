@@ -97,7 +97,7 @@ class Baseline(nn.Module):
             'baseline-giant',
             'baseline-gigantic'
         ] = 'baseline',
-        input_fmt='BZYXC',
+        input_fmt='TZYXC',
         input_shape=(1, 6, 64, 64, 1),
         modes=15,
         lateral_patch_size=16,
