@@ -13,6 +13,8 @@ from ray.train import report
 
 from tests.conftest import distributed_test, config
 from data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
+from utils.context import process_rank
+
 
 def test_access_to_storage_server(config):
     if not Path(config.paths.server_folder_path).exists():
@@ -42,6 +44,7 @@ def test_dataloader_dali(config):
         prefetch_queue_depth=config.datasets.prefetch_factor,
         exec_async=False,
         exec_pipelined=True,
+        device_id=process_rank()
     )
     pipe.build()
     dataloader = DALIGenericIterator(
