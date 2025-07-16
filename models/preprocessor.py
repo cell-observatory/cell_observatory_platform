@@ -29,16 +29,22 @@ class TorchPreprocessor(torch.nn.Module):
             masks, context_masks, target_masks, \
             original_patch_indices, channels_to_mask = self.mask_generator(inputs.shape[0])
 
-        return {
-            'data_tensor': inputs,
-            'metainfo': {
-                'masks': [masks] if self.with_masking else None,
-                'context_masks': [context_masks] if self.with_masking else None,
-                'target_masks': [target_masks] if self.with_masking else None,
-                'original_patch_indices': [original_patch_indices] if self.with_masking else None,
-                'channels_to_mask': [channels_to_mask] if self.with_masking else None
+            return {
+                'data_tensor': inputs,
+                'metainfo': {
+                    'masks': [masks] if self.with_masking else None,
+                    'context_masks': [context_masks] if self.with_masking else None,
+                    'target_masks': [target_masks] if self.with_masking else None,
+                    'original_patch_indices': [original_patch_indices] if self.with_masking else None,
+                    'channels_to_mask': [channels_to_mask] if self.with_masking else None,
+                    **meta
+                }
             }
-        }
+        else:
+            return {
+                'data_tensor': inputs,
+                'metainfo': meta
+            }
 
 
 class DaliPreprocessor(torch.nn.Module):
@@ -64,13 +70,18 @@ class DaliPreprocessor(torch.nn.Module):
             masks, context_masks, target_masks, \
             original_patch_indices, channels_to_mask = self.mask_generator(inputs.shape[0])
 
-        return {
-            'data_tensor': inputs,
-            "metainfo": {
-                'masks': [masks] if self.with_masking else None,
-                'context_masks': [context_masks] if self.with_masking else None,
-                'target_masks': [target_masks] if self.with_masking else None,
-                'original_patch_indices': [original_patch_indices] if self.with_masking else None,
-                'channels_to_mask': [channels_to_mask] if self.with_masking else None
+            return {
+                'data_tensor': inputs,
+                "metainfo": {
+                    'masks': [masks] if self.with_masking else None,
+                    'context_masks': [context_masks] if self.with_masking else None,
+                    'target_masks': [target_masks] if self.with_masking else None,
+                    'original_patch_indices': [original_patch_indices] if self.with_masking else None,
+                    'channels_to_mask': [channels_to_mask] if self.with_masking else None,
+                }
             }
-        }
+        else:
+            return {
+                'data_tensor': inputs,
+                'metainfo': {}
+            }
