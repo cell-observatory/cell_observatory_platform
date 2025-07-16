@@ -38,7 +38,7 @@ def read_npy(image_path: str, dtype: NUMPY_DTYPES | str = NUMPY_DTYPES.fp16) -> 
     if np.isnan(np.sum(img)):
         logger.error("NaN!")
 
-    dtype = dtype.value if isinstance(dtype, NUMPY_DTYPES) else NUMPY_DTYPES[dtype].value
+    dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype
     return img.astype(dtype)
 
 
@@ -49,7 +49,7 @@ def read_tiff(image_path: str, dtype: NUMPY_DTYPES | str = NUMPY_DTYPES.fp16) ->
     if np.isnan(np.sum(img)):
         logger.error("NaN!")
 
-    dtype = dtype.value if isinstance(dtype, NUMPY_DTYPES) else NUMPY_DTYPES[dtype].value
+    dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype
     return img.astype(dtype)
 
 
@@ -64,7 +64,7 @@ def read_zarr(
         "kvstore": {"driver": "file", "path": image_path},
         "dtype": ts.uint16
     }
-    dtype = dtype.value if isinstance(dtype, TENSORSTORE_DTYPES) else TENSORSTORE_DTYPES[dtype].value
+    dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
     ds = ts.open(spec, read=True).result()
     return ts.cast(ds, dtype)
 

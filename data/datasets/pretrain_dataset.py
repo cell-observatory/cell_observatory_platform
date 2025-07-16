@@ -1,6 +1,7 @@
 import os
 from typing import Dict, Any, Tuple
 import torch
+from dask.dataframe.tests.test_pyarrow_compat import dtype
 from torch.utils.data import get_worker_info
 
 from data.data_types import TENSORSTORE_DTYPES
@@ -40,7 +41,7 @@ class PretrainDataset(BaseDataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._zarr_handles_data = {}
-        self.dtype = self.dtype.value if isinstance(self.dtype, TENSORSTORE_DTYPES) else TENSORSTORE_DTYPES[self.dtype].value
+        self.dtype = TENSORSTORE_DTYPES[self.dtype].value if isinstance(self.dtype, str) else dtype
 
     def worker_init_fn(self, worker_id):
         worker_info = get_worker_info()
