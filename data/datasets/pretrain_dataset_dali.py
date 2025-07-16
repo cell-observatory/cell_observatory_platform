@@ -10,25 +10,23 @@ import nvidia.dali as dali
 from nvidia.dali import pipeline_def, fn, types
 
 from data.io import read_zarr
-from data.data_types import DALI_DTYPES, TENSORSTORE_DTYPES
 from utils.context import process_rank, get_world_size
-
+from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES, DALI_DTYPES
 
 # based on: 
 # https://docs.nvidia.com/deeplearning/dali/user-guide/docs/
 # examples/general/data_loading/parallel_external_source.html
 class PretrainDatasetDali:
-    def __init__(self, 
-                 input_layout,
-                 hypercubes_dataframe_path, 
-                 server_folder_path,
-                 batch_size: int,
-                 ndim: int = 5,
-                 target_dtype: str = "float16",
+    def __init__(
+        self,
+        input_layout,
+        hypercubes_dataframe_path,
+        server_folder_path,
+        batch_size: int,
+        dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | DALI_DTYPES | str = NUMPY_DTYPES.fp16,
     ):
-        self.ndim = ndim
         self.input_layout = input_layout
-        self.target_dtype = target_dtype
+        self.dtype = dtype.value if isinstance(dtype, DALI_DTYPES) else DALI_DTYPES[dtype].value
 
         self.server_folder_path = server_folder_path
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
@@ -44,8 +42,7 @@ class PretrainDatasetDali:
         }
 
         self._zarr_handles_data = {
-            p: read_zarr(p, dtype=TENSORSTORE_DTYPES[self.target_dtype] \
-                            if isinstance(self.target_dtype, str) else self.target_dtype)
+            p: read_zarr(p, dtype=dtype)
             for p in self.paths
         }
 
@@ -116,17 +113,14 @@ class PretrainDatasetDali:
 
 @pipeline_def
 def pretrain_dataset_pipeline(dataset):
-    target_dtype = DALI_DTYPES[dataset.target_dtype].value \
-        if isinstance(dataset.target_dtype, str) else dataset.target_dtype
-
     vols = fn.external_source(
         source=dataset,
         num_outputs=1,
         batch=False,
         parallel=True,
         device="cpu",
-        dtype=target_dtype,
-        ndim=dataset.ndim,
+        dtype=dataset.dtype,
+        ndim=dataset.input_layout.ndim,
     )
     vol = vols[0].gpu()
     
@@ -134,11 +128,11 @@ def pretrain_dataset_pipeline(dataset):
     #       different input shapes
     #       (2) should we do this ourselves,
     #       or let DALI handle it?
-    vol_f32 = fn.cast(vol, dtype=types.FLOAT)
+    vol_f32 = fn.cast(vol, dtype=DALI_DTYPES.float32.value)
     vol_norm = fn.normalize(
         vol_f32,
         axes=[1, 2, 3, 4],
         batch=True
     )
-    vol_out = fn.cast(vol_norm, dtype=target_dtype)
+    vol_out = fn.cast(vol_norm, dtype=dataset.dtype)
     return vol_out

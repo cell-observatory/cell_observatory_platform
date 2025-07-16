@@ -43,6 +43,11 @@ quantization: float16 # data type for training, options: float32, float16
 # dtype for training data
 dataset_dtype: float16 # data type for training, options: float32, float16
 
+# dataset layout in the zarr files
+dataset_layout: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE  #  MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
+dataset_layout_order: TZYXC
+
+
 # overrides
 # --------------------------------------------------------------------------------
 
@@ -69,7 +74,6 @@ datasets:
   patch_shape: [4, 16, 16, 16]
 
   split: null
-  dataloader_type: dali # options: torch, dali
   return_dataloader: true
   distributed_sampler: true
 
@@ -87,15 +91,6 @@ datasets:
     _target_: nvidia.dali.plugin.base_iterator.LastBatchPolicy
     _args_:  [1] # 0=FILL, 1=DROP, 2=PARTIAL
 
-  dataset:
-    _target_: data.datasets.pretrain_dataset_dali.PretrainDatasetDali
-  
-    target_dtype: ${dataset_dtype}
-    server_folder_path: ${paths.server_folder_path}
-    hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
-
-  dali_pipeline:
-    _target_: data.datasets.pretrain_dataset_dali.pretrain_dataset_pipeline
 
 # model
 models:

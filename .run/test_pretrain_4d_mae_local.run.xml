@@ -49,7 +49,7 @@
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/manager.py" />
-    <option name="PARAMETERS" value="--config-name test_pretrain_4d_mae_local.yaml" />
+    <option name="PARAMETERS" value="--config-name experiments/pretrain_4d_mae_abc_06_30_2025.yaml" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
