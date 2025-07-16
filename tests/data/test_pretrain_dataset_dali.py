@@ -56,8 +56,8 @@ def test_dataloader_dali(config):
         data_tensor = data_sample[0]["data_tensor"]
 
         assert isinstance(data_tensor, torch.Tensor), "Data tensor should be a PyTorch tensor"
-        assert data_tensor.ndim == (dataset.ndim + 1), \
-            f"Data tensor should have {dataset.ndim + 1} dimensions, got {data_tensor.ndim}"
+        assert data_tensor.ndim == (dataset.input_layout.ndim + 1), \
+            f"Data tensor should have {dataset.input_layout.ndim + 1} dimensions, got {data_tensor.ndim}"
         assert data_tensor.shape[0] == config.clusters.batch_size_per_gpu, \
             f"Data tensor batch size should be {config.clusters.batch_size_per_gpu}, got {data_tensor.shape[0]}"
 
