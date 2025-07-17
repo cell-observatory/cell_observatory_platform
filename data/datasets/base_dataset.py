@@ -11,7 +11,7 @@ from torch.utils.data._utils.collate import default_collate as torch_default_col
 
 from data.structures.data_sample import DataSample
 from data.structures.image_list import cat_image_lists
-from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
+from data.data_shapes import MULTICHANNEL_HYPERCUBE
 from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES
 
 logging.basicConfig(
@@ -130,7 +130,7 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
     def __init__(
         self,
         hypercubes_dataframe_path: str | Path,
-        input_layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE,
+        input_layout: MULTICHANNEL_HYPERCUBE,
         transforms: Optional[Sequence] = None,
         server_folder_path: Optional[Path] = None,
         dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | str = NUMPY_DTYPES.fp16,
@@ -138,7 +138,7 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         """
         Args:
             hypercubes_dataframe_path: path to pre-processed hypercubes dataframe from the supabase database
-            input_layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE
+            input_layout: see MULTICHANNEL_HYPERCUBE
             transforms: list of optional transforms to apply to each sample (default: None)
             server_folder_path: path to override default server folder found in the supabase database
                 update this path based on where the data is stored on your local machine

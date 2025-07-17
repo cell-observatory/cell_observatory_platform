@@ -192,11 +192,6 @@ datasets:
   input_shape: [32, 128, 128, 128, 2]
   patch_shape: [4, 16, 16, 16]
   split: 0.1 # train/val split
-  dataset:
-  _target_: data.datasets.pretrain_dataset.PretrainDataset
-  input_layout: 
-    _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
-    value: TZYXC
       
 models:
   _target_: models.jepa.JEPA

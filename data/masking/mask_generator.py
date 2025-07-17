@@ -7,10 +7,7 @@ from hydra.utils import get_method
 import torch
 
 from multiprocessing import Value
-from data.data_shapes import (
-    MULTICHANNEL_3D_HYPERCUBE,
-    MULTICHANNEL_4D_HYPERCUBE
-)
+from data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 
 # adapted from: https://github.com/facebookresearch/jepa/blob/main/src/masks/multiblock3d.py
@@ -90,8 +87,7 @@ class MaskModes(Enum):
 class MaskGenerator(object):
     def __init__(
         self,
-        layout: Union[MULTICHANNEL_3D_HYPERCUBE,
-                        MULTICHANNEL_4D_HYPERCUBE],
+        layout: MULTICHANNEL_HYPERCUBE,
         input_shape: Tuple[int, int, int, int, int] = (32, 128, 128, 128, 2),
         patch_shape: Tuple[int, int, int, int] = (32, 16, 16, 16),
         lateral_mask_scale: float = (0.2, 0.4),

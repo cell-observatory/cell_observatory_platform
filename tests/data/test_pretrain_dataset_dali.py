@@ -26,6 +26,13 @@ def test_dataloader_dali(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
 
+    with open_dict(config):
+        config.datasets.collate_fn = None
+        config.datasets.dataset._target_ = "data.datasets.pretrain_dataset_dali.PretrainDatasetDali"
+        config.datasets.dali_last_batch_policy = {
+            "_target_": "nvidia.dali.plugin.base_iterator.LastBatchPolicy",
+            "_args_": [1]
+        }
 
     database = instantiate(config.datasets.databases)
     assert database is not None
@@ -92,6 +99,13 @@ def test_data_pipeline_dali(config):
     with open_dict(config):
         config.experiment_name = "test_data_pipeline_dali"
         config.paths.resume_checkpointdir = None
+
+        config.datasets.collate_fn = None
+        config.datasets.dataset._target_ = "data.datasets.pretrain_dataset_dali.PretrainDatasetDali"
+        config.datasets.dali_last_batch_policy = {
+            "_target_": "nvidia.dali.plugin.base_iterator.LastBatchPolicy",
+            "_args_": [1]
+        }
 
     metrics = distributed_test(cfg=config, test="tests.data.test_pretrain_dataset_dali._test_dataloader_dali_dist")
     assert metrics.get("success", False), "Distributed dataloader test failed"
