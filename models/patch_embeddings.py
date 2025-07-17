@@ -14,13 +14,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def calc_num_patches(
-    input_fmt="ZYXC",
-    input_shape=(1, 6, 64, 64, 1),
+    input_fmt="TZYXC",
+    input_shape=(1, 16, 64, 64, 64, 1),
     lateral_patch_size=1,
     axial_patch_size=1,
     temporal_patch_size=1,
 ):
     if input_fmt == "TZYXC" or input_fmt == "TZYX":
+        assert lateral_patch_size != None, "lateral_patch_size cannot be None"
+        assert axial_patch_size != None, "axial_patch_size cannot be None"
+        assert temporal_patch_size != None, "temporal_patch_size cannot be None"
+
         t = input_shape[1] // temporal_patch_size
         z = input_shape[2] // axial_patch_size
         y = input_shape[3] // lateral_patch_size
@@ -29,6 +33,9 @@ def calc_num_patches(
         num_patches = t * z * y * x
 
     elif input_fmt == "ZYXC" or input_fmt == "ZYX":
+        assert lateral_patch_size != None, "lateral_patch_size cannot be None"
+        assert axial_patch_size != None, "axial_patch_size cannot be None"
+
         t = None
         z = input_shape[1] // axial_patch_size
         y = input_shape[2] // lateral_patch_size
@@ -37,6 +44,9 @@ def calc_num_patches(
         num_patches = z * y * x
 
     elif input_fmt == "TYXC" or input_fmt == "TYX":
+        assert lateral_patch_size != None, "lateral_patch_size cannot be None"
+        assert temporal_patch_size != None, "temporal_patch_size cannot be None"
+
         z = None
         t = input_shape[1] // temporal_patch_size
         y = input_shape[2] // lateral_patch_size
@@ -45,6 +55,8 @@ def calc_num_patches(
         num_patches = t * y * x
 
     elif input_fmt == "YXC" or input_fmt == "YX":
+        assert lateral_patch_size != None, "lateral_patch_size cannot be None"
+
         t, z = None, None
         y = input_shape[1] // lateral_patch_size
         x = input_shape[2] // lateral_patch_size
@@ -52,6 +64,8 @@ def calc_num_patches(
         num_patches = y * x
 
     elif input_fmt == "XC" or input_fmt == "X":
+        assert lateral_patch_size != None, "lateral_patch_size cannot be None"
+
         t, z, y = None, None, None
         x = input_shape[1] // lateral_patch_size
         c = input_shape[-1] if input_fmt == "X" else None
@@ -79,13 +93,14 @@ class ConvPatchEmbedding(nn.Module):
         input_shape=(1, 6, 64, 64, 1),
         lateral_patch_size=16,
         axial_patch_size=1,
+        temporal_patch_size=1,
         embed_dim=768,
     ):
         super().__init__()
         self.input_shape = input_shape # (B, Z, Y, X, C)
         self.lateral_patch_size = lateral_patch_size
         self.axial_patch_size = axial_patch_size
-        self.axial_patch_size = axial_patch_size
+        self.temporal_patch_size = temporal_patch_size
         self.embed_dim = embed_dim
         self.img_size = input_shape[-2]
         self.in_chans = input_shape[-1]
@@ -240,8 +255,8 @@ class PatchEmbedding(nn.Module):
 class PosEmbedding(nn.Module):
     def __init__(
         self,
-        input_fmt="ZYXC",
-        input_shape=(1, 6, 64, 64, 1),
+        input_fmt="TZYXC",
+        input_shape=(1, 16, 128, 128, 128, 1),
         lateral_patch_size=16,
         axial_patch_size=1,
         temporal_patch_size=1,

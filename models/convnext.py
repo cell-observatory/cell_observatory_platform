@@ -181,6 +181,8 @@ class ConvNeXtV2(nn.Module):
         drop_path_rate=.1,
         head_init_scale=1.
     ):
+        assert input_fmt not in ['TZYXC', 'TZXYC'], NotImplementedError(f'Input format {input_fmt} is not supported.')
+
         super().__init__()
 
         if model_template in CONFIGS.keys():
