@@ -65,10 +65,12 @@ def get_dataloader(config: DictConfig):
         dataset = build_dataset(config, transforms)
 
         if config.datasets.return_dataloader:
-            # TODO: add support for instantiate and get_method depending on if 
-            #        collate_fn is a string or a 
-            # callable
-            collate_fn = get_method(config.datasets.collate_fn)
+
+            if isinstance(config.datasets.collate_fn, DictConfig):
+                collate_fn = instantiate(config.datasets.collate_fn)
+            else:
+                collate_fn = get_method(config.datasets.collate_fn)
+
             db_worker_init_fn = dataset.worker_init_fn
 
             if config.datasets.split is not None:
