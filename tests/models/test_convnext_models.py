@@ -21,7 +21,7 @@ def test_convnext_custom(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -32,6 +32,7 @@ def test_convnext_custom(models_kargs):
 
     model = ConvNeXtV2(
         model_template='convnext',
+        input_fmt='ZYXC',
         input_shape=inputs,
         modes=models_kargs['modes'],
         depths=(3, 3, 9, 3),
@@ -57,7 +58,7 @@ def test_convnext_tiny(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -68,6 +69,7 @@ def test_convnext_tiny(models_kargs):
 
     model = ConvNeXtV2(
         model_template='convnext-tiny',
+        input_fmt='ZYXC',
         input_shape=inputs,
         modes=models_kargs['modes'],
     )
@@ -91,7 +93,7 @@ def test_convnext_small(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -102,6 +104,7 @@ def test_convnext_small(models_kargs):
 
     model = ConvNeXtV2(
         model_template='convnext-small',
+        input_fmt='ZYXC',
         input_shape=inputs,
         modes=models_kargs['modes'],
     )
@@ -125,7 +128,7 @@ def test_convnext_base(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -136,6 +139,7 @@ def test_convnext_base(models_kargs):
 
     model = ConvNeXtV2(
         model_template='convnext-base',
+        input_fmt='ZYXC',
         input_shape=inputs,
         modes=models_kargs['modes'],
     )
@@ -158,7 +162,7 @@ def test_convnext_large(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -169,6 +173,7 @@ def test_convnext_large(models_kargs):
 
     model = ConvNeXtV2(
         model_template='convnext-large',
+        input_fmt='ZYXC',
         input_shape=inputs,
         modes=models_kargs['modes'],
     )

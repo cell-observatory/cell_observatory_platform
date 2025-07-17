@@ -20,7 +20,7 @@ def test_mae_custom(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -31,10 +31,12 @@ def test_mae_custom(models_kargs):
 
     model = MaskedAutoEncoder(
         model_template='mae',
+        input_fmt='TZYXC',
         input_shape=inputs,
         embed_dim=models_kargs['hidden_size'],
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         num_heads=models_kargs['heads'],
         depth=models_kargs['repeats'],
         modes=models_kargs['modes'],
@@ -61,7 +63,7 @@ def test_mae_tiny(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -72,9 +74,11 @@ def test_mae_tiny(models_kargs):
 
     model = MaskedAutoEncoder(
         model_template='mae-tiny',
+        input_fmt='TZYXC',
         input_shape=inputs,
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
@@ -98,7 +102,7 @@ def test_mae_small(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -109,9 +113,11 @@ def test_mae_small(models_kargs):
 
     model = MaskedAutoEncoder(
         model_template='mae-small',
+        input_fmt='TZYXC',
         input_shape=inputs,
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
@@ -135,7 +141,7 @@ def test_mae_base(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -146,9 +152,11 @@ def test_mae_base(models_kargs):
 
     model = MaskedAutoEncoder(
         model_template='mae-base',
+        input_fmt='TZYXC',
         input_shape=inputs,
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
@@ -172,7 +180,7 @@ def test_mae_large(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -183,9 +191,11 @@ def test_mae_large(models_kargs):
 
     model = MaskedAutoEncoder(
         model_template='mae-large',
+        input_fmt='TZYXC',
         input_shape=inputs,
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
@@ -209,7 +219,7 @@ def test_mae_huge(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -220,9 +230,11 @@ def test_mae_huge(models_kargs):
 
     model = MaskedAutoEncoder(
         model_template='mae-huge',
+        input_fmt='TZYXC',
         input_shape=inputs,
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )

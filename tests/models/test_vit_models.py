@@ -20,7 +20,7 @@ def test_vit_custom(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -31,10 +31,12 @@ def test_vit_custom(models_kargs):
 
     model = ViT(
         model_template='vit',
+        input_fmt='TZYXC',
         input_shape=inputs,
         embed_dim=models_kargs['hidden_size'],
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         num_heads=models_kargs['heads'],
         depth=models_kargs['repeats'],
         modes=models_kargs['modes'],
@@ -61,7 +63,7 @@ def test_vit_tiny(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -72,9 +74,11 @@ def test_vit_tiny(models_kargs):
 
     model = ViT(
         model_template='vit-tiny',
+        input_fmt='TZYXC',
         input_shape=inputs,
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
@@ -98,7 +102,7 @@ def test_vit_small(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -109,9 +113,11 @@ def test_vit_small(models_kargs):
 
     model = ViT(
         model_template='vit-small',
+        input_fmt='TZYXC',
         input_shape=inputs,
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
@@ -134,7 +140,7 @@ def test_vit_base(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -145,9 +151,11 @@ def test_vit_base(models_kargs):
 
     model = ViT(
         model_template='vit-base',
+        input_fmt='TZYXC',
         input_shape=inputs,
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
@@ -171,7 +179,7 @@ def test_vit_large(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -182,9 +190,11 @@ def test_vit_large(models_kargs):
 
     model = ViT(
         model_template='vit-large',
+        input_fmt='TZYXC',
         input_shape=inputs,
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
@@ -207,7 +217,7 @@ def test_vit_huge(models_kargs):
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
-    inputs = (8, 64, 64, 64, 2)
+    inputs = (1, 8, 64, 64, 64, 2)
 
     logger.info(f"Output dir: {outdir}")
     outdir.mkdir(exist_ok=True, parents=True)
@@ -218,9 +228,11 @@ def test_vit_huge(models_kargs):
 
     model = ViT(
         model_template='vit-huge',
+        input_fmt='TZYXC',
         input_shape=inputs,
         lateral_patch_size=models_kargs['patches'],
         axial_patch_size=1,
+        temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     )
