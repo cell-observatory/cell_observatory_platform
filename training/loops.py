@@ -409,11 +409,11 @@ class EpochBasedTrainer(BaseTrainer):
         """
         self.before_val_step()
 
+        data_sample = self.preprocessor(data_sample)
         loss_dict, outputs = self.model(data_sample)
         self.evaluator.process(data_sample, outputs, loss_dict)
 
-        self.after_val_step(data_sample=data_sample, 
-                            outputs=outputs, loss_dict=loss_dict)
+        self.after_val_step(data_sample=data_sample, outputs=outputs, loss_dict=loss_dict)
         self._val_iter += 1
 
 
@@ -434,6 +434,8 @@ class TestTrainer(BaseTrainer):
             val_dataloader=None,
             config=cfg
         )
+
+        self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
         # initialize model
         model = build_dependency_graph_and_instantiate(cfg.models)
@@ -493,6 +495,7 @@ class TestTrainer(BaseTrainer):
         """
         self.before_test_step()
 
+        data_sample = self.preprocessor(data_sample)
         loss_dict, outputs = self.model(data_sample)
         self.evaluator.process(data_sample, outputs, loss_dict)
 
