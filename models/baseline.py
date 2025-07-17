@@ -102,6 +102,7 @@ class Baseline(nn.Module):
         modes=15,
         lateral_patch_size=16,
         axial_patch_size=1,
+        temporal_patch_size=1,
         embed_dim=768,
         depth=12,
         num_heads=12,
@@ -140,6 +141,7 @@ class Baseline(nn.Module):
 
         self.axial_patch_size = axial_patch_size
         self.lateral_patch_size = lateral_patch_size
+        self.temporal_patch_size = temporal_patch_size
 
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
@@ -160,6 +162,7 @@ class Baseline(nn.Module):
                 input_shape=self.input_shape,
                 lateral_patch_size=self.lateral_patch_size,
                 axial_patch_size=self.axial_patch_size,
+                temporal_patch_size=self.temporal_patch_size,
                 embed_dim=self.embed_dim,
             )
         else:
@@ -168,6 +171,7 @@ class Baseline(nn.Module):
                 input_shape=self.input_shape,
                 lateral_patch_size=self.lateral_patch_size,
                 axial_patch_size=self.axial_patch_size,
+                temporal_patch_size=self.temporal_patch_size,
                 embed_dim=self.embed_dim,
                 channels=self.in_chans,
             )
