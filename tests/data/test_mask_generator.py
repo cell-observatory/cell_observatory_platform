@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from data.masking.mask_generator import MaskGenerator, MaskModes
-from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
+from data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 
 @pytest.fixture
@@ -25,15 +25,15 @@ def make_mask_generator():
               aspect_ratio_scale_hw: float = 0.1,
               num_blocks: int = 1
               ):
-        if layout == MULTICHANNEL_4D_HYPERCUBE.CTZYX or \
-            layout == MULTICHANNEL_3D_HYPERCUBE.CTYX:
+        if layout == MULTICHANNEL_HYPERCUBE.CTZYX or \
+            layout == MULTICHANNEL_HYPERCUBE.CTYX:
             input_shape = (input_channels, time_length, *spatial_shape)
-        elif layout == MULTICHANNEL_4D_HYPERCUBE.TZYXC or \
-            layout == MULTICHANNEL_3D_HYPERCUBE.TYXC:
+        elif layout == MULTICHANNEL_HYPERCUBE.TZYXC or \
+            layout == MULTICHANNEL_HYPERCUBE.TYXC:
             input_shape = (time_length, *spatial_shape, input_channels)
-        elif layout == MULTICHANNEL_3D_HYPERCUBE.ZYXC:
+        elif layout == MULTICHANNEL_HYPERCUBE.ZYXC:
             input_shape = (*spatial_shape, input_channels)
-        elif layout == MULTICHANNEL_3D_HYPERCUBE.CZYX:
+        elif layout == MULTICHANNEL_HYPERCUBE.CZYX:
             input_shape = (input_channels, *spatial_shape)
         else:
             raise ValueError(f"Unknown layout {layout}")
@@ -65,14 +65,14 @@ def make_mask_generator():
         (10, [1, 0, 1, 1, 1, 0]),
     ],
 )
-@pytest.mark.parametrize(("batch_size", "layout"), [[1, MULTICHANNEL_3D_HYPERCUBE.TYXC],
-                                                    [3, MULTICHANNEL_3D_HYPERCUBE.TYXC],
-                                                    [1, MULTICHANNEL_3D_HYPERCUBE.CTYX],
-                                                    [3, MULTICHANNEL_3D_HYPERCUBE.CTYX],
-                                                    [1, MULTICHANNEL_4D_HYPERCUBE.TZYXC],
-                                                    [3, MULTICHANNEL_4D_HYPERCUBE.TZYXC],
-                                                    [1, MULTICHANNEL_4D_HYPERCUBE.CTZYX],
-                                                    [3, MULTICHANNEL_4D_HYPERCUBE.CTZYX],]
+@pytest.mark.parametrize(("batch_size", "layout"), [[1, MULTICHANNEL_HYPERCUBE.TYXC],
+                                                    [3, MULTICHANNEL_HYPERCUBE.TYXC],
+                                                    [1, MULTICHANNEL_HYPERCUBE.CTYX],
+                                                    [3, MULTICHANNEL_HYPERCUBE.CTYX],
+                                                    [1, MULTICHANNEL_HYPERCUBE.TZYXC],
+                                                    [3, MULTICHANNEL_HYPERCUBE.TZYXC],
+                                                    [1, MULTICHANNEL_HYPERCUBE.CTZYX],
+                                                    [3, MULTICHANNEL_HYPERCUBE.CTZYX],]
 )
 def test_blocked_pattern_mask(make_mask_generator, 
                               time_length, 
@@ -85,16 +85,16 @@ def test_blocked_pattern_mask(make_mask_generator,
     Validate BLOCKED_PATTERNED mode: 
         - tests that the mask repeats `pattern` along the time axis.
     """
-    if layout == MULTICHANNEL_4D_HYPERCUBE.CTZYX \
-        or layout == MULTICHANNEL_4D_HYPERCUBE.TZYXC:
+    if layout == MULTICHANNEL_HYPERCUBE.CTZYX \
+        or layout == MULTICHANNEL_HYPERCUBE.TZYXC:
         spatial_shape = (128, 128, 128)  # Z, Y, X
         patch_shape = (1, 16, 16, 16)  # T, Z, Y, X
-    elif layout == MULTICHANNEL_3D_HYPERCUBE.ZYXC \
-        or layout == MULTICHANNEL_3D_HYPERCUBE.CZYX:
+    elif layout == MULTICHANNEL_HYPERCUBE.ZYXC \
+        or layout == MULTICHANNEL_HYPERCUBE.CZYX:
         spatial_shape = (128, 128, 128)  # Z, Y, X
         patch_shape = (16, 16, 16)
-    elif layout == MULTICHANNEL_3D_HYPERCUBE.TYXC \
-        or layout == MULTICHANNEL_3D_HYPERCUBE.CTYX:
+    elif layout == MULTICHANNEL_HYPERCUBE.TYXC \
+        or layout == MULTICHANNEL_HYPERCUBE.CTYX:
         spatial_shape = (128, 128)  # Y, X
         patch_shape = (1, 16, 16)  # T, Y, X
     else:
@@ -130,18 +130,18 @@ def test_blocked_pattern_mask(make_mask_generator,
 @pytest.mark.parametrize(
     ("batch_size", "layout"),
     [
-        (1, MULTICHANNEL_3D_HYPERCUBE.ZYXC),
-        (3, MULTICHANNEL_3D_HYPERCUBE.ZYXC),
-        (1, MULTICHANNEL_3D_HYPERCUBE.CZYX),
-        (3, MULTICHANNEL_3D_HYPERCUBE.CZYX),
-        (1, MULTICHANNEL_3D_HYPERCUBE.TYXC),
-        (3, MULTICHANNEL_3D_HYPERCUBE.TYXC),
-        (1, MULTICHANNEL_3D_HYPERCUBE.CTYX),
-        (3, MULTICHANNEL_3D_HYPERCUBE.CTYX),
-        (1, MULTICHANNEL_4D_HYPERCUBE.TZYXC),
-        (1, MULTICHANNEL_4D_HYPERCUBE.CTZYX),
-        (3, MULTICHANNEL_4D_HYPERCUBE.TZYXC),
-        (3, MULTICHANNEL_4D_HYPERCUBE.CTZYX),
+        (1, MULTICHANNEL_HYPERCUBE.ZYXC),
+        (3, MULTICHANNEL_HYPERCUBE.ZYXC),
+        (1, MULTICHANNEL_HYPERCUBE.CZYX),
+        (3, MULTICHANNEL_HYPERCUBE.CZYX),
+        (1, MULTICHANNEL_HYPERCUBE.TYXC),
+        (3, MULTICHANNEL_HYPERCUBE.TYXC),
+        (1, MULTICHANNEL_HYPERCUBE.CTYX),
+        (3, MULTICHANNEL_HYPERCUBE.CTYX),
+        (1, MULTICHANNEL_HYPERCUBE.TZYXC),
+        (1, MULTICHANNEL_HYPERCUBE.CTZYX),
+        (3, MULTICHANNEL_HYPERCUBE.TZYXC),
+        (3, MULTICHANNEL_HYPERCUBE.CTZYX),
     ],
 )
 @pytest.mark.parametrize("maskmode", [MaskModes.RANDOM, MaskModes.RANDOM_SPACE_ONLY])
@@ -156,16 +156,16 @@ def test_random_mask(make_mask_generator,
         - ctx / tgt index sets match mask values and do not overlap  
         - orig_idx is correct permutation of all patch positions
     """
-    if layout == MULTICHANNEL_4D_HYPERCUBE.CTZYX \
-        or layout == MULTICHANNEL_4D_HYPERCUBE.TZYXC:
+    if layout == MULTICHANNEL_HYPERCUBE.CTZYX \
+        or layout == MULTICHANNEL_HYPERCUBE.TZYXC:
         spatial_shape = (128, 128, 128)  # Z, Y, X
         patch_shape = (1, 16, 16, 16)  # T, Z, Y, X
-    elif layout == MULTICHANNEL_3D_HYPERCUBE.ZYXC \
-        or layout == MULTICHANNEL_3D_HYPERCUBE.CZYX:
+    elif layout == MULTICHANNEL_HYPERCUBE.ZYXC \
+        or layout == MULTICHANNEL_HYPERCUBE.CZYX:
         spatial_shape = (128, 128, 128)  # Z, Y, X
         patch_shape = (16, 16, 16)
-    elif layout == MULTICHANNEL_3D_HYPERCUBE.TYXC \
-        or layout == MULTICHANNEL_3D_HYPERCUBE.CTYX:
+    elif layout == MULTICHANNEL_HYPERCUBE.TYXC \
+        or layout == MULTICHANNEL_HYPERCUBE.CTYX:
         spatial_shape = (128, 128)  # Y, X
         patch_shape = (1, 16, 16)  # T, Y, X
     else:
@@ -226,12 +226,12 @@ def test_random_mask(make_mask_generator,
 @pytest.mark.parametrize(
     ("batch_size", "layout"),
     [
-        (1, MULTICHANNEL_3D_HYPERCUBE.ZYXC),
-        (1, MULTICHANNEL_3D_HYPERCUBE.CZYX),
-        (1, MULTICHANNEL_3D_HYPERCUBE.TYXC),
-        (1, MULTICHANNEL_3D_HYPERCUBE.CTYX),
-        (1, MULTICHANNEL_4D_HYPERCUBE.TZYXC),
-        (1, MULTICHANNEL_4D_HYPERCUBE.CTZYX),
+        (1, MULTICHANNEL_HYPERCUBE.ZYXC),
+        (1, MULTICHANNEL_HYPERCUBE.CZYX),
+        (1, MULTICHANNEL_HYPERCUBE.TYXC),
+        (1, MULTICHANNEL_HYPERCUBE.CTYX),
+        (1, MULTICHANNEL_HYPERCUBE.TZYXC),
+        (1, MULTICHANNEL_HYPERCUBE.CTZYX),
     ],
 )
 @pytest.mark.parametrize(
@@ -251,16 +251,16 @@ def test_blocked_mask_properties(make_mask_generator,
     - ctx / tgt index sets match mask values and do not overlap
     - orig_idx is correct permutation of all patch positions
     """
-    if layout == MULTICHANNEL_4D_HYPERCUBE.CTZYX \
-        or layout == MULTICHANNEL_4D_HYPERCUBE.TZYXC:
+    if layout == MULTICHANNEL_HYPERCUBE.CTZYX \
+        or layout == MULTICHANNEL_HYPERCUBE.TZYXC:
         spatial_shape = (128, 128, 128)  # Z, Y, X
         patch_shape = (1, 16, 16, 16)  # T, Z, Y, X
-    elif layout == MULTICHANNEL_3D_HYPERCUBE.ZYXC \
-        or layout == MULTICHANNEL_3D_HYPERCUBE.CZYX:
+    elif layout == MULTICHANNEL_HYPERCUBE.ZYXC \
+        or layout == MULTICHANNEL_HYPERCUBE.CZYX:
         spatial_shape = (128, 128, 128)  # Z, Y, X
         patch_shape = (16, 16, 16)
-    elif layout == MULTICHANNEL_3D_HYPERCUBE.TYXC \
-        or layout == MULTICHANNEL_3D_HYPERCUBE.CTYX:
+    elif layout == MULTICHANNEL_HYPERCUBE.TYXC \
+        or layout == MULTICHANNEL_HYPERCUBE.CTYX:
         spatial_shape = (128, 128)  # Y, X
         patch_shape = (1, 16, 16)  # T, Y, X
     else:

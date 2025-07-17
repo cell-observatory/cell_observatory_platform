@@ -3,10 +3,7 @@ import pytest
 import torch
 
 from data.structures.image_list import ImageList, cat_image_lists
-from data.data_shapes import (
-    MULTICHANNEL_3D_HYPERCUBE as L3,
-    MULTICHANNEL_4D_HYPERCUBE as L4,
-)
+from data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 
 torch.manual_seed(0)
@@ -26,7 +23,7 @@ def _assert_stats_correct(tensor, mean, std, dims):
 # ---------------------------------------------------------------------------
 
 def test_image_list_3d_channel_last():
-    layout = L3.ZYXC
+    layout = MULTICHANNEL_HYPERCUBE.ZYXC
     # img0:   (Z=2, Y=4, X=4, C=1)
     # img1:   (Z=3, Y=5, X=6, C=1)
     imgs = [_rand((2, 4, 4, 1)), _rand((3, 5, 6, 1))]
@@ -60,7 +57,7 @@ def test_image_list_3d_channel_last():
 # ---------------------------------------------------------------------------
 
 def test_image_list_4d_channel_last():
-    layout = L4.TZYXC
+    layout = MULTICHANNEL_HYPERCUBE.TZYXC
     # img0: (T=3, Z=2, Y=4, X=4, C=1)
     # img1: (T=3, Z=3, Y=5, X=6, C=1)
     imgs = [_rand((3, 2, 4, 4, 1)), _rand((3, 3, 5, 6, 1))]
@@ -87,7 +84,7 @@ def test_image_list_4d_channel_last():
 # ---------------------------------------------------------------------------
 
 def test_cat_image_lists():
-    layout = L3.ZYXC
+    layout = MULTICHANNEL_HYPERCUBE.ZYXC
     a = ImageList.from_tensors([_rand((2, 4, 4, 1))], layout=layout)
     b = ImageList.from_tensors([_rand((2, 4, 4, 1))], layout=layout)
     c = ImageList.from_tensors([_rand((3, 5, 6, 1))], layout=layout)

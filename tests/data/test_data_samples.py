@@ -2,12 +2,12 @@ import torch
 
 from data.structures.image_list import ImageList
 from data.structures.data_sample import DataSample
-from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE
+from data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 
 def test_data_sample():
     # build an ImageList
-    layout = MULTICHANNEL_3D_HYPERCUBE.ZYXC
+    layout = MULTICHANNEL_HYPERCUBE.ZYXC
     img1 = torch.randn(2, 4, 4, 1)
     img2 = torch.randn(3, 5, 6, 1)
     im_list = ImageList.from_tensors([img1, img2], layout=layout)

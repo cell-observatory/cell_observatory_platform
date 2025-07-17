@@ -7,7 +7,7 @@ import torch
 from torch import device
 
 from data.io import record_init
-from data.data_shapes import MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
+from data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -29,8 +29,8 @@ class ImageList:
         self,
         tensor: torch.Tensor,
         image_sizes: List[Tuple],
-        layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE = MULTICHANNEL_4D_HYPERCUBE.TZYXC,
-        orig_layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE = None,
+        layout: MULTICHANNEL_HYPERCUBE = MULTICHANNEL_HYPERCUBE.TZYXC,
+        orig_layout: MULTICHANNEL_HYPERCUBE = None,
     ):
         """
         Arguments:
@@ -46,19 +46,25 @@ class ImageList:
         self.orig_layout = orig_layout if orig_layout is not None else layout
 
         if self.layout != self.orig_layout:
-            if self.layout == MULTICHANNEL_3D_HYPERCUBE.TYXC or self.layout == MULTICHANNEL_4D_HYPERCUBE.TZYXC:
+            if self.layout in (
+                    MULTICHANNEL_HYPERCUBE.ZYXC,
+                    MULTICHANNEL_HYPERCUBE.TYXC,
+                    MULTICHANNEL_HYPERCUBE.TZYXC
+            ):
                 self.tensor = self.layout.to_channel_last(self.tensor)
-            elif self.layout == MULTICHANNEL_3D_HYPERCUBE.CTYX or self.layout == MULTICHANNEL_4D_HYPERCUBE.CTZYX:
+            elif self.layout in (
+                    MULTICHANNEL_HYPERCUBE.CZYX,
+                    MULTICHANNEL_HYPERCUBE.CTYX,
+                    MULTICHANNEL_HYPERCUBE.CTZYX
+            ):
                 self.tensor = self.layout.to_channel_first(self.tensor)
             else:
                 raise NotImplementedError(f"Unsupported layout {self.layout}")
 
-        if isinstance(self.layout, MULTICHANNEL_3D_HYPERCUBE):
-            if self.tensor.ndim == 4:
+        if self.layout.is_3d() and self.tensor.ndim == 4:
                 self.tensor = self.tensor.unsqueeze(0) # (C, D, H, W) -> (1, C, D, H, W)
 
-        elif isinstance(self.layout, MULTICHANNEL_4D_HYPERCUBE):
-            if self.tensor.ndim == 5:
+        elif self.layout.is_4d() and self.tensor.ndim == 5:
                 self.tensor = self.tensor.unsqueeze(0) # (T, C, D, H, W) -> (1, T, C, D, H, W)
 
     @property
@@ -101,13 +107,13 @@ class ImageList:
         """ Access the individual image in its original size. """
         s = self.image_sizes[idx]
 
-        if isinstance(self.layout, MULTICHANNEL_3D_HYPERCUBE):
+        if self.layout.is_3d():
             if self.layout.is_channel_first():
                 return self.tensor[idx, :, :s[0], :s[1], :s[2]]
             else:
                 return self.tensor[idx, :s[0], :s[1], :s[2]]
 
-        elif isinstance(self.layout, MULTICHANNEL_4D_HYPERCUBE):
+        elif self.layout.is_4d():
             if self.layout.is_channel_first():
                 return self.tensor[idx, :, :s[0], :s[1], :s[2], :s[3]]
             else:
@@ -141,7 +147,7 @@ class ImageList:
         )
 
     def get_image_stats(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        if isinstance(self.layout, MULTICHANNEL_3D_HYPERCUBE):
+        if self.layout.is_3d():
             if self.layout.is_channel_first(): # (B, C, D, H, W)
                 mean = self.tensor.mean(dim=(2, 3, 4), keepdim=True)
                 std = self.tensor.std(dim=(2, 3, 4), keepdim=True)
@@ -149,7 +155,7 @@ class ImageList:
                 mean = self.tensor.mean(dim=(1, 2, 3), keepdim=True)
                 std = self.tensor.std(dim=(1, 2, 3), keepdim=True)
 
-        elif isinstance(self.layout, MULTICHANNEL_4D_HYPERCUBE):
+        elif self.layout.is_4d():
             if self.layout.is_channel_first(): # (B, C, T, D, H, W)
                 mean = self.tensor.mean(dim=(2, 3, 4, 5), keepdim=True)
                 std = self.tensor.std(dim=(2, 3, 4, 5), keepdim=True)
@@ -165,7 +171,7 @@ class ImageList:
     @staticmethod
     def from_tensors(
         tensors: List[torch.Tensor],
-        layout: MULTICHANNEL_3D_HYPERCUBE | MULTICHANNEL_4D_HYPERCUBE = MULTICHANNEL_4D_HYPERCUBE.TZYXC,
+        layout: MULTICHANNEL_HYPERCUBE = MULTICHANNEL_HYPERCUBE.TZYXC,
         size_divisibility: int = 0,
         pad_value: float = 0.0,
         padding_constraints: Optional[Dict[str, int]] = None,

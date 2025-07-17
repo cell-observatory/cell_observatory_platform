@@ -2,10 +2,7 @@ import pytest
 
 import torch
 
-from data.data_shapes import (
-    MULTICHANNEL_3D_HYPERCUBE as H3,
-    MULTICHANNEL_4D_HYPERCUBE as H4,
-)
+from data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 # -----------------------------------------------------------------------------
 # helpers
@@ -18,17 +15,17 @@ def make_tensor(shape):
     return torch.arange(numel, dtype=torch.int64).reshape(shape)
 
 def cf_variant(layout):
-    if isinstance(layout, H3):
-        return H3.CZYX if not layout.has_temporal_dim() else H3.CTYX
-    elif isinstance(layout, H4):
-        return H4.CTZYX
+    if layout.is_3d():
+        return MULTICHANNEL_HYPERCUBE.CZYX if not layout.has_temporal_dim() else MULTICHANNEL_HYPERCUBE.CTYX
+    elif layout.is_4d():
+        return MULTICHANNEL_HYPERCUBE.CTZYX
     raise TypeError
 
 def cl_variant(layout):
-    if isinstance(layout, H3):
-        return H3.ZYXC if not layout.has_temporal_dim() else H3.TYXC
-    elif isinstance(layout, H4):
-        return H4.TZYXC
+    if layout.is_3d():
+        return MULTICHANNEL_HYPERCUBE.ZYXC if not layout.has_temporal_dim() else MULTICHANNEL_HYPERCUBE.TYXC
+    elif layout.is_4d():
+        return MULTICHANNEL_HYPERCUBE.TZYXC
     raise TypeError
 
 # -----------------------------------------------------------------------------
@@ -37,15 +34,15 @@ def cl_variant(layout):
 
 CASES_3D = [
     # enum, shape (no batch), shape (with batch), has_temporal
-    (H3.CZYX, (3, 4, 5, 6), (2, 3, 4, 5, 6), False),
-    (H3.ZYXC, (4, 5, 6, 3), (2, 4, 5, 6, 3), False),
-    (H3.CTYX, (3, 7, 5, 6), (2, 3, 7, 5, 6), True),
-    (H3.TYXC, (7, 5, 6, 3), (2, 7, 5, 6, 3), True),
+    (MULTICHANNEL_HYPERCUBE.CZYX, (3, 4, 5, 6), (2, 3, 4, 5, 6), False),
+    (MULTICHANNEL_HYPERCUBE.ZYXC, (4, 5, 6, 3), (2, 4, 5, 6, 3), False),
+    (MULTICHANNEL_HYPERCUBE.CTYX, (3, 7, 5, 6), (2, 3, 7, 5, 6), True),
+    (MULTICHANNEL_HYPERCUBE.TYXC, (7, 5, 6, 3), (2, 7, 5, 6, 3), True),
 ]
 
 CASES_4D = [
-    (H4.CTZYX, (3, 7, 4, 5, 6), (2, 3, 7, 4, 5, 6), True),
-    (H4.TZYXC, (7, 4, 5, 6, 3), (2, 7, 4, 5, 6, 3), True),
+    (MULTICHANNEL_HYPERCUBE.CTZYX, (3, 7, 4, 5, 6), (2, 3, 7, 4, 5, 6), True),
+    (MULTICHANNEL_HYPERCUBE.TZYXC, (7, 4, 5, 6, 3), (2, 7, 4, 5, 6, 3), True),
 ]
 
 # -----------------------------------------------------------------------------
@@ -62,17 +59,17 @@ def test_axes_property(layout, shape_nb, shape_b, has_t):
 def test_channel_first_last_flags_3d(layout, shape_nb, shape_b, has_t):
     # exactly one of the two flags must be True
     assert layout.is_channel_first() ^ layout.is_channel_last()
-    assert layout.is_channel_first() == (layout in (H3.CZYX, H3.CTYX))
-    assert layout.is_channel_last() == (layout in (H3.ZYXC, H3.TYXC))
+    assert layout.is_channel_first() == (layout in (MULTICHANNEL_HYPERCUBE.CZYX, MULTICHANNEL_HYPERCUBE.CTYX))
+    assert layout.is_channel_last() == (layout in (MULTICHANNEL_HYPERCUBE.ZYXC, MULTICHANNEL_HYPERCUBE.TYXC))
     # temporal flag must match the design table above
-    assert layout.has_temporal_dim() == (layout in (H3.CTYX, H3.TYXC))
+    assert layout.has_temporal_dim() == (layout in (MULTICHANNEL_HYPERCUBE.CTYX, MULTICHANNEL_HYPERCUBE.TYXC))
 
 
 @pytest.mark.parametrize("layout, shape_nb, shape_b, has_t", CASES_4D)
 def test_channel_first_last_flags_4d(layout, shape_nb, shape_b, has_t):
     assert layout.is_channel_first() ^ layout.is_channel_last()
-    assert layout.is_channel_first() == (layout is H4.CTZYX)
-    assert layout.is_channel_last() == (layout is H4.TZYXC)
+    assert layout.is_channel_first() == (layout is MULTICHANNEL_HYPERCUBE.CTZYX)
+    assert layout.is_channel_last() == (layout is MULTICHANNEL_HYPERCUBE.TZYXC)
     assert layout.has_temporal_dim()
 
 # -----------------------------------------------------------------------------
