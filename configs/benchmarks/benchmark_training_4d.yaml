@@ -45,6 +45,12 @@ quantization: float16 # data type for training, options: float32, float16
 # where to save the benchmark csv results
 csv_outdir: ${paths.data_path}/nvme/segment_4d/benchmarks/training_4d/results
 
+# dtype for training data
+dataset_dtype: float16 # data type for training, options: float32, float16
+
+# dataset layout in the zarr files
+dataset_layout_order: TZYXC
+
 # overrides
 # --------------------------------------------------------------------------------
 
@@ -71,12 +77,6 @@ datasets:
 
   prefetch_factor: 2 # prefetch factor for the dataloader
   num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
-  
-  dataset:
-    _target_: data.datasets.pretrain_dataset.PretrainDataset
-    input_layout: 
-      _target_: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
-      value: TZYXC
 
   databases:
     max_hypercubes: 200

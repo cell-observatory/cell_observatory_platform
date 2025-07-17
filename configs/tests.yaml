@@ -1,7 +1,7 @@
 defaults:
   - clusters: local                          # configs/clusters/local.yaml
   - paths: local                             # configs/paths/local.yaml
-  - datasets: pretrain_dataset_dali          # configs/datasets/pretrain_dataset_dali.yaml
+  - datasets: pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
   - models: mae/tiny                         # configs/models/mae/tiny.yaml
   - hooks: hooks                             # configs/hooks/hooks.yaml
   - checkpoint: checkpoint                   # configs/checkpoint/checkpoint.yaml
@@ -44,7 +44,6 @@ quantization: float16 # data type for training, options: float32, float16
 dataset_dtype: float16 # data type for training, options: float32, float16
 
 # dataset layout in the zarr files
-dataset_layout: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE  #  MULTICHANNEL_3D_HYPERCUBE, MULTICHANNEL_4D_HYPERCUBE
 dataset_layout_order: TZYXC
 
 # overrides
@@ -60,7 +59,7 @@ clusters:
   batch_size: 2 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 4 # number of cpu cores per gpu
+  cpus_per_gpu: 8 # number of cpu cores per gpu
   mem_per_cpu: 16000 # ram per cpu core
 
 datasets:
@@ -69,12 +68,12 @@ datasets:
   input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
 
-  split: null
+  split: 0.1
   return_dataloader: true
   distributed_sampler: true
 
-  prefetch_factor: 2 # prefetch factor for the dataloader
-  num_workers: ${clusters.cpus_per_worker}
+  prefetch_factor: 1 # prefetch factor for the dataloader
+  num_workers: 4
 
   databases:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
@@ -82,6 +81,27 @@ datasets:
     max_hypercubes: 200 # maximum number of hypercubes to return
     use_cached_hypercubes_dataframe: false
     protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+
+evaluation:
+  val_begin: 0
+  val_interval: 1
+  # used by BestMetricSaver to save best metric
+  # needs to match one of metrics saved per epoch by loss_dict
+  # in the training loop or evaluator.evaluate() in the evaluation loop
+  val_metric: val_step_loss
+  val_mode: min # mode for the validation metric, can be 'max' or 'min'
+  evaluator:
+    _target_: evaluation.base_evaluation.BaseEvaluator
+    training_metrics:
+      - "step_loss": "mean"
+
+loggers:
+  event_writers:
+      - _target_: training.loggers.LocalEventWriter
+        save_dir: ${loggers.logdir}
+        step_scalars_prefix: step_logbook
+        epoch_scalars_prefix: epoch_logbook
+        scalars_save_format: csv
 
 hooks:
   hooks_list:
@@ -103,11 +123,12 @@ hooks:
       warmup: 1
       active: 3
       repeat: 2
-      wait: 1  
-    activities: 
+      wait: 1
+    activities:
       - CUDA
       - CPU
     save_tensorboard: true
+    shutdown_after_profile: False
   - _target_: training.hooks.TorchMemoryStats
     step_period: 5
     epoch_period: 1

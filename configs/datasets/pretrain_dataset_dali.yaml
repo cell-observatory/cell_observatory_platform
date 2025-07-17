@@ -10,7 +10,7 @@ batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * to
 input_shape: [16, 128, 128, 128, 2] 
 patch_shape: [4, 16, 16, 16]
 
-split: 0.1
+split: null
 return_dataloader: true
 distributed_sampler: true
 collate_fn: null
@@ -22,15 +22,16 @@ databases:
   max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
   max_hypercubes: 100 # maximum number of hypercubes to return
 
-dali_last_batch_policy:
-  _target_: nvidia.dali.plugin.base_iterator.LastBatchPolicy
-  _args_:  [1] # 0=FILL, 1=DROP, 2=PARTIAL
-
 dataset:
   _target_: data.datasets.pretrain_dataset_dali.PretrainDatasetDali
   dtype: ${dataset_dtype}
   server_folder_path: ${paths.server_folder_path}
   hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
+
   input_layout:
-    _target_: ${dataset_layout}
+    _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}
+
+dali_last_batch_policy:
+  _target_: nvidia.dali.plugin.base_iterator.LastBatchPolicy
+  _args_:  [1] # 0=FILL, 1=DROP, 2=PARTIAL
