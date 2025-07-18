@@ -17,7 +17,7 @@ from tests.helpers import get_input_data
 def test_baseline_custom(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/baseline/custom"
+    outdir = models_kargs['outdir']/"tests/baseline/custom"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -60,7 +60,7 @@ def test_baseline_custom(models_kargs):
 def test_baseline_tiny(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/baseline/tiny"
+    outdir = models_kargs['outdir']/"tests/baseline/tiny"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -99,7 +99,7 @@ def test_baseline_tiny(models_kargs):
 def test_baseline_small(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/baseline/small"
+    outdir = models_kargs['outdir']/"tests/baseline/small"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -138,7 +138,7 @@ def test_baseline_small(models_kargs):
 def test_baseline_base(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/baseline/base"
+    outdir = models_kargs['outdir']/"tests/baseline/base"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -177,7 +177,7 @@ def test_baseline_base(models_kargs):
 def test_baseline_large(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/baseline/large"
+    outdir = models_kargs['outdir']/"tests/baseline/large"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -216,7 +216,7 @@ def test_baseline_large(models_kargs):
 def test_baseline_huge(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/baseline/huge"
+    outdir = models_kargs['outdir']/"tests/baseline/huge"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
