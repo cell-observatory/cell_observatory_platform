@@ -16,7 +16,7 @@ from training.helpers import summarize_model
 def test_vit_custom(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/vit/custom"
+    outdir = models_kargs['outdir']/"tests/vit/custom"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -59,7 +59,7 @@ def test_vit_custom(models_kargs):
 def test_vit_tiny(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/vit/tiny"
+    outdir = models_kargs['outdir']/"tests/vit/tiny"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -98,7 +98,7 @@ def test_vit_tiny(models_kargs):
 def test_vit_small(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/vit/small"
+    outdir = models_kargs['outdir']/"tests/vit/small"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -136,7 +136,7 @@ def test_vit_small(models_kargs):
 def test_vit_base(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/vit/base"
+    outdir = models_kargs['outdir']/"tests/vit/base"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -175,7 +175,7 @@ def test_vit_base(models_kargs):
 def test_vit_large(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/vit/large"
+    outdir = models_kargs['outdir']/"tests/vit/large"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -213,7 +213,7 @@ def test_vit_large(models_kargs):
 def test_vit_huge(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/vit/huge"
+    outdir = models_kargs['outdir']/"tests/vit/huge"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 

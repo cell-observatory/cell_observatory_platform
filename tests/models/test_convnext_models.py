@@ -17,7 +17,7 @@ from tests.helpers import get_input_data
 def test_convnext_custom(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/convnext/custom"
+    outdir = models_kargs['outdir']/"tests/convnext/custom"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -54,7 +54,7 @@ def test_convnext_custom(models_kargs):
 def test_convnext_tiny(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/convnext/tiny"
+    outdir = models_kargs['outdir']/"tests/convnext/tiny"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -89,7 +89,7 @@ def test_convnext_tiny(models_kargs):
 def test_convnext_small(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/convnext/small"
+    outdir = models_kargs['outdir']/"tests/convnext/small"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -124,7 +124,7 @@ def test_convnext_small(models_kargs):
 def test_convnext_base(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/convnext/base"
+    outdir = models_kargs['outdir']/"tests/convnext/base"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -158,7 +158,7 @@ def test_convnext_base(models_kargs):
 def test_convnext_large(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/convnext/large"
+    outdir = models_kargs['outdir']/"tests/convnext/large"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 

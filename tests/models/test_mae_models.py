@@ -16,7 +16,7 @@ from models.maskedautoencoder import MaskedAutoEncoder
 def test_mae_custom(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/mae/custom"
+    outdir = models_kargs['outdir']/"tests/mae/custom"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -59,7 +59,7 @@ def test_mae_custom(models_kargs):
 def test_mae_tiny(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/mae/tiny"
+    outdir = models_kargs['outdir']/"tests/mae/tiny"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -98,7 +98,7 @@ def test_mae_tiny(models_kargs):
 def test_mae_small(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/mae/small"
+    outdir = models_kargs['outdir']/"tests/mae/small"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -137,7 +137,7 @@ def test_mae_small(models_kargs):
 def test_mae_base(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/mae/base"
+    outdir = models_kargs['outdir']/"tests/mae/base"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -176,7 +176,7 @@ def test_mae_base(models_kargs):
 def test_mae_large(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/mae/large"
+    outdir = models_kargs['outdir']/"tests/mae/large"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -215,7 +215,7 @@ def test_mae_large(models_kargs):
 def test_mae_huge(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/mae/huge"
+    outdir = models_kargs['outdir']/"tests/mae/huge"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 

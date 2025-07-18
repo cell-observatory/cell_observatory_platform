@@ -16,7 +16,7 @@ from tests.helpers import get_masked_input_data
 def test_jepa_custom(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/jepa/custom"
+    outdir = models_kargs['outdir']/"tests/jepa/custom"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -59,7 +59,7 @@ def test_jepa_custom(models_kargs):
 def test_jepa_tiny(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/jepa/tiny"
+    outdir = models_kargs['outdir']/"tests/jepa/tiny"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -97,7 +97,7 @@ def test_jepa_tiny(models_kargs):
 def test_jepa_small(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/jepa/small"
+    outdir = models_kargs['outdir']/"tests/jepa/small"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -135,7 +135,7 @@ def test_jepa_small(models_kargs):
 def test_jepa_base(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/jepa/base"
+    outdir = models_kargs['outdir']/"tests/jepa/base"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -173,7 +173,7 @@ def test_jepa_base(models_kargs):
 def test_jepa_large(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/jepa/large"
+    outdir = models_kargs['outdir']/"tests/jepa/large"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
@@ -211,7 +211,7 @@ def test_jepa_large(models_kargs):
 def test_jepa_huge(models_kargs):
 
     # clean out existing model
-    outdir = models_kargs['outdir']/"pytests/jepa/huge"
+    outdir = models_kargs['outdir']/"tests/jepa/huge"
     if outdir.exists() and outdir.is_dir():
         shutil.rmtree(outdir)
 
