@@ -21,6 +21,9 @@ loop_per_worker_script: scripts.benchmark_dataloaders.bench_dataloader
 # experiment name
 experiment_name: benchmark_dataloaders_4d
 
+# run type
+run_type: single_run # single_run, multi_run, or tune
+
 # this is poorly named but this will prevent
 # dataloaders from being automatically wrapped
 # with prepare_data_loader by Ray which 

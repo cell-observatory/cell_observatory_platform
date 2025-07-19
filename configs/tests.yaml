@@ -28,6 +28,9 @@ engine: deepspeed
 # distributed framework
 distributed_framework: ray
 
+# run type
+run_type: single_run # single_run, multi_run, or tune
+
 # job type
 job_type: train # train or test
 
