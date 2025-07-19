@@ -4,8 +4,6 @@ import logging
 from pathlib import Path
 from typing import Optional, Tuple
 
-from omegaconf import DictConfig
-
 import numpy as np
 
 import torch
@@ -13,6 +11,8 @@ import torch.nn as nn
 from torchinfo import summary
 from torch.optim.lr_scheduler import LinearLR
 from timm.scheduler import create_scheduler_v2
+
+from omegaconf import DictConfig
 
 from deepspeed.ops.adam import FusedAdam
 from deepspeed.ops.lamb import FusedLamb

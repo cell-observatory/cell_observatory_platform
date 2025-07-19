@@ -5,19 +5,22 @@ https://github.com/open-mmlab/mmengine/blob/main/mmengine/runner/loops.py
 """
 
 
+import os
+import time
 import logging
 import weakref
 from typing import List, Optional, Sequence
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 from hydra.utils import instantiate, get_class
+if not OmegaConf.has_resolver("now"):
+    OmegaConf.register_new_resolver("now", lambda fmt: time.strftime(fmt))
 
 from ray.train import get_context
 
 import torch
 from deepspeed import initialize
 
-from data.data_types import TORCH_DTYPES
 from training.helpers import (
     get_optimizer,
     get_lr_scheduler,
@@ -40,6 +43,9 @@ logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INF
 
 # Ray train wrapper entry point
 def train_loop_per_worker(config):
+    # TODO: add backends HYDRA config
+    torch.backends.cudnn.benchmark = True
+
     trainer_cls = get_class(config.trainer)
     trainer_per_worker = trainer_cls(config)
 

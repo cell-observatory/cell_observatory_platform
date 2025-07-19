@@ -2,20 +2,23 @@ import os
 import sys
 import time
 import logging
+from pathlib import Path
 
 import warnings
 warnings.filterwarnings("ignore")
 
-import torch
+from ray.tune import Tuner
 from ray import init, cluster_resources
 from ray.train.torch import TorchTrainer, TorchConfig
 from ray.train import ScalingConfig, CheckpointConfig, RunConfig, FailureConfig
 
 import hydra
-from hydra.utils import get_method
-from omegaconf import DictConfig, OmegaConf
+from hydra.utils import get_method, instantiate
+from omegaconf import DictConfig, OmegaConf, open_dict
 if not OmegaConf.has_resolver("eval"):
     OmegaConf.register_new_resolver("eval", eval)
+if not OmegaConf.has_resolver("now"):
+    OmegaConf.register_new_resolver("now", lambda fmt: time.strftime(fmt))
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.DEBUG)
@@ -61,10 +64,6 @@ def initialize_session(cfg: DictConfig):
 
 def run_session(cfg: DictConfig):
 
-    if torch.cuda.is_available():
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.benchmark = True
-
     scaling_config = ScalingConfig(
         num_workers=cfg.clusters.scaling_config.num_workers,
         resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
@@ -103,6 +102,60 @@ def run_session(cfg: DictConfig):
         sys.exit(1)
 
 
+def run_tune(cfg: DictConfig):
+    logger.info(f"Starting hyperparameter tuning with Ray Tune...")
+    logger.info(f"Using parameter space: {cfg.tune.param_space}")
+    logger.info(f"Using tune config: {cfg.tune.tune_config}")
+
+    # ensures the output directory is unique for each tuning run
+    with open_dict(cfg):
+        cfg.paths.outdir = os.path.join(cfg.paths.outdir, "${now:%Y-%m-%d_%H-%M-%S}")
+
+    param_space = instantiate(cfg.tune.param_space)
+    tune_cfg = instantiate(cfg.tune.tune_config)
+    run_cfg = OmegaConf.merge(param_space, cfg)
+
+    scaling_config = ScalingConfig(
+        num_workers=cfg.clusters.scaling_config.num_workers,
+        resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
+        trainer_resources=cfg.clusters.scaling_config.trainer_resources,
+        use_gpu=cfg.clusters.scaling_config.use_gpu
+    )
+    checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
+    run_config = RunConfig(
+        log_to_file=cfg.clusters.run_config.log_to_file,
+        checkpoint_config=checkpoint_config,
+        failure_config=FailureConfig(max_failures=0),
+        storage_path=cfg.clusters.run_config.storage_path,
+    )
+    torch_config = TorchConfig(timeout_s=cfg.clusters.torch_config.timeout_s)
+
+    trainer = TorchTrainer(
+        train_loop_per_worker=get_method(cfg.loop_per_worker_script),
+        run_config=run_config,
+        scaling_config=scaling_config,
+        torch_config=torch_config,
+        datasets=None
+    )
+
+    # NOTE: we need to pass the run config to the Tuner instead of 
+    #       the trainer directly to allow for Tune to inject
+    #       the hyperparameter space and sampling logic into
+    #       our train config
+    tuner = Tuner(
+        trainable=trainer.as_trainable(),
+        param_space={"train_loop_config": run_cfg},
+        tune_config=tune_cfg,
+    )
+
+    try:
+        results = tuner.fit()
+        logger.info(f"Tuning completed with results: {results}")
+    except Exception as e:
+        logger.error(f"Tuning failed with exception: {e}")
+        sys.exit(1)
+
+
 @hydra.main(config_path="../configs", config_name="test_pretrain_4d_mae_local")
 def main(cfg: DictConfig):
 
@@ -114,7 +167,14 @@ def main(cfg: DictConfig):
     # depending on the cluster Hydra configuration
 
     cluster_resources = initialize_session(cfg)
-    result = run_session(cfg)
+
+    if cfg.run_type == "single_run":
+        result = run_session(cfg)
+    elif cfg.run_type == "tune":
+        result = run_tune(cfg)
+    else:
+        logger.error(f"Unknown run_type: {cfg.run_type}. Expected 'tune' or 'single_run'.")
+        sys.exit(1)
 
     logger.info(f"Total time elapsed: {time.time() - timeit:.2f} sec.")
     sys.exit(0)

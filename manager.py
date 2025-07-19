@@ -1,13 +1,16 @@
 import os
+import sys
 import shlex
+import logging
 import subprocess
 from pathlib import Path
 from subprocess import call, run
 
 import hydra
+from hydra import compose
 from dotenv import load_dotenv
 from hydra.core.hydra_config import HydraConfig
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 OmegaConf.register_new_resolver("eval", eval)
 
 from training import runner
@@ -26,16 +29,108 @@ os.environ["NCCL_CROSS_NIC"] = "1"
 os.environ["NCCL_P2P_LEVEL"] = "NVL"
 os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "3600"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["NVIDIA_TF32_OVERRIDE"] = "1"
 load_dotenv(Path(__file__).parent / ".env", verbose=True)
+
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 
 def q(x: str) -> str:
     """Shortcut for shlex.quote."""
     return shlex.quote(str(x))
 
+
+def get_defaults_overrides(defaults_overrides: list[dict] | None):
+    defaults = {}
+    for default in defaults_overrides or []:
+        for key, default_path in default.items():
+            defaults[key] = compose(config_name=default_path)
+    return defaults
+
+
 # modify Hydra config on cmd line to use different models
 @hydra.main(config_path="configs", config_name="test_pretrain_4d_mae_local")
 def main(cfg: DictConfig):
+    logger.info(f"Launch config: {OmegaConf.to_yaml(cfg)}")
 
+    if cfg.run_type == "multi_run":
+        assert len(list(cfg.runs)) > 0, \
+            "cfg.runs must be a list of configurations for multiple training jobs."
+        
+        logger.info("Launching multiple training jobs...")        
+        for run in list(cfg.runs):            
+            logger.info(f"Launching job with base config: {run.cfg}")
+            logger.info(f"Launching job with overrides: {run.overrides}")
+
+            # first we merge the defaults_overrides with the run config
+            defaults_overrides = get_defaults_overrides(run.get("defaults_overrides"))
+            logger.info(f"Defaults overrides: {defaults_overrides}")
+            run_cfg = compose(config_name=run.cfg)
+            with open_dict(run_cfg):
+                for key, value in defaults_overrides.items():
+                    logger.info(f"Overriding Defaults: {key}")
+                    # TODO: make sure old default values are removed correctly here
+                    run_cfg[key] = {}
+                    run_cfg = OmegaConf.merge(run_cfg, value)
+            
+            # next we merge the run overrides with the resulting run config
+            override_cfg = OmegaConf.create(OmegaConf.to_container(run.overrides, resolve=True))
+            run_cfg = OmegaConf.merge(run_cfg, override_cfg) 
+
+            if cfg.get("runs_base_dir"):
+                base_dir = Path(run_cfg.paths.outdir) / Path(cfg.runs_base_dir)
+                logger.info(f"Root directory for runs set to: {cfg.runs_base_dir}")
+                # NOTE: run.name.stem yields the name of the run 
+                #       and the full path run.name yields the location experiments for 
+                #       the run config file
+                run_id_path = base_dir / Path(run.name).stem
+                run_id_path.mkdir(parents=True, exist_ok=True)
+
+                with open_dict(run_cfg.paths):
+                    run_cfg.paths.outdir = str(run_id_path)
+                    logger.info(f"Output directory for this run: {run_cfg.paths.outdir}")
+
+            if cfg.get("wandb_tags"):
+                logger.info(f"Adding W&B tags: {cfg.wandb_tags}")
+                # TODO: we should consider making event_writers a dict 
+                #       instead of a list to prevent the need for this loop
+                with open_dict(run_cfg):
+                    for event_writer in run_cfg.loggers.event_writers:
+                        if event_writer._target_.endswith("WandBEventWriter"):
+                            event_writer.tags = event_writer.tags + list(cfg.wandb_tags)
+
+            # save the run config to a file for reproducibility and so 
+            # we can pass to the runner
+            run_cfg_path = Path(__file__).parent / "configs" / "experiments" / Path(run.name)
+            os.makedirs(Path(run_cfg_path).parent, exist_ok=True)
+
+            # inject package global variable since we are saving 
+            # config in `experiments` folder
+            run_cfg_yml = OmegaConf.to_yaml(run_cfg)
+            run_cfg_yml = "#@package _global_\n" + run_cfg_yml
+            run_cfg_path.write_text(run_cfg_yml)
+
+            logger.info(f"Run config saved to: {run_cfg_path}")
+
+            # launch the job
+            logger.info(f"Run config after overrides: {run_cfg_yml}")
+            launch_job(run_cfg, config_name="experiments" / Path(run.name))
+
+    elif cfg.run_type == "single_run" or cfg.run_type == "tune":
+        logger.info("Launching a single training job...")
+        launch_job(cfg)
+    else:
+        raise ValueError(f"Unknown run type: {cfg.run_type}. "
+                         f"Please set cfg.run_type to either 'single_run', 'multi_run', or 'tune'.")
+
+
+def launch_job(cfg: DictConfig, config_name: str = None):
+    
     container_info = get_container_info()
     print(f"Container type: {container_info['container_type']}")
 
@@ -64,13 +159,13 @@ def main(cfg: DictConfig):
     #     f"Missing dotenv path: {cfg.paths.dotenv_path}"
     load_dotenv(cfg.paths.dotenv_path, verbose=True)
 
-    # print full configuration (for debugging)
-    print("\n" + OmegaConf.to_yaml(cfg))
-
-    hydra_cfg = HydraConfig.get()
-
-    config_name = hydra_cfg.job.config_name
+    # ensure correct config is being passed to the runner
+    config_name = config_name if config_name is not None else HydraConfig.get().job.config_name
     print(f"Running with config: {config_name}")
+
+    # print full configuration (for debugging)
+    print(f"\nFull run configuration:")
+    print("\n" + OmegaConf.to_yaml(cfg))
 
     print(f"Current working directory: {Path.cwd()}")
     print(f"Creating output directory: {cfg.paths.outdir}...")
