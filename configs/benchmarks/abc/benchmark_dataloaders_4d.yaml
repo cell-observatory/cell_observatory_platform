@@ -15,6 +15,12 @@ num_batches: 50
 # where to save the benchmark results
 csv_out: ${paths.outdir}/results/results.csv
 
+# whether to benchmark the main process
+benchmark_main_process: true
+
+# whether to benchmark the worker processes
+benchmark_worker_process: false
+
 # benchmark loop to run for each worker
 loop_per_worker_script: scripts.benchmark_dataloaders.bench_dataloader
 
