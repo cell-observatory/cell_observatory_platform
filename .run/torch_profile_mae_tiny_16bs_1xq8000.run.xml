@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="profile_mae_16bs_1xq8000" type="PythonConfigurationType" factoryName="Python" folderName="profiling">
+  <configuration default="false" name="torch_profile_mae_tiny_16bs_1xq8000" type="PythonConfigurationType" factoryName="Python" folderName="profiling">
     <module name="cell_observatory_platform" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
@@ -49,7 +49,7 @@
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/manager.py" />
-    <option name="PARAMETERS" value="--config-name experiments/profile_mae_16bs_1xq8000.yaml" />
+    <option name="PARAMETERS" value="--config-name experiments/torch_profile_mae_tiny_16bs_1xq8000.yaml" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
