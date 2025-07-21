@@ -80,35 +80,33 @@ def main(cfg: DictConfig):
             override_cfg = OmegaConf.create(OmegaConf.to_container(run.overrides, resolve=True))
             run_cfg = OmegaConf.merge(run_cfg, override_cfg) 
 
-            if cfg.get("runs_base_dir"):
-                base_dir = Path(run_cfg.paths.outdir) / Path(cfg.runs_base_dir)
-                logger.info(f"Root directory for runs set to: {cfg.runs_base_dir}")
-                # NOTE: run.name.stem yields the name of the run 
-                #       and the full path run.name yields the location experiments for 
-                #       the run config file
-                run_id_path = base_dir / Path(run.name).stem
-                run_id_path.mkdir(parents=True, exist_ok=True)
+            if cfg.get("data_base_dir"):
+                logger.info(f"Root directory for runs set to: {cfg.data_base_dir}")
+                run_path = run_cfg.paths.outdir / Path(cfg.data_base_dir) / Path(run.name).with_suffix("")
+                run_path.mkdir(parents=True, exist_ok=True)
+            else:
+                logger.info(f"Root directory for runs set to: {run_cfg.paths.outdir}")
+                run_path = run_cfg.paths.outdir / Path(run.name).with_suffix("")
+                run_path.mkdir(parents=True, exist_ok=True)
 
-                with open_dict(run_cfg.paths):
-                    run_cfg.paths.outdir = str(run_id_path)
-                    logger.info(f"Output directory for this run: {run_cfg.paths.outdir}")
+            with open_dict(run_cfg.paths):
+                run_cfg.paths.outdir = str(run_path)
+                logger.info(f"Output directory for this run: {run_cfg.paths.outdir}")
 
             if cfg.get("wandb_tags"):
                 logger.info(f"Adding W&B tags: {cfg.wandb_tags}")
                 # TODO: we should consider making event_writers a dict 
-                #       instead of a list to prevent the need for this loop
+                #       instead of a list to prevent these kinds of loops
                 with open_dict(run_cfg):
                     for event_writer in run_cfg.loggers.event_writers:
                         if event_writer._target_.endswith("WandBEventWriter"):
                             event_writer.tags = event_writer.tags + list(cfg.wandb_tags)
 
-            # save the run config to a file for reproducibility and so 
-            # we can pass to the runner
-            run_cfg_path = Path(__file__).parent / "configs" / "experiments" / Path(run.name)
-            os.makedirs(Path(run_cfg_path).parent, exist_ok=True)
-
-            # inject package global variable since we are saving 
+            # save the run config to a file for reproducibility 
+            # and so we can pass to the runner and inject 
+            # package global variable since we are saving 
             # config in `experiments` folder
+            run_cfg_path = run_path / run.name
             run_cfg_yml = OmegaConf.to_yaml(run_cfg)
             run_cfg_yml = "#@package _global_\n" + run_cfg_yml
             run_cfg_path.write_text(run_cfg_yml)
@@ -117,7 +115,7 @@ def main(cfg: DictConfig):
 
             # launch the job
             logger.info(f"Run config after overrides: {run_cfg_yml}")
-            launch_job(run_cfg, config_name="experiments" / Path(run.name))
+            launch_job(run_cfg, config_name=run_cfg_path)
 
     elif cfg.run_type == "single_run" or cfg.run_type == "tune":
         logger.info("Launching a single training job...")
@@ -193,7 +191,10 @@ def launch_job(cfg: DictConfig, config_name: str = None):
     elif cfg.clusters.launcher_type == "lsf":
         cfg.paths.ray_script = cfg.paths.ray_script.replace("ray_local_cluster.sh", "ray_lsf_cluster.sh")
 
-    task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {config_name}"
+    if config_name is not None:
+        task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {Path(config_name).name} --config-dir={Path(config_name).parent}"
+    else: 
+        task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {config_name}"
 
     if cfg.clusters.job_name is None:
         cfg.clusters.job_name = config_name

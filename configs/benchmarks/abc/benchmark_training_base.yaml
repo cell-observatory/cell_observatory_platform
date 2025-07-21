@@ -76,7 +76,7 @@ datasets:
   input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
 
-  split: 0.2
+  split: 0.5
   return_dataloader: true
   distributed_sampler: true
 

@@ -44,6 +44,10 @@ csv_monitor:
   output_path: ${loggers.logdir}
   job_name: ${experiment_name}
 
+wandb:
+  enabled: true
+  project: ${loggers.event_writers[1].project}
+
 flops_profiler:
   enabled: true
   profile_step: 1

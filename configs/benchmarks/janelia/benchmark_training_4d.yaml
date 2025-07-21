@@ -1,0 +1,84 @@
+# @package _global_
+
+# TODO: make an example/template multi-run config
+
+# specify multi_run for launching several training jobs
+run_type: multi_run
+
+# NOTE (IMPORTANT): 
+# We have two ways of grouping keeping tabs of training jobs that may later be compared:
+# 1. all jobs will have same rootdir with prefix given by 
+#    `name` field in each run config
+# 2. wandb_tags to group runs together in the wandb dashboard
+#    and use their hparam features to compare runs 
+
+wandb_tags: ["benchmark", "benchmark_training_infra", "scaling", "17_07_2025"] 
+data_base_dir: training_infrastructure/training_mae_4d
+
+# NOTE: make sure to include .yaml suffix to naming of config files! These names are appended to configs/experiments/
+#       and written to disk for reproducibility and to be passed to runner.py
+
+# NOTE: defaults_overrides is a list of configs that will be merged into the run config
+#       before applying the run overrides. This is useful for setting defaults to something different
+#      than the global defaults, e.g. for a specific dataloader or model.
+
+runs:
+  - cfg: benchmarks/benchmark_training_base
+    name: 1_GPUs.yaml
+    defaults_overrides: 
+      - datasets: datasets/pretrain_dataset
+    overrides:
+      clusters: 
+        worker_nodes: 1
+        gpus_per_worker: 2
+        batch_size: 16
+      deepspeed:
+        zero_optimization:
+          stage: 2
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 250 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: false
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+
+  - cfg: benchmarks/benchmark_training_base
+    name: 8_GPUs.yaml
+    defaults_overrides: 
+      - datasets: datasets/pretrain_dataset
+    overrides:
+      clusters: 
+        worker_nodes: 1
+        gpus_per_worker: 8
+        batch_size: 128
+      deepspeed:
+        zero_optimization:
+          stage: 2
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 2000 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: false
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+
+  - cfg: benchmarks/benchmark_training_base
+    name: 16_GPUs.yaml
+    defaults_overrides: 
+      - datasets: datasets/pretrain_dataset
+    overrides:
+      clusters: 
+        worker_nodes: 2
+        gpus_per_worker: 8
+        batch_size: 256
+      deepspeed:
+        zero_optimization:
+          stage: 2
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 4000 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: false
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
