@@ -31,6 +31,9 @@ distributed_framework: ray
 # job type
 job_type: train # train or test
 
+# run type
+run_type: single_run # single_run, multi_run, or tune=
+
 # trainer type
 trainer: training.loops.EpochBasedTrainer
 
