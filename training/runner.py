@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import logging
+import uuid
 from pathlib import Path
 
 import warnings
@@ -47,12 +48,19 @@ def initialize_session(cfg: DictConfig):
 
     else:
         logger.info(f"Starting a new local ray cluster")
+
+        tmpdir = f"/tmp/symlink_{uuid.uuid1()}"
+        raylogsdir = Path(cfg.paths.outdir)
+        os.symlink(raylogsdir, tmpdir, target_is_directory=True)
+        logger.info(f"Link outdir to tmpdir: {cfg.paths.outdir} -> {tmpdir}")
+
         init(
             log_to_driver=True,
             runtime_env=runtime_env,
             num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
             num_gpus=cfg.clusters.total_gpus,
-            ignore_reinit_error=True
+            ignore_reinit_error=True,
+            _temp_dir=tmpdir,
         )
 
     logger.info('\nResources available to this Ray cluster:')
