@@ -14,7 +14,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: profile_mae_16bs_1xq8000
+experiment_name: torch_profile_mae_tiny_32bs_2xq8000
 
 # task
 task: pretrain_mae
@@ -32,7 +32,7 @@ distributed_framework: ray
 job_type: train # train or test
 
 # run type
-run_type: single_run # single_run, multi_run, or tune
+run_type: single_run # single_run, multi_run, or tune=
 
 # trainer type
 trainer: training.loops.EpochBasedTrainer
@@ -53,7 +53,6 @@ dataset_layout_order: TZYXC
 # overrides
 # --------------------------------------------------------------------------------
 
-
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
@@ -61,11 +60,12 @@ paths:
   pretrained_checkpointdir: null
 
 clusters:
-  batch_size: 16 # total batch size
+  batch_size: 32 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 12 # number of cpu cores per gpu
+  gpus_per_worker: 2 # number of gpus per worker node
+  cpus_per_gpu: 24 # number of cpu cores per gpu
   mem_per_cpu: 31000 # ram per cpu core
+
 
 datasets:
   # mainly used by other configs but determined here for ease of access
@@ -88,32 +88,8 @@ datasets:
     protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
 
+
 hooks:
-#  nsys_env:
-#    nsight:
-#      # image appears to be too old
-#      # pytorch: autograd-shapes-nvtx
-#      # cuda-memory-usage: "false"
-#      # OPTIONS:
-#      # "t": "cuda, nvtx, cuda-hw,"
-#      #     "cublas-verbose"
-#      #     "cusparse-verbose, cudnn, cudla-verbose,"
-#      #     "cusolver-verbose, opengl, opengl-annotations, "
-#      #     "openacc, openmp, osrt, mpi, nvvideo, vulkan, vulkan-annotations, "
-#      #     "dx11, dx11-annotations, dx12, dx12-annotations, openxr, openxr-annotations, "
-#      #     "oshmem, ucx, wddm, tegra-accelerators, python-gil",
-#      t: cuda,nvtx,cudnn,cublas,osrt
-#      # s: process-tree
-#      # "gpu-metrics-devices": "cuda-visible",
-#      capture-range: cudaProfilerApi
-#      capture-range-end: stop-shutdown
-#      # nvtx-capture: range@domain
-#      # cudabacktrace: all:10000
-#      # backtrace: dwarf
-#      # "python-backtrace": "cuda",
-#      # "osrt-threshold": "10000",
-#      # "python-sampling": "true",
-#      # "python-sampling-frequency": "1000"
   hooks_list:
   - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.LRScheduler
@@ -125,9 +101,6 @@ hooks:
     file_prefix: latest_model
   - _target_: training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-#  - _target_: training.hooks.NsysProfilerHook
-#    start_iter: 10
-#    end_iter: 30
   - _target_: training.hooks.TorchProfiler
     output_dir: ${loggers.logdir}/profiler
     schedule:

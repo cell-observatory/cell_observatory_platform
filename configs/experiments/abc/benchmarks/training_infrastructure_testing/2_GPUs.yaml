@@ -321,5 +321,4 @@ trainer: training.loops.EpochBasedTrainer
 loop_per_worker_script: training.loops.train_loop_per_worker
 quantization: float16
 dataset_dtype: float16
-dataset_layout: data.data_shapes.MULTICHANNEL_4D_HYPERCUBE
 dataset_layout_order: TZYXC
