@@ -12,8 +12,6 @@ from dotenv import load_dotenv
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf, open_dict
 OmegaConf.register_new_resolver("eval", eval)
-
-from training import runner
 from utils.container import get_container_info
 
 # Update environment variables
@@ -225,6 +223,9 @@ def launch_job(cfg: DictConfig, config_name: str = None):
             call([ray_wrap], shell=True)
         else:
             print(f"Running in {container_info['ide_type']} IDE in {container_info['container_type']} environment")
+
+            # needs to be here to launch jobs in the IDE
+            from training import runner
             runner.main(cfg)
 
     elif cfg.clusters.launcher_type == "slurm":
