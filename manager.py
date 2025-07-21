@@ -125,7 +125,7 @@ def main(cfg: DictConfig):
                          f"Please set cfg.run_type to either 'single_run', 'multi_run', or 'tune'.")
 
 
-def launch_job(cfg: DictConfig, config_name: str = None):
+def launch_job(cfg: DictConfig, run_config_name: str = None):
     
     container_info = get_container_info()
     print(f"Container type: {container_info['container_type']}")
@@ -156,7 +156,7 @@ def launch_job(cfg: DictConfig, config_name: str = None):
     load_dotenv(cfg.paths.dotenv_path, verbose=True)
 
     # ensure correct config is being passed to the runner
-    config_name = config_name if config_name is not None else HydraConfig.get().job.config_name
+    config_name = run_config_name if run_config_name is not None else HydraConfig.get().job.config_name
     print(f"Running with config: {config_name}")
 
     # print full configuration (for debugging)
@@ -191,7 +191,7 @@ def launch_job(cfg: DictConfig, config_name: str = None):
     elif cfg.clusters.launcher_type == "lsf":
         cfg.paths.ray_script = cfg.paths.ray_script.replace("ray_local_cluster.sh", "ray_lsf_cluster.sh")
 
-    if config_name is not None:
+    if run_config_name is not None:
         task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {Path(config_name).name} --config-dir={Path(config_name).parent}"
     else: 
         task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {config_name}"
