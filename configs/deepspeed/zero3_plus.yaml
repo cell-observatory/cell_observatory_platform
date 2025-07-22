@@ -1,6 +1,6 @@
 
 zero_optimization:
-  stage: 3 # full ZeRO-3 with parameter + gradient + optimizer partitioning
+  stage: 3 # full ZeRO-3 with parameter + gradient + optimizer partitioning + cpu offloading + quantized weights + HZP++
   reduce_bucket_size: auto # controls how many elements are grouped before being reduced
   reduce_scatter: true # fused reduce + scatter ops
   contiguous_gradients: true # gradients allocated in a contiguous memory block
@@ -10,10 +10,13 @@ zero_optimization:
   stage3_max_live_parameters: 1e9
   stage3_max_reuse_distance: 1e9
   stage3_gather_16bit_weights_on_model_save: false # reconstruct full weights (in FP16) during saving, rather than saving sharded pieces
+  zero_quantized_weights: true
+  zero_hpz_partition_size: ${clusters.gpus_per_worker} # Should not be set for single-node training, otherwise `gpus per node`
+  zero_quantized_gradients: true
   offload_optimizer: # disables offloading to CPU, everything stays on GPU
-    device: none
+    device: cpu
   offload_param:
-    device: none
+    device: cpu
 
 fp16:
   enabled: true
