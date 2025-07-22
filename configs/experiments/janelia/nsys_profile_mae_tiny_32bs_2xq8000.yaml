@@ -1,7 +1,7 @@
 # @package _global_
 defaults:
-  - /clusters/janelia_h100                   # configs/clusters/local.yaml
-  - /paths/janelia                           # configs/paths/local.yaml
+  - /clusters/local                          # configs/clusters/local.yaml
+  - /paths/local                             # configs/paths/local.yaml
   - /datasets/pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
   - /models/mae/tiny                         # configs/models/mae/tiny.yaml
   - /hooks/hooks                             # configs/hooks/hooks.yaml
@@ -14,7 +14,8 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: torch_profile_mae_tiny_96bs_2xh100
+experiment_name: nsys_profile_mae_tiny_32bs_2xq8000
+wandb_project: platform_experiments
 
 # task
 task: pretrain_mae
@@ -53,7 +54,6 @@ dataset_layout_order: TZYXC
 # overrides
 # --------------------------------------------------------------------------------
 
-
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
@@ -61,11 +61,12 @@ paths:
   pretrained_checkpointdir: null
 
 clusters:
-  batch_size: 96 # total batch size
+  batch_size: 32 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 2 # number of gpus per worker node
-  cpus_per_gpu: 12 # number of cpu cores per gpu
-  mem_per_cpu: 40000 # ram per cpu core
+  cpus_per_gpu: 24 # number of cpu cores per gpu
+  mem_per_cpu: 31000 # ram per cpu core
+
 
 datasets:
   # mainly used by other configs but determined here for ease of access
@@ -88,7 +89,32 @@ datasets:
     protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
 
+
 hooks:
+  nsys_env:
+    nsight:
+      pytorch: autograd-shapes-nvtx
+      cuda-memory-usage: "true"
+      # OPTIONS:
+      # "t": "cuda, nvtx, cuda-hw,"
+      #     "cublas-verbose"
+      #     "cusparse-verbose, cudnn, cudla-verbose,"
+      #     "cusolver-verbose, opengl, opengl-annotations, "
+      #     "openacc, openmp, osrt, mpi, nvvideo, vulkan, vulkan-annotations, "
+      #     "dx11, dx11-annotations, dx12, dx12-annotations, openxr, openxr-annotations, "
+      #     "oshmem, ucx, wddm, tegra-accelerators, python-gil",
+      t: cuda,nvtx,cudnn,cublas,osrt
+      # s: process-tree
+      # "gpu-metrics-devices": "cuda-visible",
+      capture-range: cudaProfilerApi
+      capture-range-end: stop-shutdown
+      # nvtx-capture: range@domain
+      cudabacktrace: all:10000
+      # backtrace: dwarf
+      # "python-backtrace": "cuda",
+      # "osrt-threshold": "10000",
+      # "python-sampling": "true",
+      # "python-sampling-frequency": "1000"
   hooks_list:
   - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.LRScheduler
@@ -100,18 +126,9 @@ hooks:
     file_prefix: latest_model
   - _target_: training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: training.hooks.TorchProfiler
-    output_dir: ${loggers.logdir}/profiler
-    schedule:
-     skip_first: 15
-     warmup: 1
-     active: 2
-     repeat: 1
-     wait: 1
-     activities:
-       - CUDA
-       - CPU
-     save_tensorboard: true
+  - _target_: training.hooks.NsysProfilerHook
+    start_iter: 10
+    end_iter: 30
   - _target_: training.hooks.TorchMemoryStats
     step_period: 5
     epoch_period: 1

@@ -13,7 +13,7 @@ event_writers:
       epoch_scalars_prefix: epoch_logbook
       scalars_save_format: csv
     - _target_: training.loggers.WandBEventWriter
-      project: cell_observatory_test
+      project: ${wandb_project}
       # entity: cell-observatory
       # save directory for W&B logs
       # will automatically append wandb folder

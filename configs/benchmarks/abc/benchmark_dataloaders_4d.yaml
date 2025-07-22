@@ -26,6 +26,7 @@ loop_per_worker_script: scripts.benchmark_dataloaders.bench_dataloader
 
 # experiment name
 experiment_name: benchmark_dataloaders_4d
+wandb_project: platform_benchmarks
 
 # run type
 run_type: single_run # single_run, multi_run, or tune

@@ -12,7 +12,7 @@ run_type: multi_run
 # 2. wandb_tags to group runs together in the wandb dashboard
 #    and use their hparam features to compare runs 
 
-wandb_tags: ["benchmark", "benchmark_training_infra", "scaling", "17_07_2025"] 
+wandb_tags: ["benchmark", "benchmark_training_infra", "scaling", "torch_dataloader"]
 data_base_dir: training_infrastructure/training_mae_4d
 
 # NOTE: make sure to include .yaml suffix to naming of config files! These names are appended to configs/experiments/
@@ -30,11 +30,8 @@ runs:
     overrides:
       clusters: 
         worker_nodes: 1
-        gpus_per_worker: 2
+        gpus_per_worker: 1
         batch_size: 16
-      deepspeed:
-        zero_optimization:
-          stage: 2
       datasets:
         databases:
           max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
@@ -52,9 +49,6 @@ runs:
         worker_nodes: 1
         gpus_per_worker: 8
         batch_size: 128
-      deepspeed:
-        zero_optimization:
-          stage: 2
       datasets:
         databases:
           max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
@@ -72,9 +66,6 @@ runs:
         worker_nodes: 2
         gpus_per_worker: 8
         batch_size: 256
-      deepspeed:
-        zero_optimization:
-          stage: 2
       datasets:
         databases:
           max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)

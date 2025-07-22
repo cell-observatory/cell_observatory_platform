@@ -1,7 +1,7 @@
 # @package _global_
 defaults:
-  - /clusters/janelia_h100                   # configs/clusters/local.yaml
-  - /paths/janelia                           # configs/paths/local.yaml
+  - /clusters/local                          # configs/clusters/local.yaml
+  - /paths/local                             # configs/paths/local.yaml
   - /datasets/pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
   - /models/mae/tiny                         # configs/models/mae/tiny.yaml
   - /hooks/hooks                             # configs/hooks/hooks.yaml
@@ -14,7 +14,8 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: torch_profile_mae_tiny_48bs_1xh100
+experiment_name: torch_profile_mae_tiny_16bs_1xq8000
+wandb_project: platform_experiments
 
 # task
 task: pretrain_mae
@@ -61,11 +62,11 @@ paths:
   pretrained_checkpointdir: null
 
 clusters:
-  batch_size: 48 # total batch size
+  batch_size: 16 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
-  mem_per_cpu: 40000 # ram per cpu core
+  mem_per_cpu: 31000 # ram per cpu core
 
 datasets:
   # mainly used by other configs but determined here for ease of access

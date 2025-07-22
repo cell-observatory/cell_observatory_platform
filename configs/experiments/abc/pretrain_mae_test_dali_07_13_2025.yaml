@@ -15,6 +15,7 @@ defaults:
 
 # experiment name (used for logging)
 experiment_name: tests_dali_loader
+wandb_project: platform_experiments
 
 # task
 task: pretrain_mae
@@ -112,8 +113,6 @@ checkpoint:
 
 # deepspeed
 deepspeed:
-  zero_optimization:
-    stage: 3
   checkpoint:
     load_universal: true
 

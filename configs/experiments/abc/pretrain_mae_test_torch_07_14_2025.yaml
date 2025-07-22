@@ -15,6 +15,7 @@ defaults:
 
 # experiment name (used for logging)
 experiment_name: tests_torch_loader
+wandb_project: platform_experiments
 
 # task
 task: pretrain_mae
@@ -108,8 +109,6 @@ checkpoint:
 
 # deepspeed
 deepspeed:
-  zero_optimization:
-    stage: 2
   checkpoint:
     load_universal: true
 

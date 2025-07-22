@@ -15,6 +15,7 @@ defaults:
 
 # experiment name (used for logging)
 experiment_name: tests
+wandb_project: platform_github_action_tests
 
 # task
 task: pretrain_mae
@@ -97,14 +98,6 @@ evaluation:
     _target_: evaluation.base_evaluation.BaseEvaluator
     training_metrics:
       - "step_loss": "mean"
-
-loggers:
-  event_writers:
-      - _target_: training.loggers.LocalEventWriter
-        save_dir: ${loggers.logdir}
-        step_scalars_prefix: step_logbook
-        epoch_scalars_prefix: epoch_logbook
-        scalars_save_format: csv
 
 hooks:
   hooks_list:
