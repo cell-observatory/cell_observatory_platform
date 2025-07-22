@@ -15,6 +15,7 @@ defaults:
 
 # experiment name (used for logging)
 experiment_name: torch_profile_mae_tiny_32bs_2xq8000
+wandb_project: platform_experiments
 
 # task
 task: pretrain_mae

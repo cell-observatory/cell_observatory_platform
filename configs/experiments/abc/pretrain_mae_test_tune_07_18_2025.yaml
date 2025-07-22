@@ -18,6 +18,7 @@ defaults:
 
 # experiment name (used for logging)
 experiment_name: tune_test
+wandb_project: platform_experiments
 
 # task
 task: pretrain_mae

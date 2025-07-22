@@ -49,7 +49,7 @@
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/manager.py" />
-    <option name="PARAMETERS" value="--config-name experiments/nsys_profile_mae_tiny_16bs_1xq8000.yaml" />
+    <option name="PARAMETERS" value="--config-name experiments/janelia/nsys_profile_mae_tiny_16bs_1xq8000.yaml" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

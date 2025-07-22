@@ -14,7 +14,8 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: torch_profile_mae_tiny_32bs_2xq8000
+experiment_name: nsys_profile_mae_tiny_16bs_1xq8000
+wandb_project: platform_experiments
 
 # task
 task: pretrain_mae
@@ -53,6 +54,7 @@ dataset_layout_order: TZYXC
 # overrides
 # --------------------------------------------------------------------------------
 
+
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
@@ -60,12 +62,11 @@ paths:
   pretrained_checkpointdir: null
 
 clusters:
-  batch_size: 32 # total batch size
+  batch_size: 16 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 2 # number of gpus per worker node
-  cpus_per_gpu: 24 # number of cpu cores per gpu
+  gpus_per_worker: 1 # number of gpus per worker node
+  cpus_per_gpu: 12 # number of cpu cores per gpu
   mem_per_cpu: 31000 # ram per cpu core
-
 
 datasets:
   # mainly used by other configs but determined here for ease of access
@@ -88,13 +89,11 @@ datasets:
     protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
 
-
 hooks:
   nsys_env:
     nsight:
-      # image appears to be too old
       pytorch: autograd-shapes-nvtx
-      # cuda-memory-usage: "false"
+      cuda-memory-usage: "true"
       # OPTIONS:
       # "t": "cuda, nvtx, cuda-hw,"
       #     "cublas-verbose"
@@ -109,7 +108,7 @@ hooks:
       capture-range: cudaProfilerApi
       capture-range-end: stop-shutdown
       # nvtx-capture: range@domain
-      # cudabacktrace: all:10000
+      cudabacktrace: all:10000
       # backtrace: dwarf
       # "python-backtrace": "cuda",
       # "osrt-threshold": "10000",

@@ -9,7 +9,7 @@ defaults:
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
-  - /deepspeed/zero3                         # configs/deepspeed/zero3.yaml
+  - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
   - _self_
@@ -17,6 +17,7 @@ defaults:
 
 # experiment name (used for logging)
 experiment_name: benchmark
+wandb_project: platform_benchmarks
 
 # task
 task: pretrain_mae
