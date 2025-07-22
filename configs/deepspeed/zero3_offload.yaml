@@ -1,6 +1,6 @@
 
 zero_optimization:
-  stage: 3 # full ZeRO-3 with parameter + gradient + optimizer partitioning
+  stage: 3 # full ZeRO-3 with parameter + gradient + optimizer partitioning + cpu offloading
   reduce_bucket_size: auto # controls how many elements are grouped before being reduced
   reduce_scatter: true # fused reduce + scatter ops
   contiguous_gradients: true # gradients allocated in a contiguous memory block
@@ -11,9 +11,9 @@ zero_optimization:
   stage3_max_reuse_distance: 1e9
   stage3_gather_16bit_weights_on_model_save: false # reconstruct full weights (in FP16) during saving, rather than saving sharded pieces
   offload_optimizer: # disables offloading to CPU, everything stays on GPU
-    device: none
+    device: cpu
   offload_param:
-    device: none
+    device: cpu
 
 fp16:
   enabled: true

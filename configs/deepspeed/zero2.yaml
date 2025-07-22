@@ -1,15 +1,10 @@
 
 zero_optimization:
-  stage: 3 # full ZeRO-3 with parameter + gradient + optimizer partitioning
+  stage: 2 # full ZeRO-2 with gradient + optimizer partitioning
   reduce_bucket_size: auto # controls how many elements are grouped before being reduced
   reduce_scatter: true # fused reduce + scatter ops
   contiguous_gradients: true # gradients allocated in a contiguous memory block
   overlap_comm: true # overlap communication with computation
-  stage3_prefetch_bucket_size: auto # params to prefetch in advance
-  stage3_param_persistence_threshold: auto # keep parameters in memory if they’re small and reused often
-  stage3_max_live_parameters: 1e9
-  stage3_max_reuse_distance: 1e9
-  stage3_gather_16bit_weights_on_model_save: false # reconstruct full weights (in FP16) during saving, rather than saving sharded pieces
   offload_optimizer: # disables offloading to CPU, everything stays on GPU
     device: none
   offload_param:
