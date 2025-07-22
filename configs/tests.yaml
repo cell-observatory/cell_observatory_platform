@@ -99,6 +99,14 @@ evaluation:
     training_metrics:
       - "step_loss": "mean"
 
+loggers:
+  event_writers:
+      - _target_: training.loggers.LocalEventWriter
+        save_dir: ${loggers.logdir}
+        step_scalars_prefix: step_logbook
+        epoch_scalars_prefix: epoch_logbook
+        scalars_save_format: csv
+
 hooks:
   hooks_list:
   - _target_: training.hooks.AnomalyDetector
