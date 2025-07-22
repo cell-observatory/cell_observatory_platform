@@ -46,7 +46,7 @@ csv_monitor:
 
 wandb:
   enabled: true
-  project: ${loggers.event_writers[1].project}
+  project: ${wandb_project}
 
 flops_profiler:
   enabled: true
