@@ -11,6 +11,7 @@ from hydra import compose
 from dotenv import load_dotenv
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf, open_dict
+
 OmegaConf.register_new_resolver("eval", eval)
 from utils.container import get_container_info
 
@@ -59,9 +60,9 @@ def main(cfg: DictConfig):
     if cfg.run_type == "multi_run":
         assert len(list(cfg.runs)) > 0, \
             "cfg.runs must be a list of configurations for multiple training jobs."
-        
-        logger.info("Launching multiple training jobs...")        
-        for run in list(cfg.runs):            
+
+        logger.info("Launching multiple training jobs...")
+        for run in list(cfg.runs):
             logger.info(f"Launching job with base config: {run.cfg}")
             logger.info(f"Launching job with overrides: {run.overrides}")
 
@@ -75,10 +76,10 @@ def main(cfg: DictConfig):
                     # TODO: make sure old default values are removed correctly here
                     run_cfg[key] = {}
                     run_cfg = OmegaConf.merge(run_cfg, value)
-            
+
             # next we merge the run overrides with the resulting run config
             override_cfg = OmegaConf.create(OmegaConf.to_container(run.overrides, resolve=True))
-            run_cfg = OmegaConf.merge(run_cfg, override_cfg) 
+            run_cfg = OmegaConf.merge(run_cfg, override_cfg)
 
             if cfg.get("data_base_dir"):
                 logger.info(f"Root directory for runs set to: {cfg.data_base_dir}")
@@ -95,16 +96,16 @@ def main(cfg: DictConfig):
 
             if cfg.get("wandb_tags"):
                 logger.info(f"Adding W&B tags: {cfg.wandb_tags}")
-                # TODO: we should consider making event_writers a dict 
+                # TODO: we should consider making event_writers a dict
                 #       instead of a list to prevent these kinds of loops
                 with open_dict(run_cfg):
                     for event_writer in run_cfg.loggers.event_writers:
                         if event_writer._target_.endswith("WandBEventWriter"):
                             event_writer.tags = event_writer.tags + list(cfg.wandb_tags)
 
-            # save the run config to a file for reproducibility 
-            # and so we can pass to the runner and inject 
-            # package global variable since we are saving 
+            # save the run config to a file for reproducibility
+            # and so we can pass to the runner and inject
+            # package global variable since we are saving
             # config in `experiments` folder
             run_cfg_path = run_path / run.name
             run_cfg_yml = OmegaConf.to_yaml(run_cfg)
@@ -115,7 +116,7 @@ def main(cfg: DictConfig):
 
             # launch the job
             logger.info(f"Run config after overrides: {run_cfg_yml}")
-            launch_job(run_cfg, config_name=run_cfg_path)
+            launch_job(run_cfg, run_config_name=run_cfg_path)
 
     elif cfg.run_type == "single_run" or cfg.run_type == "tune":
         logger.info("Launching a single training job...")
@@ -126,7 +127,6 @@ def main(cfg: DictConfig):
 
 
 def launch_job(cfg: DictConfig, run_config_name: str = None):
-    
     container_info = get_container_info()
     print(f"Container type: {container_info['container_type']}")
 
@@ -144,7 +144,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         for k in ['runner_script']:
             cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
 
-    else: # running in a docker/apptainer
+    else:  # running in a docker/apptainer
         [print(f"\t{k}: {v}") for k, v in container_info['container_details'].items()]
 
         for k in ['outdir', 'ray_script', 'runner_script', 'dotenv_path']:
@@ -176,7 +176,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
 
     assert (cfg.paths.apptainer_image is None) != (cfg.paths.docker_image is None), \
         "Either apptainer_image or docker_image must be specified, but not both"
-    
+
     if cfg.paths.apptainer_image is not None:
         # use apptainer for running the job
         image = cfg.paths.apptainer_image
@@ -185,7 +185,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         image = cfg.paths.docker_image
     else:
         raise ValueError("Either apptainer_image or docker_image must be specified in the configuration.")
-    
+
     if cfg.clusters.launcher_type == "slurm":
         cfg.paths.ray_script = cfg.paths.ray_script.replace("ray_local_cluster.sh", "ray_slurm_cluster.sh")
     elif cfg.clusters.launcher_type == "lsf":
@@ -193,7 +193,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
 
     if run_config_name is not None:
         task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {Path(config_name).name} --config-dir={Path(config_name).parent}"
-    else: 
+    else:
         task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {config_name}"
 
     if cfg.clusters.job_name is None:
@@ -245,7 +245,6 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             sjob_worker_nodes.append(f"--gres=gpu:{cfg.clusters.head_node_gpus}")
             sjob_worker_nodes.append(f"--mem={cfg.clusters.head_node_mem}")
 
-
         if cfg.clusters.constraint is not None:
             sjob_worker_nodes.append(f"-C '{cfg.clusters.constraint}'")
 
@@ -271,7 +270,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
     elif cfg.clusters.launcher_type == "lsf":
 
         # set resources to allocate head node, then the head node will allocate the rest of the worker nodes
-        sjob_worker_nodes = [f"/usr/bin/bsub "]
+        sjob_worker_nodes = [f"bsub"]
         sjob_worker_nodes.append(f"-q {cfg.clusters.partition}")
 
         if cfg.clusters.exclusive is not None:
@@ -290,17 +289,19 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         sjob_worker_nodes.append(f"-o {outdir / cfg.clusters.job_name}.log")
         sjob_worker_nodes.append(f"{q(ray_wrap)}")
 
-        print("Checking available Janelia cluster resources...")
+        print(f"Checking available Janelia cluster resources")
+        print(f"Looking for {cfg.clusters.worker_nodes} node(s) on {cfg.clusters.partition} queue")
         try:
-            aval = run(
-                ['bash', 'check_available_janelia_nodes.sh'],
+            run(
+                f'bash {cfg.paths.repo_path}/cluster/check_available_janelia_nodes.sh \
+                    -p {cfg.clusters.partition} -n {cfg.clusters.worker_nodes}',
                 check=True,
-                text=True,
                 shell=True
             )
-            print("Requested resource are available now!")
+
+            print("Requested resources are available now!")
         except Exception as e:
-            print(f"Error running resource check: {e}")
+            print(f"Error running resources check: {e}")
 
         print("Submitting lsf job with configuration:")
         cmd = " ".join(sjob_worker_nodes)
