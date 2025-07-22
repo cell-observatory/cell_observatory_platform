@@ -494,6 +494,7 @@ jobs:
       SUPABASE_PROD_URI: ${{ secrets.SUPABASE_PROD_URI }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       WANDB_USERNAME: ${{ secrets.WANDB_USERNAME }}
+      WANDB_DATA_DIR: ${{ github.workspace }}
       REPO_NAME: cell_observatory_platform
       REPO_DIR: ${{ github.workspace }}
       DATA_DIR: ${{ github.workspace }}
