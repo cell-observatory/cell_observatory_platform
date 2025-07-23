@@ -1,10 +1,11 @@
 # @package _global_
 defaults:
-  - /paths/local
+  - /paths/abc
   - /clusters/local
   - /datasets/pretrain_dataset
   - /checkpoint/checkpoint
   - /evaluation/base_evaluator
+  - /hooks/hooks
   - _self_
 
 # number of batches to run benchmark for and
@@ -19,7 +20,12 @@ csv_out: ${paths.outdir}/results/results.csv
 benchmark_main_process: true
 
 # whether to benchmark the worker processes
-benchmark_worker_process: false
+# benchmark_worker_process: true
+
+# worker init function to use for the dataloader
+# worker_init_fn:
+#   _target_: scripts.benchmark_dataloaders.WorkerInit
+#   out_dir: ${paths.outdir}/results
 
 # benchmark loop to run for each worker
 loop_per_worker_script: scripts.benchmark_dataloaders.bench_dataloader
@@ -67,28 +73,15 @@ clusters:
 
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 8 # number of cpu cores per gpu
+  cpus_per_gpu: 16 # number of cpu cores per gpu
   # NOTE: to ensure that we can benchmark the dataloaders
   #       without running into memory issues.
-  mem_per_cpu: 124000 # ram per cpu core
+  mem_per_cpu: 31000 # ram per cpu core
 
 # Intra-Node Benchmarking Configuration (will sweep Cartesian product of the lists for a given cluster size)
 # ----------------------------------------------------------------------------------------------------------
 
 benchmark_params:
-  batch_size: [1, 2, 4, 8, 16, 32] # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
+  batch_size: [1] # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024
   num_workers: [8] # 4, 8
   prefetch_factors: [1] # 1, 2, 4, 8
-
-# Plotting Configuration
-# --------------------------------------------------------------------------------
-
-plotting:
-  # group by column for plotting
-  group_by: batch_size
-
-  # optional: best configuration to plot
-  # if not provided, will plot the mean of all configurations
-  plot_best_config: 
-    dataloader_num_workers: 8
-    dataloader_prefetch_factor: 1

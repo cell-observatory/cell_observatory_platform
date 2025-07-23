@@ -1,0 +1,9 @@
+defaults:
+  - _self_
+
+cudnn_benchmark: true
+cudnn_deterministic: false
+
+activation_checkpoint:
+  enabled: false
+  modules: []

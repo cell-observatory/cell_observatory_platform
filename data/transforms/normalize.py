@@ -2,6 +2,9 @@ import sys
 import logging
 import torch
 
+from nvidia.dali import fn
+from data.data_types import DALI_DTYPES
+
 logging.basicConfig(
 	stream=sys.stdout,
 	level=logging.INFO,
@@ -28,3 +31,14 @@ class Normalize:
 
         data_sample.data_tensor.tensor = image
         return data_sample
+
+
+def NormalizeDaliWrapper(data, dtype):
+    vol_f32 = fn.cast(data, dtype=DALI_DTYPES.float32.value)
+    vol_norm = fn.normalize(
+        vol_f32,
+        axes=[1, 2, 3, 4],
+        batch=True
+    )
+    vol_out = fn.cast(vol_norm, dtype=dtype)
+    return vol_out

@@ -1,7 +1,8 @@
 import abc
 import sys
+import time
 import logging
-from typing import Any, Callable, Optional, Sequence, Mapping, Dict
+from typing import Any, Callable, Optional, Sequence, Mapping, Dict, Literal
 from pathlib import Path
 import ujson
 import pandas as pd
@@ -134,6 +135,7 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         transforms: Optional[Sequence] = None,
         server_folder_path: Optional[Path] = None,
         dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | str = NUMPY_DTYPES.fp16,
+        time: bool = True,
     ):
         """
         Args:
@@ -155,6 +157,8 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         self._build_index()
 
         self.transforms = Transformations(transforms)
+
+        self.time = time
 
     def _process_tables(self, hypercubes_dataframe_path) -> tuple[pd.DataFrame, Dict]:
         if not hypercubes_dataframe_path.exists():
@@ -186,6 +190,15 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         return len(self._index)
 
     def __getitem__(self, idx: int):
+        if self.time:
+            start_time = time.time() 
+        
         _data = self._load_sample(self._index[idx])
         data = self._collate(_data)
-        return self.transforms(data)
+        data_transformed = self.transforms(data)
+
+        if self.time:
+            data_time = time.time() - start_time
+            data_transformed.set_metainfo(metainfo={"data_time": data_time})
+
+        return data_transformed

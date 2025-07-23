@@ -2,6 +2,8 @@ import sys
 import ujson
 import logging
 from pathlib import Path
+from functools import wraps
+from operator import attrgetter
 from typing import Optional, Tuple
 
 import numpy as np
@@ -17,7 +19,7 @@ from omegaconf import DictConfig
 from deepspeed.ops.adam import FusedAdam
 from deepspeed.ops.lamb import FusedLamb
 from deepspeed.runtime.lr_schedules import WarmupCosineLR
-
+from deepspeed.runtime.activation_checkpointing.checkpointing import checkpoint
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -287,3 +289,17 @@ def summarize_model(
             ensure_ascii=False,
             escape_forward_slashes=False
         )
+
+
+def activation_checkpoint(cfg, model: nn.Module):
+    # wraps the forward method of the model to 
+    # use activation checkpointing
+    def wrap_forward(forward):
+        @wraps(forward)
+        def wrapper(*args):
+            return checkpoint(forward, *args)
+        return wrapper
+    
+    for module_name in cfg.optimizations.activation_checkpoint.modules:
+        module = attrgetter(module_name)(model)
+        module.forward = wrap_forward(module.forward)

@@ -2,11 +2,13 @@
 Adopted with Apache License 2.0 from
 https://github.com/facebookresearch/detectron2/detectron2/utils/events.py
 """
-import logging
+
 import os
-import math
-import itertools
 import sys
+import math
+import logging
+import warnings
+import itertools
 from pathlib import Path
 from abc import abstractmethod
 from collections import defaultdict
@@ -71,8 +73,12 @@ class EventRecorder:
         for k, v in kwargs.items():
             assert isinstance(v, (int, float)), \
                 f"Scalar value must be an int or float, got {type(v)} for key '{k}'"
+            # do we really want to throw an error if the value is not finite?
             if scope == "epoch" and (math.isnan(v) or math.isinf(v)):
-                raise ValueError(f"Scalar value for key '{k}' is not finite: {v}")
+                warnings.warn(
+                    f"Non-finite value for key '{k}': {v}. "
+                )
+                # raise ValueError(f"Scalar value for key '{k}' is not finite: {v}")
             k = f"{prefix}{k}" if prefix else k
             self.put_scalar(k, v, scope=scope, reduce_method=reduce_method)
 

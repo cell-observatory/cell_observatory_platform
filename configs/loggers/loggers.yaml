@@ -45,12 +45,16 @@ event_writers:
       step_scalar_keys:
         - step_time
         - val_step_time
+        - data_time
+        - val_data_time
         - step_loss
         - lr
       epoch_scalar_keys:
         - epoch_time
         - step_time
         - val_time
+        - data_time
+        - val_data_time
         - val_step_time
         - val_step_loss
         - step_loss
