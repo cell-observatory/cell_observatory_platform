@@ -1,7 +1,7 @@
 defaults:
   - databases: supabase_database  # Loads configs/datasets/databases/supabase_database.yaml
   - masking: mask_generator       # Loads configs/datasets/masking/mask_generator.yaml
-  - transforms: transforms        # Loads configs/datasets/transforms/transforms.yaml
+  - transforms: dali_transforms        # Loads configs/datasets/transforms/dali_transforms.yaml
   - preprocessor: dali_preprocessor  # Loads configs/datasets/preprocessor/dali_preprocessor.yaml
   - _self_
 
