@@ -60,17 +60,17 @@ dataset_layout_order: TZYXC
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null 
+  resume_checkpointdir: null
   pretrained_checkpointdir: null
 
-# data 
+# data
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
 
-  split: null
+  split: 0.1
   return_dataloader: true
   distributed_sampler: true
 
