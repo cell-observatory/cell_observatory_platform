@@ -99,28 +99,7 @@ do
     echo "Running ${jobname}_ray_worker_${i} @ ${jid}"
 done
 
-############################## CHECK STATUS
-
-# add exit trap to ensure cleanup on script exit
-# this will ensure that we stop the Ray cluster and cancel worker jobs
-# even if the script fails at any point henceforth
-cleanup() {
-    ec=$? # exit code of the last command that triggered the trap
-    echo "running cleanup (exit code: $ec)"
-
-    # stop Ray on the head node
-    apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
-
-    # cancel worker jobs (if still queued/running)
-    for jid in "${worker_ids[@]}"
-    do
-        bkill $jid
-    done
-
-    # on failure (non-zero exit) also cancel the head-node job
-    [[ $ec -ne 0 ]] && bkill "$LSB_JOBID" || true
-}
-trap cleanup EXIT
+############################# CHECK STATUS
 
 apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r $nodes
 
@@ -129,3 +108,19 @@ apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpd
 echo "Running user tasks"
 echo $tasks
 apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks
+
+############################## CLEANUP
+
+echo "Stop ray"
+ps aux | grep prometheus | awk '{print $2}' | xargs kill -9
+apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
+
+
+echo "Shutting down the Job"
+
+for jid in "${worker_ids[@]}"
+do
+    bkill $jid
+done
+
+bkill $LSB_JOBID
