@@ -1,3 +1,6 @@
+import os
+import sys
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -15,13 +18,23 @@ if not OmegaConf.has_resolver("eval"):
 
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env", verbose=True)
+if os.environ["PYTHONPATH"] not in sys.path:
+    sys.path.insert(0, os.environ["PYTHONPATH"])
 
-from utils.container import get_container_info
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+from scripts.summarize_run import summarize_run
+
 
 # -------------------------------------- For Plotting Dataloader Benchmark Statistics ---------------------------------------
 
 
-def visualize_dataloader_stats(
+def _plot_dataloader_benchmarks(
     df: pd.DataFrame,
     outdir: Path,
     time_cols: list[str] = None,
@@ -123,52 +136,102 @@ def plot_dataloader_benchmarks(
     outdir = csv_path.parent / "plots"
     outdir.mkdir(parents=True, exist_ok=True)
 
-    visualize_dataloader_stats(df, outdir, group_by=group_by, plot_best_config=plot_best_config)
+    _plot_dataloader_benchmarks(df, outdir, group_by=group_by, plot_best_config=plot_best_config)
 
 
 # -------------------------------------- For Plotting Training Run Benchmark Statistics ---------------------------------------
 
-# TODO: Finish Implementation
+
+def _plot_training_results(csv_path: Path,
+                           xy_pairs: list[tuple[list[str] | str, str]],
+                           save_dir: Path,
+                           plot_name: str,
+                           filters: dict[str, object] | None = None,
+                           figsize_per_plot=(6, 4)):
+    save_dir.mkdir(parents=True, exist_ok=True)
+    df = pd.read_csv(csv_path)
+
+    # optional row filtering
+    if filters:
+        for col, val in filters.items():
+            df = df[df[col].isin(val)] if hasattr(val, "__iter__") and not isinstance(val, str) \
+                                         else df[df[col] == val]
+
+    n = len(xy_pairs)
+    fig, axes = plt.subplots(
+        nrows=n, ncols=1, figsize=(figsize_per_plot[0], figsize_per_plot[1] * n)
+    )
+
+    # Matplotlib returns a single Axes when nrows==1
+    if n == 1:
+        axes = [axes]
+
+    for ax, (x_cols, y) in zip(axes, xy_pairs):
+        # handle 1‑col vs N‑col X‑axis
+        if isinstance(x_cols, (list, tuple)):
+            g = df.groupby(list(x_cols))[y].mean().reset_index()
+            x_vals = g[list(x_cols)].astype(str).agg(" | ".join, axis=1)
+            ax.plot(x_vals, g[y], marker="o")
+            ax.set_xlabel(" & ".join(x_cols))
+        else:
+            ax.plot(df[x_cols], df[y], marker="o")
+            ax.set_xlabel(x_cols)
+
+        ax.set_ylabel(y)
+        ax.set_title(f"{y} vs {x_cols if isinstance(x_cols, str) else ', '.join(x_cols)}")
+        ax.grid(True)
+
+    fig.tight_layout()
+    fig.savefig(save_dir / plot_name, dpi=300)
+    plt.close(fig)
+
+
+def plot_training_results(cfg: DictConfig, results_path: str | Path, plot_name: str):
+    if cfg.get("force_overwrite", False) and (Path(results_path)).exists():
+        logger.warning("Force overwriting existing CSV files. "
+                       "This will overwrite any previous benchmark results.")
+        os.remove(Path(results_path))
+    elif (Path(results_path)).exists():
+            logger.info("Results CSV already exists. Skipping summarization.")
+    else:
+        for run_name, run_cfg in cfg.runs.items():
+            logger.info(f"Processing run: {run_name}")
+            summarize_run(
+                results_path=results_path,
+                cfg=OmegaConf.load(run_cfg.cfg),
+                metadata=run_cfg.get("metadata"),
+            )
+
+    if Path(results_path).exists():
+        _plot_training_results(
+            csv_path=Path(results_path),
+            xy_pairs=[tuple(p) for p in cfg.plotting.xy_pairs],
+            save_dir=Path(results_path).parent / "plots",
+            filters=cfg.plotting.get("filters", None),
+            plot_name=plot_name,
+        )
+    else:
+        raise FileNotFoundError(
+            f"Results directory {results_path} does not exist. "
+        )
+
 
 # -------------------------------------- --------------------------------------- ---------------------------------------
 
 
-@hydra.main(config_path="../configs", config_name="benchmarks/benchmark_dataloaders_4d")
+@hydra.main(config_path="../configs", config_name="plots/benchmark_training_4d.yaml")
 def main(cfg: DictConfig):
-
-    container_info = get_container_info()
-    print(f"Container type: {container_info['container_type']}")
-
-    assert cfg.paths.outdir is not None, f"Missing output directory: {cfg.paths.outdir}"
-
-    assert Path(cfg.paths.data_path) in Path(cfg.paths.outdir).parents, \
-        f"Output directory [{cfg.paths.outdir}] not in data path [{cfg.paths.data_path}]"
-
-    assert cfg.clusters.batch_size % cfg.clusters.worker_nodes == 0, (
-        f"batch_size {cfg.clusters.batch_size} must divide evenly among "
-        f"{cfg.clusters.worker_nodes} worker nodes"
-    )
-
-    if container_info['container_type'] == 'native':
-        for k in ['runner_script']:
-            cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
-
-    else: # running in a docker/apptainer
-        [print(f"\t{k}: {v}") for k, v in container_info['container_details'].items()]
-
-        for k in ['outdir', 'ray_script', 'runner_script', 'dotenv_path']:
-            cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
-
-    # load extra env variables
-    # assert cfg.paths.dotenv_path is not None and Path(cfg.paths.dotenv_path).exists(), \
-    #     f"Missing dotenv path: {cfg.paths.dotenv_path}"
-    load_dotenv(cfg.paths.dotenv_path, verbose=True)
-
-    plot_dataloader_benchmarks(
-        cfg.csv_out,
-        group_by=cfg.plotting.group_by,
-        plot_best_config=dict(cfg.plotting.plot_best_config)
-    )
+    if cfg.plot_type == "training_infrastructure_benchmark":
+        plot_training_results(cfg=cfg, results_path=cfg.csv_outdir, plot_name=cfg.plotting.name)
+    elif cfg.plot_type == "dataloader_benchmark":
+        plot_dataloader_benchmarks(
+            cfg.csv_outdir,
+            group_by=cfg.plotting.group_by,
+            plot_best_config=dict(cfg.plotting.plot_best_config)
+        )
+    else:
+        raise NotImplementedError(f"Unknown plot type: {cfg.plot_type}. \
+                                    Ensure that the plotting function is implemented.")
 
 if __name__ == "__main__":
     main()

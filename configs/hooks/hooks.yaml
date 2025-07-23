@@ -43,10 +43,11 @@ hooks_list:
   metric_name: ${evaluation.val_metric}
   compare_fn: ${evaluation.val_mode}
   eval_after_validation: true
-- _target_: training.hooks.ModelSummaryHook
-  logdir: ${loggers.logdir}/model_summary
-  inputs: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
-  batch_size: ${clusters.batch_size_per_gpu}
+# TODO: delete model summary hook
+# - _target_: training.hooks.ModelSummaryHook
+#   logdir: ${loggers.logdir}/model_summary
+#   inputs: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
+#   batch_size: ${clusters.batch_size_per_gpu}
 # - _target_: training.hooks.NsysProfilerHook
 #   start_iter: 40
 #   end_iter: 90

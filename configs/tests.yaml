@@ -10,6 +10,7 @@ defaults:
   - deepspeed: zero3                         # configs/deepspeed/zero3.yaml
   - optimizers: lamb                         # configs/optimizers/lamb.yaml
   - schedulers: test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
+  - optimizations: optimizations             # configs/optimizations/optimizations.yaml
   - _self_
 
 

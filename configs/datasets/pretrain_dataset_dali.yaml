@@ -10,7 +10,7 @@ batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * to
 input_shape: [16, 128, 128, 128, 2] 
 patch_shape: [4, 16, 16, 16]
 
-split: null
+split: 0.2
 return_dataloader: true
 distributed_sampler: true
 collate_fn: null
@@ -27,6 +27,7 @@ dataset:
   dtype: ${dataset_dtype}
   server_folder_path: ${paths.server_folder_path}
   hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
+  time: true
 
   input_layout:
     _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE

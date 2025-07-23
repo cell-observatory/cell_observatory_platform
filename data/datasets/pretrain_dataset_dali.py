@@ -1,10 +1,15 @@
 import os
+import time
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Callable, Optional, Literal
 
 import pandas as pd
 import ujson
+
+from hydra.utils import get_method
+
+import torch
 
 import nvidia.dali as dali
 from nvidia.dali import pipeline_def, fn, types
@@ -24,6 +29,9 @@ class PretrainDatasetDali:
         server_folder_path,
         batch_size: int,
         dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | DALI_DTYPES | str = NUMPY_DTYPES.fp16,
+        time: Optional[bool] = True,
+        transforms: Optional[Callable] = None,
+        indices: Optional[list[int]] = None
     ):
         self.input_layout = input_layout
         self.dtype = DALI_DTYPES[dtype].value if isinstance(dtype, str) else dtype
@@ -31,6 +39,9 @@ class PretrainDatasetDali:
         self.server_folder_path = server_folder_path
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
         self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(self.hypercubes_dataframe_path)
+
+        if indices is not None:
+            self.hypercubes_dataframe = self.hypercubes_dataframe.iloc[indices].reset_index(drop=True)
 
         self.paths = {
             os.path.join(sf, of, tn)
@@ -64,6 +75,10 @@ class PretrainDatasetDali:
 
         self._build_index()
 
+        self.time = time
+
+        self.transforms = [get_method(t) for t in transforms] if transforms is not None else []
+
     def _process_tables(self, hypercubes_dataframe_path) -> tuple[pd.DataFrame, Dict]:
         if not hypercubes_dataframe_path.exists():
             raise FileNotFoundError(f"{hypercubes_dataframe_path} does not exist")
@@ -93,11 +108,11 @@ class PretrainDatasetDali:
             os.path.join(meta["server_folder"], meta["output_folder"], meta["tile_name"])
         ]
         img = self._slice_hypercube(data_tensor, meta)
-        # dali expects the data to have a batch dimension
-        batch_img = np.expand_dims(img, axis=0)
-        return batch_img
+        return img
 
     def __call__(self, sample_info):
+        if self.time:
+            start_time = time.time()
         if sample_info.iteration >= self.full_iterations:
             # indicate end of the epoch
             raise StopIteration
@@ -108,31 +123,35 @@ class PretrainDatasetDali:
 
         sample_idx = self.perm[sample_info.idx_in_epoch + self.shard_offset]
         sample = self._index[sample_idx]
-        return self._load_sample(sample)
+        data = self._load_sample(sample)
+
+        # TODO: add support for timing data load with DALI
+        if self.time:
+            data_time = np.array(time.time() - start_time, dtype=np.float32)
+            return data, data_time
+        else:
+            return data
 
 
 @pipeline_def
 def pretrain_dataset_pipeline(dataset):
     vols = fn.external_source(
         source=dataset,
-        num_outputs=1,
+        num_outputs=2 if dataset.time else 1,
         batch=False,
         parallel=True,
         device="cpu",
-        dtype=dataset.dtype,
-        ndim=dataset.input_layout.ndim,
+        dtype=[dataset.dtype, types.FLOAT] if dataset.time else dataset.dtype,
+        ndim=[dataset.input_layout.ndim, 0] if dataset.time else dataset.input_layout.ndim,
     )
     vol = vols[0].gpu()
+
+    # apply transforms if any
+    for transform in dataset.transforms:
+        vol = transform(vol, dataset.dtype)
+
+    if dataset.time:
+        return vol, vols[1]
+    else:
+        return vol
     
-    # TODO: (1) make this more robust to 
-    #       different input shapes
-    #       (2) should we do this ourselves,
-    #       or let DALI handle it?
-    vol_f32 = fn.cast(vol, dtype=DALI_DTYPES.float32.value)
-    vol_norm = fn.normalize(
-        vol_f32,
-        axes=[1, 2, 3, 4],
-        batch=True
-    )
-    vol_out = fn.cast(vol_norm, dtype=dataset.dtype)
-    return vol_out

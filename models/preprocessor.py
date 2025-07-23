@@ -3,8 +3,9 @@ from typing import Dict, Tuple
 
 from data.data_types import TORCH_DTYPES
 
+
 class TorchPreprocessor(torch.nn.Module):
-    def __init__(self, dtype: torch.dtype, with_masking: bool, mask_generator):
+    def __init__(self, dtype: torch.dtype, with_masking: bool,  mask_generator):
         super().__init__()  
         self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
         self.with_masking = with_masking
@@ -78,6 +79,7 @@ class DaliPreprocessor(torch.nn.Module):
                     'target_masks': [target_masks] if self.with_masking else None,
                     'original_patch_indices': [original_patch_indices] if self.with_masking else None,
                     'channels_to_mask': [channels_to_mask] if self.with_masking else None,
+                    'data_time': data_sample[0].get('data_time', None)
                 }
             }
         else:

@@ -28,6 +28,7 @@ dataset:
   dtype: ${dataset_dtype}
   server_folder_path: ${paths.server_folder_path}
   hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
+  time: true
 
   input_layout: 
     _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE

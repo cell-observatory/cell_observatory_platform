@@ -3,6 +3,7 @@ import sys
 import logging
 from pathlib import Path
 
+import torch.distributed as dist
 from torch.utils.data import DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
 
@@ -42,19 +43,53 @@ def build_dataset(cfg, transforms=None):
     return dataset
 
 
-def build_dali_dataset(cfg):
+def build_dali_dataset(cfg, transforms=None):
     rank = process_rank()
     if rank == 0:
         # initialize supabase wrapper once
         db = instantiate(cfg.datasets.databases)
-    barrier(device_ids=int(os.environ.get("LOCAL_RANK")))
+        dataset_len = len(db.hypercubes_dataframe)
+    else:
+        dataset_len = None
 
-    dataset = instantiate(
-        cfg.datasets.dataset,
-        hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
-        batch_size=cfg.clusters.batch_size_per_gpu
-    )
-    return dataset
+    obj = [dataset_len] if process_rank() == 0 else [None]
+    # broadcast syncs
+    dist.broadcast_object_list(obj, src=0)
+    dataset_len = obj[0]
+
+    if cfg.datasets.split is not None:
+        val_size = round(dataset_len * cfg.datasets.split)
+        train_subset, val_subset = random_split(
+            range(dataset_len),
+            lengths=[dataset_len - val_size, val_size]
+        )
+        train_indices, val_indices = train_subset.indices, val_subset.indices
+
+        train_dataset = instantiate(
+            cfg.datasets.dataset,
+            transforms=transforms,
+            hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
+            batch_size=cfg.clusters.batch_size_per_gpu,
+            indices=train_indices
+        )
+        val_dataset = instantiate(
+            cfg.datasets.dataset,
+            transforms=transforms,
+            hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
+            batch_size=cfg.clusters.batch_size_per_gpu,
+            indices=val_indices
+        )
+
+        return train_dataset, val_dataset
+    
+    else:
+        dataset = instantiate(
+            cfg.datasets.dataset,
+            transforms=transforms,
+            hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
+            batch_size=cfg.clusters.batch_size_per_gpu)
+        
+    return dataset, None
 
 
 def get_dataloader(config: DictConfig):
@@ -139,18 +174,56 @@ def get_dataloader(config: DictConfig):
             return dataset
     
     elif config.datasets.dataset._target_.endswith("PretrainDatasetDali"):
-        dataset = build_dali_dataset(config)
+        train_dataset, val_dataset = build_dali_dataset(config, transforms=None)
 
         if config.datasets.split is not None:
-            # TODO: figure out how to handle splits with DALI dataloader
-            raise NotImplementedError(
-                f"DALI dataloader is not implemented yet with split."
+            # DALI dataloader
+            train_pipe = pretrain_dataset_pipeline(
+                    dataset=train_dataset,
+                    batch_size=config.clusters.batch_size_per_gpu,
+                    num_threads=config.datasets.num_workers,
+                    py_start_method="spawn",
+                    py_num_workers=config.datasets.num_workers,
+                    prefetch_queue_depth=config.datasets.prefetch_factor,
+                    exec_async=False,
+                    exec_pipelined=True,
+                    device_id=process_rank()
+                )
+            train_pipe.build()
+            dali_train_loader = DALIGenericIterator(
+                pipelines=train_pipe,
+                output_map=["data_tensor", "data_time"] if train_dataset.time else ["data_tensor"],
+                size=train_dataset.full_iterations * config.clusters.batch_size_per_gpu,
+                auto_reset=True,
+                last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
+            
+            val_pipe = pretrain_dataset_pipeline(
+                    dataset=val_dataset,
+                    batch_size=config.clusters.batch_size_per_gpu,
+                    num_threads=config.datasets.num_workers,
+                    py_start_method="spawn",
+                    py_num_workers=config.datasets.num_workers,
+                    prefetch_queue_depth=config.datasets.prefetch_factor,
+                    exec_async=False,
+                    exec_pipelined=True,
+                    device_id=process_rank()
+                )
+            val_pipe.build()
+            dali_val_loader = DALIGenericIterator(
+                pipelines=val_pipe,
+                output_map=["data_tensor", "data_time"] if val_dataset.time else ["data_tensor"],
+                size=val_dataset.full_iterations * config.clusters.batch_size_per_gpu,
+                auto_reset=True,
+                last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
+            )
+
+            return dali_train_loader, dali_val_loader
 
         else:
             # DALI dataloader
             pipe = pretrain_dataset_pipeline(
-                    dataset=dataset,
+                    dataset=train_dataset,
                     batch_size=config.clusters.batch_size_per_gpu,
                     num_threads=config.datasets.num_workers,
                     py_start_method="spawn",
@@ -162,11 +235,11 @@ def get_dataloader(config: DictConfig):
                 )
             pipe.build()
             dali_loader = DALIGenericIterator(
-                pipelines = pipe,
-                output_map = ["data_tensor"],
-                size = dataset.full_iterations * config.clusters.batch_size_per_gpu,
-                auto_reset = True,
-                last_batch_policy = instantiate(config.datasets.dali_last_batch_policy)
+                pipelines=pipe,
+                output_map=["data_tensor", "data_time"] if train_dataset.time else ["data_tensor"],
+                size=train_dataset.full_iterations * config.clusters.batch_size_per_gpu,
+                auto_reset=True,
+                last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
             return dali_loader, None
 

@@ -66,19 +66,21 @@ def main(cfg: DictConfig):
             logger.info(f"Launching job with base config: {run.cfg}")
             logger.info(f"Launching job with overrides: {run.overrides}")
 
-            # first we merge the defaults_overrides with the run config
-            defaults_overrides = get_defaults_overrides(run.get("defaults_overrides"))
-            logger.info(f"Defaults overrides: {defaults_overrides}")
             run_cfg = compose(config_name=run.cfg)
-            with open_dict(run_cfg):
-                for key, value in defaults_overrides.items():
-                    logger.info(f"Overriding Defaults: {key}")
-                    # TODO: make sure old default values are removed correctly here
-                    run_cfg[key] = {}
-                    run_cfg = OmegaConf.merge(run_cfg, value)
 
+            # first we merge the defaults_overrides with the run config
+            defaults_overrides = get_defaults_overrides(run.get("defaults_overrides", None))
+            if defaults_overrides is not None and len(defaults_overrides) > 0:
+                logger.info(f"Defaults overrides: {defaults_overrides}")
+                with open_dict(run_cfg):
+                    for key, value in defaults_overrides.items():
+                        logger.info(f"Overriding Defaults: {key}")
+                        # TODO: make sure old default values are removed correctly here
+                        run_cfg[key] = {}
+                        run_cfg = OmegaConf.merge(run_cfg, value)
+            
             # next we merge the run overrides with the resulting run config
-            override_cfg = OmegaConf.create(OmegaConf.to_container(run.overrides, resolve=True))
+            override_cfg = OmegaConf.create(OmegaConf.to_container(run.overrides))
             run_cfg = OmegaConf.merge(run_cfg, override_cfg)
 
             if cfg.get("data_base_dir"):

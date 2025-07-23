@@ -3,7 +3,7 @@ defaults:
   - /clusters/local                          # configs/clusters/local.yaml
   - /paths/abc                               # configs/paths/abc.yaml
   - /datasets/pretrain_dataset_dali          # configs/datasets/pretrain_dataset_dali.yaml
-  - /models/mae/huge                         # configs/models/mae/huge.yaml
+  - /models/mae/tiny                         # configs/models/mae/huge.yaml
   - /hooks/hooks                             # configs/hooks/hooks.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
@@ -11,7 +11,9 @@ defaults:
   - /deepspeed/zero3                         # configs/deepspeed/zero3.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - _self_
+
 
 # experiment name (used for logging)
 experiment_name: tests_dali_loader
@@ -76,7 +78,7 @@ datasets:
   input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
 
-  split: null
+  split: 0.1
   return_dataloader: true
   distributed_sampler: true
 
@@ -99,7 +101,7 @@ datasets:
 models:
   mae:
     _target_: models.maskedautoencoder.MaskedAutoEncoder
-    input_fmt: BTZYXC
+    input_fmt: TZYXC
     input_shape: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
     temporal_patch_size: ${datasets.patch_shape.0}
     lateral_patch_size: ${datasets.patch_shape.1}
@@ -140,32 +142,32 @@ loggers:
         scalars_save_format: csv
 
 # hooks
-hooks:
-  nsys_env:
-    nsight: 
-      # image appears to be too old
-      # pytorch: autograd-shapes-nvtx
-      # cuda-memory-usage: "false"
-      # OPTIONS:
-      # "t": "cuda, nvtx, cuda-hw,"
-      #     "cublas-verbose"
-      #     "cusparse-verbose, cudnn, cudla-verbose,"
-      #     "cusolver-verbose, opengl, opengl-annotations, "
-      #     "openacc, openmp, osrt, mpi, nvvideo, vulkan, vulkan-annotations, "
-      #     "dx11, dx11-annotations, dx12, dx12-annotations, openxr, openxr-annotations, "
-      #     "oshmem, ucx, wddm, tegra-accelerators, python-gil",
-      t: cuda,nvtx,cudnn,cublas,osrt
-      # s: process-tree
-      # "gpu-metrics-devices": "cuda-visible",
-      capture-range: cudaProfilerApi
-      capture-range-end: stop-shutdown
-      # nvtx-capture: range@domain
-      # cudabacktrace: all:10000
-      # backtrace: dwarf
-      # "python-backtrace": "cuda",
-      # "osrt-threshold": "10000",
-      # "python-sampling": "true",
-      # "python-sampling-frequency": "1000"
+# hooks:
+#   nsys_env:
+#     nsight: 
+#       # image appears to be too old
+#       # pytorch: autograd-shapes-nvtx
+#       # cuda-memory-usage: "false"
+#       # OPTIONS:
+#       # "t": "cuda, nvtx, cuda-hw,"
+#       #     "cublas-verbose"
+#       #     "cusparse-verbose, cudnn, cudla-verbose,"
+#       #     "cusolver-verbose, opengl, opengl-annotations, "
+#       #     "openacc, openmp, osrt, mpi, nvvideo, vulkan, vulkan-annotations, "
+#       #     "dx11, dx11-annotations, dx12, dx12-annotations, openxr, openxr-annotations, "
+#       #     "oshmem, ucx, wddm, tegra-accelerators, python-gil",
+#       t: cuda,nvtx,cudnn,cublas,osrt
+#       # s: process-tree
+#       # "gpu-metrics-devices": "cuda-visible",
+#       capture-range: cudaProfilerApi
+#       capture-range-end: stop-shutdown
+#       # nvtx-capture: range@domain
+#       # cudabacktrace: all:10000
+#       # backtrace: dwarf
+#       # "python-backtrace": "cuda",
+#       # "osrt-threshold": "10000",
+#       # "python-sampling": "true",
+#       # "python-sampling-frequency": "1000"
   hooks_list:
   - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.LRScheduler
@@ -177,9 +179,9 @@ hooks:
     file_prefix: latest_model
   - _target_: training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: training.hooks.NsysProfilerHook
-    start_iter: 10
-    end_iter: 30
+  # - _target_: training.hooks.NsysProfilerHook
+  #   start_iter: 10
+  #   end_iter: 30
   # - _target_: training.hooks.TorchProfiler
   #   output_dir: ${loggers.logdir}/profiler
   #   schedule:

@@ -12,7 +12,7 @@ run_type: multi_run
 # 2. wandb_tags to group runs together in the wandb dashboard
 #    and use their hparam features to compare runs 
 
-wandb_tags: ["benchmark", "benchmark_training_infra", "scaling", "17_07_2025"] 
+wandb_tags: ["benchmark", "benchmark_training_infra", "scaling"] 
 data_base_dir: training_infrastructure/training_mae_4d
 
 # NOTE: make sure to include .yaml suffix to naming of config files! These names are appended to configs/experiments/
@@ -24,7 +24,7 @@ data_base_dir: training_infrastructure/training_mae_4d
 
 runs:
   - cfg: benchmarks/abc/benchmark_training_base
-    name: 2_GPUs.yaml
+    name: 2_GPUs_torch.yaml
     defaults_overrides: 
       - datasets: datasets/pretrain_dataset
     overrides:
@@ -40,40 +40,100 @@ runs:
           use_cached_hypercubes_dataframe: false
           protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
-  # - cfg: benchmarks/benchmark_training_base
-  #   name: 3_GPUs.yaml
-  #   defaults_overrides: 
-  #     - datasets: datasets/pretrain_dataset
-  #   overrides:
-  #     clusters: 
-  #       worker_nodes: 1
-  #       gpus_per_worker: 3
-  #       batch_size: 48
-  #     datasets:
-  #       databases:
-  #         max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-  #         max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-  #         max_hypercubes: 1000 # maximum number of hypercubes to return
-  #         use_cached_hypercubes_dataframe: false
-  #         protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+  - cfg: benchmarks/abc/benchmark_training_base
+    name: 3_GPUs_torch.yaml
+    defaults_overrides: 
+      - datasets: datasets/pretrain_dataset
+    overrides:
+      clusters: 
+        worker_nodes: 1
+        gpus_per_worker: 3
+        batch_size: 48
+      deepspeed:
+        zero_optimization:
+          stage: 2
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 1000 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: false
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
-  # - cfg: benchmarks/benchmark_training_base
-  #   overrides:
-  #     - "clusters.worker_nodes=1"
-  #     - "clusters.gpus_per_worker=4"
-  #     - "deepspeed.zero_optimization.stage=2"
-  #     - "datasets=pretrain_dataset_dali"
+  - cfg: benchmarks/abc/benchmark_training_base
+    name: 2_GPUs_dali.yaml
+    defaults_overrides: null
+    overrides:
+      clusters: 
+        worker_nodes: 1
+        gpus_per_worker: 2
+        batch_size: 32
+      deepspeed:
+        zero_optimization:
+          stage: 2
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 400 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: false
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+      hooks:
+        hooks_list:
+        - _target_: training.hooks.AnomalyDetector
+        - _target_: training.hooks.LRScheduler
+        - _target_: training.hooks.IterationTimer
+          warmup_iter: 1
+        - _target_: training.hooks.PeriodicWriter
+        - _target_: training.hooks.PeriodicCheckpointer
+          period: 1
+          file_prefix: latest_model
+        - _target_: training.hooks.BestCheckpointer
+          checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+        - _target_: training.hooks.TorchMemoryStats
+          step_period: 2
+          epoch_period: 1
+          logdir: ${loggers.logdir}
+        - _target_: training.hooks.BestMetricSaver
+          metric_name: ${evaluation.val_metric}
+          compare_fn: ${evaluation.val_mode}
+          eval_after_validation: true
 
-  # - cfg: benchmarks/benchmark_training_base
-  #   overrides:
-  #     - "clusters.worker_nodes=2"
-  #     - "clusters.gpus_per_worker=4"
-  #     - "deepspeed.zero_optimization.stage=2"
-  #     - "datasets=pretrain_dataset_dali"
-
-  # - cfg: benchmarks/benchmark_training_base
-  #   overrides:
-  #     - "clusters.worker_nodes=3"
-  #     - "clusters.gpus_per_worker=4"
-  #     - "deepspeed.zero_optimization.stage=2"
-  #     - "datasets=pretrain_dataset_dali"
+  - cfg: benchmarks/abc/benchmark_training_base
+    name: 3_GPUs_dali.yaml
+    defaults_overrides: null
+    overrides:
+      clusters: 
+        worker_nodes: 1
+        gpus_per_worker: 3
+        batch_size: 48
+      deepspeed:
+        zero_optimization:
+          stage: 2
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 1000 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: false
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+      hooks:
+        hooks_list:
+        - _target_: training.hooks.AnomalyDetector
+        - _target_: training.hooks.LRScheduler
+        - _target_: training.hooks.IterationTimer
+          warmup_iter: 1
+        - _target_: training.hooks.PeriodicWriter
+        - _target_: training.hooks.PeriodicCheckpointer
+          period: 1
+          file_prefix: latest_model
+        - _target_: training.hooks.BestCheckpointer
+          checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+        - _target_: training.hooks.TorchMemoryStats
+          step_period: 2
+          epoch_period: 1
+          logdir: ${loggers.logdir}
+        - _target_: training.hooks.BestMetricSaver
+          metric_name: ${evaluation.val_metric}
+          compare_fn: ${evaluation.val_mode}
+          eval_after_validation: true

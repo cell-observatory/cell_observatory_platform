@@ -25,7 +25,8 @@ from training.helpers import (
     get_optimizer,
     get_lr_scheduler,
     get_steps_per_epoch,
-    resume_run
+    resume_run,
+    activation_checkpoint
 )
 from training.hooks import HookBase
 from utils.context import inference_context
@@ -43,9 +44,6 @@ logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INF
 
 # Ray train wrapper entry point
 def train_loop_per_worker(config):
-    # TODO: add backends HYDRA config
-    torch.backends.cudnn.benchmark = True
-
     trainer_cls = get_class(config.trainer)
     trainer_per_worker = trainer_cls(config)
 
@@ -323,6 +321,15 @@ class EpochBasedTrainer(BaseTrainer):
         # initialize evaluator
         self.evaluator = instantiate(cfg.evaluation.evaluator)
 
+        if cfg.optimizations is not None:
+            # TODO: move to helper?
+            if cfg.optimizations.cudnn_benchmark:
+                torch.backends.cudnn.benchmark = True
+            if cfg.optimizations.cudnn_deterministic:
+                torch.backends.cudnn.deterministic = True
+            if cfg.optimizations.activation_checkpoint.enabled:
+                self.model = activation_checkpoint(self.model)
+
     def run(self):
         """
         Launch training.
@@ -375,6 +382,12 @@ class EpochBasedTrainer(BaseTrainer):
         #     )
         # logger.info(f"step_loss: {loss_dict['step_loss']}, lr: {self.opt.param_groups[0]['lr']}")
 
+        if data_sample['metainfo'].get('data_time') is not None:
+            self.event_recorder.put_scalars(
+                scope="step",
+                data_time=data_sample['metainfo'].get('data_time').mean().item(),
+            )
+
         self.event_recorder.put_scalars(
             scope="step",
             **{k: (v.item() if torch.is_tensor(v) else v)
@@ -418,6 +431,13 @@ class EpochBasedTrainer(BaseTrainer):
         data_sample = self.preprocessor(data_sample)
         loss_dict, outputs = self.model(data_sample)
         self.evaluator.process(data_sample, outputs, loss_dict)
+
+        if data_sample['metainfo'].get('data_time') is not None:
+            self.event_recorder.put_scalars(
+                scope="step",
+                prefix="val_",
+                data_time=data_sample['metainfo'].get('data_time').mean().item(),
+            )
 
         self.after_val_step(data_sample=data_sample, outputs=outputs, loss_dict=loss_dict)
         self._val_iter += 1

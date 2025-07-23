@@ -1,7 +1,11 @@
+import os
 import gc
 import sys
 import time
+import signal
+import datetime
 import logging
+import cProfile
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -9,7 +13,6 @@ import pandas as pd
 from itertools import product
 
 import torch
-import ray.train.torch as raytorch
 
 from omegaconf import open_dict
 
@@ -30,6 +33,50 @@ def flush():
             h.flush()
         except Exception:
             pass
+
+
+# approach for profiling workers, requires setting
+# worker_init_fn in the DataLoader for Torch dataloaders
+# not implemented for DALI dataloaders
+# def compose_worker_init(orig_init, out_dir):
+#     def _init(worker_id):
+#         install_signal_profiler(out_dir)
+#         if orig_init is not None: 
+#             orig_init(worker_id)
+#     return _init
+
+
+# def install_signal_profiler(out_dir: str | os.PathLike):
+#     out_dir = Path(out_dir).expanduser().resolve()
+#     out_dir.mkdir(parents=True, exist_ok=True)
+#     state = {"prof": None, "file": None}
+
+#     def _start(_sig, _frm):
+#         if state["prof"] is None:
+#             run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+#             f = out_dir / f"worker_{os.getpid()}_{run_id}.prof"
+#             state["file"] = f
+#             state["prof"] = cProfile.Profile()
+#             state["prof"].enable()
+
+#     def _stop(_sig, _frm):
+#         if state["prof"] is not None:
+#             state["prof"].disable()
+#             state["prof"].dump_stats(state["file"])
+#             state["prof"] = None
+
+#     signal.signal(signal.SIGUSR1, _start)
+#     signal.signal(signal.SIGUSR2, _stop)
+
+
+# class WorkerInit:
+#     def __init__(self, out_dir, orig_init):
+#         self.out_dir = out_dir
+#         self.orig_init = orig_init
+#     def __call__(self, worker_id):
+#         install_signal_profiler(self.out_dir)
+#         if self.orig_init is not None:
+#             self.orig_init(worker_id)
 
 
 # move data to device, similar to Ray Train's `move_to_device` 
@@ -64,6 +111,11 @@ def _measure_loader(loader, num_batches, batch_size, cfg, profile=False):
         for _ in range(cfg.warmup):
             next(it)
 
+        # NOTE: only works for Torch DataLoader
+        # if cfg.benchmark_worker_process:
+        #     for w in loader._iterator._workers:
+        #         os.kill(w.pid, signal.SIGUSR1)
+
         for _ in range(num_batches):
             # disk to RAM
             t0 = time.perf_counter()
@@ -78,6 +130,10 @@ def _measure_loader(loader, num_batches, batch_size, cfg, profile=False):
             time_disk2ram += (t1 - t0)
             time_ram2vram += (t2 - t1)
             total += (t2 - t0)
+
+        # if cfg.benchmark_worker_process:
+        #     for w in loader._iterator._workers:
+        #         os.kill(w.pid, signal.SIGUSR2)
 
         # average over number of batches
         # TODO: should we report average per batch
@@ -104,7 +160,6 @@ def _measure_loader(loader, num_batches, batch_size, cfg, profile=False):
 
 
 def bench_dataloader(cfg):
-
     results = []
     benchmark_configurations = [
             (b,w,p)
@@ -132,13 +187,23 @@ def bench_dataloader(cfg):
             torch.cuda.synchronize()
             logger.info("CUDA memory before run: "
                         f"{torch.cuda.memory_allocated() / 1e9:.3f} GB")
+            
+            if cfg.benchmark_main_process:
+                prof = cProfile.Profile()
+                prof.enable()
 
             stats = _measure_loader(
                 loader,
                 num_batches=num_batches,
                 batch_size=batch_size,
-                cfg=cfg
+                cfg=cfg,
+                profile=False
             )
+
+            if cfg.benchmark_main_process:
+                prof.disable()
+                prof.dump_stats(cfg.csv_out.replace(".csv", ".prof"))
+
             if hasattr(loader, "_shutdown_workers"):
                 loader._shutdown_workers()
             del loader
