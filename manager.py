@@ -105,6 +105,9 @@ def main(cfg: DictConfig):
                         if event_writer._target_.endswith("WandBEventWriter"):
                             event_writer.tags = event_writer.tags + list(cfg.wandb_tags)
 
+            with open_dict(run_cfg):
+                run_cfg.experiment_name = Path(run.name).with_suffix("")
+
             # save the run config to a file for reproducibility
             # and so we can pass to the runner and inject
             # package global variable since we are saving
