@@ -106,7 +106,7 @@ def main(cfg: DictConfig):
                             event_writer.tags = event_writer.tags + list(cfg.wandb_tags)
 
             with open_dict(run_cfg):
-                run_cfg.experiment_name = Path(run.name).with_suffix("")
+                run_cfg.experiment_name = run.name.replace(".yaml", "")
 
             # save the run config to a file for reproducibility
             # and so we can pass to the runner and inject
