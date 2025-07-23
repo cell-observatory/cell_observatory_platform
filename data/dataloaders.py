@@ -9,8 +9,9 @@ from torch.utils.data.distributed import DistributedSampler
 
 from hydra.utils import instantiate, get_method
 from omegaconf import DictConfig, OmegaConf
-if (hasattr(OmegaConf, "has_resolver") and  \
-    not OmegaConf.has_resolver("eval")):
+
+if (hasattr(OmegaConf, "has_resolver") and \
+        not OmegaConf.has_resolver("eval")):
     OmegaConf.register_new_resolver("eval", eval)
 
 import ray.train.torch as raytorch
@@ -81,21 +82,28 @@ def build_dali_dataset(cfg, transforms=None):
         )
 
         return train_dataset, val_dataset
-    
+
     else:
         dataset = instantiate(
             cfg.datasets.dataset,
             transforms=transforms,
             hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
             batch_size=cfg.clusters.batch_size_per_gpu)
-        
+
     return dataset, None
 
 
 def get_dataloader(config: DictConfig):
+    if config.datasets.split is None and config.datasets.split == 0:
+        for event_writer in config.loggers.event_writers:
+            if event_writer._target_.endswith("WandBEventWriter"):
+                for sk, ek in zip(event_writer.step_scalar_keys, event_writer.epoch_scalar_keys):
+                    assert not sk.startswith('val_'), f"WandBEventWriter can't have {sk} when {config.datasets.split=}"
+                    assert not ek.startswith('val_'), f"WandBEventWriter can't have {ek} when {config.datasets.split=}"
+
     if config.datasets.dataset._target_.endswith("PretrainDataset"):
         transforms = [instantiate(t) for t in config.datasets.transforms.transforms_list] \
-                        if config.datasets.transforms.transforms_list else None
+            if config.datasets.transforms.transforms_list else None
 
         dataset = build_dataset(config, transforms)
 
@@ -122,7 +130,7 @@ def get_dataloader(config: DictConfig):
                     prefetch_factor=config.datasets.prefetch_factor,
                     persistent_workers=False,
                     sampler=DistributedSampler(train, drop_last=True)
-                        if config.datasets.distributed_sampler else None,
+                    if config.datasets.distributed_sampler else None,
                     # NOTE: most of worker init functionality done by Ray
                     # see https://docs.ray.io/en/latest/_modules/ray/train/torch/train_loop_utils.html
                     worker_init_fn=db_worker_init_fn,
@@ -138,7 +146,7 @@ def get_dataloader(config: DictConfig):
                     prefetch_factor=config.datasets.prefetch_factor,
                     persistent_workers=False,
                     sampler=DistributedSampler(val, shuffle=False, drop_last=True)
-                        if config.datasets.distributed_sampler else None,
+                    if config.datasets.distributed_sampler else None,
                     worker_init_fn=db_worker_init_fn,
                     drop_last=True
                 )
@@ -161,7 +169,7 @@ def get_dataloader(config: DictConfig):
                     persistent_workers=False,
                     # handle cases where we want to run on a single GPU without distributed environment
                     sampler=DistributedSampler(dataset, drop_last=True)
-                        if config.datasets.distributed_sampler else None,
+                    if config.datasets.distributed_sampler else None,
                     worker_init_fn=db_worker_init_fn,
                     drop_last=True,
                 )
@@ -172,23 +180,23 @@ def get_dataloader(config: DictConfig):
                 return dataloader, None
         else:
             return dataset
-    
+
     elif config.datasets.dataset._target_.endswith("PretrainDatasetDali"):
         train_dataset, val_dataset = build_dali_dataset(config, transforms=None)
 
         if config.datasets.split is not None:
             # DALI dataloader
             train_pipe = pretrain_dataset_pipeline(
-                    dataset=train_dataset,
-                    batch_size=config.clusters.batch_size_per_gpu,
-                    num_threads=config.datasets.num_workers,
-                    py_start_method="spawn",
-                    py_num_workers=config.datasets.num_workers,
-                    prefetch_queue_depth=config.datasets.prefetch_factor,
-                    exec_async=False,
-                    exec_pipelined=True,
-                    device_id=process_rank()
-                )
+                dataset=train_dataset,
+                batch_size=config.clusters.batch_size_per_gpu,
+                num_threads=config.datasets.num_workers,
+                py_start_method="spawn",
+                py_num_workers=config.datasets.num_workers,
+                prefetch_queue_depth=config.datasets.prefetch_factor,
+                exec_async=False,
+                exec_pipelined=True,
+                device_id=process_rank()
+            )
             train_pipe.build()
             dali_train_loader = DALIGenericIterator(
                 pipelines=train_pipe,
@@ -197,18 +205,18 @@ def get_dataloader(config: DictConfig):
                 auto_reset=True,
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
-            
+
             val_pipe = pretrain_dataset_pipeline(
-                    dataset=val_dataset,
-                    batch_size=config.clusters.batch_size_per_gpu,
-                    num_threads=config.datasets.num_workers,
-                    py_start_method="spawn",
-                    py_num_workers=config.datasets.num_workers,
-                    prefetch_queue_depth=config.datasets.prefetch_factor,
-                    exec_async=False,
-                    exec_pipelined=True,
-                    device_id=process_rank()
-                )
+                dataset=val_dataset,
+                batch_size=config.clusters.batch_size_per_gpu,
+                num_threads=config.datasets.num_workers,
+                py_start_method="spawn",
+                py_num_workers=config.datasets.num_workers,
+                prefetch_queue_depth=config.datasets.prefetch_factor,
+                exec_async=False,
+                exec_pipelined=True,
+                device_id=process_rank()
+            )
             val_pipe.build()
             dali_val_loader = DALIGenericIterator(
                 pipelines=val_pipe,
@@ -223,16 +231,16 @@ def get_dataloader(config: DictConfig):
         else:
             # DALI dataloader
             pipe = pretrain_dataset_pipeline(
-                    dataset=train_dataset,
-                    batch_size=config.clusters.batch_size_per_gpu,
-                    num_threads=config.datasets.num_workers,
-                    py_start_method="spawn",
-                    py_num_workers=config.datasets.num_workers,
-                    prefetch_queue_depth=config.datasets.prefetch_factor,
-                    exec_async=False,
-                    exec_pipelined=True,
-                    device_id=process_rank()
-                )
+                dataset=train_dataset,
+                batch_size=config.clusters.batch_size_per_gpu,
+                num_threads=config.datasets.num_workers,
+                py_start_method="spawn",
+                py_num_workers=config.datasets.num_workers,
+                prefetch_queue_depth=config.datasets.prefetch_factor,
+                exec_async=False,
+                exec_pipelined=True,
+                device_id=process_rank()
+            )
             pipe.build()
             dali_loader = DALIGenericIterator(
                 pipelines=pipe,
