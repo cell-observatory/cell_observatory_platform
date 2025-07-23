@@ -9,7 +9,6 @@ import pandas as pd
 from dotenv import load_dotenv
 import connectorx as cx
 
-
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
@@ -20,22 +19,22 @@ logger = logging.getLogger(__name__)
 
 class SupabaseDatabase:
     def __init__(
-        self,
-        num_timepoints: Optional[int] = 1,
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
-        max_hypercubes: Optional[int] = None,
-        hpf_list: Optional[Iterable[int]] = None,
-        roi_list: Optional[Iterable[int]] = None,
-        tile_list: Optional[Iterable[str]] = None,
-        dbname: Literal['staging', 'production'] = 'staging',
-        dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
-        verbose: bool = False,
-        fetch_hypercubes_dataframe: bool = True,
-        hypercubes_dataframe_path: Optional[Path] = None,
-        use_cached_hypercubes_dataframe: Optional[bool] = False,
-        protocol: Literal["binary", "csv", "cursor"] = "binary",
-        max_partitions: Optional[int] = 10,
+            self,
+            num_timepoints: Optional[int] = 1,
+            max_rois: Optional[int] = None,
+            max_tiles: Optional[int] = None,
+            max_hypercubes: Optional[int] = None,
+            hpf_list: Optional[Iterable[int]] = None,
+            roi_list: Optional[Iterable[int]] = None,
+            tile_list: Optional[Iterable[str]] = None,
+            dbname: Literal['staging', 'production'] = 'staging',
+            dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
+            verbose: bool = False,
+            fetch_hypercubes_dataframe: bool = True,
+            hypercubes_dataframe_path: Optional[Path] = None,
+            use_cached_hypercubes_dataframe: Optional[bool] = False,
+            protocol: Literal["binary", "csv", "cursor"] = "binary",
+            max_partitions: Optional[int] = 10,
     ):
         """
         A class for accessing Supabase database and retrieving hypercubes.
@@ -61,12 +60,13 @@ class SupabaseDatabase:
             use_cached_hypercubes_dataframe: if True, will use the cached hypercubes dataframe from the given path
             protocol: The protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
             max_partitions: The maximum number of threads to fetch queries at once
-            
+
         # TODO: Only works for `Tx128x128x128x2`, need to extend class to work with other hypercube sizes
         """
 
         if hypercubes_dataframe_path is None:
-            self.hypercubes_dataframe_path = Path(__file__).parent.parent.parent / 'databases' / 'default_hypercubes_dataframe.csv'
+            self.hypercubes_dataframe_path = Path(
+                __file__).parent.parent.parent / 'databases' / 'default_hypercubes_dataframe.csv'
         else:
             self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
 
@@ -91,7 +91,7 @@ class SupabaseDatabase:
             # if use_cached_hypercubes_dataframe is True, it is assumed that
             # hypercubes_dataframe_path points at a valid CSV file
             if self.use_cached_hypercubes_dataframe:
-                self.hypercubes_dataframe = pd.read_csv(self.hypercubes_dataframe_path)
+                self.hypercubes_dataframe = pd.read_csv(self.hypercubes_dataframe_path).iloc[:max_hypercubes, :]
             else:
                 self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
                     num_timepoints=num_timepoints,
@@ -107,7 +107,7 @@ class SupabaseDatabase:
                 # TODO: remove when DB is updated fix the output_folder paths
                 self.hypercubes_dataframe["output_folder"] = (
                     self.hypercubes_dataframe["output_folder"]
-                        .str.replace(r"/6/9/", "/7/4/", regex=True)
+                    .str.replace(r"/6/9/", "/7/4/", regex=True)
                 )
 
                 self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
@@ -132,12 +132,11 @@ class SupabaseDatabase:
         assert uri is not None, "SUPABASE_URI_* environment variable not set"
         return uri
 
-
     def _choose_filter(
-        self,
-        rois: Optional[Iterable[int|str]] = None,
-        tiles: Optional[Iterable[str]] = None,
-        table_name: str = 'ptv'
+            self,
+            rois: Optional[Iterable[int | str]] = None,
+            tiles: Optional[Iterable[str]] = None,
+            table_name: str = 'ptv'
     ) -> str:
 
         assert rois is not None or tiles is not None, "At least one of rois or tiles must be provided"
@@ -155,12 +154,11 @@ class SupabaseDatabase:
         elif tiles is not None:
             return f"WHERE {table_name}.tile_name IN {tiles}"
 
-
     def _limit_filter(
-        self,
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
-        table_name: str = 'ptv'
+            self,
+            max_rois: Optional[int] = None,
+            max_tiles: Optional[int] = None,
+            table_name: str = 'ptv'
     ) -> str:
         assert max_rois is not None or max_tiles is not None, "At least one of max_rois or max_tiles must be provided"
 
@@ -180,31 +178,29 @@ class SupabaseDatabase:
                 filters = f"WHERE {table_name}.prepared_id IN {tuple(unique_rois)} " \
                           f"AND {table_name}.tile_name IN {tuple(unique_tiles)}"
             else:
-                filters =  f"WHERE {table_name}.prepared_id IN ('{unique_rois}') " \
-                           f"AND {table_name}.tile_name IN ('{unique_tiles}')"
+                filters = f"WHERE {table_name}.prepared_id IN ('{unique_rois}') " \
+                          f"AND {table_name}.tile_name IN ('{unique_tiles}')"
         return filters
 
-
     def _age_filter(
-        self,
-        hpfs: Iterable[int],
-        table_name: str = 'ptv'
+            self,
+            hpfs: Iterable[int],
+            table_name: str = 'ptv'
     ) -> str:
         assert hpfs is not None, "hpfs must be provided"
 
         hpfs = tuple(hpfs) if len(hpfs) > 1 else f"({hpfs[0]})"
         return f"WHERE {table_name}.hpf IN {hpfs}"
 
-
     def _filters_to_string(
-        self,
-        table_name: str,
-        table_name_shortcut: str = 'hc',
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
-        hpf_list: Optional[Iterable[int]] = None,
-        roi_list: Optional[Iterable[int]] = None,
-        tile_list: Optional[Iterable[str]] = None,
+            self,
+            table_name: str,
+            table_name_shortcut: str = 'hc',
+            max_rois: Optional[int] = None,
+            max_tiles: Optional[int] = None,
+            hpf_list: Optional[Iterable[int]] = None,
+            roi_list: Optional[Iterable[int]] = None,
+            tile_list: Optional[Iterable[str]] = None,
     ) -> str:
 
         if roi_list is not None or tile_list is not None:
@@ -220,24 +216,23 @@ class SupabaseDatabase:
             else:
                 filters += self._age_filter(
                     hpfs=hpf_list, table_name=table_name_shortcut
-                ).replace( 'WHERE', ' AND ')
+                ).replace('WHERE', ' AND ')
 
         if self.verbose:
             print(f"Using filters: {filters}")
         return filters
 
-
     def _query_t_128_128_128_2_hypercube_view(
-        self,
-        table_name: str,
-        table_name_shortcut: str = 'hc',
-        num_timepoints: Optional[int] = 32,
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
-        max_hypercubes: Optional[int] = None,
-        hpf_list: Optional[Iterable[int]] = None,
-        roi_list: Optional[Iterable[int]] = None,
-        tile_list: Optional[Iterable[str]] = None,
+            self,
+            table_name: str,
+            table_name_shortcut: str = 'hc',
+            num_timepoints: Optional[int] = 32,
+            max_rois: Optional[int] = None,
+            max_tiles: Optional[int] = None,
+            max_hypercubes: Optional[int] = None,
+            hpf_list: Optional[Iterable[int]] = None,
+            roi_list: Optional[Iterable[int]] = None,
+            tile_list: Optional[Iterable[str]] = None,
     ) -> List[str]:
         column_names = [
             'first_pc_id',
@@ -283,7 +278,8 @@ class SupabaseDatabase:
 
         if max_hypercubes > 1000:
             # select max number of partitions that divides the number of rows in each partition evenly
-            partition_num = max([i for i in range(1, self.max_partitions+1) if max_hypercubes % i == 0]) if max_hypercubes is not None else 1
+            partition_num = max([i for i in range(1, self.max_partitions + 1) if
+                                 max_hypercubes % i == 0]) if max_hypercubes is not None else 1
             print(f"Using {partition_num} partitions to query.")
         else:
             partition_num = 1
@@ -302,11 +298,10 @@ class SupabaseDatabase:
             for i in range(partition_num)
         ]
 
-
     def _create_t_128_128_128_2_hypercube_view(
-        self,
-        num_timepoints: Optional[int] = 1,
-        max_hypercubes: Optional[int] = None,
+            self,
+            num_timepoints: Optional[int] = 1,
+            max_hypercubes: Optional[int] = None,
     ) -> str:
         prepared_cubes_column_names = [
             'prepared_id',
@@ -394,7 +389,6 @@ class SupabaseDatabase:
             ujson.dump(configs, f, indent=4, sort_keys=True, escape_forward_slashes=False)
         print(f"Saved hypercubes dataframe configs to {self.hypercubes_dataframe_path.with_suffix('.json')}")
 
-
     def execute_query(self, query: str | List[str]) -> pd.DataFrame:
         try:
             # avoid the costly COUNT query for pandas by using arrow as an intermediate step
@@ -411,32 +405,25 @@ class SupabaseDatabase:
             logger.error(f"Failed to execute query: {e}")
             raise
 
-
     def list_tables(self) -> Any:
         return self.execute_query("SELECT tablename FROM pg_tables WHERE schemaname = 'public';")
-
 
     def list_views(self) -> Any:
         return self.execute_query("SELECT viewname FROM pg_views WHERE schemaname = 'public';")
 
-
     def get_table(self, table_name: str) -> Any:
         return self.execute_query(f"SELECT * FROM {table_name};")
-
 
     def get_columns(self, table_name: str) -> List[str]:
         return self.execute_query(
             f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}';"
         ).column_name.to_list()
 
-
     def count_rows(self, table_name: str) -> int:
         return self.execute_query(f"SELECT COUNT(*) FROM {table_name};").iloc[0, 0]
 
-
     def count_columns(self, table_name: str) -> int:
         return len(self.get_columns(table_name))
-
 
     def get_random_rois(self, num_rois: int = 1) -> List[int]:
         query = f"""
@@ -446,7 +433,6 @@ class SupabaseDatabase:
         """
         return self.execute_query(query).values.squeeze().tolist()
 
-
     def get_random_tiles(self, num_tiles: int = 1) -> List[int]:
         query = f"""
             SELECT DISTINCT ON (prepared_id, tile_name) prepared_id, tile_name 
@@ -455,9 +441,8 @@ class SupabaseDatabase:
         """
         return self.execute_query(query).values.squeeze().tolist()
 
-
     def check_view_exists(self, table_name: str) -> bool:
-        query =  f"""
+        query = f"""
             SELECT EXISTS (
                 SELECT 1
                 FROM information_schema.tables
@@ -467,17 +452,16 @@ class SupabaseDatabase:
         """
         return self.execute_query(query).values.squeeze().tolist()
 
-
     def get_t_128_128_128_2_hypercubes(
-        self,
-        num_timepoints: Optional[int] = 1,
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
-        max_hypercubes: Optional[int] = None,
-        hpf_list: Optional[Iterable[int]] = None,
-        roi_list: Optional[Iterable[int]] = None,
-        tile_list: Optional[Iterable[str]] = None,
-        hypercubes_dataframe_path: Optional[Path] = None
+            self,
+            num_timepoints: Optional[int] = 1,
+            max_rois: Optional[int] = None,
+            max_tiles: Optional[int] = None,
+            max_hypercubes: Optional[int] = None,
+            hpf_list: Optional[Iterable[int]] = None,
+            roi_list: Optional[Iterable[int]] = None,
+            tile_list: Optional[Iterable[str]] = None,
+            hypercubes_dataframe_path: Optional[Path] = None
     ) -> pd.DataFrame:
 
         table_name = f'prepared_{num_timepoints}_128_128_128_2_hypercube_view'
