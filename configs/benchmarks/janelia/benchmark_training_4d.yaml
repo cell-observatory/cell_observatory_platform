@@ -27,7 +27,7 @@ runs:
     name: 1gpus_8cores_h200_mae_large.yaml
     defaults_overrides:
       - clusters: clusters/janelia_h200
-      - models: models/mae/mae_large
+      - models: models/mae/large
     overrides:
      clusters:
        worker_nodes: 1
@@ -47,7 +47,7 @@ runs:
     name: 1gpus_12cores_h200_mae_large.yaml
     defaults_overrides:
       - clusters: clusters/janelia_h200
-      - models: models/mae/mae_large
+      - models: models/mae/large
     overrides:
      clusters:
        worker_nodes: 1
@@ -67,7 +67,7 @@ runs:
     name: 8gpus_8cores_h200_mae_large.yaml
     defaults_overrides:
       - clusters: clusters/janelia_h200
-      - models: models/mae/mae_large
+      - models: models/mae/large
     overrides:
       clusters:
         worker_nodes: 1
@@ -87,7 +87,7 @@ runs:
     name: 8gpus_12cores_h200_mae_large.yaml
     defaults_overrides:
       - clusters: clusters/janelia_h200
-      - models: models/mae/mae_large
+      - models: models/mae/large
     overrides:
       clusters:
         worker_nodes: 1
