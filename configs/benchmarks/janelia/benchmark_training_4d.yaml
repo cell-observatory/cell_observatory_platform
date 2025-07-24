@@ -12,7 +12,7 @@ run_type: multi_run
 # 2. wandb_tags to group runs together in the wandb dashboard
 #    and use their hparam features to compare runs 
 
-wandb_tags: [ "benchmark", "benchmark_training_infra", "scaling" ]
+wandb_tags: [ "benchmark", "benchmark_training_infra", "scaling", "h200", "mae_large"]
 data_base_dir: training_infrastructure/training_mae_4d
 
 # NOTE: make sure to include .yaml suffix to naming of config files! These names are appended to configs/experiments/
@@ -23,113 +23,82 @@ data_base_dir: training_infrastructure/training_mae_4d
 #      than the global defaults, e.g. for a specific dataloader or model.
 
 runs:
- - cfg: benchmarks/janelia/benchmark_training_base
-   name: 1gpus_8cores.yaml
-   defaults_overrides: null
-   overrides:
+  - cfg: benchmarks/janelia/benchmark_training_base
+    name: 1gpus_8cores_h200_mae_large.yaml
+    defaults_overrides:
+      clusters: clusters/janelia_h200
+      models: models/mae/mae_large
+    overrides:
      clusters:
        worker_nodes: 1
        gpus_per_worker: 1
        cpus_per_gpu: 8
-       batch_size: 32
+       batch_size: 64
      datasets:
        databases:
          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
          max_hypercubes: 250 # maximum number of hypercubes to return
          use_cached_hypercubes_dataframe: true
-         hypercubes_dataframe_path: ${paths.workdir}/databases/test_small_hypercubes_dataframe.csv
+         hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
- - cfg: benchmarks/janelia/benchmark_training_base
-   name: 1gpus_12cores.yaml
-   defaults_overrides: null
-   overrides:
+  - cfg: benchmarks/janelia/benchmark_training_base
+    name: 1gpus_12cores_h200_mae_large.yaml
+    defaults_overrides:
+      clusters: clusters/janelia_h200
+      models: models/mae/mae_large
+    overrides:
      clusters:
        worker_nodes: 1
        gpus_per_worker: 1
        cpus_per_gpu: 12
-       batch_size: 32
+       batch_size: 64
      datasets:
        databases:
          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
          max_hypercubes: 250 # maximum number of hypercubes to return
          use_cached_hypercubes_dataframe: true
-         hypercubes_dataframe_path: ${paths.workdir}/databases/test_small_hypercubes_dataframe.csv
+         hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
+  - cfg: benchmarks/janelia/benchmark_training_base
+    name: 8gpus_8cores_h200_mae_large.yaml
+    defaults_overrides:
+      clusters: clusters/janelia_h200
+      models: models/mae/mae_large
+    overrides:
+      clusters:
+        worker_nodes: 1
+        gpus_per_worker: 8
+        cpus_per_gpu: 8
+        batch_size: 512
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 2000 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: true
+          hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
-#  - cfg: benchmarks/janelia/benchmark_training_base
-#    name: 8gpus_8cores.yaml
-#    defaults_overrides: null
-#    overrides:
-#      clusters:
-#        worker_nodes: 1
-#        gpus_per_worker: 8
-#        cpus_per_gpu: 8
-#        batch_size: 256
-#      datasets:
-#        databases:
-#          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-#          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-#          max_hypercubes: 2000 # maximum number of hypercubes to return
-#          use_cached_hypercubes_dataframe: true
-#          hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
-#          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
-#
-#  - cfg: benchmarks/janelia/benchmark_training_base
-#    name: 8gpus_12cores.yaml
-#    defaults_overrides: null
-#    overrides:
-#      clusters:
-#        worker_nodes: 1
-#        gpus_per_worker: 8
-#        cpus_per_gpu: 12
-#        batch_size: 256
-#      datasets:
-#        databases:
-#          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-#          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-#          max_hypercubes: 2000 # maximum number of hypercubes to return
-#          use_cached_hypercubes_dataframe: true
-#          hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
-#          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
-#
-#  - cfg: benchmarks/janelia/benchmark_training_base
-#    name: 16gpus_8cores.yaml
-#    defaults_overrides: null
-#    overrides:
-#      clusters:
-#        worker_nodes: 2
-#        gpus_per_worker: 8
-#        cpus_per_gpu: 8
-#        batch_size: 256
-#      datasets:
-#        databases:
-#          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-#          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-#          max_hypercubes: 4000 # maximum number of hypercubes to return
-#          use_cached_hypercubes_dataframe: true
-#          hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
-#          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
-#
-#  - cfg: benchmarks/janelia/benchmark_training_base
-#    name: 16gpus_12cores.yaml
-#    defaults_overrides: null
-#    overrides:
-#      clusters:
-#        worker_nodes: 2
-#        gpus_per_worker: 8
-#        cpus_per_gpu: 12
-#        batch_size: 256
-#      datasets:
-#        databases:
-#          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-#          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-#          max_hypercubes: 4000 # maximum number of hypercubes to return
-#          use_cached_hypercubes_dataframe: true
-#          hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
-#          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
-#
-#
+  - cfg: benchmarks/janelia/benchmark_training_base
+    name: 8gpus_12cores_h200_mae_large.yaml
+    defaults_overrides:
+      clusters: clusters/janelia_h200
+      models: models/mae/mae_large
+    overrides:
+      clusters:
+        worker_nodes: 1
+        gpus_per_worker: 8
+        cpus_per_gpu: 12
+        batch_size: 512
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 2000 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: true
+          hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
