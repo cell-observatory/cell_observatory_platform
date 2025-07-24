@@ -26,8 +26,8 @@ runs:
   - cfg: benchmarks/janelia/benchmark_training_base
     name: 1gpus_8cores_h200_mae_large.yaml
     defaults_overrides:
-      clusters: clusters/janelia_h200
-      models: models/mae/mae_large
+      - clusters: clusters/janelia_h200
+      - models: models/mae/mae_large
     overrides:
      clusters:
        worker_nodes: 1
@@ -46,8 +46,8 @@ runs:
   - cfg: benchmarks/janelia/benchmark_training_base
     name: 1gpus_12cores_h200_mae_large.yaml
     defaults_overrides:
-      clusters: clusters/janelia_h200
-      models: models/mae/mae_large
+      - clusters: clusters/janelia_h200
+      - models: models/mae/mae_large
     overrides:
      clusters:
        worker_nodes: 1
@@ -66,8 +66,8 @@ runs:
   - cfg: benchmarks/janelia/benchmark_training_base
     name: 8gpus_8cores_h200_mae_large.yaml
     defaults_overrides:
-      clusters: clusters/janelia_h200
-      models: models/mae/mae_large
+      - clusters: clusters/janelia_h200
+      - models: models/mae/mae_large
     overrides:
       clusters:
         worker_nodes: 1
@@ -86,8 +86,8 @@ runs:
   - cfg: benchmarks/janelia/benchmark_training_base
     name: 8gpus_12cores_h200_mae_large.yaml
     defaults_overrides:
-      clusters: clusters/janelia_h200
-      models: models/mae/mae_large
+      - clusters: clusters/janelia_h200
+      - models: models/mae/mae_large
     overrides:
       clusters:
         worker_nodes: 1
