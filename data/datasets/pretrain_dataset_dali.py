@@ -26,7 +26,6 @@ class PretrainDatasetDali:
         self,
         input_layout,
         hypercubes_dataframe_path,
-        server_folder_path,
         batch_size: int,
         dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | DALI_DTYPES | str = NUMPY_DTYPES.fp16,
         time: Optional[bool] = True,
@@ -36,7 +35,6 @@ class PretrainDatasetDali:
         self.input_layout = input_layout
         self.dtype = DALI_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
-        self.server_folder_path = server_folder_path
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
         self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(self.hypercubes_dataframe_path)
 
@@ -87,8 +85,6 @@ class PretrainDatasetDali:
         with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
             configs = ujson.load(f)
 
-        if self.server_folder_path is not None:
-            hypercubes['server_folder'] = self.server_folder_path
         return hypercubes, configs
     
     def _build_index(self) -> None:
@@ -97,9 +93,9 @@ class PretrainDatasetDali:
 
     def _slice_hypercube(self, data_tensor, meta: Dict[str, Any]) -> Tuple[int]:
         t, c = slice(meta["time_start"], meta["time_start"] + meta["time_size"]), slice(0, meta["channel_size"])
-        z = slice(meta["z_start"]-28, meta["z_start"] + meta["cube_size"]-28)
+        z = slice(meta["z_start"], meta["z_start"] + meta["cube_size"])
         y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
-        x = slice(meta["x_start"]-14, meta["x_start"] + meta["cube_size"]-14)
+        x = slice(meta["x_start"], meta["x_start"] + meta["cube_size"])
         return data_tensor[t, z, y, x, c].read().result()
 
     def _load_sample(self, meta: Dict[str, Any]) -> np.ndarray | Dict[str, Any]:

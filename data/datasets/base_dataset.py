@@ -133,7 +133,6 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         hypercubes_dataframe_path: str | Path,
         input_layout: MULTICHANNEL_HYPERCUBE,
         transforms: Optional[Sequence] = None,
-        server_folder_path: Optional[Path] = None,
         dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | str = NUMPY_DTYPES.fp16,
         time: bool = True,
     ):
@@ -142,13 +141,10 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
             hypercubes_dataframe_path: path to pre-processed hypercubes dataframe from the supabase database
             input_layout: see MULTICHANNEL_HYPERCUBE
             transforms: list of optional transforms to apply to each sample (default: None)
-            server_folder_path: path to override default server folder found in the supabase database
-                update this path based on where the data is stored on your local machine
         """
         super().__init__()
 
         self.input_layout = input_layout
-        self.server_folder_path = server_folder_path
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
         self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(self.hypercubes_dataframe_path)
         self.dtype = dtype
@@ -168,8 +164,6 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
             configs = ujson.load(f)
 
-        if self.server_folder_path is not None:
-            hypercubes['server_folder'] = self.server_folder_path
         return hypercubes, configs
 
     @abc.abstractmethod

@@ -26,7 +26,6 @@ databases:
 dataset:
   _target_: data.datasets.pretrain_dataset.PretrainDataset
   dtype: ${dataset_dtype}
-  server_folder_path: ${paths.server_folder_path}
   hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
   time: true
 

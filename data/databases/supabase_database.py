@@ -35,6 +35,7 @@ class SupabaseDatabase:
             use_cached_hypercubes_dataframe: Optional[bool] = False,
             protocol: Literal["binary", "csv", "cursor"] = "binary",
             max_partitions: Optional[int] = 10,
+            server_folder_path: Optional[Path|str] = None,
     ):
         """
         A class for accessing Supabase database and retrieving hypercubes.
@@ -60,6 +61,8 @@ class SupabaseDatabase:
             use_cached_hypercubes_dataframe: if True, will use the cached hypercubes dataframe from the given path
             protocol: The protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
             max_partitions: The maximum number of threads to fetch queries at once
+            server_folder_path: path to override default server folder found in the supabase database
+                update this path based on where the data is stored on your local machine
 
         # TODO: Only works for `Tx128x128x128x2`, need to extend class to work with other hypercube sizes
         """
@@ -84,6 +87,7 @@ class SupabaseDatabase:
         self.use_cached_hypercubes_dataframe = use_cached_hypercubes_dataframe
         self.protocol = protocol
         self.max_partitions = max_partitions
+        self.server_folder_path = server_folder_path
 
         self._database_url = self._load_uri()
 
@@ -92,6 +96,9 @@ class SupabaseDatabase:
             # hypercubes_dataframe_path points at a valid CSV file
             if self.use_cached_hypercubes_dataframe:
                 self.hypercubes_dataframe = pd.read_csv(self.hypercubes_dataframe_path).iloc[:max_hypercubes, :]
+
+                if self.server_folder_path is not None:
+                    self.hypercubes_dataframe['server_folder'] = self.server_folder_path
             else:
                 self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
                     num_timepoints=num_timepoints,
@@ -103,12 +110,8 @@ class SupabaseDatabase:
                     tile_list=tile_list
                 )
 
-                # this is a hack to check that dataloading works correctly
-                # TODO: remove when DB is updated fix the output_folder paths
-                self.hypercubes_dataframe["output_folder"] = (
-                    self.hypercubes_dataframe["output_folder"]
-                    .str.replace(r"/6/9/", "/7/4/", regex=True)
-                )
+                if self.server_folder_path is not None:
+                    self.hypercubes_dataframe['server_folder'] = self.server_folder_path
 
                 self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
         else:
@@ -133,10 +136,10 @@ class SupabaseDatabase:
         return uri
 
     def _choose_filter(
-            self,
-            rois: Optional[Iterable[int | str]] = None,
-            tiles: Optional[Iterable[str]] = None,
-            table_name: str = 'ptv'
+        self,
+        rois: Optional[Iterable[int | str]] = None,
+        tiles: Optional[Iterable[str]] = None,
+        table_name: str = 'ptv'
     ) -> str:
 
         assert rois is not None or tiles is not None, "At least one of rois or tiles must be provided"
@@ -155,10 +158,10 @@ class SupabaseDatabase:
             return f"WHERE {table_name}.tile_name IN {tiles}"
 
     def _limit_filter(
-            self,
-            max_rois: Optional[int] = None,
-            max_tiles: Optional[int] = None,
-            table_name: str = 'ptv'
+        self,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        table_name: str = 'ptv'
     ) -> str:
         assert max_rois is not None or max_tiles is not None, "At least one of max_rois or max_tiles must be provided"
 
@@ -203,20 +206,32 @@ class SupabaseDatabase:
             tile_list: Optional[Iterable[str]] = None,
     ) -> str:
 
-        if roi_list is not None or tile_list is not None:
-            filters = self._choose_filter(rois=roi_list, tiles=tile_list, table_name=table_name_shortcut)
-        elif max_rois is not None or max_tiles is not None:
-            filters = self._limit_filter(max_rois=max_rois, max_tiles=max_tiles, table_name=table_name_shortcut)
+        if self.server_folder_path is None or str(self.server_folder_path).startswith('/clusterfs'):
+            filters = f"WHERE {table_name_shortcut}.exists IS TRUE"
+        elif str(self.server_folder_path).startswith('/groups'):
+            filters = f"WHERE {table_name_shortcut}.exists_prfs IS TRUE"
+        elif str(self.server_folder_path).startswith('/aws'):
+            filters = f"WHERE {table_name_shortcut}.exists_aws IS TRUE"
         else:
-            filters = ''
+            raise ValueError(f"Unknown server_folder_path: {self.server_folder_path}")
+
+        if roi_list is not None or tile_list is not None:
+            filters += self._choose_filter(
+                rois=roi_list,
+                tiles=tile_list,
+                table_name=table_name_shortcut
+            ).replace('WHERE', ' AND ')
+        elif max_rois is not None or max_tiles is not None:
+            filters += self._limit_filter(
+                max_rois=max_rois,
+                max_tiles=max_tiles,
+                table_name=table_name_shortcut
+            ).replace('WHERE', ' AND ')
 
         if hpf_list is not None:
-            if filters == '':
-                filters = self._age_filter(hpfs=hpf_list, table_name=table_name_shortcut)
-            else:
-                filters += self._age_filter(
-                    hpfs=hpf_list, table_name=table_name_shortcut
-                ).replace('WHERE', ' AND ')
+            filters += self._age_filter(
+                hpfs=hpf_list, table_name=table_name_shortcut
+            ).replace('WHERE', ' AND ')
 
         if self.verbose:
             print(f"Using filters: {filters}")
@@ -256,6 +271,9 @@ class SupabaseDatabase:
             'date_crossed',
             'occupancy_ratios_ch_0',
             'occupancy_ratios_ch_1',
+            'exists',
+            'exists_prfs',
+            'exists_aws',
         ]
 
         filters = self._filters_to_string(
