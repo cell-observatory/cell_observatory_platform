@@ -8,7 +8,7 @@ num_timepoints: ${datasets.input_shape.0} # number of timepoints for each hyperc
 
 max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
 max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-max_hypercubes: 100 # maximum number of hypercubes to return
+max_hypercubes: null # maximum number of hypercubes to return
 
 hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
 roi_list: null # list of specific ROIs to filter
@@ -18,3 +18,4 @@ fetch_hypercubes_dataframe: true # automatically initialize the database based o
 hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv # path to the hypercubes dataframe (path/to/repo/databases/default_hypercubes_dataframe.csv)
 use_cached_hypercubes_dataframe: false # if True, will use the cached hypercubes dataframe from the given path
 protocol: binary # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+server_folder_path: ${paths.server_folder_path}

@@ -66,9 +66,9 @@ class PretrainDataset(BaseDataset):
 
     def _slice_hypercube(self, data_tensor, meta: Dict[str, Any]) -> Tuple[int]:
         t, c = slice(meta["time_start"], meta["time_start"] + meta["time_size"]), slice(0, meta["channel_size"])
-        z = slice(meta["z_start"]-28, meta["z_start"] + meta["cube_size"]-28)
+        z = slice(meta["z_start"], meta["z_start"] + meta["cube_size"])
         y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
-        x = slice(meta["x_start"]-14, meta["x_start"] + meta["cube_size"]-14)
+        x = slice(meta["x_start"], meta["x_start"] + meta["cube_size"])
         return data_tensor[t, z, y, x, c].read().result()
 
     def _load_sample(self, meta: Dict[str, Any]) -> Dict[str, Any]:
