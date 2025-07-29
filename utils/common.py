@@ -51,7 +51,7 @@ def multiprocess(
     """
 
     cores = cores if mp.current_process().name == 'MainProcess' else 1
-    # mp.set_start_method('spawn', force=True)
+    mp.set_start_method('spawn', force=True)
     jobs = list(jobs)
 
     if cores == 1 or len(jobs) == 1:

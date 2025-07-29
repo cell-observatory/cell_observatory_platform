@@ -1,5 +1,6 @@
 import os
-from typing import Dict, Any, Tuple
+import time
+from typing import Dict, Any
 import torch
 from dask.dataframe.tests.test_pyarrow_compat import dtype
 from torch.utils.data import get_worker_info
@@ -64,19 +65,28 @@ class PretrainDataset(BaseDataset):
         # convert df into a list of Python dicts
         self._index = self.hypercubes_dataframe.to_dict(orient="records")
 
-    def _slice_hypercube(self, data_tensor, meta: Dict[str, Any]) -> Tuple[int]:
-        t, c = slice(meta["time_start"], meta["time_start"] + meta["time_size"]), slice(0, meta["channel_size"])
+    def _slice_hypercube(self, data_tensor, meta: Dict[str, Any]):
+        t = slice(meta["time_start"], meta["time_start"] + meta["time_size"])
+        c = slice(0, meta["channel_size"])
         z = slice(meta["z_start"], meta["z_start"] + meta["cube_size"])
         y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
         x = slice(meta["x_start"], meta["x_start"] + meta["cube_size"])
         return data_tensor[t, z, y, x, c].read().result()
 
-    def _load_sample(self, meta: Dict[str, Any]) -> Dict[str, Any]:
+    def _load_sample(self, meta: Dict[str, Any], time_slice_hypercube: bool = False) -> Dict[str, Any]:
         """Read raw image crop into memory."""
         data_tensor = self._zarr_handles_data[
             os.path.join(meta["server_folder"], meta["output_folder"], meta["tile_name"])
         ]
+
+        start_time = time.perf_counter()
         img = self._slice_hypercube(data_tensor, meta)
+        timer = time.perf_counter() - start_time
+
+        if time_slice_hypercube:
+            meta["_slice_hypercube_timer"] = timer
+            meta["_slice_hypercube_nbytes"] = img.nbytes
+
         return dict(meta=meta, image=img)
 
     def _collate(self, _data: Dict[str, Any]) -> DataSample:
