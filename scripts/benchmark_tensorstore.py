@@ -72,14 +72,19 @@ class DataLoadingBenchmark:
         individual_times = [r[0] for r in results]
         total_bytes = sum(r[1] for r in results)
         total_gb = total_bytes / (1024 ** 3)
+        read_time = sum(individual_times)
 
         return {
             'total_time': total_time,
+            'read_time': read_time,
             'total_gb': total_gb,
             'throughput_gb_per_sec': total_gb / total_time,
+            'read_throughput_gb_per_sec': total_gb / read_time,
             'throughput_gb_per_sec_per_core': (total_gb / total_time) / num_workers,
+            'read_throughput_gb_per_sec_per_core': (total_gb / read_time) / num_workers,
             'hypercubes_per_sec': len(hypercube_list) / total_time,
-            'individual_times': individual_times,
+            'min_time': np.min(individual_times),
+            'max_time': np.max(individual_times),
             'mean_time': np.mean(individual_times),
             'std_time': np.std(individual_times),
         }
@@ -110,7 +115,7 @@ class DataLoadingBenchmark:
 
         ax1.plot(
             cpu_cores, total_throughput, 'o-', color='C0', linewidth=2.5, markersize=8,
-            label=f'{self.hypercube_shape}, {self.dtype}'
+            label=f'Total {self.hypercube_shape}, {self.dtype}'
         )
 
         # ideal_scaling = per_core_throughput[0] * cpu_cores
@@ -120,7 +125,6 @@ class DataLoadingBenchmark:
         ax1.grid(True, alpha=0.3)
         ax1.legend(loc='lower right', frameon=False)
         ax1.set_xticks(cpu_cores)
-
 
         ax1.spines['right'].set_visible(False)
         ax1.spines['top'].set_visible(False)
@@ -138,7 +142,10 @@ class DataLoadingBenchmark:
 
         efficiency_percent = (per_core_throughput / per_core_throughput[0]) * 100
 
-        ax2.plot(cpu_cores, per_core_throughput, 's-', color='C1', linewidth=2.5, markersize=8, label='GB/s per Core')
+        ax2.plot(
+            cpu_cores, per_core_throughput,
+            's-', color='C1', linewidth=2.5, markersize=8, label='Total GB/s'
+        )
 
         ax2_twin = ax2.twinx()
         ax2_twin.plot(
@@ -180,10 +187,15 @@ class DataLoadingBenchmark:
                 'cpu_count': cpu_count,
                 'num_hypercubes': num_hypercubes,
                 'total_time': stats['total_time'],
+                'read_time': stats['read_time'],
                 'total_gb': stats['total_gb'],
                 'throughput_gb_per_sec': stats['throughput_gb_per_sec'],
+                'read_throughput_gb_per_sec': stats['read_throughput_gb_per_sec'],
                 'throughput_gb_per_sec_per_core': stats['throughput_gb_per_sec_per_core'],
+                'read_throughput_gb_per_sec_per_core': stats['read_throughput_gb_per_sec_per_core'],
                 'hypercubes_per_sec': stats['hypercubes_per_sec'],
+                'min_read_time': stats['min_time'],
+                'max_read_time': stats['max_time'],
                 'mean_read_time': stats['mean_time'],
                 'std_read_time': stats['std_time']
             }

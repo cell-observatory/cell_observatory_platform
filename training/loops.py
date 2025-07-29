@@ -4,8 +4,6 @@ https://github.com/facebookresearch/detectron2/blob/main/detectron2/engine/train
 https://github.com/open-mmlab/mmengine/blob/main/mmengine/runner/loops.py
 """
 
-
-import os
 import time
 import logging
 import weakref
@@ -26,10 +24,13 @@ from training.helpers import (
     get_lr_scheduler,
     get_steps_per_epoch,
     resume_run,
-    activation_checkpoint
+    activation_checkpoint,
+    summarize_model,
+    get_input_data,
+    get_masked_input_data
 )
 from training.hooks import HookBase
-from utils.context import inference_context
+from utils.context import inference_context, process_rank
 from training.loggers import EventRecorder
 from data.dataloaders import get_dataloader
 from training.registry import build_dependency_graph_and_instantiate
@@ -268,6 +269,19 @@ class EpochBasedTrainer(BaseTrainer):
         #       have the model defined in a subfolder (e.g. models/abc/model.py)
         #       this hack works for one folder deep models but should be fixed asap
         model, = model.values() if isinstance(model, dict) else (model,)
+
+        rank = process_rank()
+        if rank == 0:
+            input_shape = (cfg.clusters.batch_size, *cfg.datasets.input_shape)
+            input_data = get_masked_input_data(model, input_shape)
+
+            summarize_model(
+                model=model,
+                inputs=input_shape,
+                input_data=input_data,
+                batch_size=cfg.clusters.batch_size,
+                logdir=cfg.paths.outdir,
+            )
 
         # initialize optimizer and learning rate scheduler
         opt, _ = get_optimizer(

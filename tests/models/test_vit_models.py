@@ -1,16 +1,14 @@
 import logging
 logger = logging.getLogger(__name__)
 
-import pytest
 import shutil
 
 import warnings
 warnings.filterwarnings("ignore")
 
 from models.vit import ViT
-from tests.helpers import get_input_data
 from tests.conftest import models_kargs
-from training.helpers import summarize_model
+from training.helpers import summarize_model, get_input_data
 
 
 def test_vit_custom(models_kargs):
