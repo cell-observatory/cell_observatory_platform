@@ -8,8 +8,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from tests.conftest import models_kargs
-from training.helpers import summarize_model
-from tests.helpers import get_masked_input_data
+from training.helpers import summarize_model, get_masked_input_data
 from models.maskedautoencoder import MaskedAutoEncoder
 
 

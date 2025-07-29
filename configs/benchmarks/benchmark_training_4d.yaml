@@ -1,10 +1,10 @@
 # @package _global_
 defaults:
-  - /paths/local                           # configs/paths/abc.yaml
+  - /paths/local                             # configs/paths/abc.yaml
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
   - /clusters/local                          # configs/clusters/local.yaml
-  - /datasets/pretrain_dataset_dali               # configs/datasets/pretrain_dataset.yaml
-  - /models/mae/base                         # configs/models/mae/base.yaml
+  - /datasets/pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
+  - /models/mae/large                         # configs/models/mae/base.yaml
   - /hooks/hooks                             # configs/hooks/hooks.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
@@ -17,7 +17,7 @@ defaults:
 
 
 # experiment name (used for logging)
-experiment_name: local_dali_1gpus_8cores
+experiment_name: local_1gpus_8cores
 wandb_project: platform_benchmarks
 
 # task
@@ -89,7 +89,7 @@ datasets:
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
     max_hypercubes: 250 # maximum number of hypercubes to return
     use_cached_hypercubes_dataframe: true
-    hypercubes_dataframe_path: ${paths.workdir}/databases/test_small_hypercubes_dataframe.csv
+    hypercubes_dataframe_path: ${paths.workdir}/databases/test_16_128_128_128_2_hypercubes_database_10k.csv
     protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
 

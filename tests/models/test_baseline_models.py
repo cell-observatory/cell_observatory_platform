@@ -8,10 +8,9 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-from training.helpers import summarize_model
+from training.helpers import summarize_model, get_input_data
 from models.baseline import Baseline
 from tests.conftest import models_kargs
-from tests.helpers import get_input_data
 
 
 def test_baseline_custom(models_kargs):
