@@ -162,3 +162,4 @@ src/LV_auto_batch.bat_predict_rois
 /scaling/
 *.npy
 .testmondata
+/plots/
