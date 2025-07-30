@@ -330,15 +330,9 @@ def summarize_model(
             escape_forward_slashes=False
         )
 
-<<<<<<< Updated upstream
-def activation_checkpoint(cfg, model: nn.Module):
-    # wraps the forward method of the model to 
-    # use activation checkpointing
-=======
 
 def activation_checkpoint(cfg, model):
     """Wrap listed sub-modules with activation-checkpointing."""
->>>>>>> Stashed changes
     def wrap_forward(forward):
         @wraps(forward)
         def wrapper(*args, **kwargs):
