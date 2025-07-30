@@ -35,7 +35,7 @@ total_gpus: ${eval:'${clusters.worker_nodes} * ${clusters.gpus_per_worker}'}  # 
 total_cpus: ${eval:'${clusters.worker_nodes} * ${clusters.cpus_per_worker}'}  # total number of CPUS across all nodes
 batch_size_per_gpu: ${eval:'${clusters.batch_size} // ${clusters.total_gpus}'} # batch size for each gpu
 # an additional cpu core will be automatically allocated on the headnode for the training coordinator
-cpus_for_training_coordinator: 1
+cpus_for_training_coordinator: 0
 head_node_cpus: ${eval:'${clusters.cpus_per_worker} + ${clusters.cpus_for_training_coordinator}'}
 head_node_gpus: ${clusters.gpus_per_worker} # number of gpus on the head node (usually gpus per worker)
 head_node_mem: ${clusters.mem_per_worker} # memory on the head node (usually mem per worker)

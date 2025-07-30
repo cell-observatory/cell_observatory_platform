@@ -1,0 +1,109 @@
+# @package _global_
+
+# TODO: make an example/template multi-run config
+
+# specify multi_run for launching several training jobs
+run_type: multi_run
+
+# NOTE (IMPORTANT): 
+# We have two ways of grouping keeping tabs of training jobs that may later be compared:
+# 1. all jobs will have same rootdir with prefix given by 
+#    `name` field in each run config
+# 2. wandb_tags to group runs together in the wandb dashboard
+#    and use their hparam features to compare runs 
+
+wandb_tags: ["benchmark", "benchmark_training_infra", "scaling"] 
+data_base_dir: training_infrastructure/training_mae_4d_dataloaders
+
+# NOTE: make sure to include .yaml suffix to naming of config files! These names are appended to configs/experiments/
+#       and written to disk for reproducibility and to be passed to runner.py
+
+# NOTE: defaults_overrides is a list of configs that will be merged into the run config
+#       before applying the run overrides. This is useful for setting defaults to something different
+#      than the global defaults, e.g. for a specific dataloader or model.
+
+runs:
+  - cfg: benchmarks/abc/benchmark_training_base
+    name: 8gpus_12cores_a100_mae_large.yaml
+    defaults_overrides: 
+      - datasets: datasets/pretrain_dataset
+    overrides:
+      clusters: 
+        worker_nodes: 1
+        gpus_per_worker: 8
+        batch_size: 256
+        cpus_per_gpu: 8 # number of cpu cores per gpu
+        mem_per_cpu: 31000 # ram per cpu core
+      datasets:
+        # mainly used by other configs but determined here for ease of access
+        batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+        input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
+        patch_shape: [4, 16, 16, 16]
+
+        split: 0.1
+        return_dataloader: true
+        distributed_sampler: true
+
+        prefetch_factor: 1 # prefetch factor for the dataloader
+        num_workers: ${clusters.cpus_per_worker}
+
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 8000 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: false
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+
+  # - cfg: benchmarks/abc/benchmark_training_base
+  #   name: 8gpus_12cores_a100_mae_large_dali_loader.yaml
+  #   defaults_overrides: null 
+  #   overrides:
+  #     clusters: 
+  #       worker_nodes: 1
+  #       gpus_per_worker: 8
+  #       batch_size: 256
+  #       cpus_per_gpu: 12 # number of cpu cores per gpu
+  #       mem_per_cpu: 16000 # ram per cpu core
+  #     datasets:
+  #       # mainly used by other configs but determined here for ease of access
+  #       batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  #       input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
+  #       patch_shape: [4, 16, 16, 16]
+
+  #       split: 0.1
+  #       return_dataloader: true
+  #       distributed_sampler: true
+
+  #       prefetch_factor: 1 # prefetch factor for the dataloader
+  #       num_workers: ${clusters.cpus_per_worker}
+
+  #       exec_async: false
+  #       exec_pipelined: true
+
+  #       databases:
+  #         max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+  #         max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+  #         max_hypercubes: 4000 # maximum number of hypercubes to return
+  #         use_cached_hypercubes_dataframe: true
+  #         protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+  #     # hooks
+  #     hooks:
+  #       hooks_list:
+  #       - _target_: training.hooks.AnomalyDetector
+  #       - _target_: training.hooks.LRScheduler
+  #       - _target_: training.hooks.IterationTimer
+  #         warmup_iter: 1
+  #       - _target_: training.hooks.PeriodicWriter
+  #       - _target_: training.hooks.PeriodicCheckpointer
+  #         period: 1
+  #         file_prefix: latest_model
+  #       - _target_: training.hooks.BestCheckpointer
+  #         checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  #       - _target_: training.hooks.TorchMemoryStats
+  #         step_period: 1
+  #         epoch_period: 1
+  #         logdir: ${loggers.logdir}
+  #       - _target_: training.hooks.BestMetricSaver
+  #         metric_name: ${evaluation.val_metric}
+  #         compare_fn: ${evaluation.val_mode}
+  #         eval_after_validation: true

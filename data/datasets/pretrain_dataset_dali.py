@@ -30,7 +30,7 @@ class PretrainDatasetDali:
         dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | DALI_DTYPES | str = NUMPY_DTYPES.fp16,
         time: Optional[bool] = True,
         transforms: Optional[Callable] = None,
-        indices: Optional[list[int]] = None
+        indices: Optional[list[int]] = None,
     ):
         self.input_layout = input_layout
         self.dtype = DALI_DTYPES[dtype].value if isinstance(dtype, str) else dtype
@@ -150,4 +150,3 @@ def pretrain_dataset_pipeline(dataset):
         return vol, vols[1]
     else:
         return vol
-    

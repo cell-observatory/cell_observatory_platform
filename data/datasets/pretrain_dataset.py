@@ -1,12 +1,13 @@
 import os
 import time
-from typing import Dict, Any
-import torch
-from dask.dataframe.tests.test_pyarrow_compat import dtype
-from torch.utils.data import get_worker_info
+from typing import Dict, Any, Tuple
 
-from data.data_types import TENSORSTORE_DTYPES
+import torch
+from torch.utils.data import get_worker_info
+from dask.dataframe.tests.test_pyarrow_compat import dtype
+
 from data.io import read_zarr
+from data.data_types import TENSORSTORE_DTYPES
 from data.structures.data_sample import DataSample
 from data.structures.image_list import ImageList, cat_image_lists
 from data.datasets.base_dataset import BaseDataset, default_collate
@@ -26,10 +27,12 @@ def simple_collate_pretrain_dataset(samples: list["DataSample"]) -> "DataSample"
     """
     Simple collate function for pretrain dataset.
     """
+    collate_time = time.time()
     metainfo = default_collate([s.metainfo for s in samples])
     # no image list class until we add a helper function that doesn't stack
     # images in the image list
     image_list = [s.data_tensor.tensor for s in samples]
+    metainfo['collate_time'] = time.time() - collate_time
     return {
         'data_tensor': image_list,
         'metainfo': metainfo,
@@ -78,15 +81,10 @@ class PretrainDataset(BaseDataset):
         data_tensor = self._zarr_handles_data[
             os.path.join(meta["server_folder"], meta["output_folder"], meta["tile_name"])
         ]
-
-        start_time = time.perf_counter()
+        slice_time = time.time()
         img = self._slice_hypercube(data_tensor, meta)
-        timer = time.perf_counter() - start_time
-
-        if time_slice_hypercube:
-            meta["_slice_hypercube_timer"] = timer
-            meta["_slice_hypercube_nbytes"] = img.nbytes
-
+        slice_time = time.time() - slice_time
+        meta["slice_time"] = slice_time
         return dict(meta=meta, image=img)
 
     def _collate(self, _data: Dict[str, Any]) -> DataSample:

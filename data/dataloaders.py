@@ -14,11 +14,13 @@ if (hasattr(OmegaConf, "has_resolver") and \
         not OmegaConf.has_resolver("eval")):
     OmegaConf.register_new_resolver("eval", eval)
 
+import ray
 import ray.train.torch as raytorch
 
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 
 from utils.context import process_rank, barrier
+from data.datasets.pretrain_dataset_ray import get_dataloader_ray
 from data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
 
 logging.basicConfig(
@@ -182,7 +184,14 @@ def get_dataloader(config: DictConfig):
             return dataset
 
     elif config.datasets.dataset._target_.endswith("PretrainDatasetDali"):
-        train_dataset, val_dataset = build_dali_dataset(config, transforms=None)
+        transforms = []
+        for t in config.datasets.transforms.transforms_list:
+            if isinstance(t, DictConfig):
+                transforms.append(instantiate(t))
+            else:
+                transforms.append(get_method(t))
+
+        train_dataset, val_dataset = build_dali_dataset(config, transforms=transforms)
 
         if config.datasets.split is not None:
             # DALI dataloader
@@ -193,14 +202,14 @@ def get_dataloader(config: DictConfig):
                 py_start_method="spawn",
                 py_num_workers=config.datasets.num_workers,
                 prefetch_queue_depth=config.datasets.prefetch_factor,
-                exec_async=False,
-                exec_pipelined=True,
+                exec_async=config.datasets.exec_async,
+                exec_pipelined=config.datasets.exec_pipelined,
                 device_id=process_rank()
             )
             train_pipe.build()
             dali_train_loader = DALIGenericIterator(
                 pipelines=train_pipe,
-                output_map=["data_tensor", "data_time"] if train_dataset.time else ["data_tensor"],
+                output_map=["data_tensor", "get_item_time"] if train_dataset.time else ["data_tensor"],
                 size=train_dataset.full_iterations * config.clusters.batch_size_per_gpu,
                 auto_reset=True,
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
@@ -213,14 +222,14 @@ def get_dataloader(config: DictConfig):
                 py_start_method="spawn",
                 py_num_workers=config.datasets.num_workers,
                 prefetch_queue_depth=config.datasets.prefetch_factor,
-                exec_async=False,
-                exec_pipelined=True,
+                exec_async=config.datasets.exec_async,
+                exec_pipelined=config.datasets.exec_pipelined,
                 device_id=process_rank()
             )
             val_pipe.build()
             dali_val_loader = DALIGenericIterator(
                 pipelines=val_pipe,
-                output_map=["data_tensor", "data_time"] if val_dataset.time else ["data_tensor"],
+                output_map=["data_tensor", "get_item_time"] if val_dataset.time else ["data_tensor"],
                 size=val_dataset.full_iterations * config.clusters.batch_size_per_gpu,
                 auto_reset=True,
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
@@ -237,20 +246,57 @@ def get_dataloader(config: DictConfig):
                 py_start_method="spawn",
                 py_num_workers=config.datasets.num_workers,
                 prefetch_queue_depth=config.datasets.prefetch_factor,
-                exec_async=False,
-                exec_pipelined=True,
+                exec_async=config.datasets.exec_async,
+                exec_pipelined=config.datasets.exec_pipelined,
                 device_id=process_rank()
             )
             pipe.build()
             dali_loader = DALIGenericIterator(
                 pipelines=pipe,
-                output_map=["data_tensor", "data_time"] if train_dataset.time else ["data_tensor"],
+                output_map=["data_tensor", "get_item_time"] if train_dataset.time else ["data_tensor"],
                 size=train_dataset.full_iterations * config.clusters.batch_size_per_gpu,
                 auto_reset=True,
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
             return dali_loader, None
 
+    elif config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
+        if isinstance(config.datasets.collate_fn, DictConfig):
+            collate_fn = instantiate(config.datasets.collate_fn)
+        else:
+            collate_fn = get_method(config.datasets.collate_fn)
+
+        if config.datasets.split is not None:
+            train_dataset = ray.train.get_dataset_shard("train")
+            val_dataset = ray.train.get_dataset_shard("val")
+            
+            train_dataloader = get_dataloader_ray(
+                dataset=train_dataset,
+                batch_size=config.clusters.batch_size_per_gpu,
+                drop_last=config.datasets.drop_last_policy,
+                collate_fn=collate_fn,
+                prefetch_factor=config.datasets.prefetch_factor
+            )
+            val_dataloader = get_dataloader_ray(
+                dataset=val_dataset,
+                batch_size=config.clusters.batch_size_per_gpu,
+                drop_last=config.datasets.drop_last_policy,
+                collate_fn=collate_fn,
+                prefetch_factor=config.datasets.prefetch_factor
+            )
+            return train_dataloader, val_dataloader
+        
+        else: 
+            train_dataset = ray.train.get_dataset_shard("train")
+            train_dataloader = get_dataloader_ray(
+                dataset=train_dataset,
+                batch_size=config.clusters.batch_size_per_gpu,
+                drop_last=config.datasets.drop_last_policy,
+                collate_fn=collate_fn,
+                prefetch_factor=config.datasets.prefetch_factor
+            )
+            return train_dataloader, None
     else:
-        # TODO: Support Ray Dataloader with heterogeneous cluster setup
-        raise NotImplementedError(f"Unsupported dataloader type: {config.datasets.dataset._target_}")
+        raise NotImplementedError(
+            f"Dataset {config.datasets.dataset._target_} is not supported for dataloader building."
+        )

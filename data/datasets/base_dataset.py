@@ -193,6 +193,6 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
 
         if self.time:
             data_time = time.time() - start_time
-            data_transformed.set_metainfo(metainfo={"data_time": data_time})
+            data_transformed.set_metainfo(metainfo={"get_item_time": data_time})
 
         return data_transformed

@@ -50,7 +50,7 @@ class Encoder(nn.Module):
         self.activation_checkpointing = activation_checkpointing
 
         # stochastic depth decay rule
-        if not fixed_dropout_depth and self.drop_path_rate > 0.0:
+        if not fixed_dropout_depth: # and self.drop_path_rate > 0.0:
             dpr = np.linspace(0, self.drop_path_rate, self.depth)
 
         self.norm_layer = get_norm(norm_layer)

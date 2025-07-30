@@ -17,6 +17,9 @@ collate_fn: null
 prefetch_factor: 2 # prefetch factor for the dataloader
 num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
 
+exec_async: true
+exec_pipelined: true
+
 databases:
   max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
   max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
@@ -27,6 +30,7 @@ dataset:
   dtype: ${dataset_dtype}
   hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
   time: true
+  cache_pool_bytes_limit: null
 
   input_layout:
     _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE

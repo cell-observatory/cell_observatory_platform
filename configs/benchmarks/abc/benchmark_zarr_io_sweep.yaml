@@ -1,0 +1,83 @@
+# @package _global_
+
+run_type: multi_run
+
+wandb_tags: null
+data_base_dir: sweep_cores
+
+runs:
+  - cfg: benchmarks/abc/benchmark_zarr_io.yaml
+    name: 1_cores.yaml
+    defaults_overrides: null
+    overrides:
+      clusters: 
+        worker_nodes: 1
+        gpus_per_worker: 1
+        batch_size: 32
+        cpus_per_gpu: 12 # number of cpu cores per gpu
+        mem_per_cpu: 31000 # ram per cpu core
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 200 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: false
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+      cores: 1
+  
+  - cfg: benchmarks/abc/benchmark_zarr_io.yaml
+    name: 4_cores.yaml
+    defaults_overrides: null
+    overrides:
+      clusters: 
+        worker_nodes: 1
+        gpus_per_worker: 1
+        batch_size: 32
+        cpus_per_gpu: 12 # number of cpu cores per gpu
+        mem_per_cpu: 31000 # ram per cpu core
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 200 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: false
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+      cores: 4
+
+  - cfg: benchmarks/abc/benchmark_zarr_io.yaml
+    name: 8_cores.yaml
+    defaults_overrides: null
+    overrides:
+      clusters: 
+        worker_nodes: 1
+        gpus_per_worker: 1
+        batch_size: 32
+        cpus_per_gpu: 12 # number of cpu cores per gpu
+        mem_per_cpu: 31000 # ram per cpu core
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 200 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: false
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+      cores: 8
+  
+  - cfg: benchmarks/abc/benchmark_zarr_io.yaml
+    name: 12_cores.yaml
+    defaults_overrides: null
+    overrides:
+      clusters: 
+        worker_nodes: 1
+        gpus_per_worker: 1
+        batch_size: 32
+        cpus_per_gpu: 12 # number of cpu cores per gpu
+        mem_per_cpu: 31000 # ram per cpu core
+      datasets:
+        databases:
+          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+          max_hypercubes: 200 # maximum number of hypercubes to return
+          use_cached_hypercubes_dataframe: false
+          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+      cores: 12

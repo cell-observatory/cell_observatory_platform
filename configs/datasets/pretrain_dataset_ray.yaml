@@ -1,0 +1,26 @@
+defaults:
+  - databases: supabase_database      # Loads configs/datasets/databases/supabase_database.yaml
+  - masking: mask_generator           # Loads configs/datasets/masking/mask_generator.yaml
+  - transforms: ray_transforms        # Loads configs/datasets/transforms/ray_transforms.yaml
+  - preprocessor: ray_preprocessor    # Loads configs/datasets/preprocessor/ray_preprocessor.yaml
+  - _self_
+
+# mainly used by other configs but determined here for ease of access
+batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+input_shape: [16, 128, 128, 128, 2] 
+patch_shape: [4, 16, 16, 16]
+
+split: 0.2
+return_dataloader: true
+distributed_sampler: true
+collate_fn: data.datasets.pretrain_dataset_ray.base_collate_fn_ray
+prefetch_factor: 2 # prefetch factor for the dataloader
+num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
+
+drop_last_policy: true # whether to drop the last batch if it is smaller than the batch size
+
+dataset:
+  _target_: data.datasets.pretrain_dataset_ray.PretrainDatasourceRay
+  input_layout:
+    _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
+    value: ${dataset_layout_order}
