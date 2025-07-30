@@ -27,7 +27,8 @@ from training.helpers import (
     activation_checkpoint,
     summarize_model,
     get_input_data,
-    get_masked_input_data
+    get_masked_input_data,
+    enable_optimizations
 )
 from training.hooks import HookBase
 from utils.context import inference_context, process_rank
@@ -252,7 +253,7 @@ class EpochBasedTrainer(BaseTrainer):
         # val_dataloader is None if no validation set is provided
         self.train_dataloader, self.val_dataloader = get_dataloader(cfg)
 
-        self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
+        self.steps_per_epoch, self.val_steps_per_epoch = get_steps_per_epoch(
             train_dataloader=self.train_dataloader,
             val_dataloader=self.val_dataloader,
             config=cfg
@@ -296,6 +297,12 @@ class EpochBasedTrainer(BaseTrainer):
             steps_per_epoch=self.steps_per_epoch
         )
 
+        # enable optimizations if specified
+        # includes setting Torch backend flags, 
+        # activation checkpointing, and torch Compile 
+        if cfg.optimizations is not None:
+            model = enable_optimizations(cfg=cfg, model=model)
+
         # initialize deepspeed
         self.model, self.opt, _, _ = initialize(
             model=model,
@@ -335,15 +342,6 @@ class EpochBasedTrainer(BaseTrainer):
         # initialize evaluator
         self.evaluator = instantiate(cfg.evaluation.evaluator)
 
-        if cfg.optimizations is not None:
-            # TODO: move to helper?
-            if cfg.optimizations.cudnn_benchmark:
-                torch.backends.cudnn.benchmark = True
-            if cfg.optimizations.cudnn_deterministic:
-                torch.backends.cudnn.deterministic = True
-            if cfg.optimizations.activation_checkpoint.enabled:
-                self.model = activation_checkpoint(self.model)
-
     def run(self):
         """
         Launch training.
@@ -360,8 +358,14 @@ class EpochBasedTrainer(BaseTrainer):
         Iterate one epoch.
         """
         self.before_epoch()
+        
+        end = time.perf_counter()
         for idx, data_sample in enumerate(self.train_dataloader):
+            data_time = time.perf_counter() - end
+            data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
+            # run one step with the fetched data sample
             self.run_step(idx, data_sample)
+            end = time.perf_counter()
 
         if self.val_dataloader and \
            (self._epoch >= self.val_begin and
@@ -383,8 +387,6 @@ class EpochBasedTrainer(BaseTrainer):
         # and return a loss_dict with at least
         # a "step_loss" key together with
         # the outputs of the model
-
-        data_sample = self.preprocessor(data_sample)
         loss_dict, outputs = self.model(data_sample)
         self.model.backward(loss_dict["step_loss"])
         self.model.step()
@@ -395,19 +397,6 @@ class EpochBasedTrainer(BaseTrainer):
         #         f"Training stopped at step {idx} for testing."
         #     )
         # logger.info(f"step_loss: {loss_dict['step_loss']}, lr: {self.opt.param_groups[0]['lr']}")
-
-        if data_sample['metainfo'].get('data_time') is not None:
-            self.event_recorder.put_scalars(
-                scope="step",
-                data_time=data_sample['metainfo'].get('data_time').mean().item(),
-            )
-
-        self.event_recorder.put_scalars(
-            scope="step",
-            **{k: (v.item() if torch.is_tensor(v) else v)
-            for k, v in loss_dict.items()
-            }
-        )
 
         self.after_step(data_sample=data_sample, outputs=outputs, loss_dict=loss_dict)
         self._iter += 1
@@ -421,8 +410,13 @@ class EpochBasedTrainer(BaseTrainer):
         # but kept here for clarity
         with inference_context(self.model):
             with torch.no_grad():
+                end = time.perf_counter()
                 for idx, data_sample in enumerate(self.val_dataloader):
+                    data_time = time.perf_counter() - end
+                    data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
+                    # run one step with the fetched data sample
                     self.run_validation_step(idx, data_sample)
+                    end = time.perf_counter()
 
         metrics = self.evaluator.evaluate()
         self.event_recorder.put_scalars(
@@ -442,16 +436,8 @@ class EpochBasedTrainer(BaseTrainer):
         """
         self.before_val_step()
 
-        data_sample = self.preprocessor(data_sample)
         loss_dict, outputs = self.model(data_sample)
         self.evaluator.process(data_sample, outputs, loss_dict)
-
-        if data_sample['metainfo'].get('data_time') is not None:
-            self.event_recorder.put_scalars(
-                scope="step",
-                prefix="val_",
-                data_time=data_sample['metainfo'].get('data_time').mean().item(),
-            )
 
         self.after_val_step(data_sample=data_sample, outputs=outputs, loss_dict=loss_dict)
         self._val_iter += 1

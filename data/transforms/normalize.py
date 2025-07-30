@@ -1,9 +1,17 @@
 import sys
 import logging
+from typing import Dict, Any, List
+
+import numpy as np
+
 import torch
 
 from nvidia.dali import fn
+
 from data.data_types import DALI_DTYPES
+from data.structures.image_list import ImageList
+
+import pandas as pd
 
 logging.basicConfig(
 	stream=sys.stdout,
@@ -42,3 +50,15 @@ def NormalizeDaliWrapper(data, dtype):
     )
     vol_out = fn.cast(vol_norm, dtype=dtype)
     return vol_out
+
+
+class NormalizeRayWrapper:
+    def __init__(self, input_layout) -> None:
+        self.input_layout = input_layout
+
+    def __call__(self, data_tensor: torch.Tensor) -> torch.Tensor:
+        image_list = ImageList(data_tensor,
+                        layout=self.input_layout,
+                        image_sizes=[data_tensor.shape])
+        mean, std = image_list.get_image_stats()
+        return ((image_list.tensor - mean) / std)

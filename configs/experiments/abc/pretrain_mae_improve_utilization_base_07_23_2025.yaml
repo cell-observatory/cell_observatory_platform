@@ -17,7 +17,7 @@ defaults:
 
 
 # experiment name (used for logging)
-experiment_name: benchmark
+experiment_name: benchmark 
 wandb_project: platform_benchmarks
 
 # task
@@ -58,10 +58,10 @@ dataset_layout_order: TZYXC
 
 # clusters
 clusters:
-  batch_size: 16 # total batch size
+  batch_size: 32 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 2 # number of gpus per worker node
-  cpus_per_gpu: 4 # number of cpu cores per gpu
+  gpus_per_worker: 1 # number of gpus per worker node
+  cpus_per_gpu: 16 # number of cpu cores per gpu
   mem_per_cpu: 31000 # ram per cpu core
 
 #paths:
@@ -88,6 +88,7 @@ datasets:
   databases:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+    max_hypercubes: 4000 # maximum number of hypercubes to return
     use_cached_hypercubes_dataframe: false
     protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
@@ -97,6 +98,7 @@ schedulers:
 
 # hooks
 hooks:
+  nsys_env: null
   hooks_list:
   - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.SamplerSetter
@@ -110,7 +112,7 @@ hooks:
   - _target_: training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - _target_: training.hooks.TorchMemoryStats
-    step_period: 1
+    step_period: 2
     epoch_period: 1
     logdir: ${loggers.logdir}
   - _target_: training.hooks.BestMetricSaver

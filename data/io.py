@@ -57,15 +57,16 @@ def read_zarr(
     image_path: str,
     zarr_driver: str = "zarr3",
     dtype: TENSORSTORE_DTYPES | str = TENSORSTORE_DTYPES.fp16,
+    context: ts.Context | None = None
 ) -> np.ndarray:
     """ Read a Zarr file and return the data as a NumPy array """
     spec = {
         "driver": zarr_driver,
         "kvstore": {"driver": "file", "path": image_path},
-        "dtype": ts.uint16
+        "dtype": ts.uint16,
     }
     dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-    ds = ts.open(spec, read=True).result()
+    ds = ts.open(spec, context=context, read=True).result()
     return ts.cast(ds, dtype)
 
 

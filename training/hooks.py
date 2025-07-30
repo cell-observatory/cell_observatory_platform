@@ -24,7 +24,9 @@ from fvcore.common.timer import Timer
 from ray.train import Checkpoint, report
 
 from training.loggers import EventWriter
+from training.helpers import log_data_timings
 from utils.context import is_main_process, gather_and_reduce, process_rank
+
 
 
 logging.basicConfig(
@@ -243,13 +245,16 @@ class IterationTimer(HookBase):
     # this hook runs early in the hook chain
     PRIORITY = HOOK_PRIORITY.HIGH
 
-    def __init__(self, warmup_iter=3):
+    def __init__(self, warmup_iter: int = 0):
         """
         Args:
             warmup_iter (int): the number of iterations at the beginning to exclude
                 from timing.
         """
-        self._warmup_iter = warmup_iter
+        # TODO: decide if we want to have a warmup_iter
+        #       it may make more sense to remove it entirely
+        #       invalidating until we decide
+        self._warmup_iter = 0
 
         # train step timer and
         # train epoch timer
@@ -317,6 +322,11 @@ class IterationTimer(HookBase):
         if iter_done > self._warmup_iter:
             sec = self._step_timer.seconds()
             self.trainer.event_recorder.put_scalars(step_time=sec)
+            log_data_timings(self.trainer, 
+                             self.trainer._iter+1, 
+                             data_sample, 
+                             loss_dict, 
+                             type="train")
         else:
             # reset _total_timer and _start_time
             # to avoid counting the warmup iterations
@@ -370,6 +380,12 @@ class IterationTimer(HookBase):
 
         # Reset the timer for the next validation step
         self._val_step_timer.reset()
+
+        log_data_timings(self.trainer, 
+                         self.trainer._iter+1, 
+                         data_sample, 
+                         loss_dict, 
+                         type="val")
     
     def before_test(self):
         """

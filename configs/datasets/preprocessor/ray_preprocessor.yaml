@@ -1,0 +1,10 @@
+_target_: models.preprocessor.RayPreprocessor
+
+dtype: ${dataset_dtype}
+with_masking: true
+mask_generator: ${datasets.masking.mask_generators.0}
+transforms_list: 
+  - _target_: data.transforms.normalize.NormalizeRayWrapper
+    input_layout:
+      _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
+      value: ${dataset_layout_order}

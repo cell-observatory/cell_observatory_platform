@@ -1,4 +1,5 @@
 import sys
+import math
 import ujson
 import logging
 from pathlib import Path
@@ -16,10 +17,15 @@ from timm.scheduler import create_scheduler_v2
 
 from omegaconf import DictConfig
 
+import deepspeed
 from deepspeed.ops.adam import FusedAdam
 from deepspeed.ops.lamb import FusedLamb
 from deepspeed.runtime.lr_schedules import WarmupCosineLR
 from deepspeed.runtime.activation_checkpointing.checkpointing import checkpoint
+
+import ray
+
+from training.loggers import WandBEventWriter
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -126,10 +132,46 @@ def get_optimizer(
         return opt, None
 
 
+def _infer_steps_per_epoch(loader, batch_size, type: str = "train"):
+    if loader is None:
+        return None
+
+    # PyTorch/DALI
+    try:
+        return len(loader)
+    except TypeError:
+        pass
+
+    # Ray Dataset iterator
+    if isinstance(loader, ray.data.iterator._IterableFromIterator):
+        if type == "train":
+            dataset = ray.train.get_dataset_shard("train")
+            rows = dataset._base_dataset.count()
+        elif type == "val":
+            dataset = ray.train.get_dataset_shard("val")
+            rows = dataset._base_dataset.count()
+        else:
+            raise ValueError(f"Unknown dataset type: {type}")
+        return math.ceil(rows / batch_size)
+
+    raise TypeError(
+        f"Cannot infer steps/epoch for loader type {type(loader)}. "
+        f"Extend the _infer_steps_per_epoch function to handle this type."
+    )
+
+
 def get_steps_per_epoch(train_dataloader, val_dataloader, config: DictConfig):
-    steps_per_epoch = int(np.ceil(len(train_dataloader) / (config.clusters.total_gpus)))
-    val_steps_per_epoch = int(np.ceil(len(val_dataloader) / (config.clusters.total_gpus))) \
-        if val_dataloader else None
+    # TODO: double check correctness
+    steps_per_epoch = _infer_steps_per_epoch(train_dataloader, 
+                                             config.clusters.batch_size_per_gpu, 
+                                             type="train")
+    val_steps_per_epoch = _infer_steps_per_epoch(val_dataloader, 
+                                                 config.clusters.batch_size_per_gpu, 
+                                                 type="val") if val_dataloader else None
+    logger.info(
+        f"Steps per epoch: {steps_per_epoch}, "
+        f"Validation steps per epoch: {val_steps_per_epoch}"
+    )
     return steps_per_epoch, val_steps_per_epoch
 
 
@@ -288,18 +330,176 @@ def summarize_model(
             escape_forward_slashes=False
         )
 
+<<<<<<< Updated upstream
 def activation_checkpoint(cfg, model: nn.Module):
     # wraps the forward method of the model to 
     # use activation checkpointing
+=======
+
+def activation_checkpoint(cfg, model):
+    """Wrap listed sub-modules with activation-checkpointing."""
+>>>>>>> Stashed changes
     def wrap_forward(forward):
         @wraps(forward)
-        def wrapper(*args):
-            return checkpoint(forward, *args)
+        def wrapper(*args, **kwargs):
+            return checkpoint(forward, use_reentrant=False, *args, **kwargs)
+        wrapper._is_ckpt_wrapped = True
         return wrapper
+
+    for mod_name in cfg.optimizations.activation_checkpoint.modules:
+        mod = attrgetter(mod_name)(model)
+        if not getattr(mod.forward, "_is_ckpt_wrapped", False):
+            mod.forward = wrap_forward(mod.forward)
+
+
+def enable_optimizations(cfg: DictConfig, model: nn.Module):
+    # torch backend optimization flags for training
+    if cfg.optimizations.cudnn_benchmark:
+        torch.backends.cudnn.benchmark = True
+    if cfg.optimizations.cudnn_deterministic:
+        torch.backends.cudnn.deterministic = True
+    if cfg.optimizations.cudnn_enabled:
+        torch.backends.cudnn.enabled = True
+    if cfg.optimizations.cudnn_allow_tf32:
+        torch.backends.cudnn.allow_tf32 = True
+    if cfg.optimizations.deterministic:
+        torch.use_deterministic_algorithms(True)
+
+    # activation checkpointing 
+    if cfg.optimizations.activation_checkpoint.enabled:
+        logger.info(
+            f"Enabling activation checkpointing for modules: \
+                {cfg.optimizations.activation_checkpoint.modules}"
+        )
+        activation_checkpoint(cfg, model)
+        # TODO: add deepspeed checkpointing config logic
+        # deepspeed.checkpointing.configure(**cfg.deepspeed.checkpointing)
     
-    for module_name in cfg.optimizations.activation_checkpoint.modules:
-        module = attrgetter(module_name)(model)
-        module.forward = wrap_forward(module.forward)
+    # torch compile optimizations
+    if cfg.optimizations.torch_compile.enabled:
+        model = torch.compile(model,
+                            dynamic = cfg.optimizations.torch_compile.dynamic,
+                            # options: "default", "reduce-overhead", "max-autotune"
+                            # reduced overhead is for small models
+                            # max-autotune takes long but gives largest speedup
+                            # see: https://pytorch.org/get-started/pytorch-2-x/#user-experience
+                            mode = cfg.optimizations.torch_compile.mode,
+                            # DeepSpeed generates graph breaks
+                            # hence we must disable fullgraph
+                            fullgraph = False)
+
+    return model
+
+
+def log_data_timings(trainer, 
+                     idx, 
+                     data_sample: dict, 
+                     loss_dict: dict, 
+                     type: str = "train",
+):
+    data_time = data_sample['metainfo'].get('data_time', None)
+    if data_time is not None:
+        trainer.event_recorder.put_scalars(
+            scope="step",
+            prefix="val_" if type == "val" else None,
+            data_time=data_time,
+        )
+
+    get_item_time = data_sample['metainfo'].get('get_item_time', None)
+    if get_item_time is not None:
+        trainer.event_recorder.put_scalars(
+            scope="step",
+            prefix="val_" if type == "val" else None,
+            get_item_time=get_item_time.mean().item(),
+        )
+    
+    preprocess_time = data_sample['metainfo'].get('preprocess_time', None)
+    if preprocess_time is not None:
+        trainer.event_recorder.put_scalars(
+            scope="step",
+            prefix="val_" if type == "val" else None,
+            preprocess_time=preprocess_time,
+        )
+
+    masking_time = data_sample['metainfo'].get('masking_time', None)
+    if masking_time is not None:
+        trainer.event_recorder.put_scalars(
+            scope="step",
+            prefix="val_" if type == "val" else None,
+            masking_time=masking_time,
+        )
+    
+    collate_time = data_sample['metainfo'].get('collate_time', None)
+    if collate_time is not None:
+        trainer.event_recorder.put_scalars(
+            scope="step",
+            prefix="val_" if type == "val" else None,
+            collate_time=collate_time,
+        )
+    
+    slice_time = data_sample['metainfo'].get('slice_time', None)
+    if slice_time is not None:
+        trainer.event_recorder.put_scalars(
+            scope="step",
+            prefix="val_" if type == "val" else None,
+            slice_time=slice_time.mean().item(),
+        )
+
+    if type == "train":
+        trainer.event_recorder.put_scalars(
+            scope="step",
+            **{k: (v.item() if torch.is_tensor(v) else v)
+            for k, v in loss_dict.items()
+            }
+        )
+
+    if idx == 0 and trainer.event_writers_list is not None:
+        try:
+            wandb_writer = next(
+                w for w in trainer.event_writers_list.writers
+                if isinstance(w, WandBEventWriter)
+            )
+        except StopIteration:   
+            return
+
+
+        # keys expected by the writer (from Hydra/YAML config)
+        expected_step_keys  = set(wandb_writer.step_scalar_keys)
+        expected_epoch_keys = set(wandb_writer.epoch_scalar_keys)
+        # filter out keys that are not relevant for the current type of loop
+        if type == "train":
+            expected_step_keys  = {k for k in expected_step_keys  if not k.startswith(("val_", "test_"))}
+            expected_epoch_keys = {k for k in expected_epoch_keys if not k.startswith(("val_", "test_"))}
+        elif type == "val":
+            expected_step_keys  = {k for k in expected_step_keys  if k.startswith("val_")}
+            expected_epoch_keys = {k for k in expected_epoch_keys if k.startswith("val_")}
+
+        # keys that have actually been recorded so far by the recorder
+        recorded_step_keys = set(trainer.event_recorder.get_step_scalars().keys())
+        recorded_epoch_keys = set(trainer.event_recorder.get_epoch_scalars().keys())
+
+        unexpected_step = recorded_step_keys  - expected_step_keys
+        missing_step = expected_step_keys  - recorded_step_keys
+        unexpected_ep = recorded_epoch_keys - expected_epoch_keys
+        # it's hard to guard against missing epoch keys since they 
+        # are not logged until after the epoch ends but this doesn't
+        # really matter since the logger will throw an error
+        # anyways at the end of the epoch if the keys are missing
+        missing_ep = expected_epoch_keys - recorded_epoch_keys
+
+        assert not unexpected_step, (
+            f"[WandB] step-scalar(s) {sorted(unexpected_step)} were logged "
+            f"but are not listed in WandBEventWriter.step_scalar_keys"
+        )
+        assert not unexpected_ep, (
+            f"[WandB] epoch-scalar(s) {sorted(unexpected_ep)} were logged "
+            f"but are not listed in WandBEventWriter.epoch_scalar_keys"
+        )
+        assert not missing_step, (
+            f"[WandB] step-scalar key(s) {sorted(missing_step)} were declared "
+            f"in WandBEventWriter.step_scalar_keys but never logged "
+            f"in the first iteration"
+        )
 
 
 def get_input_data(model, inputs, device: Optional[torch.device] = None):

@@ -27,48 +27,49 @@ defaults:
 #     # "python-sampling": "true",
 #     # "python-sampling-frequency": "1000"
 
+nsys_env: null
+
 hooks_list:
-- _target_: training.hooks.AnomalyDetector
-- _target_: training.hooks.SamplerSetter
-- _target_: training.hooks.LRScheduler
-- _target_: training.hooks.IterationTimer
-  warmup_iter: 1
-- _target_: training.hooks.PeriodicWriter
-- _target_: training.hooks.PeriodicCheckpointer
-  period: 1
-  file_prefix: latest_model
-- _target_: training.hooks.BestCheckpointer
-  checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-- _target_: training.hooks.BestMetricSaver
-  metric_name: ${evaluation.val_metric}
-  compare_fn: ${evaluation.val_mode}
-  eval_after_validation: true
-# TODO: delete model summary hook
-# - _target_: training.hooks.ModelSummaryHook
-#   logdir: ${loggers.logdir}/model_summary
-#   inputs: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
-#   batch_size: ${clusters.batch_size_per_gpu}
-# - _target_: training.hooks.NsysProfilerHook
-#   start_iter: 40
-#   end_iter: 90
-# - _target_: training.hooks.TorchProfiler
-#   output_dir: ${loggers.logdir}/profiler
-#   schedule:
-#     skip_first: 1
-#     warmup: 1
-#     active: 3
-#     repeat: 2
-#     wait: 1  
-#   activities: 
-#     - CUDA
-#     - CPU
-#   save_tensorboard: true
-# - _target_: training.hooks.TorchMemoryStats
-#   step_period: 20
-#   epoch_period: 1
-#   logdir: ${loggers.logdir}
-# - _target_: training.hooks.EarlyStopHook
-#   patience: 10
-#   stopping_threshold: 0.01
-#   mode: ${evaluation.val_mode}
-#   metric_name: ${evaluation.val_metric}
+  - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.SamplerSetter
+  - _target_: training.hooks.LRScheduler
+  - _target_: training.hooks.IterationTimer
+  - _target_: training.hooks.PeriodicWriter
+  - _target_: training.hooks.PeriodicCheckpointer
+    period: 1
+    file_prefix: latest_model
+  - _target_: training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true
+  # TODO: delete model summary hook
+  # - _target_: training.hooks.ModelSummaryHook
+  #   logdir: ${loggers.logdir}/model_summary
+  #   inputs: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
+  #   batch_size: ${clusters.batch_size_per_gpu}
+  # - _target_: training.hooks.NsysProfilerHook
+  #   start_iter: 40
+  #   end_iter: 90
+  # - _target_: training.hooks.TorchProfiler
+  #   output_dir: ${loggers.logdir}/profiler
+  #   schedule:
+  #     skip_first: 1
+  #     warmup: 1
+  #     active: 3
+  #     repeat: 2
+  #     wait: 1  
+  #   activities: 
+  #     - CUDA
+  #     - CPU
+  #   save_tensorboard: true
+  # - _target_: training.hooks.TorchMemoryStats
+  #   step_period: 20
+  #   epoch_period: 1
+  #   logdir: ${loggers.logdir}
+  # - _target_: training.hooks.EarlyStopHook
+  #   patience: 10
+  #   stopping_threshold: 0.01
+  #   mode: ${evaluation.val_mode}
+  #   metric_name: ${evaluation.val_metric}

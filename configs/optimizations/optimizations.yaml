@@ -2,8 +2,16 @@ defaults:
   - _self_
 
 cudnn_benchmark: true
+cudnn_enabled: true
+cudnn_allow_tf32: true
 cudnn_deterministic: false
+deterministic: false
 
 activation_checkpoint:
   enabled: false
   modules: []
+
+torch_compile:
+  enabled: false
+  mode: reduce-overhead
+  dynamic: false

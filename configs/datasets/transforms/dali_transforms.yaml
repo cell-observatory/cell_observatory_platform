@@ -2,4 +2,4 @@ defaults:
   - _self_
 
 transforms_list:
-  - _target_: data.transforms.normalize.NormalizeDaliWrapper
+  - data.transforms.normalize.NormalizeDaliWrapper
