@@ -26,6 +26,54 @@ import torch
 from data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 
+def arrow_pinned_to_mem(chunked, reuse_buf=None):
+    pinned = torch.empty((32, 16, 128, 128, 128, 2),
+                             dtype=torch.float16,
+                             pin_memory=True)
+    
+    offset = 0
+    for item in chunked.chunks:
+        item =  torch.from_numpy(item.to_numpy())
+        pinned[offset:offset+item.shape[0]].copy_(item, non_blocking=True)
+        offset += item.shape[0]
+        
+    return pinned
+
+
+def arrow_chunked_to_pinned(chunked, reuse_buf=None):
+    arr = chunked.combine_chunks()
+    np_arr = arr.to_numpy()
+    if reuse_buf is None or reuse_buf.shape != np_arr.shape:
+        pinned = torch.empty(np_arr.shape,
+                             dtype=torch.float16,
+                             pin_memory=True)
+    else:
+        pinned = reuse_buf
+
+    pinned.copy_(torch.from_numpy(np_arr))
+    return pinned
+
+def pyaarrow_chunks_to_torch2(chunks):
+    """ https://github.com/ray-project/ray/issues/50128 """
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    pinned = []
+    batch_size = 0
+    for item in chunks.chunks:
+        item = item.to_numpy()
+        item = torch.from_numpy(item)
+        # item = item.pin_memory()
+        pinned.append(item)
+        batch_size += item.shape[0]
+    shape = list(pinned[0].shape)
+    shape[0] = batch_size
+    tensor = torch.zeros(torch.Size(shape), device='cpu', dtype=torch.float16)
+    offset = 0
+    for item in pinned:
+        tensor[offset:offset+item.shape[0]].copy_(item, non_blocking=True)
+        offset += item.shape[0]
+    return tensor
+
+
 def base_collate_fn_ray(batch: Dict[str, Any]) -> Dict[str, Any]:
     """
     Convert the dict-of-arrays produced by Ray's `iter_torch_batches`
@@ -36,22 +84,23 @@ def base_collate_fn_ray(batch: Dict[str, Any]) -> Dict[str, Any]:
         }
     """
     t0 = time.time()
-    np_img = batch.pop("data_tensor")
-    data_tensor = torch.as_tensor(np_img)
+    np_img = batch.column("data_tensor")
+    # data_tensor = torch.as_tensor(np_img).pin_memory()
+    data_tensor = arrow_pinned_to_mem(np_img)
 
-    metainfo = {}
-    for k, v in batch.items():
-        if isinstance(v, np.ndarray) and np.issubdtype(v.dtype, np.number):
-            metainfo[k] = torch.as_tensor(v)
-        else:
-            metainfo[k] = v
+    metainfo = {'slice_time': torch.zeros((1, 2))}
+    # for k, v in batch.items():
+    #     if isinstance(v, np.ndarray) and np.issubdtype(v.dtype, np.number):
+    #         metainfo[k] = torch.as_tensor(v)
+    #     else:
+    #         metainfo[k] = v
 
     metainfo["collate_time"] = time.time() - t0
 
     # TODO: temporary logic for moving data to GPU, after we figure out all disk->cpu
     #       bottlenecks, we should augment this logic to move data to GPU in a separate stream
     #       with one batch prefetching
-    return {"data_tensor": data_tensor.to("cuda", non_blocking=True), "metainfo": metainfo}
+    return {"data_tensor": data_tensor, "metainfo": metainfo}
 
 
 def _slice_hypercube(data_tensor, meta: Dict[str, Any]) -> np.ndarray:
@@ -235,7 +284,15 @@ def get_dataloader_ray(dataset: ray.data.Dataset,
                        drop_last: bool = False,
                        collate_fn: Optional[Callable] = None,
                        prefetch_factor: int = None):
-    return dataset.iter_torch_batches(batch_size=batch_size,
-                                        prefetch_batches=prefetch_factor,
-                                        drop_last=drop_last,
-                                        collate_fn=collate_fn)
+    # return dataset.iter_torch_batches(
+    #     batch_size=batch_size,
+    #     prefetch_batches=prefetch_factor,
+    #     drop_last=drop_last,
+    #     collate_fn=collate_fn
+    # )
+    return dataset._iter_batches(
+        batch_size=batch_size, 
+        prefetch_batches=prefetch_factor,
+        _collate_fn=collate_fn,
+        batch_format=None
+    )
