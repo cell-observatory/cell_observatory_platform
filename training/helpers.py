@@ -1,11 +1,13 @@
+import os
 import sys
 import math
 import ujson
 import logging
+import warnings
 from pathlib import Path
 from functools import wraps
 from operator import attrgetter
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Iterator
 
 import numpy as np
 
@@ -142,8 +144,10 @@ def _infer_steps_per_epoch(loader, batch_size, type: str = "train"):
     except TypeError:
         pass
 
-    # Ray Dataset iterator
-    if isinstance(loader, ray.data.iterator._IterableFromIterator):
+    # Ray Dataset iterator or wrapped Ray Dataset iterator for auto
+    # transfer to GPU (see cell_observatory_platform/data/datasets/pretrain_dataset_ray.py)
+    if isinstance(loader, ray.data.iterator._IterableFromIterator) or \
+        isinstance(loader.data_iter, Iterator):
         if type == "train":
             dataset = ray.train.get_dataset_shard("train")
             rows = dataset._base_dataset.count()
@@ -436,7 +440,8 @@ def log_data_timings(trainer,
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix="val_" if type == "val" else None,
-            slice_time=slice_time.mean().item(),
+            slice_time=slice_time.mean().item() if \
+                isinstance(slice_time, torch.Tensor) else np.mean(slice_time),
         )
 
     if type == "train":
@@ -519,3 +524,20 @@ def get_masked_input_data(model, inputs, device: Optional[torch.device] = None):
     # in a tuple with a single dict element
     input_data = ({"data_tensor": torch.randn(*inputs, device=device), "metainfo": meta},)
     return input_data
+
+
+def set_env_from_cfg(cfg: DictConfig) -> None:
+    def _to_str(v):
+        return "1" if isinstance(v, bool) and v \
+            else "0" if isinstance(v, bool) else str(v)
+
+    if not hasattr(cfg.optimizations, "env"):
+        warnings.warn("No env section found in config.")
+        return
+
+    for key, val in cfg.optimizations.env.items():
+        if val is None:
+            continue
+        env_key = key.upper()
+        os.environ[env_key] = _to_str(val)
+        logger.debug("Set %s=%s", env_key, os.environ[env_key])

@@ -16,7 +16,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: test_ray_dataset
+experiment_name: test_ray_dataset_collate_fix
 wandb_project: test_ray_dataset
 
 # task
@@ -71,7 +71,6 @@ clusters:
     trainer_resources:
       CPU: 0 
 
-
 #paths:
 paths:
   # base output directory for logs, checkpoints, etc.
@@ -91,7 +90,7 @@ datasets:
   distributed_sampler: true
 
   prefetch_factor: 1 # prefetch factor for the dataloader
-  num_workers: ${clusters.cpus_per_worker}
+  num_workers: ${clusters.cpus_per_gpu}  # number of workers for the dataloader
 
   databases:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
@@ -104,10 +103,37 @@ datasets:
 schedulers:
   epochs: 1
 
+# turn on compile mode
+optimizations:
+  torch_compile:
+    enabled: true
+    mode: reduce-overhead
+    dynamic: false
+
+# drop_path in timm leads to graph break in compile
+models:
+  mae:
+    drop_path_rate: 0.0 # no drop path rate for now
+
+# flops profiler needs to be turned off for compile
+deepspeed:
+  flops_profiler:
+    enabled: false # turn off flops profiler for now
+
 # hooks
 hooks:
-  nsys_env: null
+  nsys_env:
+    nsight: 
+      pytorch: autograd-shapes-nvtx
+      t: cuda,nvtx,cudnn,cublas,osrt
+      s: cpu
+      "gpu-metrics-devices": all
+      capture-range: cudaProfilerApi
+      capture-range-end: stop-shutdown
   hooks_list:
+  - _target_: training.hooks.NsysProfilerHook
+    start_iter: 20
+    end_iter: 25
   - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer

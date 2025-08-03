@@ -13,22 +13,13 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 OmegaConf.register_new_resolver("eval", eval)
+from training.helpers import set_env_from_cfg
 from utils.container import get_container_info
 
 # Update environment variables
 os.environ["HYDRA_FULL_ERROR"] = "1"
 os.environ["RAY_DEDUP_LOGS"] = "0"
-os.environ["NCCL_DEBUG"] = "TRACE"
-os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
-os.environ["NCCL_DEBUG_SUBSYS"] = "GRAPH"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-os.environ["NCCL_CUMEM_ENABLE"] = "0"
-os.environ["NCCL_CROSS_NIC"] = "1"
-os.environ["NCCL_P2P_LEVEL"] = "NVL"
-os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "3600"
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["NVIDIA_TF32_OVERRIDE"] = "1"
+
 load_dotenv(Path(__file__).parent / ".env", verbose=True)
 
 logging.basicConfig(
@@ -132,6 +123,11 @@ def main(cfg: DictConfig):
 
 
 def launch_job(cfg: DictConfig, run_config_name: str = None):
+    # TODO: make sure this recapitulates the old ENV variable
+    #       setting logic
+    # set environment variables from the config
+    set_env_from_cfg(cfg)
+
     container_info = get_container_info()
     print(f"Container type: {container_info['container_type']}")
 

@@ -275,14 +275,16 @@ def get_dataloader(config: DictConfig):
                 batch_size=config.clusters.batch_size_per_gpu,
                 drop_last=config.datasets.drop_last_policy,
                 collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor
+                prefetch_factor=config.datasets.prefetch_factor,
+                auto_transfer=config.datasets.auto_transfer
             )
             val_dataloader = get_dataloader_ray(
                 dataset=val_dataset,
                 batch_size=config.clusters.batch_size_per_gpu,
                 drop_last=config.datasets.drop_last_policy,
                 collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor
+                prefetch_factor=config.datasets.prefetch_factor,
+                auto_transfer=config.datasets.auto_transfer
             )
             return train_dataloader, val_dataloader
         
@@ -293,7 +295,8 @@ def get_dataloader(config: DictConfig):
                 batch_size=config.clusters.batch_size_per_gpu,
                 drop_last=config.datasets.drop_last_policy,
                 collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor
+                prefetch_factor=config.datasets.prefetch_factor,
+                auto_transfer=config.datasets.auto_transfer
             )
             return train_dataloader, None
     else:

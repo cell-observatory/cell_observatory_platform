@@ -8,28 +8,90 @@ import ujson
 import numpy as np
 import pandas as pd
 
+import tensorstore as ts
+
 from omegaconf import DictConfig
 from hydra.utils import instantiate, get_method
 
 from data.io import read_zarr
-from data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES
+from data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
 
 import ray
 from ray.data.block import Block, BlockMetadata
 from ray.data.datasource import Datasource, ReadTask
 from ray.data._internal.delegating_block_builder import DelegatingBlockBuilder
 
-import tensorstore as ts
-
 import torch
+
+import pyarrow as pa
 
 from data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 
+class PinnedTensorCollator:
+    """
+    Convert a ChunkedArray column in Arrow to a pinned Torch tensor
+    using exactly one host-side copy. The pinned buffer is optionally reused
+    across batches to prevent creating new pinned buffers each iteration.
+    """
+    def __init__(self, dtype: str, sample_shape: List[int] = None, pin_memory: bool = True):
+        self.dtype, self.sample_shape = TORCH_DTYPES[dtype].value, sample_shape
+
+        self.pinned, self.pin_memory = None, pin_memory
+        self._elem_size = torch.tensor([], dtype=self.dtype).element_size()
+
+    def _ensure_buffer(self, batch_size: int) -> None:
+            shape = (batch_size, *self.sample_shape)
+            if self.pinned is None or self.pinned.shape != shape:
+                self.pinned = torch.empty(shape,
+                                        dtype=self.dtype,
+                                        pin_memory=True)
+
+    def _copy_chunked(self, 
+                      chunks_arr: pa.ChunkedArray, 
+                      pin_memory: bool) -> torch.Tensor:
+        if not pin_memory:
+            pinned = torch.empty((chunks_arr.length(), *self.sample_shape),
+                         dtype=self.dtype,
+                         pin_memory=True)
+        else:
+            self._ensure_buffer(chunks_arr.length())
+            pinned = self.pinned
+        
+        offset = 0
+        for item in chunks_arr.chunks:
+            # arrow -> numpy -> torch should be zero-copy
+            # see: ray/air/util/tensor_extensions/arrow.py
+            item = torch.from_numpy(item.to_numpy(zero_copy_only=True))
+            
+            # copy to pinned memory (should be only real copy)
+            pinned[offset:offset+item.shape[0]].copy_(item, non_blocking=True)
+                
+            offset += item.shape[0]
+
+        return pinned
+
+    def __call__(self, batch: pa.Table | pa.RecordBatch) -> Dict[str, Any]:
+        t0 = time.time()
+
+        chunks_arr = batch.column('data_tensor')
+        data_tensor = self._copy_chunked(chunks_arr, pin_memory=self.pin_memory)
+
+        meta = {name: batch.column(name).to_pylist()
+                for name in batch.schema.names
+                if name != 'data_tensor'}
+        meta['collate_time'] = time.time() - t0
+
+        return {"data_tensor": data_tensor, "metainfo": meta}
+
+
+# functional version of PinnedTensorCollator
 def arrow_pinned_to_mem(chunked, reuse_buf=None):
-    pinned = torch.empty((32, 16, 128, 128, 128, 2),
-                             dtype=torch.float16,
-                             pin_memory=True)
+    batch_size = chunked.length()
+    sample_shape = tuple(chunked.type.shape)
+    pinned = torch.empty((batch_size, *sample_shape), 
+                         dtype=torch.float16,
+                         pin_memory=True)
     
     offset = 0
     for item in chunked.chunks:
@@ -40,43 +102,9 @@ def arrow_pinned_to_mem(chunked, reuse_buf=None):
     return pinned
 
 
-def arrow_chunked_to_pinned(chunked, reuse_buf=None):
-    arr = chunked.combine_chunks()
-    np_arr = arr.to_numpy()
-    if reuse_buf is None or reuse_buf.shape != np_arr.shape:
-        pinned = torch.empty(np_arr.shape,
-                             dtype=torch.float16,
-                             pin_memory=True)
-    else:
-        pinned = reuse_buf
-
-    pinned.copy_(torch.from_numpy(np_arr))
-    return pinned
-
-def pyaarrow_chunks_to_torch2(chunks):
-    """ https://github.com/ray-project/ray/issues/50128 """
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    pinned = []
-    batch_size = 0
-    for item in chunks.chunks:
-        item = item.to_numpy()
-        item = torch.from_numpy(item)
-        # item = item.pin_memory()
-        pinned.append(item)
-        batch_size += item.shape[0]
-    shape = list(pinned[0].shape)
-    shape[0] = batch_size
-    tensor = torch.zeros(torch.Size(shape), device='cpu', dtype=torch.float16)
-    offset = 0
-    for item in pinned:
-        tensor[offset:offset+item.shape[0]].copy_(item, non_blocking=True)
-        offset += item.shape[0]
-    return tensor
-
-
 def base_collate_fn_ray(batch: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Convert the dict-of-arrays produced by Ray's `iter_torch_batches`
+    Convert the dict-of-arrays produced by Ray's `_iter_batches`
     into the structure expected by the rest of the training loop:
         {
             "data_tensor":  Tensor,
@@ -84,22 +112,14 @@ def base_collate_fn_ray(batch: Dict[str, Any]) -> Dict[str, Any]:
         }
     """
     t0 = time.time()
-    np_img = batch.column("data_tensor")
-    # data_tensor = torch.as_tensor(np_img).pin_memory()
-    data_tensor = arrow_pinned_to_mem(np_img)
+    
+    data_tensor = arrow_pinned_to_mem(batch.column("data_tensor"))
 
-    metainfo = {'slice_time': torch.zeros((1, 2))}
-    # for k, v in batch.items():
-    #     if isinstance(v, np.ndarray) and np.issubdtype(v.dtype, np.number):
-    #         metainfo[k] = torch.as_tensor(v)
-    #     else:
-    #         metainfo[k] = v
-
+    metainfo = {name: batch.column(name).to_pylist()
+                for name in batch.schema.names
+                if name != 'data_tensor'}
     metainfo["collate_time"] = time.time() - t0
 
-    # TODO: temporary logic for moving data to GPU, after we figure out all disk->cpu
-    #       bottlenecks, we should augment this logic to move data to GPU in a separate stream
-    #       with one batch prefetching
     return {"data_tensor": data_tensor, "metainfo": metainfo}
 
 
@@ -283,16 +303,91 @@ def get_dataloader_ray(dataset: ray.data.Dataset,
                        batch_size: int,
                        drop_last: bool = False,
                        collate_fn: Optional[Callable] = None,
-                       prefetch_factor: int = None):
-    # return dataset.iter_torch_batches(
-    #     batch_size=batch_size,
-    #     prefetch_batches=prefetch_factor,
-    #     drop_last=drop_last,
-    #     collate_fn=collate_fn
-    # )
-    return dataset._iter_batches(
-        batch_size=batch_size, 
-        prefetch_batches=prefetch_factor,
-        _collate_fn=collate_fn,
-        batch_format=None
-    )
+                       prefetch_factor: int = None,
+                       auto_transfer: bool = True):
+    # we use _iter_batches instead of iter_torch_batches
+    # to avoid a (very) costly conversion to torch tensors that 
+    # the current implementation of iter_torch_batches does
+    if auto_transfer:
+        wrapped_loader = _WrappedRayDataLoader(
+            dataset._iter_batches(
+                batch_size=batch_size,
+                prefetch_batches=prefetch_factor,
+                _collate_fn=collate_fn,
+                batch_format=None
+            ),
+            device=torch.cuda.current_device(),
+            tensor_keys=("data_tensor",)
+        )
+        return wrapped_loader
+    else:
+        return dataset._iter_batches(
+            batch_size=batch_size, 
+            prefetch_batches=prefetch_factor,
+            _collate_fn=collate_fn,
+            batch_format=None
+        )
+
+
+# based on: _WrappedDataLoader in ray/train/torch/train_loop_utils.py
+class _WrappedRayDataLoader:
+    """
+    Wrap any iterator that yields batches with Torch tensors.
+    Each call prefetches the NEXT batch to GPU on its own
+    stream while the default stream works on the current batch.
+    """
+
+    def __init__(self, data_iter, device, tensor_keys=("data_tensor",)):
+        self.device, self.data_iter = device, iter(data_iter)
+
+        self.tensor_keys = (tensor_keys
+                            if isinstance(tensor_keys, (tuple, list))
+                            else (tensor_keys,))
+        self._stream = torch.cuda.Stream(device=device)
+
+        self._next_batch = None
+        # TODO: move this later in the training logic?
+        self._prefetch_next_batch()
+
+    def _to_cuda(self, batch):
+        """Non-recursive helper that only touches the listed keys."""
+        with torch.cuda.stream(self._stream):
+            for k in self.tensor_keys:
+                batch[k] = batch[k].to(self.device, non_blocking=True)
+        return batch
+
+    def _prefetch_next_batch(self):
+        try:
+            batch = next(self.data_iter)
+        except StopIteration:
+            self._next_batch = None
+            return
+        self._next_batch = self._to_cuda(batch)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._next_batch is None:
+            raise StopIteration
+        
+        batch = self._next_batch
+
+        # Reference:
+        # https://pytorch.org/docs/stable/generated/torch.Tensor.record_stream.html
+        # The training stream (current) needs to wait until
+        # the memory copy stream finishes.
+        torch.cuda.current_stream().wait_stream(self._stream)
+
+        # When a tensor is used by CUDA streams different from
+        # its original allocator, we need to call `record_stream`
+        # to inform the allocator of all these streams. Otherwise,
+        # the tensor might be freed once it is no longer used by
+        # the creator stream.
+        for k in self.tensor_keys:
+            batch[k].record_stream(torch.cuda.current_stream())
+
+        # prefetch the NEXT batch while we are computing on the current one
+        # is being processed
+        self._prefetch_next_batch()
+        return batch
