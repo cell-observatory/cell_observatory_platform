@@ -8,7 +8,6 @@ from pathlib import Path
 import warnings
 warnings.filterwarnings("ignore")
 
-import ray
 from ray.tune import Tuner
 from ray import init, cluster_resources
 from ray.train.torch import TorchTrainer, TorchConfig

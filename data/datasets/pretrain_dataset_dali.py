@@ -75,7 +75,7 @@ class PretrainDatasetDali:
 
         self.time = time
 
-        self.transforms = [get_method(t) for t in transforms] if transforms is not None else []
+        self.transforms = transforms
 
     def _process_tables(self, hypercubes_dataframe_path) -> tuple[pd.DataFrame, Dict]:
         if not hypercubes_dataframe_path.exists():
