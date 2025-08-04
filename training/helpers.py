@@ -524,20 +524,3 @@ def get_masked_input_data(model, inputs, device: Optional[torch.device] = None):
     # in a tuple with a single dict element
     input_data = ({"data_tensor": torch.randn(*inputs, device=device), "metainfo": meta},)
     return input_data
-
-
-def set_env_from_cfg(cfg: DictConfig) -> None:
-    def _to_str(v):
-        return "1" if isinstance(v, bool) and v \
-            else "0" if isinstance(v, bool) else str(v)
-
-    if not hasattr(cfg.optimizations, "env"):
-        warnings.warn("No env section found in config.")
-        return
-
-    for key, val in cfg.optimizations.env.items():
-        if val is None:
-            continue
-        env_key = key.upper()
-        os.environ[env_key] = _to_str(val)
-        logger.debug("Set %s=%s", env_key, os.environ[env_key])

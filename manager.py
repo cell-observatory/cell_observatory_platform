@@ -3,6 +3,7 @@ import sys
 import shlex
 import logging
 import subprocess
+import warnings
 from pathlib import Path
 from subprocess import call, run
 
@@ -13,7 +14,6 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 OmegaConf.register_new_resolver("eval", eval)
-from training.helpers import set_env_from_cfg
 from utils.container import get_container_info
 
 # Update environment variables
@@ -42,6 +42,23 @@ def get_defaults_overrides(defaults_overrides: list[dict] | None):
             defaults[key] = compose(config_name=default_path)
     return defaults
 
+
+
+def set_env_from_cfg(cfg: DictConfig) -> None:
+    def _to_str(v):
+        return "1" if isinstance(v, bool) and v \
+            else "0" if isinstance(v, bool) else str(v)
+
+    if not hasattr(cfg.optimizations, "env"):
+        warnings.warn("No env section found in config.")
+        return
+
+    for key, val in cfg.optimizations.env.items():
+        if val is None:
+            continue
+        env_key = key.upper()
+        os.environ[env_key] = _to_str(val)
+        logger.debug("Set %s=%s", env_key, os.environ[env_key])
 
 # modify Hydra config on cmd line to use different models
 @hydra.main(config_path="configs", config_name="test_pretrain_4d_mae_local")
