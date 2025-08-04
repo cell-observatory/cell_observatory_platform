@@ -34,6 +34,7 @@ collate_fn:
 
 dataset:
   _target_: data.datasets.pretrain_dataset_ray.PretrainDatasourceRay
+  parallelism: ${clusters.total_gpus}
   input_layout:
     _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}

@@ -184,6 +184,7 @@ class PretrainDatasourceRay(Datasource):
                  dtype: TENSORSTORE_DTYPES = TENSORSTORE_DTYPES.fp16,
                  indices: Optional[List[int]] = None,
                  time: bool = True,
+                 parallelism: int = -1
     ):
         self.input_layout = input_layout
         
@@ -204,6 +205,8 @@ class PretrainDatasourceRay(Datasource):
         self._bytes_per_cube = self._compute_bytes_per_cube(self._hypercubes_records, self._dtype)
 
         self.time = time
+
+        self.parallelism = parallelism
 
     def _compute_bytes_per_cube(self, records: List[Dict[str, Any]], dtype: TENSORSTORE_DTYPES) -> int:
         sample = records[0]
@@ -242,10 +245,10 @@ class PretrainDatasourceRay(Datasource):
     # rows of data to the block builder followed by a build() call. in general, this leverages
     # a API call to example Pandas (or other backend) which generates a DataFrame from dicts of 
     # data and concats tables as needed. 
-    def get_read_tasks(self, parallelism: int) -> List[ReadTask]:
+    def get_read_tasks(self, parallelism) -> List[ReadTask]:
         # parallelism is user configured or inferred by Ray
-        parallelism = min(parallelism, len(self._hypercubes_records))
-        splits = np.array_split(self._hypercubes_records, parallelism)
+        # parallelism = min(parallelism, len(self._hypercubes_records))
+        splits = np.array_split(self._hypercubes_records, self.parallelism)
 
         tasks: List[ReadTask] = []
         for shard in splits:
