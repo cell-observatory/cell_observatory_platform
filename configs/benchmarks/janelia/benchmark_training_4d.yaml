@@ -50,8 +50,8 @@ runs:
       clusters:
         batch_size: 256 # total batch size
         worker_nodes: 1 # number of worker nodes
-        gpus_per_worker: 12 # number of gpus per worker node
-        cpus_per_gpu: 8 # number of cpu cores per gpu
+        gpus_per_worker: 8 # number of gpus per worker node
+        cpus_per_gpu: 12 # number of cpu cores per gpu
         mem_per_cpu: 40000 # ram per cpu core
         scaling_config:
           use_gpu: true

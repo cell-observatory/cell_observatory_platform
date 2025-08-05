@@ -34,6 +34,7 @@ class PinnedTensorCollator:
     using exactly one host-side copy. The pinned buffer is optionally reused
     across batches to prevent creating new pinned buffers each iteration.
     """
+
     def __init__(self, dtype: str, sample_shape: List[int] = None, pin_memory: bool = True):
         self.dtype, self.sample_shape = TORCH_DTYPES[dtype].value, sample_shape
 
@@ -41,32 +42,32 @@ class PinnedTensorCollator:
         self._elem_size = torch.tensor([], dtype=self.dtype).element_size()
 
     def _ensure_buffer(self, batch_size: int) -> None:
-            shape = (batch_size, *self.sample_shape)
-            if self.pinned is None or self.pinned.shape != shape:
-                self.pinned = torch.empty(shape,
-                                        dtype=self.dtype,
-                                        pin_memory=True)
+        shape = (batch_size, *self.sample_shape)
+        if self.pinned is None or self.pinned.shape != shape:
+            self.pinned = torch.empty(shape,
+                                      dtype=self.dtype,
+                                      pin_memory=True)
 
-    def _copy_chunked(self, 
-                      chunks_arr: pa.ChunkedArray, 
+    def _copy_chunked(self,
+                      chunks_arr: pa.ChunkedArray,
                       pin_memory: bool) -> torch.Tensor:
         if not pin_memory:
             pinned = torch.empty((chunks_arr.length(), *self.sample_shape),
-                         dtype=self.dtype,
-                         pin_memory=True)
+                                 dtype=self.dtype,
+                                 pin_memory=True)
         else:
             self._ensure_buffer(chunks_arr.length())
             pinned = self.pinned
-        
+
         offset = 0
         for item in chunks_arr.chunks:
             # arrow -> numpy -> torch should be zero-copy
             # see: ray/air/util/tensor_extensions/arrow.py
             item = torch.from_numpy(item.to_numpy(zero_copy_only=True))
-            
+
             # copy to pinned memory (should be only real copy)
-            pinned[offset:offset+item.shape[0]].copy_(item, non_blocking=True)
-                
+            pinned[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
+
             offset += item.shape[0]
 
         return pinned
@@ -89,16 +90,16 @@ class PinnedTensorCollator:
 def arrow_pinned_to_mem(chunked, reuse_buf=None):
     batch_size = chunked.length()
     sample_shape = tuple(chunked.type.shape)
-    pinned = torch.empty((batch_size, *sample_shape), 
+    pinned = torch.empty((batch_size, *sample_shape),
                          dtype=torch.float16,
                          pin_memory=True)
-    
+
     offset = 0
     for item in chunked.chunks:
-        item =  torch.from_numpy(item.to_numpy())
-        pinned[offset:offset+item.shape[0]].copy_(item, non_blocking=True)
+        item = torch.from_numpy(item.to_numpy())
+        pinned[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
         offset += item.shape[0]
-        
+
     return pinned
 
 
@@ -112,7 +113,7 @@ def base_collate_fn_ray(batch: Dict[str, Any]) -> Dict[str, Any]:
         }
     """
     t0 = time.time()
-    
+
     data_tensor = arrow_pinned_to_mem(batch.column("data_tensor"))
 
     metainfo = {name: batch.column(name).to_pylist()
@@ -154,7 +155,7 @@ def _read_block(records: List[Dict[str, Any]], timing: bool, dtype) -> Iterable[
         #     layout=self.input_layout,
         #     image_sizes=[img_tensor.shape]
         # )
-        # NOTE: 
+        # NOTE:
         # (1) if we support numpy in ImageList, we can use:
         # builder.add({**data_sample.to_dict()})
         if timing:
@@ -164,6 +165,7 @@ def _read_block(records: List[Dict[str, Any]], timing: bool, dtype) -> Iterable[
 
     block = builder.build()
     yield block
+
 
 # based on: https://github.com/ray-project/ray/python/ray/data/datasource/file_based_datasource.py
 class PretrainDatasourceRay(Datasource):
@@ -177,21 +179,20 @@ class PretrainDatasourceRay(Datasource):
         channel_size
     """
 
-    def __init__(self, 
+    def __init__(self,
                  hypercubes_dataframe_path: Path,
                  input_layout: MULTICHANNEL_HYPERCUBE,
                  server_folder_path: Optional[Path] = None,
                  dtype: TENSORSTORE_DTYPES = TENSORSTORE_DTYPES.fp16,
                  indices: Optional[List[int]] = None,
                  time: bool = True,
-                 parallelism: int = -1
-    ):
+                 ):
         self.input_layout = input_layout
-        
+
         hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
         if not hypercubes_dataframe_path.exists():
             raise FileNotFoundError(hypercubes_dataframe_path)
-        
+
         self.server_folder_path = str(server_folder_path) if server_folder_path else None
         self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(hypercubes_dataframe_path)
 
@@ -206,12 +207,10 @@ class PretrainDatasourceRay(Datasource):
 
         self.time = time
 
-        self.parallelism = parallelism
-
     def _compute_bytes_per_cube(self, records: List[Dict[str, Any]], dtype: TENSORSTORE_DTYPES) -> int:
         sample = records[0]
         voxels = (
-            sample["time_size"] * sample["channel_size"] * sample["cube_size"] ** 3
+                sample["time_size"] * sample["channel_size"] * sample["cube_size"] ** 3
         )
         if dtype == ts.float16:
             return voxels * 2
@@ -238,17 +237,17 @@ class PretrainDatasourceRay(Datasource):
     def estimate_inmemory_data_size(self) -> int:
         return self._bytes_per_cube * len(self._hypercubes_records)
 
-    # get_read_tasks returns a list of ReadTask objects, each containing a 
+    # get_read_tasks returns a list of ReadTask objects, each containing a
     # ReadTask which is a class that wraps a read task function with associated
     # metadata. the read task function returns an iterable which yields blocks of data.
     # blocks may be built using a DelegatingBlockBuilder, which allows for passing
     # rows of data to the block builder followed by a build() call. in general, this leverages
-    # a API call to example Pandas (or other backend) which generates a DataFrame from dicts of 
-    # data and concats tables as needed. 
-    def get_read_tasks(self, parallelism) -> List[ReadTask]:
+    # a API call to example Pandas (or other backend) which generates a DataFrame from dicts of
+    # data and concats tables as needed.
+    def get_read_tasks(self, parallelism: int) -> List[ReadTask]:
         # parallelism is user configured or inferred by Ray
-        # parallelism = min(parallelism, len(self._hypercubes_records))
-        splits = np.array_split(self._hypercubes_records, self.parallelism)
+        parallelism = min(parallelism, len(self._hypercubes_records))
+        splits = np.array_split(self._hypercubes_records, parallelism)
 
         tasks: List[ReadTask] = []
         for shard in splits:
@@ -276,30 +275,30 @@ class PretrainDatasourceRay(Datasource):
 
 
 def get_dataset_ray(cfg: DictConfig, indices: Optional[List[int]]):
-        datasource = instantiate(cfg.datasets.dataset,
-                              hypercubes_dataframe_path=cfg.datasets.databases.hypercubes_dataframe_path,
-                              server_folder_path=cfg.paths.server_folder_path,
-                              dtype=cfg.dataset_dtype,
-                              input_layout=cfg.datasets.dataset.input_layout,
-                              indices=indices)
-        
-        dataset = ray.data.read_datasource(datasource)
+    datasource = instantiate(cfg.datasets.dataset,
+                             hypercubes_dataframe_path=cfg.datasets.databases.hypercubes_dataframe_path,
+                             server_folder_path=cfg.paths.server_folder_path,
+                             dtype=cfg.dataset_dtype,
+                             input_layout=cfg.datasets.dataset.input_layout,
+                             indices=indices)
 
-        # we include transforms here for completion but if data loading
-        # is performance critical, the transforms may also be applied
-        # in the preprocessor on device
-        transforms = []
-        for t in cfg.datasets.transforms.transforms_list:
-            if isinstance(t, DictConfig):
-                transforms.append(instantiate(t))
-            else:
-                transforms.append(get_method(t))
+    dataset = ray.data.read_datasource(datasource)
 
-        for transform in transforms:
-            dataset = dataset.map_batches(transform, 
-                                          batch_size=cfg.clusters.batch_size_per_gpu, 
-                                          batch_format="pandas")
-        return dataset
+    # we include transforms here for completion but if data loading
+    # is performance critical, the transforms may also be applied
+    # in the preprocessor on device
+    transforms = []
+    for t in cfg.datasets.transforms.transforms_list:
+        if isinstance(t, DictConfig):
+            transforms.append(instantiate(t))
+        else:
+            transforms.append(get_method(t))
+
+    for transform in transforms:
+        dataset = dataset.map_batches(transform,
+                                      batch_size=cfg.clusters.batch_size_per_gpu,
+                                      batch_format="pandas")
+    return dataset
 
 
 def get_dataloader_ray(dataset: ray.data.Dataset,
@@ -309,7 +308,7 @@ def get_dataloader_ray(dataset: ray.data.Dataset,
                        prefetch_factor: int = None,
                        auto_transfer: bool = True):
     # we use _iter_batches instead of iter_torch_batches
-    # to avoid a (very) costly conversion to torch tensors that 
+    # to avoid a (very) costly conversion to torch tensors that
     # the current implementation of iter_torch_batches does
     if auto_transfer:
         wrapped_loader = _WrappedRayDataLoader(
@@ -325,7 +324,7 @@ def get_dataloader_ray(dataset: ray.data.Dataset,
         return wrapped_loader
     else:
         return dataset._iter_batches(
-            batch_size=batch_size, 
+            batch_size=batch_size,
             prefetch_batches=prefetch_factor,
             _collate_fn=collate_fn,
             batch_format=None
@@ -373,7 +372,7 @@ class _WrappedRayDataLoader:
     def __next__(self):
         if self._next_batch is None:
             raise StopIteration
-        
+
         batch = self._next_batch
 
         # Reference:
