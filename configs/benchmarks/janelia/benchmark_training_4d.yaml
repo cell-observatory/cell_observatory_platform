@@ -23,35 +23,16 @@ data_base_dir: training_infrastructure/training_mae_4d
 #      than the global defaults, e.g. for a specific dataloader or model.
 
 runs:
-#  - cfg: benchmarks/janelia/benchmark_training_base
-#    name: 1gpus_8cores_h100_mae_large.yaml
-#    defaults_overrides:
-#      - clusters: clusters/janelia_h100
-#    overrides:
-#      clusters:
-#        batch_size: 32 # total batch size
-#        worker_nodes: 1 # number of worker nodes
-#        gpus_per_worker: 1 # number of gpus per worker node
-#        cpus_per_gpu: 8 # number of cpu cores per gpu
-#        mem_per_cpu: 40000 # ram per cpu core
-#        scaling_config:
-#          use_gpu: true
-#          num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
-#          resources_per_worker:
-#            CPU: 0
-#            GPU: 1
-#          trainer_resources:
-#            CPU: 0
   - cfg: benchmarks/janelia/benchmark_training_base
-    name: 4gpus_8cores_h100_mae_large.yaml
+    name: 1gpus_12cores_h100_mae_large.yaml
     defaults_overrides:
       - clusters: clusters/janelia_h100
     overrides:
       clusters:
-        batch_size: 128 # total batch size
+        batch_size: 32 # total batch size
         worker_nodes: 1 # number of worker nodes
-        gpus_per_worker: 4 # number of gpus per worker node
-        cpus_per_gpu: 8 # number of cpu cores per gpu
+        gpus_per_worker: 1 # number of gpus per worker node
+        cpus_per_gpu: 12 # number of cpu cores per gpu
         mem_per_cpu: 40000 # ram per cpu core
         scaling_config:
           use_gpu: true
@@ -61,28 +42,15 @@ runs:
             GPU: 1
           trainer_resources:
             CPU: 0
-      hooks:
-        nsys_env:
-          nsight:
-            pytorch: autograd-shapes-nvtx
-            t: cuda,nvtx,cudnn,cublas,osrt
-            s: cpu
-            # "gpu-metrics-devices": all
-            capture-range: cudaProfilerApi
-            capture-range-end: stop-shutdown
-        hooks_list:
-          - _target_: training.hooks.NsysProfilerHook
-            start_iter: 80
-            end_iter: 90
   - cfg: benchmarks/janelia/benchmark_training_base
-    name: 8gpus_8cores_h100_mae_large.yaml
+    name: 8gpus_12cores_h100_mae_large.yaml
     defaults_overrides:
       - clusters: clusters/janelia_h100
     overrides:
       clusters:
         batch_size: 256 # total batch size
         worker_nodes: 1 # number of worker nodes
-        gpus_per_worker: 8 # number of gpus per worker node
+        gpus_per_worker: 12 # number of gpus per worker node
         cpus_per_gpu: 8 # number of cpu cores per gpu
         mem_per_cpu: 40000 # ram per cpu core
         scaling_config:
@@ -93,16 +61,3 @@ runs:
             GPU: 1
           trainer_resources:
             CPU: 0
-      hooks:
-        nsys_env:
-          nsight:
-            pytorch: autograd-shapes-nvtx
-            t: cuda,nvtx,cudnn,cublas,osrt
-            s: cpu
-            # "gpu-metrics-devices": all
-            capture-range: cudaProfilerApi
-            capture-range-end: stop-shutdown
-        hooks_list:
-          - _target_: training.hooks.NsysProfilerHook
-            start_iter: 80
-            end_iter: 90

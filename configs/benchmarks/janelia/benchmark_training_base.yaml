@@ -16,8 +16,8 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: benchmark_scaling_epoch2_compiled
-wandb_project: platform_benchmarks
+experiment_name: platform_benchmark_scaling
+wandb_project: platform_benchmark_scaling
 
 # task
 task: pretrain_mae
@@ -85,11 +85,11 @@ datasets:
   input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
 
-  split: null
+  split: 0.1
   return_dataloader: true
   distributed_sampler: true
 
-  prefetch_factor: 1 # prefetch factor for the dataloader
+  prefetch_factor: 2 # prefetch factor for the dataloader
   num_workers: ${clusters.cpus_per_gpu}  # number of workers for the dataloader
 
   databases:
@@ -100,30 +100,28 @@ datasets:
     hypercubes_dataframe_path: ${paths.repo_path}/databases/test_16_128_128_128_2_hypercubes_database_10k.csv
     protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
-# schedulers
-schedulers:
-  epochs: 3
 
 # hooks
 hooks:
   hooks_list:
-    - _target_: training.hooks.AnomalyDetector
-    - _target_: training.hooks.LRScheduler
-    - _target_: training.hooks.IterationTimer
-    - _target_: training.hooks.PeriodicWriter
-    - _target_: training.hooks.PeriodicCheckpointer
-      period: 1
-      file_prefix: latest_model
-    - _target_: training.hooks.BestCheckpointer
-      checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-    - _target_: training.hooks.TorchMemoryStats
-      step_period: 2
-      epoch_period: 1
-      logdir: ${loggers.logdir}
-    - _target_: training.hooks.BestMetricSaver
-      metric_name: ${evaluation.val_metric}
-      compare_fn: ${evaluation.val_mode}
-      eval_after_validation: true
+  - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.LRScheduler
+  - _target_: training.hooks.IterationTimer
+  - _target_: training.hooks.PeriodicWriter
+  - _target_: training.hooks.PeriodicCheckpointer
+    period: 1
+    file_prefix: latest_model
+  - _target_: training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: training.hooks.TorchMemoryStats
+    step_period: 2
+    epoch_period: 1
+    logdir: ${loggers.logdir}
+  - _target_: training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true
+
 
 
 # loggers
