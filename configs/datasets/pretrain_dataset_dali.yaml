@@ -30,7 +30,6 @@ dataset:
   dtype: ${dataset_dtype}
   hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
   time: true
-  cache_pool_bytes_limit: null
 
   input_layout:
     _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE

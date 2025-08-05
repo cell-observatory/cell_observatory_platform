@@ -3,6 +3,7 @@ import sys
 import shlex
 import logging
 import subprocess
+import warnings
 from pathlib import Path
 from subprocess import call, run
 
@@ -18,17 +19,7 @@ from utils.container import get_container_info
 # Update environment variables
 os.environ["HYDRA_FULL_ERROR"] = "1"
 os.environ["RAY_DEDUP_LOGS"] = "0"
-os.environ["NCCL_DEBUG"] = "TRACE"
-os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
-os.environ["NCCL_DEBUG_SUBSYS"] = "GRAPH"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-os.environ["NCCL_CUMEM_ENABLE"] = "0"
-os.environ["NCCL_CROSS_NIC"] = "1"
-os.environ["NCCL_P2P_LEVEL"] = "NVL"
-os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "3600"
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["NVIDIA_TF32_OVERRIDE"] = "1"
+
 load_dotenv(Path(__file__).parent / ".env", verbose=True)
 
 logging.basicConfig(
@@ -51,6 +42,23 @@ def get_defaults_overrides(defaults_overrides: list[dict] | None):
             defaults[key] = compose(config_name=default_path)
     return defaults
 
+
+
+def set_env_from_cfg(cfg: DictConfig) -> None:
+    def _to_str(v):
+        return "1" if isinstance(v, bool) and v \
+            else "0" if isinstance(v, bool) else str(v)
+
+    if not hasattr(cfg.optimizations, "env"):
+        warnings.warn("No env section found in config.")
+        return
+
+    for key, val in cfg.optimizations.env.items():
+        if val is None:
+            continue
+        env_key = key.upper()
+        os.environ[env_key] = _to_str(val)
+        logger.debug("Set %s=%s", env_key, os.environ[env_key])
 
 # modify Hydra config on cmd line to use different models
 @hydra.main(config_path="configs", config_name="test_pretrain_4d_mae_local")
@@ -132,6 +140,11 @@ def main(cfg: DictConfig):
 
 
 def launch_job(cfg: DictConfig, run_config_name: str = None):
+    # TODO: make sure this recapitulates the old ENV variable
+    #       setting logic
+    # set environment variables from the config
+    set_env_from_cfg(cfg)
+
     container_info = get_container_info()
     print(f"Container type: {container_info['container_type']}")
 

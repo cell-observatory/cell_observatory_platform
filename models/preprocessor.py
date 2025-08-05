@@ -136,7 +136,7 @@ class RayPreprocessor(torch.nn.Module):
         """
         preprocess_time = time.time()
 
-        inputs = data_sample['data_tensor']
+        inputs = data_sample['data_tensor'].to("cuda", non_blocking=True)
         meta = data_sample['metainfo']
         
         # if isinstance(inputs, list):

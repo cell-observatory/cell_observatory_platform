@@ -13,14 +13,28 @@ patch_shape: [4, 16, 16, 16]
 split: 0.2
 return_dataloader: true
 distributed_sampler: true
-collate_fn: data.datasets.pretrain_dataset_ray.base_collate_fn_ray
-prefetch_factor: 2 # prefetch factor for the dataloader
+prefetch_factor: 1 # prefetch factor for the dataloader
 num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
 
 drop_last_policy: true # whether to drop the last batch if it is smaller than the batch size
 
+auto_transfer: false
+
+# collate function options:
+# Ray collate function OR class PinnedTensorCollator
+# class keeps a permanent pinned tensor in memory and allows
+# for keeping state between batches
+# collate_fn: data.datasets.pretrain_dataset_ray.base_collate_fn_ray
+# OR:
+collate_fn:
+  _target_: data.datasets.pretrain_dataset_ray.PinnedTensorCollator
+  dtype: ${dataset_dtype}
+  sample_shape: ${datasets.input_shape}
+  pin_memory: true
+
 dataset:
   _target_: data.datasets.pretrain_dataset_ray.PretrainDatasourceRay
+  parallelism: ${clusters.total_gpus}
   input_layout:
     _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}

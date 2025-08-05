@@ -12,7 +12,7 @@ run_type: multi_run
 # 2. wandb_tags to group runs together in the wandb dashboard
 #    and use their hparam features to compare runs 
 
-wandb_tags: [ "benchmark", "benchmark_training_infra", "scaling", "h200", "mae_large"]
+wandb_tags: [ "benchmark", "benchmark_training_infra", "scaling", "h100", "mae_large"]
 data_base_dir: training_infrastructure/training_mae_4d
 
 # NOTE: make sure to include .yaml suffix to naming of config files! These names are appended to configs/experiments/
@@ -23,78 +23,86 @@ data_base_dir: training_infrastructure/training_mae_4d
 #      than the global defaults, e.g. for a specific dataloader or model.
 
 runs:
+#  - cfg: benchmarks/janelia/benchmark_training_base
+#    name: 1gpus_8cores_h100_mae_large.yaml
+#    defaults_overrides:
+#      - clusters: clusters/janelia_h100
+#    overrides:
+#      clusters:
+#        batch_size: 32 # total batch size
+#        worker_nodes: 1 # number of worker nodes
+#        gpus_per_worker: 1 # number of gpus per worker node
+#        cpus_per_gpu: 8 # number of cpu cores per gpu
+#        mem_per_cpu: 40000 # ram per cpu core
+#        scaling_config:
+#          use_gpu: true
+#          num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
+#          resources_per_worker:
+#            CPU: 0
+#            GPU: 1
+#          trainer_resources:
+#            CPU: 0
   - cfg: benchmarks/janelia/benchmark_training_base
-    name: 1gpus_8cores_h200_mae_large.yaml
+    name: 4gpus_8cores_h100_mae_large.yaml
     defaults_overrides:
-      - clusters: clusters/janelia_h200
-    overrides:
-     clusters:
-       worker_nodes: 1
-       gpus_per_worker: 1
-       cpus_per_gpu: 8
-       batch_size: 64
-     datasets:
-       databases:
-         max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-         max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-         max_hypercubes: 250 # maximum number of hypercubes to return
-         use_cached_hypercubes_dataframe: true
-         hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
-         protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
-
-  - cfg: benchmarks/janelia/benchmark_training_base
-    name: 1gpus_12cores_h200_mae_large.yaml
-    defaults_overrides:
-      - clusters: clusters/janelia_h200
-    overrides:
-     clusters:
-       worker_nodes: 1
-       gpus_per_worker: 1
-       cpus_per_gpu: 12
-       batch_size: 64
-     datasets:
-       databases:
-         max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-         max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-         max_hypercubes: 250 # maximum number of hypercubes to return
-         use_cached_hypercubes_dataframe: true
-         hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
-         protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
-
-  - cfg: benchmarks/janelia/benchmark_training_base
-    name: 8gpus_8cores_h200_mae_large.yaml
-    defaults_overrides:
-      - clusters: clusters/janelia_h200
+      - clusters: clusters/janelia_h100
     overrides:
       clusters:
-        worker_nodes: 1
-        gpus_per_worker: 8
-        cpus_per_gpu: 8
-        batch_size: 512
-      datasets:
-        databases:
-          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-          max_hypercubes: 2000 # maximum number of hypercubes to return
-          use_cached_hypercubes_dataframe: true
-          hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
-          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
-
+        batch_size: 128 # total batch size
+        worker_nodes: 1 # number of worker nodes
+        gpus_per_worker: 4 # number of gpus per worker node
+        cpus_per_gpu: 8 # number of cpu cores per gpu
+        mem_per_cpu: 40000 # ram per cpu core
+        scaling_config:
+          use_gpu: true
+          num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
+          resources_per_worker:
+            CPU: 0
+            GPU: 1
+          trainer_resources:
+            CPU: 0
+      hooks:
+        nsys_env:
+          nsight:
+            pytorch: autograd-shapes-nvtx
+            t: cuda,nvtx,cudnn,cublas,osrt
+            s: cpu
+            # "gpu-metrics-devices": all
+            capture-range: cudaProfilerApi
+            capture-range-end: stop-shutdown
+        hooks_list:
+          - _target_: training.hooks.NsysProfilerHook
+            start_iter: 80
+            end_iter: 90
   - cfg: benchmarks/janelia/benchmark_training_base
-    name: 8gpus_12cores_h200_mae_large.yaml
+    name: 8gpus_8cores_h100_mae_large.yaml
     defaults_overrides:
-      - clusters: clusters/janelia_h200
+      - clusters: clusters/janelia_h100
     overrides:
       clusters:
-        worker_nodes: 1
-        gpus_per_worker: 8
-        cpus_per_gpu: 12
-        batch_size: 512
-      datasets:
-        databases:
-          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-          max_hypercubes: 2000 # maximum number of hypercubes to return
-          use_cached_hypercubes_dataframe: true
-          hypercubes_dataframe_path: ${paths.workdir}/databases/test_hypercubes_dataframe.csv
-          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+        batch_size: 256 # total batch size
+        worker_nodes: 1 # number of worker nodes
+        gpus_per_worker: 8 # number of gpus per worker node
+        cpus_per_gpu: 8 # number of cpu cores per gpu
+        mem_per_cpu: 40000 # ram per cpu core
+        scaling_config:
+          use_gpu: true
+          num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
+          resources_per_worker:
+            CPU: 0
+            GPU: 1
+          trainer_resources:
+            CPU: 0
+      hooks:
+        nsys_env:
+          nsight:
+            pytorch: autograd-shapes-nvtx
+            t: cuda,nvtx,cudnn,cublas,osrt
+            s: cpu
+            # "gpu-metrics-devices": all
+            capture-range: cudaProfilerApi
+            capture-range-end: stop-shutdown
+        hooks_list:
+          - _target_: training.hooks.NsysProfilerHook
+            start_iter: 80
+            end_iter: 90
