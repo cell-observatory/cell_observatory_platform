@@ -105,6 +105,7 @@ cleanup() {
     echo "running cleanup (exit code: $ec)"
 
     # stop Ray on the head node
+    ps aux | grep prometheus | awk '{print $2}' | xargs kill -9
     apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
 
     # cancel worker jobs (if still queued/running)
