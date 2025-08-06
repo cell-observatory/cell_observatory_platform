@@ -65,7 +65,7 @@ scaling_config:
   use_gpu: true
   num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
   resources_per_worker:
-    CPU: ${clusters.cpus_per_gpu}
+    CPU: 0 # Ray allocates cpus automatically
     GPU: 1
   trainer_resources:
     CPU: ${clusters.cpus_for_training_coordinator} # an additional cpu core for the training coordinator

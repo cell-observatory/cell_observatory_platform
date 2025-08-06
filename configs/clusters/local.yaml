@@ -11,7 +11,7 @@ batch_size: 128 # total batch size
 
 worker_nodes: 1 # number of worker nodes
 gpus_per_worker: 1 # number of gpus per worker node
-cpus_per_gpu: 4 # number of cpu cores per gpu
+cpus_per_gpu: 8 # number of cpu cores per gpu
 mem_per_cpu: 16000 # ram per cpu core
 
 cpus_per_worker: ${eval:'${clusters.gpus_per_worker} * ${clusters.cpus_per_gpu}'}
@@ -50,7 +50,7 @@ scaling_config:
   use_gpu: true
   num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
   resources_per_worker:
-    CPU: ${clusters.cpus_per_gpu}
+    CPU: 0 # Ray allocates cpus automatically
     GPU: 1
   trainer_resources:
     CPU: ${clusters.cpus_for_training_coordinator} # an additional cpu core for the training coordinator
