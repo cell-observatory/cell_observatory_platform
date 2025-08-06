@@ -42,5 +42,8 @@ echo "Starting ray head node @ $(hostname) => $cluster_address with CPUs[$cpus] 
 job="ray start --head --node-ip-address=$ip --port=$port --dashboard-port=$dashboard_port --dashboard-host=0.0.0.0 --min-worker-port 18999 --max-worker-port 19999 --temp-dir=$tmpdir --num-cpus=$cpus --num-gpus=$gpus"
 echo $job
 $job &
-ray metrics launch-prometheus &
+
+echo "Starting prometheus server on $(hostname) => $cluster_address with dashboard_port[$dashboard_port] & tmpdir[$tmpdir]"
+~/prometheus-3.5.0.linux-amd64/prometheus --config.file=$tmpdir/session_latest/metrics/prometheus/prometheus.yml
+
 sleep infinity
