@@ -52,7 +52,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 RUN echo "Installing jemalloc"
-RUN cd && \ wget https://github.com/jemalloc/jemalloc/releases/download/5.2.1/jemalloc-5.2.1.tar.bz2 && \
+RUN cd && wget https://github.com/jemalloc/jemalloc/releases/download/5.2.1/jemalloc-5.2.1.tar.bz2 && \
     tar -xvf jemalloc-5.2.1.tar.bz2 && \
     cd jemalloc-5.2.1 && \
     export JEMALLOC_DIR=$PWD && \
@@ -63,7 +63,7 @@ RUN which jeprof
 
 
 RUN echo "Installing prometheus"
-RUN cd && \ wget https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.linux-amd64.tar.gz && \
+RUN cd && wget https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.linux-amd64.tar.gz && \
     tar -xvf prometheus-3.5.0.linux-amd64.tar.gz
 RUN cd && which ~/prometheus-3.5.0.linux-amd64/prometheus
 
