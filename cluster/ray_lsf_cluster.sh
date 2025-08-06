@@ -48,7 +48,6 @@ export head_node_ip
 export cluster_address
 
 apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir &
-sleep 10
 
 ############################## ADD WORKER NODES
 
@@ -56,8 +55,8 @@ worker_ids=()
 num_workers=$((nodes - 1))
 for i in $(seq 1 $num_workers)
 do
-    mkdir -p "${outdir}/ray_worker_logs/ray_worker_${i}"
-    echo "Adding worker: ${outdir}/ray_worker_logs/ray_worker_${i}"
+    mkdir -p "${outdir}/ray_worker_${i}"
+    echo "Adding worker: ${outdir}/ray_worker_${i}"
     if [[ "$exclusive" == "true" ]]; then
         echo "Exclusive mode is enabled"
         job="bsub -cwd "$(pwd)" \
@@ -66,7 +65,7 @@ do
             -x \
             -n $cpus \
             -gpu "num=$gpus:mode=shared" \
-            -o "${outdir}/ray_worker_logs/ray_worker_${i}.log" \
+            -o "${outdir}/ray_worker_${i}.log" \
             apptainer exec --userns --nv \
               --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
                 $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
@@ -77,7 +76,7 @@ do
             -J "${jobname}_ray_worker_${i}" \
             -n $cpus \
             -gpu "num=$gpus:mode=shared" \
-            -o "${outdir}/ray_worker_logs/ray_worker_${i}.log" \
+            -o "${outdir}/ray_worker_${i}.log" \
             apptainer exec --userns --nv \
               --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
                 $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
