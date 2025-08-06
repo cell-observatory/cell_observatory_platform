@@ -40,10 +40,10 @@ elif command -v bsub >/dev/null 2>&1; then
     echo "LSF is available on this cluster"
     lsid
     scheduler="lsf"
+    echo "Ray worker LSF ID: $LSB_JOBID"
 else
     echo "Neither SLURM nor LSF is available on this cluster"
     scheduler="none"
-    echo "Ray worker LSF ID: $LSB_JOBID"
 fi
 
 sleep infinity

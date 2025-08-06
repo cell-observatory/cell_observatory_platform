@@ -58,8 +58,8 @@ worker_ids=()
 num_workers=$((nodes - 1))
 for i in $(seq 1 $num_workers)
 do
-    mkdir -p "${outdir}/ray_worker_logs/ray_worker_${i}"
-    echo "Adding worker: ${outdir}/ray_worker_logs/ray_worker_${i}"
+    mkdir -p "${outdir}/ray_worker_${i}"
+    echo "Adding worker: ${outdir}/ray_worker_${i}"
     if [[ "$exclusive" == "true" ]]; then
         echo "Exclusive mode is enabled"
         jid=$(sbatch  --partition $partition \
@@ -67,10 +67,10 @@ do
                 --nodes 1 \
                 --ntasks 1 \
                 --exclusive \
-                --output="${outdir}/ray_worker_logs/ray_worker_${i}.log" \
+                --output="${outdir}/ray_worker_${i}.log" \
                 --export=ALL \
                 --wrap="apptainer exec --userns --nv \
-                  --bind $workspace  --bind $bind --bind $outdir/ray_worker_logs/ray_worker_${i}:$tmpdir \
+                  --bind $workspace  --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
                   $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
                   -a $cluster_address -c $cpus -g $gpus -t $tmpdir" \
                 | awk '{print $4}')
@@ -82,10 +82,10 @@ do
                 --cpus-per-task=$cpus \
                 --gres=gpu:$gpus \
                 --mem=$mem \
-                --output="${outdir}/ray_worker_logs/ray_worker_${i}.log" \
+                --output="${outdir}/ray_worker_${i}.log" \
                 --export=ALL \
                 --wrap="apptainer exec --userns --nv \
-                  --bind $workspace --bind $bind --bind $outdir/ray_worker_logs/ray_worker_${i}:$tmpdir \
+                  --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
                   $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
                   -a $cluster_address -c $cpus -g $gpus -t $tmpdir" \
                 | awk '{print $4}')

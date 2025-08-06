@@ -62,14 +62,6 @@ clusters:
   gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 8 # number of cpu cores per gpu
   mem_per_cpu: 40000 # ram per cpu core
-  scaling_config:
-    use_gpu: true
-    num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
-    resources_per_worker:
-      CPU: 0
-      GPU: 1
-    trainer_resources:
-      CPU: 0
 
 #paths:
 paths:
