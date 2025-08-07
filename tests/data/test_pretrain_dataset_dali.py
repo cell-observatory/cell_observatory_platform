@@ -55,11 +55,11 @@ def test_dataloader_dali(config):
     )
     pipe.build()
     dataloader = DALIGenericIterator(
-        pipelines = pipe,
-        output_map = ["data_tensor"],
-        size = dataset.full_iterations * config.clusters.batch_size_per_gpu,
-        auto_reset = True,
-        last_batch_policy = instantiate(config.datasets.dali_last_batch_policy)
+        pipelines=pipe,
+        output_map=["data_tensor", "get_item_time"] if dataset.time else ["data_tensor"],
+        size=dataset.full_iterations * config.clusters.batch_size_per_gpu,
+        auto_reset=True,
+        last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
     )
 
     for idx, data_sample in enumerate(dataloader):
