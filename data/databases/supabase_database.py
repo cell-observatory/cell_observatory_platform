@@ -9,6 +9,8 @@ import pandas as pd
 from dotenv import load_dotenv
 import connectorx as cx
 
+from data.io import load_hypercubes_dataframe
+
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
@@ -92,13 +94,19 @@ class SupabaseDatabase:
         self._database_url = self._load_uri()
 
         if self.fetch_hypercubes_dataframe:
-            # if use_cached_hypercubes_dataframe is True, it is assumed that
-            # hypercubes_dataframe_path points at a valid CSV file
             if self.use_cached_hypercubes_dataframe:
-                self.hypercubes_dataframe = pd.read_csv(self.hypercubes_dataframe_path).iloc[:max_hypercubes, :]
+                # we assume that hypercubes_dataframe_path has a valid csv
+                self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
+                    hypercubes_dataframe_path=self.hypercubes_dataframe_path,
+                    server_folder_path=server_folder_path,
+                    max_rois=max_rois,
+                    max_tiles=max_tiles,
+                    max_hypercubes=max_hypercubes,
+                    hpf_list=hpf_list,
+                    roi_list=roi_list,
+                    tile_list=tile_list
+                )
 
-                if self.server_folder_path is not None:
-                    self.hypercubes_dataframe['server_folder'] = self.server_folder_path
             else:
                 self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
                     num_timepoints=num_timepoints,
@@ -109,11 +117,11 @@ class SupabaseDatabase:
                     roi_list=roi_list,
                     tile_list=tile_list
                 )
-
-                if self.server_folder_path is not None:
-                    self.hypercubes_dataframe['server_folder'] = self.server_folder_path
-
                 self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
+
+            if self.server_folder_path is not None:
+                self.hypercubes_dataframe['server_folder'] = self.server_folder_path
+
         else:
             self.hypercubes_dataframe = None
 

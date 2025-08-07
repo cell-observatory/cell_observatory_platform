@@ -62,11 +62,8 @@ datasets:
   patch_shape: [4, 16, 16, 16]
 
   split: 0.0 # no split for benchmarking
+  max_hypercubes: 100000
 
-  databases:
-    max_hypercubes: 100000
-    use_cached_hypercubes_dataframe: true # use cached hypercubes dataframe for faster loading
-    protocol: cursor
 
 clusters:
   launcher_type: local # type of launcher to use

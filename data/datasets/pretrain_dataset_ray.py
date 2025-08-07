@@ -13,7 +13,7 @@ import tensorstore as ts
 from omegaconf import DictConfig
 from hydra.utils import instantiate, get_method
 
-from data.io import read_zarr
+from data.io import read_zarr, load_hypercubes_dataframe
 from data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
 
 import ray
@@ -180,13 +180,19 @@ class PretrainDatasourceRay(Datasource):
     """
 
     def __init__(self,
-                 hypercubes_dataframe_path: Path,
-                 input_layout: MULTICHANNEL_HYPERCUBE,
-                 server_folder_path: Optional[Path] = None,
-                 dtype: TENSORSTORE_DTYPES = TENSORSTORE_DTYPES.fp16,
-                 indices: Optional[List[int]] = None,
-                 time: bool = True,
-                 ):
+         hypercubes_dataframe_path: Path,
+         input_layout: MULTICHANNEL_HYPERCUBE,
+         server_folder_path: Optional[Path] = None,
+         dtype: TENSORSTORE_DTYPES = TENSORSTORE_DTYPES.fp16,
+         indices: Optional[List[int]] = None,
+         time: bool = True,
+         max_rois: Optional[int] = None,
+         max_tiles: Optional[int] = None,
+         max_hypercubes: Optional[int] = None,
+         hpf_list: Optional[Iterable[int]] = None,
+         roi_list: Optional[Iterable[int]] = None,
+         tile_list: Optional[Iterable[str]] = None,
+    ):
         self.input_layout = input_layout
 
         hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
@@ -194,7 +200,16 @@ class PretrainDatasourceRay(Datasource):
             raise FileNotFoundError(hypercubes_dataframe_path)
 
         self.server_folder_path = str(server_folder_path) if server_folder_path else None
-        self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(hypercubes_dataframe_path)
+        self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
+            hypercubes_dataframe_path=hypercubes_dataframe_path,
+            server_folder_path=server_folder_path,
+            max_rois=max_rois,
+            max_tiles=max_tiles,
+            max_hypercubes=max_hypercubes,
+            hpf_list=hpf_list,
+            roi_list=roi_list,
+            tile_list=tile_list
+        )
 
         if indices is not None:
             self.hypercubes_dataframe = self.hypercubes_dataframe.iloc[indices].reset_index(drop=True)
@@ -218,18 +233,6 @@ class PretrainDatasourceRay(Datasource):
             return voxels * 4
         else:
             raise ValueError(f"Unsupported dtype: {dtype}")
-
-    def _process_tables(self, hypercubes_dataframe_path) -> tuple[pd.DataFrame, Dict]:
-        if not hypercubes_dataframe_path.exists():
-            raise FileNotFoundError(f"{hypercubes_dataframe_path} does not exist")
-
-        hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
-        with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
-            configs = ujson.load(f)
-
-        if self.server_folder_path is not None:
-            hypercubes['server_folder'] = self.server_folder_path
-        return hypercubes, configs
 
     def get_name(self) -> str:
         return "PretrainHypercube"
@@ -265,7 +268,6 @@ class PretrainDatasourceRay(Datasource):
             meta = BlockMetadata(
                 num_rows=len(shard),
                 size_bytes=self._bytes_per_cube * len(shard),
-                schema=None,
                 input_files=None,
                 exec_stats=None,
             )
@@ -275,12 +277,21 @@ class PretrainDatasourceRay(Datasource):
 
 
 def get_dataset_ray(cfg: DictConfig, indices: Optional[List[int]]):
-    datasource = instantiate(cfg.datasets.dataset,
-                             hypercubes_dataframe_path=cfg.datasets.databases.hypercubes_dataframe_path,
-                             server_folder_path=cfg.paths.server_folder_path,
-                             dtype=cfg.dataset_dtype,
-                             input_layout=cfg.datasets.dataset.input_layout,
-                             indices=indices)
+    datasource = instantiate(
+        cfg.datasets.dataset,
+        hypercubes_dataframe_path=cfg.datasets.databases.hypercubes_dataframe_path,
+        server_folder_path=cfg.paths.server_folder_path,
+        dtype=cfg.dataset_dtype,
+        input_layout=cfg.datasets.dataset.input_layout,
+        indices=indices,
+        max_rois=cfg.datasets.max_rois,
+        max_tiles=cfg.datasets.max_tiles,
+        max_hypercubes=cfg.datasets.max_hypercubes,
+        hpf_list=cfg.datasets.hpf_list,
+        roi_list=cfg.datasets.roi_list,
+        tile_list=cfg.datasets.tile_list,
+
+    )
 
     dataset = ray.data.read_datasource(datasource)
 

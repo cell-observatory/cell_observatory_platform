@@ -224,7 +224,7 @@ defaults:
 
 ## Datasets
 
-**`BaseDataset:`** Abstract `PyTorch` dataset class that takes local data tables from `Database` class and creates fast indexes through four key methods: `_process_tables()` filters data, `_build_index()` converts DataFrames to list of dicts for `O(1)` access, `_load_sample()` reads image data using zarr handles, and `_collate()` converts raw data into structured objects.
+**`BaseDataset:`** Abstract `PyTorch` dataset class that takes local data tables from `Database` class and creates fast indexes through four key methods:`_build_index()` converts DataFrames to list of dicts for `O(1)` access, `_load_sample()` reads image data using zarr handles, and `_collate()` converts raw data into structured objects.
 
 **`Transformation:`** Transform pipeline class that sequentially applies data augmentations and preprocessing transforms to `DataSample` objects, enabling modular and configurable data preprocessing workflows.
 

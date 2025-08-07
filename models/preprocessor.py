@@ -25,8 +25,8 @@ class TorchPreprocessor(torch.nn.Module):
         inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
         # inputs, meta = data_sample['data_tensor'], {}
 
-        # if isinstance(inputs, list):
-        #     inputs = torch.stack(inputs, dim=0)
+        if isinstance(inputs, list):
+            inputs = torch.stack(inputs, dim=0)
 
         # TODO: this is relatively slow on GPU, consider moving to CPU
         #        or skipping this check

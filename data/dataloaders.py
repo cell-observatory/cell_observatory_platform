@@ -41,7 +41,14 @@ def build_dataset(cfg, transforms=None):
     dataset = instantiate(
         cfg.datasets.dataset,
         hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
-        transforms=transforms
+        server_folder_path=cfg.paths.server_folder_path,
+        transforms=transforms,
+        max_rois=cfg.datasets.max_rois,
+        max_tiles=cfg.datasets.max_tiles,
+        max_hypercubes=cfg.datasets.max_hypercubes,
+        hpf_list=cfg.datasets.hpf_list,
+        roi_list=cfg.datasets.roi_list,
+        tile_list=cfg.datasets.tile_list,
     )
     return dataset
 
@@ -72,15 +79,29 @@ def build_dali_dataset(cfg, transforms=None):
             cfg.datasets.dataset,
             transforms=transforms,
             hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
+            server_folder_path=cfg.paths.server_folder_path,
             batch_size=cfg.clusters.batch_size_per_gpu,
-            indices=train_indices
+            indices=train_indices,
+            max_rois=cfg.datasets.max_rois,
+            max_tiles=cfg.datasets.max_tiles,
+            max_hypercubes=cfg.datasets.max_hypercubes,
+            hpf_list=cfg.datasets.hpf_list,
+            roi_list=cfg.datasets.roi_list,
+            tile_list=cfg.datasets.tile_list,
         )
         val_dataset = instantiate(
             cfg.datasets.dataset,
             transforms=transforms,
             hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
+            server_folder_path=cfg.paths.server_folder_path,
             batch_size=cfg.clusters.batch_size_per_gpu,
-            indices=val_indices
+            indices=val_indices,
+            max_rois=cfg.datasets.max_rois,
+            max_tiles=cfg.datasets.max_tiles,
+            max_hypercubes=cfg.datasets.max_hypercubes,
+            hpf_list=cfg.datasets.hpf_list,
+            roi_list=cfg.datasets.roi_list,
+            tile_list=cfg.datasets.tile_list,
         )
 
         return train_dataset, val_dataset
@@ -90,7 +111,15 @@ def build_dali_dataset(cfg, transforms=None):
             cfg.datasets.dataset,
             transforms=transforms,
             hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
-            batch_size=cfg.clusters.batch_size_per_gpu)
+            server_folder_path=cfg.paths.server_folder_path,
+            batch_size=cfg.clusters.batch_size_per_gpu,
+            max_rois=cfg.datasets.max_rois,
+            max_tiles=cfg.datasets.max_tiles,
+            max_hypercubes=cfg.datasets.max_hypercubes,
+            hpf_list=cfg.datasets.hpf_list,
+            roi_list=cfg.datasets.roi_list,
+            tile_list=cfg.datasets.tile_list,
+        )
 
     return dataset, None
 

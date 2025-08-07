@@ -6,16 +6,17 @@ dbname: 'staging'
 
 num_timepoints: ${datasets.input_shape.0} # number of timepoints for each hypercube
 
-max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-max_hypercubes: null # maximum number of hypercubes to return
+max_rois: ${datasets.max_rois} # maximum number of ROIs (each ROI can have dozens of tiles)
+max_tiles: ${datasets.max_tiles} # maximum number of tiles (each tile can have thousands of hypercubes)
+max_hypercubes: ${datasets.max_hypercubes} # maximum number of hypercubes to return
 
-hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
-roi_list: null # list of specific ROIs to filter
-tile_list: null # list of specific tiles to filter
+hpf_list: ${datasets.hpf_list} # list of specific HPFs (hours-post-fertilization in hours) to filter
+roi_list: ${datasets.roi_list} # list of specific ROIs to filter
+tile_list: ${datasets.tile_list} # list of specific tiles to filter
+
 verbose: true # to print debug messages
 fetch_hypercubes_dataframe: true # automatically initialize the database based on the provided parameters
-hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv # path to the hypercubes dataframe (path/to/repo/databases/default_hypercubes_dataframe.csv)
-use_cached_hypercubes_dataframe: false # if True, will use the cached hypercubes dataframe from the given path
-protocol: binary # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+hypercubes_dataframe_path: ${datasets.hypercubes_dataframe_path}
+use_cached_hypercubes_dataframe: ${datasets.use_cached_hypercubes_dataframe} # if True, will use the cached hypercubes dataframe from the given path
+protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 server_folder_path: ${paths.server_folder_path}
