@@ -36,7 +36,14 @@ exec_pipelined: true
 dataset:
   _target_: data.datasets.pretrain_dataset_dali.PretrainDatasetDali
   dtype: ${dataset_dtype}
-  hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
+  hypercubes_dataframe_path: ${datasets.hypercubes_dataframe_path}
+  server_folder_path: ${datasets.server_folder_path}
+  max_rois: ${datasets.max_rois}
+  max_tiles: ${datasets.max_tiles}
+  max_hypercubes: ${datasets.max_hypercubes}
+  hpf_list: ${datasets.hpf_list}
+  roi_list: ${datasets.roi_list}
+  tile_list: ${datasets.tile_list}
   time: true
 
   input_layout:
