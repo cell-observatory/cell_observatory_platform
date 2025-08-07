@@ -389,12 +389,16 @@ def enable_optimizations(cfg: DictConfig, model: nn.Module):
     return model
 
 
-def log_data_timings(trainer, 
-                     idx, 
-                     data_sample: dict, 
-                     loss_dict: dict, 
-                     type: str = "train",
+def log_data_timings(
+    trainer,
+    idx,
+    data_sample: dict,
+    loss_dict: dict,
+    type: str = "train",
 ):
+    assert data_sample is not None, "data_sample is None"
+    assert data_sample['metainfo'] is not None, "data_sample['metainfo'] is None"
+
     data_time = data_sample['metainfo'].get('data_time', None)
     if data_time is not None:
         trainer.event_recorder.put_scalars(

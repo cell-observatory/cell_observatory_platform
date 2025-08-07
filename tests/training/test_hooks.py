@@ -145,7 +145,7 @@ def _test_hooks_dist(cfg):
         # records step time if not in warmup
         # if in warmup, it just resets the 
         # step timer and total timer
-        timer.after_step(None, None, {})
+        timer.after_step({'metainfo': {}}, None, {})
         trainer._iter = step + 1
     # gets total time including hooks
     # by looking at time - _start_time diff.
@@ -170,7 +170,7 @@ def _test_hooks_dist(cfg):
     for vstep in range(3):
         timer.before_val_step()
         time.sleep(0.1)
-        timer.after_val_step(None, None, {})
+        timer.after_val_step({'metainfo': {}}, None, {})
         trainer._val_iter = vstep + 1
 
     time.sleep(0.1) # pretend some extra val work
