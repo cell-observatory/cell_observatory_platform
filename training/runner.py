@@ -48,6 +48,7 @@ def initialize_session(cfg: DictConfig):
             address=f"{address}:{port}",
             log_to_driver=True,
             runtime_env=runtime_env,
+            object_store_memory=cfg.clusters.object_store_memory,
         )
 
     else:
@@ -57,12 +58,12 @@ def initialize_session(cfg: DictConfig):
         raylogsdir = Path(cfg.paths.outdir)
         os.symlink(raylogsdir, tmpdir, target_is_directory=True)
         logger.info(f"Link outdir to tmpdir: {cfg.paths.outdir} -> {tmpdir}")
-
         init(
             log_to_driver=True,
             runtime_env=runtime_env,
             num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
             num_gpus=cfg.clusters.total_gpus,
+            object_store_memory=cfg.clusters.object_store_memory,
             ignore_reinit_error=True,
             _temp_dir=tmpdir,
         )
