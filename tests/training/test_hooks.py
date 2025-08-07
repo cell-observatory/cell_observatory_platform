@@ -60,14 +60,14 @@ def _test_hooks_dist(cfg):
     # enter anomaly-detect context for the epoch
     anomaly_detector_hook.before_epoch()
 
-    # feed 5 NaNs, should just increment loss_nans
-    for i in range(5):
+    # feed 10 NaNs, should just increment loss_nans
+    for i in range(10):
         anomaly_detector_hook.after_step(data_sample=None, 
                                          outputs=None, 
                                          loss_dict={"step_loss": torch.tensor(float("nan"))})
         assert anomaly_detector_hook.loss_nans == i + 1
 
-    # on the 6th NaN should get an Exception
+    # on the 11th NaN should get an Exception
     success = False
     try:
         anomaly_detector_hook.after_step(data_sample=None, 
@@ -78,7 +78,7 @@ def _test_hooks_dist(cfg):
 
     if not success:
         raise ValueError("AnomalyDetector did not raise \
-                         an exception on the 6th NaN")
+                         an exception on the 11th NaN")
 
     # exit the anomaly context cleanly
     anomaly_detector_hook.after_epoch()
