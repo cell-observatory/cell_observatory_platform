@@ -83,7 +83,10 @@ datasets:
   max_hypercubes: 200 # maximum number of hypercubes to return
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_16_128_128_128_2_hypercube_view_1066194rows.csv
-  
+
+  exec_async: true
+  exec_pipelined: true
+
 evaluation:
   val_begin: 0
   val_interval: 1

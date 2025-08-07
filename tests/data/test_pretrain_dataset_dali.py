@@ -101,6 +101,7 @@ def test_data_pipeline_dali(config):
         config.paths.resume_checkpointdir = None
 
         config.datasets.collate_fn = None
+        config.datasets.transforms.transforms_list = ["data.transforms.normalize.NormalizeDaliWrapper"]
         config.datasets.dataset._target_ = "data.datasets.pretrain_dataset_dali.PretrainDatasetDali"
         config.datasets.dali_last_batch_policy = {
             "_target_": "nvidia.dali.plugin.base_iterator.LastBatchPolicy",

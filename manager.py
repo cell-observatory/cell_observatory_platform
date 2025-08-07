@@ -12,10 +12,7 @@ from hydra import compose
 from dotenv import load_dotenv
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf, open_dict
-
 OmegaConf.register_new_resolver("eval", eval)
-if not OmegaConf.has_resolver("not"):
-    OmegaConf.register_new_resolver("not", lambda x: not x)
 
 from utils.container import get_container_info
 
