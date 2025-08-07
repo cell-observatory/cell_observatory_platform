@@ -4,7 +4,7 @@ export NCCL_DEBUG=INFO
 export NCCL_DEBUG_SUBSYS=GRAPH
 export NCCL_P2P_LEVEL=NVL
 
-while getopts ":a:c:g:t:" option;do
+while getopts ":a:c:g:t:q:" option;do
     case "${option}" in
     a)  a=${OPTARG}
         cluster_address=$a
@@ -22,13 +22,17 @@ while getopts ":a:c:g:t:" option;do
         tmpdir=$t
         echo tmpdir=$tmpdir
     ;;
+    q)  q=${OPTARG}
+        object_store_memory=$q
+        echo object_store_memory=$object_store_memory
+    ;;
     *)  echo "Did not supply the correct arguments"
     ;;
     esac
 done
 
 echo "Starting ray worker @ $(hostname) with CPUs[$cpus] & GPUs [$gpus] => $cluster_address"
-job="ray start --address=$cluster_address --num-cpus=$cpus --num-gpus=$gpus --temp-dir=$tmpdir"
+job="ray start --address=$cluster_address --num-cpus=$cpus --num-gpus=$gpus --temp-dir=$tmpdir --object-store-memory=$object_store_memory"
 echo $job
 $job &
 

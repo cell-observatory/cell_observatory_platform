@@ -227,6 +227,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         f"-n {q(cfg.clusters.worker_nodes)} "
         f"-o {q(str(outdir))} "
         f"-p {q(cfg.clusters.partition)} "
+        f"-q {q(cfg.clusters.object_store_memory)} "
         f"-s {q(str(workspace))} "
         f"-t {q(task)} "
         f"-j {q(cfg.clusters.job_name)} "
