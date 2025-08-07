@@ -175,7 +175,7 @@ class AnomalyDetector(HookBase):
             self.loss_nans += 1
             logger.warning(f"Step loss is {loss_dict['step_loss']} \
                            for step {self.trainer._iter} in epoch {self.trainer._epoch}")
-            if self.loss_nans > 5:
+            if self.loss_nans > 10:
                 raise Exception(f"Step loss is {loss_dict['step_loss']} \
                                 for step {self.trainer._iter} in epoch {self.trainer._epoch}.")
 
