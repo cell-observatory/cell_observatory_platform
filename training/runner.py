@@ -48,7 +48,6 @@ def initialize_session(cfg: DictConfig):
             address=f"{address}:{port}",
             log_to_driver=True,
             runtime_env=runtime_env,
-            object_store_memory=cfg.clusters.object_store_memory,
         )
 
     else:
