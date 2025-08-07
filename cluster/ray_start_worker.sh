@@ -23,7 +23,7 @@ while getopts ":a:c:g:t:q:" option;do
         echo tmpdir=$tmpdir
     ;;
     q)  q=${OPTARG}
-        object_store_memory=${q//[\"\']/}
+        object_store_memory=$(printf "%.0f" "$q")
         echo object_store_memory=$object_store_memory
     ;;
     *)  echo "Did not supply the correct arguments"
