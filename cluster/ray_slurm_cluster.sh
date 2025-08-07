@@ -49,7 +49,7 @@ export head_node
 export head_node_ip
 export cluster_address
 
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir &
+apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory &
 sleep 10
 
 ############################## ADD WORKER NODES
@@ -72,7 +72,7 @@ do
                 --wrap="apptainer exec --userns --nv \
                   --bind $workspace  --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
                   $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-                  -a $cluster_address -c $cpus -g $gpus -t $tmpdir" \
+                  -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory" \
                 | awk '{print $4}')
     else
         jid=$(sbatch  --partition $partition \
@@ -87,7 +87,7 @@ do
                 --wrap="apptainer exec --userns --nv \
                   --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
                   $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-                  -a $cluster_address -c $cpus -g $gpus -t $tmpdir" \
+                  -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory" \
                 | awk '{print $4}')
     fi
 
