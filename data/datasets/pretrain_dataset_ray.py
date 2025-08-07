@@ -265,12 +265,21 @@ class PretrainDatasourceRay(Datasource):
             def _make_read_task(records_ref=shard_ref, dtype=dtype, timing=timing):
                 return _read_block(ray.get(records_ref), timing, dtype)
 
-            meta = BlockMetadata(
-                num_rows=len(shard),
-                size_bytes=self._bytes_per_cube * len(shard),
-                input_files=None,
-                exec_stats=None,
-            )
+            try:
+                meta = BlockMetadata(
+                    num_rows=len(shard),
+                    size_bytes=self._bytes_per_cube * len(shard),
+                    input_files=None,
+                    exec_stats=None,
+                    schema=None
+                )
+            except TypeError:
+                meta = BlockMetadata(
+                    num_rows=len(shard),
+                    size_bytes=self._bytes_per_cube * len(shard),
+                    input_files=None,
+                    exec_stats=None
+                )
             tasks.append(ReadTask(_make_read_task, meta))
 
         return tasks
