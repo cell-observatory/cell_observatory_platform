@@ -213,7 +213,7 @@ def record_init(fn):
             for name, value in bound.arguments.items()
             if name != "self"
         }
-        _init_args = init_args
+        self._init_args = init_args
         return fn(self, *args, **kwargs)
     return wrapper
 
