@@ -1,14 +1,16 @@
 import sys
 import logging
 from pathlib import Path
-from typing import Tuple, Literal
+from typing import Tuple, Literal, Optional, Iterable, Dict
 import inspect
 import functools
+import ujson
 import torch
 import numpy as np
 import tensorstore as ts
 from tifffile import TiffFile
 from skimage.io import imread, imsave
+import pandas as pd
 
 from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES
 
@@ -199,7 +201,7 @@ def get_shape_from_file_tiff(image_path: str) -> tuple:
 def record_init(fn):
     """
     Decorator for __init__ methods.  Captures every arg/kwarg you passed
-    (with defaults) into self._init_args.
+    (with defaults) into _init_args.
     """
     sig = inspect.signature(fn)
     @functools.wraps(fn)
@@ -211,6 +213,129 @@ def record_init(fn):
             for name, value in bound.arguments.items()
             if name != "self"
         }
-        self._init_args = init_args
+        _init_args = init_args
         return fn(self, *args, **kwargs)
     return wrapper
+
+
+def filter_hypercubes_dataframe_storage_server(
+    hypercubes_dataframe: pd.DataFrame,
+    server_folder_path: Optional[Path | str] = None
+):
+    if server_folder_path is None or str(server_folder_path).startswith('/clusterfs'):
+        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists']]
+        print(f"Using ABC {server_folder_path=}, {hypercubes_dataframe.shape}")
+
+    elif str(server_folder_path).startswith('/groups'):
+        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_prfs']]
+        hypercubes_dataframe['server_folder'] = server_folder_path
+        print(f"Using Janelia {server_folder_path=}, {hypercubes_dataframe.shape}")
+
+    elif str(server_folder_path).startswith('/aws'):
+        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_aws']]
+        hypercubes_dataframe['server_folder'] = server_folder_path
+        print(f"Using AWS {server_folder_path=}, {hypercubes_dataframe.shape}")
+
+    else:
+        raise ValueError(f"Unknown server_folder_path: {server_folder_path}")
+
+    return hypercubes_dataframe
+
+
+def apply_hypercubes_dataframe_filters(
+    hypercubes_dataframe: pd.DataFrame,
+    max_rois: Optional[int] = None,
+    max_tiles: Optional[int] = None,
+    max_hypercubes: Optional[int] = None,
+    hpf_list: Optional[Iterable[int]] = None,
+    roi_list: Optional[Iterable[int]] = None,
+    tile_list: Optional[Iterable[str]] = None,
+):
+    print(
+        f"Applied filters:\n"
+        f"{hpf_list=}\n"
+        f"{roi_list=}\n"
+        f"{tile_list=}\n"
+        f"{max_rois=}\n"
+        f"{max_tiles=}\n"
+        f"{max_hypercubes=}"
+    )
+
+    if roi_list is not None or tile_list is not None:
+        rois = tuple(roi_list) if len(roi_list) > 1 else f"({roi_list[0]})"
+        tiles = tuple(tile_list) if len(tile_list) > 1 else f"({tile_list[0]})"
+
+        if rois is not None and tiles is not None:
+            hypercubes_dataframe = hypercubes_dataframe[
+                (hypercubes_dataframe['roi'].isin(rois)) & (hypercubes_dataframe['tile'].isin(tiles))
+                ]
+        elif rois is not None:
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['roi'].isin(rois)]
+        elif tiles is not None:
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['tile'].isin(tiles)]
+
+    if hpf_list is not None:
+        hpfs = tuple(hpf_list) if len(hpf_list) > 1 else f"({hpf_list[0]})"
+        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['hpf'].isin(hpfs)]
+
+    if max_rois is not None:
+        unique_rois = hypercubes_dataframe['roi'].unique().tolist()
+        hypercubes_dataframe = hypercubes_dataframe[
+            hypercubes_dataframe['roi'].isin(unique_rois[:max_rois])
+        ]
+
+    if max_tiles is not None:
+        unique_tiles = hypercubes_dataframe['tile'].unique().tolist()
+        hypercubes_dataframe = hypercubes_dataframe[
+            hypercubes_dataframe['tile'].isin(unique_tiles[:max_tiles])
+        ]
+
+    if max_hypercubes is not None:
+        hypercubes_dataframe = hypercubes_dataframe.head(max_hypercubes)
+
+    return hypercubes_dataframe
+
+
+def load_hypercubes_dataframe(
+    hypercubes_dataframe_path: str | Path,
+    max_rois: Optional[int] = None,
+    max_tiles: Optional[int] = None,
+    max_hypercubes: Optional[int] = None,
+    hpf_list: Optional[Iterable[int]] = None,
+    roi_list: Optional[Iterable[int]] = None,
+    tile_list: Optional[Iterable[str]] = None,
+    server_folder_path: Optional[Path | str] = None
+) -> Tuple[pd.DataFrame, Dict]:
+
+    if not Path(hypercubes_dataframe_path).exists():
+        raise FileNotFoundError(f"{hypercubes_dataframe_path} does not exist")
+
+    hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
+    print(
+        f"Setup hypercubes dataframe from {hypercubes_dataframe_path} {hypercubes.shape}"
+    )
+
+    hypercubes = filter_hypercubes_dataframe_storage_server(
+        hypercubes_dataframe=hypercubes,
+        server_folder_path=server_folder_path,
+    )
+
+    hypercubes = apply_hypercubes_dataframe_filters(
+        hypercubes,
+        max_rois=max_rois,
+        max_tiles=max_tiles,
+        max_hypercubes=max_hypercubes,
+        hpf_list=hpf_list,
+        roi_list=roi_list,
+        tile_list=tile_list,
+    )
+
+    print(f"Loaded hypercubes dataframe with {hypercubes.shape}")
+    print(f"Columns: {hypercubes.columns}")
+    print(hypercubes.head())
+    print(hypercubes['server_folder'].head())
+
+    with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
+        configs = ujson.load(f)
+
+    return hypercubes, configs
