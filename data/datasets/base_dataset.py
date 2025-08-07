@@ -2,7 +2,7 @@ import abc
 import sys
 import time
 import logging
-from typing import Any, Callable, Optional, Sequence, Mapping, Dict, Literal
+from typing import Any, Callable, Optional, Sequence, Mapping, Dict, Literal, Iterable
 from pathlib import Path
 import ujson
 import pandas as pd
@@ -14,6 +14,7 @@ from data.structures.data_sample import DataSample
 from data.structures.image_list import cat_image_lists
 from data.data_shapes import MULTICHANNEL_HYPERCUBE
 from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES
+from data.io import load_hypercubes_dataframe
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -135,18 +136,44 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         transforms: Optional[Sequence] = None,
         dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | str = NUMPY_DTYPES.fp16,
         time: bool = True,
+        server_folder_path: Optional[Path | str] = None,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        max_hypercubes: Optional[int] = None,
+        hpf_list: Optional[Iterable[int]] = None,
+        roi_list: Optional[Iterable[int]] = None,
+        tile_list: Optional[Iterable[str]] = None,
     ):
         """
         Args:
             hypercubes_dataframe_path: path to pre-processed hypercubes dataframe from the supabase database
             input_layout: see MULTICHANNEL_HYPERCUBE
             transforms: list of optional transforms to apply to each sample (default: None)
+            dtype: data type for the dataset (default: NUMPY_DTYPES.fp16)
+            time: whether to time the dataset (default: True)
+            server_folder_path: path to override default server folder found in the supabase database
+                update this path based on where the data is stored on your local machine
+            max_rois: maximum number of ROIs (each ROI can have dozens of tiles)
+            max_tiles: maximum number of tiles (each tile can have thousands of hypercubes)
+            max_hypercubes: maximum number of hypercubes to return
+            hpf_list: list of specific HPFs (hours-post-fertilization in hours) to filter
+            roi_list: list of specific ROIs to filter
+            tile_list: list of specific tiles to filter
         """
         super().__init__()
 
         self.input_layout = input_layout
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
-        self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(self.hypercubes_dataframe_path)
+        self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
+            hypercubes_dataframe_path=self.hypercubes_dataframe_path,
+            server_folder_path=server_folder_path,
+            max_rois=max_rois,
+            max_tiles=max_tiles,
+            max_hypercubes=max_hypercubes,
+            hpf_list=hpf_list,
+            roi_list=roi_list,
+            tile_list=tile_list
+        )
         self.dtype = dtype
 
         self._index = None
@@ -155,16 +182,6 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         self.transforms = Transformations(transforms)
 
         self.time = time
-
-    def _process_tables(self, hypercubes_dataframe_path) -> tuple[pd.DataFrame, Dict]:
-        if not hypercubes_dataframe_path.exists():
-            raise FileNotFoundError(f"{hypercubes_dataframe_path} does not exist")
-
-        hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
-        with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
-            configs = ujson.load(f)
-
-        return hypercubes, configs
 
     @abc.abstractmethod
     def _build_index(self) -> None:

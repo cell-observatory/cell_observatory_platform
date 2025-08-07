@@ -2,7 +2,7 @@ import os
 import time
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Tuple, Callable, Optional, Literal
+from typing import Dict, Any, Tuple, Callable, Optional, Literal, Iterable
 
 import pandas as pd
 import ujson
@@ -14,7 +14,7 @@ import torch
 import nvidia.dali as dali
 from nvidia.dali import pipeline_def, fn, types
 
-from data.io import read_zarr
+from data.io import read_zarr, load_hypercubes_dataframe
 from utils.context import process_rank, get_world_size
 from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES, DALI_DTYPES
 
@@ -31,12 +31,28 @@ class PretrainDatasetDali:
         time: Optional[bool] = True,
         transforms: Optional[Callable] = None,
         indices: Optional[list[int]] = None,
+        server_folder_path: Optional[Path | str] = None,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        max_hypercubes: Optional[int] = None,
+        hpf_list: Optional[Iterable[int]] = None,
+        roi_list: Optional[Iterable[int]] = None,
+        tile_list: Optional[Iterable[str]] = None,
     ):
         self.input_layout = input_layout
         self.dtype = DALI_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
-        self.hypercubes_dataframe, self.hypercubes_dataframe_config = self._process_tables(self.hypercubes_dataframe_path)
+        self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
+            hypercubes_dataframe_path=self.hypercubes_dataframe_path,
+            server_folder_path=server_folder_path,
+            max_rois=max_rois,
+            max_tiles=max_tiles,
+            max_hypercubes=max_hypercubes,
+            hpf_list=hpf_list,
+            roi_list=roi_list,
+            tile_list=tile_list
+        )
 
         if indices is not None:
             self.hypercubes_dataframe = self.hypercubes_dataframe.iloc[indices].reset_index(drop=True)
@@ -77,15 +93,6 @@ class PretrainDatasetDali:
 
         self.transforms = transforms
 
-    def _process_tables(self, hypercubes_dataframe_path) -> tuple[pd.DataFrame, Dict]:
-        if not hypercubes_dataframe_path.exists():
-            raise FileNotFoundError(f"{hypercubes_dataframe_path} does not exist")
-
-        hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
-        with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
-            configs = ujson.load(f)
-
-        return hypercubes, configs
     
     def _build_index(self) -> None:
         # convert df into a list of Python dicts

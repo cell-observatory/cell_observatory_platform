@@ -33,12 +33,7 @@ runs:
         gpus_per_worker: 2
         batch_size: 32
       datasets:
-        databases:
-          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-          max_hypercubes: 400 # maximum number of hypercubes to return
-          use_cached_hypercubes_dataframe: false
-          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+        max_hypercubes: 400 # maximum number of hypercubes to return
 
   - cfg: benchmarks/abc/benchmark_training_base
     name: 3_GPUs_torch.yaml
@@ -53,12 +48,7 @@ runs:
         zero_optimization:
           stage: 2
       datasets:
-        databases:
-          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-          max_hypercubes: 1000 # maximum number of hypercubes to return
-          use_cached_hypercubes_dataframe: false
-          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+        max_hypercubes: 1000 # maximum number of hypercubes to return
 
   - cfg: benchmarks/abc/benchmark_training_base
     name: 2_GPUs_dali.yaml
@@ -72,12 +62,7 @@ runs:
         zero_optimization:
           stage: 2
       datasets:
-        databases:
-          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-          max_hypercubes: 400 # maximum number of hypercubes to return
-          use_cached_hypercubes_dataframe: false
-          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+        max_hypercubes: 400 # maximum number of hypercubes to return
       hooks:
         hooks_list:
         - _target_: training.hooks.AnomalyDetector
@@ -111,12 +96,7 @@ runs:
         zero_optimization:
           stage: 2
       datasets:
-        databases:
-          max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-          max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-          max_hypercubes: 1000 # maximum number of hypercubes to return
-          use_cached_hypercubes_dataframe: false
-          protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+        max_hypercubes: 1000 # maximum number of hypercubes to return
       hooks:
         hooks_list:
         - _target_: training.hooks.AnomalyDetector

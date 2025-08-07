@@ -149,7 +149,14 @@ def build_loader(cfg: DictConfig) -> DataLoader:
     dataset = instantiate(
         cfg.datasets.dataset,
         hypercubes_dataframe_path=Path(cfg.datasets.databases.hypercubes_dataframe_path),
-        transforms=transforms
+        transforms=transforms,
+        server_folder_path=cfg.paths.server_folder_path,
+        max_rois=cfg.datasets.max_rois,
+        max_tiles=cfg.datasets.max_tiles,
+        max_hypercubes=cfg.datasets.max_hypercubes,
+        hpf_list=cfg.datasets.hpf_list,
+        roi_list=cfg.datasets.roi_list,
+        tile_list=cfg.datasets.tile_list,
     )
 
     if isinstance(cfg.datasets.collate_fn, DictConfig):

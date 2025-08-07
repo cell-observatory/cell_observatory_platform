@@ -45,14 +45,8 @@ datasets:
 
   prefetch_factor: 1 # prefetch factor for the dataloader
   num_workers: ${clusters.cpus_per_worker}
-
-  databases:
-    max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-    max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-    max_hypercubes: 2000 # maximum number of hypercubes to return
-    use_cached_hypercubes_dataframe: true
-    # hypercubes_dataframe_path: ${paths.workdir}/databases/test_small_hypercubes_dataframe.csv
-    protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
+  max_hypercubes: 2000 # maximum number of hypercubes to return
+  hypercubes_dataframe_path: ${paths.workdir}/databases/test_small_hypercubes_dataframe.csv
 
 
 

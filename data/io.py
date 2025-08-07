@@ -333,7 +333,6 @@ def load_hypercubes_dataframe(
     print(f"Loaded hypercubes dataframe with {hypercubes.shape}")
     print(f"Columns: {hypercubes.columns}")
     print(hypercubes.head())
-    print(hypercubes['server_folder'].head())
 
     with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
         configs = ujson.load(f)
