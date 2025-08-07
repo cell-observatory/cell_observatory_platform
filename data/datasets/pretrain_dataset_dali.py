@@ -3,15 +3,6 @@ import time
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Tuple, Callable, Optional, Literal, Iterable
-
-import pandas as pd
-import ujson
-
-from hydra.utils import get_method
-
-import torch
-
-import nvidia.dali as dali
 from nvidia.dali import pipeline_def, fn, types
 
 from data.io import read_zarr, load_hypercubes_dataframe
@@ -150,8 +141,9 @@ def pretrain_dataset_pipeline(dataset):
     vol = vols[0].gpu()
 
     # apply transforms if any
-    for transform in dataset.transforms:
-        vol = transform(vol, dataset.dtype)
+    if dataset.transforms is not None and dataset.transforms != []:
+        for transform in dataset.transforms:
+            vol = transform(vol, dataset.dtype)
 
     if dataset.time:
         return vol, vols[1]

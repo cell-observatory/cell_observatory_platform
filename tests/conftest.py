@@ -11,8 +11,6 @@ from omegaconf import OmegaConf, DictConfig
 
 try:
     OmegaConf.register_new_resolver("eval", eval)
-    if not OmegaConf.has_resolver("not"):
-        OmegaConf.register_new_resolver("not", lambda x: not x)
 except ValueError:
     pass
 
