@@ -10,9 +10,12 @@ from torch.utils.data.distributed import DistributedSampler
 from hydra.utils import instantiate, get_method
 from omegaconf import DictConfig, OmegaConf
 
-if (hasattr(OmegaConf, "has_resolver") and \
-        not OmegaConf.has_resolver("eval")):
+if (hasattr(OmegaConf, "has_resolver") and not OmegaConf.has_resolver("eval")):
     OmegaConf.register_new_resolver("eval", eval)
+
+if not OmegaConf.has_resolver("not"):
+    OmegaConf.register_new_resolver("not", lambda x: not x)
+
 
 import ray
 import ray.train.torch as raytorch
