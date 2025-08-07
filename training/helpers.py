@@ -261,7 +261,7 @@ def summarize_model(
     inputs: Optional[tuple] = None,
     input_data: Optional[dict] = None
 ):
-    logdir = Path(logdir) / 'logs'
+    logdir = Path(logdir)
 
     model_logbook = {}
     model_stats = summary(
