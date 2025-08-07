@@ -32,7 +32,7 @@ while getopts ":a:c:g:t:q:" option;do
 done
 
 echo "Starting ray worker @ $(hostname) with CPUs[$cpus] & GPUs [$gpus] => $cluster_address"
-job="ray start --address=$cluster_address --num-cpus=$cpus --num-gpus=$gpus --temp-dir=$tmpdir --object-store-memory=$object_store_memory"
+job="ray start --address=$cluster_address --num-cpus=$cpus --num-gpus=$gpus --temp-dir=$tmpdir --object-store-memory=$((object_store_memory))"
 echo $job
 $job &
 
