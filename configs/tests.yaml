@@ -110,6 +110,7 @@ loggers:
 
 hooks:
   hooks_list:
+  - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.SamplerSetter
   - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer
