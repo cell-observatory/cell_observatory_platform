@@ -11,8 +11,6 @@ from nvidia.dali import fn
 from data.data_types import DALI_DTYPES
 from data.structures.image_list import ImageList
 
-import pandas as pd
-
 logging.basicConfig(
 	stream=sys.stdout,
 	level=logging.INFO,
@@ -22,15 +20,17 @@ logger = logging.getLogger(__name__)
 
 
 class Normalize:
-    def __init__(self, mean=None, std=None):
+    def __init__(self, mean=None, std=None, eps=1e-4):
         self.mean = mean
         self.std = std
+        self.eps = eps
 
     def __call__(self, data_sample):
         image = data_sample.data_tensor.tensor
 
         if self.mean is None and self.std is None:
             mean, std = data_sample.data_tensor.get_image_stats()
+            std = std.clamp_min(self.eps)
             image = (image - mean) / std
         else:
             mean = torch.tensor(self.mean, dtype=image.dtype, device=image.device)
@@ -53,12 +53,17 @@ def NormalizeDaliWrapper(data, dtype):
 
 
 class NormalizeRayWrapper:
-    def __init__(self, input_layout) -> None:
+    def __init__(self, input_layout, eps=1e-4) -> None:
         self.input_layout = input_layout
+        self.eps = eps
 
     def __call__(self, data_tensor: torch.Tensor) -> torch.Tensor:
         image_list = ImageList(data_tensor,
                         layout=self.input_layout,
                         image_sizes=[data_tensor.shape])
-        mean, std = image_list.get_image_stats()
-        return ((image_list.tensor - mean) / std)
+        mean, std = image_list.get_image_stats()     
+        std = std.clamp_min(self.eps)   
+        image = (image_list.tensor - mean) / std
+        return image
+
+        # return ((image_list.tensor - mean) / std)
