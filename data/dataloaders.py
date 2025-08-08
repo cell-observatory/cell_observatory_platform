@@ -48,6 +48,7 @@ def build_dataset(cfg, transforms=None):
         hpf_list=cfg.datasets.hpf_list,
         roi_list=cfg.datasets.roi_list,
         tile_list=cfg.datasets.tile_list,
+        occupancy_threshold=cfg.datasets.occupancy_threshold
     )
     return dataset
 
@@ -87,6 +88,7 @@ def build_dali_dataset(cfg, transforms=None):
             hpf_list=cfg.datasets.hpf_list,
             roi_list=cfg.datasets.roi_list,
             tile_list=cfg.datasets.tile_list,
+            occupancy_threshold=cfg.datasets.occupancy_threshold
         )
         val_dataset = instantiate(
             cfg.datasets.dataset,
@@ -101,6 +103,7 @@ def build_dali_dataset(cfg, transforms=None):
             hpf_list=cfg.datasets.hpf_list,
             roi_list=cfg.datasets.roi_list,
             tile_list=cfg.datasets.tile_list,
+            occupancy_threshold=cfg.datasets.occupancy_threshold
         )
 
         return train_dataset, val_dataset
@@ -118,6 +121,7 @@ def build_dali_dataset(cfg, transforms=None):
             hpf_list=cfg.datasets.hpf_list,
             roi_list=cfg.datasets.roi_list,
             tile_list=cfg.datasets.tile_list,
+            occupancy_threshold=cfg.datasets.occupancy_threshold
         )
 
     return dataset, None

@@ -29,6 +29,7 @@ class PretrainDatasetDali:
         hpf_list: Optional[Iterable[int]] = None,
         roi_list: Optional[Iterable[int]] = None,
         tile_list: Optional[Iterable[str]] = None,
+        occupancy_threshold: Optional[float] = None
     ):
         self.input_layout = input_layout
         self.dtype = DALI_DTYPES[dtype].value if isinstance(dtype, str) else dtype
@@ -42,7 +43,8 @@ class PretrainDatasetDali:
             max_hypercubes=max_hypercubes,
             hpf_list=hpf_list,
             roi_list=roi_list,
-            tile_list=tile_list
+            tile_list=tile_list,
+            occupancy_threshold=occupancy_threshold
         )
 
         if indices is not None:

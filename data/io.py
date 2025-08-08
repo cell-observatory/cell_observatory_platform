@@ -224,17 +224,17 @@ def filter_hypercubes_dataframe_storage_server(
 ):
     if server_folder_path is None or str(server_folder_path).startswith('/clusterfs'):
         hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists']]
-        print(f"Using ABC {server_folder_path=}, {hypercubes_dataframe.shape}")
+        logger.info(f"Using ABC {server_folder_path=}, {hypercubes_dataframe.shape}")
 
     elif str(server_folder_path).startswith('/groups'):
         hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_prfs']]
         hypercubes_dataframe['server_folder'] = server_folder_path
-        print(f"Using Janelia {server_folder_path=}, {hypercubes_dataframe.shape}")
+        logger.info(f"Using Janelia {server_folder_path=}, {hypercubes_dataframe.shape}")
 
     elif str(server_folder_path).startswith('/aws'):
         hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_aws']]
         hypercubes_dataframe['server_folder'] = server_folder_path
-        print(f"Using AWS {server_folder_path=}, {hypercubes_dataframe.shape}")
+        logger.info(f"Using AWS {server_folder_path=}, {hypercubes_dataframe.shape}")
 
     else:
         raise ValueError(f"Unknown server_folder_path: {server_folder_path}")
@@ -242,7 +242,7 @@ def filter_hypercubes_dataframe_storage_server(
     return hypercubes_dataframe
 
 
-def apply_hypercubes_dataframe_filters(
+def apply_hypercubes_dataframe_selections(
     hypercubes_dataframe: pd.DataFrame,
     max_rois: Optional[int] = None,
     max_tiles: Optional[int] = None,
@@ -251,8 +251,8 @@ def apply_hypercubes_dataframe_filters(
     roi_list: Optional[Iterable[int]] = None,
     tile_list: Optional[Iterable[str]] = None,
 ):
-    print(
-        f"Applied filters:\n"
+    logger.info(
+        f"\nApplied selections:\n"
         f"{hpf_list=}\n"
         f"{roi_list=}\n"
         f"{tile_list=}\n"
@@ -296,6 +296,50 @@ def apply_hypercubes_dataframe_filters(
     return hypercubes_dataframe
 
 
+def apply_occupancy_threshold(
+    hypercubes_dataframe: pd.DataFrame,
+    occupancy_threshold: Optional[float] = 0.
+):
+    def _string_set_to_list(value):
+        if isinstance(value, str):
+            clean_str = value.strip('{}')
+            if clean_str:
+                return [float(x.strip()) for x in clean_str.split(',') if x.strip()]
+            else:
+                return []
+        elif isinstance(value, list):
+            return [float(x) for x in value]
+        else:
+            return [float(value)] if value is not None else []
+
+    t = 0. if occupancy_threshold is None else occupancy_threshold
+
+    logger.info(f"\nApplied filters:\n{occupancy_threshold=}")
+
+    hypercubes_dataframe['occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(_string_set_to_list)
+    hypercubes_dataframe['mean_occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(np.mean)
+
+    hypercubes_dataframe['occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(_string_set_to_list)
+    hypercubes_dataframe['mean_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.mean)
+
+    return hypercubes_dataframe[
+        (hypercubes_dataframe['mean_occupancy_ratios_ch_0'] >= t) &
+        (hypercubes_dataframe['mean_occupancy_ratios_ch_1'] >= t)
+    ]
+
+
+def apply_hypercubes_dataframe_filters(
+    hypercubes_dataframe: pd.DataFrame,
+    occupancy_threshold: Optional[float] = 0.
+):
+    hypercubes_dataframe = apply_occupancy_threshold(
+        hypercubes_dataframe=hypercubes_dataframe,
+        occupancy_threshold=occupancy_threshold,
+    )
+
+    return hypercubes_dataframe
+
+
 def load_hypercubes_dataframe(
     hypercubes_dataframe_path: str | Path,
     max_rois: Optional[int] = None,
@@ -304,14 +348,15 @@ def load_hypercubes_dataframe(
     hpf_list: Optional[Iterable[int]] = None,
     roi_list: Optional[Iterable[int]] = None,
     tile_list: Optional[Iterable[str]] = None,
-    server_folder_path: Optional[Path | str] = None
+    server_folder_path: Optional[Path | str] = None,
+    occupancy_threshold: Optional[float] = None
 ) -> Tuple[pd.DataFrame, Dict]:
 
     if not Path(hypercubes_dataframe_path).exists():
         raise FileNotFoundError(f"{hypercubes_dataframe_path} does not exist")
 
     hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
-    print(
+    logger.info(
         f"Setup hypercubes dataframe from {hypercubes_dataframe_path} {hypercubes.shape}"
     )
 
@@ -321,7 +366,12 @@ def load_hypercubes_dataframe(
     )
 
     hypercubes = apply_hypercubes_dataframe_filters(
-        hypercubes,
+        hypercubes_dataframe=hypercubes,
+        occupancy_threshold=occupancy_threshold,
+    )
+
+    hypercubes = apply_hypercubes_dataframe_selections(
+        hypercubes_dataframe=hypercubes,
         max_rois=max_rois,
         max_tiles=max_tiles,
         max_hypercubes=max_hypercubes,
@@ -330,9 +380,9 @@ def load_hypercubes_dataframe(
         tile_list=tile_list,
     )
 
-    print(f"Loaded hypercubes dataframe with {hypercubes.shape}")
-    print(f"Columns: {hypercubes.columns}")
-    print(hypercubes.head())
+    logger.info(f"Loaded hypercubes dataframe with {hypercubes.shape}")
+    logger.info(f"Columns: {hypercubes.columns}")
+    logger.info(hypercubes.head())
 
     with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
         configs = ujson.load(f)

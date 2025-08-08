@@ -157,6 +157,7 @@ def build_loader(cfg: DictConfig) -> DataLoader:
         hpf_list=cfg.datasets.hpf_list,
         roi_list=cfg.datasets.roi_list,
         tile_list=cfg.datasets.tile_list,
+        occupancy_threshold=cfg.datasets.occupancy_threshold
     )
 
     if isinstance(cfg.datasets.collate_fn, DictConfig):
