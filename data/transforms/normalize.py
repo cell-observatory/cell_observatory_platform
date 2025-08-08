@@ -65,5 +65,3 @@ class NormalizeRayWrapper:
         std = std.clamp_min(self.eps)   
         image = (image_list.tensor - mean) / std
         return image
-
-        # return ((image_list.tensor - mean) / std)
