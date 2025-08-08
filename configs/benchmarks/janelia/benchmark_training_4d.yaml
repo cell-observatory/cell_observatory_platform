@@ -24,46 +24,35 @@ data_base_dir: training_infrastructure/training_mae_4d
 
 runs:
   - cfg: benchmarks/janelia/benchmark_training_base
-    name: 1gpus_8cores_h100_mae_large.yaml
+    name: 1xh200_mae_large.yaml
     defaults_overrides:
-      - clusters: clusters/janelia_h100
-    overrides:
-      clusters:
-        batch_size: 32 # total batch size
-        worker_nodes: 1 # number of worker nodes
-        gpus_per_worker: 1 # number of gpus per worker node
-        cpus_per_gpu: 8 # number of cpu cores per gpu
-        mem_per_cpu: 40000 # ram per cpu core
-  - cfg: benchmarks/janelia/benchmark_training_base
-    name: 4gpus_8cores_h100_mae_large.yaml
-    defaults_overrides:
-      - clusters: clusters/janelia_h100
-    overrides:
-      clusters:
-        batch_size: 128 # total batch size
-        worker_nodes: 1 # number of worker nodes
-        gpus_per_worker: 4 # number of gpus per worker node
-        cpus_per_gpu: 8 # number of cpu cores per gpu
-        mem_per_cpu: 40000 # ram per cpu core
-  - cfg: benchmarks/janelia/benchmark_training_base
-    name: 8gpus_8cores_h100_mae_large.yaml
-    defaults_overrides:
-      - clusters: clusters/janelia_h100
-    overrides:
-      clusters:
-        batch_size: 256 # total batch size
-        worker_nodes: 1 # number of worker nodes
-        gpus_per_worker: 8 # number of gpus per worker node
-        cpus_per_gpu: 8 # number of cpu cores per gpu
-        mem_per_cpu: 40000 # ram per cpu core
-  - cfg: benchmarks/janelia/benchmark_training_base
-    name: 16gpus_8cores_h100_mae_large.yaml
-    defaults_overrides:
-      - clusters: clusters/janelia_h100
+      - clusters: clusters/janelia_h200
     overrides:
       clusters:
         batch_size: 512 # total batch size
+        worker_nodes: 1 # number of worker nodes
+        gpus_per_worker: 8 # number of gpus per worker node
+        cpus_per_gpu: 12 # number of cpu cores per gpu
+        mem_per_cpu: 40000 # ram per cpu core
+  - cfg: benchmarks/janelia/benchmark_training_base
+    name: 2xh200_mae_large.yaml
+    defaults_overrides:
+      - clusters: clusters/janelia_h200
+    overrides:
+      clusters:
+        batch_size: 1024 # total batch size
         worker_nodes: 2 # number of worker nodes
         gpus_per_worker: 8 # number of gpus per worker node
-        cpus_per_gpu: 8 # number of cpu cores per gpu
+        cpus_per_gpu: 12 # number of cpu cores per gpu
+        mem_per_cpu: 40000 # ram per cpu core
+  - cfg: benchmarks/janelia/benchmark_training_base
+    name: 3xh100_mae_large.yaml
+    defaults_overrides:
+      - clusters: clusters/janelia_h100
+    overrides:
+      clusters:
+        batch_size: 768 # total batch size
+        worker_nodes: 4 # number of worker nodes
+        gpus_per_worker: 8 # number of gpus per worker node
+        cpus_per_gpu: 12 # number of cpu cores per gpu
         mem_per_cpu: 40000 # ram per cpu core

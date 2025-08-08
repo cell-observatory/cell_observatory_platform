@@ -16,8 +16,8 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: platform_benchmark_scaling
-wandb_project: platform_benchmark_scaling
+experiment_name: platform_benchmark_multinode_training
+wandb_project: platform_benchmark_multinode_training
 
 # task
 task: pretrain_mae
@@ -81,11 +81,9 @@ datasets:
   return_dataloader: true
   distributed_sampler: true
 
-  occupancy_threshold: 0.5 # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
-
   prefetch_factor: 4 # prefetch factor for the dataloader
   num_workers: ${clusters.cpus_per_gpu}  # number of workers for the dataloader
-  max_hypercubes: 10000 # maximum number of hypercubes to return
+  max_hypercubes: 100000 # maximum number of hypercubes to return
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_16_128_128_128_2_hypercube_view_1066194rows.csv
 
@@ -94,7 +92,7 @@ datasets:
 # hooks
 hooks:
   hooks_list:
-  - _target_: training.hooks.AnomalyDetector
+#  - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer
   - _target_: training.hooks.PeriodicWriter
