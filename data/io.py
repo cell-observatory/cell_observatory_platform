@@ -318,13 +318,17 @@ def apply_occupancy_threshold(
 
     hypercubes_dataframe['occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(_string_set_to_list)
     hypercubes_dataframe['mean_occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(np.mean)
+    hypercubes_dataframe['min_occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(np.min)
+    hypercubes_dataframe['med_occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(np.median)
 
     hypercubes_dataframe['occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(_string_set_to_list)
     hypercubes_dataframe['mean_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.mean)
+    hypercubes_dataframe['min_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.min)
+    hypercubes_dataframe['med_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.median)
 
     return hypercubes_dataframe[
-        (hypercubes_dataframe['mean_occupancy_ratios_ch_0'] >= t) &
-        (hypercubes_dataframe['mean_occupancy_ratios_ch_1'] >= t)
+        (hypercubes_dataframe['min_occupancy_ratios_ch_0'] >= t) &
+        (hypercubes_dataframe['min_occupancy_ratios_ch_1'] >= t)
     ]
 
 
@@ -335,6 +339,10 @@ def apply_hypercubes_dataframe_filters(
     hypercubes_dataframe = apply_occupancy_threshold(
         hypercubes_dataframe=hypercubes_dataframe,
         occupancy_threshold=occupancy_threshold,
+    )
+
+    logger.info(hypercubes_dataframe[['min_occupancy_ratios_ch_0', 'min_occupancy_ratios_ch_1']].describe(
+        percentiles=[0, .25, .5, .75, .8, .9, .95, .99, 1])
     )
 
     return hypercubes_dataframe
