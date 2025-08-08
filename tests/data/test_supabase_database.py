@@ -10,7 +10,6 @@ from tests.conftest import config
 import warnings
 warnings.filterwarnings("ignore")
 
-import pytest
 pytest.skip("Database connection not available", allow_module_level=True)
 
 
