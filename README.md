@@ -41,7 +41,7 @@ git pull --recurse-submodules
 
 
 ## Setup environment variables
-Rename `.env.example` file to `.env` which will be automatically loaded into the container and will be gitignored
+Rename `.env.example` file to `.env` which will be automatically loaded into the container and will be gitignored. The Supabase related environment variables enable database functionality. The W&B API key enables logging functionality. The `REPO_NAME`, `DATA_DIR`, and `STORAGE_SERVER_DIR` environment variables are leverged in the `configs/paths` configuration files to ensure that jobs run and save outputs as expected.
 
 ```shell
 SUPABASE_USER=REPLACE_ME_WITH_YOUR_SUPABASE_USERNAME
@@ -53,8 +53,8 @@ WANDB_API_KEY=REPLACE_ME_WITH_YOUR_WANDB_API_KEY
 SUPABASE_STAGING_URI="postgresql://${SUPABASE_USER}.${SUPABASE_STAGING_ID}:${SUPABASE_PASS}@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
 SUPABASE_PROD_URI="postgresql://${SUPABASE_USER}.${SUPABASE_PROD_ID}:${SUPABASE_PASS}@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
 
-REPO_NAME: cell_observatory_platform  # TODO: replace with your repo name if you renamed it
-DATA_DIR=REPLACE_ME_WITH_YOUR_REPO_DIR_OR_DATA_DIR
+REPO_NAME: cell_observatory_platform
+DATA_DIR=REPLACE_ME_WITH_YOUR_ROOT_DATA_DIR_WHERE_DATA_WILL_BE_SAVED
 STORAGE_SERVER_DIR=REPLACE_ME_WITH_YOUR_STORAGE_SERVER_DIR_WHERE_DATA_SERVER_IS_MOUNTED
 ````
 
@@ -75,10 +75,27 @@ apptainer pull --force develop_torch_cuda_12_8.sif docker://ghcr.io/cell-observa
 
 # Get started
 
+All jobs are launched through our `manager.py` script which
+facilitates cluster resource allocation and Ray cluster setup. 
+You may decide whether to run jobs locally or on a cluster by 
+setting the `launcher_type` variable in `configs/clusters/*.yaml`. 
+We show how to run jobs locally and on SLURM or LSF clusters below. 
+Other cluster configurations can be added by extending the `manager.py` 
+script and adding the necessary files in the `cluster` folder to support allocaing 
+cluster resources (see `cluster/ray_slurm_cluster.sh` and `cluster/ray_lsf_cluster.sh`
+for examples).
+
 ## Local setup
 
-The local job config lives in `configs/test_pretrain_4d_mae_local.yaml`. 
-Edit just the handful of lines below, then launch the job.
+Example job configs are located in the `configs/experiments` folder. 
+For local jobs, you can use our existing `configs/paths/local.yaml` 
+and `configs/clusters/local.yaml` configurations. Then just edit the handful of lines below
+to specify your local directory structure and resource configuration before launching the job. 
+In general, if you want to extend existing functionality (to support a new 
+database type, cluster type, dataloader type, etc.), you just need to implement
+the necessary module (e.g. `data/databases/my_database.py`, `data/datasets/my_dataset.py`, `clusters/my_cluster.sh` to implement
+a new database, dataloader, or cluster configuration respectively), and add a new Hydra configuration file
+to specify under the `defaults` block in your run config.
 
 ### 1. Update your paths
 ```yaml
@@ -107,12 +124,19 @@ Run the local job using the `manager.py` script, which will pick up the Hydra co
 python cluster/manager.py --config-name=configs/test_pretrain_4d_mae_local.yaml
 ```
 
+### 4. Launch multiple training jobs or Ray Tune jobs with `manager.py`
+To launch multiple training jobs with `manager.py`, set the `run_type` variable to `multi_run` and define a `runs` list of 
+training jobs you want to run (see `configs/benchmarks/abc/benchmark_training_4d.yaml` for an example). Note that each run config needs to specify a base configuration from which each job can override any parameters necessary. We also provide functionality to run jobs using Ray Tune's hyperparameter tuning functionality, in which case you should set `run_type` to `tune` and specify the parameters you want to sweep in the `tune` config module. For using Hydra's native sweep functionality or to run
+single jobs, set `run_type` to `single_run`. 
+
 ## Cluster setup
 
 Running a job on a cluster is very similar to the local setup. 
 You need to override the `defaults` in your `my_run_config.yaml` file. 
-We have some examples below for SLURM and LSF in 
-`configs/paths/*.yaml` and `configs/clusters/*.yaml`.
+We recommend creating `clusters/my_cluster_configuration.yaml` and
+`path/my_path_configurations.yaml` to match your directory structure and
+resource/cluster configurations. We have some examples below for SLURM and 
+LSF in `configs/paths/*.yaml` and `configs/clusters/*.yaml`.
 
 ### SLURM Setup
 ```yaml
@@ -160,6 +184,15 @@ Here's what each configuration subdirectory handles:
   - Defines the training loop and configurations for training models.
 - **[`configs/evaluation/`](configs/evaluation)**
   - Defines evaluation configurations for assessing model performance on validation/test datasets.
+- **[`configs/optimizations/`](configs/optimizations)**
+  - Defines configurations for enabling model performance optimization flags/functionality
+  (e.g. `torch.compile`, activation checkpointing, flags such as `PYTORCH_CUDA_ALLOC_CONF`).
+- **[`configs/benchmarks/`](configs/benchmarks)**
+  - Defines run configurations for benchmarking model throughput, data loading throughput, etc.
+- **[`configs/experiments/`](configs/experiments)**
+  - Defines run configurations for previous experiments we have run.
+- **[`configs/tune/`](configs/tune)**
+  - Defines Ray Tune configurations for running parameter sweeps.
 
 ## Model configurations
 
@@ -210,30 +243,84 @@ defaults:
 
 # Data Pipeline
 
+The end-to-end flow of our data pipeline is as follows: `Database (Supabase) -> index DataFrame -> dataset -> dataloader -> preprocessor -> model`.
+
+We first build a hypercubes table (CSV + JSON config) from Supabase, filter it (based on server path, ROI/tile/HPF, occupancy), and then choose one of three input stacks:
+
+  -  `PyTorch` (classic Dataset/DataLoader)
+
+  -  `DALI` (CPU external_source → GPU pipeline)
+
+  -  `Ray Data` (custom Datasource → streaming iterator)
+
+All three paths normalize batches to `{"data_tensor": <Tensor>, "metainfo": <dict>}` and then a `Preprocessor` enforces `dtype/device`, applies optional on-device transforms, and (optionally) generates masks for self-supervised training. 
+
 ## Structures
 
-• **`ImageList:`** A tensor container that holds images of varying sizes as a single padded tensor, storing original image sizes, layout information (`CZYX` vs `ZYXC` etc.), and providing methods for standardization and batch operations.
+**`ImageList:`** A tensor container that holds images of varying sizes as a single padded tensor, storing original image sizes, layout information (`CZYX` vs `ZYXC` etc.), and providing methods for standardization and batch operations.
 
-• **`BaseDataElement:`** A base class that provides dict-like and tensor-like operations for data containers, separating metainfo (image metadata) from data fields (annotations/predictions).
+**`BaseDataElement:`** A base class that provides dict-like and tensor-like operations for data containers, separating metainfo (image metadata) from data fields (annotations/predictions). 
 
-• **`DataSample:`** Inherits from `BaseDataElement` that contains an `ImageList` object for data tensors and class methods `from_dict` and `to_dict` for serialization and deserialization.
+**`DataSample:`** Inherits from `BaseDataElement` that contains an `ImageList` object for data tensors and class methods `from_dict` and `to_dict` for serialization and deserialization.
 
 ## Databases
 
-**`SuperDatabase:`** Base class defining the interface for database implementations, including methods for querying data and metadata.
+**`SupabaseDatabase:`**  Database class that constructs or queries a view of `TxZxYxXxC` hypercubes, fetches it via `ConnectorX` (Arrow path), and saves both a CSV of records and a JSON of configs. It supports:
+
+  - Server-aware existence filters (`/clusterfs`, `/groups`, `/aws`) and optional override of `server_folder`.
+
+  - Row limiting / ROI or tile selection / HPF filters and an occupancy filter (based on a minimum occupancy ratio) that parses per-channel occupancy data for each sample and drops low-occupancy samples.
+
+Users that want to implement their own database class only needs to implement (with corresponding `.yaml` files) a corresponding class to generate a local CSV record with file path information for your training samples.
 
 ## Datasets
 
-**`BaseDataset:`** Abstract `PyTorch` dataset class that takes local data tables from `Database` class and creates fast indexes through four key methods:`_build_index()` converts DataFrames to list of dicts for `O(1)` access, `_load_sample()` reads image data using zarr handles, and `_collate()` converts raw data into structured objects.
+Our `get_dataloader` method in `data/dataloaders.py` is the entrypoint that instantiates the selected dataset stack, optional transforms, and builds a dataloader. We have support for the following dataloaders:
 
-**`Transformation:`** Transform pipeline class that sequentially applies data augmentations and preprocessing transforms to `DataSample` objects, enabling modular and configurable data preprocessing workflows.
+  -  `PyTorch`: `PreTrainDataset` implements a standard `DataLoader(..., num_workers, prefetch_factor, pin_memory, ...)`, and a user-defined collate function.
 
-**`MaskCollator:`** A specialized collator that processes `DataSample` objects, extracting and collating image data as well as generating masks for self-supervised learning tasks.
+  -  `DALI`: `PretrainDatasetDali` builds a `DALI` pipeline of the type `CPU external source -> GPU ops`, then a `DALIGenericIterator` provides data loading functionality.
+
+  -  `Ray`: `PretrainDatasourceRay` builds a Dataset from a custom `Datasource`, applies optional transforms, and creates an iterator with `_iter_batches`.
+
+## Preprocessors
+Our `Preprocessors` class provides a unified interface to standardize outputs from different data loader libraries and to perform any operations needed before the model step. We support the following `Preprocessors:`
+
+**`TorchPreprocessor`**
+
+Normalizes `PyTorch` batches to a common interface:
+
+  -  Stacks lists, validates dtype, optionally does checks for NaN/Inf.
+
+  -  If `with_masking`, calls `mask_generator(batch_size)` and adds
+  `masks`, `context_masks`, `target_masks`, `original_patch_indices`, `channels_to_mask` to the `data_sample` metainfo.
+
+**`DaliPreprocessor`**
+
+Similar to `TorchPreprocessor`, but input comes as a tuple from `DALIGenericIterator`; the tensor is already on GPU.
+
+**`RayPreprocessor`**
+
+Similar to `TorchPreprocessor`, also allows for applying transformations.
+
+## MaskGenerator
+Generates per-batch, patch-level masks for self-supervised learning over `3D/4D` inputs with explicit time and space awareness. We currently support the following mask generation modes:
+
+  - `BLOCKED` / `BLOCKED_TIME_ONLY` / `BLOCKED_SPACE_ONLY`: samples block sizes from specified scales, creates spatial/temporal blocks.
+
+  - `RANDOM` / `RANDOM_SPACE_ONLY`: MAE-style `noise -> sort -> split` mask creation pipeline that splits patch-level masks into `context` and `target` sets; in `SPACE_ONLY`, the same spatial mask is repeated across time.
+
+  - `BLOCKED_PATTERNED`: downsample time according to a provided pattern and build masks deterministically.
+
+The `MaskGenerator` object is owned by the `Preprocessor`; when `with_masking=True`, the preprocessor attaches all mask tensors into metainfo for the model step.
+
+## Transformations
+
+List of methods that return a transformed tensor. **Where to apply:** If the transform is cheap, you can attach it to the dataset by attaching the necessary config to `configs/datasets/my_dataset/transforms.yaml` (will be included inside `__getitem__` in `Torch` or in `get_dataset_ray` with `Ray Data`). If it is heavy, consider applying it on device in the `Preprocessor` to avoid extra CPU cost. For `DALI` both CPU and on device operations should be specified as part of the `DALI` pipeline.
 
 ## Evaluators
 
 **`DatasetEvaluator:`** Abstract base class defining three key methods: `reset()` for initialization, `process()` for accumulating predictions during evaluation, and `evaluate()` for computing final metrics and returning results as dictionaries.
-
 
 # License
 
