@@ -81,9 +81,11 @@ datasets:
   return_dataloader: true
   distributed_sampler: true
 
-  prefetch_factor: 2 # prefetch factor for the dataloader
+  occupancy_threshold: 0.5 # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
+
+  prefetch_factor: 4 # prefetch factor for the dataloader
   num_workers: ${clusters.cpus_per_gpu}  # number of workers for the dataloader
-  max_hypercubes: 4000 # maximum number of hypercubes to return
+  max_hypercubes: 10000 # maximum number of hypercubes to return
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_16_128_128_128_2_hypercube_view_1066194rows.csv
 
@@ -143,12 +145,10 @@ loggers:
         - preprocess_time
         - masking_time
         - collate_time
-        - slice_time
         - val_data_time
         - val_preprocess_time
         - val_masking_time
         - val_collate_time
-        - val_slice_time
         - step_loss
         - lr
       epoch_scalar_keys:
@@ -159,14 +159,12 @@ loggers:
         - preprocess_time
         - masking_time
         - collate_time
-        - slice_time
         - val_data_time
         - val_preprocess_time
         - val_masking_time
         - val_collate_time
         - val_step_time
         - val_step_loss
-        - val_slice_time
         - step_loss
         - lr
         - eta

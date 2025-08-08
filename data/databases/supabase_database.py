@@ -38,6 +38,7 @@ class SupabaseDatabase:
             protocol: Literal["binary", "csv", "cursor"] = "binary",
             max_partitions: Optional[int] = 10,
             server_folder_path: Optional[Path|str] = None,
+            occupancy_threshold: Optional[float] = None
     ):
         """
         A class for accessing Supabase database and retrieving hypercubes.
@@ -65,6 +66,7 @@ class SupabaseDatabase:
             max_partitions: The maximum number of threads to fetch queries at once
             server_folder_path: path to override default server folder found in the supabase database
                 update this path based on where the data is stored on your local machine
+            occupancy_threshold: to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
 
         # TODO: Only works for `Tx128x128x128x2`, need to extend class to work with other hypercube sizes
         """
@@ -90,6 +92,7 @@ class SupabaseDatabase:
         self.protocol = protocol
         self.max_partitions = max_partitions
         self.server_folder_path = server_folder_path
+        self.occupancy_threshold = occupancy_threshold
 
         self._database_url = self._load_uri()
 
@@ -104,7 +107,8 @@ class SupabaseDatabase:
                     max_hypercubes=max_hypercubes,
                     hpf_list=hpf_list,
                     roi_list=roi_list,
-                    tile_list=tile_list
+                    tile_list=tile_list,
+                    occupancy_threshold=occupancy_threshold
                 )
 
             else:
@@ -115,7 +119,8 @@ class SupabaseDatabase:
                     max_hypercubes=max_hypercubes,
                     hpf_list=hpf_list,
                     roi_list=roi_list,
-                    tile_list=tile_list
+                    tile_list=tile_list,
+                    occupancy_threshold=occupancy_threshold
                 )
                 self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
 
@@ -246,16 +251,17 @@ class SupabaseDatabase:
         return filters
 
     def _query_t_128_128_128_2_hypercube_view(
-            self,
-            table_name: str,
-            table_name_shortcut: str = 'hc',
-            num_timepoints: Optional[int] = 32,
-            max_rois: Optional[int] = None,
-            max_tiles: Optional[int] = None,
-            max_hypercubes: Optional[int] = None,
-            hpf_list: Optional[Iterable[int]] = None,
-            roi_list: Optional[Iterable[int]] = None,
-            tile_list: Optional[Iterable[str]] = None,
+        self,
+        table_name: str,
+        table_name_shortcut: str = 'hc',
+        num_timepoints: Optional[int] = 32,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        max_hypercubes: Optional[int] = None,
+        hpf_list: Optional[Iterable[int]] = None,
+        roi_list: Optional[Iterable[int]] = None,
+        tile_list: Optional[Iterable[str]] = None,
+        occupancy_threshold: Optional[float] = None
     ) -> List[str]:
         column_names = [
             'first_pc_id',
@@ -479,15 +485,16 @@ class SupabaseDatabase:
         return self.execute_query(query).values.squeeze().tolist()
 
     def get_t_128_128_128_2_hypercubes(
-            self,
-            num_timepoints: Optional[int] = 1,
-            max_rois: Optional[int] = None,
-            max_tiles: Optional[int] = None,
-            max_hypercubes: Optional[int] = None,
-            hpf_list: Optional[Iterable[int]] = None,
-            roi_list: Optional[Iterable[int]] = None,
-            tile_list: Optional[Iterable[str]] = None,
-            hypercubes_dataframe_path: Optional[Path] = None
+        self,
+        num_timepoints: Optional[int] = 1,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        max_hypercubes: Optional[int] = None,
+        hpf_list: Optional[Iterable[int]] = None,
+        roi_list: Optional[Iterable[int]] = None,
+        tile_list: Optional[Iterable[str]] = None,
+        hypercubes_dataframe_path: Optional[Path] = None,
+        occupancy_threshold: Optional[float] = None
     ) -> pd.DataFrame:
 
         table_name = f'prepared_{num_timepoints}_128_128_128_2_hypercube_view'
@@ -504,7 +511,8 @@ class SupabaseDatabase:
                 max_hypercubes=max_hypercubes,
                 hpf_list=hpf_list,
                 roi_list=roi_list,
-                tile_list=tile_list
+                tile_list=tile_list,
+                occupancy_threshold=occupancy_threshold
             )
         else:
 
@@ -524,7 +532,8 @@ class SupabaseDatabase:
                 max_hypercubes=max_hypercubes,
                 hpf_list=hpf_list,
                 roi_list=roi_list,
-                tile_list=tile_list
+                tile_list=tile_list,
+                occupancy_threshold=occupancy_threshold
             )
 
         if self.verbose:

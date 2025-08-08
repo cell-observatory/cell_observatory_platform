@@ -143,6 +143,7 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         hpf_list: Optional[Iterable[int]] = None,
         roi_list: Optional[Iterable[int]] = None,
         tile_list: Optional[Iterable[str]] = None,
+        occupancy_threshold: Optional[float] = None
     ):
         """
         Args:
@@ -172,7 +173,8 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
             max_hypercubes=max_hypercubes,
             hpf_list=hpf_list,
             roi_list=roi_list,
-            tile_list=tile_list
+            tile_list=tile_list,
+            occupancy_threshold=occupancy_threshold
         )
         self.dtype = dtype
 

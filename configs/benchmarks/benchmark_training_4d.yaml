@@ -139,12 +139,10 @@ loggers:
         - preprocess_time
         - masking_time
         - collate_time
-        - slice_time
         - val_data_time
         - val_preprocess_time
         - val_masking_time
         - val_collate_time
-        - val_slice_time
         - step_loss
         - lr
       epoch_scalar_keys:
@@ -155,14 +153,12 @@ loggers:
         - preprocess_time
         - masking_time
         - collate_time
-        - slice_time
         - val_data_time
         - val_preprocess_time
         - val_masking_time
         - val_collate_time
         - val_step_time
         - val_step_loss
-        - val_slice_time
         - step_loss
         - lr
         - eta

@@ -18,6 +18,8 @@ hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to fi
 roi_list: null # list of specific ROIs to filter
 tile_list: null # list of specific tiles to filter
 
+occupancy_threshold: 0.2 # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
+
 use_cached_hypercubes_dataframe: false # whether to use the cached hypercubes dataframe
 hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv # path to the hypercubes dataframe (path/to/repo/databases/default_hypercubes_dataframe.csv)
 server_folder_path: ${paths.server_folder_path}

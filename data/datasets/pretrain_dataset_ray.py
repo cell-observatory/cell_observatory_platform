@@ -192,6 +192,7 @@ class PretrainDatasourceRay(Datasource):
          hpf_list: Optional[Iterable[int]] = None,
          roi_list: Optional[Iterable[int]] = None,
          tile_list: Optional[Iterable[str]] = None,
+         occupancy_threshold: Optional[float] = None
     ):
         self.input_layout = input_layout
 
@@ -208,7 +209,8 @@ class PretrainDatasourceRay(Datasource):
             max_hypercubes=max_hypercubes,
             hpf_list=hpf_list,
             roi_list=roi_list,
-            tile_list=tile_list
+            tile_list=tile_list,
+            occupancy_threshold=occupancy_threshold
         )
 
         if indices is not None:
@@ -299,6 +301,7 @@ def get_dataset_ray(cfg: DictConfig, indices: Optional[List[int]]):
         hpf_list=cfg.datasets.hpf_list,
         roi_list=cfg.datasets.roi_list,
         tile_list=cfg.datasets.tile_list,
+        occupancy_threshold=cfg.datasets.occupancy_threshold
 
     )
 
