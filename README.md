@@ -16,6 +16,10 @@
   - [Structures](#structures)
   - [Databases](#databases)
   - [Datasets](#datasets)
+  - [Preprocessors](#preprocessors)
+  - [MaskGenerator](#maskgenerator)
+  - [Transformations](#transformations)
+- [Evaluators](#evaluators)
 - [License](#license)
 
 
