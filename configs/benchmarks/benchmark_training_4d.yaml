@@ -79,6 +79,9 @@ datasets:
   return_dataloader: true
   distributed_sampler: true
 
+  roi_list: [344] # list of specific ROIs to filter
+  tile_list: ['000x_000y_000z.zarr'] # list of specific tiles to filter
+
   prefetch_factor: 2 # prefetch factor for the dataloader
   num_workers: ${clusters.cpus_per_gpu}  # number of workers for the dataloader
   max_hypercubes: 4000 # maximum number of hypercubes to return
