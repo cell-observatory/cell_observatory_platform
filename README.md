@@ -1,6 +1,6 @@
 
 # Cell Observatory Platform
-**The Cell Observatory Platform** is a comprehensive framework for training and evaluating machine learning models on biological image and video datasets. Built with [PyTorch](https://pytorch.org/), accelerated and scaled with [Ray](https://www.ray.io/), and flexibly configured using [Hydra](https://hydra.cc/), it provides a modular architecture for easy customization and extension.
+**The Cell Observatory Platform** is a comprehensive framework for training and evaluating machine learning models on biological image and video datasets. Built with [PyTorch](https://pytorch.org/), accelerated and scaled with [Ray](https://www.ray.io/), model sharding using [DeepSpeed](https://www.deepspeed.ai/), and flexibly configured using [Hydra](https://hydra.cc/), it provides a modular architecture for easy customization and extension.
 
 - [Installation](#installation)
    - [Docker \& Apptainer images](#docker--apptainer-images)
@@ -31,7 +31,7 @@ Our prebuilt image with Python, Torch, and all packages installed for you.
 docker pull ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
 ```
 
-## Clone repository to your host system
+## Clone the repository to your host system
 ```shell
 git clone --recurse-submodules https://github.com/cell-observatory/cell_observatory_platform.git
 ```
@@ -43,6 +43,12 @@ git pull --recurse-submodules
 
 **Note:** If you want to run a local version of the image, see the [Dockerfile](https://github.com/cell-observatory/cell_observatory_platform/blob/main/Dockerfile)
 
+## Setup Supabase and W&B accounts
+
+You will need to create a Supabase and W&B account to use the platform.
+Supabase can be found [Cell Observatory Database](https://supabase.com/dashboard/org/yrgvnbckfmhfyxgzzkqb), and W&B can be found [Cell Observatory Dashboard](https://wandb.ai/cell-observatory).
+
+Once you have created your Supabase and W&B accounts, you'll need to add your API keys in the environment variables as described below.
 
 ## Setup environment variables
 Rename `.env.example` file to `.env` which will be automatically loaded into the container and will be gitignored. The Supabase related environment variables enable database functionality. The W&B API key enables logging functionality. The `REPO_NAME`, `DATA_DIR`, and `STORAGE_SERVER_DIR` environment variables are leverged in the `configs/paths` configuration files to ensure that jobs run and save outputs as expected.
@@ -57,9 +63,11 @@ WANDB_API_KEY=REPLACE_ME_WITH_YOUR_WANDB_API_KEY
 SUPABASE_STAGING_URI="postgresql://${SUPABASE_USER}.${SUPABASE_STAGING_ID}:${SUPABASE_PASS}@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
 SUPABASE_PROD_URI="postgresql://${SUPABASE_USER}.${SUPABASE_PROD_ID}:${SUPABASE_PASS}@aws-0-us-east-1.pooler.supabase.com:5432/postgres"
 
-REPO_NAME: cell_observatory_platform
+REPO_NAME=cell_observatory_platform
+REPO_DIR=REPLACE_ME_WITH_YOUR_ROOT_REPO_DIR
 DATA_DIR=REPLACE_ME_WITH_YOUR_ROOT_DATA_DIR_WHERE_DATA_WILL_BE_SAVED
 STORAGE_SERVER_DIR=REPLACE_ME_WITH_YOUR_STORAGE_SERVER_DIR_WHERE_DATA_SERVER_IS_MOUNTED
+PYTHONPATH=REPLACE_ME_WITH_YOUR_ROOT_REPO_DIR
 ````
 
 # Running docker image
@@ -101,7 +109,13 @@ the necessary module (e.g. `data/databases/my_database.py`, `data/datasets/my_da
 a new database, dataloader, or cluster configuration respectively), and add a new Hydra configuration file
 to specify under the `defaults` block in your run config.
 
-### 1. Update your paths
+### 1. Update experiment name
+```yaml
+experiment_name: test_cell_observatory_platform
+wandb_project: test_cell_observatory_platform
+```
+
+### 2. Update your paths
 ```yaml
 paths:
   # base output directory for logs, checkpoints, etc.
@@ -110,7 +124,7 @@ paths:
   pretrained_checkpointdir: null
 ```
 
-### 2. Edit resource requirements
+### 3. Edit resource requirements
 ```yaml
 clusters:
   batch_size: 2 # total batch size
@@ -120,7 +134,7 @@ clusters:
   mem_per_cpu: 16000 # ram per cpu core
 ```
 
-### 3. Run local training job with `manager.py`
+### 4. Run local training job with `manager.py`
 Run the local job using the `manager.py` script, which will pick up the Hydra config and launch the Ray job:
 
 ```bash
@@ -128,7 +142,7 @@ Run the local job using the `manager.py` script, which will pick up the Hydra co
 python cluster/manager.py --config-name=configs/test_pretrain_4d_mae_local.yaml
 ```
 
-### 4. Launch multiple training jobs or Ray Tune jobs with `manager.py`
+### 5. Launch multiple training jobs or Ray Tune jobs with `manager.py`
 To launch multiple training jobs with `manager.py`, set the `run_type` variable to `multi_run` and define a `runs` list of 
 training jobs you want to run (see `configs/benchmarks/abc/benchmark_training_4d.yaml` for an example). Note that each run config needs to specify a base configuration from which each job can override any parameters necessary. We also provide functionality to run jobs using Ray Tune's hyperparameter tuning functionality, in which case you should set `run_type` to `tune` and specify the parameters you want to sweep in the `tune` config module. For using Hydra's native sweep functionality or to run
 single jobs, set `run_type` to `single_run`. 
