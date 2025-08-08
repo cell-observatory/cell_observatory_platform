@@ -124,9 +124,9 @@ def get_optimizer(
             optimizer=opt,
             total_num_steps=total_steps,
             warmup_num_steps=warmup_steps,
-            warmup_min_ratio=0.0,
-            cos_min_ratio=0.0001,
-            warmup_type='linear',
+            warmup_min_ratio=config.schedulers.warmup_min_ratio,
+            cos_min_ratio=config.schedulers.cos_min_ratio,
+            warmup_type=config.schedulers.cos_miwarmup_type,
         )
 
         return opt, scheduler
