@@ -267,13 +267,12 @@ class MaskedAutoEncoder(nn.Module):
         predictions = apply_masks(x, masks=target_masks)
 
         # TODO: (1) solve memory issues with loss computation
-
-        # loss = (targets - predictions) ** 2
-        # loss = loss.mean(dim=-1)  # mean loss per patch
-        # loss = loss.sum() / masks.sum()
+        loss = (targets - predictions) ** 2
+        loss = loss.mean(dim=-1)  # mean loss per patch
+        loss = loss.sum() / masks.sum()
 
         # NOTE: potential partial fix
-        loss = nn.functional.mse_loss(predictions, targets, reduction='mean')
+        # loss = nn.functional.mse_loss(predictions, targets, reduction='mean')
         
         loss = loss.to(targets.dtype)
         loss_dict = {

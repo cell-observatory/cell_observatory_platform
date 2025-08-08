@@ -24,7 +24,7 @@ data_base_dir: training_infrastructure/training_mae_4d
 
 runs:
   - cfg: benchmarks/janelia/benchmark_training_base
-    name: 1xh200_mae_large.yaml
+    name: 1xh200_mae_large_org_loss.yaml
     defaults_overrides:
       - clusters: clusters/janelia_h200
     overrides:
@@ -35,7 +35,7 @@ runs:
         cpus_per_gpu: 12 # number of cpu cores per gpu
         mem_per_cpu: 40000 # ram per cpu core
   - cfg: benchmarks/janelia/benchmark_training_base
-    name: 2xh200_mae_large.yaml
+    name: 2xh200_mae_large_org_loss.yaml
     defaults_overrides:
       - clusters: clusters/janelia_h200
     overrides:
@@ -46,7 +46,7 @@ runs:
         cpus_per_gpu: 12 # number of cpu cores per gpu
         mem_per_cpu: 40000 # ram per cpu core
   - cfg: benchmarks/janelia/benchmark_training_base
-    name: 4xh100_mae_large.yaml
+    name: 4xh100_mae_large_org_loss.yaml
     defaults_overrides:
       - clusters: clusters/janelia_h100
     overrides:
