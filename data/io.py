@@ -262,32 +262,32 @@ def apply_hypercubes_dataframe_selections(
     )
 
     if roi_list is not None or tile_list is not None:
-        rois = tuple(roi_list) if len(roi_list) > 1 else f"({roi_list[0]})"
-        tiles = tuple(tile_list) if len(tile_list) > 1 else f"({tile_list[0]})"
+        rois = list(roi_list)
+        tiles = list(tile_list)
 
         if rois is not None and tiles is not None:
             hypercubes_dataframe = hypercubes_dataframe[
-                (hypercubes_dataframe['roi'].isin(rois)) & (hypercubes_dataframe['tile'].isin(tiles))
+                (hypercubes_dataframe['prepared_id'].isin(rois)) & (hypercubes_dataframe['tile_name'].isin(tiles))
                 ]
         elif rois is not None:
-            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['roi'].isin(rois)]
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['prepared_id'].isin(rois)]
         elif tiles is not None:
-            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['tile'].isin(tiles)]
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['tile_name'].isin(tiles)]
 
     if hpf_list is not None:
-        hpfs = tuple(hpf_list) if len(hpf_list) > 1 else f"({hpf_list[0]})"
+        hpfs = list(hpf_list)
         hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['hpf'].isin(hpfs)]
 
     if max_rois is not None:
-        unique_rois = hypercubes_dataframe['roi'].unique().tolist()
+        unique_rois = hypercubes_dataframe['prepared_id'].unique().tolist()
         hypercubes_dataframe = hypercubes_dataframe[
-            hypercubes_dataframe['roi'].isin(unique_rois[:max_rois])
+            hypercubes_dataframe['prepared_id'].isin(unique_rois[:max_rois])
         ]
 
     if max_tiles is not None:
-        unique_tiles = hypercubes_dataframe['tile'].unique().tolist()
+        unique_tiles = hypercubes_dataframe['tile_name'].unique().tolist()
         hypercubes_dataframe = hypercubes_dataframe[
-            hypercubes_dataframe['tile'].isin(unique_tiles[:max_tiles])
+            hypercubes_dataframe['tile_name'].isin(unique_tiles[:max_tiles])
         ]
 
     if max_hypercubes is not None:
