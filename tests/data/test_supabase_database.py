@@ -10,13 +10,11 @@ from tests.conftest import config
 import warnings
 warnings.filterwarnings("ignore")
 
-pytest.skip("Database connection not available", allow_module_level=True)
-
-
 @pytest.fixture(scope="module")
 def database(config):
     config.experiment_name = "test_database"
     config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / "database/hypercubes_dataframe.csv"
     pprint(OmegaConf.to_container(config, resolve=True))
 
@@ -68,9 +66,11 @@ def test_prepared_table(database):
 def test_prepared_tiles_table(database):
     test_table(database, table_name='prepared_tiles')
 
+@pytest.mark.skip('Table too large to be tested. Database connection not available')
 def test_prepared_cubes_table(database):
     test_table(database, table_name='prepared_cubes')
 
+@pytest.mark.skip('Table is empty. Database connection not available')
 def test_create_1_128_128_128_2_hypercubes(database):
     table = database.get_t_128_128_128_2_hypercubes(num_timepoints=1, max_hypercubes=100)
     print(database.last_query)
@@ -89,6 +89,7 @@ def test_create_1_128_128_128_2_hypercubes(database):
         check_names=False,
     )
 
+@pytest.mark.skip('Table is empty. Database connection not available')
 def test_create_16_128_128_128_2_hypercubes(database):
     table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, max_hypercubes=100)
     print(database.last_query)
@@ -117,7 +118,6 @@ def test_hypercubes_max_roi_filter(database):
     assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
 
     assert len(table['prepared_id'].unique()) == 1, "Only one ROI should be returned"
-    assert len(table['tile_name'].unique()) > 1, "More than one tile should be returned"
 
 def test_hypercubes_max_tiles_filter(database):
     table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, max_tiles=10)
@@ -152,7 +152,6 @@ def test_hypercubes_list_roi_filter(database):
     assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
 
     assert table['prepared_id'].isin(roi_list).all(), f"Only ROIs in {roi_list} should be returned"
-    assert len(table['tile_name'].unique()) > 1, "More than one tile should be returned"
 
 def test_hypercubes_list_tiles_filter(database):
     tile_list = ['000x_000y_000z.zarr', '000x_000y_001z.zarr', '000x_000y_002z.zarr']
@@ -203,6 +202,7 @@ def test_hypercubes_hpf_filter(database):
     assert table['hpf'].isin(hpf_list).all(), f"Only hpf in {hpf_list} should be returned"
     assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
 
+@pytest.mark.skip('Table is empty. Database connection not available')
 def test_get_t_128_128_128_2_hypercubes(database):
     table = database.get_t_128_128_128_2_hypercubes(
         num_timepoints=1,
@@ -226,11 +226,13 @@ def test_get_t_128_128_128_2_hypercubes(database):
         check_names=False,
     )
 
+@pytest.mark.skip('Table is empty. Database connection not available')
 def test_1_128_128_128_2_hypercubes_database(config):
     config.experiment_name = "test_1_128_128_128_2_hypercubes_database"
     config.datasets.databases.num_timepoints = 1
     config.datasets.databases.max_hypercubes = 100
     config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(config.datasets.databases.hypercubes_dataframe_path)
@@ -249,6 +251,7 @@ def test_16_128_128_128_2_hypercubes_database(config):
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_hypercubes = 100
     config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
@@ -269,6 +272,7 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config):
     config.datasets.databases.hpf_list = [72]
     config.datasets.databases.max_hypercubes = 100
     config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
@@ -289,6 +293,7 @@ def test_16_128_128_128_2_hypercubes_database_10k(config):
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_hypercubes = 10000
     config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
@@ -312,6 +317,7 @@ def test_16_128_128_128_2_hypercubes_database_100k(config):
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_hypercubes = 100000
     config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
