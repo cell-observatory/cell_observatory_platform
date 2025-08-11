@@ -1,9 +1,7 @@
-import os
 import sys
 import math
 import ujson
 import logging
-import warnings
 from pathlib import Path
 from functools import wraps
 from operator import attrgetter
@@ -19,7 +17,6 @@ from timm.scheduler import create_scheduler_v2
 
 from omegaconf import DictConfig
 
-import deepspeed
 from deepspeed.ops.adam import FusedAdam
 from deepspeed.ops.lamb import FusedLamb
 from deepspeed.runtime.lr_schedules import WarmupCosineLR
@@ -29,12 +26,9 @@ import ray
 
 from training.loggers import WandBEventWriter
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("ray")
+logger.setLevel(logging.INFO)
+logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
 
 
 def get_lr_scheduler(
@@ -58,13 +52,18 @@ def get_lr_scheduler(
         cooldown_steps = config.schedulers.cooldown * steps_per_epoch
         decay_steps = total_steps - (warmup_steps + cooldown_steps)
 
+        cos_min_lr = config.schedulers.cos_min_ratio * config.optimizers.lr
+        warmup_min_lr = config.schedulers.warmup_min_ratio * config.optimizers.lr
+
+        logger.info('-'*80)
         logger.info(
-            f"Training [epochs: {config.schedulers.epochs} = total_steps: {total_steps}, "
-            f"warmup: {config.schedulers.warmup} = warmup_steps: {warmup_steps}, "
-            f"cooldown: {config.schedulers.cooldown} = cooldown_steps: {cooldown_steps}, "
-            f"decay_epochs: {decay_epochs}," 
-            f"decay_steps: {decay_steps}]"
+            f"Epochs: {config.schedulers.epochs} = "
+            f"[{config.schedulers.warmup} warmup + {decay_epochs} decay + {config.schedulers.cooldown} cooldown]\n"
+            f"Steps: {total_steps} = "
+            f"[{warmup_steps} warmup + {decay_steps} decay + {cooldown_steps} cooldown]\n"
+            f"LR: {config.optimizers.lr} = [{warmup_min_lr=},  {cos_min_lr=}]"
         )
+        logger.info('-'*80)
 
         scheduler, num_epochs = create_scheduler_v2(
             optimizer=opt,
@@ -73,8 +72,8 @@ def get_lr_scheduler(
             warmup_epochs=config.schedulers.warmup,
             cooldown_epochs=config.schedulers.cooldown,
             decay_epochs=decay_epochs,
-            min_lr=1e-8,
-            warmup_lr=1e-8,
+            min_lr=cos_min_lr,
+            warmup_lr=warmup_min_lr,
         )
 
     return scheduler
@@ -112,13 +111,18 @@ def get_optimizer(
         warmup_steps = config.schedulers.warmup * steps_per_epoch
         decay_steps = total_steps - warmup_steps
 
+        cos_min_lr = config.schedulers.cos_min_ratio * config.optimizers.lr
+        warmup_min_lr = config.schedulers.warmup_min_ratio * config.optimizers.lr
+
+        logger.info('-'*80)
         logger.info(
-            f"Training [epochs: {config.schedulers.epochs}, steps_per_epoch: \
-                {steps_per_epoch} = total_steps: {total_steps}, "
-            f"warmup: {config.schedulers.warmup} = warmup_steps: \
-                {warmup_steps}, decay_epochs: {decay_epochs},"
-            f"decay_steps: {decay_steps}]"
+            f"Epochs: {config.schedulers.epochs} = "
+            f"[{config.schedulers.warmup} warmup + {decay_epochs} decay + NA cooldown]\n"
+            f"Steps: {total_steps} = "
+            f"[{warmup_steps} warmup + {decay_steps} decay + NA cooldown]\n"
+            f"LR: {config.optimizers.lr} = [{warmup_min_lr=},  {cos_min_lr=}]"
         )
+        logger.info('-'*80)
 
         scheduler = WarmupCosineLR(
             optimizer=opt,
