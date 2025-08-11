@@ -68,6 +68,16 @@ RUN cd && wget https://github.com/prometheus/prometheus/releases/download/v3.5.0
 RUN cd && which ~/prometheus-3.5.0.linux-amd64/prometheus
 
 
+RUN echo "Installing fio"
+RUN cd && wget https://git.kernel.org/pub/scm/linux/kernel/git/axboe/fio.git/snapshot/fio-3.38.tar.gz && \
+    tar -xvf fio-3.38.tar.gz && \
+    cd fio-3.38 && \
+    ./configure && \
+    make && \
+    sudo make install
+RUN which fio
+
+
 # Give the dockerfile the name of the current git branch (passed in as a command line argument to "docker build")
 ARG BRANCH_NAME
 
