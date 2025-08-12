@@ -43,7 +43,6 @@ def get_defaults_overrides(defaults_overrides: list[dict] | None):
     return defaults
 
 
-
 def set_env_from_cfg(cfg: DictConfig) -> None:
     def _to_str(v):
         return "1" if isinstance(v, bool) and v \
@@ -59,6 +58,7 @@ def set_env_from_cfg(cfg: DictConfig) -> None:
         env_key = key.upper()
         os.environ[env_key] = _to_str(val)
         logger.debug("Set %s=%s", env_key, os.environ[env_key])
+
 
 # modify Hydra config on cmd line to use different models
 @hydra.main(config_path="configs", config_name="test_pretrain_4d_mae_local")

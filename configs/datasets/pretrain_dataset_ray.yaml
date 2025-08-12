@@ -34,6 +34,12 @@ drop_last_policy: true # whether to drop the last batch if it is smaller than th
 
 auto_transfer: false
 
+use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
+locality_with_output: true # whether to use locality with output for the Ray tasks
+
+# ray_remote_args:
+#   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
+
 # collate function options:
 # Ray collate function OR class PinnedTensorCollator
 # class keeps a permanent pinned tensor in memory and allows

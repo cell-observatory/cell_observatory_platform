@@ -1,18 +1,22 @@
+import os
 import sys
 import time
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any
+
 import logging
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from data.io import read_zarr
-from utils import cli
+import hydra
+from omegaconf import DictConfig
+
 from utils.common import multiprocess
-from data.datasets.pretrain_dataset import PretrainDataset
-from data.data_shapes import  MULTICHANNEL_HYPERCUBE
-from data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES
+from data.data_types import NUMPY_DTYPES
+from data.io import load_hypercubes_dataframe, read_zarr
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -25,50 +29,47 @@ logger = logging.getLogger(__name__)
 class DataLoadingBenchmark:
     def __init__(
         self,
-        input_file: str|Path,
-        outdir: str|Path,
+        outdir: Path,
+        hypercubes_dataframe_path: str,
+        server_folder_path: Optional[str] = None,
+        max_rois: int = 100,
+        max_tiles: int = 100,
+        max_hypercubes: int = 100,
+        hpf_list: Optional[List[str]] = None,
+        roi_list: Optional[List[str]] = None,
+        tile_list: Optional[List[str]] = None,
+        occupancy_threshold: float = 0.0,
         dtype: str = "fp16",
-        zarr_file: bool = False,
-        hypercube_shape: Optional[tuple] = None
-
     ):
         self.dtype = dtype
-        self.input_file = Path(input_file)
-        self.zarr_file = zarr_file
-
-        if not zarr_file:
-            self.dataset = PretrainDataset(
-                hypercubes_dataframe_path=self.input_file,
-                input_layout=MULTICHANNEL_HYPERCUBE.TZYXC,
-                dtype=self.dtype,
-                transforms=None,
-                time=False
-            )
-
         self.bytes_per_sample = np.dtype(NUMPY_DTYPES[self.dtype].value).itemsize
 
-        if self.zarr_file and hypercube_shape:
-            self.hypercube_shape = hypercube_shape
-            self.channel_size = hypercube_shape[4]
-            self.cube_size = hypercube_shape[2]  # assuming ZYX are same
-            self.time_size = hypercube_shape[0]
+        hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
+        if not hypercubes_dataframe_path.exists():
+            raise FileNotFoundError(hypercubes_dataframe_path)
 
-            self.zarr_handle = read_zarr(str(self.input_file), dtype=self.dtype)
-            zarr_shape = self.zarr_handle.shape
-            logger.info(f"Zarr file shape: {zarr_shape}")
-            self.max_time_start = max(0, zarr_shape[0] - self.time_size)
-            self.max_z_start = max(0, zarr_shape[1] - self.cube_size)
-            self.max_y_start = max(0, zarr_shape[2] - self.cube_size)
-            self.max_x_start = max(0, zarr_shape[3] - self.cube_size)
+        self.server_folder_path = str(server_folder_path) if server_folder_path else None
+        self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
+            hypercubes_dataframe_path=hypercubes_dataframe_path,
+            server_folder_path=server_folder_path,
+            max_rois=max_rois,
+            max_tiles=max_tiles,
+            max_hypercubes=max_hypercubes,
+            hpf_list=hpf_list,
+            roi_list=roi_list,
+            tile_list=tile_list,
+            occupancy_threshold=occupancy_threshold
+        )
 
-        else:
-            self.channel_size = self.dataset.hypercubes_dataframe.channel_size[0]
-            self.cube_size = self.dataset.hypercubes_dataframe.cube_size[0]
-            self.time_size = self.dataset.hypercubes_dataframe.time_size[0]
-            self.hypercube_shape = (self.time_size, self.cube_size, self.cube_size, self.cube_size, self.channel_size)
+        self.channel_size = self.hypercubes_dataframe.channel_size[0]
+        self.cube_size = self.hypercubes_dataframe.cube_size[0]
+        self.time_size = self.hypercubes_dataframe.time_size[0]
+        self.hypercube_shape = (self.time_size, self.cube_size, self.cube_size, self.cube_size, self.channel_size)
 
         self.gb_per_hypercube = np.prod(self.hypercube_shape) * self.bytes_per_sample / (1024 ** 3)
-        self.output_path = outdir / f"{"_".join(map(str, self.hypercube_shape))}_{self.dtype}"
+        self.output_path = outdir / f"{'_'.join(map(str, self.hypercube_shape))}_{self.dtype}"
+
+        os.makedirs(self.output_path.parent, exist_ok=True)
 
         self.results = []
 
@@ -80,41 +81,47 @@ class DataLoadingBenchmark:
         x = slice(meta["x_start"], meta["x_start"] + meta["cube_size"])
         return data_tensor[t, z, y, x, c].read().result()
 
-    def generate_hypercubes_grid(self):
-        x_starts = np.arange(0, self.max_x_start + 1, self.cube_size)
-        y_starts = np.arange(0, self.max_y_start + 1, self.cube_size)
-        z_starts = np.arange(0, self.max_z_start + 1, self.cube_size)
-        time_starts = np.arange(0, self.max_time_start + 1, self.time_size)
+    # NOTE: should delete, deprecated
+    # def generate_hypercubes_grid(self):
+    #     x_starts = np.arange(0, self.max_x_start + 1, self.cube_size)
+    #     y_starts = np.arange(0, self.max_y_start + 1, self.cube_size)
+    #     z_starts = np.arange(0, self.max_z_start + 1, self.cube_size)
+    #     time_starts = np.arange(0, self.max_time_start + 1, self.time_size)
 
-        hypercube_list = []
-        for x in x_starts:
-            for y in y_starts:
-                for z in z_starts:
-                    for t in time_starts:
-                        hypercube_list.append(
-                            {
-                                'time_start': t,
-                                'z_start': z,
-                                'y_start': y,
-                                'x_start': x,
-                                'cube_size': self.cube_size,
-                                'channel_size': self.channel_size,
-                                'time_size': self.time_size,
-                            }
-                        )
+    #     hypercube_list = []
+    #     for x in x_starts:
+    #         for y in y_starts:
+    #             for z in z_starts:
+    #                 for t in time_starts:
+    #                     hypercube_list.append(
+    #                         {
+    #                             'time_start': t,
+    #                             'z_start': z,
+    #                             'y_start': y,
+    #                             'x_start': x,
+    #                             'cube_size': self.cube_size,
+    #                             'channel_size': self.channel_size,
+    #                             'time_size': self.time_size,
+    #                         }
+    #                     )
 
-        return hypercube_list
+    #     return hypercube_list
+
+    # NOTE: should delete, deprecated
+    # def read_hypercube(self, rec):
+    #     d = self.dataset._load_sample(rec, time_slice_hypercube=True)['meta']
+    #     timer, nbytes = d['_slice_hypercube_timer'], d['_slice_hypercube_nbytes']
+    #     return timer, nbytes
 
     def read_hypercube_from_zarr(self, rec) -> float:
         start = time.perf_counter()
-        volume = self.slice_hypercube(self.zarr_handle, rec)
+        zarr_handle = read_zarr(
+            os.path.join(rec['server_folder'], rec['output_folder'], rec['tile_name']),
+            dtype=NUMPY_DTYPES[self.dtype].value
+        )
+        volume = self.slice_hypercube(zarr_handle, rec)
         read_time = time.perf_counter() - start
         return read_time, volume.nbytes
-
-    def read_hypercube(self, rec):
-        d = self.dataset._load_sample(rec, time_slice_hypercube=True)['meta']
-        timer, nbytes = d['_slice_hypercube_timer'], d['_slice_hypercube_nbytes']
-        return timer, nbytes
 
     def benchmark_parallel_reads(
         self,
@@ -241,23 +248,17 @@ class DataLoadingBenchmark:
         plt.close()
 
     def benchmark_cpu_scaling(self, cpu_counts: List[int],  num_hypercubes: int = 20) -> None:
-        logger.info(f"Starting benchmark for: {self.input_file}")
-        if self.zarr_file:
-            hypercube_list = self.generate_hypercubes_grid()[:num_hypercubes]
-        else:
-            hypercube_list = [self.dataset._index[i] for i in range(num_hypercubes)]
+        logger.info(f"Starting benchmark...")
 
         for cpu_count in cpu_counts:
             logger.info(f"Benchmarking with {cpu_count} CPU cores...")
 
-
-            if not self.zarr_file:
-                [self.dataset.worker_init_fn(i) for i in range(cpu_count)]
+            hypercubes_list = self.hypercubes_dataframe.sample(n=num_hypercubes).to_dict(orient='records')
 
             stats = self.benchmark_parallel_reads(
-                hypercube_list=hypercube_list,
+                hypercube_list=hypercubes_list,
                 num_workers=cpu_count,
-                func=self.read_hypercube_from_zarr if self.zarr_file else self.read_hypercube
+                func=self.read_hypercube_from_zarr
             )
 
             self.results.append({
@@ -308,39 +309,21 @@ class DataLoadingBenchmark:
             self.plot_scaling()
 
 
-def main():
-    parser = cli.argparser()
-    parser.add_argument("ifile", help="Path to either zarr file or hypercubes dataframe csv")
-    parser.add_argument("--hypercube-shape", nargs=5, type=int,
-                       help="Hypercube shape as 5 integers: T Z Y X C (required when using --zarr-file)")
-    parser.add_argument("--cpu-counts", nargs="+", type=int, default=list(range(1, 17)))
-    parser.add_argument("--num-hypercubes", type=int, default=20)
-    parser.add_argument("--dtype", type=str, default="fp16")
-
-    args = parser.parse_args()
-
-    ifile = Path(args.ifile)
-    if not ifile.exists():
-        logger.error(f"Path does not exist: {ifile}")
-        sys.exit(1)
-
-    outdir = Path(__file__).parent.parent / 'benchmarks'
-    outdir.mkdir(parents=True, exist_ok=True)
-
+def benchmark_tensorstore(cfg: DictConfig):
     benchmarker = DataLoadingBenchmark(
-        input_file=ifile,
-        zarr_file=ifile.suffix == ".zarr",
-        outdir=outdir,
-        dtype=args.dtype,
-        hypercube_shape=args.hypercube_shape
+        hypercubes_dataframe_path=cfg.datasets.hypercubes_dataframe_path,
+        max_rois=cfg.datasets.max_rois,
+        max_tiles=cfg.datasets.max_tiles,
+        max_hypercubes=cfg.datasets.max_hypercubes,
+        hpf_list=cfg.datasets.hpf_list,
+        roi_list=cfg.datasets.roi_list,
+        tile_list=cfg.datasets.tile_list,
+        server_folder_path=cfg.paths.server_folder_path,
+        occupancy_threshold=cfg.datasets.occupancy_threshold,
+        outdir=Path(cfg.paths.outdir),
+        dtype=cfg.dataset_dtype,
     )
     benchmarker.benchmark_cpu_scaling(
-        cpu_counts=args.cpu_counts,
-        num_hypercubes=args.num_hypercubes
+        cpu_counts=cfg.cpu_counts,
+        num_hypercubes=cfg.datasets.max_hypercubes
     )
-
-    print(f"\nBenchmark complete! Results saved to {outdir}")
-
-
-if __name__ == "__main__":
-    main()

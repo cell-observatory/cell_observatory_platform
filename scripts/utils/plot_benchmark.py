@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from scripts.summarize_run import summarize_run
+from cell_observatory_platform.scripts.utils.summarize_run import summarize_run
 
 
 # -------------------------------------- For Plotting Dataloader Benchmark Statistics ---------------------------------------
