@@ -10,10 +10,9 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-
-import hydra
 from omegaconf import DictConfig
 
+from utils import cli
 from utils.common import multiprocess
 from data.data_types import NUMPY_DTYPES
 from data.io import load_hypercubes_dataframe, read_zarr
@@ -61,9 +60,9 @@ class DataLoadingBenchmark:
             occupancy_threshold=occupancy_threshold
         )
 
-        self.channel_size = self.hypercubes_dataframe.channel_size[0]
-        self.cube_size = self.hypercubes_dataframe.cube_size[0]
-        self.time_size = self.hypercubes_dataframe.time_size[0]
+        self.channel_size = self.hypercubes_dataframe.channel_size.values[0]
+        self.cube_size = self.hypercubes_dataframe.cube_size.values[0]
+        self.time_size = self.hypercubes_dataframe.time_size.values[0]
         self.hypercube_shape = (self.time_size, self.cube_size, self.cube_size, self.cube_size, self.channel_size)
 
         self.gb_per_hypercube = np.prod(self.hypercube_shape) * self.bytes_per_sample / (1024 ** 3)
@@ -327,3 +326,49 @@ def benchmark_tensorstore(cfg: DictConfig):
         cpu_counts=cfg.cpu_counts,
         num_hypercubes=cfg.datasets.max_hypercubes
     )
+
+
+
+def main():
+    parser = cli.argparser()
+    parser.add_argument("ifile", help="Path to either zarr file or hypercubes dataframe csv")
+    parser.add_argument("--hypercube-shape", nargs=5, type=int,
+                       help="Hypercube shape as 5 integers: T Z Y X C (required when using --zarr-file)")
+    parser.add_argument("--cpu-counts", nargs="+", type=int, default=list(range(1, 17)))
+    parser.add_argument("--num-hypercubes", type=int, default=20)
+    parser.add_argument("--dtype", type=str, default="fp16")
+    parser.add_argument("--server-folder-path", type=str, default='/groups/betzig/betziglab/CellObservatoryData')
+
+    args = parser.parse_args()
+
+    ifile = Path(args.ifile)
+    if not ifile.exists():
+        logger.error(f"Path does not exist: {ifile}")
+        sys.exit(1)
+
+    outdir = Path(__file__).parent.parent / 'benchmarks'
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    benchmarker = DataLoadingBenchmark(
+        hypercubes_dataframe_path=ifile,
+        max_rois=None,
+        max_tiles=None,
+        max_hypercubes=args.num_hypercubes,
+        hpf_list=None,
+        roi_list=None,
+        tile_list=None,
+        server_folder_path=args.server_folder_path,
+        occupancy_threshold=.9,
+        outdir=outdir,
+        dtype=args.dtype,
+    )
+    benchmarker.benchmark_cpu_scaling(
+        cpu_counts=args.cpu_counts,
+        num_hypercubes=args.num_hypercubes
+    )
+
+    print(f"\nBenchmark complete! Results saved to {outdir}")
+
+
+if __name__ == "__main__":
+    main()
