@@ -50,7 +50,7 @@ class EventRecorder:
         name,
         value,
         scope: Literal["step", "epoch"] = "step",
-        reduce_method: str | None = "mean"
+        reduce_method: List[str] | None = ["median"]
     ):
         # we need to reduce per rank and per step to get epoch averages
         # either we set this dynamically or we have a config with 
@@ -66,7 +66,7 @@ class EventRecorder:
     def put_scalars(
         self,
         scope="step",
-        reduce_method="mean",
+        reduce_method=["median"],
         prefix=None,
         **kwargs
     ):
@@ -227,20 +227,24 @@ class EventWriter:
             # apply reductions
             merged, merged_per_step = defaultdict(list), defaultdict(list)
             for metric, rows in buckets.items():
-                reduce_op = self.event_recorder.get_reduce_op(metric)
+                reduce_op_list = self.event_recorder.get_reduce_op(metric)
                 # vals_per_rank = [[val_rank0_iter0, ...], [val_rank0_iter1, ...] ...]
                 vals_per_rank = [v for _, v in rows.items()]
                 # flatten list of lists before reduction
                 vals = list(itertools.chain.from_iterable(vals_per_rank))
-                v = self._reduce(reduce_op, vals)
-                merged[metric].append((v, self.event_recorder._iter, 
-                                        self.event_recorder._epoch))
+                for reduce_op in reduce_op_list:
+                    metric_name = f"{metric}_{reduce_op}"
+                    v = self._reduce(reduce_op, vals)
+                    merged[metric_name].append((v, self.event_recorder._iter,
+                                            self.event_recorder._epoch))
                 
                 if keep_steps_data:
-                    vals_per_step = [self._reduce(reduce_op, vals_rank) for vals_rank in vals_per_rank]
-                    merged_per_step[metric] = [
-                        (val, it, ep) for val, (it, ep) in zip(vals_per_step, rows.keys())
-                    ]
+                    for reduce_op in reduce_op_list:
+                        metric_name = f"{metric}_{reduce_op}"
+                        vals_per_step = [self._reduce(reduce_op, vals_rank) for vals_rank in vals_per_rank]
+                        merged_per_step[metric_name] = [
+                            (val, it, ep) for val, (it, ep) in zip(vals_per_step, rows.keys())
+                        ]
 
             return merged, merged_per_step
         else:
@@ -289,6 +293,16 @@ class EventWriter:
             return sum(values)
         elif reduce_method == "mean":
             return sum(values) / len(values)
+        elif reduce_method == "median":
+            if not values:
+                return 0.0
+            sorted_values = sorted(values)
+            n = len(sorted_values)
+            mid = n // 2
+            if n % 2 == 0:
+                return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
+            else:
+                return sorted_values[mid]
         elif reduce_method == "max":
             return max(values)
         elif reduce_method == "min":

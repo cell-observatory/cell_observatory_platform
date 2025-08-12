@@ -409,6 +409,7 @@ def log_data_timings(
             scope="step",
             prefix="val_" if type == "val" else None,
             data_time=data_time,
+            reduce_method=["median", "max", "min"]
         )
 
     get_item_time = data_sample['metainfo'].get('get_item_time', None)
@@ -417,6 +418,7 @@ def log_data_timings(
             scope="step",
             prefix="val_" if type == "val" else None,
             get_item_time=get_item_time.mean().item(),
+            reduce_method=["median", "max", "min"]
         )
     
     preprocess_time = data_sample['metainfo'].get('preprocess_time', None)
@@ -441,6 +443,7 @@ def log_data_timings(
             scope="step",
             prefix="val_" if type == "val" else None,
             collate_time=collate_time,
+            reduce_method=["median", "max", "min"]
         )
     
     slice_time = data_sample['metainfo'].get('slice_time', None)
@@ -450,6 +453,7 @@ def log_data_timings(
             prefix="val_" if type == "val" else None,
             slice_time=slice_time.mean().item() if \
                 isinstance(slice_time, torch.Tensor) else np.mean(slice_time),
+            reduce_method=["median", "max", "min"]
         )
 
     if type == "train":

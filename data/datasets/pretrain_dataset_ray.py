@@ -38,26 +38,20 @@ class PinnedTensorCollator:
     def __init__(self, dtype: str, sample_shape: List[int] = None, pin_memory: bool = True):
         self.dtype, self.sample_shape = TORCH_DTYPES[dtype].value, sample_shape
 
-        self.pinned, self.pin_memory = None, pin_memory
+        self.data_tensor, self.pin_memory = None, pin_memory
         self._elem_size = torch.tensor([], dtype=self.dtype).element_size()
 
-    def _ensure_buffer(self, batch_size: int) -> None:
+    def _ensure_buffer(self, batch_size: int, pin_memory: bool) -> None:
         shape = (batch_size, *self.sample_shape)
-        if self.pinned is None or self.pinned.shape != shape:
-            self.pinned = torch.empty(shape,
-                                      dtype=self.dtype,
-                                      pin_memory=True)
+        if self.data_tensor is None or self.data_tensor.shape != shape:
+            self.data_tensor = torch.empty(shape,
+                                            dtype=self.dtype,
+                                            pin_memory=pin_memory)
 
     def _copy_chunked(self,
                       chunks_arr: pa.ChunkedArray,
                       pin_memory: bool) -> torch.Tensor:
-        if not pin_memory:
-            pinned = torch.empty((chunks_arr.length(), *self.sample_shape),
-                                 dtype=self.dtype,
-                                 pin_memory=True)
-        else:
-            self._ensure_buffer(chunks_arr.length())
-            pinned = self.pinned
+        self._ensure_buffer(chunks_arr.length(), pin_memory=pin_memory)
 
         offset = 0
         for item in chunks_arr.chunks:
@@ -66,11 +60,11 @@ class PinnedTensorCollator:
             item = torch.from_numpy(item.to_numpy(zero_copy_only=True))
 
             # copy to pinned memory (should be only real copy)
-            pinned[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
+            self.data_tensor[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
 
             offset += item.shape[0]
 
-        return pinned
+        return self.data_tensor
 
     def __call__(self, batch: pa.Table | pa.RecordBatch) -> Dict[str, Any]:
         t0 = time.time()
@@ -84,44 +78,6 @@ class PinnedTensorCollator:
         meta['collate_time'] = time.time() - t0
 
         return {"data_tensor": data_tensor, "metainfo": meta}
-
-
-# functional version of PinnedTensorCollator
-def arrow_pinned_to_mem(chunked, reuse_buf=None):
-    batch_size = chunked.length()
-    sample_shape = tuple(chunked.type.shape)
-    pinned = torch.empty((batch_size, *sample_shape),
-                         dtype=torch.float16,
-                         pin_memory=True)
-
-    offset = 0
-    for item in chunked.chunks:
-        item = torch.from_numpy(item.to_numpy())
-        pinned[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
-        offset += item.shape[0]
-
-    return pinned
-
-
-def base_collate_fn_ray(batch: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Convert the dict-of-arrays produced by Ray's `_iter_batches`
-    into the structure expected by the rest of the training loop:
-        {
-            "data_tensor":  Tensor,
-            "metainfo":     { <all other cols> }
-        }
-    """
-    t0 = time.time()
-
-    data_tensor = arrow_pinned_to_mem(batch.column("data_tensor"))
-
-    metainfo = {name: batch.column(name).to_pylist()
-                for name in batch.schema.names
-                if name != 'data_tensor'}
-    metainfo["collate_time"] = time.time() - t0
-
-    return {"data_tensor": data_tensor, "metainfo": metainfo}
 
 
 def _slice_hypercube(data_tensor, meta: Dict[str, Any]) -> np.ndarray:
@@ -302,10 +258,17 @@ def get_dataset_ray(cfg: DictConfig, indices: Optional[List[int]]):
         roi_list=cfg.datasets.roi_list,
         tile_list=cfg.datasets.tile_list,
         occupancy_threshold=cfg.datasets.occupancy_threshold
-
     )
 
-    dataset = ray.data.read_datasource(datasource)
+    dataset = ray.data.read_datasource(datasource, 
+                                    #    ray_remote_args={
+                                    #          "num_cpus": cfg.datasets.ray_remote_args.num_cpus}
+                                       )
+
+    # set Data Context for the dataset
+    # ctx = ray.data.DataContext.get_current()
+    # ctx.execution_options.locality_with_output = cfg.datasets.locality_with_output
+    # ctx.use_arrow_tensor_v2 = cfg.datasets.use_arrow_tensor_v2
 
     # we include transforms here for completion but if data loading
     # is performance critical, the transforms may also be applied
@@ -318,9 +281,8 @@ def get_dataset_ray(cfg: DictConfig, indices: Optional[List[int]]):
             transforms.append(get_method(t))
 
     for transform in transforms:
-        dataset = dataset.map_batches(transform,
-                                      batch_size=cfg.clusters.batch_size_per_gpu,
-                                      batch_format="pandas")
+        dataset = dataset.map_batches(transform, 
+                                      batch_size=cfg.clusters.batch_size_per_gpu)
     return dataset
 
 

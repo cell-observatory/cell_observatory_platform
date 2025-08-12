@@ -3,21 +3,19 @@ defaults:
   - /paths/abc                               # configs/paths/abc.yaml
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
   - /clusters/local                          # configs/clusters/local.yaml
-  - /datasets/pretrain_dataset_dali          # configs/datasets/pretrain_dataset_dali.yaml
-  - /models/mae/large                        # configs/models/mae/large.yaml
+  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/mae/tiny                         # configs/models/mae/tiny.yaml
   - /hooks/hooks                             # configs/hooks/hooks.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
-  - /deepspeed/zero0                         # configs/deepspeed/zero0.yaml
+  - /deepspeed/zero2                         # configs/deepspeed/zero0.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - _self_
 
-# experiment name (used for logging)
-experiment_name: platform_benchmark_abc
-wandb_project: platform_benchmark_abc
+experiment_name: benchmark_tensorstore
 
 # task
 task: pretrain_mae
@@ -41,7 +39,7 @@ job_type: train # train or test
 trainer: training.loops.EpochBasedTrainer
 
 # loop per worker script
-loop_per_worker_script: training.loops.train_loop_per_worker
+loop_per_worker_script: scripts.benchmarks_io.benchmark_tensorstore.benchmark_tensorstore
 
 # training quantization
 quantization: float16 # data type for training, options: float32, float16
@@ -59,10 +57,10 @@ dataset_layout_order: TZYXC
 clusters:
   batch_size: 32 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 8 # number of gpus per worker node
+  gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 16 # number of cpu cores per gpu
   mem_per_cpu: 21000 # ram per cpu core
-  ray_queue_memory: 0.35
+  ray_queue_memory: 0.6
 
 #paths:
 paths:
@@ -78,18 +76,11 @@ datasets:
   input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
 
-  split: 0.1
-  return_dataloader: true
-  distributed_sampler: true
-
-  prefetch_factor: 3 # prefetch factor for the dataloader
-  num_workers: ${clusters.cpus_per_worker}
-
   use_cached_hypercubes_dataframe: true # whether to use the cached hypercubes dataframe
   hypercubes_dataframe_path: /clusterfs/vast/Data/cell_observatory_databases/prepared_16_128_128_128_2_hypercube_view_1066194rows.csv
 
   # max nr of hypercubes to test for benchmark
-  max_hypercubes: 200000
+  max_hypercubes: 4000
   max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
   max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
@@ -97,25 +88,7 @@ datasets:
   roi_list: null # list of specific ROIs to filter
   tile_list: null # list of specific tiles to filter
 
-# hooks
-hooks:
-  hooks_list:
-  - _target_: training.hooks.AnomalyDetector
-  - _target_: training.hooks.SamplerSetter
-  - _target_: training.hooks.LRScheduler
-  - _target_: training.hooks.IterationTimer
-    warmup_iter: 1
-  - _target_: training.hooks.PeriodicWriter
-  - _target_: training.hooks.PeriodicCheckpointer
-    period: 1
-    file_prefix: latest_model
-  - _target_: training.hooks.BestCheckpointer
-    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: training.hooks.TorchMemoryStats
-    step_period: 1
-    epoch_period: 1
-    logdir: ${loggers.logdir}
-  - _target_: training.hooks.BestMetricSaver
-    metric_name: ${evaluation.val_metric}
-    compare_fn: ${evaluation.val_mode}
-    eval_after_validation: true
+# benchmarking
+# --------------------------------------------------------------------------------
+
+cpu_counts: [16, 32] # number of cpu cores to test for scaling
