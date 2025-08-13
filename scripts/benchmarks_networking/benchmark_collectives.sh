@@ -21,7 +21,9 @@ OUTDIR="/clusterfs/nvme/hph/git_managed/cell_observatory_platform/scripts/networ
 GPUS_PER_NODE=8
 NNODES=1
 
-MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+HEAD_NODE=$(cat $LSB_DJOB_HOSTFILE | uniq | head -n1 | awk '{print $1;}')
+MASTER_ADDR=$(getent hosts $HEAD_NODE | awk '{ print $1 }')
+#MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 MASTER_PORT=6000
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
