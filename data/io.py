@@ -306,7 +306,7 @@ def apply_occupancy_threshold(
             if clean_str.startswith('[') and clean_str.endswith(']'):
                 clean_str = clean_str.strip('[]')
             if clean_str:
-                return np.array(clean_str.split(','), dtype=float)
+                return [float(x.strip()) for x in clean_str.split(' ') if x.strip()]
             else:
                 return []
         elif isinstance(value, list):

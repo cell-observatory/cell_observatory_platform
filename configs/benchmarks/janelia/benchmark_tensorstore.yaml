@@ -2,7 +2,7 @@
 defaults:
   - /paths/janelia                           # configs/paths/abc.yaml
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
-  - /clusters/local                   # configs/clusters/local.yaml
+  - /clusters/local                           # configs/clusters/local.yaml
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
   - /models/mae/tiny                         # configs/models/mae/tiny.yaml
   - /hooks/hooks                             # configs/hooks/hooks.yaml
@@ -15,7 +15,7 @@ defaults:
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - _self_
 
-experiment_name: benchmark_tensorstore
+experiment_name: benchmark_tensorstore_h100s
 
 # task
 task: pretrain_mae
@@ -58,9 +58,9 @@ clusters:
   batch_size: 32 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 12 # number of cpu cores per gpu
-  mem_per_cpu: 21000 # ram per cpu core
-  ray_queue_memory: 0.6
+  cpus_per_gpu: 96 # number of cpu cores per gpu
+  mem_per_cpu: 40000 # ram per cpu core
+  ray_queue_memory: 0.5
 
 #paths:
 paths:
@@ -77,10 +77,11 @@ datasets:
   patch_shape: [4, 16, 16, 16]
 
   use_cached_hypercubes_dataframe: true # whether to use the cached hypercubes dataframe
-  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_16_128_128_128_2_hypercube_view_1066194rows.csv
+  hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
+  occupancy_threshold: 0.0
 
   # max nr of hypercubes to test for benchmark
-  max_hypercubes: 4000
+  max_hypercubes: 1000000
   max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
   max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
@@ -91,4 +92,5 @@ datasets:
 # benchmarking
 # --------------------------------------------------------------------------------
 
-cpu_counts: [8, 12, 16, 32, 64, 96] # number of cpu cores to test for scaling
+cpu_counts: [32] # number of cpu cores to test for scaling
+random_hypercubes: 2000
