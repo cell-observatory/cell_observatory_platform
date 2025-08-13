@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig
+import tensorstore as ts
 
 from utils import cli
 from utils.common import multiprocess
@@ -53,7 +54,7 @@ class DataLoadingBenchmark:
             server_folder_path=server_folder_path,
             max_rois=max_rois,
             max_tiles=max_tiles,
-            max_hypercubes=max_hypercubes,
+            max_hypercubes=None,
             hpf_list=hpf_list,
             roi_list=roi_list,
             tile_list=tile_list,
@@ -70,6 +71,21 @@ class DataLoadingBenchmark:
 
         os.makedirs(self.output_path.parent, exist_ok=True)
 
+        
+        self.paths = {
+            os.path.join(sf, of, tn)
+            for sf, of, tn in 
+            zip(self.hypercubes_dataframe["server_folder"], 
+                self.hypercubes_dataframe["output_folder"], 
+                self.hypercubes_dataframe["tile_name"]
+            )
+        }
+        
+        self._zarr_handles_data = {
+            p: read_zarr(p, dtype=self.dtype)
+            for p in self.paths
+        }
+        
         self.results = []
 
     def slice_hypercube(self, data_tensor, meta: Dict[str, Any]):
@@ -78,50 +94,32 @@ class DataLoadingBenchmark:
         z = slice(meta["z_start"], meta["z_start"] + meta["cube_size"])
         y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
         x = slice(meta["x_start"], meta["x_start"] + meta["cube_size"])
-        return data_tensor[t, z, y, x, c].read().result()
-
-    # NOTE: should delete, deprecated
-    # def generate_hypercubes_grid(self):
-    #     x_starts = np.arange(0, self.max_x_start + 1, self.cube_size)
-    #     y_starts = np.arange(0, self.max_y_start + 1, self.cube_size)
-    #     z_starts = np.arange(0, self.max_z_start + 1, self.cube_size)
-    #     time_starts = np.arange(0, self.max_time_start + 1, self.time_size)
-
-    #     hypercube_list = []
-    #     for x in x_starts:
-    #         for y in y_starts:
-    #             for z in z_starts:
-    #                 for t in time_starts:
-    #                     hypercube_list.append(
-    #                         {
-    #                             'time_start': t,
-    #                             'z_start': z,
-    #                             'y_start': y,
-    #                             'x_start': x,
-    #                             'cube_size': self.cube_size,
-    #                             'channel_size': self.channel_size,
-    #                             'time_size': self.time_size,
-    #                         }
-    #                     )
-
-    #     return hypercube_list
-
-    # NOTE: should delete, deprecated
-    # def read_hypercube(self, rec):
-    #     d = self.dataset._load_sample(rec, time_slice_hypercube=True)['meta']
-    #     timer, nbytes = d['_slice_hypercube_timer'], d['_slice_hypercube_nbytes']
-    #     return timer, nbytes
-
+        return data_tensor[t, z, y, x, c].read()
+    
+    def _get_ts_context(file_io_limit=128, copy_limit=128) -> ts.Context:
+        return ts.Context({
+            # optional stuff if not use defaults
+            # "file_io_concurrency":   {"limit": file_io_limit},
+            # "data_copy_concurrency": {"limit": copy_limit},
+            "cache_pool": {"total_bytes_limit": 0}
+        })
+    
+    
     def read_hypercube_from_zarr(self, rec) -> float:
+        context = self._get_ts_context()
+        
         start = time.perf_counter()
-        zarr_handle = read_zarr(
-            os.path.join(rec['server_folder'], rec['output_folder'], rec['tile_name']),
-            dtype=NUMPY_DTYPES[self.dtype].value
-        )
-        volume = self.slice_hypercube(zarr_handle, rec)
+        
+        results = []
+        for f in rec:
+            zarr_handle = self._zarr_handles_data[os.path.join(f["server_folder"], f["output_folder"], f["tile_name"])]
+            results.append(self.slice_hypercube(zarr_handle, f))
+        
+        results = [r.result() for r in results]
         read_time = time.perf_counter() - start
-        return read_time, volume.nbytes
-
+        nbytes = results[0].nbytes * len(results)
+        return read_time, nbytes
+    
     def benchmark_parallel_reads(
         self,
         func: callable,
@@ -130,13 +128,17 @@ class DataLoadingBenchmark:
     ) -> Dict[str, float]:
 
         start_time = time.perf_counter()
-
+        
+        batches = np.array_split(hypercube_list, num_workers)
+        logger.info(f"Benchmarking with {num_workers} CPU cores with a batch of {len(batches[0])} per worker...")
+        
         results = multiprocess(
             func=func,
-            jobs=hypercube_list,
+            jobs=batches,
             cores=num_workers,
             desc=f"Loading hypercubes using {num_workers=} cpu(s)",
-            unit='hypercube'
+            unit='hypercube',
+            unit_scale=len(batches[0])
         )
 
         total_time = time.perf_counter() - start_time
@@ -250,8 +252,6 @@ class DataLoadingBenchmark:
         logger.info(f"Starting benchmark...")
 
         for cpu_count in cpu_counts:
-            logger.info(f"Benchmarking with {cpu_count} CPU cores...")
-
             hypercubes_list = self.hypercubes_dataframe.sample(n=num_hypercubes).to_dict(orient='records')
 
             stats = self.benchmark_parallel_reads(
@@ -324,7 +324,7 @@ def benchmark_tensorstore(cfg: DictConfig):
     )
     benchmarker.benchmark_cpu_scaling(
         cpu_counts=cfg.cpu_counts,
-        num_hypercubes=cfg.datasets.max_hypercubes
+        num_hypercubes=cfg.random_hypercubes
     )
 
 
@@ -335,7 +335,8 @@ def main():
     parser.add_argument("--hypercube-shape", nargs=5, type=int,
                        help="Hypercube shape as 5 integers: T Z Y X C (required when using --zarr-file)")
     parser.add_argument("--cpu-counts", nargs="+", type=int, default=list(range(1, 17)))
-    parser.add_argument("--num-hypercubes", type=int, default=20)
+    parser.add_argument("--num-hypercubes", type=int, default=100)
+    parser.add_argument("--random-hypercubes", type=int, default=20)
     parser.add_argument("--dtype", type=str, default="fp16")
     parser.add_argument("--server-folder-path", type=str, default='/groups/betzig/betziglab/CellObservatoryData')
 
@@ -358,13 +359,13 @@ def main():
         roi_list=None,
         tile_list=None,
         server_folder_path=args.server_folder_path,
-        occupancy_threshold=.9,
+        occupancy_threshold=0,
         outdir=outdir,
         dtype=args.dtype,
     )
     benchmarker.benchmark_cpu_scaling(
         cpu_counts=args.cpu_counts,
-        num_hypercubes=args.num_hypercubes
+        num_hypercubes=args.random_hypercubes
     )
 
     print(f"\nBenchmark complete! Results saved to {outdir}")
