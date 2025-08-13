@@ -176,14 +176,13 @@ class PretrainDatasourceRay(Datasource):
         self._dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
         # pre-compute bytes / cube for size estimates
-        self._bytes_per_cube = self._compute_bytes_per_cube(self._hypercubes_records, self._dtype)
+        self._bytes_per_cube = self._compute_bytes_per_record(record=self._hypercubes_records[0], dtype=self._dtype)
 
         self.time = time
 
-    def _compute_bytes_per_cube(self, records: List[Dict[str, Any]], dtype: TENSORSTORE_DTYPES) -> int:
-        sample = records[0]
+    def _compute_bytes_per_record(self, record: Dict[str, Any], dtype: TENSORSTORE_DTYPES) -> int:
         voxels = (
-                sample["time_size"] * sample["channel_size"] * sample["cube_size"] ** 3
+                record["time_size"] * record["channel_size"] * record["cube_size"] ** 3
         )
         if dtype == ts.float16:
             return voxels * 2
@@ -223,21 +222,21 @@ class PretrainDatasourceRay(Datasource):
             def _make_read_task(records_ref=shard_ref, dtype=dtype, timing=timing):
                 return _read_block(ray.get(records_ref), timing, dtype)
 
-            try:
-                meta = BlockMetadata(
-                    num_rows=len(shard),
-                    size_bytes=self._bytes_per_cube * len(shard),
-                    input_files=None,
-                    exec_stats=None,
-                    schema=None
-                )
-            except TypeError:
-                meta = BlockMetadata(
-                    num_rows=len(shard),
-                    size_bytes=self._bytes_per_cube * len(shard),
-                    input_files=None,
-                    exec_stats=None
-                )
+            # NOTE: we have seen issues before with Ray's fifo_bundle_queue
+            #       where we get:
+            #       `AssertionError: Expected the total size of
+            #       objects in the queue to be non-negative, but
+            #       got -134217744 bytes instead.`
+            #       if this persists, consider setting size_bytes to None
+            #       or debug further
+            shard_size = sum(self._compute_bytes_per_record(r, self._dtype) for r in shard)
+
+            meta = BlockMetadata(
+                num_rows=len(shard),
+                size_bytes=shard_size,
+                input_files=None,
+                exec_stats=None
+            )
             tasks.append(ReadTask(_make_read_task, meta))
 
         return tasks
@@ -288,7 +287,7 @@ def get_dataset_ray(cfg: DictConfig, indices: Optional[List[int]]):
 
 def get_dataloader_ray(dataset: ray.data.Dataset,
                        batch_size: int,
-                       drop_last: bool = False,
+                       drop_last: bool = True,
                        collate_fn: Optional[Callable] = None,
                        prefetch_factor: int = None,
                        auto_transfer: bool = True):
@@ -311,6 +310,7 @@ def get_dataloader_ray(dataset: ray.data.Dataset,
         return dataset._iter_batches(
             batch_size=batch_size,
             prefetch_batches=prefetch_factor,
+            drop_last=drop_last,
             _collate_fn=collate_fn,
             batch_format=None
         )
