@@ -36,6 +36,7 @@ def multiprocess(
         func: Any,
         desc: str = 'Processing',
         cores: int = -1,
+        unit_scale: int = 1,
         unit: str = 'it',
         pool: Optional[mp.Pool] = None,
 ):
@@ -62,6 +63,7 @@ def multiprocess(
                 desc=desc,
                 bar_format='{l_bar}{bar}{r_bar} {elapsed_s:.1f}s elapsed',
                 unit=unit,
+                unit_scale=unit_scale,
                 file=sys.stdout,
         ):
             results.append(func(j))
@@ -73,6 +75,7 @@ def multiprocess(
                 desc=desc,
                 bar_format='{l_bar}{bar}{r_bar} {elapsed_s:.1f}s elapsed',
                 unit=unit,
+                unit_scale=unit_scale,
                 file=sys.stdout,
             ))
     elif cores > 1 and len(jobs) > 0:
@@ -83,6 +86,7 @@ def multiprocess(
                 desc=desc,
                 bar_format='{l_bar}{bar}{r_bar} {elapsed_s:.1f}s elapsed',
                 unit=unit,
+                unit_scale=unit_scale,
                 file=sys.stdout,
             ))
     else:
