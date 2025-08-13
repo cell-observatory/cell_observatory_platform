@@ -16,8 +16,8 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: platform_benchmark_multinode_training_h100s
-wandb_project: platform_benchmark_multinode_training_h100s
+experiment_name: benchmark_multinode_training_h100s
+wandb_project: benchmark_multinode_training_h100s
 
 # task
 task: pretrain_mae
