@@ -49,7 +49,11 @@ RUN apt-get update \
   google-perftools \
   libgoogle-perftools-dev \
   graphviz \
+  zsh \
   && rm -rf /var/lib/apt/lists/*
+
+RUN echo "Install ohmyzsh"
+RUN sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
 
 RUN echo "Installing jemalloc"
 RUN cd && wget https://github.com/jemalloc/jemalloc/releases/download/5.2.1/jemalloc-5.2.1.tar.bz2 && \
@@ -76,6 +80,13 @@ RUN cd && wget https://git.kernel.org/pub/scm/linux/kernel/git/axboe/fio.git/sna
     make && \
     sudo make install
 RUN which fio
+
+RUN echo "Installing vmtouch"
+RUN cd && git clone https://github.com/hoytech/vmtouch.git && \
+    cd vmtouch && \
+    make && \
+    sudo make install
+RUN which vmtouch
 
 
 # Give the dockerfile the name of the current git branch (passed in as a command line argument to "docker build")
