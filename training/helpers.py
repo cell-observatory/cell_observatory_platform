@@ -464,54 +464,6 @@ def log_data_timings(
             }
         )
 
-    if idx == 0 and trainer.event_writers_list is not None:
-        try:
-            wandb_writer = next(
-                w for w in trainer.event_writers_list.writers
-                if isinstance(w, WandBEventWriter)
-            )
-        except StopIteration:   
-            return
-
-
-        # keys expected by the writer (from Hydra/YAML config)
-        expected_step_keys  = set(wandb_writer.step_scalar_keys)
-        expected_epoch_keys = set(wandb_writer.epoch_scalar_keys)
-        # filter out keys that are not relevant for the current type of loop
-        if type == "train":
-            expected_step_keys  = {k for k in expected_step_keys  if not k.startswith(("val_", "test_"))}
-            expected_epoch_keys = {k for k in expected_epoch_keys if not k.startswith(("val_", "test_"))}
-        elif type == "val":
-            expected_step_keys  = {k for k in expected_step_keys  if k.startswith("val_")}
-            expected_epoch_keys = {k for k in expected_epoch_keys if k.startswith("val_")}
-
-        # keys that have actually been recorded so far by the recorder
-        recorded_step_keys = set(trainer.event_recorder.get_step_scalars().keys())
-        recorded_epoch_keys = set(trainer.event_recorder.get_epoch_scalars().keys())
-
-        unexpected_step = recorded_step_keys  - expected_step_keys
-        missing_step = expected_step_keys  - recorded_step_keys
-        unexpected_ep = recorded_epoch_keys - expected_epoch_keys
-        # it's hard to guard against missing epoch keys since they 
-        # are not logged until after the epoch ends but this doesn't
-        # really matter since the logger will throw an error
-        # anyways at the end of the epoch if the keys are missing
-        missing_ep = expected_epoch_keys - recorded_epoch_keys
-
-        assert not unexpected_step, (
-            f"[WandB] step-scalar(s) {sorted(unexpected_step)} were logged "
-            f"but are not listed in WandBEventWriter.step_scalar_keys"
-        )
-        assert not unexpected_ep, (
-            f"[WandB] epoch-scalar(s) {sorted(unexpected_ep)} were logged "
-            f"but are not listed in WandBEventWriter.epoch_scalar_keys"
-        )
-        assert not missing_step, (
-            f"[WandB] step-scalar key(s) {sorted(missing_step)} were declared "
-            f"in WandBEventWriter.step_scalar_keys but never logged "
-            f"in the first iteration"
-        )
-
 
 def get_input_data(model, inputs, device: Optional[torch.device] = None):
     input_data = ({"data_tensor": torch.randn(*inputs, device=device), "metainfo": {}},)

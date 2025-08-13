@@ -303,8 +303,10 @@ def apply_occupancy_threshold(
     def _string_set_to_list(value):
         if isinstance(value, str):
             clean_str = value.strip('{}')
+            if clean_str.startswith('[') and clean_str.endswith(']'):
+                clean_str = clean_str.strip('[]')
             if clean_str:
-                return [float(x.strip()) for x in clean_str.split(',') if x.strip()]
+                return [float(x.strip()) for x in clean_str.split(' ') if x.strip()]
             else:
                 return []
         elif isinstance(value, list):
