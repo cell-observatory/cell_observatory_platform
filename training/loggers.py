@@ -407,8 +407,6 @@ class WandBEventWriter(EventWriter):
         event_recorder: EventRecorder,
         project: str,
         dir: str | Path,
-        step_scalar_keys: List[str],
-        epoch_scalar_keys: List[str],
         entity: str | None = None,
         name: str | None = None,
         tags: List[str] | None = None,
@@ -418,8 +416,6 @@ class WandBEventWriter(EventWriter):
         force: bool = True
     ):
         self.event_recorder = event_recorder
-        self.step_scalar_keys = step_scalar_keys
-        self.epoch_scalar_keys = epoch_scalar_keys
 
         if process_rank() == 0:
             wandb.login()
@@ -435,60 +431,42 @@ class WandBEventWriter(EventWriter):
             
             self.run.define_metric("iter")
             self.run.define_metric("epoch")
-            for k in self.step_scalar_keys:
-                self.run.define_metric(k, step_metric="iter")
-            for k in self.epoch_scalar_keys:
-                self.run.define_metric(f"epoch/{k}", step_metric="epoch")
-
-            self.run.define_metric("epoch", step_metric="epoch")
-            self.run.define_metric("iter", step_metric="iter")
-                    
-            self.step_table = wandb.Table(columns=["iter", "epoch", *step_scalar_keys],  log_mode="INCREMENTAL")
-            self.epoch_table = wandb.Table(columns=["epoch", *epoch_scalar_keys], log_mode="INCREMENTAL")
-            self.run.log({
-                "step_logbook":  self.step_table,
-                "epoch_logbook": self.epoch_table
-            })
+            self.run.define_metric("step/*",  step_metric="iter")
+            self.run.define_metric("epoch/*", step_metric="epoch")
         else:
             self.run = None
-            self.step_table = None
-            self.epoch_table = None
         
     def _write_scalar_impl(
         self,
         scalar_dict,
-        scope: Literal["step", "epoch"] = "step"
+        scope: "Literal['step','epoch']" = "step",
     ):
-        if process_rank() == 0:
-            if not scalar_dict:
-                raise ValueError("No scalars to write. "
-                                "Please ensure scalars are recorded before writing.")
-            if scope == "step":
-                df = self._make_step_table(scalar_dict)                    
-                
-                for rec in df.to_dict(orient="records"):
-                    vals = [rec["iter"], rec["epoch"]] + [rec[k] for k in self.step_scalar_keys]
-                    self.step_table.add_data(*vals)
+        if self.run is None:
+            return
+        if not scalar_dict:
+            raise ValueError("No scalars to write.")
 
-                    step_logs = {"iter": rec["iter"]}
-                    step_logs.update({k: rec[k] for k in self.step_scalar_keys})
-                    self.run.log(step_logs, step=rec["iter"], commit=False)
-                
-                self.run.log({}, commit=True)  # commits the batch of logs
-                self.run.log({"step_logbook": self.step_table})
+        if scope == "step":
+            df = self._make_step_table(scalar_dict)
+            for rec in df.to_dict(orient="records"):
+                it = int(rec["iter"])
+                ep = int(rec.get("epoch", 0))
+                payload = {
+                    "iter": it,            # required so step/* uses iter
+                    "epoch": ep,           # handy to see epoch with step logs
+                    **{f"step/{k}": v for k, v in rec.items() if k not in ("iter", "epoch")},
+                }
+                self.run.log(payload, commit=True)
 
-            elif scope == "epoch":
-                df = self._make_epoch_table(scalar_dict)            
-                for rec in df.to_dict(orient="records"):
-                    vals = [rec["epoch"]] + [rec[k] for k in self.epoch_scalar_keys]
-                    self.epoch_table.add_data(*vals)
-
-                    epoch_logs = {"epoch": rec["epoch"]}
-                    epoch_logs.update({f"epoch/{k}": rec[k] for k in self.epoch_scalar_keys})
-                    self.run.log(epoch_logs, commit=False)
-                
-                self.run.log({}, commit=True)  # commits the batch of logs
-                self.run.log({"epoch_logbook": self.epoch_table})
+        elif scope == "epoch":
+            df = self._make_epoch_table(scalar_dict)
+            for rec in df.to_dict(orient="records"):
+                ep = int(rec["epoch"])
+                payload = {
+                    "epoch": ep,           # required so epoch/* uses epoch
+                    **{f"epoch/{k}": v for k, v in rec.items() if k != "epoch"},
+                }
+                self.run.log(payload, commit=True)             
 
     def _write_histograms_impl(self):
         pass
