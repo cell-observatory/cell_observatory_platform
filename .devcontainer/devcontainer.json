@@ -1,0 +1,46 @@
+{
+	"name": "Cell Observatory Platform",
+	"image": "ghcr.io/cell-observatory/cell_observatory_platform:feature-optimize_utilization_torch_cuda_12_8",
+	"workspaceFolder": "/workspace/cell_observatory_platform",
+	"containerUser": "ubuntu",
+	"overrideCommand": true,
+	"runArgs": [
+		"-e",
+		"PYTHONUNBUFFERED=1",
+		"--entrypoint=",
+		"--privileged",
+		"--ipc",
+		"host",
+		"--ipc",
+		"host",
+		"--gpus",
+		"all"
+	],
+	"mounts": [
+		"source=${localWorkspaceFolder},target=/workspace/cell_observatory_platform,type=bind,consistency=cached",
+		"source=${localEnv:HOME}/.ssh,target=/home/ubuntu/.ssh,type=bind,consistency=cached",
+		"source=/groups/betzig/betziglab,target=/groups/betzig/betziglab,type=bind,consistency=cached"
+	],
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"python.defaultInterpreterPath": "/usr/bin/python3",
+				"python.terminal.activateEnvironment": true,
+				"python.terminal.activateEnvInCurrentTerminal": true,
+				"python.linting.enabled": true,
+				"python.linting.flake8Enabled": true,
+				"python.formatting.provider": "black",
+				"python.formatting.blackArgs": [
+					"--line-length",
+					"88"
+				],
+				"editor.formatOnSave": true,
+				"editor.codeActionsOnSave": {
+					"source.organizeImports": true
+				}
+			}
+		}
+	},
+	"postCreateCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && pip install --upgrade psutil && pip install nvitop bpytop && cp ~/.bashrc /tmp/host_bashrc && echo 'source /tmp/host_bashrc' >> ~/.bashrc && python3 --version",
+	"postStartCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && export PYTHONPATH=/workspace/cell_observatory_platform && source ~/.bashrc"
+}

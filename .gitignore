@@ -163,3 +163,4 @@ src/LV_auto_batch.bat_predict_rois
 *.npy
 .testmondata
 /plots/
+.history/
