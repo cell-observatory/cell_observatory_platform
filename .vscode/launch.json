@@ -1,0 +1,326 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "🔧 Benchmark TensorStore",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/benchmark_tensorstore.py",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "databases/test_16_128_128_128_2_hypercubes_database_10k.csv",
+                "--num-hypercubes",
+                "100",
+                "--cpu-counts",
+                "1",
+                "2",
+                "4",
+                "8",
+                "12",
+                "16",
+                "--dtype",
+                "fp32"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Loops",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/training/test_loops.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Utils",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/utils/"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test All",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Models",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/models/"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Training",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/training/"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Data",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/data/"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🤖 Test MAE Models",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/models/test_mae_models.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🤖 Test ViT Models",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/models/test_vit_models.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🤖 Test ConvNeXt Models",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/models/test_convnext_models.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🤖 Test JEPA Models",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/models/test_jepa_models.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🤖 Test Baseline Models",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/models/test_baseline_models.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Hooks",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/training/test_hooks.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Checkpoint",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/training/test_checkpoint.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Loggers",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "remoteRoot": "/workspace/cell_observatory_platform",
+            "localRoot": "${workspaceFolder}",
+            "args": [
+                "-s",
+                "-vv",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "tests/training/test_loggers.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        }
+    ]
+}
