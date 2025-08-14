@@ -2,7 +2,7 @@ import os
 import gc
 import time
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Iterable, Callable
+from typing import List, Optional, Dict, Any, Iterable, Callable, Literal
 
 import ujson
 import numpy as np
@@ -10,6 +10,7 @@ import pandas as pd
 
 import tensorstore as ts
 
+from omegaconf import OmegaConf
 from omegaconf import DictConfig
 from hydra.utils import instantiate, get_method
 
@@ -28,49 +29,81 @@ import pyarrow as pa
 from data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 
+# -------- -------- -------- v1 -------- -------- --------
+
+
 class PinnedTensorCollator:
     """
-    Convert a ChunkedArray column in Arrow to a pinned Torch tensor
-    using exactly one host-side copy. The pinned buffer is optionally reused
-    across batches to prevent creating new pinned buffers each iteration.
+    Convert FixedShapeTensorArray column in Arrow to a 
+    pinned Torch tensor using one host-side copy. 
     """
 
-    def __init__(self, dtype: str, sample_shape: List[int] = None, pin_memory: bool = True):
-        self.dtype, self.sample_shape = TORCH_DTYPES[dtype].value, sample_shape
+    def __init__(self, 
+                 dtype: str, 
+                 sample_shape: List[int], 
+                 pin_memory: bool = True,
+                 impl_type: Literal["FixedShapeTensorArray", "FixedSizeListArray"] = "FixedSizeListArray"
+    ):
+        self.impl_type = impl_type
+        self.pin_memory = pin_memory
+        self.sample_shape = sample_shape
+        self.dtype = TORCH_DTYPES[dtype].value
 
-        self.data_tensor, self.pin_memory = None, pin_memory
-        self._elem_size = torch.tensor([], dtype=self.dtype).element_size()
-
-    def _ensure_buffer(self, batch_size: int, pin_memory: bool) -> None:
+    def _create_pinned_mem_array(self, batch_size: int, pin_memory: bool) -> None:
         shape = (batch_size, *self.sample_shape)
-        if self.data_tensor is None or self.data_tensor.shape != shape:
-            self.data_tensor = torch.empty(shape,
-                                            dtype=self.dtype,
-                                            pin_memory=pin_memory)
+        data_tensor = torch.empty(shape,
+                                  dtype=self.dtype,
+                                  pin_memory=pin_memory)
+        return data_tensor
 
-    def _copy_chunked(self,
+    def _copy_arrow_tensor_array(self,
                       chunks_arr: pa.ChunkedArray,
                       pin_memory: bool) -> torch.Tensor:
-        self._ensure_buffer(chunks_arr.length(), pin_memory=pin_memory)
+        pinned_array = self._create_pinned_mem_array(
+            batch_size=chunks_arr.num_chunks,
+            pin_memory=pin_memory
+        )
 
         offset = 0
-        for item in chunks_arr.chunks:
-            # arrow -> numpy -> torch should be zero-copy
-            # see: ray/air/util/tensor_extensions/arrow.py
-            item = torch.from_numpy(item.to_numpy(zero_copy_only=True))
+        for item in chunks_arr.chunks:            
+            item = torch.from_numpy(item.to_numpy_ndarray())
 
             # copy to pinned memory (should be only real copy)
-            self.data_tensor[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
+            pinned_array[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
 
             offset += item.shape[0]
 
-        return self.data_tensor
+        return pinned_array
+
+    def _copy_arrow_list_array(self,
+                      chunks_arr: pa.ChunkedArray,
+                      pin_memory: bool) -> torch.Tensor:
+        pinned_array = self._create_pinned_mem_array(
+           batch_size=chunks_arr.num_chunks,
+           pin_memory=pin_memory
+        )
+
+        offset = 0
+        for chunk in chunks_arr.chunks:
+            M = len(chunk)
+            flat = chunk.values.to_numpy(zero_copy_only=True)
+            np_view = flat.reshape(M, *self.sample_shape)
+            tensor = torch.from_numpy(np_view)
+            pinned_array[offset:offset+M].copy_(tensor, non_blocking=True)
+            offset += M
+
+        return pinned_array
 
     def __call__(self, batch: pa.Table | pa.RecordBatch) -> Dict[str, Any]:
         t0 = time.time()
 
         chunks_arr = batch.column('data_tensor')
-        data_tensor = self._copy_chunked(chunks_arr, pin_memory=self.pin_memory)
+        if self.impl_type == "FixedShapeTensorArray":
+            data_tensor = self._copy_arrow_tensor_array(chunks_arr, pin_memory=self.pin_memory)
+        elif self.impl_type == "FixedSizeListArray":
+            data_tensor = self._copy_arrow_list_array(chunks_arr, pin_memory=self.pin_memory)
+        else:
+            raise ValueError(f"Unsupported impl_type: {self.impl_type}")
 
         meta = {name: batch.column(name).to_pylist()
                 for name in batch.schema.names
@@ -201,9 +234,7 @@ class PretrainDatasourceRay(Datasource):
     # ReadTask which is a class that wraps a read task function with associated
     # metadata. the read task function returns an iterable which yields blocks of data.
     # blocks may be built using a DelegatingBlockBuilder, which allows for passing
-    # rows of data to the block builder followed by a build() call. in general, this leverages
-    # a API call to example Pandas (or other backend) which generates a DataFrame from dicts of
-    # data and concats tables as needed.
+    # rows of data to the block builder followed by a build() call.
     def get_read_tasks(self, parallelism: int) -> List[ReadTask]:
         # parallelism is user configured or inferred by Ray
         parallelism = min(parallelism, len(self._hypercubes_records))
@@ -240,49 +271,195 @@ class PretrainDatasourceRay(Datasource):
             tasks.append(ReadTask(_make_read_task, meta))
 
         return tasks
+    
+
+# -------- -------- -------- v2 -------- -------- --------
 
 
-def get_dataset_ray(cfg: DictConfig, indices: Optional[List[int]]):
-    datasource = instantiate(
-        cfg.datasets.dataset,
-        hypercubes_dataframe_path=cfg.datasets.databases.hypercubes_dataframe_path,
-        server_folder_path=cfg.paths.server_folder_path,
-        dtype=cfg.dataset_dtype,
-        input_layout=cfg.datasets.dataset.input_layout,
-        indices=indices,
-        max_rois=cfg.datasets.max_rois,
-        max_tiles=cfg.datasets.max_tiles,
-        max_hypercubes=cfg.datasets.max_hypercubes,
-        hpf_list=cfg.datasets.hpf_list,
-        roi_list=cfg.datasets.roi_list,
-        tile_list=cfg.datasets.tile_list,
-        occupancy_threshold=cfg.datasets.occupancy_threshold
-    )
+class RayLoaderActor:
+    """
+    Ray actor that loads a hypercube from a DataFrame row.
+    Used for Ray Data v2.
+    """
+    def __init__(self, 
+                 context_spec: Dict[str, Any],
+                 hypercubes_dataframe: pd.DataFrame, 
+                 with_batched_api: bool = True, 
+                 dtype: str = "fp16",
+                 impl_type: Literal["FixedShapeTensorArray", 
+                                    "FixedSizeListArray"] = "FixedSizeListArray"
+):
+        self.impl_type = impl_type
+        self.ctx = ts.Context(context_spec)
+        self.with_batched_api = with_batched_api
+        self.hypercubes_dataframe = hypercubes_dataframe
+        self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
-    dataset = ray.data.read_datasource(datasource, 
-                                    #    ray_remote_args={
-                                    #          "num_cpus": cfg.datasets.ray_remote_args.num_cpus}
-                                       )
+        self.paths = {
+            os.path.join(sf, of, tn)
+            for sf, of, tn in 
+            zip(self.hypercubes_dataframe["server_folder"], 
+                self.hypercubes_dataframe["output_folder"], 
+                self.hypercubes_dataframe["tile_name"]
+            )
+        }
+        self._handles = {
+            p: read_zarr(p, dtype=self.dtype, context=self.ctx)
+            for p in self.paths
+        }
 
-    # set Data Context for the dataset
-    # ctx = ray.data.DataContext.get_current()
-    # ctx.execution_options.locality_with_output = cfg.datasets.locality_with_output
-    # ctx.use_arrow_tensor_v2 = cfg.datasets.use_arrow_tensor_v2
+    def _slice_hypercube(self, data_tensor, meta: Dict[str, Any], ts_batch=None):
+        t = slice(meta["time_start"], meta["time_start"] + meta["time_size"])
+        c = slice(0, meta["channel_size"])
+        z = slice(meta["z_start"], meta["z_start"] + meta["cube_size"])
+        y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
+        x = slice(meta["x_start"], meta["x_start"] + meta["cube_size"])
+        return data_tensor[t, z, y, x, c].read(batch=ts_batch, order="C")
 
-    # we include transforms here for completion but if data loading
-    # is performance critical, the transforms may also be applied
-    # in the preprocessor on device
-    transforms = []
-    for t in cfg.datasets.transforms.transforms_list:
-        if isinstance(t, DictConfig):
-            transforms.append(instantiate(t))
+    def _get_handle(self, path: str):
+        h = self._handles.get(path)
+        if h is None:
+            # we still allow lazy fill
+            h = read_zarr(path, dtype=self.dtype, context=self.ctx)
+            self._handles[path] = h
+        return h
+    
+    def _np_as_strided_view(self, array: np.ndarray) -> np.ndarray:
+        return np.lib.stride_tricks.as_strided(
+            array,
+            shape=(1, *array.shape),
+            strides=(array.nbytes, *array.strides),
+        )
+
+    def __call__(self, batch):
+        records = batch.to_pylist()
+
+        futs = []
+        if self.with_batched_api:
+            with ts.Batch() as b:
+                for i, r in enumerate(records):
+                    p = os.path.join(r["server_folder"], r["output_folder"], r["tile_name"])
+                    futs.append(self._slice_hypercube(self._get_handle(p), r, ts_batch=b))
+                b.submit()
         else:
-            transforms.append(get_method(t))
+            for i, r in enumerate(records):
+                p = os.path.join(r["server_folder"], r["output_folder"], r["tile_name"])
+                futs.append(self._slice_hypercube(self._get_handle(p), r, ts_batch=None))
 
-    for transform in transforms:
-        dataset = dataset.map_batches(transform, 
-                                      batch_size=cfg.clusters.batch_size_per_gpu)
-    return dataset
+        arrays = [f.result() for f in futs]
+
+        # NOTE: FixedSizeListArray seems to be faster based on 
+        #       one initial test
+        if self.impl_type == "FixedSizeListArray":
+            # TODO: do we want to be more granular here? 
+            #       make this computation more general so
+            #       it works for ND tensors
+            T = records[0]["time_size"]
+            cube_size = records[0]["cube_size"]
+            C = records[0]["channel_size"]
+            S = T * cube_size * cube_size * cube_size * C
+            
+            chunks = []
+            for a in arrays:
+                flat = a.reshape(-1) # (S,)
+                values = pa.array(flat)
+                fs1 = pa.FixedSizeListArray.from_arrays(values, list_size=S)
+                chunks.append(fs1)
+
+            col = pa.chunked_array(chunks)
+            return batch.append_column("data_tensor", col)
+        
+        elif self.impl_type == "FixedShapeTensorArray":
+            chunks  = [pa.FixedShapeTensorArray.from_numpy_ndarray(self._np_as_strided_view(a)) 
+                        for a in arrays]
+            col = pa.chunked_array(chunks)
+            return batch.append_column("data_tensor", col)
+        
+        else:
+            raise ValueError(f"Unsupported impl_type: {self.impl_type}")
+
+
+# -------- -------- --------  -------- -------- --------
+
+
+def get_dataset_ray(cfg: DictConfig, 
+                    indices: Optional[List[int]], 
+                    database: Optional[Any] = None
+):
+    if not cfg.datasets.ray_data_v2:
+        datasource = instantiate(
+            cfg.datasets.dataset,
+            hypercubes_dataframe_path=cfg.datasets.databases.hypercubes_dataframe_path,
+            server_folder_path=cfg.paths.server_folder_path,
+            dtype=cfg.dataset_dtype,
+            input_layout=cfg.datasets.dataset.input_layout,
+            indices=indices,
+            max_rois=cfg.datasets.max_rois,
+            max_tiles=cfg.datasets.max_tiles,
+            max_hypercubes=cfg.datasets.max_hypercubes,
+            hpf_list=cfg.datasets.hpf_list,
+            roi_list=cfg.datasets.roi_list,
+            tile_list=cfg.datasets.tile_list,
+            occupancy_threshold=cfg.datasets.occupancy_threshold
+        )
+
+        dataset = ray.data.read_datasource(datasource, 
+                                        #    ray_remote_args={
+                                        #          "num_cpus": cfg.datasets.ray_remote_args.num_cpus}
+                                        )
+
+        # set Data Context for the dataset
+        ctx = ray.data.DataContext.get_current()
+        # ctx.execution_options.locality_with_output = cfg.datasets.locality_with_output
+        ctx.use_arrow_tensor_v2 = cfg.datasets.use_arrow_tensor_v2
+
+        # we include transforms here for completion but if data loading
+        # is performance critical, the transforms may also be applied
+        # in the preprocessor on device
+        transforms = []
+        for t in cfg.datasets.transforms.transforms_list:
+            if isinstance(t, DictConfig):
+                transforms.append(instantiate(t))
+            else:
+                transforms.append(get_method(t))
+
+        for transform in transforms:
+            dataset = dataset.map_batches(transform, 
+                                        batch_size=cfg.clusters.batch_size_per_gpu)
+        return dataset
+    
+    else:
+        # set Data Context for the dataset
+        ray_ctx = ray.data.DataContext.get_current()
+        # ray_ctx.execution_options.locality_with_output = cfg.datasets.locality_with_output
+        ray_ctx.use_arrow_tensor_v2 = cfg.datasets.use_arrow_tensor_v2
+
+        ts_ctx = OmegaConf.to_container(cfg.datasets.context, resolve=True)
+        # remove None values from context spec
+        ctx_spec = {k: v for k, v in ts_ctx.items() if v is not None}
+
+        table = pa.table(database.hypercubes_dataframe.iloc[indices] \
+                         if indices is not None else database.hypercubes_dataframe)
+        dataset = ray.data.from_arrow(table).repartition(
+            target_num_rows_per_block=cfg.clusters.batch_size_per_gpu
+        ).map_batches(
+            RayLoaderActor,
+            batch_size=cfg.clusters.batch_size_per_gpu,
+            batch_format="pyarrow",
+            fn_constructor_kwargs={
+                "context_spec": ctx_spec,
+                "hypercubes_dataframe": database.hypercubes_dataframe.iloc[indices] \
+                         if indices is not None else database.hypercubes_dataframe,
+                "with_batched_api": cfg.datasets.with_batched_api,
+                "dtype": cfg.dataset_dtype,
+                "impl_type": cfg.datasets.impl_type
+            },
+            # consider fractional values for jobs with much I/O
+            # num_cpus=cfg.datasets.ray_remote_args.num_cpus,
+            # could be a tuple also for (min, max)
+            concurrency=cfg.datasets.num_actors,
+        )
+        return dataset
 
 
 def get_dataloader_ray(dataset: ray.data.Dataset,
@@ -290,9 +467,10 @@ def get_dataloader_ray(dataset: ray.data.Dataset,
                        drop_last: bool = True,
                        collate_fn: Optional[Callable] = None,
                        prefetch_factor: int = None,
-                       auto_transfer: bool = True):
+                       auto_transfer: bool = True
+):
     # we use _iter_batches instead of iter_torch_batches
-    # to avoid a (very) costly conversion to torch tensors that
+    # to avoid a costly conversion to torch tensors that
     # the current implementation of iter_torch_batches does
     if auto_transfer:
         wrapped_loader = _WrappedRayDataLoader(
@@ -312,7 +490,7 @@ def get_dataloader_ray(dataset: ray.data.Dataset,
             prefetch_batches=prefetch_factor,
             drop_last=drop_last,
             _collate_fn=collate_fn,
-            batch_format=None
+            batch_format="pyarrow"
         )
 
 

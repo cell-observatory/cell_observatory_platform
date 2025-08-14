@@ -103,11 +103,11 @@ def run_session(cfg: DictConfig):
                 lengths=[dataset_len - val_size, val_size]
             )
             train_indices, val_indices = train_subset.indices, val_subset.indices
-            train_dataset = get_dataset_ray(cfg, indices=train_indices)
-            val_dataset = get_dataset_ray(cfg, indices=val_indices)
+            train_dataset = get_dataset_ray(cfg, indices=train_indices, database=db)
+            val_dataset = get_dataset_ray(cfg, indices=val_indices, database=db)
             dataset = {"train": train_dataset, "val": val_dataset}
         else:
-            train_dataset = get_dataset_ray(cfg, indices=None)
+            train_dataset = get_dataset_ray(cfg, indices=None, database=db)
             dataset = {"train": train_dataset}
     else:
         dataset = None

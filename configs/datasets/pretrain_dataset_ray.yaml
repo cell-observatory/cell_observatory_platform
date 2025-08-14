@@ -34,12 +34,6 @@ drop_last_policy: true # whether to drop the last batch if it is smaller than th
 
 auto_transfer: false
 
-use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
-locality_with_output: true # whether to use locality with output for the Ray tasks
-
-# ray_remote_args:
-#   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
-
 # collate function options:
 # Ray collate function OR class PinnedTensorCollator
 # class keeps a permanent pinned tensor in memory and allows
@@ -51,6 +45,7 @@ collate_fn:
   dtype: ${dataset_dtype}
   sample_shape: ${datasets.input_shape}
   pin_memory: true
+  impl_type: ${datasets.impl_type} # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
 
 dataset:
   _target_: data.datasets.pretrain_dataset_ray.PretrainDatasourceRay
@@ -65,3 +60,19 @@ dataset:
   input_layout:
     _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}
+  
+use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
+locality_with_output: true # whether to use locality with output for the Ray tasks
+
+ray_remote_args:
+  num_cpus: 0.25 # number of cpus per gpu for Ray tasks
+
+impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
+ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
+num_actors: 72
+with_batched_api: true
+context:
+  file_io_concurrency: null # concurrency for file I/O operations
+  data_copy_concurrency: null # concurrency for data copy operations
+  cache_pool: 
+    total_bytes_limit: 0
