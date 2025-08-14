@@ -29,13 +29,11 @@ import pyarrow as pa
 from data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 
-# -------- -------- -------- v1 -------- -------- --------
-
-
 class PinnedTensorCollator:
     """
-    Convert FixedShapeTensorArray column in Arrow to a 
-    pinned Torch tensor using one host-side copy. 
+    Convert FixedShapeTensorArray/FixedSizeListArray 
+    column in Arrow to a pinned Torch tensor using
+    one host-side copy. 
     """
 
     def __init__(self, 
@@ -111,6 +109,9 @@ class PinnedTensorCollator:
         meta['collate_time'] = time.time() - t0
 
         return {"data_tensor": data_tensor, "metainfo": meta}
+
+
+# -------- -------- -------- v1 -------- -------- --------
 
 
 def _slice_hypercube(data_tensor, meta: Dict[str, Any]) -> np.ndarray:
@@ -278,12 +279,12 @@ class PretrainDatasourceRay(Datasource):
 
 class RayLoaderActor:
     """
-    Ray actor that loads a hypercube from a DataFrame row.
+    Ray actor that loads hypercubes from a Arrow Table.
     Used for Ray Data v2.
     """
     def __init__(self, 
                  context_spec: Dict[str, Any],
-                 hypercubes_dataframe: pd.DataFrame, 
+                 input_layout: str,
                  with_batched_api: bool = True, 
                  dtype: str = "fp16",
                  impl_type: Literal["FixedShapeTensorArray", 
@@ -291,22 +292,11 @@ class RayLoaderActor:
 ):
         self.impl_type = impl_type
         self.ctx = ts.Context(context_spec)
+        self.input_layout = input_layout.upper()
         self.with_batched_api = with_batched_api
-        self.hypercubes_dataframe = hypercubes_dataframe
         self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
-        self.paths = {
-            os.path.join(sf, of, tn)
-            for sf, of, tn in 
-            zip(self.hypercubes_dataframe["server_folder"], 
-                self.hypercubes_dataframe["output_folder"], 
-                self.hypercubes_dataframe["tile_name"]
-            )
-        }
-        self._handles = {
-            p: read_zarr(p, dtype=self.dtype, context=self.ctx)
-            for p in self.paths
-        }
+        self._handles = {}  # lazy loading of handles
 
     def _slice_hypercube(self, data_tensor, meta: Dict[str, Any], ts_batch=None):
         t = slice(meta["time_start"], meta["time_start"] + meta["time_size"])
@@ -319,7 +309,6 @@ class RayLoaderActor:
     def _get_handle(self, path: str):
         h = self._handles.get(path)
         if h is None:
-            # we still allow lazy fill
             h = read_zarr(path, dtype=self.dtype, context=self.ctx)
             self._handles[path] = h
         return h
@@ -330,6 +319,13 @@ class RayLoaderActor:
             shape=(1, *array.shape),
             strides=(array.nbytes, *array.strides),
         )
+    
+    def _get_sample_size(self, record) -> int:
+        if self.input_layout == 'TZYXC':
+            return int(record["time_size"] * record["cube_size"] ** 3 * record["channel_size"])
+        else:
+            #TODO: add support for other layouts
+            raise ValueError(f"Unsupported dataset layout order: {self.input_layout}")
 
     def __call__(self, batch):
         records = batch.to_pylist()
@@ -348,35 +344,28 @@ class RayLoaderActor:
 
         arrays = [f.result() for f in futs]
 
-        # NOTE: FixedSizeListArray seems to be faster based on 
-        #       one initial test
-        if self.impl_type == "FixedSizeListArray":
-            # TODO: do we want to be more granular here? 
-            #       make this computation more general so
-            #       it works for ND tensors
-            T = records[0]["time_size"]
-            cube_size = records[0]["cube_size"]
-            C = records[0]["channel_size"]
-            S = T * cube_size * cube_size * cube_size * C
-            
+        # NOTE: FixedSizeListArray seems to be faster 
+        #       based on initial tests
+        if self.impl_type == "FixedSizeListArray":            
             chunks = []
             for a in arrays:
-                flat = a.reshape(-1) # (S,)
+                flat = a.reshape(-1)
                 values = pa.array(flat)
-                fs1 = pa.FixedSizeListArray.from_arrays(values, list_size=S)
+                fs1 = pa.FixedSizeListArray.from_arrays(values, 
+                                                        list_size=self._get_sample_size(records[0]))
                 chunks.append(fs1)
 
             col = pa.chunked_array(chunks)
-            return batch.append_column("data_tensor", col)
         
         elif self.impl_type == "FixedShapeTensorArray":
             chunks  = [pa.FixedShapeTensorArray.from_numpy_ndarray(self._np_as_strided_view(a)) 
                         for a in arrays]
             col = pa.chunked_array(chunks)
-            return batch.append_column("data_tensor", col)
         
         else:
             raise ValueError(f"Unsupported impl_type: {self.impl_type}")
+
+        return batch.append_column("data_tensor", col)
 
 
 # -------- -------- --------  -------- -------- --------
@@ -448,11 +437,10 @@ def get_dataset_ray(cfg: DictConfig,
             batch_format="pyarrow",
             fn_constructor_kwargs={
                 "context_spec": ctx_spec,
-                "hypercubes_dataframe": database.hypercubes_dataframe.iloc[indices] \
-                         if indices is not None else database.hypercubes_dataframe,
                 "with_batched_api": cfg.datasets.with_batched_api,
                 "dtype": cfg.dataset_dtype,
-                "impl_type": cfg.datasets.impl_type
+                "impl_type": cfg.datasets.impl_type,
+                "input_layout": cfg.datasets.dataset.input_layout.value
             },
             # consider fractional values for jobs with much I/O
             # num_cpus=cfg.datasets.ray_remote_args.num_cpus,
@@ -478,7 +466,7 @@ def get_dataloader_ray(dataset: ray.data.Dataset,
                 batch_size=batch_size,
                 prefetch_batches=prefetch_factor,
                 _collate_fn=collate_fn,
-                batch_format=None
+                batch_format="pyarrow"
             ),
             device=torch.cuda.current_device(),
             tensor_keys=("data_tensor",)
