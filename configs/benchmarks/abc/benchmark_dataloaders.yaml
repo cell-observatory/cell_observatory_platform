@@ -81,7 +81,7 @@ datasets:
 
   # max nr of hypercubes to test for benchmark
   occupancy_threshold: 0.0
-  max_hypercubes: 4000
+  max_hypercubes: 10000
   max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
   max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
@@ -89,7 +89,22 @@ datasets:
   roi_list: null # list of specific ROIs to filter
   tile_list: null # list of specific tiles to filter
 
-  prefetch_factor: 6
+  prefetch_factor: 12
+  use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
+  locality_with_output: true # whether to use locality with output for the Ray tasks
+
+  # ray_remote_args:
+  #   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
+
+  impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
+  ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
+  num_actors: 32
+  with_batched_api: true
+  context:
+    file_io_concurrency: null # concurrency for file I/O operations
+    data_copy_concurrency: null # concurrency for data copy operations
+    cache_pool: 
+      total_bytes_limit: 0
 
   collate_fn:
     _target_: data.datasets.pretrain_dataset_ray.PinnedTensorCollator

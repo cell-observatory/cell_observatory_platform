@@ -64,12 +64,12 @@ dataset:
 use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
 locality_with_output: true # whether to use locality with output for the Ray tasks
 
-ray_remote_args:
-  num_cpus: 0.25 # number of cpus per gpu for Ray tasks
+# ray_remote_args:
+#   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
 
 impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
 ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
-num_actors: 72
+num_actors: 32
 with_batched_api: true
 context:
   file_io_concurrency: null # concurrency for file I/O operations
