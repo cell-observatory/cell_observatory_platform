@@ -24,7 +24,6 @@ from training.helpers import (
     get_lr_scheduler,
     get_steps_per_epoch,
     resume_run,
-    activation_checkpoint,
     summarize_model,
     get_input_data,
     get_masked_input_data,

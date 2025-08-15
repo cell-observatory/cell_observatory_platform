@@ -23,6 +23,7 @@ if not OmegaConf.has_resolver("now"):
 
 from torch.utils.data import random_split
 
+from training.helpers import record_dataset_len
 from data.datasets.pretrain_dataset_ray import get_dataset_ray
 
 logger = logging.getLogger("ray")
@@ -106,9 +107,11 @@ def run_session(cfg: DictConfig):
             train_dataset = get_dataset_ray(cfg, indices=train_indices, database=db)
             val_dataset = get_dataset_ray(cfg, indices=val_indices, database=db)
             dataset = {"train": train_dataset, "val": val_dataset}
+            record_dataset_len(cfg, len(train_indices), len(val_indices))
         else:
             train_dataset = get_dataset_ray(cfg, indices=None, database=db)
             dataset = {"train": train_dataset}
+            record_dataset_len(cfg, dataset_len, 0)
     else:
         dataset = None
 

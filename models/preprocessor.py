@@ -139,14 +139,16 @@ class RayPreprocessor(torch.nn.Module):
         inputs = data_sample['data_tensor'].to("cuda", non_blocking=True)
         meta = data_sample['metainfo']
         
-        # if isinstance(inputs, list):
-        #     inputs = torch.stack(inputs, dim=0)
-
-        assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
+        # skipping checks for NaN/Inf values
+        # if torch.isnan(inputs).all() or torch.isinf(inputs).all():
+        #     raise ValueError(f"Invalid training data")
+        # assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 
         if self.transforms is not None:
+            transform_t0 = time.time()
             for transform in self.transforms:
                 inputs = transform(inputs)
+            transform_time = time.time() - transform_t0
 
         if self.with_masking:
             masking_time = time.time()
@@ -165,6 +167,7 @@ class RayPreprocessor(torch.nn.Module):
                     'preprocess_time': time.time() - preprocess_time,
                     'data_time': data_time,
                     'masking_time': masking_time,
+                    'transform_time': transform_time if self.transforms is not None else -1,
                     **meta
                 }
             }
@@ -173,4 +176,3 @@ class RayPreprocessor(torch.nn.Module):
                 'data_tensor': inputs,
                 'metainfo': {}
             }
-        

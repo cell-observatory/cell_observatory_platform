@@ -72,19 +72,19 @@ class DataLoadingBenchmark:
         os.makedirs(self.output_path.parent, exist_ok=True)
 
         
-        self.paths = {
-            os.path.join(sf, of, tn)
-            for sf, of, tn in 
-            zip(self.hypercubes_dataframe["server_folder"], 
-                self.hypercubes_dataframe["output_folder"], 
-                self.hypercubes_dataframe["tile_name"]
-            )
-        }
+        # self.paths = {
+        #     os.path.join(sf, of, tn)
+        #     for sf, of, tn in 
+        #     zip(self.hypercubes_dataframe["server_folder"], 
+        #         self.hypercubes_dataframe["output_folder"], 
+        #         self.hypercubes_dataframe["tile_name"]
+        #     )
+        # }
         
-        self._zarr_handles_data = {
-            p: read_zarr(p, dtype=self.dtype)
-            for p in self.paths
-        }
+        # self._zarr_handles_data = {
+        #     p: read_zarr(p, dtype=self.dtype)
+        #     for p in self.paths
+        # }
         
         self.results = []
 
@@ -104,7 +104,6 @@ class DataLoadingBenchmark:
             "cache_pool": {"total_bytes_limit": 0}
         })
     
-    
     def read_hypercube_from_zarr(self, rec) -> float:
         context = self._get_ts_context()
         
@@ -112,7 +111,12 @@ class DataLoadingBenchmark:
         
         results = []
         for f in rec:
-            zarr_handle = self._zarr_handles_data[os.path.join(f["server_folder"], f["output_folder"], f["tile_name"])]
+            # zarr_handle = self._zarr_handles_data[os.path.join(f["server_folder"], f["output_folder"], f["tile_name"])]
+            zarr_handle = read_zarr(
+                path=os.path.join(f["server_folder"], f["output_folder"], f["tile_name"]),
+                dtype=self.dtype,
+                context=context
+            )
             results.append(self.slice_hypercube(zarr_handle, f))
         
         results = [r.result() for r in results]
@@ -307,7 +311,6 @@ class DataLoadingBenchmark:
 
             self.plot_scaling()
 
-
 def benchmark_tensorstore(cfg: DictConfig):
     benchmarker = DataLoadingBenchmark(
         hypercubes_dataframe_path=cfg.datasets.hypercubes_dataframe_path,
@@ -326,7 +329,6 @@ def benchmark_tensorstore(cfg: DictConfig):
         cpu_counts=cfg.cpu_counts,
         num_hypercubes=cfg.random_hypercubes
     )
-
 
 
 def main():

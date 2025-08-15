@@ -8,7 +8,7 @@
 # CFG="benchmarks/abc/benchmark_scaling_4d_base.yaml"
 # CFG="benchmarks/abc/benchmark_training_base.yaml"
 
-# CFG="benchmarks/abc/benchmark_dataloaders.yaml"
-CFG="benchmarks/abc/benchmark_tensorstore.yaml"
+CFG="benchmarks/abc/benchmark_dataloaders.yaml"
+# CFG="benchmarks/abc/benchmark_tensorstore.yaml"
 
 python3 /clusterfs/nvme/hph/git_managed/cell_observatory_platform/manager.py --config-name=${CFG}

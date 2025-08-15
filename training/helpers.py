@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from functools import wraps
 from operator import attrgetter
-from typing import Optional, Tuple, Iterator
+from typing import Optional, Tuple, Iterator, defaultdict
 
 import numpy as np
 
@@ -15,7 +15,7 @@ from torchinfo import summary
 from torch.optim.lr_scheduler import LinearLR
 from timm.scheduler import create_scheduler_v2
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 from deepspeed.ops.adam import FusedAdam
 from deepspeed.ops.lamb import FusedLamb
@@ -23,8 +23,6 @@ from deepspeed.runtime.lr_schedules import WarmupCosineLR
 from deepspeed.runtime.activation_checkpointing.checkpointing import checkpoint
 
 import ray
-
-from training.loggers import WandBEventWriter
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
@@ -138,42 +136,54 @@ def get_optimizer(
         return opt, None
 
 
-def _infer_steps_per_epoch(loader, batch_size, type: str = "train"):
-    if loader is None:
-        return None
+def record_dataset_len(config, num_train_steps: int, num_val_steps: int):
+    bs = config.clusters.batch_size_per_gpu
+    world_size = ray.train.get_context().get_world_size()
+    drop_last = bool(getattr(config.datasets, "drop_last_policy"))
 
-    # PyTorch/DALI
-    try:
-        return len(loader)
-    except TypeError:
-        pass
-
-    # Ray Dataset iterator or wrapped Ray Dataset iterator for auto
-    # transfer to GPU (see cell_observatory_platform/data/datasets/pretrain_dataset_ray.py)
-    if isinstance(loader, ray.data.iterator._IterableFromIterator) or \
-        isinstance(loader.data_iter, Iterator):
-        if type == "train":
-            dataset = ray.train.get_dataset_shard("train")
-            rows = dataset._base_dataset.count()
-        elif type == "val":
-            dataset = ray.train.get_dataset_shard("val")
-            rows = dataset._base_dataset.count()
+    def steps_from_rows(n_rows: int):
+        if drop_last:
+            min_rows_per_worker = n_rows // world_size
+            return (min_rows_per_worker // bs)
         else:
-            raise ValueError(f"Unknown dataset type: {type}")
-        return math.ceil(rows / batch_size)
+            return math.ceil(n_rows / (world_size * bs))
 
-    raise TypeError(
-        f"Cannot infer steps/epoch for loader type {type(loader)}. "
-        f"Extend the _infer_steps_per_epoch function to handle this type."
-    )
+    steps_per_epoch = steps_from_rows(num_train_steps)
+    val_steps_per_epoch = steps_from_rows(num_val_steps) if num_val_steps > 0 else None
+    
+    with open_dict(config):
+        config.runtime = {"train_steps_per_epoch": steps_per_epoch, 
+                       "val_steps_per_epoch": val_steps_per_epoch,
+                       "n_train_rows": num_train_steps,
+                       "n_val_rows": num_val_steps}
+
+
+def _infer_steps_per_epoch(config, loader, batch_size, type: str = "train"):    
+    if config.datasets.dataset._target_.endswith("PretrainDatasetDali") or \
+        config.datasets.dataset._target_.endswith("PretrainDataset"):
+        return len(loader)
+    
+    elif config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
+        if type == "train":
+            return config.runtime.get("train_steps_per_epoch")
+        elif type == "val":
+            return config.runtime.get("val_steps_per_epoch")
+    
+    else:
+        raise TypeError(
+            f"Cannot infer steps/epoch for loader type {type(loader)}. "
+            f"Extend the _infer_steps_per_epoch function to handle this type."
+        )
 
 
 def get_steps_per_epoch(train_dataloader, val_dataloader, config: DictConfig):
     # TODO: double check correctness
-    steps_per_epoch = _infer_steps_per_epoch(train_dataloader, 
+    steps_per_epoch = _infer_steps_per_epoch(config, 
+                                             train_dataloader, 
                                              config.clusters.batch_size_per_gpu, 
                                              type="train")
-    val_steps_per_epoch = _infer_steps_per_epoch(val_dataloader, 
+    val_steps_per_epoch = _infer_steps_per_epoch(config, 
+                                                 val_dataloader, 
                                                  config.clusters.batch_size_per_gpu, 
                                                  type="val") if val_dataloader else None
     logger.info(
@@ -192,9 +202,6 @@ def get_steps_per_epoch(train_dataloader, val_dataloader, config: DictConfig):
 #       and the checkpoint tag need be specified whereafter
 #       any checkpoint with corresponding iter, epoch, best_loss
 #       will be loaded from the checkpoint directory.
-#       see: https://arxiv.org/pdf/2204.02311 for
-#       strategies to resume training after training 
-#       instabilities
 def resume_model_state(config: DictConfig, checkpoint_manager):
     assert config.checkpoint.checkpoint_manager.resume_checkpointdir is not None and \
         Path(config.checkpoint.checkpoint_manager.resume_checkpointdir).is_dir(), \
@@ -427,6 +434,7 @@ def log_data_timings(
             scope="step",
             prefix="val_" if type == "val" else None,
             preprocess_time=preprocess_time,
+            reduce_method=["median", "max", "min"]
         )
 
     masking_time = data_sample['metainfo'].get('masking_time', None)
@@ -435,6 +443,7 @@ def log_data_timings(
             scope="step",
             prefix="val_" if type == "val" else None,
             masking_time=masking_time,
+            reduce_method=["median", "max", "min"]
         )
     
     collate_time = data_sample['metainfo'].get('collate_time', None)
@@ -453,6 +462,15 @@ def log_data_timings(
             prefix="val_" if type == "val" else None,
             slice_time=slice_time.mean().item() if \
                 isinstance(slice_time, torch.Tensor) else np.mean(slice_time),
+            reduce_method=["median", "max", "min"]
+        )
+
+    transform_time = data_sample['metainfo'].get('transform_time', None)
+    if transform_time is not None:
+        trainer.event_recorder.put_scalars(
+            scope="step",
+            prefix="val_" if type == "val" else None,
+            transform_time=transform_time,
             reduce_method=["median", "max", "min"]
         )
 
