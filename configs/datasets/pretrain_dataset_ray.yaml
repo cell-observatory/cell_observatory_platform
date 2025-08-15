@@ -63,6 +63,7 @@ dataset:
   
 use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
 locality_with_output: true # whether to use locality with output for the Ray tasks
+rows_per_block: ${datasets.batch_size} # number of rows per block for the Ray dataset
 
 # ray_remote_args:
 #   num_cpus: 0.25 # number of cpus per gpu for Ray tasks

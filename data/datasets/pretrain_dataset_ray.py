@@ -429,9 +429,14 @@ def get_dataset_ray(cfg: DictConfig,
 
         table = pa.table(database.hypercubes_dataframe.iloc[indices] \
                          if indices is not None else database.hypercubes_dataframe)
+        
+        # convert to Ray Dataset
         dataset = ray.data.from_arrow(table).repartition(
-            target_num_rows_per_block=cfg.clusters.batch_size_per_gpu
-        ).map_batches(
+            target_num_rows_per_block=cfg.datasets.rows_per_block,
+            shuffle=False
+        )
+
+        dataset = dataset.map_batches(
             RayLoaderActor,
             batch_size=cfg.clusters.batch_size_per_gpu,
             batch_format="pyarrow",
@@ -442,11 +447,12 @@ def get_dataset_ray(cfg: DictConfig,
                 "impl_type": cfg.datasets.impl_type,
                 "input_layout": cfg.datasets.dataset.input_layout.value
             },
-            # consider fractional values for jobs with much I/O
-            # num_cpus=cfg.datasets.ray_remote_args.num_cpus,
-            # could be a tuple also for (min, max)
-            concurrency=cfg.datasets.num_actors,
+            # consider fractional values for jobs with much I/O, i.e.
+            # num_cpus=0.5,
+            concurrency=(cfg.datasets.num_actors_min, 
+                         cfg.datasets.num_actors_max),
         )
+
         return dataset
 
 
@@ -455,7 +461,7 @@ def get_dataloader_ray(dataset: ray.data.Dataset,
                        drop_last: bool = True,
                        collate_fn: Optional[Callable] = None,
                        prefetch_factor: int = None,
-                       auto_transfer: bool = True
+                       auto_transfer: bool = False
 ):
     # we use _iter_batches instead of iter_torch_batches
     # to avoid a costly conversion to torch tensors that
