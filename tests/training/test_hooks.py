@@ -260,12 +260,13 @@ def _test_hooks_dist(cfg):
         else:
             step_df  = pd.read_csv(step_csv)
             epoch_df = pd.read_csv(epoch_csv)
-
-            assert abs(step_df.loc[0, "loss"] - 1.23) < 1e-6
+            
+            print(step_df.columns)
+            assert abs(step_df.loc[0, "loss_median"] - 1.23) < 1e-6
             assert step_df.loc[0, "iter"]  == 0
             assert step_df.loc[0, "epoch"] == 0
             
-            assert abs(epoch_df.loc[0, "val_metric"] - 0.90) < 1e-6
+            assert abs(epoch_df.loc[0, "val_metric_median"] - 0.90) < 1e-6
             assert epoch_df.loc[0, "epoch"] == 0
 
     barrier()
