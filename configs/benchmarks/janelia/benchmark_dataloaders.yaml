@@ -74,7 +74,7 @@ datasets:
   patch_shape: [4, 16, 16, 16]
 
   use_cached_hypercubes_dataframe: true # whether to use the cached hypercubes dataframe
-  hypercubes_dataframe_path: ${paths.data_path}/database/hypercubes_dataframe.csv
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
 
 
   # max nr of hypercubes to test for benchmark
@@ -87,7 +87,7 @@ datasets:
   roi_list: null # list of specific ROIs to filter
   tile_list: null # list of specific tiles to filter
 
-  prefetch_factor: 12
+  prefetch_factor: 16
   use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
   locality_with_output: true # whether to use locality with output for the Ray tasks
 

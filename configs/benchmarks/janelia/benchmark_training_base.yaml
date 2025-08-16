@@ -16,8 +16,8 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: benchmark_multinode_training_h100s
-wandb_project: benchmark_multinode_training_h100s
+experiment_name: benchmark_multinode_training_h100s_ray_v2
+wandb_project: benchmark_multinode_training_h100s_ray_v2
 
 # task
 task: pretrain_mae
@@ -57,11 +57,12 @@ dataset_layout_order: TZYXC
 
 # clusters
 clusters:
-  batch_size: 32 # total batch size
+  batch_size: 256 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 8 # number of cpu cores per gpu
+  gpus_per_worker: 8 # number of gpus per worker node
+  cpus_per_gpu: 12 # number of cpu cores per gpu
   mem_per_cpu: 40000 # ram per cpu core
+  ray_queue_memory: 0.35
 
 #paths:
 paths:
@@ -70,7 +71,6 @@ paths:
   resume_checkpointdir: null
   pretrained_checkpointdir: null
 
-# data
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
@@ -81,11 +81,29 @@ datasets:
   return_dataloader: true
   distributed_sampler: true
 
-  prefetch_factor: 4 # prefetch factor for the dataloader
-  num_workers: ${clusters.cpus_per_gpu}  # number of workers for the dataloader
+  use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
+  locality_with_output: true # whether to use locality with output for the Ray tasks
+
+  # ray_remote_args:
+  #   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
+
+  impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
+  ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
+  
+  prefetch_factor: 12
+  num_actors_min: 4
+  num_actors_max: 64
+  
+  with_batched_api: true
+  context:
+    file_io_concurrency: null # concurrency for file I/O operations
+    data_copy_concurrency: null # concurrency for data copy operations
+    cache_pool: 
+      total_bytes_limit: 0
+
   max_hypercubes: 100000 # maximum number of hypercubes to return
   use_cached_hypercubes_dataframe: true
-  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_16_128_128_128_2_hypercube_view_1066194rows.csv
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
 
 
 
