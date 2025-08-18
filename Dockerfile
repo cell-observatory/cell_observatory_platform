@@ -74,7 +74,7 @@ RUN which jeprof
 
 
 RUN echo "Installing grafana"
-RUN apt-get install -y adduser libfontconfig1 musl && \
+RUN sudo apt-get install -y adduser libfontconfig1 musl && \
     cd && wget https://dl.grafana.com/grafana-enterprise/release/12.1.1/grafana-enterprise_12.1.1_16903967602_linux_amd64.deb && \
     sudo dpkg -i grafana-enterprise_12.1.1_16903967602_linux_amd64.deb    
 RUN which grafana-server
