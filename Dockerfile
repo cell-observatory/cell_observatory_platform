@@ -50,44 +50,37 @@ RUN apt-get update \
   libgoogle-perftools-dev \
   graphviz \
   zsh \
+  vmtouch \
+  fio \
+  prometheus \ 
+  autoconf \
+  libxslt-dev \ 
+  xsltproc \ 
+  docbook-xsl \
   && rm -rf /var/lib/apt/lists/*
 
-RUN echo "Install ohmyzsh"
-RUN sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
+RUN echo "Installing grafana"
+RUN cd && \
+    sudo mkdir -p /etc/apt/keyrings/ && \
+    wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null  && \
+    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee -a /etc/apt/sources.list.d/grafana.list && \
+    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com beta main" | sudo tee -a /etc/apt/sources.list.d/grafana.list
+RUN sudo apt-get update && sudo apt-get install -y grafana && sudo apt-get install -y grafana-enterprise
+
 
 RUN echo "Installing jemalloc"
-RUN cd && wget https://github.com/jemalloc/jemalloc/releases/download/5.2.1/jemalloc-5.2.1.tar.bz2 && \
-    tar -xvf jemalloc-5.2.1.tar.bz2 && \
-    cd jemalloc-5.2.1 && \
+RUN cd && wget https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2 && \
+    tar -xvf jemalloc-5.3.0.tar.bz2 && \
+    cd jemalloc-5.3.0 && \
     export JEMALLOC_DIR=$PWD && \
-    ./configure --enable-prof --enable-prof-libunwind && \
+    ./configure --prefix=/usr/local --enable-prof --enable-prof-libunwind && \
     make && \
-    sudo make install
+    sudo make install 
 RUN which jeprof
 
 
-RUN echo "Installing prometheus"
-RUN cd && wget https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.linux-amd64.tar.gz && \
-    tar -xvf prometheus-3.5.0.linux-amd64.tar.gz
-RUN cd && which ~/prometheus-3.5.0.linux-amd64/prometheus
-
-
-RUN echo "Installing fio"
-RUN cd && wget https://git.kernel.org/pub/scm/linux/kernel/git/axboe/fio.git/snapshot/fio-3.38.tar.gz && \
-    tar -xvf fio-3.38.tar.gz && \
-    cd fio-3.38 && \
-    ./configure && \
-    make && \
-    sudo make install
-RUN which fio
-
-RUN echo "Installing vmtouch"
-RUN cd && git clone https://github.com/hoytech/vmtouch.git && \
-    cd vmtouch && \
-    make && \
-    sudo make install
-RUN which vmtouch
-
+RUN echo "Install ohmyzsh"
+RUN sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
 
 # Give the dockerfile the name of the current git branch (passed in as a command line argument to "docker build")
 ARG BRANCH_NAME
@@ -110,7 +103,7 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 
 # Create the user
-RUN   groupadd --gid $USER_GID $USERNAME && \
+RUN groupadd --gid $USER_GID $USERNAME && \
     groupadd --gid 1001 user1000_secondary && \
     useradd -l --uid $USER_UID --gid $USER_GID -G 1001 -m $USERNAME && \
     #
