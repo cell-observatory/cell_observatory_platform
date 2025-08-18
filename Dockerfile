@@ -41,6 +41,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
   sudo \
   htop \
+  nvitop \
   cifs-utils \
   winbind \
   smbclient \
@@ -78,7 +79,7 @@ RUN cd && wget https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jema
     export JEMALLOC_DIR=$PWD && \
     ./configure --prefix=/usr/local --enable-prof --enable-prof-libunwind && \
     make && \
-    make install 
+    sudo make install 
 RUN which jeprof
 
 
