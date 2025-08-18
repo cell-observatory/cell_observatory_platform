@@ -16,16 +16,41 @@ TERM=xterm-256color
 echo "PS1='\e[97m\u\e[0m@\e[94m\h\e[0m:\e[35m\w\e[0m# '" >> /root/.bashrc
 
 apt-get update \
-&& apt-get install -y --no-install-recommends \
-sudo \
-htop \
-cifs-utils \
-winbind \
-smbclient \
-sshfs \
-iputils-ping \
-&& rm -rf /var/lib/apt/lists/*
+  && apt-get install -y --no-install-recommends \
+  sudo \
+  htop \
+  nvitop \
+  cifs-utils \
+  winbind \
+  smbclient \
+  sshfs \
+  iputils-ping \
+  google-perftools \
+  libgoogle-perftools-dev \
+  graphviz \
+  zsh \
+  vmtouch \
+  fio \
+  prometheus \ 
+  autoconf \
+  libxslt-dev \ 
+  xsltproc \ 
+  docbook-xsl \
+  && rm -rf /var/lib/apt/lists/*
 
+echo "Installing grafana"
+cd && \
+    mkdir -p /etc/apt/keyrings/ && \
+    wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | tee /etc/apt/keyrings/grafana.gpg > /dev/null  && \
+    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | tee -a /etc/apt/sources.list.d/grafana.list && \
+    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com beta main" | tee -a /etc/apt/sources.list.d/grafana.list
+apt-get update && \
+    apt-get install -y grafana && \
+    apt-get install -y grafana-enterprise && \
+    rm -rf /var/lib/apt/lists/*
+
+echo "Install ohmyzsh"
+sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
 
 # needs to have
 # sudo mount --bind ~/.cache/pip /tmp/pip

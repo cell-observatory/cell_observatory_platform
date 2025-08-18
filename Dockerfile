@@ -41,6 +41,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
   sudo \
   htop \
+  nvitop \
   cifs-utils \
   winbind \
   smbclient \
@@ -61,23 +62,14 @@ RUN apt-get update \
 
 RUN echo "Installing grafana"
 RUN cd && \
-    sudo mkdir -p /etc/apt/keyrings/ && \
-    wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null  && \
-    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee -a /etc/apt/sources.list.d/grafana.list && \
-    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com beta main" | sudo tee -a /etc/apt/sources.list.d/grafana.list
-RUN sudo apt-get update && sudo apt-get install -y grafana && sudo apt-get install -y grafana-enterprise
-
-
-RUN echo "Installing jemalloc"
-RUN cd && wget https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2 && \
-    tar -xvf jemalloc-5.3.0.tar.bz2 && \
-    cd jemalloc-5.3.0 && \
-    export JEMALLOC_DIR=$PWD && \
-    ./configure --prefix=/usr/local --enable-prof --enable-prof-libunwind && \
-    make && \
-    sudo make install 
-RUN which jeprof
-
+    mkdir -p /etc/apt/keyrings/ && \
+    wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | tee /etc/apt/keyrings/grafana.gpg > /dev/null  && \
+    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | tee -a /etc/apt/sources.list.d/grafana.list && \
+    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com beta main" | tee -a /etc/apt/sources.list.d/grafana.list
+RUN apt-get update && \
+    apt-get install -y grafana && \
+    apt-get install -y grafana-enterprise && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN echo "Install ohmyzsh"
 RUN sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
