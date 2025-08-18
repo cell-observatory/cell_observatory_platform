@@ -71,18 +71,6 @@ RUN apt-get update && \
     apt-get install -y grafana-enterprise && \
     rm -rf /var/lib/apt/lists/*
 
-
-RUN echo "Installing jemalloc"
-RUN cd && wget https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2 && \
-    tar -xvf jemalloc-5.3.0.tar.bz2 && \
-    cd jemalloc-5.3.0 && \
-    export JEMALLOC_DIR=$PWD && \
-    ./configure --prefix=/usr/local --enable-prof --enable-prof-libunwind && \
-    make && \
-    sudo make install 
-RUN which jeprof
-
-
 RUN echo "Install ohmyzsh"
 RUN sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
 
