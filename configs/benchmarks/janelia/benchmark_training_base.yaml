@@ -90,7 +90,7 @@ datasets:
   impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
   ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
   
-  prefetch_factor: 12
+  prefetch_factor: 4
   num_actors_min: 4
   num_actors_max: 64
   
