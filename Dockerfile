@@ -59,8 +59,14 @@ RUN apt-get update \
   docbook-xsl \
   && rm -rf /var/lib/apt/lists/*
 
-RUN echo "Install ohmyzsh"
-RUN sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
+RUN echo "Installing grafana"
+RUN cd && \
+    sudo mkdir -p /etc/apt/keyrings/ && \
+    wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg > /dev/null  && \
+    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee -a /etc/apt/sources.list.d/grafana.list && \
+    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com beta main" | sudo tee -a /etc/apt/sources.list.d/grafana.list
+RUN sudo apt-get update && sudo apt-get install -y grafana && sudo apt-get install -y grafana-enterprise
+
 
 RUN echo "Installing jemalloc"
 RUN cd && wget https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2 && \
@@ -73,10 +79,8 @@ RUN cd && wget https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jema
 RUN which jeprof
 
 
-RUN echo "Installing grafana"
-RUN cd && wget https://dl.grafana.com/grafana-enterprise/release/12.1.1/grafana-enterprise_12.1.1_16903967602_linux_amd64.deb && \
-    sudo dpkg -i grafana-enterprise_12.1.1_16903967602_linux_amd64.deb    
-RUN which grafana-server
+RUN echo "Install ohmyzsh"
+RUN sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
 
 # Give the dockerfile the name of the current git branch (passed in as a command line argument to "docker build")
 ARG BRANCH_NAME
