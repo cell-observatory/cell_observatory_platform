@@ -50,44 +50,34 @@ RUN apt-get update \
   libgoogle-perftools-dev \
   graphviz \
   zsh \
+  vmtouch \
+  fio \
+  prometheus \ 
+  autoconf \
+  libxslt-dev \ 
+  xsltproc \ 
+  docbook-xsl \
   && rm -rf /var/lib/apt/lists/*
 
 RUN echo "Install ohmyzsh"
 RUN sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
 
 RUN echo "Installing jemalloc"
-RUN cd && wget https://github.com/jemalloc/jemalloc/releases/download/5.2.1/jemalloc-5.2.1.tar.bz2 && \
-    tar -xvf jemalloc-5.2.1.tar.bz2 && \
-    cd jemalloc-5.2.1 && \
+RUN cd && wget https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2 && \
+    tar -xvf jemalloc-5.3.0.tar.bz2 && \
+    cd jemalloc-5.3.0 && \
     export JEMALLOC_DIR=$PWD && \
-    ./configure --enable-prof --enable-prof-libunwind && \
+    ./configure --prefix=/usr/local --enable-prof --enable-prof-libunwind && \
     make && \
-    sudo make install
+    sudo make install 
 RUN which jeprof
 
 
-RUN echo "Installing prometheus"
-RUN cd && wget https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.linux-amd64.tar.gz && \
-    tar -xvf prometheus-3.5.0.linux-amd64.tar.gz
-RUN cd && which ~/prometheus-3.5.0.linux-amd64/prometheus
-
-
-RUN echo "Installing fio"
-RUN cd && wget https://git.kernel.org/pub/scm/linux/kernel/git/axboe/fio.git/snapshot/fio-3.38.tar.gz && \
-    tar -xvf fio-3.38.tar.gz && \
-    cd fio-3.38 && \
-    ./configure && \
-    make && \
-    sudo make install
-RUN which fio
-
-RUN echo "Installing vmtouch"
-RUN cd && git clone https://github.com/hoytech/vmtouch.git && \
-    cd vmtouch && \
-    make && \
-    sudo make install
-RUN which vmtouch
-
+RUN echo "Installing grafana"
+RUN apt-get install -y adduser libfontconfig1 musl && \
+    cd && wget https://dl.grafana.com/grafana-enterprise/release/12.1.1/grafana-enterprise_12.1.1_16903967602_linux_amd64.deb && \
+    sudo dpkg -i grafana-enterprise_12.1.1_16903967602_linux_amd64.deb    
+RUN which grafana-server
 
 # Give the dockerfile the name of the current git branch (passed in as a command line argument to "docker build")
 ARG BRANCH_NAME
@@ -110,7 +100,7 @@ ARG USER_UID=1000
 ARG USER_GID=1000
 
 # Create the user
-RUN   groupadd --gid $USER_GID $USERNAME && \
+RUN groupadd --gid $USER_GID $USERNAME && \
     groupadd --gid 1001 user1000_secondary && \
     useradd -l --uid $USER_UID --gid $USER_GID -G 1001 -m $USERNAME && \
     #
