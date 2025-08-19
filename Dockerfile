@@ -48,12 +48,6 @@ ENV TERM=xterm-256color
 RUN echo "PS1='\e[97m\u\e[0m@\e[94m\h\e[0m:\e[35m\w\e[0m# '" >> /root/.bashrc
 
 
-RUN apt update --fix-missing && \
-    add-apt-repository universe multiverse && \
-    apt update && \
-    apt upgrade -y && \
-    ls /etc/apt/sources.list.d/
-
 # Install requirements. Don't "apt-get upgrade" or else all the NVIDIA tools and drivers will update.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
