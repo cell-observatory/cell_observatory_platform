@@ -1,23 +1,22 @@
-'''
-For amd64 support only:
-    docker buildx build . --tag ghcr.io/cell-observatory/cell_observatory_platform:main_torch_cuda_12_8 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8 --progress=plain --no-cache-filter pip_install
+# For amd64 support only:
+#     docker buildx build . --tag ghcr.io/cell-observatory/cell_observatory_platform:main_torch_cuda_12_8 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8 --progress=plain --no-cache-filter pip_install
 
-For multi-platform support:
-    1. Check if containerd-snapshotter is enabled
-        docker info -f '{{ .DriverStatus }}'
-        You should see snapshotter in the output: [[driver-type io.containerd.snapshotter.v1]]
-        If not, make sure your /etc/docker/daemon.json has containerd-snapshotter enabled https://docs.docker.com/engine/storage/containerd/
+# For multi-platform support:
+#     1. Check if containerd-snapshotter is enabled
+#         docker info -f '{{ .DriverStatus }}'
+#         You should see snapshotter in the output: [[driver-type io.containerd.snapshotter.v1]]
+#         If not, make sure your /etc/docker/daemon.json has containerd-snapshotter enabled https://docs.docker.com/engine/storage/containerd/
 
-    2. Use the tonistiigi/binfmt image to install QEMU and register the executable types on the host
-        docker run --privileged --rm tonistiigi/binfmt --install all
+#     2. Use the tonistiigi/binfmt image to install QEMU and register the executable types on the host
+#         docker run --privileged --rm tonistiigi/binfmt --install all
 
-    3. Build image with --platform flag:
-        docker buildx build --platform linux/amd64,linux/arm64 . --tag ghcr.io/cell-observatory/cell_observatory_platform:main_torch_cuda_12_8 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8 --progress=plain --no-cache-filter pip_install
+#     3. Build image with --platform flag:
+#         docker buildx build --platform linux/amd64,linux/arm64 . --tag ghcr.io/cell-observatory/cell_observatory_platform:main_torch_cuda_12_8 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8 --progress=plain --no-cache-filter pip_install
 
 
-Running image:
-    docker run --network host -u 1000 --privileged -v ~/.ssh:/sshkey -v ${PWD}:/workspace/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -t -i --rm -w /workspace/cell_observatory_platform --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8 bash
-'''
+# Running image:
+#     docker run --network host -u 1000 --privileged -v ~/.ssh:/sshkey -v ${PWD}:/workspace/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -t -i --rm -w /workspace/cell_observatory_platform --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8 bash
+
 
 # to run on a ubuntu system:
 # install nvidia driver (distro=ubuntu2204 && arch=x86_64 && arch_ext=amd64) then follow https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/index.html#ubuntu-installation and Network Repository Installation
