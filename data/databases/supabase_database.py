@@ -225,6 +225,8 @@ class SupabaseDatabase:
             filters = f"WHERE {table_name_shortcut}.exists_prfs IS TRUE"
         elif str(self.server_folder_path).startswith('/aws'):
             filters = f"WHERE {table_name_shortcut}.exists_aws IS TRUE"
+        elif str(self.server_folder_path).startswith('/lustre'):
+            filters = f"WHERE {table_name_shortcut}.exists_oak IS TRUE"
         else:
             raise ValueError(f"Unknown server_folder_path: {self.server_folder_path}")
 
