@@ -57,11 +57,11 @@ dataset_layout_order: TZYXC
 
 # clusters
 clusters:
-  ray_queue_memory: 0.3
-  batch_size: 96 # total batch size
+  ray_queue_memory: 0.2
+  batch_size: 32 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 3 # number of gpus per worker node
-  cpus_per_gpu: 42 # number of cpu cores per gpu
+  gpus_per_worker: 1 # number of gpus per worker node
+  cpus_per_gpu: 126 # number of cpu cores per gpu
   mem_per_cpu: 21000 # ram per cpu core
   scaling_config:
     use_gpu: true
@@ -83,7 +83,7 @@ paths:
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-  input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
+  input_shape: [16, 128, 128, 128, 1] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
 
   split: 0.1
@@ -96,12 +96,17 @@ datasets:
   # ray_remote_args:
   #   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
 
-  impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
+  # implementation type for the data tensor array 
+  # options: FixedShapeTensorArray, FixedSizeListArray, ArrowTensorArray
+  impl_type: FixedSizeListArray
   ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
   
   prefetch_factor: 3
   num_actors_min: 4
   num_actors_max: 64
+
+  # only train on channel 0
+  channels_subset: [0]
   
   with_batched_api: true
   context:
@@ -122,38 +127,50 @@ datasets:
 schedulers:
   epochs: 1
 
-# turn on compile mode
-# optimizations:
-#   torch_compile:
-#     enabled: true
-#     mode: reduce-overhead
-#     dynamic: false
+# test activation checkpointing
+optimizations:
+  activation_checkpoint:
+    enabled: true
+    modules: ["masked_encoder.encoder"] # "masked_decoder.encoder.transformer_blocks"
+    selective_ac_option: "op" # apply activation checkpointing every 1 module
+    per_op_sac_force_recompute_mm_shapes_by_fqns: ["fc1"] # specific modules to force recompute
+    mode: "selective" # modes: "full", "selective"
+    mm_recompute_frac: 2 # recompute every 2nd mm module
 
-# drop_path in timm leads to graph break in compile
-# models:
-#   mae:
-#     drop_path_rate: 0.0 # no drop path rate for now
+# test compile mode
+  torch_compile:
+    enabled: true
+    # modules to compile
+    modules: ["masked_encoder.encoder", "masked_decoder.encoder.transformer_blocks"]
+    blocks_nomenclature: "transformer_blocks"
+    range: block_based # options: "full", "block_based"
+    mode: reduce-overhead
+    dynamic: false
+    blockbased_fullgraph: false
 
-# # flops profiler needs to be turned off for compile
-# deepspeed:
-#   flops_profiler:
-#     enabled: false # turn off flops profiler for now
+models:
+  mae:
+    drop_path_rate: 0.0
+
+deepspeed:
+  flops_profiler:
+    enabled: false
 
 # hooks
 hooks:
-  # nsys_env:
-  #   nsight: 
-  #     pytorch: autograd-shapes-nvtx
-  #     t: cuda,nvtx,cudnn,cublas,osrt
-  #     s: cpu
-  #     "gpu-metrics-devices": all
-  #     capture-range: cudaProfilerApi
-  #     capture-range-end: stop-shutdown
+  nsys_env:
+    nsight: 
+      pytorch: autograd-shapes-nvtx
+      t: cuda,nvtx,cudnn,cublas,osrt
+      s: cpu
+      # "gpu-metrics-devices": 0
+      capture-range: cudaProfilerApi
+      capture-range-end: stop-shutdown
   hooks_list:
-  # - _target_: training.hooks.NsysProfilerHook
-  #   start_iter: 20
-  #   end_iter: 25
-  # - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.NsysProfilerHook
+    start_iter: 20
+    end_iter: 25
+  - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer
   - _target_: training.hooks.PeriodicWriter

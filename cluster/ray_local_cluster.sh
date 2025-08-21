@@ -46,7 +46,7 @@ export cluster_address
 ############################## START HEAD NODE
 
 apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir -q $object_store_memory &
-sleep 10
+sleep 20
 
 rpids=$(pgrep -u $USER ray)
 echo "Ray head node PID:"

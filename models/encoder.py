@@ -34,7 +34,6 @@ class Encoder(nn.Module):
         norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
         act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
         mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
-        activation_checkpointing: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -47,7 +46,6 @@ class Encoder(nn.Module):
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
         self.drop_path_rate = drop_path_rate
-        self.activation_checkpointing = activation_checkpointing
 
         # stochastic depth decay rule
         if not fixed_dropout_depth: # and self.drop_path_rate > 0.0:
@@ -67,8 +65,7 @@ class Encoder(nn.Module):
                 drop_path=self.drop_path_rate if fixed_dropout_depth and self.drop_path_rate > 0.0 else dpr[i],
                 norm_layer=self.norm_layer,
                 act_layer=self.act_layer,
-                mlp_layer=self.mlp_layer,
-                activation_checkpointing=activation_checkpointing
+                mlp_layer=self.mlp_layer
             )
             for i in range(self.depth)
         ])

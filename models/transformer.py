@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.layers import SwiGLU, DropPath
 from torch.utils.checkpoint import checkpoint
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 logging.basicConfig(
 	stream=sys.stdout,
@@ -49,7 +50,8 @@ class Attention(nn.Module):
         k = self.k_norm(k)
 
         try:
-            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=True):
+            # with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=True):
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]):
                 x = F.scaled_dot_product_attention(
                     q, k, v,
                     dropout_p=self.att_drop.p if self.training else 0.,
@@ -83,8 +85,7 @@ class Transformer(nn.Module):
         drop_path: float = 0.,
         norm_layer: nn.Module = partial(nn.LayerNorm, eps=1e-5),
         act_layer: nn.Module = nn.SiLU,
-        mlp_layer: nn.Module = SwiGLU,
-        activation_checkpointing: bool = False
+        mlp_layer: nn.Module = SwiGLU
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -107,7 +108,6 @@ class Transformer(nn.Module):
             act_layer=act_layer,
         )
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.activation_checkpointing = activation_checkpointing
 
     def forward(self, x, return_attention=False):
 
@@ -120,10 +120,7 @@ class Transformer(nn.Module):
             p1 = x + self.drop_path1(att)
 
             ffn = self.norm2(p1)
-            if self.activation_checkpointing:
-                ffn = checkpoint(self.mlp, ffn, use_reentrant=False)
-            else:
-                ffn = self.mlp(ffn)
+            ffn = self.mlp(ffn)
 
             p2 = p1 + self.drop_path2(ffn)
             return p2

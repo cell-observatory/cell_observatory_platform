@@ -70,7 +70,6 @@ class DataLoadingBenchmark:
         self.output_path = outdir / f"{'_'.join(map(str, self.hypercube_shape))}_{self.dtype}"
 
         os.makedirs(self.output_path.parent, exist_ok=True)
-
         
         # self.paths = {
         #     os.path.join(sf, of, tn)
@@ -113,7 +112,7 @@ class DataLoadingBenchmark:
         for f in rec:
             # zarr_handle = self._zarr_handles_data[os.path.join(f["server_folder"], f["output_folder"], f["tile_name"])]
             zarr_handle = read_zarr(
-                path=os.path.join(f["server_folder"], f["output_folder"], f["tile_name"]),
+                image_path=os.path.join(f["server_folder"], f["output_folder"], f["tile_name"]),
                 dtype=self.dtype,
                 context=context
             )

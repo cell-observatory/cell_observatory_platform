@@ -1,3 +1,4 @@
+import re
 import sys
 import math
 import ujson
@@ -5,7 +6,8 @@ import logging
 from pathlib import Path
 from functools import wraps
 from operator import attrgetter
-from typing import Optional, Tuple, Iterator, defaultdict
+from collections import defaultdict
+from typing import Optional, List, Union, Iterator, Tuple
 
 import numpy as np
 
@@ -13,6 +15,10 @@ import torch
 import torch.nn as nn
 from torchinfo import summary
 from torch.optim.lr_scheduler import LinearLR
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+    checkpoint_wrapper as ptd_checkpoint_wrapper,
+    CheckpointWrapper,
+)
 from timm.scheduler import create_scheduler_v2
 
 from omegaconf import DictConfig, open_dict
@@ -346,60 +352,6 @@ def summarize_model(
         )
 
 
-def activation_checkpoint(cfg, model):
-    """Wrap listed sub-modules with activation-checkpointing."""
-    def wrap_forward(forward):
-        @wraps(forward)
-        def wrapper(*args, **kwargs):
-            return checkpoint(forward, use_reentrant=False, *args, **kwargs)
-        wrapper._is_ckpt_wrapped = True
-        return wrapper
-
-    for mod_name in cfg.optimizations.activation_checkpoint.modules:
-        mod = attrgetter(mod_name)(model)
-        if not getattr(mod.forward, "_is_ckpt_wrapped", False):
-            mod.forward = wrap_forward(mod.forward)
-
-
-def enable_optimizations(cfg: DictConfig, model: nn.Module):
-    # torch backend optimization flags for training
-    if cfg.optimizations.cudnn_benchmark:
-        torch.backends.cudnn.benchmark = True
-    if cfg.optimizations.cudnn_deterministic:
-        torch.backends.cudnn.deterministic = True
-    if cfg.optimizations.cudnn_enabled:
-        torch.backends.cudnn.enabled = True
-    if cfg.optimizations.cudnn_allow_tf32:
-        torch.backends.cudnn.allow_tf32 = True
-    if cfg.optimizations.deterministic:
-        torch.use_deterministic_algorithms(True)
-
-    # activation checkpointing 
-    if cfg.optimizations.activation_checkpoint.enabled:
-        logger.info(
-            f"Enabling activation checkpointing for modules: \
-                {cfg.optimizations.activation_checkpoint.modules}"
-        )
-        activation_checkpoint(cfg, model)
-        # TODO: add deepspeed checkpointing config logic
-        # deepspeed.checkpointing.configure(**cfg.deepspeed.checkpointing)
-    
-    # torch compile optimizations
-    if cfg.optimizations.torch_compile.enabled:
-        model = torch.compile(model,
-                            dynamic = cfg.optimizations.torch_compile.dynamic,
-                            # options: "default", "reduce-overhead", "max-autotune"
-                            # reduced overhead is for small models
-                            # max-autotune takes long but gives largest speedup
-                            # see: https://pytorch.org/get-started/pytorch-2-x/#user-experience
-                            mode = cfg.optimizations.torch_compile.mode,
-                            # DeepSpeed generates graph breaks
-                            # hence we must disable fullgraph
-                            fullgraph = False)
-
-    return model
-
-
 def log_data_timings(
     trainer,
     idx,
@@ -506,3 +458,437 @@ def get_masked_input_data(model, inputs, device: Optional[torch.device] = None):
     # in a tuple with a single dict element
     input_data = ({"data_tensor": torch.randn(*inputs, device=device), "metainfo": meta},)
     return input_data
+
+
+def enable_optimizations(cfg: DictConfig, model: nn.Module):
+    # torch backend optimization flags for training
+    if cfg.optimizations.cudnn_benchmark:
+        torch.backends.cudnn.benchmark = True
+    if cfg.optimizations.cudnn_deterministic:
+        torch.backends.cudnn.deterministic = True
+    if cfg.optimizations.cudnn_enabled:
+        torch.backends.cudnn.enabled = True
+    if cfg.optimizations.cudnn_allow_tf32:
+        torch.backends.cudnn.allow_tf32 = True
+    if cfg.optimizations.deterministic:
+        torch.use_deterministic_algorithms(mode=True)
+
+    # activation checkpointing 
+    if cfg.optimizations.activation_checkpoint.enabled:
+        apply_activation_checkpointing(cfg, model)
+    
+    # torch compile optimizations
+    if cfg.optimizations.torch_compile.enabled:
+        model = apply_compile(model, cfg)
+
+    print_model_tree_with_opt(model, treat_wrappers_as_leaves=False) # sanity check
+    return model
+
+
+# many of the below functions are based on: 
+# https://github.com/pytorch/torchtitan/main/torchtitan/models/llama3/infra/parallelize.py
+def apply_activation_checkpointing(cfg: DictConfig, model: nn.Module):
+    """Apply activation checkpointing to the model."""
+    num_blocks = apply_ac_over_discovered_stacks(cfg, model)
+    logger.info(f"Applied activation checkpointing to {num_blocks} transformer blocks.")
+
+
+# TODO: we should consider consolidating all these types of objects
+# to identify which models currently support automated activation checkpointing
+# where the user does not need to specify the modules
+_ac_ckpt_supported_models_list = ["MaskedAutoEncoder", "JEPA"]
+# TODO: ensure set is exhaustive
+# identify all the MM functions that we want to count
+# for activation checkpointing
+_MM_FUNCS = {
+    torch.ops.aten.mm.default,
+    torch.ops.aten.addmm.default,
+    torch.ops.aten.bmm.default,
+    torch.ops.aten.matmul.default,
+}
+# for selective op activation checkpointing
+_save_list = {
+    *tuple(_MM_FUNCS),
+    torch.ops.aten._scaled_dot_product_efficient_attention.default,
+    torch.ops.aten._scaled_dot_product_flash_attention.default,
+    torch.ops._c10d_functional.reduce_scatter_tensor.default,
+    # for low precision training, it's useful to always save
+    # the result of max, since the absolute maximum is
+    # used to compute the scaling factor for quantization.
+    torch.ops.aten.max.default,
+}
+
+
+def _as_stack(path_str: str, 
+              submod, 
+              blocks_nomenclature: str = "transformer_blocks"
+) -> Tuple[str, nn.ModuleList]:
+    """
+    Normalize a object into a (stack_fqn, stack_container) pair.
+    Accept ModuleList/Sequential directly, or parent modules that own a
+    transformer blocks ModuleList.
+    """
+    # direct container
+    if isinstance(submod, (nn.ModuleList, nn.Sequential)):
+        return path_str, submod
+
+    # parent form: grab its blocks named `blocks_nomenclature`
+    if hasattr(submod, blocks_nomenclature) and \
+        isinstance(getattr(submod, blocks_nomenclature), nn.ModuleList):
+        return f"{path_str}.{blocks_nomenclature}", getattr(submod, blocks_nomenclature)
+
+    raise TypeError(
+        f"Config path '{path_str}' resolved to {type(submod).__name__}; "
+        f"expected ModuleList/Sequential or a module with '.{blocks_nomenclature}'."
+    )
+
+
+# TODO: break `yield_transformer_stacks_for_act_ckpt` and 
+#       `yield_transformer_stacks_for_compile` into one helper function
+#        and two smaller functions that yield the stacks for each case to
+#        avoid code duplication
+
+def yield_transformer_stacks_for_act_ckpt(cfg, model: nn.Module):
+    # if user provided explicit modules, honor them
+    cfg_modules = getattr(cfg.optimizations.activation_checkpoint, "modules", None)
+    blocks_name = getattr(cfg.optimizations.activation_checkpoint, "blocks_nomenclature", "transformer_blocks")
+    if cfg_modules:
+        for module_fqn in cfg_modules:
+            try:
+                submod = attrgetter(module_fqn)(model)
+            except AttributeError as e:
+                raise AttributeError(f"Could not resolve '{module_fqn}' on model: {e}") from e
+            stack_fqn, stack = _as_stack(module_fqn, submod, blocks_nomenclature=blocks_name)
+            yield (stack_fqn, stack)
+        return
+    
+    # if user does not provide explicit modules, we auto-discover
+    # transformer stacks in the model. 
+    # since our current activation checkpointing implementation
+    # is based on correctly identifying transformer blocks
+    # we catch model class names that are not supported here
+    # if model.__class__.__name__ is not in _ac_ckpt_supported_models_list 
+    # then the user should extend these functions to support their model
+    # or explicitly provide the modules to apply activation checkpointing
+    # via the config.
+    if model.__class__.__name__ not in _ac_ckpt_supported_models_list:
+        raise ValueError(
+            f"Model {model.__class__.__name__} is not supported for activation checkpointing. "
+            f"Supported models: {_ac_ckpt_supported_models_list}"
+        )
+
+    # fallback auto-discovery 
+    # MAE
+    if hasattr(model, "masked_encoder") and hasattr(model.masked_encoder, "encoder"):
+        if hasattr(model.masked_encoder.encoder, blocks_name):
+            yield (f"masked_encoder.encoder.{blocks_name}", getattr(model.masked_encoder.encoder, blocks_name))
+    if hasattr(model, "masked_decoder") and hasattr(model.masked_decoder, "encoder"):
+        if hasattr(model.masked_decoder.encoder, blocks_name):
+            yield (f"masked_decoder.encoder.{blocks_name}",
+                   getattr(model.masked_decoder.encoder, blocks_name))
+    # JEPA
+    if hasattr(model, "input_encoder") and hasattr(model.input_encoder, "encoder"):
+        if hasattr(model.input_encoder.encoder, blocks_name):
+            yield (f"input_encoder.encoder.{blocks_name}",
+                   getattr(model.input_encoder.encoder, blocks_name))
+    if hasattr(model, "target_predictor") and hasattr(model.target_predictor, "encoder"):
+        if hasattr(model.target_predictor.encoder, blocks_name):
+            yield (f"target_predictor.encoder.{blocks_name}",
+                   getattr(model.target_predictor.encoder, blocks_name))
+
+
+def yield_transformer_stacks_for_compile(cfg: DictConfig, model: nn.Module):
+    # honor explicit module paths if provided
+    cfg_modules = getattr(cfg.optimizations.torch_compile, "modules", None)
+    blocks_name = getattr(cfg.optimizations.torch_compile, "blocks_nomenclature", "transformer_blocks")
+    if cfg_modules:
+        for module_fqn in cfg_modules:
+            submod = attrgetter(module_fqn)(model)  # raises if missing
+            stack_fqn, stack = _as_stack(module_fqn, submod, blocks_nomenclature=blocks_name)
+            yield (stack_fqn, stack)
+        return
+
+    # fallback auto-discovery
+    # MAE
+    if hasattr(model, "masked_encoder") and hasattr(model.masked_encoder, "encoder"):
+        if hasattr(model.masked_encoder.encoder, blocks_name):
+            yield (f"masked_encoder.encoder.{blocks_name}", getattr(model.masked_encoder.encoder, blocks_name))
+    if hasattr(model, "masked_decoder") and hasattr(model.masked_decoder, "encoder"):
+        if hasattr(model.masked_decoder.encoder, blocks_name):
+            yield (f"masked_decoder.encoder.{blocks_name}", getattr(model.masked_decoder.encoder, blocks_name))
+    # JEPA
+    if hasattr(model, "input_encoder") and hasattr(model.input_encoder, "encoder"):
+        if hasattr(model.input_encoder.encoder, blocks_name):
+            yield (f"input_encoder.encoder.{blocks_name}", getattr(model.input_encoder.encoder, blocks_name))
+    if hasattr(model, "target_predictor") and hasattr(model.target_predictor, "encoder"):
+        if hasattr(model.target_predictor.encoder, blocks_name):
+            yield (f"target_predictor.encoder.{blocks_name}", getattr(model.target_predictor.encoder, blocks_name))
+    # also compile the frozen target encoder
+    if hasattr(model, "target_encoder") and hasattr(model.target_encoder, "encoder"):
+        if hasattr(model.target_encoder.encoder, blocks_name):
+            yield (f"target_encoder.encoder.{blocks_name}", getattr(model.target_encoder.encoder, blocks_name))
+
+
+def apply_ac_over_discovered_stacks(cfg, model: nn.Module):
+    wrapped = 0
+    for stack_fqn, stack in yield_transformer_stacks_for_act_ckpt(cfg, model):
+        for i, block in enumerate(stack):
+            wrapped_block = _apply_ac_to_module(
+                module=block,
+                act_ckpt_mode=cfg.optimizations.activation_checkpoint.mode,
+                selective_ac_option=cfg.optimizations.activation_checkpoint.selective_ac_option,
+                per_op_sac_force_recompute_mm_shapes_by_fqns=\
+                    cfg.optimizations.activation_checkpoint.per_op_sac_force_recompute_mm_shapes_by_fqns,
+                base_fqn=f"{stack_fqn}.{i}",
+                mm_recompute_frac=cfg.optimizations.activation_checkpoint.mm_recompute_frac,
+            )
+            stack[i] = wrapped_block
+            wrapped += 1
+    return wrapped
+
+
+# args info from: https://github.com/pytorch/pytorch/aten/src/ATen/native/native_functions.yaml
+def _rhs_shape_for(func, args):
+    # return the (K, N) rhs shape
+    if func == torch.ops.aten.mm.default:
+        # func: mm(Tensor self, Tensor mat2) -> Tensor
+        return tuple(args[1].shape)
+    if func == torch.ops.aten.addmm.default:
+        # func: addmm.out(Tensor self, Tensor mat1, Tensor mat2, *, ...)
+        # addmm(input, mat1[M,K], mat2[K,N], beta, alpha)
+        return tuple(args[2].shape)
+    if func in (torch.ops.aten.matmul.default, torch.ops.aten.bmm.default):
+        # matmul: func: matmul(Tensor self, Tensor other) -> Tensor
+        # bmm: func: bmm(Tensor self, Tensor mat2) -> Tensor
+        # (..., M, K) @ (..., K, N)
+        return tuple(args[1].shape[-2:])
+    return None
+
+
+def _apply_ac_to_module(
+    module: nn.Module,
+    act_ckpt_mode: str, 
+    base_fqn: Optional[str] = None,
+    selective_ac_option: Optional[Union[str, int]] = None,
+    per_op_sac_force_recompute_mm_shapes_by_fqns: Optional[List[str]] = None,
+    mm_recompute_frac: Optional[int] = 2,
+):
+    valid_ac_modes = ("full", "selective")
+    if act_ckpt_mode not in valid_ac_modes:
+        raise ValueError(
+            f"Invalid AC mode: {act_ckpt_mode}. Valid modes: {valid_ac_modes}"
+        )
+
+    if act_ckpt_mode == "full":
+        return ptd_checkpoint_wrapper(module, preserve_rng_state=False)
+
+    assert act_ckpt_mode == "selective", f"{act_ckpt_mode}"
+
+    use_op_sac = selective_ac_option == "op"
+    use_layer_sac = isinstance(selective_ac_option, (str, int)) \
+        and str(selective_ac_option).isdigit()
+    if not use_op_sac and not use_layer_sac:
+        raise ValueError(
+            f"Invalid selective AC option: {selective_ac_option}. "
+            f"Valid options: 'op' or a positive int representing layer frequency"
+        )
+    
+    if use_op_sac:
+        from torch.utils.checkpoint import (
+            CheckpointPolicy,
+            create_selective_checkpoint_contexts,
+        )
+
+        mm_recompute_shapes, per_op_act_ckpt_fqns = set(), []
+        # True if len(per_op_sac_force_recompute_mm_shapes_by_fqns) > 0 or 
+        # per_op_sac_force_recompute_mm_shapes_by_fqns is not None 
+        if per_op_sac_force_recompute_mm_shapes_by_fqns:
+            for module_fqn, submod in module.named_modules():
+                fqn = module_fqn
+                if base_fqn is not None:
+                    fqn = f"{base_fqn}.{module_fqn}"
+                
+                if not any(
+                    filter_fqn in fqn
+                    for filter_fqn in per_op_sac_force_recompute_mm_shapes_by_fqns
+                ):
+                    continue
+                
+                if not isinstance(submod, nn.Linear):
+                    raise ValueError(
+                        "per_op_sac_force_recompute_mm_shapes_by_fqns expected to match "
+                        f"a nn.Linear, but got: {submod}"
+                    )
+                
+                # use rhs shapes to identify the mm ops to recompute
+                out_f, in_f = submod.weight.shape
+                mm_recompute_shapes.add((in_f, out_f))
+
+                logger.info(
+                    f"Selective op AC force recompute mm shape for {fqn}: "
+                    f"{(in_f, out_f)}"
+                )
+
+                per_op_act_ckpt_fqns.append(fqn)
+            
+            logger.info(
+                f"Activation checkpointing summary:     \n"
+                f"Selective op AC mode: {act_ckpt_mode} \n"
+                f"Selective op AC option: {selective_ac_option} \n"
+                f"Selective op AC force recompute functions: {per_op_act_ckpt_fqns} \n"
+                f"Selective op AC force recomputing mms with rhs shapes {mm_recompute_shapes}"
+            )
+
+        assert mm_recompute_frac is not None and mm_recompute_frac > 0, \
+            f"mm_recompute_frac must be a positive integer, got: {mm_recompute_frac}"
+
+        def _get_custom_policy(meta, mm_recompute_frac, mm_recompute_shapes):
+            def _custom_policy(ctx, func, *args, **kwargs):
+                mode = "recompute" if ctx.is_recompute else "forward"
+                mm_count_key = f"{mode}_mm_count"
+                
+                is_mm = func in _MM_FUNCS
+                if is_mm:
+                    rhs = _rhs_shape_for(func, args)
+                    # force-recompute if rhs matches a targeted Linear
+                    if rhs is not None and rhs in mm_recompute_shapes:
+                        # PREFER_XXX may be overridden
+                        # but MUST_XXX is always respected
+                        return CheckpointPolicy.PREFER_RECOMPUTE
+                    meta[mm_count_key] += 1
+                
+                # saves output of all compute ops, except every mm_recompute_frac mm
+                to_save = func in _save_list and not (
+                    is_mm and meta[mm_count_key] % mm_recompute_frac == 0
+                )
+                return (
+                    CheckpointPolicy.MUST_SAVE
+                    if to_save
+                    else CheckpointPolicy.PREFER_RECOMPUTE
+                )
+
+            return _custom_policy
+        
+        def selective_checkpointing_context_fn():
+            meta = defaultdict(int)
+            return create_selective_checkpoint_contexts(_get_custom_policy(meta, 
+                                                                           mm_recompute_frac, 
+                                                                           mm_recompute_shapes))
+
+        # selective checkpointing of mm ops as well every mm_recompute_frac-th
+        # mm op in the module
+        return ptd_checkpoint_wrapper(
+            module,
+            context_fn=selective_checkpointing_context_fn,
+            preserve_rng_state=False,
+        )
+    
+    elif use_layer_sac:
+        # checkpoint every `selective_ac_option` of the modules passed to this function
+        ac_freq = int(selective_ac_option)
+        ptd_checkpoint_wrapper.__dict__.setdefault("_count", 0)
+        ptd_checkpoint_wrapper._count += 1
+        if not ac_freq or ptd_checkpoint_wrapper._count % ac_freq == 0:
+            return ptd_checkpoint_wrapper(module, preserve_rng_state=False)
+        else:
+            return module
+
+
+def apply_compile(model: nn.Module, cfg: DictConfig):
+    if cfg.optimizations.torch_compile.range == "full":
+        logger.info("Applying torch.compile to the whole model.")
+        model = torch.compile(
+            model,
+            dynamic=cfg.optimizations.torch_compile.dynamic,
+            mode=cfg.optimizations.torch_compile.mode,
+            fullgraph=False,  # DS causes graph breaks -> keep False here
+        )
+        # mark whole-model compilation so printer can tag the root
+        setattr(model, "_is_compiled", True)
+        setattr(model, "_compiled_fqns", set(["<whole_model>"]))
+    elif cfg.optimizations.torch_compile.range == "block_based":
+        num_blocks_compiled = _apply_compile_over_discovered_stacks(cfg, model)
+        logger.info(f"Applied torch.compile to {num_blocks_compiled} transformer blocks.")
+    else:
+        raise ValueError(
+            f"Invalid torch compile mode: {cfg.optimizations.torch_compile.mode}. "
+            "Valid modes: 'full' or 'block_based'"
+        )
+    
+    return model
+
+
+def _apply_compile_over_discovered_stacks(cfg, model: nn.Module):
+    """
+    Apply torch.compile to each Transformer block, and record which blocks were compiled
+    so the tree printer can show [TC].
+    """
+    num_blocks_compiled = 0
+    compiled_fqns = set()
+
+    for stack_fqn, stack in yield_transformer_stacks_for_compile(cfg, model):
+        for i, block in enumerate(stack):
+            compiled = torch.compile(
+                block,
+                fullgraph=getattr(cfg.optimizations.torch_compile, "blockbased_fullgraph", False),
+                dynamic=getattr(cfg.optimizations.torch_compile, "dynamic", False),
+                mode=getattr(cfg.optimizations.torch_compile, "mode", "default"),
+            )
+            # mark and re-register
+            setattr(compiled, "_is_compiled", True)  # helpful heuristic for printer
+            stack[i] = compiled
+            compiled_fqns.add(f"{stack_fqn}.{i}")
+            num_blocks_compiled += 1
+
+    # stash a summary for the printer
+    setattr(model, "_compiled_fqns", compiled_fqns)
+    return num_blocks_compiled
+
+
+# helpers for printing model structure with 
+# activation checkpointing to ensure correctness
+def unwrap_checkpoint(m):
+    if isinstance(m, CheckpointWrapper):
+        inner = getattr(m, "_checkpoint_wrapped_module", None)
+        if inner is None:
+            inner = getattr(m, "module", None)
+        return True, m, inner
+    return False, None, m
+
+
+def print_model_tree_with_opt(model, max_depth=99, treat_wrappers_as_leaves=False):
+    compiled_fqns = getattr(model, "_compiled_fqns", set())
+
+    def is_compiled(mod, fqn):
+        return getattr(mod, "_is_compiled", False) or (fqn in compiled_fqns)
+
+    def walk(mod, prefix="", fqn="", depth=0):
+        is_ckpt, wrap, inner = unwrap_checkpoint(mod)
+        label = mod.__class__.__name__
+        tags = []
+
+        if is_ckpt:
+            inner_name = inner.__class__.__name__ if inner is not None else "?"
+            label = f"{label} -> {inner_name}"
+            tags.append("AC")
+        if is_compiled(mod, fqn):
+            tags.append("TC")
+
+        tag_str = ("  [" + ",".join(tags) + "]") if tags else ""
+        print(prefix + label + tag_str)
+
+        if depth >= max_depth:
+            return
+        if is_ckpt and treat_wrappers_as_leaves:
+            return
+
+        children = list(mod.named_children())
+        for i, (name, child) in enumerate(children):
+            last = i == (len(children) - 1)
+            branch = "└─ " if last else "├─ "
+            indent = "   " if last else "│  "
+            child_fqn = f"{fqn}.{name}" if fqn else name
+            print(prefix + branch + f"{name}: ", end="")
+            walk(child, prefix + indent, child_fqn, depth + 1)
+
+    walk(model)

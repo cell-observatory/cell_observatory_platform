@@ -58,7 +58,7 @@ clusters:
   batch_size: 32 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 128 # number of cpu cores per gpu
+  cpus_per_gpu: 16 # number of cpu cores per gpu
   mem_per_cpu: 31000 # ram per cpu core
   ray_queue_memory: 0.2
 
@@ -89,7 +89,7 @@ datasets:
   roi_list: null # list of specific ROIs to filter
   tile_list: null # list of specific tiles to filter
 
-  prefetch_factor: 12
+  prefetch_factor: 3
   use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
   locality_with_output: true # whether to use locality with output for the Ray tasks
 
@@ -98,7 +98,8 @@ datasets:
 
   impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
   ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
-  num_actors: 32
+  num_actors_min: 4
+  num_actors_max: 64
   with_batched_api: true
   context:
     file_io_concurrency: null # concurrency for file I/O operations
@@ -117,5 +118,5 @@ datasets:
 
 csv_out: ${paths.outdir}/benchmark_dataloader.csv # path to save the benchmark results
 
-warmup: 30
+warmup: 5
 num_batches: ${eval:'(${datasets.max_hypercubes} // ${clusters.batch_size}) - ${warmup}'} # number of batches to run for the benchmark

@@ -50,7 +50,7 @@ export head_node_ip
 export cluster_address
 
 apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory &
-sleep 10
+sleep 20
 
 ############################## ADD WORKER NODES
 
