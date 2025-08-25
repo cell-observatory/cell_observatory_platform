@@ -53,7 +53,7 @@ jobs:
         # Get a list of packages and their types
         run: |       
           # Get a list of packages and their types
-          PACKAGES=$(gh api --jq '.[] | .name, .package_type' "/orgs/$ORG/packages")
+          PACKAGES=$(gh api --jq '.[] | .name' "/orgs/$ORG/packages/container")
 
           # Loop through the list of packages
           while read -r name; read -r type; do
@@ -123,7 +123,7 @@ jobs:
         # Get a list of packages and their types
         run: |       
           # Get a list of packages and their types
-          PACKAGES=$(gh api --jq '.[] | .name, .package_type' "/orgs/$ORG/packages")
+          PACKAGES=$(gh api --jq '.[] | .name' "/orgs/$ORG/packages/container")
 
           # Loop through the list of packages
           while read -r name; read -r type; do
@@ -169,7 +169,7 @@ jobs:
         # Get a list of packages and their types
         run: |       
           # Get a list of packages and their types
-          PACKAGES=$(gh api --jq '.[] | .name, .package_type' "/orgs/$ORG/packages")
+          PACKAGES=$(gh api --jq '.[] | .name' "/orgs/$ORG/packages/container")
 
           # Loop through the list of packages
           while read -r name; read -r type; do
