@@ -76,8 +76,11 @@ jobs:
         run: |
           git fetch --all
           echo $(git branch -r) 
-          git branch -r | grep -o "feature/.*" | sed -e 's/^/!/' | tr '/' '-' > all_feature_branches_names.txt
-          echo "IMAGES_FILTER=$(paste -sd " !*"  all_feature_branches_names.txt)" >> "$GITHUB_OUTPUT"
+          echo "Finding all feature branches, converting to format !*feature-branchname* for filtering container tags"
+          git branch -r | grep -o "feature/.*" | sed -e 's/^/!*/' | sed -e 's/$/*/' | tr '/' '-' > all_feature_branches_names.txt  
+          echo "Concatenating all branch names into a single line"
+          echo "IMAGES_FILTER=$(paste -sd ' '  all_feature_branches_names.txt)"
+          echo "IMAGES_FILTER=$(paste -sd ' '  all_feature_branches_names.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Delete old untagged images
         uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
@@ -86,7 +89,7 @@ jobs:
         with:
           image-names: "*"      # cell_observatory_platform, aovift, ...
           tag-selection: tagged
-          image-tags: "!develop !main !tags* !0* !1* !2* !3* ${{ steps.get_branches.outputs.IMAGES_FILTER }} *feature-* "  # delete all features that are not active, ...
+          image-tags: "!develop* !main* !tags* !0* !1* !2* !3* ${{ steps.get_branches.outputs.IMAGES_FILTER }} *feature-* "  # delete all features that are not active, ...
           cut-off: 1d           # package versions should be older than 1 week, to be considered
           keep-n-most-recent: 0
           account: ${{ github.repository_owner }}    # Organization "cell-observatory"
