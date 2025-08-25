@@ -191,6 +191,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
     if hasattr(cfg.paths, "data_path") and cfg.paths.data_path is not None:
         bind = f'{cfg.paths.data_path}:{cfg.paths.data_path}'
         workspace = f'{cfg.paths.repo_path}:{cfg.paths.workdir}'
+        storage_server = f'{cfg.paths.server_folder_path}:{cfg.paths.server_folder_path}'
 
     assert (cfg.paths.apptainer_image is None) != (cfg.paths.docker_image is None), \
         "Either apptainer_image or docker_image must be specified, but not both"
@@ -220,8 +221,9 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
     ray_wrap = (
         f" bash {q(cfg.paths.ray_script)} "
         f"-b {q(str(bind))} "
+        f"-d {q(str(storage_server))} "
         f"-c {q(cfg.clusters.cpus_per_worker)} "
-        f"-e {q(image)} "
+        f"-e {image} "
         f"-g {q(cfg.clusters.gpus_per_worker)} "
         f"-m {q(cfg.clusters.mem_per_worker)} "
         f"-n {q(cfg.clusters.worker_nodes)} "
