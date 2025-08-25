@@ -56,7 +56,7 @@ jobs:
           PACKAGES=$(gh api --jq '.[] | .name' "/orgs/$ORG/packages?package_type=container")
 
           # Loop through the list of packages
-          while read -r name; read -r type; do
+          while read -r name;  do
             echo "---"
             echo "Package: $name (container)"
             echo "Versions:"
@@ -126,7 +126,7 @@ jobs:
           PACKAGES=$(gh api --jq '.[] | .name' "/orgs/$ORG/packages?package_type=container")
 
           # Loop through the list of packages
-          while read -r name; read -r type; do
+          while read -r name;  do
             echo "---"
             echo "Package: $name (container)"
             echo "Versions:"
@@ -172,7 +172,7 @@ jobs:
           PACKAGES=$(gh api --jq '.[] | .name' "/orgs/$ORG/packages?package_type=container")
 
           # Loop through the list of packages
-          while read -r name; read -r type; do
+          while read -r name;  do
             echo "---"
             echo "Package: $name (container)"
             echo "Versions:"
