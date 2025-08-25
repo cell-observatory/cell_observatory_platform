@@ -47,7 +47,7 @@ export head_node
 export head_node_ip
 export cluster_address
 
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory &
+apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory &
 
 ############################## ADD WORKER NODES
 
@@ -67,7 +67,7 @@ do
             -gpu "num=$gpus:mode=shared" \
             -o "${outdir}/ray_worker_${i}.log" \
             apptainer exec --userns --nv \
-              --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
+              --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
                 $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
                 -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory"
     else
@@ -78,7 +78,7 @@ do
             -gpu "num=$gpus:mode=shared" \
             -o "${outdir}/ray_worker_${i}.log" \
             apptainer exec --userns --nv \
-              --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
+              --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
                 $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
                 -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory"
     fi
@@ -100,19 +100,19 @@ done
 
 ############################# CHECK STATUS
 
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r $nodes
+apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r $nodes
 
 ############################## RUN WORKLOAD
 
 echo "Running user tasks"
 echo $tasks
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks
+apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks
 
 ############################## CLEANUP
 
 echo "Stop ray"
 ps aux | grep prometheus | awk '{print $2}' | xargs kill -9
-apptainer exec --userns --nv --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
+apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
 
 echo "Shutting down the Job"
 
