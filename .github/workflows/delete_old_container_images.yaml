@@ -62,7 +62,7 @@ jobs:
             echo "Versions:"
             
             # Fetch all versions for the current package and print them
-            gh api --jq --paginate '.[].name | .[].metadata.container.tags'' "/orgs/$ORG/packages/container/$name/versions"
+            gh api --jq --paginate '.[].name | .[].metadata.container.tags' "/orgs/$ORG/packages/container/$name/versions"
             # Get the number of versions for the package
             version_count=$(gh api "/orgs/$ORG/packages/container/$name/versions" --jq 'length' || true)
 
@@ -178,7 +178,7 @@ jobs:
             echo "Versions:"
             
             # Fetch all versions for the current package and print them
-            gh api --jq --paginate '.[].name | .[].metadata.container.tags'' "/orgs/$ORG/packages/container/$name/versions"
+            gh api --jq --paginate '.[].name | .[].metadata.container.tags' "/orgs/$ORG/packages/container/$name/versions"
             # Get the number of versions for the package
             version_count=$(gh api "/orgs/$ORG/packages/container/$name/versions" --jq 'length' || true)
 
