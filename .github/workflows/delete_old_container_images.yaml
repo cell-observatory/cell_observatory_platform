@@ -53,7 +53,7 @@ jobs:
         # Get a list of packages and their types
         run: |       
           # Get a list of packages and their types
-          PACKAGES=$(gh api --jq --paginate '.[] | .name' "/orgs/$ORG/packages?package_type=container")
+          PACKAGES=$(gh api --paginate --jq  '.[] | .name' "/orgs/$ORG/packages?package_type=container")
 
           # Loop through the list of packages
           while read -r name;  do
@@ -62,7 +62,7 @@ jobs:
             echo "Versions:"
             
             # Fetch all versions for the current package and print them
-            gh api --jq --paginate '.[].name | .[].metadata.container.tags' "/orgs/$ORG/packages/container/$name/versions"
+            gh api --paginate --jq  '.[].name | .[].metadata.container.tags' "/orgs/$ORG/packages/container/$name/versions"
             # Get the number of versions for the package
             version_count=$(gh api "/orgs/$ORG/packages/container/$name/versions" --jq 'length' || true)
 
@@ -123,7 +123,7 @@ jobs:
         # Get a list of packages and their types
         run: |       
           # Get a list of packages and their types
-          PACKAGES=$(gh api --jq --paginate '.[] | .name' "/orgs/$ORG/packages?package_type=container")
+          PACKAGES=$(gh api --paginate --jq  '.[] | .name' "/orgs/$ORG/packages?package_type=container")
 
           # Loop through the list of packages
           while read -r name;  do
@@ -132,7 +132,7 @@ jobs:
             echo "Versions:"
             
             # Fetch all versions for the current package and print them
-            gh api --jq --paginate '.[].name | .[].metadata.container.tags' "/orgs/$ORG/packages/container/$name/versions"
+            gh api --paginate --jq  '.[].name | .[].metadata.container.tags' "/orgs/$ORG/packages/container/$name/versions"
             # Get the number of versions for the package
             version_count=$(gh api "/orgs/$ORG/packages/container/$name/versions" --jq 'length' || true)
 
@@ -169,7 +169,7 @@ jobs:
         # Get a list of packages and their types
         run: |       
           # Get a list of packages and their types
-          PACKAGES=$(gh api --jq --paginate '.[] | .name' "/orgs/$ORG/packages?package_type=container")
+          PACKAGES=$(gh api --paginate --jq  '.[] | .name' "/orgs/$ORG/packages?package_type=container")
 
           # Loop through the list of packages
           while read -r name;  do
@@ -178,7 +178,7 @@ jobs:
             echo "Versions:"
             
             # Fetch all versions for the current package and print them
-            gh api --jq --paginate '.[].name | .[].metadata.container.tags' "/orgs/$ORG/packages/container/$name/versions"
+            gh api --paginate --jq  '.[].name | .[].metadata.container.tags' "/orgs/$ORG/packages/container/$name/versions"
             # Get the number of versions for the package
             version_count=$(gh api "/orgs/$ORG/packages/container/$name/versions" --jq 'length' || true)
 
