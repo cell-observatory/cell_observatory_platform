@@ -339,7 +339,7 @@ class PosEmbedding(nn.Module):
         logger.info(f"{self.input_shape=}, {self.input_fmt=}")
         logger.info(f"{self.temporal_patch_size=}, {self.axial_patch_size=}, {self.lateral_patch_size=}")
         logger.info(f"({self.num_patches=}, {self.embed_dim=}) -> {sincos.shape=}")
-        pos_embed.copy_(torch.from_numpy(sincos).float().unsqueeze(0))
+        pos_embed.copy_(torch.from_numpy(sincos).unsqueeze(0))
 
     def interpolate_positional_encoding(self, x, pos_embed):
         if self.input_fmt == "TZYXC" or self.input_fmt == "TZYX":
@@ -491,6 +491,6 @@ class PosEmbedding(nn.Module):
 
     def forward(self, x):
         if self.interpolate:
-            return self.interpolate_positional_encoding(x, self.pos_embed)
+            return self.interpolate_positional_encoding(x, self.pos_embed.to(x.dtype))
         else:
-            return self.pos_embed
+            return self.pos_embed.to(x.dtype)
