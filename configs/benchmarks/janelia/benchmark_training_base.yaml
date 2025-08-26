@@ -44,10 +44,10 @@ trainer: training.loops.EpochBasedTrainer
 loop_per_worker_script: training.loops.train_loop_per_worker
 
 # training quantization
-quantization: float16 # data type for training, options: float32, float16
+quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
 
 # dtype for training data
-dataset_dtype: float16 # data type for training, options: float32, float16
+dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
 
 # dataset layout in the zarr files
 dataset_layout_order: TZYXC
