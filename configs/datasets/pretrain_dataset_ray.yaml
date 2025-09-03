@@ -44,7 +44,7 @@ collate_fn:
   _target_: data.datasets.pretrain_dataset_ray.PinnedTensorCollator
   dtype: ${dataset_dtype}
   sample_shape: ${datasets.input_shape}
-  pin_memory: true
+  pin_memory: false
   impl_type: ${datasets.impl_type} # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
 
 dataset:
