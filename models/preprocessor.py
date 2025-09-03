@@ -136,7 +136,12 @@ class RayPreprocessor(torch.nn.Module):
         """
         preprocess_time = time.time()
 
-        inputs = data_sample['data_tensor'].to("cuda", non_blocking=True)
+        if isinstance(data_sample['data_tensor'], list):
+            inputs = [t.to("cuda", non_blocking=True) for t in data_sample['data_tensor']]
+            inputs = torch.cat(inputs, dim=0)
+        else:
+            inputs = data_sample['data_tensor'].to("cuda", non_blocking=True)
+            
         meta = data_sample['metainfo']
         
         # skipping checks for NaN/Inf values
