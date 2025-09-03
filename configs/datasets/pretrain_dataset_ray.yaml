@@ -46,6 +46,7 @@ collate_fn:
   sample_shape: ${datasets.input_shape}
   pin_memory: false
   impl_type: ${datasets.impl_type} # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
+  copy_to_pinned_array: false # option to stack and copy data to pinned memory in the collate function
 
 dataset:
   _target_: data.datasets.pretrain_dataset_ray.PretrainDatasourceRay
