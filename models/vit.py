@@ -12,7 +12,8 @@ from models.norm import get_norm
 from models.encoder import Encoder
 from models.activation import get_activation
 from models.patch_embeddings import calc_num_patches
-from models.patch_embeddings import PatchEmbedding, PosEmbedding
+from models.patch_embeddings import PatchEmbedding
+from models.positional_encoding import PosEmbedding
 
 logging.basicConfig(
 	stream=sys.stdout,
