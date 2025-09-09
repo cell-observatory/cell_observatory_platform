@@ -324,9 +324,9 @@ def get_input_data(model, inputs, device: Optional[torch.device] = None):
     return input_data
 
 
-def get_masked_input_data(model, inputs, device: Optional[torch.device] = None):
+def get_masked_input_data(model, inputs, device: Optional[torch.device] = None, mask_ratio: float = 0.75):
     n_patches = model.get_num_patches()
-    context_len = int(n_patches * (1 - model.mask_ratio))
+    context_len = int(n_patches * (1 - mask_ratio))
     context_idx = torch.arange(context_len, dtype=torch.long, device=device).unsqueeze(0)
     target_idx  = torch.arange(context_len, n_patches, dtype=torch.long, device=device).unsqueeze(0)
 
@@ -828,7 +828,7 @@ def init_weights(model: nn.Module, weight_init_type: str):
         # initialize nn.Linear and nn.LayerNorm
         model.apply(_mae_init_weights)
 
-    if weight_init_type == "vjepa":
+    elif weight_init_type == "vjepa":
         # helpers from: 
         # https://github.com/facebookresearch/ijepa/blob/main/src/models/vision_transformer.py
         def _vjepa_fix_init_weight(model):
@@ -869,9 +869,9 @@ def init_weights(model: nn.Module, weight_init_type: str):
     elif weight_init_type == "vjepa2":
         # helpers from:
         # https://github.com/facebookresearch/vjepa2/main/src/models/vision_transformer.py
-        def _vjepa2_init_weights(self, m):
+        def _vjepa2_init_weights(m):
             if isinstance(m, nn.Linear):
-                trunc_normal_(m.weight, std=self.init_std)
+                trunc_normal_(m.weight, std=model.init_std)
                 if isinstance(m, nn.Linear) and m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.LayerNorm):
@@ -880,14 +880,14 @@ def init_weights(model: nn.Module, weight_init_type: str):
             # NOTE: technically vjepa2 only applies the below
             #       to input encoder and not target predictor
             elif isinstance(m, nn.Conv2d):
-                trunc_normal_(m.weight, std=self.init_std)
+                trunc_normal_(m.weight, std=model.init_std)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Conv3d):
-                trunc_normal_(m.weight, std=self.init_std)
+                trunc_normal_(m.weight, std=model.init_std)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-
+        
         def _vjepa2_rescale_blocks(model):
             def rescale(param, layer_id):
                 param.div_(math.sqrt(2.0 * layer_id))

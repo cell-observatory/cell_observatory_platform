@@ -325,7 +325,8 @@ class PretrainDatasourceRay(Datasource):
                 num_rows=len(shard),
                 size_bytes=shard_size,
                 input_files=None,
-                exec_stats=None
+                exec_stats=None,
+                schema=None
             )
             tasks.append(ReadTask(_make_read_task, meta))
 

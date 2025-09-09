@@ -531,42 +531,52 @@ def compute_mixed_cis(freqs: torch.Tensor,
                       t_y: torch.Tensor,
                       t_z: Optional[torch.Tensor] = None,
                       t_t: Optional[torch.Tensor] = None,
-                      input_fmt: str = "TZYXC"
-):
-    N = t_x.shape[0]
-    # no float 16 for this range
+                      input_fmt: str = "TZYXC"):
+    def _outer_pos_freq(pos, f):
+        if pos.dim() == 1:
+            # [N,1] * [H,1,J] -> [H,N,J]
+            return (pos.unsqueeze(-1) @ f.unsqueeze(-2))
+        else:
+            B, N = pos.shape
+            # broadcast: [B,N,1] * [1,H,1,J] -> [B,H,N,J]
+            return (pos[:, :, None] * f[None, :, None, :])
+
     with torch.amp.autocast(enabled=False, device_type='cuda'):
         if input_fmt == "YXC":
-            # [N, 1] @ [num_heads,1,(dim/4)*2] -> [num_heads,N,dim/4*2] -> [N,num_heads,dim/4*2]
-            freqs_x = (t_x.unsqueeze(-1) @ freqs[0].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            freqs_y = (t_y.unsqueeze(-1) @ freqs[1].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            # compute e^(i*theta) where theta for each k is given by [mag_k(x_k*cosϕ + y_k*sinϕ),mag_k(-x_k*sinϕ+y_k*cosϕ)]
-            # i.e. e^(i*theta) where theta is <(x,y), (basis_vectors for head h)>
-            freqs_cis = torch.polar(torch.ones_like(freqs_x), freqs_x + freqs_y)
-        
+            # [H,N,Jx] or [B,H,N,Jx]
+            fx = _outer_pos_freq(t_x, freqs[0])
+            # [H,N,Jy] or [B,H,N,Jy]
+            fy = _outer_pos_freq(t_y, freqs[1])
+            phases = fx + fy
         elif input_fmt == "TYXC":
             assert t_t is not None, "t_t must be provided for TYXC format"
-            freqs_x = (t_x.unsqueeze(-1) @ freqs[0].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            freqs_y = (t_y.unsqueeze(-1) @ freqs[1].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            freqs_t = (t_t.unsqueeze(-1) @ freqs[2].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            freqs_cis = torch.polar(torch.ones_like(freqs_x), freqs_x + freqs_y + freqs_t)
-
+            fx = _outer_pos_freq(t_x, freqs[0])
+            fy = _outer_pos_freq(t_y, freqs[1])
+            ft = _outer_pos_freq(t_t, freqs[2])
+            phases = fx + fy + ft
         elif input_fmt == "ZYXC":
             assert t_z is not None, "t_z must be provided for ZYXC format"
-            freqs_x = (t_x.unsqueeze(-1) @ freqs[0].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            freqs_y = (t_y.unsqueeze(-1) @ freqs[1].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            freqs_z = (t_z.unsqueeze(-1) @ freqs[2].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            freqs_cis = torch.polar(torch.ones_like(freqs_x), freqs_x + freqs_y + freqs_z)
-
+            fx = _outer_pos_freq(t_x, freqs[0])
+            fy = _outer_pos_freq(t_y, freqs[1])
+            fz = _outer_pos_freq(t_z, freqs[2])
+            phases = fx + fy + fz
         elif input_fmt == "TZYXC":
             assert t_t is not None and t_z is not None, "t_t and t_z must be provided for TZYXC format"
-            freqs_x = (t_x.unsqueeze(-1) @ freqs[0].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            freqs_y = (t_y.unsqueeze(-1) @ freqs[1].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            freqs_z = (t_z.unsqueeze(-1) @ freqs[2].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            freqs_t = (t_t.unsqueeze(-1) @ freqs[3].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
-            freqs_cis = torch.polar(torch.ones_like(freqs_x), freqs_x + freqs_y + freqs_z + freqs_t)
+            fx = _outer_pos_freq(t_x, freqs[0])
+            fy = _outer_pos_freq(t_y, freqs[1])
+            fz = _outer_pos_freq(t_z, freqs[2])
+            ft = _outer_pos_freq(t_t, freqs[3])
+            phases = fx + fy + fz + ft
+        else:
+            raise NotImplementedError
 
-    return freqs_cis
+        ones = torch.ones_like(phases)
+        freqs_cis = torch.polar(ones, phases)
+
+        if freqs_cis.dim() == 3:
+            return freqs_cis
+        else:
+            return freqs_cis
 
 def compute_axial_cis(dim: int, 
                       end_x: int, 
@@ -660,16 +670,22 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     if freqs_cis.shape == (x.shape[-2], x.shape[-1]):
         # freq_cis reshaped to (1, 1, N, J) since x: [B, H, N, J]
         shape = [d if i >= x.ndim-2 else 1 for i, d in enumerate(x.shape)]
-    # freqs_cis: (N, H, J) branch
+    # freqs_cis: (H, N, J) branch
     elif freqs_cis.shape == (x.shape[-3], x.shape[-2], x.shape[-1]):
         # freq_cis reshaped to (1, H, N, J) since x: [B, H, N, J]
         shape = [d if i >= x.ndim-3 else 1 for i, d in enumerate(x.shape)]
+    # freqs_cis: (B, N, J) branch
+    elif freqs_cis.shape == (x.shape[0], x.shape[-2], x.shape[-1]):
+        shape = [x.shape[0], 1, x.shape[-2], x.shape[-1]]
+    # freqs_cis: (B, H, N, J) branch
+    elif freqs_cis.shape == (x.shape[0], x.shape[-3], x.shape[-2], x.shape[-1]):
+        shape = [x.shape[0], x.shape[-3], x.shape[-2], x.shape[-1]]
     else:
         raise ValueError(f"Unexpected freqs_cis shape: {freqs_cis.shape} for x shape: {x.shape}")
     return freqs_cis.view(*shape)
 
 def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor):
-    # xq[:-1]: [B, H, N] => xq reshape: [B, H, N, J, 2] for J=H/2 
+    # xq[:-1]: [B, H, N] => xq reshape: [B, H, N, J, 2] for J=D/2 
     # thus xq_: [B, H, N, J] complex and similar for xk
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))

@@ -10,6 +10,7 @@ from models.norm import get_norm
 from models.encoder import Encoder
 from models.activation import get_activation
 from models.positional_encoding import PosEmbedding
+from models.patch_embeddings import calc_num_patches
 
 logging.basicConfig(
 	stream=sys.stdout,
@@ -143,7 +144,7 @@ class MaskedPredictor(nn.Module):
         self.input_fmt = input_fmt
         self.input_shape = input_shape
 
-        axis_to_value = dict(zip(input_fmt, input_shape))
+        axis_to_value = dict(zip(input_fmt, input_shape[1:]))
         self.in_chans = axis_to_value['C']
         self.num_frames = axis_to_value['T']
 
@@ -233,14 +234,23 @@ class MaskedPredictor(nn.Module):
 
     @torch.jit.ignore
     def get_num_patches(self):
-        return self.pos_embedding.num_patches
+        if self.abs_sincos_enc:
+            return self.pos_embedding.num_patches
+        else:
+            num_patches, _ = calc_num_patches(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                lateral_patch_size=self.lateral_patch_size,
+                axial_patch_size=self.axial_patch_size,
+                temporal_patch_size=self.temporal_patch_size,
+            )
+            return num_patches
 
-    def forward(self, inputs, original_patch_indices):
+    def forward(self, inputs, original_patch_indices, target_masks):
         batch_size = inputs.shape[0]
 
         tokens = self.patch_projection(inputs)
-        mask_tokens = self.token_param.repeat(batch_size, \
-                                              original_patch_indices.shape[1] - tokens.shape[1], 1)
+        mask_tokens = self.token_param.repeat(batch_size, target_masks.shape[1], 1)
 
         patches = torch.cat([tokens, mask_tokens], dim=1)
         patches = torch.gather(
@@ -251,6 +261,8 @@ class MaskedPredictor(nn.Module):
 
         if self.abs_sincos_enc:
             x = patches + self.pos_embedding(patches)
+        else:
+            x = patches
 
         x = self.encoder(x)
         x = self.norm(x)

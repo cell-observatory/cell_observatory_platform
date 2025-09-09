@@ -38,7 +38,7 @@ class Encoder(nn.Module):
         rope_random_rotation_per_head: bool = True,
         rope_mixed: bool = True,
         rope_theta: float = 10.0,
-        input_fmt: str = "TZXYC",
+        input_fmt: str = "TZYXC",
         input_shape: tuple = (16, 128, 128, 128, 2),
         patch_size: tuple = (4, 16, 16, 16),
         wide_silu: bool = False,
@@ -94,7 +94,7 @@ class Encoder(nn.Module):
     def get_num_layers(self):
         return len(self.transformer_blocks)
 
-    def forward(self, x):
+    def forward(self, x, masks=None):
         for i, t in enumerate(self.transformer_blocks):
-            x = t(x, return_attention=False)
+            x = t(x, masks=masks, return_attention=False)
         return x

@@ -12,6 +12,7 @@ from training.helpers import init_weights
 from models.activation import get_activation
 from models.maskedencoder import MaskedEncoder
 from models.maskedpredictor import MaskedPredictor
+from models.patch_embeddings import calc_num_patches
 from data.masking.mask_generator import apply_masks
 
 logging.basicConfig(
@@ -182,7 +183,7 @@ class MaskedAutoEncoder(nn.Module):
         self.input_fmt = input_fmt
         self.input_shape = input_shape
         
-        axis_to_value = dict(zip(input_fmt, input_shape))
+        axis_to_value = dict(zip(input_fmt, input_shape[1:]))
         self.in_chans = axis_to_value['C']
         self.num_frames = axis_to_value['T']
 
@@ -280,8 +281,18 @@ class MaskedAutoEncoder(nn.Module):
 
     @torch.jit.ignore
     def get_num_patches(self):
-        return self.masked_encoder.pos_embedding.num_patches
-
+        if self.abs_sincos_enc:
+            return self.pos_embedding.num_patches
+        else:
+            num_patches, _ = calc_num_patches(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                lateral_patch_size=self.lateral_patch_size,
+                axial_patch_size=self.axial_patch_size,
+                temporal_patch_size=self.temporal_patch_size,
+            )
+            return num_patches
+    
     def forward(self, data_sample: dict):
         inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
         masks, context_masks = meta['masks'][0], meta['context_masks'][0]

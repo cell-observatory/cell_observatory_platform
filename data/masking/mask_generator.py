@@ -1,6 +1,6 @@
 import math
 from enum import Enum
-from typing import Optional, Sequence, Tuple, Union
+from typing import Optional, Sequence, Tuple, Literal
 
 from hydra.utils import get_method
 
@@ -455,3 +455,34 @@ def apply_masks(x, masks, concat=True):
             indices = indices.expand(-1, -1, x.size(-1))
 
         return torch.gather(x, dim=1, index=indices)
+    
+
+def apply_masks_rope(x, masks, type="mixed"):
+    B, N_masked = masks.shape
+
+    if type == "mixed":
+        out = []
+        # x = [t_t, t_z, t_y, t_x]
+        for pos in x:
+            if pos is None:
+                out.append(None); continue
+            # pos: [N_full]
+            if pos.dim() == 1:
+                pos = pos.unsqueeze(0).expand(B, -1)
+            out.append(torch.gather(pos, dim=1, index=masks.to(pos.device)))
+        t_t, t_z, t_y, t_x = out
+        return t_t, t_z, t_y, t_x
+
+    elif type == "axial":
+        # x: [N_full, J]
+        if x.dim() == 2:
+            # xb: [B, N_full, J] -> [B, N_masked, J]
+            xb = x.unsqueeze(0).expand(B, -1, -1)
+            # idx: [B, N_masked] -> [B, N_masked, J]
+            idx = masks.unsqueeze(-1).expand(-1, -1, xb.size(-1))
+            return torch.gather(xb, dim=1, index=idx.to(xb.device))
+        else:
+            raise ValueError(f"Unexpected axial freqs_cis shape: {x.shape}")
+
+    else:
+        raise ValueError(f"Unknown RoPE mask type: {type}")

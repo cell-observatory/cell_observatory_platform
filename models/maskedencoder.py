@@ -9,8 +9,9 @@ from models.mlp import get_mlp
 from models.norm import get_norm
 from models.encoder import Encoder
 from models.activation import get_activation
+from models.patch_embeddings import PatchEmbedding
 from models.positional_encoding import PosEmbedding
-from models.patch_embeddings import ConvPatchEmbedding, PatchEmbedding
+from models.patch_embeddings import calc_num_patches
 from data.masking.mask_generator import apply_masks
 
 logging.basicConfig(
@@ -140,7 +141,7 @@ class MaskedEncoder(nn.Module):
         self.input_fmt = input_fmt
         self.input_shape = input_shape
         
-        axis_to_value = dict(zip(input_fmt, input_shape))
+        axis_to_value = dict(zip(input_fmt, input_shape[1:]))
         self.in_chans = axis_to_value['C']
         self.num_frames = axis_to_value['T']
 
@@ -229,7 +230,17 @@ class MaskedEncoder(nn.Module):
 
     @torch.jit.ignore
     def get_num_patches(self):
-        return self.pos_embedding.num_patches
+        if self.abs_sincos_enc:
+            return self.pos_embedding.num_patches
+        else:
+            num_patches, _ = calc_num_patches(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                lateral_patch_size=self.lateral_patch_size,
+                axial_patch_size=self.axial_patch_size,
+                temporal_patch_size=self.temporal_patch_size,
+            )
+            return num_patches
 
     def forward(self, inputs, masks=None, concat_masks=True):
         x, patches = self.patch_embedding(inputs, return_patches=True)
@@ -240,6 +251,6 @@ class MaskedEncoder(nn.Module):
         if masks is not None:
             x = apply_masks(x, masks, concat=concat_masks)
 
-        x = self.encoder(x)
+        x = self.encoder(x, masks=masks)
         x = self.norm(x)
         return x, patches

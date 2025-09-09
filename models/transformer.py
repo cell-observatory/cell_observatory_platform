@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from timm.layers import SwiGLU, DropPath
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from data.masking.mask_generator import apply_masks_rope
 from models.positional_encoding import (
     generate_frequency_spectrum,
     generate_grid_indices,
@@ -54,7 +55,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, return_attention=False):
+    def forward(self, x, masks=None, return_attention=False):
         B, L, C = x.shape
         qkv = self.qkv(x).reshape(B, L, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
@@ -144,21 +145,14 @@ class RopeAttention(nn.Module):
                 random_rotation_per_head=self.random_rotation_per_head,
                 input_fmt=input_fmt
             )
-
-            if self.input_fmt == "YXC":
-                freqs = freqs.view(2, -1)
-            elif self.input_fmt in ["ZYXC", "TYXC"]:
-                freqs = freqs.view(3, -1)
-            elif self.input_fmt == "TZYXC":
-                freqs = freqs.view(4, -1)
                 
             self.freqs = nn.Parameter(freqs, requires_grad=True)
 
             # NOTE: works as long as we follow channel-last convention
             #       otherwise we need a more robust solution
             assert input_fmt[-1] == 'C', "input_fmt must follow channel-last convention"
-            end_x = input_shape[input_fmt.index('X')] // patch_size[input_fmt.index('X')]
-            end_y = input_shape[input_fmt.index('Y')] // patch_size[input_fmt.index('Y')]
+            end_x = input_shape[1:][input_fmt.index('X')] // patch_size[input_fmt.index('X')]
+            end_y = input_shape[1:][input_fmt.index('Y')] // patch_size[input_fmt.index('Y')]
 
             if self.input_fmt == "YXC":
                 _, _, t_y, t_x = generate_grid_indices(end_x=end_x, 
@@ -170,7 +164,7 @@ class RopeAttention(nn.Module):
                 self.grid_indices = (None, None, t_y, t_x)
 
             elif self.input_fmt == "ZYXC":
-                end_z = input_shape[input_fmt.index('Z')] // patch_size[input_fmt.index('Z')]
+                end_z = input_shape[1:][input_fmt.index('Z')] // patch_size[input_fmt.index('Z')]
                 _, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                          end_y=end_y, 
                                                          end_z=end_z, 
@@ -182,7 +176,7 @@ class RopeAttention(nn.Module):
                 self.grid_indices = (None, t_z, t_y, None)
 
             elif self.input_fmt == "TYXC":
-                end_t = input_shape[input_fmt.index('T')] // patch_size[input_fmt.index('T')]
+                end_t = input_shape[1:][input_fmt.index('T')] // patch_size[input_fmt.index('T')]
                 t_t, _, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                          end_y=end_y, 
                                                          end_t=end_t, 
@@ -194,9 +188,9 @@ class RopeAttention(nn.Module):
                 self.grid_indices = (t_t, None, t_y, t_x)
 
             elif self.input_fmt == "TZYXC":
-                end_z = input_shape[input_fmt.index('Z')] // patch_size[input_fmt.index('Z')]
-                end_t = input_shape[input_fmt.index('T')] // patch_size[input_fmt.index('T')]
-                t_t, t_z, t_x, t_y = generate_grid_indices(end_x=end_x, 
+                end_z = input_shape[1:][input_fmt.index('Z')] // patch_size[input_fmt.index('Z')]
+                end_t = input_shape[1:][input_fmt.index('T')] // patch_size[input_fmt.index('T')]
+                t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                            end_y=end_y, 
                                                            end_z=end_z, 
                                                            end_t=end_t, 
@@ -212,16 +206,16 @@ class RopeAttention(nn.Module):
                 raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
 
         else:
-            end_x = input_shape[input_fmt.index('X')] // patch_size[input_fmt.index('X')]
-            end_y = input_shape[input_fmt.index('Y')] // patch_size[input_fmt.index('Y')]
+            end_x = input_shape[1:][input_fmt.index('X')] // patch_size[input_fmt.index('X')]
+            end_y = input_shape[1:][input_fmt.index('Y')] // patch_size[input_fmt.index('Y')]
 
             if 'Z' in input_fmt:
-                end_z = input_shape[input_fmt.index('Z')] // patch_size[input_fmt.index('Z')]
+                end_z = input_shape[1:][input_fmt.index('Z')] // patch_size[input_fmt.index('Z')]
             else:
                 end_z = None
 
             if 'T' in input_fmt:
-                end_t = input_shape[input_fmt.index('T')] // patch_size[input_fmt.index('T')]
+                end_t = input_shape[1:][input_fmt.index('T')] // patch_size[input_fmt.index('T')]
             else:
                 end_t = None
 
@@ -233,7 +227,7 @@ class RopeAttention(nn.Module):
                                                end_t=end_t, 
                                                input_fmt=input_fmt)
 
-    def forward(self, x, return_attention=False):
+    def forward(self, x, masks=None, return_attention=False):
         B, L, C = x.shape
         qkv = self.qkv(x).reshape(B, L, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
@@ -242,13 +236,27 @@ class RopeAttention(nn.Module):
 
         # apply rotary position embedding
         if self.rope_mixed:
-            t_t, t_z, t_y, t_x = self.grid_indices
+            if masks is not None:
+                t_t, t_z, t_y, t_x = apply_masks_rope(self.grid_indices, masks, type="mixed")
+            else:
+                t_t, t_z, t_y, t_x = self.grid_indices
+
             # compute learnable frequencies
             # works no matter what input_fmt is since unused t_* are None
-            freqs_cis = self.compute_cis(self.freqs, t_t=t_t, t_z=t_z, t_y=t_y, t_x=t_x)
+            freqs_cis = self.compute_cis(freqs=self.freqs, 
+                                         num_heads=self.num_heads, 
+                                         t_t=t_t, 
+                                         t_z=t_z, 
+                                         t_y=t_y, 
+                                         t_x=t_x,
+                                         input_fmt=self.input_fmt)
+        
         else:
             # axial RoPE does not use learnable frequencies
-            freqs_cis = self.freqs_cis
+            if masks is not None:
+                freqs_cis = apply_masks_rope(self.freqs_cis, masks, type="axial")
+            else:
+                freqs_cis = self.freqs_cis
         
         q_rope, k_rope = apply_rotary_emb(q, k, freqs_cis=freqs_cis)
 
@@ -295,7 +303,7 @@ class Transformer(nn.Module):
         rope_random_rotation_per_head: bool = True,
         rope_mixed: bool = True,
         rope_theta: float = 10.0,
-        input_fmt: str = "TZXYC",
+        input_fmt: str = "TZYXC",
         input_shape: tuple = (16,128,128,128,2),
         patch_size: tuple = (4,16,16,16),
         wide_silu: bool = False,
@@ -355,13 +363,13 @@ class Transformer(nn.Module):
         
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
-    def forward(self, x, return_attention=False):
+    def forward(self, x, masks=None, return_attention=False):
         ln1 = self.norm1(x)
 
         if return_attention:
-            return self.att(ln1, return_attention=True)
+            return self.att(ln1, masks=masks, return_attention=True)
         else:
-            att = self.att(ln1, return_attention=False)
+            att = self.att(ln1, masks=masks, return_attention=False)
             p1 = x + self.drop_path1(att)
 
             ffn = self.norm2(p1)

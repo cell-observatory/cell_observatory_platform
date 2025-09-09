@@ -272,7 +272,7 @@ class WarmupStableDecaySchedule(object):
 
         return new_lr
     
-    
+
 # from: https://github.com/facebookresearch/vjepa2/blob/main/src/utils/schedulers.py
 class CosineWeightDecaySchedule(object):
     def __init__(self, 
