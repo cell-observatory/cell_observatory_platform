@@ -337,7 +337,7 @@ class PosEmbedding(nn.Module):
             pe = pe.reshape(B, Y1, X1, C, T1).permute(0, 4, 1, 2, 3)
             return pe.reshape(B, T1 * Y1 * X1, C)
         
-        T0, Z0, Y0, X0, C0 = self.token_shape[0:4]
+        T0, Z0, Y0, X0, C0 = self.token_shape
 
         # compute original & target grid sizes from x and config
         if self.input_fmt == "TZYXC":
@@ -515,6 +515,11 @@ def generate_grid_indices(
     if need_T:
         t = (idx // (X * Y * (Z if need_Z else 1)))
 
+    t = t.to(torch.float32) if t is not None else None
+    z = z.to(torch.float32) if z is not None else None
+    y = y.to(torch.float32)
+    x = x.to(torch.float32)
+
     return (t, z, y, x)
 
 def compute_mixed_cis(freqs: torch.Tensor,
@@ -527,7 +532,7 @@ def compute_mixed_cis(freqs: torch.Tensor,
 ):
     N = t_x.shape[0]
     # no float 16 for this range
-    with torch.cuda.autocast(enabled=False):
+    with torch.amp.autocast(enabled=False, device_type='cuda'):
         if input_fmt == "YXC":
             # [N, 1] @ [num_heads,1,(dim/4)*2] -> [num_heads,N,dim/4*2] -> [N,num_heads,dim/4*2]
             freqs_x = (t_x.unsqueeze(-1) @ freqs[0].unsqueeze(-2)).view(N, num_heads, -1).permute(1, 0, 2)
@@ -577,7 +582,9 @@ def compute_axial_cis(dim: int,
         assert dim % 4 == 0, "head_dim must be divisible by 4 for 2D frame duplication."
         mag = 1.0 / (theta ** (torch.arange(0, dim, 4)[: (dim // 4)].float() / dim))
         
-        t_y, t_x = generate_grid_indices(end_x=end_x, end_y=end_y, input_fmt=input_fmt)
+        t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
+                                                   end_y=end_y, 
+                                                   input_fmt=input_fmt)
 
         freqs_x = torch.outer(t_x, mag)
         freqs_y = torch.outer(t_y, mag)
@@ -587,7 +594,10 @@ def compute_axial_cis(dim: int,
         base = torch.arange(0, dim, 6)[: (dim // 6)].float() / dim
         mag = theta ** (-base)
         
-        t_t, t_y, t_x = generate_grid_indices(end_x=end_x, end_y=end_y, end_t=end_t, input_fmt=input_fmt)
+        t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
+                                                   end_y=end_y, 
+                                                   end_t=end_t, 
+                                                   input_fmt=input_fmt)
         
         freqs_x = torch.outer(t_x, mag)
         freqs_y = torch.outer(t_y, mag)
@@ -598,7 +608,10 @@ def compute_axial_cis(dim: int,
         base = torch.arange(0, dim, 6)[: (dim // 6)].float() / dim
         mag = theta ** (-base)
         
-        t_z, t_y, t_x = generate_grid_indices(end_x=end_x, end_y=end_y, end_z=end_z, input_fmt=input_fmt)
+        t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
+                                                   end_y=end_y, 
+                                                   end_z=end_z, 
+                                                   input_fmt=input_fmt)
         
         freqs_x = torch.outer(t_x, mag)
         freqs_y = torch.outer(t_y, mag)
@@ -648,6 +661,8 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     elif freqs_cis.shape == (x.shape[-3], x.shape[-2], x.shape[-1]):
         # freq_cis reshaped to (1, H, N, J) since x: [B, H, N, J]
         shape = [d if i >= x.ndim-3 else 1 for i, d in enumerate(x.shape)]
+    else:
+        raise ValueError(f"Unexpected freqs_cis shape: {freqs_cis.shape} for x shape: {x.shape}")
     return freqs_cis.view(*shape)
 
 def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor):
