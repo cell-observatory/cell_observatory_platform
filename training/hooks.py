@@ -223,6 +223,8 @@ class LRScheduler(HookBase):
                     return i
 
     def after_step(self, data_sample, outputs, loss_dict):
+        # TODO: add below?
+        # if self.trainer.model.is_gradient_accumulation_boundary():
         lr = self.optimizer.param_groups[self._best_param_group_id]["lr"]
         self.trainer.event_recorder.put_scalar("lr", lr)
         # NOTE: alternatively, we can summarize all LR groups
@@ -926,3 +928,26 @@ class EMASchedulerHook(HookBase):
         Update the EMA beta after each step.
         """
         self.model.ema_update(beta=next(self.ema_scheduler))
+
+
+class WeightDecayScheduleHook(HookBase):
+    def before_train(self):
+        self.wd_sched = self.trainer.wd_sched
+        assert self.wd_sched is not None, \
+            "WeightDecayScheduleHook requires wd_sched to be set in the trainer."
+        self.event_recorder = self.trainer.event_recorder
+        if self.event_recorder is None:
+            logger.warning("WeightDecayScheduleHook requires event_recorder to be set in the trainer. \
+                            Weight decay values will not be logged.")
+
+    def after_step(self, **kwargs):
+        # DeepSpeed performs the optimizer step at boundary
+        # after that prepare WD for the next optimizer step
+        # is_gradient_accumulation_boundary queries whether the current
+        # micro-batch is at the boundary of gradient accumulation, and 
+        # thus will trigger gradient reductions and an optimizer step
+        if self.trainer.model.is_gradient_accumulation_boundary():
+            self.wd_sched.step()
+            if self.event_recorder:
+                wd0 = self.trainer.opt.param_groups[0]["weight_decay"]
+                self.event_recorder.put_scalars(scope="step", wd=wd0)

@@ -143,6 +143,8 @@ def _measure_loader(loader, num_batches: int, warmup: int, batch_size: int, byte
     total_bytes = 0
     measured = 0
 
+    read_times, collate_times = [], []
+
     for _ in range(num_batches):
         t0 = time.perf_counter()
         try:
@@ -151,10 +153,20 @@ def _measure_loader(loader, num_batches: int, warmup: int, batch_size: int, byte
             break
         t1 = time.perf_counter()
 
+        collate_time = batch['metainfo'].get('collate_time', -1)
+        read_time = batch['metainfo'].get('read_time', -1)
+
+        collate_times.append(collate_time)
+        read_times.append(read_time)
+
         wait_time += (t1 - t0)
         total_items += batch_size
         total_bytes += bytes_per_sample * batch_size
         measured += 1
+
+    # for manual inspection
+    # logger.info(f"Collate times: {collate_times}")
+    # logger.info(f"Read times: {read_times}")
 
     stats = {
         "num_batches_requested": num_batches,

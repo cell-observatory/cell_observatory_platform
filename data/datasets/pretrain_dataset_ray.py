@@ -1,12 +1,9 @@
 import os
-import gc
 import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Iterable, Callable, Literal
 
-import ujson
 import numpy as np
-import pandas as pd
 
 import tensorstore as ts
 
@@ -27,8 +24,10 @@ import torch
 import pyarrow as pa
 
 from data.data_shapes import MULTICHANNEL_HYPERCUBE
+from utils.profiling import pprof_func, pprof_class
 
 
+@pprof_class
 class PinnedTensorCollator:
     """
     Convert FixedShapeTensorArray/FixedSizeListArray/ArrowTensorArray 
@@ -40,13 +39,14 @@ class PinnedTensorCollator:
                  sample_shape: List[int], 
                  pin_memory: bool = True,
                  impl_type: Literal["FixedShapeTensorArray", 
-                                    "FixedSizeListArray",
-                                    "ArrowTensorArray"] = "FixedSizeListArray"
+                                    "FixedSizeListArray"] = "FixedSizeListArray",
+                 copy_to_pinned_array: bool = False # to stack and copy data to pinned memory
     ):
         self.impl_type = impl_type
         self.pin_memory = pin_memory
         self.sample_shape = sample_shape
         self.dtype = TORCH_DTYPES[dtype].value
+        self.copy_to_pinned_array = copy_to_pinned_array
 
     def _create_pinned_mem_array(self, batch_size: int, pin_memory: bool) -> None:
         shape = (batch_size, *self.sample_shape)
@@ -58,48 +58,43 @@ class PinnedTensorCollator:
     def _copy_arrow_tensor_array(self,
                                  chunks_arr,
                                  pin_memory: bool) -> torch.Tensor:
-        pinned_array = self._create_pinned_mem_array(
-            batch_size=chunks_arr.length(),
-            pin_memory=pin_memory
-        )
+        if self.copy_to_pinned_array:
+            arr = self._create_pinned_mem_array(
+                batch_size=chunks_arr.num_chunks,
+                pin_memory=pin_memory
+            )
+        else:
+            arr = []
 
         offset = 0
         for item in chunks_arr.chunks:           
             item = torch.from_numpy(item.to_numpy())
 
-            # copy to pinned memory (should be only real copy)
-            pinned_array[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
+            if item.dtype != self.dtype:
+                # ray.logger.warning(f"Casting colatted data to {self.dtype}")
+                item = item.to(self.dtype)
+
+            if self.copy_to_pinned_array:
+                # copy to pinned memory (should be only real copy)
+                arr[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
+            else:
+                arr.append(item)
 
             offset += item.shape[0]
 
-        return pinned_array
-
-    def _copy_arrow_fixed_shape_tensor_array(self,
-                      chunks_arr: pa.ChunkedArray,
-                      pin_memory: bool) -> torch.Tensor:
-        pinned_array = self._create_pinned_mem_array(
-            batch_size=chunks_arr.num_chunks,
-            pin_memory=pin_memory
-        )
-
-        offset = 0
-        for item in chunks_arr.chunks:            
-            item = torch.from_numpy(item.to_numpy_ndarray())
-
-            # copy to pinned memory (should be only real copy)
-            pinned_array[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
-
-            offset += item.shape[0]
-
-        return pinned_array
+        return arr
 
     def _copy_arrow_list_array(self,
                       chunks_arr: pa.ChunkedArray,
                       pin_memory: bool) -> torch.Tensor:
-        pinned_array = self._create_pinned_mem_array(
-           batch_size=chunks_arr.num_chunks,
-           pin_memory=pin_memory
-        )
+        if self.copy_to_pinned_array:
+            arr = self._create_pinned_mem_array(
+            batch_size=chunks_arr.num_chunks,
+            pin_memory=pin_memory
+            )
+        
+        else:
+            arr = []
 
         offset = 0
         for chunk in chunks_arr.chunks:
@@ -107,10 +102,20 @@ class PinnedTensorCollator:
             flat = chunk.values.to_numpy(zero_copy_only=True)
             np_view = flat.reshape(M, *self.sample_shape)
             tensor = torch.from_numpy(np_view)
-            pinned_array[offset:offset+M].copy_(tensor, non_blocking=True)
+
+            if tensor.dtype != self.dtype:
+                # ray.logger.warning(f"Casting colatted data to {self.dtype}")
+                tensor = tensor.to(self.dtype)
+
+            if self.copy_to_pinned_array:
+                # copy to pinned memory (should be only real copy)
+                arr[offset:offset+M].copy_(tensor, non_blocking=True)
+            else:
+                arr.append(tensor)
+
             offset += M
 
-        return pinned_array
+        return arr
 
     def __call__(self, batch: pa.Table | pa.RecordBatch) -> Dict[str, Any]:
         t0 = time.time()
@@ -122,6 +127,8 @@ class PinnedTensorCollator:
             data_tensor = self._copy_arrow_list_array(chunks_arr, pin_memory=self.pin_memory)
         else:
             raise ValueError(f"Unsupported impl_type: {self.impl_type}")
+        
+        # assert data_tensor.dtype == self.dtype, f"{data_tensor.dtype=} != {self.dtype=}" 
 
         meta = {name: batch.column(name).to_pylist()
                 for name in batch.schema.names
@@ -260,7 +267,7 @@ class PretrainDatasourceRay(Datasource):
             voxels = (
                     record["time_size"] * record["channel_size"] * record["cube_size"] ** 3
             )
-        if dtype == ts.float16:
+        if dtype == ts.float16 or dtype == ts.bfloat16:
             return voxels * 2
         elif dtype == ts.float32:
             return voxels * 4
@@ -328,6 +335,7 @@ class PretrainDatasourceRay(Datasource):
 # -------- -------- -------- v2 -------- -------- --------
 
 
+@pprof_class
 class RayLoaderActor:
     """
     Ray actor that loads hypercubes from a Arrow Table.
@@ -349,6 +357,12 @@ class RayLoaderActor:
         self.input_layout = input_layout.upper()
         self.with_batched_api = with_batched_api
         self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+
+        if self.dtype == TENSORSTORE_DTYPES.bf16.value:
+            # ray.logger.warning(
+            #     "Using fp16 for PyArrow, Collator will cast data to bf16"
+            # )
+            self.dtype = TENSORSTORE_DTYPES.fp16.value
 
         self._handles = {}  # lazy loading of handles
 
@@ -391,6 +405,7 @@ class RayLoaderActor:
             raise ValueError(f"Unsupported dataset layout order: {self.input_layout}")
 
     def __call__(self, batch):
+        read_time = time.perf_counter()
         records = batch.to_pylist()
 
         futs = []
@@ -399,7 +414,6 @@ class RayLoaderActor:
                 for i, r in enumerate(records):
                     p = os.path.join(r["server_folder"], r["output_folder"], r["tile_name"])
                     futs.append(self._slice_hypercube(self._get_handle(p), r, ts_batch=b))
-                b.submit()
         else:
             for i, r in enumerate(records):
                 p = os.path.join(r["server_folder"], r["output_folder"], r["tile_name"])
@@ -427,8 +441,12 @@ class RayLoaderActor:
         
         else:
             raise ValueError(f"Unsupported impl_type: {self.impl_type}")
+        
+        read_time = time.perf_counter() - read_time
+        read_time_col = pa.array([read_time] * batch.num_rows, type=pa.float64())
 
-        return batch.append_column("data_tensor", col)
+        batch = batch.append_column("data_tensor", col)
+        return batch.append_column("read_time", read_time_col)
 
 
 # -------- -------- --------  -------- -------- --------

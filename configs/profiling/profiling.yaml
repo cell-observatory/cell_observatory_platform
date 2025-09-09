@@ -1,0 +1,9 @@
+defaults:
+  - _self_
+
+enable: false
+outdir: ${paths.outdir}/profiling
+duration: forever
+freq: 1000
+realtime: 0
+lockfile_dir: ${paths.outdir}/profiling/lockfiles

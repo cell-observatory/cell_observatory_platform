@@ -61,16 +61,18 @@ dataset:
     _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}
   
-use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
+use_arrow_tensor_v2: true # use Arrow Tensor v2
 locality_with_output: true # whether to use locality with output for the Ray tasks
 rows_per_block: ${datasets.batch_size} # number of rows per block for the Ray dataset
 
 # ray_remote_args:
 #   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
 
+channels_subset: null # subset of channels to use, e.g. [0, 1] for first two channels
 impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
 ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
-num_actors: 32
+num_actors_min: 4
+num_actors_max: 64
 with_batched_api: true
 context:
   file_io_concurrency: null # concurrency for file I/O operations

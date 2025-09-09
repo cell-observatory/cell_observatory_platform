@@ -44,6 +44,7 @@ hooks_list:
     metric_name: ${evaluation.val_metric}
     compare_fn: ${evaluation.val_mode}
     eval_after_validation: true
+  - _target_: training.hooks.WeightDecayScheduleHook
   # - _target_: training.hooks.NsysProfilerHook
   #   start_iter: 40
   #   end_iter: 90

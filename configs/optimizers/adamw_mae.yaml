@@ -1,0 +1,12 @@
+opt: adamw
+lr: 5e-4 # initial learning rate
+wd: 5e-5 # initial weight decay
+ld: null # optional layer decay
+clip_grad: 0.5
+betas: [0.9, 0.99]
+eps: 1e-08
+
+param_group_split_mode: mae
+layer_decay: 0.75
+weight_decay: 0.05
+no_weight_decay_list: ['pos_embedding', 'cls_token', 'bias']

@@ -18,6 +18,8 @@ from utils.common import multiprocess
 from data.data_types import NUMPY_DTYPES
 from data.io import load_hypercubes_dataframe, read_zarr
 
+from utils.profiling import pprof_func, enable_profiling
+
 logging.basicConfig(
     stream=sys.stdout,
     level=logging.INFO,
@@ -103,6 +105,7 @@ class DataLoadingBenchmark:
             "cache_pool": {"total_bytes_limit": 0}
         })
     
+    @pprof_func(label="read_hypercube_ts_benchmark")
     def read_hypercube_from_zarr(self, rec) -> float:
         context = self._get_ts_context()
         
@@ -311,6 +314,7 @@ class DataLoadingBenchmark:
             self.plot_scaling()
 
 def benchmark_tensorstore(cfg: DictConfig):
+    enable_profiling(cfg)
     benchmarker = DataLoadingBenchmark(
         hypercubes_dataframe_path=cfg.datasets.hypercubes_dataframe_path,
         max_rois=cfg.datasets.max_rois,

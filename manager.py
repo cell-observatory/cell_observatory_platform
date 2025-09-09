@@ -14,6 +14,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf, open_dict
 OmegaConf.register_new_resolver("eval", eval)
 
+from utils.profiling import enable_profiling
 from utils.container import get_container_info
 
 # Update environment variables
@@ -144,6 +145,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
     #       setting logic
     # set environment variables from the config
     set_env_from_cfg(cfg)
+    enable_profiling(cfg)
 
     container_info = get_container_info()
     print(f"Container type: {container_info['container_type']}")

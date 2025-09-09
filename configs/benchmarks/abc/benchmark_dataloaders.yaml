@@ -13,6 +13,7 @@ defaults:
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /profiling/profiling                      # configs/profiling/profiling.yaml
   - _self_
 
 experiment_name: benchmark_dataloader_with_obs
@@ -58,7 +59,7 @@ clusters:
   batch_size: 32 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 16 # number of cpu cores per gpu
+  cpus_per_gpu: 128 # number of cpu cores per gpu
   mem_per_cpu: 31000 # ram per cpu core
   ray_queue_memory: 0.2
 
@@ -81,7 +82,7 @@ datasets:
 
   # max nr of hypercubes to test for benchmark
   occupancy_threshold: 0.0
-  max_hypercubes: 10000
+  max_hypercubes: 50000
   max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
   max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
@@ -118,5 +119,5 @@ datasets:
 
 csv_out: ${paths.outdir}/benchmark_dataloader.csv # path to save the benchmark results
 
-warmup: 5
+warmup: 1
 num_batches: ${eval:'(${datasets.max_hypercubes} // ${clusters.batch_size}) - ${warmup}'} # number of batches to run for the benchmark

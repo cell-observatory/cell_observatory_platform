@@ -10,6 +10,7 @@ from multiprocessing import Value
 from data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 
+# DEPRECATED
 # adapted from: https://github.com/facebookresearch/jepa/blob/main/src/masks/multiblock3d.py
 class MaskCollator(object):
 
@@ -45,10 +46,10 @@ class MaskCollator(object):
 
         # collated batch now is a DataSample object with
         # a batched data tensor and a metainfo dictionary
-        # containing lists of batched masks where each 
+        # containing lists of batched masks where each  
         # list element (B,L) is from a different mask generator
         # if the user wants to train on multiple masks variations 
-        # per batch (different modes/scales etc., see V-JEPA paper)
+        # per batch (different scales etc., see V-JEPA paper)
         return collated_batch 
 
 
@@ -60,7 +61,7 @@ class MaskCollator(object):
 #                    in terms of mask/not mask across space only
 #                    (subset of BLOCKED with spatial_mask_scale=1.0)
 # BLOCKED_PATTERNED: mask out a block of patches with a fixed pattern
-#                    that repeats across time if necessary, used for
+#                    that repeats across time if necessary, used
 #                    primarily for upsampling finetuning task
 # RANDOM: randomly mask out patches in the input tensor
 # RANDOM_SPACE_ONLY: randomly mask out patches in the input tensor
@@ -77,13 +78,6 @@ class MaskModes(Enum):
     RANDOM_SPACE_ONLY = "random_space_only"
 
 
-# MaskGenerator lives inside the Dataloader as part of the collator
-# class. we take this approach since we ideally want to generate
-# masks on a batch level and not on a per-sample level since 
-# we need to mask the same number of patches across all samples
-# to allow for batched processing downstream. hence the collator
-# is the most natural place to generate masks in the data loading
-# pipeline.
 class MaskGenerator(object):
     def __init__(
         self,
@@ -129,8 +123,7 @@ class MaskGenerator(object):
         # block sizes of the same size for each step
         # strictly speaking we don't need to ensure
         # that the block sizes are the same across
-        # GPU workers however this is most likely
-        # helpful for training stability and is
+        # GPU workers however this is
         # the strategy utilized in V-JEPA
         self._itr_counter = Value("i", -1)
 
@@ -178,8 +171,7 @@ class MaskGenerator(object):
         return time, depth, height, width
 
     # we step with iteration counter
-    # once per step after collating 
-    # each batch
+    # once per step
     def step(self):
         i = self._itr_counter
         with i.get_lock():
@@ -204,6 +196,8 @@ class MaskGenerator(object):
         axial_num_mask = int(self.height * self.width * axial_mask_scale)
 
         # sample block aspect-ratio
+        # TODO: we may consider other ways to sample blocks of 
+        #       different shapes/sizes in the future
         _rand_ar = torch.rand(1, generator=generator).item()
         min_ar, max_ar = self.aspect_ratio_scale_hw
         aspect_ratio_hw = min_ar + _rand_ar * (max_ar - min_ar)
@@ -236,21 +230,22 @@ class MaskGenerator(object):
             for st, sz in zip(starts, block_size)
         ]
 
-        shape = [1 if dim in (None, 0) else dim for dim in self.input_shape_patches]
+        shape = [1 if dim in (None, 0, 1) else dim for dim in self.input_shape_patches]
         block_mask = torch.ones(shape, dtype=torch.int32)
 
         block_mask[tuple(slices)] = 0
         block_mask = block_mask.squeeze()
         return block_mask
     
-    # from: https://github.com/facebookresearch/jepa/blob/main/src/masks/multiblock3d.py
+    # adapted from: 
+    # https://github.com/facebookresearch/jepa/blob/main/src/masks/multiblock3d.py
     def _generate_batched_blocked_mask(self, batch_size: int, generator):
         # we sample the block size once per batch
         # to ensure that all samples in the batch
         # have the same block size, they may still not
         # have the same number of patches masked out
-        # since the block size is sampled randomly
-        # across the batch where taking a union may 
+        # since the block is sampled randomly
+        # across the batch and taking a union may 
         # result in differences in the number of patches
         block_size = self._sample_block_size(generator)
 
@@ -316,6 +311,37 @@ class MaskGenerator(object):
         collated_masks_target = torch.utils.data.default_collate(target_list)
         original_patch_indices = torch.utils.data.default_collate(original_indices_list)
         return masks, collated_masks_context, collated_masks_target, original_patch_indices
+    
+    # NOTE: not to be used for pretraining but for upsampling finetuning
+    #       task hence we do not return context/target masks
+    def _generate_blocked_mask_patterned(self, batch_size):
+        """
+        Generates masks that downsample the time dimension by a given factor. 
+        """
+        mask_pattern = torch.tensor(self.time_downsample_pattern, dtype=torch.bool)  
+        K = mask_pattern.shape[0]  
+        
+        # mod all time values by K to extend 
+        # the mask pattern across the time dimension
+        time_indices = torch.arange(self.time) % K    
+        time_mask = mask_pattern[time_indices]                            
+
+        # mask: (time,) -> (time, (depth), height, width) -> (bs, time * (depth) * height * width)
+        # later, we repeat across channel dimension
+        if self.depth:
+            mask = time_mask.view(self.time, 1, 1, 1).expand(-1, self.depth, self.height, self.width)
+            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, -1, -1)
+            mask = mask.contiguous().view(batch_size, -1)
+        else:
+            mask = time_mask.view(self.time, 1, 1).expand(-1, self.height, self.width)
+            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, -1)
+            mask = mask.contiguous().view(batch_size, -1)
+
+        # masked patches are 1, unmasked are 0
+        # so argsort will give us the original patch indices in (B,L)
+        original_patch_indices = mask.int().argsort(dim=1, stable=True)
+        
+        return mask, None, None, original_patch_indices
 
     def _generate_random_mask(self, batch_size: int, space_only=False, device="cuda"):
         B, T = batch_size, self.time
@@ -366,35 +392,6 @@ class MaskGenerator(object):
 
             return masks, context_masks, target_masks, original_patch_indices
 
-    def _generate_blocked_mask_patterned(self, batch_size):
-        """
-        Generates masks that downsample the time dimension by a factor. 
-        """
-        mask_pattern = torch.tensor(self.time_downsample_pattern, dtype=torch.bool)  
-        K = mask_pattern.shape[0]  
-        
-        # mod all time values by K to extend 
-        # the mask pattern across the time dimension
-        time_indices = torch.arange(self.time) % K    
-        time_mask = mask_pattern[time_indices]                            
-
-        # mask: (time,) -> (time, (depth), height, width) -> (bs, time * (depth) * height * width)
-        # later, we repeat across channel dimension
-        if self.depth:
-            mask = time_mask.view(self.time, 1, 1, 1).expand(-1, self.depth, self.height, self.width)
-            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, -1, -1)
-            mask = mask.contiguous().view(batch_size, -1)
-        else:
-            mask = time_mask.view(self.time, 1, 1).expand(-1, self.height, self.width)
-            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, -1)
-            mask = mask.contiguous().view(batch_size, -1)
-
-        # masked patches are 1, unmasked are 0
-        # so argsort will give us the original patch indices in (B,L)
-        original_patch_indices = mask.int().argsort(dim=1, stable=True)
-        
-        return mask, None, None, original_patch_indices
-
     def __call__(self, batch_size):
         if self.mask_mode in (MaskModes.BLOCKED, 
                               MaskModes.BLOCKED_TIME_ONLY,
@@ -417,17 +414,22 @@ class MaskGenerator(object):
                 "Temporal mask scale must be 1.0 for BLOCKED_SPACE_ONLY mode."
             masks, context_masks, target_masks, \
                 original_patch_indices = self._generate_batched_blocked_mask(generator=g, batch_size=batch_size)
+        elif self.mask_mode == MaskModes.BLOCKED_PATTERNED:
+            masks, context_masks, target_masks, \
+                original_patch_indices = self._generate_blocked_mask_patterned(batch_size = batch_size)
         elif self.mask_mode == MaskModes.RANDOM:
             masks, context_masks, target_masks, \
                 original_patch_indices = self._generate_random_mask(batch_size = batch_size, space_only=False, device=self.device)   
         elif self.mask_mode == MaskModes.RANDOM_SPACE_ONLY:
             masks, context_masks, target_masks, \
                 original_patch_indices = self._generate_random_mask(batch_size = batch_size, space_only=True, device=self.device)
-        elif self.mask_mode == MaskModes.BLOCKED_PATTERNED:
-            masks, context_masks, target_masks, \
-                original_patch_indices = self._generate_blocked_mask_patterned(batch_size = batch_size)
         else:
             raise ValueError(f"Unknown mask mode: {self.mask_mode}")
+        
+        # ensure variables are on the correct device
+        masks, context_masks, target_masks, original_patch_indices = \
+            masks.to(self.device), context_masks.to(self.device), \
+              target_masks.to(self.device), original_patch_indices.to(self.device)
 
         return masks, context_masks, target_masks, original_patch_indices, self.channels_to_mask
 

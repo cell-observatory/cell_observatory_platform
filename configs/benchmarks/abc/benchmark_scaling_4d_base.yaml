@@ -106,7 +106,7 @@ datasets:
   num_actors_max: 64
 
   # only train on channel 0
-  channels_subset: [0]
+  # channels_subset: [0]
   
   with_batched_api: true
   context:
@@ -118,58 +118,58 @@ datasets:
   databases:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-    max_hypercubes: 80000 # maximum number of hypercubes to return
-    use_cached_hypercubes_dataframe: true
+    max_hypercubes: 10000 # maximum number of hypercubes to return
+    use_cached_hypercubes_dataframe: false
     hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
     protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
 # schedulers
 schedulers:
-  epochs: 1
+  epochs: 5
 
 # test activation checkpointing
-optimizations:
-  activation_checkpoint:
-    enabled: true
-    modules: ["masked_encoder.encoder"] # "masked_decoder.encoder.transformer_blocks"
-    selective_ac_option: "op" # apply activation checkpointing every 1 module
-    per_op_sac_force_recompute_mm_shapes_by_fqns: ["fc1"] # specific modules to force recompute
-    mode: "selective" # modes: "full", "selective"
-    mm_recompute_frac: 2 # recompute every 2nd mm module
+# optimizations:
+#   activation_checkpoint:
+#     enabled: true
+#     modules: ["masked_encoder.encoder"] # "masked_decoder.encoder.transformer_blocks"
+#     selective_ac_option: "op" # apply activation checkpointing every 1 module
+#     per_op_sac_force_recompute_mm_shapes_by_fqns: ["fc1"] # specific modules to force recompute
+#     mode: "selective" # modes: "full", "selective"
+#     mm_recompute_frac: 2 # recompute every 2nd mm module
 
-# test compile mode
-  torch_compile:
-    enabled: true
-    # modules to compile
-    modules: ["masked_encoder.encoder", "masked_decoder.encoder.transformer_blocks"]
-    blocks_nomenclature: "transformer_blocks"
-    range: block_based # options: "full", "block_based"
-    mode: reduce-overhead
-    dynamic: false
-    blockbased_fullgraph: false
+# # test compile mode
+#   torch_compile:
+#     enabled: true
+#     # modules to compile
+#     modules: ["masked_encoder.encoder", "masked_decoder.encoder.transformer_blocks"]
+#     blocks_nomenclature: "transformer_blocks"
+#     range: block_based # options: "full", "block_based"
+#     mode: reduce-overhead
+#     dynamic: false
+#     blockbased_fullgraph: false
 
-models:
-  mae:
-    drop_path_rate: 0.0
+# models:
+#   mae:
+#     drop_path_rate: 0.0
 
-deepspeed:
-  flops_profiler:
-    enabled: false
+# deepspeed:
+#   flops_profiler:
+    # enabled: false
 
 # hooks
 hooks:
-  nsys_env:
-    nsight: 
-      pytorch: autograd-shapes-nvtx
-      t: cuda,nvtx,cudnn,cublas,osrt
-      s: cpu
-      # "gpu-metrics-devices": 0
-      capture-range: cudaProfilerApi
-      capture-range-end: stop-shutdown
+  # nsys_env:
+  #   nsight: 
+  #     pytorch: autograd-shapes-nvtx
+  #     t: cuda,nvtx,cudnn,cublas,osrt
+  #     s: cpu
+  #     # "gpu-metrics-devices": 0
+  #     capture-range: cudaProfilerApi
+  #     capture-range-end: stop-shutdown
   hooks_list:
-  - _target_: training.hooks.NsysProfilerHook
-    start_iter: 20
-    end_iter: 25
+  # - _target_: training.hooks.NsysProfilerHook
+  #   start_iter: 20
+  #   end_iter: 25
   - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer

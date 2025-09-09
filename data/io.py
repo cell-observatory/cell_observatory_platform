@@ -2,14 +2,19 @@ import sys
 import logging
 from pathlib import Path
 from typing import Tuple, Literal, Optional, Iterable, Dict
+
+import ujson
 import inspect
 import functools
-import ujson
+
 import torch
+
 import numpy as np
 import tensorstore as ts
+
 from tifffile import TiffFile
 from skimage.io import imread, imsave
+
 import pandas as pd
 
 from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES
@@ -58,8 +63,9 @@ def read_tiff(image_path: str, dtype: NUMPY_DTYPES | str = NUMPY_DTYPES.fp16) ->
 def read_zarr(
     image_path: str,
     zarr_driver: str = "zarr3",
-    dtype: TENSORSTORE_DTYPES | str = TENSORSTORE_DTYPES.fp16,
-    context: ts.Context | None = None
+    dtype: Optional[TENSORSTORE_DTYPES | str] = None,
+    context: ts.Context | None = None,
+    cast: bool = True
 ) -> np.ndarray:
     """ Read a Zarr file and return the data as a NumPy array """
     spec = {
@@ -69,7 +75,10 @@ def read_zarr(
     }
     dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
     ds = ts.open(spec, context=context, read=True).result()
-    return ts.cast(ds, dtype)
+    if cast:
+        return ts.cast(ds, dtype)
+    else:
+        return ds
 
 
 def read_file(

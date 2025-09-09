@@ -25,3 +25,12 @@ mlp_layer: SwiGLU
 
 mask_ratio: 0.75
 window_mask_shape: null
+
+abs_sincos_enc: false
+rope_pos_enc: true
+rope_random_rotation_per_head: true
+rope_mixed: true
+rope_theta: 100.0
+weight_init_type: vjepa2
+mlp_wide_silu: false
+loss_fn: l1_masked

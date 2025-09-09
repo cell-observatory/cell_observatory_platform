@@ -1,145 +1,29 @@
-import re
-import sys
 import math
 import ujson
 import logging
 from pathlib import Path
-from functools import wraps
 from operator import attrgetter
 from collections import defaultdict
-from typing import Optional, List, Union, Iterator, Tuple
+from typing import Optional, List, Union, Callable, Tuple
 
 import numpy as np
 
 import torch
 import torch.nn as nn
 from torchinfo import summary
-from torch.optim.lr_scheduler import LinearLR
+from timm.layers.weight_init import trunc_normal_
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     checkpoint_wrapper as ptd_checkpoint_wrapper,
     CheckpointWrapper,
 )
-from timm.scheduler import create_scheduler_v2
 
 from omegaconf import DictConfig, open_dict
-
-from deepspeed.ops.adam import FusedAdam
-from deepspeed.ops.lamb import FusedLamb
-from deepspeed.runtime.lr_schedules import WarmupCosineLR
-from deepspeed.runtime.activation_checkpointing.checkpointing import checkpoint
 
 import ray
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
-
-
-def get_lr_scheduler(
-    opt: torch.optim.Optimizer,
-    steps_per_epoch: int,
-    config: DictConfig,
-    decay: str = 'cosine'
-):
-    if config.schedulers.fixedlr:
-        scheduler = LinearLR(
-            opt,
-            start_factor=1.0,
-            end_factor=1.0,
-            total_iters=config.schedulers.epochs,
-        )
-        logger.info(f"Training steps: [{steps_per_epoch * config.schedulers.epochs}]")
-    else:
-        decay_epochs = config.schedulers.epochs - (config.schedulers.warmup + config.schedulers.cooldown)
-        total_steps = config.schedulers.epochs * steps_per_epoch
-        warmup_steps = config.schedulers.warmup * steps_per_epoch
-        cooldown_steps = config.schedulers.cooldown * steps_per_epoch
-        decay_steps = total_steps - (warmup_steps + cooldown_steps)
-
-        cos_min_lr = config.schedulers.cos_min_ratio * config.optimizers.lr
-        warmup_min_lr = config.schedulers.warmup_min_ratio * config.optimizers.lr
-
-        logger.info('-'*80)
-        logger.info(
-            f"Epochs: {config.schedulers.epochs} = "
-            f"[{config.schedulers.warmup} warmup + {decay_epochs} decay + {config.schedulers.cooldown} cooldown]\n"
-            f"Steps: {total_steps} = "
-            f"[{warmup_steps} warmup + {decay_steps} decay + {cooldown_steps} cooldown]\n"
-            f"LR: {config.optimizers.lr} = [{warmup_min_lr=},  {cos_min_lr=}]"
-        )
-        logger.info('-'*80)
-
-        scheduler, num_epochs = create_scheduler_v2(
-            optimizer=opt,
-            sched=decay,
-            num_epochs=config.schedulers.epochs,
-            warmup_epochs=config.schedulers.warmup,
-            cooldown_epochs=config.schedulers.cooldown,
-            decay_epochs=decay_epochs,
-            min_lr=cos_min_lr,
-            warmup_lr=warmup_min_lr,
-        )
-
-    return scheduler
-
-
-def get_optimizer(
-    params,
-    config: DictConfig,
-    optimizer: str,
-    steps_per_epoch: int,
-    deepspeed_scheduler: bool = False
-):
-    if optimizer == 'adamw':
-        opt = FusedAdam(
-            params,
-            lr=config.optimizers.lr,
-            weight_decay=config.optimizers.wd,
-            betas=(0.9, 0.99),
-            eps=1e-08,
-        )
-    elif optimizer == 'lamb':
-        opt = FusedLamb(
-            params,
-            lr=config.optimizers.lr,
-            weight_decay=config.optimizers.wd,
-            betas=(0.9, 0.99),
-            eps=1e-08,
-        )
-    else:
-        raise ValueError(f"Optimizer {optimizer} not supported")
-
-    if deepspeed_scheduler:
-        decay_epochs = config.schedulers.epochs - (config.schedulers.warmup + config.schedulers.cooldown)
-        total_steps = config.schedulers.epochs * steps_per_epoch
-        warmup_steps = config.schedulers.warmup * steps_per_epoch
-        decay_steps = total_steps - warmup_steps
-
-        cos_min_lr = config.schedulers.cos_min_ratio * config.optimizers.lr
-        warmup_min_lr = config.schedulers.warmup_min_ratio * config.optimizers.lr
-
-        logger.info('-'*80)
-        logger.info(
-            f"Epochs: {config.schedulers.epochs} = "
-            f"[{config.schedulers.warmup} warmup + {decay_epochs} decay + NA cooldown]\n"
-            f"Steps: {total_steps} = "
-            f"[{warmup_steps} warmup + {decay_steps} decay + NA cooldown]\n"
-            f"LR: {config.optimizers.lr} = [{warmup_min_lr=},  {cos_min_lr=}]"
-        )
-        logger.info('-'*80)
-
-        scheduler = WarmupCosineLR(
-            optimizer=opt,
-            total_num_steps=total_steps,
-            warmup_num_steps=warmup_steps,
-            warmup_min_ratio=config.schedulers.warmup_min_ratio,
-            cos_min_ratio=config.schedulers.cos_min_ratio,
-            warmup_type=config.schedulers.cos_miwarmup_type,
-        )
-
-        return opt, scheduler
-    else:
-        return opt, None
 
 
 def record_dataset_len(config, num_train_steps: int, num_val_steps: int):
@@ -199,7 +83,7 @@ def get_steps_per_epoch(train_dataloader, val_dataloader, config: DictConfig):
     return steps_per_epoch, val_steps_per_epoch
 
 
-# TODO: we store best loss, starting epoch and starting step
+# NOTE: we store best loss, starting epoch and starting step
 #       with checkpoint manager in client state
 #       resume model state is most useful when restarting a 
 #       job from an earlier checkpoint to sidestep training 
@@ -892,3 +776,129 @@ def print_model_tree_with_opt(model, max_depth=99, treat_wrappers_as_leaves=Fals
             walk(child, prefix + indent, child_fqn, depth + 1)
 
     walk(model)
+
+
+# from: https://github.com/rwightman/timm/timm/models/_manipulate.py
+def named_apply(
+        fn: Callable,
+        module: nn.Module, name='',
+        depth_first: bool = True,
+        include_root: bool = False,
+) -> nn.Module:
+    if not depth_first and include_root:
+        fn(module=module, name=name)
+    for child_name, child_module in module.named_children():
+        child_name = '.'.join((name, child_name)) if name else child_name
+        named_apply(fn=fn, module=child_module, name=child_name, depth_first=depth_first, include_root=True)
+    if depth_first and include_root:
+        fn(module=module, name=name)
+    return module
+
+
+def init_weights(model: nn.Module, weight_init_type: str):
+    if weight_init_type == "mae":
+        # MAE model init utility function adapted from:
+        # https://github.com/facebookresearch/mae/main/models_mae.py
+        def _mae_init_weights(m):
+            if isinstance(m, nn.Linear):
+                # use xavier_uniform following official JAX ViT
+                torch.nn.init.xavier_uniform_(m.weight)
+                if isinstance(m, nn.Linear) and m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+            # NOTE: we follow the initialization scheme of MAE here however
+            #       we might consider doing as timm does and
+            #       include the option to initalize with init_weights
+            #       function of module if it exists and then call
+            #       named_apply(_mae_init_weights) afterwards in which
+            #       case we'd include the below commented code
+            # elif hasattr(m, 'init_weights'):
+            #     m.init_weights()
+
+         # initialize patch_embed like nn.Linear (instead of nn.Conv2d)
+        w = model.masked_encoder.patch_embedding.proj.weight.data
+        torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+
+        # timm's trunc_normal_(std=.02) is effectively 
+        # normal_(std=0.02) as cutoff is too big (2.)
+        torch.nn.init.normal_(model.masked_decoder.token_param, std=.02)
+
+        # initialize nn.Linear and nn.LayerNorm
+        model.apply(_mae_init_weights)
+
+    if weight_init_type == "vjepa":
+        # helpers from: 
+        # https://github.com/facebookresearch/ijepa/blob/main/src/models/vision_transformer.py
+        def _vjepa_fix_init_weight(model):
+            def rescale(param, layer_id):
+                param.div_(math.sqrt(2.0 * layer_id))
+
+            for layer_id, layer in enumerate(model.encoder.transformer_blocks):
+                # important to match names with timm MLP and our Attention module
+                rescale(layer.att.proj.weight.data, layer_id + 1)
+                rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+
+        def _vjepa_init_weights(m):
+            if isinstance(m, nn.Linear):
+                trunc_normal_(m.weight, std=model.init_std)
+                if isinstance(m, nn.Linear) and m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+            elif isinstance(m, nn.Conv2d):
+                trunc_normal_(m.weight, std=model.init_std)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Conv3d):
+                trunc_normal_(m.weight, std=model.init_std)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+        # NOTE: IJEPA does initlization of encoder and decoder separately
+        #       however they are intialized the same way hence we
+        #       just do a single named_apply over the whole model
+        trunc_normal_(model.masked_decoder.token_param, std=model.init_std)
+        model.apply(_vjepa_init_weights)
+        # rescale blocks for input encoder and target predictor
+        _vjepa_fix_init_weight(model.input_encoder)
+        _vjepa_fix_init_weight(model.target_predictor)
+
+    elif weight_init_type == "vjepa2":
+        # helpers from:
+        # https://github.com/facebookresearch/vjepa2/main/src/models/vision_transformer.py
+        def _vjepa2_init_weights(self, m):
+            if isinstance(m, nn.Linear):
+                trunc_normal_(m.weight, std=self.init_std)
+                if isinstance(m, nn.Linear) and m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+            # NOTE: technically vjepa2 only applies the below
+            #       to input encoder and not target predictor
+            elif isinstance(m, nn.Conv2d):
+                trunc_normal_(m.weight, std=self.init_std)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Conv3d):
+                trunc_normal_(m.weight, std=self.init_std)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+        def _vjepa2_rescale_blocks(model):
+            def rescale(param, layer_id):
+                param.div_(math.sqrt(2.0 * layer_id))
+
+            for layer_id, layer in enumerate(model.encoder.transformer_blocks):
+                rescale(layer.att.proj.weight.data, layer_id + 1)
+                rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+
+        model.apply(_vjepa2_init_weights)
+        _vjepa2_rescale_blocks(model.input_encoder)
+        _vjepa2_rescale_blocks(model.target_predictor)
+
+    else:
+        raise ValueError(f"Unknown weight initialization type: {weight_init_type}")
