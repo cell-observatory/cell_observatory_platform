@@ -114,7 +114,7 @@ class PatchEmbedding(nn.Module):
         pixels_per_patch = self.channels
         pixels_per_patch *= self.temporal_patch_size if self.temporal_patch_size is not None else 1
         pixels_per_patch *= self.axial_patch_size if self.axial_patch_size is not None else 1
-        pixels_per_patch *= self.lateral_patch_size ** 2
+        pixels_per_patch *= self.lateral_patch_size ** 2 if self.input_fmt is not "XC" else self.lateral_patch_size
         return pixels_per_patch
 
     def patchify(self, inputs, reshape=True):

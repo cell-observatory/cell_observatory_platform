@@ -106,6 +106,8 @@ class RopeAttention(nn.Module):
     ) -> None:
         super().__init__()
 
+        self.dim = dim
+
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
 
         if qk_norm:
@@ -143,11 +145,11 @@ class RopeAttention(nn.Module):
                 input_fmt=input_fmt
             )
 
-            if self.input_fmt == "XYC":
+            if self.input_fmt == "YXC":
                 freqs = freqs.view(2, -1)
-            elif self.input_fmt in ["ZYXC", "TXYC"]:
+            elif self.input_fmt in ["ZYXC", "TYXC"]:
                 freqs = freqs.view(3, -1)
-            elif self.input_fmt == "TZXYC":
+            elif self.input_fmt == "TZYXC":
                 freqs = freqs.view(4, -1)
                 
             self.freqs = nn.Parameter(freqs, requires_grad=True)
@@ -158,8 +160,10 @@ class RopeAttention(nn.Module):
             end_x = input_shape[input_fmt.index('X')] // patch_size[input_fmt.index('X')]
             end_y = input_shape[input_fmt.index('Y')] // patch_size[input_fmt.index('Y')]
 
-            if self.input_fmt == "XYC":
-                _, _, t_y, t_x = generate_grid_indices(end_x=end_x, end_y=end_y)
+            if self.input_fmt == "YXC":
+                _, _, t_y, t_x = generate_grid_indices(end_x=end_x, 
+                                                       end_y=end_y, 
+                                                       input_fmt=input_fmt)
                 self.register_buffer('freqs_t_x', t_x)
                 self.register_buffer('freqs_t_y', t_y)
 
@@ -167,32 +171,45 @@ class RopeAttention(nn.Module):
 
             elif self.input_fmt == "ZYXC":
                 end_z = input_shape[input_fmt.index('Z')] // patch_size[input_fmt.index('Z')]
-                _, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, end_y=end_y, end_z=end_z)
+                _, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
+                                                         end_y=end_y, 
+                                                         end_z=end_z, 
+                                                         input_fmt=input_fmt)
                 self.register_buffer('freqs_t_x', t_x)
                 self.register_buffer('freqs_t_y', t_y)
                 self.register_buffer('freqs_t_z', t_z)
 
                 self.grid_indices = (None, t_z, t_y, None)
 
-            elif self.input_fmt == "TXYC":
+            elif self.input_fmt == "TYXC":
                 end_t = input_shape[input_fmt.index('T')] // patch_size[input_fmt.index('T')]
-                t_t, _, t_y, t_x = generate_grid_indices(end_x=end_x, end_y=end_y, end_t=end_t)
+                t_t, _, t_y, t_x = generate_grid_indices(end_x=end_x, 
+                                                         end_y=end_y, 
+                                                         end_t=end_t, 
+                                                         input_fmt=input_fmt)
                 self.register_buffer('freqs_t_x', t_x)
                 self.register_buffer('freqs_t_y', t_y)
                 self.register_buffer('freqs_t_t', t_t)
 
                 self.grid_indices = (t_t, None, t_y, t_x)
 
-            elif self.input_fmt == "TZXYC":
+            elif self.input_fmt == "TZYXC":
                 end_z = input_shape[input_fmt.index('Z')] // patch_size[input_fmt.index('Z')]
                 end_t = input_shape[input_fmt.index('T')] // patch_size[input_fmt.index('T')]
-                t_t, t_z, t_x, t_y = generate_grid_indices(end_x=end_x, end_y=end_y, end_z=end_z, end_t=end_t)
+                t_t, t_z, t_x, t_y = generate_grid_indices(end_x=end_x, 
+                                                           end_y=end_y, 
+                                                           end_z=end_z, 
+                                                           end_t=end_t, 
+                                                           input_fmt=input_fmt)
                 self.register_buffer('freqs_t_x', t_x)
                 self.register_buffer('freqs_t_y', t_y)
                 self.register_buffer('freqs_t_z', t_z)
                 self.register_buffer('freqs_t_t', t_t)
 
                 self.grid_indices = (t_t, t_z, t_x, t_y)
+
+            else:
+                raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
 
         else:
             end_x = input_shape[input_fmt.index('X')] // patch_size[input_fmt.index('X')]

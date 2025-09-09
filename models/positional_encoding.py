@@ -401,7 +401,7 @@ def generate_frequency_spectrum(dim: int,
                                 random_rotation_per_head: bool = True,
                                 input_fmt: str = "TZYXC"
 ):
-    if input_fmt == "XYC":
+    if input_fmt == "YXC":
         assert dim % 4 == 0, "head_dim must be divisible by 4 for 2D ROPE."
         freqs_x, freqs_y = [], []
         # generate frequency spectrum: 1 / (theta ** (4i / d)) for i = 0, ..., d/4 - 1
@@ -480,6 +480,9 @@ def generate_frequency_spectrum(dim: int,
                 blocks.append(Q[:, [k]] @ mag[None, :])
             # freqs: [4, num_heads, dim//8*4]
             freqs[:, h, :] = torch.cat(blocks, dim=-1)
+
+    else:
+        raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
     
     return freqs
 
@@ -579,7 +582,7 @@ def compute_axial_cis(dim: int,
     #       x,y positions to dimensions is not interleaved but blockwise
 
     if input_fmt == "YXC":
-        assert dim % 4 == 0, "head_dim must be divisible by 4 for 2D frame duplication."
+        assert dim % 4 == 0, "head_dim must be divisible by 4 for 2D ROPE."
         mag = 1.0 / (theta ** (torch.arange(0, dim, 4)[: (dim // 4)].float() / dim))
         
         t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
@@ -590,7 +593,7 @@ def compute_axial_cis(dim: int,
         freqs_y = torch.outer(t_y, mag)
 
     elif input_fmt == "TYXC":
-        assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D frame duplication."
+        assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D ROPE."
         base = torch.arange(0, dim, 6)[: (dim // 6)].float() / dim
         mag = theta ** (-base)
         
@@ -604,7 +607,7 @@ def compute_axial_cis(dim: int,
         freqs_t = torch.outer(t_t, mag)
 
     elif input_fmt == "ZYXC":
-        assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D frame duplication."
+        assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D ROPE."
         base = torch.arange(0, dim, 6)[: (dim // 6)].float() / dim
         mag = theta ** (-base)
         
@@ -618,7 +621,7 @@ def compute_axial_cis(dim: int,
         freqs_z = torch.outer(t_z, mag)
 
     elif input_fmt == "TZYXC":
-        assert dim % 8 == 0, "head_dim must be divisible by 8 for 4D frame duplication."
+        assert dim % 8 == 0, "head_dim must be divisible by 8 for 4D ROPE."
         base = torch.arange(0, dim, 8)[: (dim // 8)].float() / dim
         mag = theta ** (-base)
         

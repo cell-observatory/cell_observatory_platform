@@ -231,7 +231,7 @@ class MaskGenerator(object):
         ]
 
         shape = [1 if dim in (None, 0, 1) else dim for dim in self.input_shape_patches]
-        block_mask = torch.ones(shape, dtype=torch.int32)
+        block_mask = torch.ones(shape, dtype=torch.int32, device=self.device)
 
         block_mask[tuple(slices)] = 0
         block_mask = block_mask.squeeze()
@@ -260,11 +260,16 @@ class MaskGenerator(object):
                 # we use the opposite convention here for masking/unmasking where
                 # the mask is 1 for unmasked patches
                 if self.time > 1 and self.depth > 1:
-                    mask_ctx = torch.ones((self.time, self.depth, self.height, self.width), dtype=torch.int32)
+                    mask_ctx = torch.ones((self.time, self.depth, self.height, self.width), 
+                                          dtype=torch.int32, device=self.device)
                 elif self.time > 1 and self.depth == 1:
-                    mask_ctx = torch.ones((self.time, self.height, self.width), dtype=torch.int32)
+                    mask_ctx = torch.ones((self.time, self.height, self.width), 
+                                          dtype=torch.int32, 
+                                          device=self.device)
                 elif self.time == 1 and self.depth > 1:
-                    mask_ctx = torch.ones((self.depth, self.height, self.width), dtype=torch.int32)
+                    mask_ctx = torch.ones((self.depth, self.height, self.width), 
+                                          dtype=torch.int32, 
+                                          device=self.device)
                 else:
                     raise ValueError("Invalid input shape for masking. "
                                      "Expected at least one of time or depth to be greater than 1.")
@@ -297,7 +302,7 @@ class MaskGenerator(object):
             
             # TODO: is this really necessary? seems like all
             # we currently use mask for is to do masks.sum()?
-            mask = torch.ones_like(perm, dtype=torch.int32)
+            mask = torch.ones_like(perm, dtype=torch.int32, device=self.device)
             mask[:len(ctx)] = 0
             mask = mask[orig_idx]
 
@@ -318,12 +323,14 @@ class MaskGenerator(object):
         """
         Generates masks that downsample the time dimension by a given factor. 
         """
-        mask_pattern = torch.tensor(self.time_downsample_pattern, dtype=torch.bool)  
+        mask_pattern = torch.tensor(self.time_downsample_pattern, 
+                                    dtype=torch.bool, 
+                                    device=self.device)  
         K = mask_pattern.shape[0]  
         
         # mod all time values by K to extend 
         # the mask pattern across the time dimension
-        time_indices = torch.arange(self.time) % K    
+        time_indices = torch.arange(self.time, device=self.device) % K    
         time_mask = mask_pattern[time_indices]                            
 
         # mask: (time,) -> (time, (depth), height, width) -> (bs, time * (depth) * height * width)
@@ -425,11 +432,6 @@ class MaskGenerator(object):
                 original_patch_indices = self._generate_random_mask(batch_size = batch_size, space_only=True, device=self.device)
         else:
             raise ValueError(f"Unknown mask mode: {self.mask_mode}")
-        
-        # ensure variables are on the correct device
-        masks, context_masks, target_masks, original_patch_indices = \
-            masks.to(self.device), context_masks.to(self.device), \
-              target_masks.to(self.device), original_patch_indices.to(self.device)
 
         return masks, context_masks, target_masks, original_patch_indices, self.channels_to_mask
 

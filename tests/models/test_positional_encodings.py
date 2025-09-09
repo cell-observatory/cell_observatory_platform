@@ -144,7 +144,7 @@ def test_pos_embedding_forward_interp_resized_shapes(fmt, shape, new_shape, patc
 @pytest.mark.parametrize(
     "gen_fmt,head_dim,num_heads,axes",
     [
-        ("XYC",   8,  2, 2),   # 2D
+        ("YXC",   8,  2, 2),   # 2D
         ("TYXC", 12, 3, 3),    # 3D (T,Y,X)
         ("ZYXC", 12, 3, 3),    # 3D (Z,Y,X)
         ("TZYXC",16, 4, 4),    # 4D
@@ -166,7 +166,7 @@ def test_generate_frequency_spectrum_shapes(gen_fmt, head_dim, num_heads, axes, 
 @pytest.mark.parametrize(
     "fmt,gen_fmt,head_dim,end_x,end_y,end_z,end_t",
     [
-        ("YXC",   "XYC",   8,  3, 2, None, None),
+        ("YXC",   "YXC",   8,  3, 2, None, None),
         ("TYXC",  "TYXC", 12, 3, 2, None, 2),
         ("ZYXC",  "ZYXC", 12, 3, 2, 2, None),
         ("TZYXC", "TZYXC",16, 3, 2, 2, 2),
