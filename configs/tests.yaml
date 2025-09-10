@@ -113,6 +113,7 @@ hooks:
   - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.SamplerSetter
   - _target_: training.hooks.LRScheduler
+  - _target_: training.hooks.WeightDecayScheduleHook
   - _target_: training.hooks.IterationTimer
     warmup_iter: 2
   - _target_: training.hooks.PeriodicWriter
