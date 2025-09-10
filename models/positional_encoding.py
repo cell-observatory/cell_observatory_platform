@@ -402,7 +402,7 @@ def generate_frequency_spectrum(dim: int,
                                 input_fmt: str = "TZYXC"
 ):
     if input_fmt == "YXC":
-        assert dim % 4 == 0, "head_dim must be divisible by 4 for 2D ROPE."
+        # assert dim % 4 == 0, "head_dim must be divisible by 4 for 2D ROPE."
         freqs_x, freqs_y = [], []
         # generate frequency spectrum: 1 / (theta ** (4i / d)) for i = 0, ..., d/4 - 1
         mag = 1 / (theta ** (torch.arange(0, dim, 4)[: (dim // 4)].float() / dim))
@@ -427,7 +427,7 @@ def generate_frequency_spectrum(dim: int,
     
     elif input_fmt == "TYXC" or input_fmt == "ZYXC":
         # the below follows the logic as above but generalized to 3D
-        assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D ROPE."
+        # assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D ROPE."
         J = dim // 6
 
         base = torch.arange(0, dim, 6)[: (dim // 6)].float() / dim
@@ -455,7 +455,7 @@ def generate_frequency_spectrum(dim: int,
     
     elif input_fmt == "TZYXC":
         # the below follows the logic as above but generalized to 4D
-        assert dim % 8 == 0, "head_dim must be divisible by 8 for 4D ROPE."
+        # assert dim % 8 == 0, "head_dim must be divisible by 8 for 4D ROPE."
         J = dim // 8
 
         base = torch.arange(0, dim, 8)[: (dim // 8)].float() / dim
@@ -592,7 +592,7 @@ def compute_axial_cis(dim: int,
     #       x,y positions to dimensions is not interleaved but blockwise
 
     if input_fmt == "YXC":
-        assert dim % 4 == 0, "head_dim must be divisible by 4 for 2D ROPE."
+        # assert dim % 4 == 0, "head_dim must be divisible by 4 for 2D ROPE."
         mag = 1.0 / (theta ** (torch.arange(0, dim, 4)[: (dim // 4)].float() / dim))
         
         t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
@@ -603,7 +603,7 @@ def compute_axial_cis(dim: int,
         freqs_y = torch.outer(t_y, mag)
 
     elif input_fmt == "TYXC":
-        assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D ROPE."
+        # assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D ROPE."
         base = torch.arange(0, dim, 6)[: (dim // 6)].float() / dim
         mag = theta ** (-base)
         
@@ -617,7 +617,7 @@ def compute_axial_cis(dim: int,
         freqs_t = torch.outer(t_t, mag)
 
     elif input_fmt == "ZYXC":
-        assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D ROPE."
+        # assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D ROPE."
         base = torch.arange(0, dim, 6)[: (dim // 6)].float() / dim
         mag = theta ** (-base)
         
@@ -631,7 +631,7 @@ def compute_axial_cis(dim: int,
         freqs_z = torch.outer(t_z, mag)
 
     elif input_fmt == "TZYXC":
-        assert dim % 8 == 0, "head_dim must be divisible by 8 for 4D ROPE."
+        # assert dim % 8 == 0, "head_dim must be divisible by 8 for 4D ROPE."
         base = torch.arange(0, dim, 8)[: (dim // 8)].float() / dim
         mag = theta ** (-base)
         
@@ -685,17 +685,37 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     return freqs_cis.view(*shape)
 
 def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor):
+    # xq: [B,H,N,D]
+    Jf = freqs_cis.shape[-1]
+    De = Jf * 2
+
+    # split off the tail that cannot be rotated cleanly
+    xq_even = xq[..., :De]
+    xk_even = xk[..., :De]
+    xq_tail = xq[..., De:]
+    xk_tail = xk[..., De:]
+    
     # xq[:-1]: [B, H, N] => xq reshape: [B, H, N, J, 2] for J=D/2 
     # thus xq_: [B, H, N, J] complex and similar for xk
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
+    xq_ = torch.view_as_complex(xq_even.float().reshape(*xq_even.shape[:-1], -1, 2))
+    xk_ = torch.view_as_complex(xk_even.float().reshape(*xk_even.shape[:-1], -1, 2))
+    
     # if [N, J] -> reshaped to [1, 1, N, J]
     # if [H, N, J] -> reshaped to [1, H, N, J]
     freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
+    
     # xq_ * freqs_cis: elementwise complex mult -> [B, H, N, J]
     # then view_as_real -> [B, H, N, J, 2] -> flatten last two dims -> [B, H, N, J]
-    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    xq_rot = torch.view_as_real(xq_ * freqs_cis).flatten(3)
+    xk_rot = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+    
+    if xq_tail.numel():
+        xq_out = torch.cat([xq_rot, xq_tail], dim=-1)
+        xk_out = torch.cat([xk_rot, xk_tail], dim=-1)
+    else:
+        xq_out = xq_rot
+        xk_out = xk_rot
+
     return xq_out.type_as(xq).to(xq.device), xk_out.type_as(xk).to(xk.device)
 
 

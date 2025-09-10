@@ -173,7 +173,7 @@ class RopeAttention(nn.Module):
                 self.register_buffer('freqs_t_y', t_y)
                 self.register_buffer('freqs_t_z', t_z)
 
-                self.grid_indices = (None, t_z, t_y, None)
+                self.grid_indices = (None, t_z, t_y, t_x)
 
             elif self.input_fmt == "TYXC":
                 end_t = input_shape[1:][input_fmt.index('T')] // patch_size[input_fmt.index('T')]
@@ -200,7 +200,7 @@ class RopeAttention(nn.Module):
                 self.register_buffer('freqs_t_z', t_z)
                 self.register_buffer('freqs_t_t', t_t)
 
-                self.grid_indices = (t_t, t_z, t_x, t_y)
+                self.grid_indices = (t_t, t_z, t_y, t_x)
 
             else:
                 raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
