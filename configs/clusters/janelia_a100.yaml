@@ -14,9 +14,10 @@ defaults:
 
 job_name: ${experiment_name}
 launcher_type: lsf # type of launcher to use
-partition: gpu_a100   # partition to submit the job to
+partition: gpu_a100_parallel   # partition to submit the job to (use `parallel` parition if `multijob_submission` is not used)
 qos: null   # qos for the job
 python_env: python # python executable to use (if not using apptainer)
+multijob_submission: false # each worker node will be submitted as a separate job
 
 batch_size: 4096 # total batch size
 
