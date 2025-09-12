@@ -1,4 +1,10 @@
+# NCCL settings optimized for Ethernet without InfiniBand
 export NCCL_DEBUG=INFO
+export NCCL_IB_DISABLE=1
+export NCCL_NET_GDR_LEVEL=0
+export NCCL_BUFFSIZE=8388608
+export NCCL_P2P_DISABLE=0
+export NCCL_SHM_DISABLE=0
 export NCCL_DEBUG_SUBSYS=GRAPH
 export RAY_DEDUP_LOGS=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -39,9 +45,9 @@ export RAY_PROMETHEUS_HOST=${port}:9090
 
 ############################## START HEAD NODE
 
-nodes_array=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
-nodes_array=(nodes_array)
-head_node=${nodes_array[0]}
+hosts=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
+hosts=(hosts)
+head_node=${hosts[0]}
 head_node_ip=$(hostname --ip-address | awk '{ print $1 }')
 cluster_address="$head_node_ip:$port"
 
@@ -49,53 +55,41 @@ export head_node
 export head_node_ip
 export cluster_address
 
-apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory &
-sleep 10
+srun -n1 -N1 -w \$head_node "
+    apptainer exec --userns --nv \
+        --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir:\$tmpdir \
+        \$env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
+        -i \$head_node_ip -p \$port -d \$dashboard_port -c \$head_cpus -g \$head_gpus -t \$tmpdir -q \$object_store_memory
+" &
+sleep 20
 
 ############################## ADD WORKER NODES
 
-worker_ids=()
-num_workers=$((nodes - 1))
-for i in $(seq 1 $num_workers)
-do
-    mkdir -p "${outdir}/ray_worker_${i}"
-    echo "Adding worker: ${outdir}/ray_worker_${i}"
-    if [[ "$exclusive" == "true" ]]; then
-        echo "Exclusive mode is enabled"
-        jid=$(sbatch  --partition $partition \
-                --job-name="${jobname}_ray_worker_${i}" \
-                --nodes 1 \
-                --ntasks 1 \
-                --exclusive \
-                --output="${outdir}/ray_worker_${i}.log" \
-                --export=ALL \
-                --wrap="apptainer exec --userns --nv \
-                  --bind $storage_server --bind $workspace  --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
-                  $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-                  -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory" \
-                | awk '{print $4}')
-    else
-        jid=$(sbatch  --partition $partition \
-                --job-name="${jobname}_ray_worker_${i}" \
-                --nodes 1 \
-                --ntasks 1 \
-                --cpus-per-task=$cpus \
-                --gres=gpu:$gpus \
-                --mem=$mem \
-                --output="${outdir}/ray_worker_${i}.log" \
-                --export=ALL \
-                --wrap="apptainer exec --userns --nv \
-                  --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
-                  $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-                  -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory" \
-                | awk '{print $4}')
-    fi
+workers=("\${hosts[@]:1}")
+if [ ${nodes} -gt 1 ]; then
+    i=0
+    for host in "\${workers[@]}"; do
+        echo "Starting worker on: \$host"
+        srun -n1 -N1 -w \$host "
+            apptainer exec --userns --nv \
+                --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir/ray_worker_\$i:\$tmpdir \
+                \$env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+                -a \$cluster_address -c \$cpus -g \$gpus -t \$tmpdir -q \$object_store_memory
+        " &
+        i+=1
+    done
+fi
 
-    worker_ids+=($jid)
-    echo "Running ${jobname}_ray_worker_${i} @ ${jid}"
-done
+############################# CHECK CLUSTER STATUS
 
-############################## CHECK STATUS
+srun -n1 -N1 -w \$head_node " 
+    apptainer exec --userns --nv \
+        --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir:\$tmpdir \
+        \$env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
+        -a \$cluster_address -r \$nodes 
+" &
+
+############################## CLEANUP
 
 # add exit trap to ensure cleanup on script exit
 # this will ensure that we stop the Ray cluster and cancel worker jobs
@@ -106,20 +100,20 @@ cleanup() {
 
     # stop Ray on the head node
     ps aux | grep prometheus | awk '{print $2}' | xargs kill -9
-    apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
 
-    # cancel worker jobs (if still queued/running)
-    for jid in "${worker_ids[@]}"
-    do
-        scancel $jid
+    for host in "\${hosts[@]}"; do
+        srun -n1 -N1 -w \$host " 
+            apptainer exec --userns --nv \
+                --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir:\$tmpdir \
+                \$env ray stop --force 
+        " &
     done
+    wait
 
     # on failure (non-zero exit) also cancel the head-node job
     [[ $ec -ne 0 ]] && scancel "$SLURM_JOB_ID" || true
 }
 trap cleanup EXIT
-
-apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r $nodes
 
 ############################## RUN WORKLOAD
 

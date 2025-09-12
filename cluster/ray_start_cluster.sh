@@ -1,8 +1,15 @@
+# NCCL settings optimized for Ethernet without InfiniBand
 export LC_ALL=C.UTF-8
 export LANG=C.UTF-8
 export NCCL_DEBUG=INFO
+export NCCL_IB_DISABLE=1
+export NCCL_NET_GDR_LEVEL=0
+export NCCL_BUFFSIZE=8388608
+export NCCL_P2P_DISABLE=0
+export NCCL_SHM_DISABLE=0
 export NCCL_DEBUG_SUBSYS=GRAPH
-export NCCL_P2P_LEVEL=NVL
+export RAY_DEDUP_LOGS=0
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 while getopts ":i:p:d:c:g:t:q:" option;do
     case "${option}" in
@@ -48,6 +55,6 @@ echo $job
 $job &
 
 echo "Starting prometheus server on $(hostname) => $cluster_address with dashboard_port[$dashboard_port] & tmpdir[$tmpdir]"
-~/prometheus-3.5.0.linux-amd64/prometheus --config.file=$tmpdir/session_latest/metrics/prometheus/prometheus.yml
+prometheus --config.file=$tmpdir/session_latest/metrics/prometheus/prometheus.yml
 
 sleep infinity
