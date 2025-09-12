@@ -31,13 +31,15 @@ class PinnedTensorCollator:
         sample_shape: List[int], 
         pin_memory: bool = True,
         impl_type: Literal["FixedShapeTensorArray", "FixedSizeListArray"] = "FixedSizeListArray",
-        copy_to_pinned_array: bool = False # to stack and copy data to pinned memory
+        copy_to_pinned_array: bool = False, # to stack and copy data to pinned memory
+        skip_metadata: bool = True 
     ):
         self.impl_type = impl_type
         self.pin_memory = pin_memory
         self.sample_shape = sample_shape
         self.dtype = TORCH_DTYPES[dtype].value
         self.copy_to_pinned_array = copy_to_pinned_array
+        self.skip_metadata = skip_metadata
 
     def _create_pinned_mem_array(self, batch_size: int, pin_memory: bool) -> None:
         shape = (batch_size, *self.sample_shape)
@@ -113,11 +115,11 @@ class PinnedTensorCollator:
         else:
             raise ValueError(f"Unsupported impl_type: {self.impl_type}")
         
-        # assert data_tensor.dtype == self.dtype, f"{data_tensor.dtype=} != {self.dtype=}" 
-
-        meta = {name: batch.column(name).to_pylist()
-                for name in batch.schema.names
-                if name != 'data_tensor'}
+        if self.skip_metadata:
+            meta = {}
+        else:
+            meta = {name: batch.column(name).to_pylist() for name in batch.schema.names if name != 'data_tensor'}
+            
         meta['collate_time'] = time.time() - t0
 
         return {"data_tensor": data_tensor, "metainfo": meta}
@@ -387,9 +389,15 @@ class RayLoaderActor:
 # -------- -------- --------  -------- -------- --------
 
 
-def get_dataset_ray(cfg: DictConfig, 
-                    indices: Optional[List[int]], 
-                    database: Optional[Any] = None
+def get_dataset_ray(
+    cfg: DictConfig, 
+    indices: Optional[List[int]], 
+    database: Optional[Any] = None,
+    columns: list = [ # metadata columns to keep from the original dataframe (adding more columns will slow down our collate)
+        'x_start', 'y_start', 'z_start', 'time_start', 
+        'channel_size', 'cube_size', 'time_size',
+        'server_folder', 'output_folder', 'tile_name',
+    ]
 ):
     if not cfg.datasets.ray_data_v2:
         datasource = instantiate(
@@ -441,9 +449,11 @@ def get_dataset_ray(cfg: DictConfig,
         ts_ctx = OmegaConf.to_container(cfg.datasets.context, resolve=True)
         # remove None values from context spec
         ctx_spec = {k: v for k, v in ts_ctx.items() if v is not None}
-
-        table = pa.table(database.hypercubes_dataframe.iloc[indices] \
-                         if indices is not None else database.hypercubes_dataframe)
+        
+        table = pa.table(
+            database.hypercubes_dataframe[columns].iloc[indices] 
+            if indices is not None else database.hypercubes_dataframe[columns]
+        )
         
         # convert to Ray Dataset
         dataset = ray.data.from_arrow(table).repartition(
@@ -464,8 +474,7 @@ def get_dataset_ray(cfg: DictConfig,
             },
             # consider fractional values for jobs with much I/O, i.e.
             # num_cpus=0.5,
-            concurrency=(cfg.datasets.num_actors_min, 
-                         cfg.datasets.num_actors_max),
+            concurrency=(cfg.datasets.num_actors_min, cfg.datasets.num_actors_max),
         )
 
         return dataset
