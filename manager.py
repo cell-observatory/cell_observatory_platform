@@ -339,8 +339,8 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             '''
             sjob_worker_nodes = ["bsub"]
             sjob_worker_nodes.append(f"-q {cfg.clusters.partition}")
-            sjob_worker_nodes.append(f"-n {cfg.clusters.cpus_per_worker}")
-            sjob_worker_nodes.append(f'-R "span[ptile={cfg.clusters.cpus_per_worker}]')
+            sjob_worker_nodes.append(f"-n {cfg.clusters.cpus_per_worker * cfg.clusters.worker_nodes}")
+            sjob_worker_nodes.append(f'-R "span[ptile={cfg.clusters.cpus_per_worker}]"')
             sjob_worker_nodes.append(f'-app parallel-96')
             sjob_worker_nodes.append(f'-gpu "num={cfg.clusters.gpus_per_worker}:mode=exclusive_process"')
         

@@ -55,26 +55,31 @@ export head_node
 export head_node_ip
 export cluster_address
 
-srun -n1 -N1 -w \$head_node "
+srun -n1 -N1 -w $head_node "
     apptainer exec --userns --nv \
-        --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir:\$tmpdir \
-        \$env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
-        -i \$head_node_ip -p \$port -d \$dashboard_port -c \$head_cpus -g \$head_gpus -t \$tmpdir -q \$object_store_memory
+        --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+        $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
+        -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory
 " &
-sleep 20
+sleep 10
+check_headnode="ray status --address $head_node:\$port"
+while ! $check_headnode; do
+    echo "Waiting for head node..."
+    sleep 3
+done
 
 ############################## ADD WORKER NODES
 
-workers=("\${hosts[@]:1}")
+workers=("${hosts[@]:1}")
 if [ ${nodes} -gt 1 ]; then
     i=0
-    for host in "\${workers[@]}"; do
-        echo "Starting worker on: \$host"
-        srun -n1 -N1 -w \$host "
+    for host in "${workers[@]}"; do
+        echo "Starting worker on: $host"
+        srun -n1 -N1 -w $host "
             apptainer exec --userns --nv \
-                --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir/ray_worker_\$i:\$tmpdir \
-                \$env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-                -a \$cluster_address -c \$cpus -g \$gpus -t \$tmpdir -q \$object_store_memory
+                --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
+                $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory
         " &
         i+=1
     done
@@ -82,11 +87,11 @@ fi
 
 ############################# CHECK CLUSTER STATUS
 
-srun -n1 -N1 -w \$head_node " 
+srun -n1 -N1 -w $head_node " 
     apptainer exec --userns --nv \
-        --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir:\$tmpdir \
-        \$env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
-        -a \$cluster_address -r \$nodes 
+        --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+        $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
+        -a $cluster_address -r $nodes 
 " &
 
 ############################## CLEANUP
@@ -101,11 +106,11 @@ cleanup() {
     # stop Ray on the head node
     ps aux | grep prometheus | awk '{print $2}' | xargs kill -9
 
-    for host in "\${hosts[@]}"; do
-        srun -n1 -N1 -w \$host " 
+    for host in "${hosts[@]}"; do
+        srun -n1 -N1 -w $host " 
             apptainer exec --userns --nv \
-                --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir:\$tmpdir \
-                \$env ray stop --force 
+                --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+                $env ray stop --force 
         " &
     done
     wait
