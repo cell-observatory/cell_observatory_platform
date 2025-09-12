@@ -141,14 +141,16 @@ class RayPreprocessor(torch.nn.Module):
             inputs = torch.cat(inputs, dim=0)
         else:
             inputs = data_sample['data_tensor'].to("cuda", non_blocking=True)
+        
+        if inputs.dtype != self.dtype:
+            # ray.logger.warning(f"Casting inputs to {self.dtype}")
+            inputs = inputs.to(self.dtype)
             
         meta = data_sample['metainfo']
         
         # skipping checks for NaN/Inf values
         # if torch.isnan(inputs).all() or torch.isinf(inputs).all():
         #     raise ValueError(f"Invalid training data")
-        
-        # assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 
         if self.transforms is not None:
             transform_t0 = time.time()
