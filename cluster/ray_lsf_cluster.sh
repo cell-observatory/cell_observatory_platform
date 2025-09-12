@@ -47,13 +47,13 @@ export RAY_PROMETHEUS_HOST=${port}:9090
 
 # Get allocated hosts from LSF
 hosts=()
-for host in \$(cat \$LSB_DJOB_HOSTFILE | uniq); do
-    echo "Adding host: \$host"
-    hosts+=(\$host)
+for host in $(cat $LSB_DJOB_HOSTFILE | uniq); do
+    echo "Adding host: $host"
+    hosts+=($host)
 done
-echo "The host list is: \${hosts[@]}"
+echo "The host list is: ${hosts[@]}"
 
-head_node=\${hosts[0]}
+head_node=${hosts[0]}
 head_node_ip=$(getent hosts $head_node | awk '{ print $1 }')
 cluster_address="$head_node_ip:$port"
 
@@ -61,26 +61,32 @@ export head_node
 export head_node_ip
 export cluster_address
 
-blaunch -z \$head_node "
+blaunch -z $head_node "
     apptainer exec --userns --nv \
-        --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir:\$tmpdir \
-        \$env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
-        -i \$head_node_ip -p \$port -d \$dashboard_port -c \$head_cpus -g \$head_gpus -t \$tmpdir -q \$object_store_memory
+        --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+        $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
+        -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory
 " &
-sleep 20
+sleep 10
+apptainer exec --userns --nv \
+    --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+    $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
+    -a $cluster_address -r 1
+
 
 ############################## ADD WORKER NODES
 
-workers=("\${hosts[@]:1}")
+workers=("${hosts[@]:1}")
 if [ ${nodes} -gt 1 ]; then
     i=0
-    for host in "\${workers[@]}"; do
-        echo "Starting worker on: \$host"
-        blaunch -z \$host "
+    for host in "${workers[@]}"; do
+        echo "Starting worker on: $host"
+        mkdir -p $outdir/ray_worker_$i
+        blaunch -z $host "
             apptainer exec --userns --nv \
-                --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir/ray_worker_\$i:\$tmpdir \
-                \$env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-                -a \$cluster_address -c \$cpus -g \$gpus -t \$tmpdir -q \$object_store_memory
+                --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
+                $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory
         " &
         i+=1
     done
@@ -88,11 +94,11 @@ fi
 
 ############################# CHECK CLUSTER STATUS
 
-blaunch -z \$head_node " 
+blaunch -z $head_node " 
     apptainer exec --userns --nv \
-        --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir:\$tmpdir \
-        \$env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
-        -a \$cluster_address -r \$nodes 
+        --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+        $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
+        -a $cluster_address -r $nodes 
 " &
 
 ############################## RUN WORKLOAD
@@ -106,11 +112,11 @@ apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bi
 echo "Stop ray"
 ps aux | grep prometheus | awk '{print $2}' | xargs kill -9
 
-for host in "\${hosts[@]}"; do
-    blaunch -z \$host " 
+for host in "${hosts[@]}"; do
+    blaunch -z $host " 
         apptainer exec --userns --nv \
-            --bind \$storage_server --bind \$workspace --bind \$bind --bind \$outdir:\$tmpdir \
-            \$env ray stop --force 
+            --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+            $env ray stop --force 
     " &
 done
 wait
