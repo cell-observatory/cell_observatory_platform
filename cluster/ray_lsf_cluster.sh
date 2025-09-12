@@ -119,7 +119,6 @@ for host in "${hosts[@]}"; do
             $env ray stop --force 
     " &
 done
-wait
 
 echo "Shutting down the job"
 bkill $LSB_JOBID

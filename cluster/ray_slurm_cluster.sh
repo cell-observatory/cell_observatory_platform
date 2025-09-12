@@ -113,7 +113,6 @@ cleanup() {
                 $env ray stop --force 
         " &
     done
-    wait
 
     # on failure (non-zero exit) also cancel the head-node job
     [[ $ec -ne 0 ]] && scancel "$SLURM_JOB_ID" || true
