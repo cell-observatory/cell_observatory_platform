@@ -1,0 +1,81 @@
+Bootstrap: localimage
+From: pytorch_25.08-py3.sif
+Stage: base
+
+%environment
+export RUNNING_IN_DOCKER=TRUE
+export TERM=xterm-256color
+
+%files
+requirements.txt requirements.txt
+
+
+%post
+RUNNING_IN_DOCKER=TRUE
+TERM=xterm-256color
+echo "PS1='\e[97m\u\e[0m@\e[94m\h\e[0m:\e[35m\w\e[0m# '" >> /root/.bashrc
+
+
+apt-get update \
+  && apt-get install -y --no-install-recommends \
+  sudo \
+  htop \
+  cifs-utils \
+  winbind \
+  smbclient \
+  sshfs \
+  iputils-ping \
+  google-perftools \
+  libgoogle-perftools-dev \
+  graphviz \
+  zsh \
+  vmtouch \
+  fio \
+  autoconf \
+  && rm -rf /var/lib/apt/lists/*
+
+
+echo "Installing prometheus"
+pver=3.5.0
+if [ "$(uname -m)" = "x86_64" ]; then
+    echo "Building for AMD64"
+    parch=amd64
+elif [ "$(uname -m)" = "aarch64" ]; then
+    echo "Building for ARM64"
+    parch=arm64
+else
+    echo "Unsupported architecture"
+    exit 1
+fi
+mkdir /etc/prometheus /var/lib/prometheus
+wget https://github.com/prometheus/prometheus/releases/download/v$pver/prometheus-$pver.linux-$parch.tar.gz
+tar xvf prometheus-$pver.linux-$parch.tar.gz
+mv prometheus-$pver.linux-$parch/prometheus /usr/local/bin/prometheus
+mv prometheus-$pver.linux-$parch/promtool /usr/local/bin/promtool
+mv prometheus-$pver.linux-$parch/prometheus.yml /etc/prometheus/prometheus.yml
+prometheus --version
+
+echo "Installing grafana"
+mkdir -p /etc/apt/keyrings/ && \
+  wget -q -O - https://apt.grafana.com/gpg.key | gpg --dearmor | tee /etc/apt/keyrings/grafana.gpg > /dev/null  && \
+  echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | tee -a /etc/apt/sources.list.d/grafana.list && \
+  echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com beta main" | tee -a /etc/apt/sources.list.d/grafana.list
+
+apt-get update && \
+  apt-get install -y grafana && \
+  apt-get install -y grafana-enterprise && \
+  rm -rf /var/lib/apt/lists/*
+
+echo "Install ohmyzsh"
+sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
+
+# needs to have
+# sudo mount --bind ~/.cache/pip /tmp/pip
+pip list
+pip install -r requirements.txt --progress-bar off --cache-dir /tmp/pip
+pip list
+
+%runscript
+exec /bin/bash -l -c "$@"
+%startscript
+exec /bin/bash -l -c "$@"

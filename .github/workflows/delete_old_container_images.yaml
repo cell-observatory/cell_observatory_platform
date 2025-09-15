@@ -14,28 +14,177 @@ on:
           - info
           - warning
           - debug
+permissions:
+  packages: write
+  contents: read
 
 jobs:
   list_package_info:
     runs-on: ubuntu-latest
     permissions: {}
-    steps:
-      - env:
+    env:
           GH_TOKEN: ${{ secrets.cleanup_packages }}
+          ORG: ${{ github.repository_owner }}
+    steps:
+      - name: List all container packages in the org (verbose)
         run: |
-          gh api /user/packages?package_type=container
-          gh api /user/packages/container/${{ github.repository }}/versions?per_page=10
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            --paginate \
+            /orgs/$ORG/packages?package_type=container
+
+      - name: List all container packages in the org (pretty)
+        run: |  
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            --paginate \
+            /orgs/$ORG/packages?package_type=container | jq -r -C --tab
+
+
+      - name: List all package versions in the platform (pretty)
+        run: |  
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            --paginate \
+            /orgs/$ORG/packages/container/cell_observatory_platform/versions | jq -r -C --tab
+
+
+      - name: List all packages and their version counts
+        # Get a list of packages and their types
+        run: |       
+          # Get a list of packages and their types
+          PACKAGES=$(gh api --paginate --jq  '.[] | .name' "/orgs/$ORG/packages?package_type=container")
+
+          # Loop through the list of packages
+          while read -r name;  do
+            echo "---"
+            echo "Package: $name (container)"
+            echo "Versions:"
+            
+            # Fetch all versions for the current package and print them
+            gh api --paginate --jq  '.[] | "\(.name)\t\(.metadata.container.tags | join(", "))"' "/orgs/$ORG/packages/container/$name/versions"
+            # Get the number of versions for the package
+            version_count=$(gh api --paginate "/orgs/$ORG/packages/container/$name/versions?per_page=100" --jq 'length' || true)
+
+            # Print the result
+            echo "$name: $version_count versions"
+          done <<< "$PACKAGES"
+
+
 
   clean-ghcr:
-    name: Delete old unused container images
+    name: Delete old tagged
+    runs-on: ubuntu-latest
+    needs: list_package_info
+    env:
+      ORG: ${{ github.repository_owner }}
+    steps:
+      - name: Delete old tagged images
+        uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
+        with:
+          tag-selection: tagged
+          image-names: "*"      # cell_observatory_platform, aovift, ...
+          cut-off: 1w           # package versions should be older than 1 week, to be considered
+          keep-n-most-recent: 3
+          account: ${{ github.repository_owner }}    # Organization "cell-observatory"
+          token: ${{ secrets.cleanup_packages }}
+
+  clean-ghcr-untagged:
+    name: Delete old untagged
+    runs-on: ubuntu-latest
+    needs: list_package_info
+    env:
+      ORG: ${{ github.repository_owner }}
+    steps:
+      - name: Delete old untagged images
+        uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
+        with:
+          tag-selection: untagged
+          image-names: "*"      # cell_observatory_platform, aovift, ...
+          cut-off: 1d           # package versions should be older than 1 week, to be considered
+          keep-n-most-recent: 0
+          account: ${{ github.repository_owner }}    # Organization "cell-observatory"
+          token: ${{ secrets.cleanup_packages }}
+          dry-run: false
+
+
+  clean-ghcr-deleted-branches:
+    name: Delete removed branches
+    needs: [list_package_info, clean-ghcr-untagged, clean-ghcr]
+    env:
+      GH_TOKEN: ${{ secrets.cleanup_packages }}
+      ORG: ${{ github.repository_owner }}
     runs-on: ubuntu-latest
     steps:
-      - name: Delete old images
-        uses: snok/container-retention-policy@v3.0.0
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: List all packages and their version counts
+        # Get a list of packages and their types
+        run: |       
+          # Get a list of packages and their types
+          PACKAGES=$(gh api --paginate --jq  '.[] | .name' "/orgs/$ORG/packages?package_type=container")
+
+          # Loop through the list of packages
+          while read -r name;  do
+            echo "---"
+            echo "Package: $name (container)"
+            echo "Versions:"
+            
+            # Fetch all versions for the current package and print them
+            gh api --paginate --jq  '.[] | "\(.name)\t\(.metadata.container.tags | join(", "))"' "/orgs/$ORG/packages/container/$name/versions"
+            # Get the number of versions for the package
+            version_count=$(gh api --paginate "/orgs/$ORG/packages/container/$name/versions?per_page=100" --jq 'length' || true)
+
+            # Print the result
+            echo "$name: $version_count versions"
+          done <<< "$PACKAGES"
+
+      - name: Get all branch names
+        id: get_branches
+        run: |
+          git fetch --all
+          echo $(git branch -r) 
+          echo "Finding all feature branches, converting to format !*feature-branchname* for filtering container tags"
+          git branch -r | grep -o "feature/.*" | sed -e 's/^/!*/' | sed -e 's/$/*/' | tr '/' '-' > all_feature_branches_names.txt  
+          echo "Concatenating all branch names into a single line"
+          echo "IMAGES_FILTER=$(paste -sd ' '  all_feature_branches_names.txt)"
+          echo "IMAGES_FILTER=$(paste -sd ' '  all_feature_branches_names.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Delete old untagged images
+        uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
+        env:
+          IMAGES_FILTER: ${{ steps.get_branches.outputs.IMAGES_FILTER }}
         with:
-          image-names: ${{ github.repository }}
-          cut-off: 1w
-          keep-n-most-recent: 3
-          account: user
+          image-names: "*"      # cell_observatory_platform, aovift, ...
+          tag-selection: tagged
+          image-tags: "!develop* !main* !tags* !0* !1* !2* !3* ${{ steps.get_branches.outputs.IMAGES_FILTER }} *feature-* "  # delete all features that are not active, ...
+          cut-off: 1d           # package versions should be older than 1 week, to be considered
+          keep-n-most-recent: 0
+          account: ${{ github.repository_owner }}    # Organization "cell-observatory"
           token: ${{ secrets.cleanup_packages }}
-          tag-selection: untagged
+          dry-run: false
+
+      - name: List all packages and their version counts after deletion
+        # Get a list of packages and their types
+        run: |       
+          # Get a list of packages and their types
+          PACKAGES=$(gh api --paginate --jq  '.[] | .name' "/orgs/$ORG/packages?package_type=container")
+
+          # Loop through the list of packages
+          while read -r name;  do
+            echo "---"
+            echo "Package: $name (container)"
+            echo "Versions:"
+            
+            # Fetch all versions for the current package and print them
+            gh api --paginate --jq  '.[] | "\(.name)\t\(.metadata.container.tags | join(", "))"' "/orgs/$ORG/packages/container/$name/versions"
+            # Get the number of versions for the package
+            version_count=$(gh api --paginate "/orgs/$ORG/packages/container/$name/versions?per_page=100" --jq 'length' || true)
+
+            # Print the result
+            echo "$name: $version_count versions"
+          done <<< "$PACKAGES"

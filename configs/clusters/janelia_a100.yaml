@@ -1,0 +1,71 @@
+defaults:
+  - _self_
+
+# (IMPORTANT) NOTE 1:
+#     Set the number of nodes with the desired cpus and gpus per node and let lsf allocate nodes as needed.
+#     You can set the `exclusive` if you don't want other jobs to run on the same node.
+#     We recommend using as many gpus as possible per node to reduce internode comms
+
+# NOTE 2: we first determine the number of nodes to use based on the number of gpus
+#        `next, we allocate Ray worker nodes based on the number of nodes (1 worker per node).
+#        Afterward, Ray will create Actors in accordance with the total number of gpus per worker.
+#        For example, on a node with 4 gpus, we will create 4 actors that all live within the same cgroup
+#        specified by the original allocation.
+
+job_name: ${experiment_name}
+launcher_type: lsf # type of launcher to use
+partition: gpu_a100_parallel   # partition to submit the job to (use `parallel` parition if `multijob_submission` is not used)
+qos: null   # qos for the job
+python_env: python # python executable to use (if not using apptainer)
+multijob_submission: false # each worker node will be submitted as a separate job
+
+batch_size: 4096 # total batch size
+
+worker_nodes: 1 # number of worker nodes
+gpus_per_worker: 8 # number of gpus per worker node
+cpus_per_gpu: 8 # number of cpu cores per gpu
+mem_per_cpu: 40000 # ram per cpu core
+
+cpus_per_worker: ${eval:'${clusters.gpus_per_worker} * ${clusters.cpus_per_gpu}'}
+mem_per_worker: ${eval:'${clusters.cpus_per_worker} * ${clusters.mem_per_cpu}'}
+total_gpus: ${eval:'${clusters.worker_nodes} * ${clusters.gpus_per_worker}'}  # total number of GPUS across all nodes
+total_cpus: ${eval:'${clusters.worker_nodes} * ${clusters.cpus_per_worker}'}  # total number of CPUS across all nodes
+batch_size_per_gpu: ${eval:'${clusters.batch_size} // ${clusters.total_gpus}'} # batch size for each gpu
+# an additional cpu core will be automatically allocated on the headnode for the training coordinator
+cpus_for_training_coordinator: 0
+head_node_cpus: ${eval:'${clusters.cpus_per_worker} + ${clusters.cpus_for_training_coordinator}'}
+head_node_gpus: ${clusters.gpus_per_worker} # number of gpus on the head node (usually gpus per worker)
+head_node_mem: ${clusters.mem_per_worker} # memory on the head node (usually mem per worker)
+
+ray_queue_memory: 0.35 # fraction of the total memory to allocate for the ray queue
+object_store_memory: ${eval:'${clusters.mem_per_worker} * 1024 * 1024 * ${clusters.ray_queue_memory}'} # (bytes)
+
+exclusive: null   # whether to use exclusive node allocation (not recommended)
+nodelist: null    # list of specific nodes to use
+dependency: null  # job dependency
+constraint: null  # constraint for the job
+timelimit: null   # time limit for the job
+max_worker_heartbeat_timeout: 2 # in minutes (to prevent indefinite hang if one process fails)
+
+# Ray ScalingConfig (some variables are set to null to be set in the training loop)
+run_config:
+  log_to_file: true
+  storage_path: ${paths.outdir}
+  checkpoint_config:
+    num_to_keep: 3
+    checkpoint_score_attribute: loss
+    checkpoint_score_order: min
+  failure_config:
+    max_failures: 0
+
+torch_config:
+  timeout_s: 3600
+
+scaling_config:
+  use_gpu: true
+  num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
+  resources_per_worker:
+    CPU: 0 # Ray allocates cpus automatically
+    GPU: 1
+  trainer_resources:
+    CPU: ${clusters.cpus_for_training_coordinator} # an additional cpu core for the training coordinator

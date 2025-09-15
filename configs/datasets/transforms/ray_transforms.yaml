@@ -1,0 +1,6 @@
+defaults:
+  - _self_
+
+# we opt to apply ray transforms in the
+# preprocessor for performance reasons
+transforms_list: []

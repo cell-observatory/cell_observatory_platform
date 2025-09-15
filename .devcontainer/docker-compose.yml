@@ -1,0 +1,41 @@
+version: "3.8"
+
+services:
+  cell-observatory-platform:
+    image: ghcr.io/cell-observatory/cell_observatory_platform:feature-optimize_utilization_torch_cuda_12_8
+    container_name: cell_observatory_dev
+    user: "1000:1000"
+    working_dir: /workspace/cell_observatory_platform
+    volumes:
+      - ..:/workspace/cell_observatory_platform:cached
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /groups/betzig/betziglab/:/groups/betzig/betziglab/:cached
+    environment:
+      - DISPLAY=${DISPLAY}
+      - CUDA_VISIBLE_DEVICES=all
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    runtime: nvidia
+    network_mode: host
+    ipc: host
+    cap_add:
+      - SYS_ADMIN
+    privileged: true
+    security_opt:
+      - seccomp=unconfined
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      stack:
+        soft: 67108864
+        hard: 67108864
+    stdin_open: true
+    tty: true
+    command: /bin/bash -l

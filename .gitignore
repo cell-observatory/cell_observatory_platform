@@ -1,12 +1,7 @@
-dataset/
-evaluations/
-archive/
-logs/
-profilers/
-pretrained_models/
 .idea/
 .DS_Store
 .DS_Store?
+.env
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -96,8 +91,8 @@ ipython_config.py
 
 # pipenv
 #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
+#   However, in case of collaboration, if having cell_observatory_platform-specific dependencies or dependencies
+#   having no cross-cell_observatory_platform support, pipenv may install dependencies that don't work, or not
 #   install all needed dependencies.
 #Pipfile.lock
 
@@ -141,24 +136,31 @@ dmypy.json
 # Profiler
 *.pclprof
 
+# Data
+/databases
+outputs/
+/databases
+archive/
+logs/
+pretrained_models/
+scaling/olddata/
+scaling/data/
+test_data
+scope_psf
+SyntheticPSFCache/
+*.npy
 examples/DM_State_510nm.csv
 src/pycharm.lnk
 src/LabVIEW_Shortcut.lnk
 src/LV_auto_batch.bat
 login.bat
 *.bat
-/examples/largefov/before_tiles/
-/examples
-src/all_coords_cache_3x361x6x64x64_float16.npy
-/src/phasenet_repo/
-/src/phasenet_repo/**/*.*
-/src/phasenet_repo/**/**/*.*
-/src/cocoa_repo/
-/src/cocoa_repo/**/*.*
-/src/cocoa_repo/**/**/*.*
 /scope_psf
 src/LV_auto_batch.bat_predict_rois
 /SyntheticPSFCache/
 /benchmarks/
 /scaling/
 *.npy
+.testmondata
+/plots/
+.history/

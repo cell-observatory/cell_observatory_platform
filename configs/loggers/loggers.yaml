@@ -1,0 +1,47 @@
+defaults:
+  - _self_
+
+logdir: ${paths.outdir}/logs
+
+event_writers_list:
+  _target_: training.loggers.EventWriterList
+  
+event_writers:
+    - _target_: training.loggers.LocalEventWriter
+      save_dir: ${loggers.logdir}
+      step_scalars_prefix: step_logbook
+      epoch_scalars_prefix: epoch_logbook
+      scalars_save_format: csv
+    - _target_: training.loggers.WandBEventWriter
+      project: ${wandb_project}
+      # entity: cell-observatory
+      # save directory for W&B logs
+      # will automatically append wandb folder
+      # to the logdir
+      dir: ${loggers.logdir}
+      name: ${experiment_name}
+      tags: 
+        - pretrain
+        - ${network}
+        - ${job_type}
+        - ${trainer}
+        - ${engine}
+        - ${quantization}
+        - ${task}
+      # step to resume from if resuming a run 
+      # (if id is set to an existing run)
+      resume_from: null
+      # unique ID used for resuming a run
+      # if not set, a new run will be created
+      # if set, the run will be resumed
+      # if the id does not exist, a new run will 
+      # be created
+      id: null
+      notes: "First test run for wandb logging"
+      # force=True implies user must be logged in to W&B
+      # otherwise if force=False, W&B will log
+      # locally and not upload to W&B
+      force: true
+
+event_recorder:
+  _target_: training.loggers.EventRecorder

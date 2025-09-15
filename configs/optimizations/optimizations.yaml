@@ -1,0 +1,32 @@
+defaults:
+  - _self_
+
+cudnn_benchmark: true
+cudnn_enabled: true
+cudnn_allow_tf32: true
+cudnn_deterministic: false
+deterministic: false
+
+activation_checkpoint:
+  enabled: false
+  modules: []
+
+torch_compile:
+  enabled: false
+  mode: reduce-overhead
+  dynamic: false
+
+env:
+  HYDRA_FULL_ERROR: true            # print full Hydra tracebacks
+  RAY_DEDUP_LOGS: true
+  TORCH_DISTRIBUTED_DEBUG: null     # e.g. "INFO"
+  NCCL_DEBUG_SUBSYS: null           # e.g. "GRAPH"
+  OMP_NUM_THREADS: null             # e.g. "1"
+  NCCL_CUMEM_ENABLE: null           # e.g. "0"
+  NCCL_CROSS_NIC: true
+  NCCL_P2P_LEVEL: "NVL"
+  TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 3600
+  PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+  NVIDIA_TF32_OVERRIDE: "1"
+
+with_model_summary: false

@@ -1,0 +1,5 @@
+_target_: models.preprocessor.DaliPreprocessor
+
+dtype: ${dataset_dtype}
+with_masking: true
+mask_generator: ${datasets.masking.mask_generators.0}

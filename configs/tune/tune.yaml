@@ -1,0 +1,28 @@
+defaults:
+  - _self_
+
+tune_config:
+  _target_: ray.tune.TuneConfig
+  metric: ${evaluation.val_metric}
+  mode: ${evaluation.val_mode}
+  num_samples: 2
+  search_alg: 
+    _target_: ray.tune.search.basic_variant.BasicVariantGenerator # OR: bayesopt.BayesOptSearch etc.
+
+# DUMMY EXAMPLE PARAMS W. SOME COMMON OPTIONS:
+# learning_rate:
+#   _target_: ray.tune.uniform
+#   low: 1e-5
+#   high: 1e-3
+# batch_size:
+#   _target_: ray.tune.choice
+#   _args_: [[16, 32, 64]]
+# weight_decay:
+#   _target_: ray.tune.grid_search
+#   _args_: [[0.0, 1e-4, 1e-3]]
+
+param_space:
+ train_loop_config:
+    clusters.batch_size:
+      _target_: ray.tune.grid_search
+      _args_: [[16, 32]]

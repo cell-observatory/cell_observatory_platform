@@ -1,0 +1,63 @@
+
+zero_optimization:
+  stage: 3 # full ZeRO-3 with parameter + gradient + optimizer partitioning + cpu offloading + quantized weights + HZP++
+  reduce_bucket_size: auto # controls how many elements are grouped before being reduced
+  reduce_scatter: true # fused reduce + scatter ops
+  contiguous_gradients: true # gradients allocated in a contiguous memory block
+  overlap_comm: true # overlap communication with computation
+  stage3_prefetch_bucket_size: auto # params to prefetch in advance
+  stage3_param_persistence_threshold: auto # keep parameters in memory if they’re small and reused often
+  stage3_max_live_parameters: 1e9
+  stage3_max_reuse_distance: 1e9
+  stage3_gather_16bit_weights_on_model_save: false # reconstruct full weights (in FP16) during saving, rather than saving sharded pieces
+  zero_quantized_weights: true
+  zero_hpz_partition_size: ${clusters.gpus_per_worker} # Should not be set for single-node training, otherwise `gpus per node`
+  zero_quantized_gradients: true
+  offload_optimizer: # disables offloading to CPU, everything stays on GPU
+    device: cpu
+  offload_param:
+    device: cpu
+
+fp16:
+  enabled: false
+  auto_cast: false
+  loss_scale: 0 #  dynamic loss scaling (0 = auto)
+  loss_scale_window: 1000 # number of good steps before increasing the scale again.
+  hysteresis: 2 # number of overflows to wait before decreasing the loss scale.
+  consecutive_hysteresis: true # if true, hysteresis must be consecutive (i.e., N overflows in a row)
+  min_loss_scale: 1 # minimum loss scale to use
+
+bf16:
+  enabled: true
+
+
+checkpoint:
+  load_universal: false # whether to load a universal checkpoint
+
+tensorboard:
+  enabled: true
+  output_path: ${loggers.logdir}
+  job_name: ${experiment_name} 
+
+csv_monitor:
+  enabled: true
+  output_path: ${loggers.logdir}
+  job_name: ${experiment_name}
+
+wandb:
+  enabled: true
+  project: ${wandb_project}
+
+flops_profiler:
+  enabled: true
+  profile_step: 1
+  module_depth: -1
+  top_modules: 1
+  detailed: true
+  output_file: ${loggers.logdir}/${experiment_name}/flops_profiler.log
+
+gradient_clipping: .5
+steps_per_print: 100
+gradient_accumulation_steps: 1 # number of steps to accumulate gradients before performing a backward/update pass
+train_batch_size: ${clusters.batch_size} # total batch size across all gpus
+zero_allow_untested_optimizer: true

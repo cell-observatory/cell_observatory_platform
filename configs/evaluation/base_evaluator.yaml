@@ -1,0 +1,12 @@
+defaults:
+  - _self_  
+
+val_begin: 0
+val_interval: 1
+val_metric: val_step_loss 
+val_mode: min # 'min' or 'max'
+
+evaluator:
+  _target_: evaluation.base_evaluation.BaseEvaluator
+  training_metrics:
+    - "step_loss": "mean"

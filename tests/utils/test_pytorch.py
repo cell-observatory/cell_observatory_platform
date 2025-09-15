@@ -4,11 +4,7 @@ import torch
 import warnings
 warnings.filterwarnings("ignore")
 
-import pytest
-
-
-@pytest.mark.run(order=1)
-def test_pytorch(kargs):
+def test_pytorch():
 
     logging.info(f'Pytorch version = {torch.__version__}')
 
@@ -23,6 +19,5 @@ def test_pytorch(kargs):
     else:
         gpu_model = None
         logging.info(f'Number of active GPUs: {gpu_workers}, {gpu_model}')
-
 
     assert gpu_workers > 0
