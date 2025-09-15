@@ -245,6 +245,11 @@ def filter_hypercubes_dataframe_storage_server(
         hypercubes_dataframe['server_folder'] = server_folder_path
         logger.info(f"Using AWS {server_folder_path=}, {hypercubes_dataframe.shape}")
 
+    elif str(server_folder_path).startswith('/lustre'):
+        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_oak']]
+        hypercubes_dataframe['server_folder'] = server_folder_path
+        logger.info(f"Using OakRidge {server_folder_path=}, {hypercubes_dataframe.shape}")
+
     else:
         raise ValueError(f"Unknown server_folder_path: {server_folder_path}")
 

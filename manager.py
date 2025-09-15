@@ -193,6 +193,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
     if hasattr(cfg.paths, "data_path") and cfg.paths.data_path is not None:
         bind = f'{cfg.paths.data_path}:{cfg.paths.data_path}'
         workspace = f'{cfg.paths.repo_path}:{cfg.paths.workdir}'
+        storage_server = f'{cfg.paths.server_folder_path}:{cfg.paths.server_folder_path}'
 
     assert (cfg.paths.apptainer_image is None) != (cfg.paths.docker_image is None), \
         "Either apptainer_image or docker_image must be specified, but not both"
@@ -219,11 +220,15 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
     if cfg.clusters.job_name is None:
         cfg.clusters.job_name = config_name
 
+    if cfg.clusters.multijob_submission:
+        cfg.paths.ray_script = str(cfg.paths.ray_script).replace('.sh', '_multijob.sh')
+        
     ray_wrap = (
         f" bash {q(cfg.paths.ray_script)} "
         f"-b {q(str(bind))} "
+        f"-d {q(str(storage_server))} "
         f"-c {q(cfg.clusters.cpus_per_worker)} "
-        f"-e {q(image)} "
+        f"-e {image} "
         f"-g {q(cfg.clusters.gpus_per_worker)} "
         f"-m {q(cfg.clusters.mem_per_worker)} "
         f"-n {q(cfg.clusters.worker_nodes)} "
@@ -252,20 +257,34 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
 
     elif cfg.clusters.launcher_type == "slurm":
 
-        # set resources to allocate head node, then the head node will allocate the rest of the worker nodes
-        sjob_worker_nodes = [f"/usr/bin/sbatch "]
-        sjob_worker_nodes.append(f"--qos={cfg.clusters.qos}")
-        sjob_worker_nodes.append(f"--partition={cfg.clusters.partition}")
-
-        if cfg.clusters.exclusive is not None:
-            sjob_worker_nodes.append(f"--exclusive")
-        else:
+        if cfg.clusters.multijob_submission: 
+            '''
+                Multijob submission (each worker node will be submitted as a separate job)
+                Set resources to allocate head node, then the head node will allocate the rest of the worker nodes
+                We assume idential configrations for worker nodes, but the head node could be different 
+            '''
+            sjob_worker_nodes = ["/usr/bin/sbatch "]
+            sjob_worker_nodes.append(f"--qos={cfg.clusters.qos}")
+            sjob_worker_nodes.append(f"--partition={cfg.clusters.partition}")
             sjob_worker_nodes.append(f"--ntasks 1")
             sjob_worker_nodes.append(f"--nodes 1")
             sjob_worker_nodes.append(f"--cpus-per-task={cfg.clusters.head_node_cpus}")
             sjob_worker_nodes.append(f"--gres=gpu:{cfg.clusters.head_node_gpus}")
             sjob_worker_nodes.append(f"--mem={cfg.clusters.head_node_mem}")
-
+        else:
+            '''
+                All resources will be requested and allocated at once.
+                We assume idential configrations for all worker nodes
+            '''
+            sjob_worker_nodes = ["/usr/bin/sbatch "]
+            sjob_worker_nodes.append(f"--qos={cfg.clusters.qos}")
+            sjob_worker_nodes.append(f"--partition={cfg.clusters.partition}")
+            sjob_worker_nodes.append(f"--nodes {cfg.clusters.worker_nodes}")
+            sjob_worker_nodes.append(f"--ntasks-per-node 1")
+            sjob_worker_nodes.append(f"--cpus-per-task={cfg.clusters.cpus_per_worker}")
+            sjob_worker_nodes.append(f"--gres=gpu:{cfg.clusters.gpus_per_worker}")
+            sjob_worker_nodes.append(f"--mem={cfg.clusters.mem_per_worker}")
+            
         if cfg.clusters.constraint is not None:
             sjob_worker_nodes.append(f"-C '{cfg.clusters.constraint}'")
 
@@ -290,15 +309,43 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
 
     elif cfg.clusters.launcher_type == "lsf":
 
-        # set resources to allocate head node, then the head node will allocate the rest of the worker nodes
-        sjob_worker_nodes = [f"bsub"]
-        sjob_worker_nodes.append(f"-q {cfg.clusters.partition}")
+        if cfg.clusters.multijob_submission: 
+            '''
+                Multijob submission (each worker node will be submitted as a separate job)
+                Set resources to allocate head node, then the head node will allocate the rest of the worker nodes
+                We assume idential configrations for worker nodes, but the head node could be different 
+            '''
+            print("Checking available Janelia cluster resources")
+            print(f"Looking for {cfg.clusters.worker_nodes} node(s) on {cfg.clusters.partition} queue")
+            try:
+                run(
+                    f'bash {cfg.paths.repo_path}/cluster/check_available_janelia_nodes.sh \
+                        -p {cfg.clusters.partition} -n {cfg.clusters.worker_nodes}',
+                    check=True,
+                    shell=True
+                )
 
-        if cfg.clusters.exclusive is not None:
-            sjob_worker_nodes.append(f"-x")
-        else:
+                print("Requested resources are available now!")
+            except Exception as e:
+                print(f"Error running resources check: {e}")
+            
+            sjob_worker_nodes = ["bsub"]
+            sjob_worker_nodes.append(f"-q {cfg.clusters.partition}")
             sjob_worker_nodes.append(f"-n {cfg.clusters.head_node_cpus}")
             sjob_worker_nodes.append(f'-gpu "num={cfg.clusters.head_node_gpus}:mode=shared"')
+        
+        else:
+            '''
+                All resources will be requested and allocated at once.
+                We assume idential configrations for all worker nodes
+            '''
+            sjob_worker_nodes = ["bsub"]
+            sjob_worker_nodes.append(f"-q {cfg.clusters.partition}")
+            sjob_worker_nodes.append(f"-n {cfg.clusters.cpus_per_worker * cfg.clusters.worker_nodes}")
+            sjob_worker_nodes.append(f'-R "span[ptile={cfg.clusters.cpus_per_worker}]"')
+            sjob_worker_nodes.append(f'-app parallel-96')
+            sjob_worker_nodes.append(f'-gpu "num={cfg.clusters.gpus_per_worker}:mode=exclusive_process"')
+        
 
         if cfg.clusters.dependency is not None:
             sjob_worker_nodes.append(f'-w "done({cfg.clusters.job_name})"')
@@ -310,20 +357,6 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         sjob_worker_nodes.append(f"-o {outdir / cfg.clusters.job_name}.log")
         sjob_worker_nodes.append(f"-env 'all'")
         sjob_worker_nodes.append(f"{q(ray_wrap)}")
-
-        print(f"Checking available Janelia cluster resources")
-        print(f"Looking for {cfg.clusters.worker_nodes} node(s) on {cfg.clusters.partition} queue")
-        try:
-            run(
-                f'bash {cfg.paths.repo_path}/cluster/check_available_janelia_nodes.sh \
-                    -p {cfg.clusters.partition} -n {cfg.clusters.worker_nodes}',
-                check=True,
-                shell=True
-            )
-
-            print("Requested resources are available now!")
-        except Exception as e:
-            print(f"Error running resources check: {e}")
 
         print("Submitting lsf job with configuration:")
         cmd = " ".join(sjob_worker_nodes)

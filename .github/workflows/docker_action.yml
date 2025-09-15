@@ -93,6 +93,9 @@ jobs:
           chmod -R 777 ${{ github.workspace }}
           ls -lhXR ${{ github.workspace }}
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -131,6 +134,7 @@ jobs:
           context: .
           file: ./Dockerfile
           push: false
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -139,6 +143,8 @@ jobs:
           #  pip_install
           # cache the nvidia image and setup.  Then don't cache the "pip_install" build stage where we pip install the requirements.txt
           target: ${{ env.CUDA_VERSION }}
+          provenance: false # disable provenance to avoid unknown/unknown
+          sbom: false       # disable sbom to avoid unknown/unknown
 
 
   docker-push:
@@ -227,12 +233,15 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BRANCH_NAME=${{ env.BRANCH }}
           target: ${{ env.CUDA_VERSION }}
+          provenance: false # disable provenance to avoid unknown/unknown
+          sbom: false       # disable sbom to avoid unknown/unknown
 
       - id: get-build-name
         run: |

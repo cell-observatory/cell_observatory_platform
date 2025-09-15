@@ -43,10 +43,10 @@ trainer: training.loops.EpochBasedTrainer
 loop_per_worker_script: scripts.benchmarks_io.benchmark_dataloaders.benchmark_dataloader
 
 # training quantization
-quantization: float16 # data type for training, options: float32, float16
+quantization: bfloat16 # data type for training, options: float32, float16
 
 # dtype for training data
-dataset_dtype: float16 # data type for training, options: float32, float16
+dataset_dtype: bfloat16 # data type for training, options: float32, float16
 
 # dataset layout in the zarr files
 dataset_layout_order: TZYXC
@@ -90,7 +90,7 @@ datasets:
   roi_list: null # list of specific ROIs to filter
   tile_list: null # list of specific tiles to filter
 
-  prefetch_factor: 3
+  prefetch_factor: 4
   use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
   locality_with_output: true # whether to use locality with output for the Ray tasks
 

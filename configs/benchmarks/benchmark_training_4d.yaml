@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  - /paths/local                             # configs/paths/abc.yaml
+  - /paths/local                             # configs/paths/local.yaml
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
   - /clusters/local                          # configs/clusters/local.yaml
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
@@ -44,10 +44,10 @@ trainer: training.loops.EpochBasedTrainer
 loop_per_worker_script: training.loops.train_loop_per_worker
 
 # training quantization
-quantization: float16 # data type for training, options: float32, float16
+quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
 
 # dtype for training data
-dataset_dtype: float16 # data type for training, options: float32, float16
+dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
 
 # dataset layout in the zarr files
 dataset_layout_order: TZYXC
@@ -57,7 +57,7 @@ dataset_layout_order: TZYXC
 
 # clusters
 clusters:
-  batch_size: 32 # total batch size
+  batch_size: 4 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 8 # number of cpu cores per gpu
@@ -79,15 +79,29 @@ datasets:
   return_dataloader: true
   distributed_sampler: true
 
-  roi_list: [344] # list of specific ROIs to filter
-  tile_list: ['000x_000y_000z.zarr'] # list of specific tiles to filter
+  use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
+  locality_with_output: true # whether to use locality with output for the Ray tasks
 
-  prefetch_factor: 2 # prefetch factor for the dataloader
-  num_workers: ${clusters.cpus_per_gpu}  # number of workers for the dataloader
+  # ray_remote_args:
+  #   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
+
+  impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
+  ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
+  
+  prefetch_factor: 1
+  num_actors_min: 4
+  num_actors_max: 64
+  
+  with_batched_api: true
+  context:
+    file_io_concurrency: null # concurrency for file I/O operations
+    data_copy_concurrency: null # concurrency for data copy operations
+    cache_pool: 
+      total_bytes_limit: 0
+
   max_hypercubes: 1000 # maximum number of hypercubes to return
   use_cached_hypercubes_dataframe: true
-  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_16_128_128_128_2_hypercube_view_1066194rows.csv
-
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
 
 hooks:
   hooks_list:
@@ -109,3 +123,6 @@ hooks:
     compare_fn: ${evaluation.val_mode}
     eval_after_validation: true
 
+deepspeed:
+  flops_profiler:
+    enabled: false
