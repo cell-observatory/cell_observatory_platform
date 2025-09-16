@@ -3,6 +3,7 @@ import sys
 import logging
 from pathlib import Path
 
+import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
@@ -13,12 +14,12 @@ from omegaconf import DictConfig, OmegaConf
 if (hasattr(OmegaConf, "has_resolver") and not OmegaConf.has_resolver("eval")):
     OmegaConf.register_new_resolver("eval", eval)
 
-import ray
 import ray.train.torch as raytorch
 
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 
-from utils.context import process_rank, barrier
+from utils.context import process_rank, barrier, local_rank
+from data.datasets.buffers import set_buffers
 from data.datasets.pretrain_dataset_ray import get_dataloader_ray
 from data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
 
@@ -189,7 +190,7 @@ def get_dataloader(config: DictConfig):
                     train = raytorch.prepare_data_loader(train)
                     val = raytorch.prepare_data_loader(val)
 
-                return train, val
+                return train, val, None, None
 
             else:
                 dataloader = DataLoader(
@@ -211,7 +212,7 @@ def get_dataloader(config: DictConfig):
                 if config.distributed_framework == "ray":
                     dataloader = raytorch.prepare_data_loader(dataloader)
 
-                return dataloader, None
+                return dataloader, None, None, None
         else:
             return dataset
 
@@ -236,7 +237,7 @@ def get_dataloader(config: DictConfig):
                 prefetch_queue_depth=config.datasets.prefetch_factor,
                 exec_async=config.datasets.exec_async,
                 exec_pipelined=config.datasets.exec_pipelined,
-                device_id=process_rank()
+                exec_dynamic=True,
             )
             train_pipe.build()
             dali_train_loader = DALIGenericIterator(
@@ -256,7 +257,7 @@ def get_dataloader(config: DictConfig):
                 prefetch_queue_depth=config.datasets.prefetch_factor,
                 exec_async=config.datasets.exec_async,
                 exec_pipelined=config.datasets.exec_pipelined,
-                device_id=process_rank()
+                exec_dynamic=True,
             )
             val_pipe.build()
             dali_val_loader = DALIGenericIterator(
@@ -267,7 +268,7 @@ def get_dataloader(config: DictConfig):
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
 
-            return dali_train_loader, dali_val_loader
+            return dali_train_loader, dali_val_loader, None, None
 
         else:
             # DALI dataloader
@@ -280,7 +281,7 @@ def get_dataloader(config: DictConfig):
                 prefetch_queue_depth=config.datasets.prefetch_factor,
                 exec_async=config.datasets.exec_async,
                 exec_pipelined=config.datasets.exec_pipelined,
-                device_id=process_rank()
+                exec_dynamic=True
             )
             pipe.build()
             dali_loader = DALIGenericIterator(
@@ -290,47 +291,32 @@ def get_dataloader(config: DictConfig):
                 auto_reset=True,
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
-            return dali_loader, None
+            return dali_loader, None, None, None
 
     elif config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
+        buffer_actor, buffer_cfg = set_buffers(
+            local_rank=local_rank(),
+            global_rank=process_rank(),
+            buffer_type="host_memory",
+            batch_size=config.clusters.batch_size_per_gpu,
+            input_shape=config.datasets.input_shape,
+            dtype=config.storage_dtype,
+            buffer_capacity=config.datasets.buffer_capacity,
+            pin_to_numa_node=config.datasets.pin_numa_node,
+        )
+
         if isinstance(config.datasets.collate_fn, DictConfig):
             collate_fn = instantiate(config.datasets.collate_fn)
         else:
             collate_fn = get_method(config.datasets.collate_fn)
 
-        if config.datasets.split is not None:
-            train_dataset = ray.train.get_dataset_shard("train")
-            val_dataset = ray.train.get_dataset_shard("val")
-            
-            train_dataloader = get_dataloader_ray(
-                dataset=train_dataset,
-                batch_size=config.clusters.batch_size_per_gpu,
-                drop_last=config.datasets.drop_last_policy,
-                collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor,
-                auto_transfer=config.datasets.auto_transfer
-            )
-            val_dataloader = get_dataloader_ray(
-                dataset=val_dataset,
-                batch_size=config.clusters.batch_size_per_gpu,
-                drop_last=config.datasets.drop_last_policy,
-                collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor,
-                auto_transfer=config.datasets.auto_transfer
-            )
-            return train_dataloader, val_dataloader
-        
-        else: 
-            train_dataset = ray.train.get_dataset_shard("train")
-            train_dataloader = get_dataloader_ray(
-                dataset=train_dataset,
-                batch_size=config.clusters.batch_size_per_gpu,
-                drop_last=config.datasets.drop_last_policy,
-                collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor,
-                auto_transfer=config.datasets.auto_transfer
-            )
-            return train_dataloader, None
+        train_dataloader, val_dataloader = get_dataloader_ray(
+            cfg=config,
+            batch_size=config.clusters.batch_size_per_gpu,
+            drop_last=config.datasets.drop_last_policy,
+            collate_fn=collate_fn
+        )
+        return train_dataloader, val_dataloader, buffer_actor, collate_fn.device_buffer
     
     else:
         raise NotImplementedError(

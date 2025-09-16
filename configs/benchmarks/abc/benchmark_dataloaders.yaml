@@ -3,7 +3,7 @@ defaults:
   - /paths/abc                               # configs/paths/abc.yaml
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
   - /clusters/local                          # configs/clusters/local.yaml
-  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
+  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_dali.yaml
   - /models/mae/tiny                         # configs/models/mae/tiny.yaml
   - /hooks/hooks                             # configs/hooks/hooks.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
@@ -16,7 +16,7 @@ defaults:
   - /profiling/profiling                      # configs/profiling/profiling.yaml
   - _self_
 
-experiment_name: benchmark_dataloader_with_obs
+experiment_name: benchmark_dataloader_with_obs_new
 
 # task
 task: pretrain_mae
@@ -47,6 +47,7 @@ quantization: float16 # data type for training, options: float32, float16
 
 # dtype for training data
 dataset_dtype: float16 # data type for training, options: float32, float16
+storage_dtype: uint16 # data type for storage
 
 # dataset layout in the zarr files
 dataset_layout_order: TZYXC
@@ -56,12 +57,16 @@ dataset_layout_order: TZYXC
 
 # clusters
 clusters:
-  batch_size: 32 # total batch size
+  batch_size: 256 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 128 # number of cpu cores per gpu
+  gpus_per_worker: 8 # number of gpus per worker node
+  cpus_per_gpu: 16 # number of cpu cores per gpu
   mem_per_cpu: 31000 # ram per cpu core
   ray_queue_memory: 0.2
+
+  scaling_config:
+    resources_per_worker:
+      CPU: 1.0
 
 #paths:
 paths:
@@ -69,7 +74,7 @@ paths:
   resume_checkpointdir: null 
   pretrained_checkpointdir: null
 
-# data 
+# data
 datasets:
   split: null
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
@@ -77,42 +82,22 @@ datasets:
   patch_shape: [4, 16, 16, 16]
 
   use_cached_hypercubes_dataframe: true # whether to use the cached hypercubes dataframe
-  # hypercubes_dataframe_path: /clusterfs/vast/Data/cell_observatory_databases/prepared_16_128_128_128_2_hypercube_view_1066194rows.csv
+  hypercubes_dataframe_path: /clusterfs/nvme/segment_4d/pretrained_models/benchmark_dataloader_with_obs_new/database/hypercubes_dataframe.csv
+  server_folder_path: /clusterfs/vast/Data/read_speed_tests/large_test_zarrs
 
-
-  # max nr of hypercubes to test for benchmark
   occupancy_threshold: 0.0
-  max_hypercubes: 50000
+  max_hypercubes: 20000
   max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
   max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
   hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
-  roi_list: null # list of specific ROIs to filter
+  roi_list: null # 576 list of specific ROIs to filter
   tile_list: null # list of specific tiles to filter
 
-  prefetch_factor: 3
-  use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
-  locality_with_output: true # whether to use locality with output for the Ray tasks
+  prefetch_factor: 1
+  num_actors_min: 2
+  num_actors_max: 8
 
-  # ray_remote_args:
-  #   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
-
-  impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
-  ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
-  num_actors_min: 4
-  num_actors_max: 64
-  with_batched_api: true
-  context:
-    file_io_concurrency: null # concurrency for file I/O operations
-    data_copy_concurrency: null # concurrency for data copy operations
-    cache_pool: 
-      total_bytes_limit: 0
-
-  collate_fn:
-    _target_: data.datasets.pretrain_dataset_ray.PinnedTensorCollator
-    dtype: ${dataset_dtype}
-    sample_shape: ${datasets.input_shape}
-    pin_memory: true
 
 # benchmarking
 # --------------------------------------------------------------------------------

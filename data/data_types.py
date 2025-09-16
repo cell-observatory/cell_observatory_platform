@@ -31,6 +31,8 @@ class NUMPY_DTYPES(Enum):
     float16 = numpy.float16
     fp16 = numpy.float16
 
+    uint16 = numpy.uint16
+    u16 = numpy.uint16
 
 class TENSORSTORE_DTYPES(Enum):
     float32 = tensorstore.float32

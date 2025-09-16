@@ -21,12 +21,12 @@ import torch
 from torch.profiler import ProfilerActivity
 from fvcore.common.timer import Timer
 
+import ray
 from ray.train import Checkpoint, report
 
 from training.loggers import EventWriter
 from training.helpers import log_data_timings
 from utils.context import is_main_process, gather_and_reduce, process_rank
-
 
 
 logging.basicConfig(
@@ -951,3 +951,31 @@ class WeightDecayScheduleHook(HookBase):
             if self.event_recorder:
                 wd0 = self.trainer.opt.param_groups[0]["weight_decay"]
                 self.event_recorder.put_scalars(scope="step", wd=wd0)
+
+
+class FreeDeviceBufferHook(HookBase):
+    """
+    A hook that frees memory buffers after each step. 
+    Important to use to prevent deadlocks.
+    """
+    def before_train(self):
+        self.host_buffer_actor = self.trainer.host_buffer_actor
+        self.device_buffer = self.trainer.device_buffer
+
+    def after_step(self, **kwargs):
+        host_buffer_idx = kwargs['data_sample']['metainfo']['host_buffer_idx']
+        device_buffer_idx = kwargs['data_sample']['metainfo']['device_buffer_idx']
+        ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+        self.device_buffer.put_free(device_buffer_idx)
+
+    def after_test_step(self, data_sample, outputs, loss_dict):
+        host_buffer_idx = data_sample['metainfo']['host_buffer_idx']
+        device_buffer_idx = data_sample['metainfo']['device_buffer_idx']
+        ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+        self.device_buffer.put_free(device_buffer_idx)
+        
+    def after_val_step(self, data_sample, outputs, loss_dict):
+        host_buffer_idx = data_sample['metainfo']['host_buffer_idx']
+        device_buffer_idx = data_sample['metainfo']['device_buffer_idx']
+        ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+        self.device_buffer.put_free(device_buffer_idx)

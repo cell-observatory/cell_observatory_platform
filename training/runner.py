@@ -21,11 +21,6 @@ if not OmegaConf.has_resolver("eval"):
 if not OmegaConf.has_resolver("now"):
     OmegaConf.register_new_resolver("now", lambda fmt: time.strftime(fmt))
 
-from torch.utils.data import random_split
-
-from training.helpers import record_dataset_len
-from data.datasets.pretrain_dataset_ray import get_dataset_ray
-
 logger = logging.getLogger("ray")
 logger.setLevel(logging.DEBUG)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
@@ -76,7 +71,6 @@ def initialize_session(cfg: DictConfig):
 
 
 def run_session(cfg: DictConfig):
-
     scaling_config = ScalingConfig(
         num_workers=cfg.clusters.scaling_config.num_workers,
         resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
@@ -85,6 +79,7 @@ def run_session(cfg: DictConfig):
     )
 
     checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
+
     run_config = RunConfig(
         log_to_file=cfg.clusters.run_config.log_to_file,
         checkpoint_config=checkpoint_config,
@@ -94,34 +89,13 @@ def run_session(cfg: DictConfig):
     
     torch_config = TorchConfig(timeout_s=cfg.clusters.torch_config.timeout_s)
 
-    if cfg.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
-        db = instantiate(cfg.datasets.databases)
-        dataset_len = len(db.hypercubes_dataframe)
-        if cfg.datasets.split is not None:
-            val_size = round(dataset_len * cfg.datasets.split)
-            train_subset, val_subset = random_split(
-                range(dataset_len),
-                lengths=[dataset_len - val_size, val_size]
-            )
-            train_indices, val_indices = train_subset.indices, val_subset.indices
-            train_dataset = get_dataset_ray(cfg, indices=train_indices, database=db)
-            val_dataset = get_dataset_ray(cfg, indices=val_indices, database=db)
-            dataset = {"train": train_dataset, "val": val_dataset}
-            record_dataset_len(cfg, len(train_indices), len(val_indices))
-        else:
-            train_dataset = get_dataset_ray(cfg, indices=None, database=db)
-            dataset = {"train": train_dataset}
-            record_dataset_len(cfg, dataset_len, 0)
-    else:
-        dataset = None
-
     trainer = TorchTrainer(
         train_loop_per_worker=get_method(cfg.loop_per_worker_script),
         train_loop_config=cfg,
         run_config=run_config,
         scaling_config=scaling_config,
         torch_config=torch_config,
-        datasets=dataset
+        datasets=None
     )
 
     try:

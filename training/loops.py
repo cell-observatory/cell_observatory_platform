@@ -249,7 +249,8 @@ class EpochBasedTrainer(BaseTrainer):
         # get_dataloader() returns a tuple of dataloaders
         # (train_dataloader, val_dataloader) where
         # val_dataloader is None if no validation set is provided
-        self.train_dataloader, self.val_dataloader = get_dataloader(cfg)
+        self.train_dataloader, self.val_dataloader, \
+            self.host_buffer_actor, self.device_buffer = get_dataloader(cfg)
 
         self.steps_per_epoch, self.val_steps_per_epoch = get_steps_per_epoch(
             train_dataloader=self.train_dataloader,

@@ -65,7 +65,7 @@ def read_zarr(
     zarr_driver: str = "zarr3",
     dtype: Optional[TENSORSTORE_DTYPES | str] = None,
     context: ts.Context | None = None,
-    cast: bool = True
+    cast: bool = False
 ) -> np.ndarray:
     """ Read a Zarr file and return the data as a NumPy array """
     spec = {
@@ -382,11 +382,6 @@ def load_hypercubes_dataframe(
     hypercubes = filter_hypercubes_dataframe_storage_server(
         hypercubes_dataframe=hypercubes,
         server_folder_path=server_folder_path,
-    )
-
-    hypercubes = apply_hypercubes_dataframe_filters(
-        hypercubes_dataframe=hypercubes,
-        occupancy_threshold=occupancy_threshold,
     )
 
     hypercubes = apply_hypercubes_dataframe_selections(

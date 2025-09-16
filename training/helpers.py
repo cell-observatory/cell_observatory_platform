@@ -26,26 +26,20 @@ logger.setLevel(logging.INFO)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
 
 
-def record_dataset_len(config, num_train_steps: int, num_val_steps: int):
+def record_dataset_len(config, num_train_rows: int, num_val_rows: int):
     bs = config.clusters.batch_size_per_gpu
-    world_size = ray.train.get_context().get_world_size()
-    drop_last = bool(getattr(config.datasets, "drop_last_policy"))
 
     def steps_from_rows(n_rows: int):
-        if drop_last:
-            min_rows_per_worker = n_rows // world_size
-            return (min_rows_per_worker // bs)
-        else:
-            return math.ceil(n_rows / (world_size * bs))
+        return int(n_rows / bs)
 
-    steps_per_epoch = steps_from_rows(num_train_steps)
-    val_steps_per_epoch = steps_from_rows(num_val_steps) if num_val_steps > 0 else None
-    
+    steps_per_epoch = steps_from_rows(num_train_rows)
+    val_steps_per_epoch = steps_from_rows(num_val_rows) if num_val_rows > 0 else None
+
     with open_dict(config):
         config.runtime = {"train_steps_per_epoch": steps_per_epoch, 
                        "val_steps_per_epoch": val_steps_per_epoch,
-                       "n_train_rows": num_train_steps,
-                       "n_val_rows": num_val_steps}
+                       "n_train_rows": num_train_rows,
+                       "n_val_rows": num_val_rows}
 
 
 def _infer_steps_per_epoch(config, loader, batch_size, type: str = "train"):    
