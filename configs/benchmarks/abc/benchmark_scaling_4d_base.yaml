@@ -45,10 +45,10 @@ trainer: training.loops.EpochBasedTrainer
 loop_per_worker_script: training.loops.train_loop_per_worker
 
 # training quantization
-quantization: float16 # data type for training, options: float32, float16
+quantization: bfloat16 # data type for training, options: float32, float16
 
 # dtype for training data
-dataset_dtype: float16 # data type for training, options: float32, float16
+dataset_dtype: bfloat16 # data type for training, options: float32, float16
 storage_dtype: uint16 # data type for storage
 
 # dataset layout in the zarr files
@@ -87,7 +87,7 @@ datasets:
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
-  
+
   databases:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)

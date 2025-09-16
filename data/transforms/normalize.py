@@ -58,9 +58,7 @@ class NormalizeRayWrapper:
         self.eps = eps
 
     def __call__(self, data_tensor: torch.Tensor) -> torch.Tensor:
-        image_list = ImageList(data_tensor,
-                        layout=self.input_layout,
-                        image_sizes=[data_tensor.shape])
+        image_list = ImageList(data_tensor, layout=self.input_layout, image_sizes=[data_tensor.shape])
         mean, std = image_list.get_image_stats()     
         std = std.clamp_min(self.eps)   
         image = (image_list.tensor - mean) / std

@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 import logging
 from typing import List, Optional, Dict, Any, Callable
 
@@ -10,15 +9,8 @@ import numpy as np
 from cupy.cuda import runtime as cudart
 
 import tensorstore as ts
-from multiprocessing import shared_memory
-
 from hydra.utils import instantiate
 from omegaconf import OmegaConf, DictConfig
-
-from data.io import read_zarr
-from data.data_types import (NUMPY_DTYPES, 
-                             TENSORSTORE_DTYPES, 
-                             TORCH_DTYPES)
 
 import ray
 import pyarrow as pa
@@ -32,7 +24,9 @@ from utils.context import (process_rank,
                            pin_to_numa_node)
 from utils.profiling import pprof_func, pprof_class
 from data.datasets.buffers import get_buffers, DeviceMemoryBuffer
-
+from data.io import read_zarr
+from data.data_types import (NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES)
+from multiprocessing import shared_memory
 from training.helpers import record_dataset_len
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
@@ -178,12 +172,15 @@ class LoaderActor:
         self.batch_size = batch_size
 
         # dtypes
-        self.dtype = TENSORSTORE_DTYPES[dtype].value \
-            if isinstance(dtype, str) else dtype
+        self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+
         if self.dtype == TENSORSTORE_DTYPES.bf16.value:
+            # ray.logger.warning(
+            #     "Using fp16 for PyArrow, Collator will cast data to bf16"
+            # )
             self.dtype = TENSORSTORE_DTYPES.fp16.value
-        self.buffer_dtype = NUMPY_DTYPES[buffer_dtype].value \
-            if isinstance(buffer_dtype, str) else buffer_dtype
+
+        self.buffer_dtype = NUMPY_DTYPES[buffer_dtype].value if isinstance(buffer_dtype, str) else buffer_dtype
 
         # tensorstore 
         self.with_batched_api = with_batched_api
@@ -219,7 +216,7 @@ class LoaderActor:
     def _get_handle(self, path: str):
         h = self._handles.get(path)
         if h is None:
-            h = read_zarr(path, dtype=self.dtype, context=self.ctx)
+            h = read_zarr(path, dtype=self.dtype, context=self.ctx, cast=False)
             self._handles[path] = h
         return h
     
@@ -271,9 +268,15 @@ def get_context_spec(cfg: DictConfig) -> Dict[str, Any]:
     return ctx_spec
 
 
-def get_dataset_ray(cfg: DictConfig,
-                    indices: Optional[List[int]],
-                    database: Optional[Any] = None
+def get_dataset_ray(
+    cfg: DictConfig,
+    indices: Optional[List[int]],
+    database: Optional[Any] = None,
+    columns: list = [ # metadata columns to keep from the original dataframe (adding more columns will slow down our collate)
+        'x_start', 'y_start', 'z_start', 'time_start',
+        'channel_size', 'cube_size', 'time_size',
+        'server_folder', 'output_folder', 'tile_name',
+    ]
 ):
     if cfg.datasets.channels_subset is not None:
         num_channels = cfg.datasets.input_shape[cfg.dataset_layout_order.index("C")]
@@ -284,9 +287,11 @@ def get_dataset_ray(cfg: DictConfig,
     set_data_context(cfg)
     ctx_spec = get_context_spec(cfg)
 
-    table = pa.table(database.hypercubes_dataframe.iloc[indices] \
-                        if indices is not None else database.hypercubes_dataframe)
-    
+    table = pa.table(
+        database.hypercubes_dataframe[columns].iloc[indices]
+        if indices is not None else database.hypercubes_dataframe[columns]
+    )
+
     dataset = ray.data.from_arrow(table)
     dataset = dataset.split(n = get_world_size(), equal = True)[process_rank()]
     
@@ -316,8 +321,7 @@ def get_dataset_ray(cfg: DictConfig,
             "local_rank": local_rank(),
             "global_rank": process_rank()
         },
-        concurrency=(cfg.datasets.num_actors_min, 
-                        cfg.datasets.num_actors_max)
+        concurrency=(cfg.datasets.num_actors_min, cfg.datasets.num_actors_max),
     )
 
     return dataset, dataset_len

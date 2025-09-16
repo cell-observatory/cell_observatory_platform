@@ -3,7 +3,7 @@ defaults:
   - /paths/abc                               # configs/paths/abc.yaml
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
   - /clusters/local                          # configs/clusters/local.yaml
-  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_dali.yaml
+  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
   - /models/mae/tiny                         # configs/models/mae/tiny.yaml
   - /hooks/hooks                             # configs/hooks/hooks.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
@@ -43,10 +43,10 @@ trainer: training.loops.EpochBasedTrainer
 loop_per_worker_script: scripts.benchmarks_io.benchmark_dataloaders.benchmark_dataloader
 
 # training quantization
-quantization: float16 # data type for training, options: float32, float16
+quantization: bfloat16 # data type for training, options: float32, float16
 
 # dtype for training data
-dataset_dtype: float16 # data type for training, options: float32, float16
+dataset_dtype: bfloat16 # data type for training, options: float32, float16
 storage_dtype: uint16 # data type for storage
 
 # dataset layout in the zarr files

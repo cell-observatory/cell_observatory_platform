@@ -16,8 +16,8 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: benchmark_multinode_training_h100s_ray_v2
-wandb_project: benchmark_multinode_training_h100s_ray_v2
+experiment_name: benchmark_multinode_training_h100s_ray_v3_bf16
+wandb_project: benchmark_multinode_training_h100s_ray_v3_bf16
 
 # task
 task: pretrain_mae
@@ -44,10 +44,11 @@ trainer: training.loops.EpochBasedTrainer
 loop_per_worker_script: training.loops.train_loop_per_worker
 
 # training quantization
-quantization: float16 # data type for training, options: float32, float16
+quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
 
 # dtype for training data
-dataset_dtype: float16 # data type for training, options: float32, float16
+dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
+storage_dtype: uint16 # data type for storage
 
 # dataset layout in the zarr files
 dataset_layout_order: TZYXC
@@ -81,38 +82,24 @@ datasets:
   return_dataloader: true
   distributed_sampler: true
 
-  use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
-  locality_with_output: true # whether to use locality with output for the Ray tasks
-
-  # ray_remote_args:
-  #   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
-
-  impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
-  ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
-  
-  prefetch_factor: 12
+  prefetch_factor: 4
   num_actors_min: 4
   num_actors_max: 64
-  
-  with_batched_api: true
-  context:
-    file_io_concurrency: null # concurrency for file I/O operations
-    data_copy_concurrency: null # concurrency for data copy operations
-    cache_pool: 
-      total_bytes_limit: 0
+  num_workers: ${clusters.cpus_per_worker}
 
   max_hypercubes: 100000 # maximum number of hypercubes to return
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
 
 
-
 # hooks
 hooks:
   hooks_list:
-#  - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.SamplerSetter
   - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer
+    warmup_iter: 1
   - _target_: training.hooks.PeriodicWriter
   - _target_: training.hooks.PeriodicCheckpointer
     period: 1
@@ -120,7 +107,7 @@ hooks:
   - _target_: training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - _target_: training.hooks.TorchMemoryStats
-    step_period: 2
+    step_period: 1
     epoch_period: 1
     logdir: ${loggers.logdir}
   - _target_: training.hooks.BestMetricSaver

@@ -6,6 +6,7 @@ launcher_type: local # type of launcher to use
 partition: null   # partition to submit the job to
 qos: null   # qos for the job
 python_env: python # python executable to use (if not using apptainer)
+multijob_submission: false # each worker node will be submitted as a separate job
 
 batch_size: 512 # total batch size
 
@@ -25,7 +26,7 @@ head_node_cpus: ${eval:'${clusters.cpus_per_worker} + ${clusters.cpus_for_traini
 head_node_gpus: ${clusters.gpus_per_worker} # number of gpus on the head node (usually gpus per worker)
 head_node_mem: ${clusters.mem_per_worker} # memory on the head node (usually mem per worker)
 
-ray_queue_memory: 0.5 # fraction of the total memory to allocate for the ray queue
+ray_queue_memory: 0.35 # fraction of the total memory to allocate for the ray queue
 object_store_memory: ${eval:'${clusters.mem_per_worker} * 1024 * 1024 * ${clusters.ray_queue_memory}'} # (bytes)
 
 exclusive: null   # whether to use exclusive node allocation (not recommended)

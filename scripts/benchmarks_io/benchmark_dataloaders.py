@@ -123,7 +123,7 @@ def _compute_bytes_per_cube(time_size: int,
     voxels = (
             time_size * channel_size * cube_size ** 3
     )
-    if dtype.lower() == "float16" or dtype.lower() == "fp16":
+    if dtype.lower() == "float16" or dtype.lower() == "fp16" or dtype.lower() == "bfloat16" or dtype.lower() == "bf16":
         return voxels * 2
     elif dtype.lower() == "float32" or dtype.lower() == "fp32":
         return voxels * 4

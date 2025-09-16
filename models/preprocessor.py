@@ -138,17 +138,22 @@ class RayPreprocessor(torch.nn.Module):
 
         inputs = data_sample['data_tensor']
         meta = data_sample['metainfo']
+
+        if inputs.dtype != self.dtype:
+            # ray.logger.warning(f"Casting inputs to {self.dtype}")
+            inputs = inputs.to(self.dtype)
         
         # skipping checks for NaN/Inf values
         # if torch.isnan(inputs).all() or torch.isinf(inputs).all():
         #     raise ValueError(f"Invalid training data")
-        # assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 
         if self.transforms is not None:
             transform_t0 = time.time()
             for transform in self.transforms:
                 inputs = transform(inputs)
             transform_time = time.time() - transform_t0
+
+        assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 
         if self.with_masking:
             masking_time = time.time()
