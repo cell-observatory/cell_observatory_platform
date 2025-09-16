@@ -53,7 +53,7 @@ class CollatorActor:
                  buffer_dtype: str,
                  pin_numa_node: bool,
                  pin_pages: bool,
-                 debug: bool = True
+                 debug: bool = False
     ):
         self.batch_size = batch_size
         self.input_shape = tuple(input_shape)
