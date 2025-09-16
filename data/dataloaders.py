@@ -303,6 +303,7 @@ def get_dataloader(config: DictConfig):
             dtype=config.storage_dtype,
             buffer_capacity=config.datasets.buffer_capacity,
             pin_to_numa_node=config.datasets.pin_numa_node,
+            max_concurrent_calls=config.datasets.max_concurrent_calls
         )
 
         if isinstance(config.datasets.collate_fn, DictConfig):

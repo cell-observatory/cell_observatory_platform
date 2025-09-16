@@ -59,13 +59,14 @@ dataset:
 use_arrow_tensor_v2: true # use Arrow Tensor v2
 locality_with_output: true # whether to use locality with output for the Ray tasks
 rows_per_block: ${clusters.batch_size_per_gpu} # ${clusters.batch_size} # number of rows per block for the Ray dataset
-buffer_capacity: 16
+buffer_capacity: 20
 pin_numa_node: true
 pin_memory: true
+max_concurrent_calls: 256
 
 channels_subset: null # subset of channels to use, e.g. [0, 1] for first two channels
 num_actors_min: 8
-num_actors_max: 12
+num_actors_max: 16
 with_batched_api: true
 context:
   file_io_concurrency: null # concurrency for file I/O operations

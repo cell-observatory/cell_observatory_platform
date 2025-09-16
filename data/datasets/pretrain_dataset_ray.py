@@ -88,7 +88,7 @@ class CollatorActor:
             capacity=self.device_buffer_capacity,
             input_shape=self.input_shape,
             batch_size=self.batch_size,
-            dtype=dtype
+            dtype=buffer_dtype
         )
 
         logger.info(f"CollatorActor on rank {process_rank()} using host shared memory buffer "
@@ -130,6 +130,11 @@ class CollatorActor:
 
         with torch.cuda.stream(self.copy_stream):
             self.copy_h2d(dst=dst_device, src=h_view)
+
+        # tells caching allocator & scheduler on training stream 
+        # that dst_device is owned by copy_stream
+        torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
+        dst_device.record_stream(self.copy_stream)
 
         metainfo = {
             "host_buffer_idx": host_buffer_idx,

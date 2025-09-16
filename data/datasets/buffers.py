@@ -115,6 +115,7 @@ def set_buffers(local_rank: int,
                 buffer_type: str,
                 buffer_capacity: int,
                 pin_to_numa_node: bool,
+                max_concurrent_calls: int = 256
 ):
     if buffer_type == "host_memory":
         numa_node = torch_gpu_to_numa(local_rank)["numa_node"]
@@ -124,7 +125,9 @@ def set_buffers(local_rank: int,
 
         buffer = HostMemoryBuffer.options(name=name,
                                       namespace="buffers",
-                                      lifetime="detached"
+                                      lifetime="detached",
+                                      # allow concurrent get/put calls
+                                      max_concurrency=max_concurrent_calls
                                       ).remote(
                                           name=name,
                                           local_rank=local_rank,
