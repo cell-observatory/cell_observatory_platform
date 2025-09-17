@@ -13,6 +13,7 @@ defaults:
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /profiling/profiling                      # configs/profiling/profiling.yaml
   - _self_
 
 experiment_name: benchmark_tensorstore_h100s
