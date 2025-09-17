@@ -172,7 +172,7 @@ class MaskedEncoder(nn.Module):
             channels=self.in_chans,
         )
 
-         # positional encoding parameters
+        # positional encoding parameters
         self.abs_sincos_enc = abs_sincos_enc
         self.rope_pos_enc = rope_pos_enc
         self.rope_mixed = rope_mixed
