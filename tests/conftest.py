@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
-from hydra.utils import get_method
 from hydra import compose, initialize
 from hydra.utils import get_method, instantiate
 from omegaconf import OmegaConf, DictConfig

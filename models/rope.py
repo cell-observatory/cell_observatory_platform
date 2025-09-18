@@ -21,7 +21,9 @@ def generate_frequency_spectrum(dim: int,
                                 num_heads: int, 
                                 theta: float = 10.0, 
                                 random_rotation_per_head: bool = True,
-                                input_fmt: str = "TZYXC"
+                                input_fmt: str = "TZYXC",
+                                device: str = 'cuda',
+                                dtype: torch.dtype = torch.bfloat16
 ):
     if input_fmt == "YXC":
         # assert dim % 4 == 0, "head_dim must be divisible by 4 for 2D ROPE."
@@ -106,7 +108,7 @@ def generate_frequency_spectrum(dim: int,
     else:
         raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
     
-    return freqs
+    return freqs.to(dtype=dtype, device=device)
 
 def generate_grid_indices(
     end_x: int,
@@ -340,7 +342,7 @@ def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
     
     # if [N, J] -> reshaped to [1, 1, N, J]
     # if [H, N, J] -> reshaped to [1, H, N, J]
-    freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
+    freqs_cis = reshape_for_broadcast(freqs_cis, xq_).to(xq_.device)
     
     # xq_ * freqs_cis: elementwise complex mult -> [B, H, N, J]
     # then view_as_real -> [B, H, N, J, 2] -> flatten last two dims -> [B, H, N, J]
