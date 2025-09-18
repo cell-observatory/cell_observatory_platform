@@ -2,6 +2,7 @@ import sys
 import logging
 from functools import partial
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -100,11 +101,14 @@ class RopeAttention(nn.Module):
         rope_theta: float = 10.0,
         input_fmt: str = "TZXYC",
         input_shape: tuple = (16,128,128,128,2),
-        patch_size: tuple = (4,16,16,16)
+        patch_size: tuple = (4,16,16,16),
+        device: str = 'cuda',
+        dtype: torch.dtype = torch.bfloat16
     ) -> None:
         super().__init__()
 
         self.dim = dim
+        self.device = device
 
         assert dim % num_heads == 0, 'dim should be divisible by num_heads'
 
@@ -154,7 +158,9 @@ class RopeAttention(nn.Module):
             if self.input_fmt == "YXC":
                 _, _, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                        end_y=end_y, 
-                                                       input_fmt=input_fmt)
+                                                       input_fmt=input_fmt,
+                                                       device=self.device,
+                                                       dtype=dtype)
                 self.register_buffer('freqs_t_x', t_x)
                 self.register_buffer('freqs_t_y', t_y)
 
@@ -165,7 +171,9 @@ class RopeAttention(nn.Module):
                 _, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                          end_y=end_y, 
                                                          end_z=end_z, 
-                                                         input_fmt=input_fmt)
+                                                         input_fmt=input_fmt,
+                                                         device=self.device,
+                                                         dtype=dtype)
                 self.register_buffer('freqs_t_x', t_x)
                 self.register_buffer('freqs_t_y', t_y)
                 self.register_buffer('freqs_t_z', t_z)
@@ -177,7 +185,9 @@ class RopeAttention(nn.Module):
                 t_t, _, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                          end_y=end_y, 
                                                          end_t=end_t, 
-                                                         input_fmt=input_fmt)
+                                                         input_fmt=input_fmt,
+                                                         device=self.device,
+                                                         dtype=dtype)
                 self.register_buffer('freqs_t_x', t_x)
                 self.register_buffer('freqs_t_y', t_y)
                 self.register_buffer('freqs_t_t', t_t)
@@ -191,7 +201,9 @@ class RopeAttention(nn.Module):
                                                            end_y=end_y, 
                                                            end_z=end_z, 
                                                            end_t=end_t, 
-                                                           input_fmt=input_fmt)
+                                                           input_fmt=input_fmt,
+                                                           device=self.device,
+                                                           dtype=dtype)
                 self.register_buffer('freqs_t_x', t_x)
                 self.register_buffer('freqs_t_y', t_y)
                 self.register_buffer('freqs_t_z', t_z)
@@ -222,7 +234,8 @@ class RopeAttention(nn.Module):
                                                end_y=end_y, 
                                                end_z=end_z, 
                                                end_t=end_t, 
-                                               input_fmt=input_fmt)
+                                               input_fmt=input_fmt,
+                                               device=self.device)
 
     def forward(self, x, masks=None, return_attention=False):
         B, L, C = x.shape
@@ -240,7 +253,7 @@ class RopeAttention(nn.Module):
 
             # compute learnable frequencies
             # works no matter what input_fmt is since unused t_* are None
-            freqs_cis = self.compute_cis(freqs=self.freqs, 
+            freqs_cis = self.compute_cis(freqs=self.freqs.to(x.device), 
                                          num_heads=self.num_heads, 
                                          t_t=t_t, 
                                          t_z=t_z, 
@@ -251,9 +264,9 @@ class RopeAttention(nn.Module):
         else:
             # axial RoPE does not use learnable frequencies
             if masks is not None:
-                freqs_cis = apply_masks_rope(self.freqs_cis, masks, type="axial")
+                freqs_cis = apply_masks_rope(self.freqs_cis.to(x.dtype), masks, type="axial")
             else:
-                freqs_cis = self.freqs_cis
+                freqs_cis = self.freqs_cis.to(x.dtype)
         
         q_rope, k_rope = apply_rotary_emb(q, k, freqs_cis=freqs_cis)
 

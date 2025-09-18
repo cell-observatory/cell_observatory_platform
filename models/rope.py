@@ -114,6 +114,8 @@ def generate_grid_indices(
     end_z: Optional[int] = None,
     end_t: Optional[int] = None,
     input_fmt: str = "TZYXC",
+    device: str = 'cuda',
+    dtype: torch.dtype = torch.bfloat16
 ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], torch.Tensor, torch.Tensor]:
     need_T = "T" in input_fmt
     need_Z = "Z" in input_fmt
@@ -140,10 +142,10 @@ def generate_grid_indices(
     if need_T:
         t = (idx // (X * Y * (Z if need_Z else 1)))
 
-    t = t.to(torch.float32) if t is not None else None
-    z = z.to(torch.float32) if z is not None else None
-    y = y.to(torch.float32)
-    x = x.to(torch.float32)
+    t = t.to(dtype=dtype, device=device) if t is not None else None
+    z = z.to(dtype=dtype, device=device) if z is not None else None
+    y = y.to(dtype=dtype, device=device)
+    x = x.to(dtype=dtype, device=device)
 
     return (t, z, y, x)
 
@@ -154,14 +156,14 @@ def compute_mixed_cis(freqs: torch.Tensor,
                       t_z: Optional[torch.Tensor] = None,
                       t_t: Optional[torch.Tensor] = None,
                       input_fmt: str = "TZYXC"):
-    def _outer_pos_freq(pos, f):
+    
+    def _outer_pos_freq(pos, f):     
         if pos.dim() == 1:
             # [N,1] * [H,1,J] -> [H,N,J]
             return (pos.unsqueeze(-1) @ f.unsqueeze(-2))
         else:
-            B, N = pos.shape
-            # broadcast: [B,N,1] * [1,H,1,J] -> [B,H,N,J]
-            return (pos[:, :, None] * f[None, :, None, :])
+            # broadcast: [B,1,N,1] * [1,H,1,J] -> [B,H,N,J]
+            return (pos[:, None, :, None] * f[None, :, None, :])
 
     with torch.amp.autocast(enabled=False, device_type='cuda'):
         if input_fmt == "YXC":
@@ -192,9 +194,14 @@ def compute_mixed_cis(freqs: torch.Tensor,
         else:
             raise NotImplementedError
 
-        ones = torch.ones_like(phases)
-        freqs_cis = torch.polar(ones, phases)
-
+        if phases.dtype != torch.float32: # polar doesn't support bf16
+            dtype = phases.dtype
+            ones = torch.ones_like(phases, dtype=torch.float32)
+            freqs_cis = torch.polar(ones, phases.to(torch.float32)).to(dtype)
+        else:
+            ones = torch.ones_like(phases)
+            freqs_cis = torch.polar(ones, phases)
+            
         if freqs_cis.dim() == 3:
             return freqs_cis
         else:
@@ -206,7 +213,8 @@ def compute_axial_cis(dim: int,
                       end_z: int, 
                       end_t: int,
                       input_fmt: str = "TZYXC", 
-                      theta: float = 100.0
+                      theta: float = 100.0,
+                      device: str = 'cuda'
 ):
     # NOTE: in the paper they define: R(n,2t)=e{iθ_{t}​p^{n}_{x}​,R(n,2t+1)=eθ_{t}​p^{n}_{y}
     #       however in the reference code the assignment per embedding dimension is:
@@ -215,24 +223,28 @@ def compute_axial_cis(dim: int,
 
     if input_fmt == "YXC":
         # assert dim % 4 == 0, "head_dim must be divisible by 4 for 2D ROPE."
-        mag = 1.0 / (theta ** (torch.arange(0, dim, 4)[: (dim // 4)].float() / dim))
+        mag = 1.0 / (theta ** (torch.arange(0, dim, 4, device=device)[: (dim // 4)].float() / dim))
         
         t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                    end_y=end_y, 
-                                                   input_fmt=input_fmt)
+                                                   input_fmt=input_fmt, 
+                                                   device=device,
+                                                   dtype=torch.float32)
 
         freqs_x = torch.outer(t_x, mag)
         freqs_y = torch.outer(t_y, mag)
 
     elif input_fmt == "TYXC":
         # assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D ROPE."
-        base = torch.arange(0, dim, 6)[: (dim // 6)].float() / dim
+        base = torch.arange(0, dim, 6, device=device)[: (dim // 6)].float() / dim
         mag = theta ** (-base)
         
         t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                    end_y=end_y, 
                                                    end_t=end_t, 
-                                                   input_fmt=input_fmt)
+                                                   input_fmt=input_fmt,
+                                                   device=device,
+                                                   dtype=torch.float32)
         
         freqs_x = torch.outer(t_x, mag)
         freqs_y = torch.outer(t_y, mag)
@@ -240,13 +252,15 @@ def compute_axial_cis(dim: int,
 
     elif input_fmt == "ZYXC":
         # assert dim % 6 == 0, "head_dim must be divisible by 6 for 3D ROPE."
-        base = torch.arange(0, dim, 6)[: (dim // 6)].float() / dim
+        base = torch.arange(0, dim, 6, device=device)[: (dim // 6)].float() / dim
         mag = theta ** (-base)
         
         t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                    end_y=end_y, 
                                                    end_z=end_z, 
-                                                   input_fmt=input_fmt)
+                                                   input_fmt=input_fmt,
+                                                   device=device,
+                                                   dtype=torch.float32)
         
         freqs_x = torch.outer(t_x, mag)
         freqs_y = torch.outer(t_y, mag)
@@ -254,14 +268,16 @@ def compute_axial_cis(dim: int,
 
     elif input_fmt == "TZYXC":
         # assert dim % 8 == 0, "head_dim must be divisible by 8 for 4D ROPE."
-        base = torch.arange(0, dim, 8)[: (dim // 8)].float() / dim
+        base = torch.arange(0, dim, 8, device=device)[: (dim // 8)].float() / dim
         mag = theta ** (-base)
         
         t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                    end_y=end_y, 
                                                    end_z=end_z, 
                                                    end_t=end_t, 
-                                                   input_fmt=input_fmt)
+                                                   input_fmt=input_fmt,
+                                                   device=device,
+                                                   dtype=torch.float32)
         
         freqs_x = torch.outer(t_x, mag)
         freqs_y = torch.outer(t_y, mag)
