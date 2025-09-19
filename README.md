@@ -28,7 +28,7 @@
 ## Docker [images](https://github.com/cell-observatory/cell_observatory_platform/pkgs/container/cell_observatory_platform)
 Our prebuilt image with Python, Torch, and all packages installed for you.
 ```shell
-docker pull ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
+docker pull ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08
 ```
 
 ## Clone the repository to your host system
@@ -84,7 +84,7 @@ PYTHONPATH=REPLACE_ME_WITH_YOUR_ROOT_REPO_DIR
 
 To run docker image, cd to repo directory or replace `$(pwd)` with your local path for the repository.
 ```shell
-docker run --network host -u 1000 --privileged -v $(pwd):/workspace/cell_observatory_platform -w /workspace/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -it --rm  --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8 bash
+docker run --network host -u 1000 --privileged -v $(pwd):/workspace/cell_observatory_platform -w /workspace/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -it --rm  --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08 bash
 ```
 
 ## Running docker image on a cluster via apptainer
@@ -92,12 +92,12 @@ Running an image on a cluster typically requires an apptainer version of the ima
 
 ### amd64/x86_64
 ```shell
-apptainer pull --arch amd64 --force develop_torch_cuda_12_8.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
+apptainer pull --arch amd64 --force develop_torch_25_08.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08
 ```
 
 ### arm64/aarch64
 ```shell
-apptainer pull --arch arm64 --force develop_torch_cuda_12_8.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
+apptainer pull --arch arm64 --force develop_torch_25_08.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08
 ```
 
 ## Building a new apptainer image with a different torch version 
@@ -108,7 +108,7 @@ apptainer pull --arch amd64 --force pytorch_25.08-py3.sif docker://nvcr.io/nvidi
 
 Then you can run the following command to build a complete image:  
 ``` shell
-apptainer build --arch amd64 --nv --force develop_torch_cuda_12_8.sif apptainerfile.def
+apptainer build --arch amd64 --nv --force develop_torch_25_08.sif apptainerfile.def
 ```
 
 > [!IMPORTANT] Make sure to pass in the right argument for your system  (`amd64` or `arm64`)
