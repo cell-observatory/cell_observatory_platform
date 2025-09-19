@@ -98,6 +98,8 @@ jobs:
         id: dockerfile_pytorch_version
         run: |
             echo "DOCKER_PYTORCH_VERSION=$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
+            echo "DOCKER_PYTORCH_VERSION=torch_$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
+            echo "$GITHUB_OUTPUT" | tr '.' '_' >> "$GITHUB_OUTPUT"   
             cat "$GITHUB_OUTPUT"
       - name: Raise error if env.TORCH_VERSION (${{ env.TORCH_VERSION }}) and dockerfile version (${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}) disagree
         if: ${{ ! startsWith( env.TORCH_VERSION, steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION) }}
