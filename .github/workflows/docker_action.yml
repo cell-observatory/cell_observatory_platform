@@ -107,7 +107,7 @@ jobs:
 
             cat "$GITHUB_OUTPUT"
       - name: Raise error if env.TORCH_VERSION (${{ env.TORCH_VERSION }}) and dockerfile version (${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}) disagree
-        if: ${{ ! startsWith( env.TORCH_VERSION, steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION) }}
+        if: ${{ ! startsWith( steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION, env.TORCH_VERSION ) }}
         env:
           TORCH_VERSION: ${{ env.TORCH_VERSION }}
           DOCKERFILE_PYTORCH_IMAGE: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
