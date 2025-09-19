@@ -97,7 +97,6 @@ jobs:
       #  (e.g. 25.06-py3)
         id: dockerfile_pytorch_version
         run: |
-            echo "DOCKER_PYTORCH_VERSION=$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
             echo "DOCKER_PYTORCH_VERSION=torch_$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
             echo "$GITHUB_OUTPUT" | tr '.' '_' >> "$GITHUB_OUTPUT"   
             cat "$GITHUB_OUTPUT"
