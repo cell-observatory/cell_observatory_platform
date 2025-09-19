@@ -1,12 +1,12 @@
 import pytest
 from pathlib import Path
 from omegaconf import open_dict
-from hydra.utils import instantiate, get_class
+from hydra.utils import get_class
 
 import torch
 from ray.train import report
 
-from tests.conftest import distributed_test, config
+from tests.conftest import distributed_test
 
 
 def test_access_to_storage_server(config):
@@ -23,13 +23,23 @@ def _test_dataloader_ray_dist(config):
     for idx, data_sample in enumerate(trainer.train_dataloader):
         data_tensor = data_sample["data_tensor"]
 
-        assert isinstance(data_tensor, torch.Tensor), "data_tensor should be a Torch tensor"
-        assert data_tensor.ndim == expected_dims, (
-            f"Expected {expected_dims} dims (including batch), got {data_tensor.ndim}"
-        )
-        assert data_tensor.shape[1:] == tuple(config.datasets.input_shape), (
-            f"Expected input shape {config.datasets.input_shape}, got {data_tensor.shape[1:]}"
-        )
+        if isinstance(data_tensor, torch.Tensor):
+            assert data_tensor.ndim == expected_dims, (
+                f"Expected {expected_dims} dims (including batch), got {data_tensor.ndim}"
+            )
+            assert data_tensor.shape[1:] == tuple(config.datasets.input_shape), (
+                f"Expected input shape {config.datasets.input_shape}, got {data_tensor.shape[1:]}"
+            )
+        elif isinstance(data_tensor, list):
+            assert data_tensor[0].ndim == expected_dims, (
+                f"Expected {expected_dims} dims, got {data_tensor[0].ndim}"
+            )
+            assert data_tensor[0].shape[1:] == tuple(config.datasets.input_shape), (
+                f"Expected input shape {config.datasets.input_shape}, got {data_tensor[0].shape[1:]}"
+            )
+        else:
+            raise f"Unsupported type: {type(data_tensor)=}"
+            
 
         if idx >= 2:
             break
@@ -42,11 +52,9 @@ def _test_dataloader_ray_dist(config):
     [
         # TODO: fixed_shape_tensor_v2 works when training, but fails in the test with 
         # `ValueError: ('Unhandled Arrow array type:', FixedShapeTensorType`
-        {"name": "arrow_tensor_v1", "ray_data_v2": False, "use_arrow_tensor_v2": False, "impl_type": "ArrowTensorArray", "split": None},
-        # {"name": "fixed_shape_tensor_v2", "ray_data_v2": True, "use_arrow_tensor_v2": True, "impl_type": "FixedShapeTensorArray", "split": None},
+        # {"name": "arrow_tensor_v1", "ray_data_v2": False, "use_arrow_tensor_v2": False, "impl_type": "FixedShapeTensorArray", "split": None},
         {"name": "fixed_size_list_v2", "ray_data_v2": True, "use_arrow_tensor_v2": True, "impl_type": "FixedSizeListArray", "split": None},
-        {"name": "arrow_tensor_v1", "ray_data_v2": False, "use_arrow_tensor_v2": False, "impl_type": "ArrowTensorArray", "split": 0.2},
-        # {"name": "fixed_shape_tensor_v2", "ray_data_v2": True, "use_arrow_tensor_v2": True, "impl_type": "FixedShapeTensorArray", "split": 0.2},
+        # {"name": "arrow_tensor_v1", "ray_data_v2": False, "use_arrow_tensor_v2": False, "impl_type": "FixedShapeTensorArray", "split": 0.2},
         {"name": "fixed_size_list_v2", "ray_data_v2": True, "use_arrow_tensor_v2": True, "impl_type": "FixedSizeListArray", "split": 0.2},
     ],
     ids=lambda m: f"dist_{m['name']}",

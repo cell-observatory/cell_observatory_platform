@@ -24,15 +24,15 @@ from ray.data.datasource import Datasource, ReadTask
 from ray.data._internal.delegating_block_builder import DelegatingBlockBuilder
 
 from data.data_shapes import MULTICHANNEL_HYPERCUBE
-from utils.profiling import pprof_func, pprof_class
+from utils.profiling import pprof_class
 from data.io import read_zarr, load_hypercubes_dataframe
-from data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
+from data.data_types import TENSORSTORE_DTYPES, TORCH_DTYPES
 
 
 @pprof_class
 class PinnedTensorCollator:
     """
-    Convert FixedShapeTensorArray/FixedSizeListArray/ArrowTensorArray
+    Convert FixedShapeTensorArray/FixedSizeListArray
     column in Arrow to a pinned Torch tensor using one host-side copy.
     """
 
@@ -331,7 +331,6 @@ class PretrainDatasourceRay(Datasource):
                 size_bytes=shard_size,
                 input_files=None,
                 exec_stats=None,
-                schema=None
             )
             tasks.append(ReadTask(_make_read_task, meta))
 
@@ -362,13 +361,6 @@ class RayLoaderActor:
         self.input_layout = input_layout.upper()
         self.with_batched_api = with_batched_api
         self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-
-        if self.dtype == TENSORSTORE_DTYPES.bf16.value:
-            # ray.logger.warning(
-            #     "Using fp16 for PyArrow, Collator will cast data to bf16"
-            # )
-            self.dtype = TENSORSTORE_DTYPES.fp16.value
-
         self._handles = {}  # lazy loading of handles
 
     def _slice_hypercube(self, data_tensor, meta: Dict[str, Any], ts_batch=None):
@@ -439,8 +431,7 @@ class RayLoaderActor:
             col = pa.chunked_array(chunks)
         
         elif self.impl_type == "FixedShapeTensorArray":
-            chunks  = [pa.FixedShapeTensorArray.from_numpy_ndarray(self._np_as_strided_view(a)) 
-                        for a in arrays]
+            chunks  = [pa.FixedShapeTensorArray.from_numpy_ndarray(self._np_as_strided_view(a)) for a in arrays]
             col = pa.chunked_array(chunks)
         
         else:
