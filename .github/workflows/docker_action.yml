@@ -26,7 +26,7 @@ env:
   BRANCH: ${{ github.head_ref || github.ref_name }}   # 'main' or 'develop'
   PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings -r fEX --junit-xml=test_results/test-results  # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
   TESTING: ${{ true }}  # skip tests if we have this branch name
-  TESTMON_DATAFILE: ~/.cache/TESTMON/.testmondata  # where testmon stores its data file
+  # TESTMON_DATAFILE: ~/.cache/TESTMON/.testmondata  # where testmon stores its data file
   
 jobs:
   cleanup-docker-runners:
@@ -532,11 +532,11 @@ jobs:
       DATA_DIR: ${{ github.workspace }}
       STORAGE_SERVER_DIR: /groups/betzig/betziglab/CellObservatoryData
     steps:
-      - name: Cache pytest .testmondata
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.TESTMON_DATAFILE }}
-          key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
+      # - name: Cache pytest .testmondata
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: ${{ env.TESTMON_DATAFILE }}
+      #     key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}-branchname
           
       - name: List files in the repository
         run: |
@@ -568,12 +568,15 @@ jobs:
       - name: print environment variables
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
 
-      - name: print testmon 
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
+      # - name: print testmon 
+      #   run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
 
       - name: pip list 
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip list
 
+      - name: pip freeze 
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip freeze
+        
       - name: Test NVIDIA-SMI
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} nvidia-smi
 
@@ -583,19 +586,19 @@ jobs:
         with:
           timeout_minutes: 2
           max_attempts: 2
-          command: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml --testmon tests/utils
+          command: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml tests/utils
 
       - name: pytest /tests/data
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml --testmon tests/data
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml tests/data
 
       - name: pytest /tests/models
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml --testmon tests/models
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml tests/models
 
       - name: pytest /tests/training
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml --testmon tests/training
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml tests/training
 
       - name: print testmon2 
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
@@ -633,10 +636,11 @@ jobs:
       run: |
         ls -alhXR ${{ runner.tool_cache }}
       
-    - name: List ~/.cache/TESTMON folder
-      continue-on-error: true
-      run: |
-        ls -alhXR ~/.cache/TESTMON
+    # - name: List ~/.cache/TESTMON folder
+    #   continue-on-error: true
+    #   run: |
+    #     ls -alhXR ~/.cache/TESTMON
+
     - name: List /home/mosaic/built_SIF folder
       continue-on-error: true
       run: |
