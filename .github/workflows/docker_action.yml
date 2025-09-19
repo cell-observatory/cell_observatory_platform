@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: ${{ !contains(github.head_ref || github.ref_name, 'release/') || !contains(github.head_ref || github.ref_name, 'main/') || !contains(github.head_ref || github.ref_name, 'develop/')}}
 
 env:
-  TORCH_VERSION: broken_torch_25_08
+  TORCH_VERSION: torch_25_08
   REGISTRY: ghcr.io  
   IMAGE_NAME: ${{ github.repository }}  # github.repository as <account>/<repo>
   DO_SIGNING: ${{ false }}
@@ -107,7 +107,7 @@ jobs:
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # "version 7"
         with:
           script: |
-              core.setFailed('Dockerfile and "TORCH_VERSION in docker_action.yml" do not have the same pytorch version! Dockerfile = $DOCKERFILE_PYTORCH_IMAGE "TORCH_VERSION in docker_action.yml" = $TORCH_VERSION')
+              core.setFailed('Dockerfile and "TORCH_VERSION in docker_action.yml" do not have the same pytorch version! Dockerfile = ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }} "TORCH_VERSION in docker_action.yml" = ${{ env.TORCH_VERSION }}')
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
