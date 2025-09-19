@@ -595,7 +595,7 @@ jobs:
 
       - name: pytest /tests/training
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml --testmon tests/training
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml --testmon tests/training
 
       - name: print testmon2 
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
