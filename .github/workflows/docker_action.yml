@@ -599,6 +599,12 @@ jobs:
     continue-on-error: true
     needs: [apptainer-test]
     steps:
+    
+    - name: List ~/SIF_files folder
+      continue-on-error: true
+      run: |
+        ls -alhXR SIF_files
+
     - name: List runner.tool_cache folder
       continue-on-error: true
       run: |
