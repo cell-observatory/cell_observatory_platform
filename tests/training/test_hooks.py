@@ -1,33 +1,36 @@
+import os
+
 import pytest
 import torch
-import os
-from omegaconf import open_dict
 from hydra.utils import get_class
+from omegaconf import open_dict
 
-from tests.conftest import distributed_test, config
+from tests.conftest import distributed_test
 
 
 def _test_hooks_dist(cfg):
     import time
-    import torch
-    import pandas as pd
     from pathlib import Path
+
+    import pandas as pd
+    import torch
     from ray.train import report
-    from utils.context import process_rank, barrier
-    from training.loggers import LocalEventWriter
+
     from training.hooks import (
         AnomalyDetector,
-        SamplerSetter,
-        LRScheduler,
-        IterationTimer,
-        PeriodicWriter,
-        TorchMemoryStats,
         BestMetricSaver,
-        TorchProfiler,
         EarlyStopHook,
         EMASchedulerHook,
-        WeightDecayScheduleHook
+        IterationTimer,
+        LRScheduler,
+        PeriodicWriter,
+        SamplerSetter,
+        TorchMemoryStats,
+        TorchProfiler,
+        WeightDecayScheduleHook,
     )
+    from training.loggers import LocalEventWriter
+    from utils.context import barrier, process_rank
 
     success = True
 
@@ -126,7 +129,7 @@ def _test_hooks_dist(cfg):
         f"Expected 2 recorded LRs at epoch 0, got {len(lrs)} with values: {lrs} " \
         f"and epochs: {epochs}"
     
-     # ---- ---- ---- WeightDecayScheduleHook tests ---- ---- ----
+    # ---- ---- ---- WeightDecayScheduleHook tests ---- ---- ----
 
     # make GA boundary always true so hook triggers each step
     orig_boundary = trainer.model.is_gradient_accumulation_boundary
@@ -137,8 +140,8 @@ def _test_hooks_dist(cfg):
         def __init__(self, opt): self.opt = opt
         def step(self): pass
 
-    orig_wd_sched = getattr(trainer, "wd_sched", None)
-    trainer.wd_sched = _NoOpWDScheduler(trainer.opt)
+    orig_wd_sched = getattr(trainer, "wd_scheduler", None)
+    trainer.wd_scheduler = _NoOpWDScheduler(trainer.opt)
 
     # ensure optimizer param group 0 has a weight_decay key
     if "weight_decay" not in trainer.opt.param_groups[0]:
@@ -170,7 +173,7 @@ def _test_hooks_dist(cfg):
 
     # restore monkeypatches
     trainer.model.is_gradient_accumulation_boundary = orig_boundary
-    trainer.wd_sched = orig_wd_sched
+    trainer.wd_scheduler = orig_wd_sched
 
     # ---- ---- ---- IterationTimer tests ---- ---- ----
     

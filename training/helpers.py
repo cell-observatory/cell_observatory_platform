@@ -135,8 +135,7 @@ def resume_model_state(config: DictConfig, checkpoint_manager):
 def resume_run(trainer, config: DictConfig):
     Path(config.paths.outdir).mkdir(exist_ok=True, parents=True)
     if config.paths.resume_checkpointdir:
-        best_loss, iter, epoch = resume_model_state(config, 
-                                    checkpoint_manager=trainer.checkpoint_manager)        
+        best_loss, iter, epoch = resume_model_state(config, checkpoint_manager=trainer.checkpoint_manager)        
         trainer.event_recorder.resume(
             iter=iter, 
             epoch=epoch
@@ -203,10 +202,8 @@ def summarize_model(
     model_logbook['forward_pass_bytes'] = model_stats.total_output_bytes
     model_logbook['forward_backward_pass_bytes'] = train_stats.total_output_bytes
 
-    model_logbook['eval_model_bytes'] = model_logbook['param_bytes'] \
-        + model_logbook['forward_pass_bytes']
-    model_logbook['training_model_bytes'] = model_logbook['param_bytes'] \
-        + model_logbook['forward_backward_pass_bytes']
+    model_logbook['eval_model_bytes'] = model_logbook['param_bytes'] + model_logbook['forward_pass_bytes']
+    model_logbook['training_model_bytes'] = model_logbook['param_bytes'] + model_logbook['forward_backward_pass_bytes']
 
     model_logbook['eval_bytes'] = model_logbook['input_bytes'] + \
         model_logbook['eval_model_bytes']

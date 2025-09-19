@@ -5,29 +5,26 @@ https://github.com/open-mmlab/mmengine/tree/main/mmengine/hooks
 """
 
 
+import datetime
+import logging
+import math
+import operator
 import os
 import sys
 import time
-import math
-import logging
-import operator
-import datetime
+from collections import Counter
 from enum import Enum
 from pathlib import Path
-from collections import Counter
-from typing import Optional, Union, Sequence, Literal
+from typing import Literal, Optional, Sequence, Union
 
 import torch
-from torch.profiler import ProfilerActivity
 from fvcore.common.timer import Timer
-
 from ray.train import Checkpoint, report
+from torch.profiler import ProfilerActivity
 
-from training.loggers import EventWriter
 from training.helpers import log_data_timings
-from utils.context import is_main_process, gather_and_reduce, process_rank
-
-
+from training.loggers import EventWriter
+from utils.context import gather_and_reduce, is_main_process, process_rank
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -932,9 +929,9 @@ class EMASchedulerHook(HookBase):
 
 class WeightDecayScheduleHook(HookBase):
     def before_train(self):
-        self.wd_sched = self.trainer.wd_sched
-        assert self.wd_sched is not None, \
-            "WeightDecayScheduleHook requires wd_sched to be set in the trainer."
+        self.wd_scheduler = self.trainer.wd_scheduler
+        assert self.wd_scheduler is not None, \
+            "WeightDecayScheduleHook requires wd_scheduler to be set in the trainer."
         self.event_recorder = self.trainer.event_recorder
         if self.event_recorder is None:
             logger.warning("WeightDecayScheduleHook requires event_recorder to be set in the trainer. \
@@ -947,7 +944,7 @@ class WeightDecayScheduleHook(HookBase):
         # micro-batch is at the boundary of gradient accumulation, and 
         # thus will trigger gradient reductions and an optimizer step
         if self.trainer.model.is_gradient_accumulation_boundary():
-            self.wd_sched.step()
+            self.wd_scheduler.step()
             if self.event_recorder:
                 wd0 = self.trainer.opt.param_groups[0]["weight_decay"]
                 self.event_recorder.put_scalars(scope="step", wd=wd0)
