@@ -28,12 +28,12 @@ def tokens_from(fmt: str, input_shape: tuple, patch_size: tuple) -> int:
     (2, 17),
     (1, 128),
 ])
-def test_attention_shapes_cpu(dim, num_heads, qk_norm, B, L):
+def test_attention_shapes(dim, num_heads, qk_norm, B, L):
     torch.manual_seed(0)
-    x = torch.randn(B, L, dim)
+    x = torch.randn(B, L, dim, device='cuda')
     m = Attention(dim=dim, 
                   num_heads=num_heads, 
-                  qk_norm=qk_norm)
+                  qk_norm=qk_norm).to('cuda')
     m.eval()
     y = m(x)
     assert y.shape == (B, L, dim)
@@ -56,7 +56,7 @@ ROPE_CASES = [
     (32, 4, False),  # axial (fixed) RoPE path
 ])
 @pytest.mark.parametrize("case", ROPE_CASES, ids=[c[0] for c in ROPE_CASES])
-def test_rope_attention_shapes_cpu(dim, num_heads, rope_mixed, case):
+def test_rope_attention_shapes(dim, num_heads, rope_mixed, case):
     input_fmt, input_shape, patch_size = case
     L = tokens_from(input_fmt, input_shape[1:], patch_size)
     B = 2
@@ -75,7 +75,7 @@ def test_rope_attention_shapes_cpu(dim, num_heads, rope_mixed, case):
         input_fmt=input_fmt,
         input_shape=input_shape,
         patch_size=patch_size,
-    )
+    ).to('cuda')
     m.eval()
     y = m(x)
     assert y.shape == (B, L, dim)
@@ -90,7 +90,7 @@ def test_rope_attention_shapes_cpu(dim, num_heads, rope_mixed, case):
     (64, 8, 4.0),
 ])
 @pytest.mark.parametrize("case", ROPE_CASES, ids=[c[0] for c in ROPE_CASES])
-def test_transformer_shapes_cpu(rope_pos_enc, dim, num_heads, mlp_ratio, case):
+def test_transformer_shapes(rope_pos_enc, dim, num_heads, mlp_ratio, case):
     input_fmt, input_shape, patch_size = case
     L = tokens_from(input_fmt, input_shape[1:], patch_size)
     B = 2
@@ -113,7 +113,7 @@ def test_transformer_shapes_cpu(rope_pos_enc, dim, num_heads, mlp_ratio, case):
         input_shape=input_shape,
         patch_size=patch_size,
         wide_silu=False,
-    )
+    ).to('cuda')
     m.eval()
     y = m(x)
     assert y.shape == (B, L, dim)
