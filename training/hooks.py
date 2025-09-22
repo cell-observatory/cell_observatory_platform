@@ -15,6 +15,7 @@ import time
 from collections import Counter
 from enum import Enum
 from pathlib import Path
+from types import NotImplementedType
 from typing import Literal, Optional, Sequence, Union
 
 import torch
@@ -194,6 +195,7 @@ class LRScheduler(HookBase):
     def before_train(self):
         self.optimizer = self.trainer.opt
         self.scheduler = self.trainer.scheduler
+        self.update_type = self.trainer.scheduler.update_type
 
         self._group_labels = [
             g.get("name", f"group{i}") for i, g in enumerate(self.optimizer.param_groups)
@@ -227,7 +229,12 @@ class LRScheduler(HookBase):
         # NOTE: alternatively, we can summarize all LR groups
         # for label, group in zip(self._group_labels, self.optimizer.param_groups):
         #     self.trainer.event_recorder.put_scalar(f"lr/{label}", group["lr"])
-        self.scheduler.step(epoch=self.trainer._epoch)
+        if self.update_type == "epoch":
+            self.scheduler.step(epoch=self.trainer._epoch)
+        elif self.update_type == "step":
+            self.scheduler.step(self.trainer_iter)
+        else:
+            raise NotImplementedError(f'{self.update_type=} is not supported')
 
 
 class IterationTimer(HookBase):
