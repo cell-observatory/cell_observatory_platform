@@ -1,6 +1,6 @@
 _target_: models.preprocessor.RayPreprocessor
 
-dtype: ${dataset_dtype}
+dtype: ${quantization}
 with_masking: true
 mask_generator: ${datasets.masking.mask_generators.0}
 transforms_list: 
