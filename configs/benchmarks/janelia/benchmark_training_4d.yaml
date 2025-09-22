@@ -24,9 +24,10 @@ data_base_dir: training_infrastructure/training_mae_4d
 
 runs:
   - cfg: benchmarks/janelia/benchmark_training_base
-    name: 8xh100_mae_large_run1.yaml
+    name: 8xh100_mae_large_run1_warmup_cosine_decay.yaml
     defaults_overrides:
       - clusters: clusters/janelia_h100
+      - schedulers: schedulers/test_warmup_cosine_decay
     overrides:
       clusters:
         batch_size: 256 # total batch size
@@ -34,17 +35,18 @@ runs:
         gpus_per_worker: 8 # number of gpus per worker node
         cpus_per_gpu: 12 # number of cpu cores per gpu
         mem_per_cpu: 40000 # ram per cpu core
-  # - cfg: benchmarks/janelia/benchmark_training_base
-  #   name: 8xh100_mae_large_run2.yaml
-  #   defaults_overrides:
-  #     - clusters: clusters/janelia_h100
-  #   overrides:
-  #     clusters:
-  #       batch_size: 256 # total batch size
-  #       worker_nodes: 1 # number of worker nodes
-  #       gpus_per_worker: 8 # number of gpus per worker node
-  #       cpus_per_gpu: 12 # number of cpu cores per gpu
-  #       mem_per_cpu: 40000 # ram per cpu core
+  - cfg: benchmarks/janelia/benchmark_training_base
+    name: 8xh100_mae_large_run2_warmup_stable_decay.yaml
+    defaults_overrides:
+      - clusters: clusters/janelia_h100
+      - schedulers: schedulers/test_warmup_stable_decay
+    overrides:
+      clusters:
+        batch_size: 256 # total batch size
+        worker_nodes: 1 # number of worker nodes
+        gpus_per_worker: 8 # number of gpus per worker node
+        cpus_per_gpu: 12 # number of cpu cores per gpu
+        mem_per_cpu: 40000 # ram per cpu core
   # - cfg: benchmarks/janelia/benchmark_training_base
   #   name: 8xh100_mae_large_run3.yaml
   #   defaults_overrides:
