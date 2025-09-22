@@ -1,7 +1,7 @@
 defaults:
   - clusters: local                          # configs/clusters/local.yaml
   - paths: local                             # configs/paths/local.yaml
-  - datasets: pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
+  - datasets: pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
   - models: mae/tiny                         # configs/models/mae/tiny.yaml
   - hooks: hooks                             # configs/hooks/hooks.yaml
   - checkpoint: checkpoint                   # configs/checkpoint/checkpoint.yaml
@@ -115,7 +115,6 @@ hooks:
   - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.SamplerSetter
   - _target_: training.hooks.LRScheduler
-  - _target_: training.hooks.WeightDecayScheduleHook
   - _target_: training.hooks.IterationTimer
     warmup_iter: 2
   - _target_: training.hooks.PeriodicWriter

@@ -1,6 +1,6 @@
 {
 	"name": "Cell Observatory Platform",
-	"image": "ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8",
+	"image": "ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08",
 	"workspaceFolder": "/workspace/cell_observatory_platform",
 	"containerUser": "ubuntu",
 	"overrideCommand": true,
