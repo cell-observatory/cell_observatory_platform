@@ -215,7 +215,6 @@ def get_schedulers(
         _hook_is_registered = False
         for hook in list(config.hooks.hooks_list):
             if hook._target_.endswith("WeightDecayScheduleHook"):
-                hook.wd_scheduler = wd_scheduler
                 _hook_is_registered = True
                 break
         if not _hook_is_registered:
@@ -251,7 +250,7 @@ class WarmupStableDecaySchedule(object):
         
         self.T_max = T_max - warmup_steps - anneal_steps
 
-    def step(self):
+    def step(self, epoch):
         self._step += 1
         if self._step < self.warmup_steps:
             progress = float(self._step) / float(max(1, self.warmup_steps))
