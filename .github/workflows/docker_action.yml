@@ -19,14 +19,14 @@ concurrency:
   cancel-in-progress: ${{ !contains(github.head_ref || github.ref_name, 'release/') || !contains(github.head_ref || github.ref_name, 'main/') || !contains(github.head_ref || github.ref_name, 'develop/')}}
 
 env:
-  CUDA_VERSION: torch_cuda_12_8
+  TORCH_VERSION: torch_25_08
   REGISTRY: ghcr.io  
   IMAGE_NAME: ${{ github.repository }}  # github.repository as <account>/<repo>
   DO_SIGNING: ${{ false }}
   BRANCH: ${{ github.head_ref || github.ref_name }}   # 'main' or 'develop'
   PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings -r fEX --junit-xml=test_results/test-results  # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
   TESTING: ${{ true }}  # skip tests if we have this branch name
-  TESTMON_DATAFILE: ~/.cache/TESTMON/.testmondata  # where testmon stores its data file
+  # TESTMON_DATAFILE: ~/.cache/TESTMON/.testmondata  # where testmon stores its data file
   
 jobs:
   cleanup-docker-runners:
@@ -93,6 +93,29 @@ jobs:
           chmod -R 777 ${{ github.workspace }}
           ls -lhXR ${{ github.workspace }}
 
+      - name: Check dockerfile pytorch version from 'Dockerfile'
+      #  (e.g. 25.06-py3)
+        id: dockerfile_pytorch_version
+        run: |
+            echo "DOCKER_PYTORCH_VERSION=torch_$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)"
+
+            {
+              echo 'DOCKER_PYTORCH_VERSION<<EOF'
+              echo "torch_$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)" | tr '.' '_'
+              echo EOF
+            } >> "$GITHUB_OUTPUT"    
+
+            cat "$GITHUB_OUTPUT"
+      - name: Raise error if env.TORCH_VERSION (${{ env.TORCH_VERSION }}) and dockerfile version (${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}) disagree
+        if: ${{ ! startsWith( steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION, env.TORCH_VERSION ) }}
+        env:
+          TORCH_VERSION: ${{ env.TORCH_VERSION }}
+          DOCKERFILE_PYTORCH_IMAGE: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # "version 7"
+        with:
+          script: |
+              core.setFailed('Dockerfile and "TORCH_VERSION in docker_action.yml" do not have the same pytorch version! Dockerfile = ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }} "TORCH_VERSION in docker_action.yml" = ${{ env.TORCH_VERSION }}')
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -123,9 +146,9 @@ jobs:
             org.opencontainers.image.vendor=Advanced Bioimaging Center at UC Berkeley and Janelia Research Campus
           tags: |
             type=schedule
-            type=ref,suffix=_${{ env.CUDA_VERSION }},event=branch
-            type=ref,suffix=_${{ env.CUDA_VERSION }},event=tag
-            type=ref,suffix=_${{ env.CUDA_VERSION }},event=pr
+            type=ref,suffix=_${{ env.TORCH_VERSION }},event=branch
+            type=ref,suffix=_${{ env.TORCH_VERSION }},event=tag
+            type=ref,suffix=_${{ env.TORCH_VERSION }},event=pr
 
       - name: Build Docker image
         id: build-and-push
@@ -142,7 +165,7 @@ jobs:
           no-cache-filters: |
           #  pip_install
           # cache the nvidia image and setup.  Then don't cache the "pip_install" build stage where we pip install the requirements.txt
-          target: ${{ env.CUDA_VERSION }}
+          target: ${{ env.TORCH_VERSION }}
           provenance: false # disable provenance to avoid unknown/unknown
           sbom: false       # disable sbom to avoid unknown/unknown
 
@@ -223,9 +246,9 @@ jobs:
             org.opencontainers.image.vendor=Advanced Bioimaging Center at UC Berkeley and Janelia Research Campus
           tags: |
             type=schedule
-            type=ref,suffix=_${{ env.CUDA_VERSION }},event=branch
-            type=ref,suffix=_${{ env.CUDA_VERSION }},event=tag
-            type=ref,suffix=_${{ env.CUDA_VERSION }},event=pr
+            type=ref,suffix=_${{ env.TORCH_VERSION }},event=branch
+            type=ref,suffix=_${{ env.TORCH_VERSION }},event=tag
+            type=ref,suffix=_${{ env.TORCH_VERSION }},event=pr
 
       - name: Push Docker image
         id: docker-push
@@ -239,7 +262,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BRANCH_NAME=${{ env.BRANCH }}
-          target: ${{ env.CUDA_VERSION }}
+          target: ${{ env.TORCH_VERSION }}
           provenance: false # disable provenance to avoid unknown/unknown
           sbom: false       # disable sbom to avoid unknown/unknown
 
@@ -281,7 +304,7 @@ jobs:
       SUPABASE_PROD_URI: ${{ secrets.SUPABASE_PROD_URI }}
       SUPABASE_STAGING_URI: ${{ secrets.SUPABASE_STAGING_URI }}
     outputs:
-      BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  # BUILT_SIF_FILE: /home/mosaic/Desktop/actions-runner/_work/cell_observatory_platform/cell_observatory_platform/feature_github_actions_updates_torch_cuda_12_8.sif
+      BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  # BUILT_SIF_FILE: /home/mosaic/Desktop/actions-runner/_work/cell_observatory_platform/cell_observatory_platform/feature_github_actions_updates_torch_25_08.sif
       SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}   
       SIF_PYTORCH_VERSION: ${{ steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION }}
       DOCKER_PYTORCH_VERSION: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
@@ -324,7 +347,7 @@ jobs:
       - name: Get built sif path
         id: built_sif_path
         run: |
-            echo "BUILT_SIF_PATH=${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+            echo "BUILT_SIF_PATH=${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
 
       - name: Get bootstrap pytorch version from 'apptainerfile.def'
       #  (e.g. 25.06-py3)
@@ -458,7 +481,7 @@ jobs:
           path: /home/mosaic/built_SIF
           key: built_SIF_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
 
-      - name: Build "${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" from docker://${{ needs.docker-push.outputs.IMAGENAME }}
+      - name: Build "${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" from docker://${{ needs.docker-push.outputs.IMAGENAME }}
         id: apptainer_build_docker_image
         run: |
             apptainer build --nv --force ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }} docker://${{ needs.docker-push.outputs.IMAGENAME }}
@@ -480,7 +503,7 @@ jobs:
       #   run: |
       #       ls *.si*
       #       apptainer remote login --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} oras://ghcr.io
-      #       apptainer push -U ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif oras://ghcr.io/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ env.CUDA_VERSION }}_sif
+      #       apptainer push -U ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif oras://ghcr.io/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ env.TORCH_VERSION }}_sif
 
 
   # if you rename "apptainer-test" to "test", you must also rename this in the branch protection rules. https://github.com/cell-observatory/cell_observatory_platform/settings/branch_protection_rules/60118126
@@ -509,11 +532,11 @@ jobs:
       DATA_DIR: ${{ github.workspace }}
       STORAGE_SERVER_DIR: /groups/betzig/betziglab/CellObservatoryData
     steps:
-      - name: Cache pytest .testmondata
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.TESTMON_DATAFILE }}
-          key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}
+      # - name: Cache pytest .testmondata
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: ${{ env.TESTMON_DATAFILE }}
+      #     key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}-branchname
           
       - name: List files in the repository
         run: |
@@ -540,17 +563,20 @@ jobs:
         id: apptainer_run
         run: |
           rm -f test_results/* || true
-          echo "APPTAINER_RUN=apptainer exec --userns --no-home ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.CUDA_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_RUN=apptainer exec --userns --no-home ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
   
       - name: print environment variables
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
 
-      - name: print testmon 
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
+      # - name: print testmon 
+      #   run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
 
       - name: pip list 
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip list
 
+      - name: pip freeze 
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip freeze
+        
       - name: Test NVIDIA-SMI
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} nvidia-smi
 
@@ -560,19 +586,19 @@ jobs:
         with:
           timeout_minutes: 2
           max_attempts: 2
-          command: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml --testmon tests/utils
+          command: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml tests/utils
 
       - name: pytest /tests/data
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml --testmon tests/data
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml tests/data
 
       - name: pytest /tests/models
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml --testmon tests/models
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml tests/models
 
       - name: pytest /tests/training
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml --testmon tests/training
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml tests/training
 
       - name: print testmon2 
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
@@ -599,15 +625,22 @@ jobs:
     continue-on-error: true
     needs: [apptainer-test]
     steps:
+    
+    - name: List ~/SIF_files folder
+      continue-on-error: true
+      run: |
+        ls -alhXR SIF_files
+
     - name: List runner.tool_cache folder
       continue-on-error: true
       run: |
         ls -alhXR ${{ runner.tool_cache }}
       
-    - name: List ~/.cache/TESTMON folder
-      continue-on-error: true
-      run: |
-        ls -alhXR ~/.cache/TESTMON
+    # - name: List ~/.cache/TESTMON folder
+    #   continue-on-error: true
+    #   run: |
+    #     ls -alhXR ~/.cache/TESTMON
+
     - name: List /home/mosaic/built_SIF folder
       continue-on-error: true
       run: |
