@@ -253,14 +253,14 @@ class PretrainDatasourceRay(Datasource):
             self.hypercubes_dataframe = self.hypercubes_dataframe.iloc[indices].reset_index(drop=True)
 
         self._hypercubes_records: List[Dict[str, Any]] = self.hypercubes_dataframe.to_dict(orient="records")
-        self._dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+        self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
         # pre-compute bytes / cube for size estimates
-        self._bytes_per_cube = self._compute_bytes_per_record(record=self._hypercubes_records[0], dtype=self._dtype)
+        self._bytes_per_cube = self._compute_bytes_per_record(record=self._hypercubes_records[0])
 
         self.time = time
 
-    def _compute_bytes_per_record(self, record: Dict[str, Any], dtype: TENSORSTORE_DTYPES) -> int:
+    def _compute_bytes_per_record(self, record: Dict[str, Any]) -> int:
         if self.channels_subset is not None:
             voxels = (
                 record["time_size"] * len(self.channels_subset) * record["cube_size"] ** 3
@@ -270,12 +270,12 @@ class PretrainDatasourceRay(Datasource):
                     record["time_size"] * record["channel_size"] * record["cube_size"] ** 3
             )
 
-        if dtype == ts.float16 or dtype == ts.bfloat16:
+        if (self.dtype == TENSORSTORE_DTYPES['fp16']) or (self.dtype == TENSORSTORE_DTYPES['bf16']):
             return voxels * 2
-        elif dtype == ts.float32:
+        elif self.dtype == TENSORSTORE_DTYPES['fp32']:
             return voxels * 4
         else:
-            raise ValueError(f"Unsupported dtype: {dtype}")
+            raise ValueError(f"Unsupported dtype: {self.dtype}")
 
     def get_name(self) -> str:
         return "PretrainHypercube"
@@ -300,7 +300,7 @@ class PretrainDatasourceRay(Datasource):
 
             # avoid big serialization
             shard_ref = ray.put(list(shard))
-            dtype = self._dtype
+            dtype = self.dtype
             timing = self.time
             channels_subset = self.channels_subset
 
@@ -324,7 +324,7 @@ class PretrainDatasourceRay(Datasource):
             #       got -134217744 bytes instead.`
             #       if this persists, consider setting size_bytes to None
             #       or debug further
-            shard_size = sum(self._compute_bytes_per_record(r, self._dtype) for r in shard)
+            shard_size = sum(self._compute_bytes_per_record(r, self.dtype) for r in shard)
 
             meta = BlockMetadata(
                 num_rows=len(shard),

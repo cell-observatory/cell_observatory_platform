@@ -1,7 +1,7 @@
 defaults:
   - clusters: local                          # configs/clusters/local.yaml
   - paths: local                             # configs/paths/local.yaml
-  - datasets: pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
+  - datasets: pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
   - models: mae/tiny                         # configs/models/mae/tiny.yaml
   - hooks: hooks                             # configs/hooks/hooks.yaml
   - checkpoint: checkpoint                   # configs/checkpoint/checkpoint.yaml
@@ -11,6 +11,7 @@ defaults:
   - optimizers: lamb                         # configs/optimizers/lamb.yaml
   - schedulers: test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
   - optimizations: optimizations             # configs/optimizations/optimizations.yaml
+  - profiling: profiling                     # configs/profiling/profiling.yaml
   - _self_
 
 
@@ -82,7 +83,7 @@ datasets:
   prefetch_factor: 1 # prefetch factor for the dataloader
   num_workers: 4
 
-  max_hypercubes: 200 # maximum number of hypercubes to return
+  max_hypercubes: 100 # maximum number of hypercubes to return
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
 
