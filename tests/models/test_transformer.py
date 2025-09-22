@@ -61,7 +61,7 @@ def test_rope_attention_shapes_cpu(dim, num_heads, rope_mixed, case):
     L = tokens_from(input_fmt, input_shape[1:], patch_size)
     B = 2
 
-    x = torch.randn(B, L, dim)
+    x = torch.randn(B, L, dim, device='cuda')
     m = RopeAttention(
         dim=dim,
         num_heads=num_heads,
@@ -95,7 +95,7 @@ def test_transformer_shapes_cpu(rope_pos_enc, dim, num_heads, mlp_ratio, case):
     L = tokens_from(input_fmt, input_shape[1:], patch_size)
     B = 2
 
-    x = torch.randn(B, L, dim)
+    x = torch.randn(B, L, dim, device='cuda')
     m = Transformer(
         dim=dim,
         num_heads=num_heads,

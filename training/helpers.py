@@ -316,12 +316,12 @@ def log_data_timings(
         )
 
 
-def get_input_data(model, inputs, device: Optional[torch.device] = None):
+def get_input_data(model, inputs, device: Optional[torch.device] = 'cuda'):
     input_data = ({"data_tensor": torch.randn(*inputs, device=device), "metainfo": {}},)
     return input_data
 
 
-def get_masked_input_data(model, inputs, device: Optional[torch.device] = None, mask_ratio: float = 0.75):
+def get_masked_input_data(model, inputs, device: Optional[torch.device] = 'cuda', mask_ratio: float = 0.75):
     n_patches = model.get_num_patches()
     context_len = int(n_patches * (1 - mask_ratio))
     context_idx = torch.arange(context_len, dtype=torch.long, device=device).unsqueeze(0)
