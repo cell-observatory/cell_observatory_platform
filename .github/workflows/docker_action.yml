@@ -574,8 +574,9 @@ jobs:
       - name: pip list 
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip list
 
+      # pip freeze gives the weird @ file://, while "pip list --format freeze" gives the correct format for a requirements.txt
       - name: pip freeze 
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip freeze
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip list --format freeze 
         
       - name: Test NVIDIA-SMI
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} nvidia-smi
