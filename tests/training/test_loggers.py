@@ -88,13 +88,13 @@ def _test_loggers_dist(cfg: DictConfig):
             for it in range(n_steps)
         }
         for _, row in step_df.iterrows():
-            assert pytest.approx(row["loss"]) == expected_means[row["iter"]]
+            assert pytest.approx(row["loss_median"]) == expected_means[row["iter"]]
 
         assert epoch_csv.exists(), "epoch CSV missing"
         epoch_df = pd.read_csv(epoch_csv)
         mean_val_loss = sum(float(k + 10) for k in range(world)) / world
         assert len(epoch_df) == 1
-        assert pytest.approx(epoch_df.loc[0, "val_loss"]) == mean_val_loss
+        assert pytest.approx(epoch_df.loc[0, "val_loss_median"]) == mean_val_loss
 
     # TODO: test appending to existing CSVs
 

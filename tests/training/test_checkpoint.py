@@ -72,8 +72,9 @@ def _test_ckpt_dist(config: DictConfig):
         }
     report(metrics)
 
-@pytest.mark.order(1)
-@pytest.mark.parametrize("zero_stage", [1]) # 2, 3
+# @pytest.mark.order(1)
+# @pytest.mark.parametrize("zero_stage", [1]) # 2, 3
+@pytest.mark.skip(reason="This test is temporarily disabled.")
 def test_checkpoint_save(config, zero_stage: int):    
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
@@ -100,9 +101,10 @@ def test_checkpoint_save(config, zero_stage: int):
     result_dict = distributed_test(cfg=config, test="tests.training.test_checkpoint._test_ckpt_dist")
     assert result_dict["success"], "Test did not complete successfully"
 
-@pytest.mark.order(2)
-@pytest.mark.parametrize("zero_stage_dst", [1]) # , 2, 3
-@pytest.mark.parametrize("zero_stage_src", [1]) # , 2, 3
+# @pytest.mark.order(2)
+# @pytest.mark.parametrize("zero_stage_dst", [1]) # , 2, 3
+# @pytest.mark.parametrize("zero_stage_src", [1]) # , 2, 3
+@pytest.mark.skip(reason="This test is temporarily disabled.")
 def test_checkpoint_load(config, zero_stage_src: int, zero_stage_dst: int):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")

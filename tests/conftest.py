@@ -5,8 +5,8 @@ import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
-from hydra.utils import get_method
 from hydra import compose, initialize
+from hydra.utils import get_method, instantiate
 from omegaconf import OmegaConf, DictConfig
 
 try:
@@ -19,6 +19,11 @@ from ray.train.torch import TorchTrainer, TorchConfig
 from ray.train import ScalingConfig, RunConfig, FailureConfig, CheckpointConfig
 
 from utils.container import get_container_info
+
+from torch.utils.data import random_split
+
+from training.helpers import record_dataset_len
+from data.datasets.pretrain_dataset_ray import get_dataset_ray
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -136,6 +141,27 @@ def distributed_test(cfg: DictConfig, test: str):
          ignore_reinit_error=True
     )
 
+    if cfg.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
+        db = instantiate(cfg.datasets.databases)
+        dataset_len = len(db.hypercubes_dataframe)
+        if cfg.datasets.split is not None:
+            val_size = round(dataset_len * cfg.datasets.split)
+            train_subset, val_subset = random_split(
+                range(dataset_len),
+                lengths=[dataset_len - val_size, val_size]
+            )
+            train_indices, val_indices = train_subset.indices, val_subset.indices
+            train_dataset = get_dataset_ray(cfg, indices=train_indices, database=db)
+            val_dataset = get_dataset_ray(cfg, indices=val_indices, database=db)
+            dataset = {"train": train_dataset, "val": val_dataset}
+            record_dataset_len(cfg, len(train_indices), len(val_indices))
+        else:
+            train_dataset = get_dataset_ray(cfg, indices=None, database=db)
+            dataset = {"train": train_dataset}
+            record_dataset_len(cfg, dataset_len, 0)
+    else:
+        dataset = None
+
     for resource, count in cluster_resources().items():
         logger.info(f"{resource}: {count}")
 
@@ -162,7 +188,7 @@ def distributed_test(cfg: DictConfig, test: str):
         run_config=run_config,
         scaling_config=scaling_config,
         torch_config=torch_config,
-        datasets=None
+        datasets=dataset
     )
 
     result = trainer.fit()

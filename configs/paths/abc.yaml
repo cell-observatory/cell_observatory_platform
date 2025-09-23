@@ -1,5 +1,5 @@
 docker_image: null
-apptainer_image: /clusterfs/nvme/hph/env_images/develop_torch_cuda_12_8.sif
+apptainer_image: /clusterfs/nvme/thayer/apptainer_images/develop_torch_25_08.sif
 
 # No need to change anything below
 # --------------------------------------------------------------------------------

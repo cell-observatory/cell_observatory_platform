@@ -4,36 +4,35 @@ https://github.com/facebookresearch/detectron2/blob/main/detectron2/engine/train
 https://github.com/open-mmlab/mmengine/blob/main/mmengine/runner/loops.py
 """
 
-import time
 import logging
+import time
 import weakref
 from typing import List, Optional, Sequence
 
+from hydra.utils import get_class, instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
-from hydra.utils import instantiate, get_class
+
 if not OmegaConf.has_resolver("now"):
     OmegaConf.register_new_resolver("now", lambda fmt: time.strftime(fmt))
 
-from ray.train import get_context
-
 import torch
 from deepspeed import initialize
+from ray.train import get_context
 
+from data.dataloaders import get_dataloader
 from training.helpers import (
-    get_optimizer,
-    get_lr_scheduler,
+    enable_optimizations,
+    get_masked_input_data,
     get_steps_per_epoch,
     resume_run,
     summarize_model,
-    get_input_data,
-    get_masked_input_data,
-    enable_optimizations
 )
 from training.hooks import HookBase
-from utils.context import inference_context, process_rank
 from training.loggers import EventRecorder
-from data.dataloaders import get_dataloader
+from training.optimizers import get_optimizer
 from training.registry import build_dependency_graph_and_instantiate
+from training.schedulers import get_param_groups, get_schedulers
+from utils.context import inference_context, process_rank
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
@@ -265,9 +264,9 @@ class EpochBasedTrainer(BaseTrainer):
         #       instead of recursive instantiation
         model = build_dependency_graph_and_instantiate(cfg.models)
 
-        # TODO: there seems to be a bug in model definitions where we  
+        # FIXME: there seems to be a bug in model definitions where we  
         #       have the model defined in a subfolder (e.g. models/abc/model.py)
-        #       this hack works for one folder deep models but should be fixed asap
+        #       this hack works for one folder deep models but should be fixed
         model, = model.values() if isinstance(model, dict) else (model,)
 
         if cfg.optimizations.with_model_summary:
@@ -285,13 +284,14 @@ class EpochBasedTrainer(BaseTrainer):
                 )
 
         # initialize optimizer and learning rate scheduler
+        param_groups = get_param_groups(cfg, model)
         opt, _ = get_optimizer(
-            params=model.parameters(),
+            params=param_groups,
             config=cfg,
             optimizer=cfg.optimizers.opt,
             steps_per_epoch=self.steps_per_epoch
         )
-        self.scheduler = get_lr_scheduler(
+        self.scheduler, self.wd_scheduler = get_schedulers(
             opt=opt,
             config=cfg,
             steps_per_epoch=self.steps_per_epoch

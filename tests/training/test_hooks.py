@@ -1,32 +1,36 @@
+import os
+
 import pytest
 import torch
-import os
-from omegaconf import open_dict
 from hydra.utils import get_class
+from omegaconf import open_dict
 
-from tests.conftest import distributed_test, config
+from tests.conftest import distributed_test
 
 
 def _test_hooks_dist(cfg):
     import time
-    import torch
-    import pandas as pd
     from pathlib import Path
+
+    import pandas as pd
+    import torch
     from ray.train import report
-    from utils.context import process_rank, barrier
-    from training.loggers import LocalEventWriter
+
     from training.hooks import (
         AnomalyDetector,
-        SamplerSetter,
-        LRScheduler,
-        IterationTimer,
-        PeriodicWriter,
-        TorchMemoryStats,
         BestMetricSaver,
-        TorchProfiler,
         EarlyStopHook,
-        EMASchedulerHook
+        EMASchedulerHook,
+        IterationTimer,
+        LRScheduler,
+        PeriodicWriter,
+        SamplerSetter,
+        TorchMemoryStats,
+        TorchProfiler,
+        WeightDecayScheduleHook,
     )
+    from training.loggers import LocalEventWriter
+    from utils.context import barrier, process_rank
 
     success = True
 
@@ -54,6 +58,8 @@ def _test_hooks_dist(cfg):
             ehook = hook
         elif isinstance(hook, EMASchedulerHook):
             ema_hook = hook
+        elif isinstance(hook, WeightDecayScheduleHook):
+            wd_hook = hook
 
     # ---- ---- ---- anomaly detector hook tests ---- ---- ----
 
@@ -122,6 +128,52 @@ def _test_hooks_dist(cfg):
     assert lrs and epochs, \
         f"Expected 2 recorded LRs at epoch 0, got {len(lrs)} with values: {lrs} " \
         f"and epochs: {epochs}"
+    
+    # ---- ---- ---- WeightDecayScheduleHook tests ---- ---- ----
+
+    # make GA boundary always true so hook triggers each step
+    orig_boundary = trainer.model.is_gradient_accumulation_boundary
+    trainer.model.is_gradient_accumulation_boundary = lambda: True
+
+    # install a no-op WD scheduler to keep wd constant during this test
+    class _NoOpWDScheduler:
+        def __init__(self, opt): self.opt = opt
+        def step(self): pass
+
+    orig_wd_sched = getattr(trainer, "wd_scheduler", None)
+    trainer.wd_scheduler = _NoOpWDScheduler(trainer.opt)
+
+    # ensure optimizer param group 0 has a weight_decay key
+    if "weight_decay" not in trainer.opt.param_groups[0]:
+        trainer.opt.param_groups[0]["weight_decay"] = 0.05
+
+    # initialize WD hook
+    wd_hook.before_train()
+    initial_wd = trainer.opt.param_groups[0]["weight_decay"]
+
+    # simulate two steps at epoch 0
+    trainer._epoch = 0
+    trainer._iter = 0
+    wd_hook.after_step()
+    trainer._iter = 1
+    wd_hook.after_step()
+
+    # pull out what got recorded (only check the last two entries)
+    recorded_wd = trainer.event_recorder.get_step_scalars().get("wd", [])
+    assert len(recorded_wd) >= 2, f"Expected at least 2 WD records, found {len(recorded_wd)}"
+    tail = recorded_wd[-2:]
+    wds = [val for val, it, ep in tail]
+    epochs = [ep for val, it, ep in tail]
+
+    # success only if exactly two new entries AND both equal the initial WD at epoch 0
+    ok_vals = all(abs(wd - initial_wd) < 1e-12 for wd in wds)
+    ok_epochs = all(ep == 0 for ep in epochs)
+    assert ok_vals and ok_epochs, \
+        f"Expected 2 recorded WDs at epoch 0, got values={wds} epochs={epochs}, initial_wd={initial_wd}"
+
+    # restore monkeypatches
+    trainer.model.is_gradient_accumulation_boundary = orig_boundary
+    trainer.wd_scheduler = orig_wd_sched
 
     # ---- ---- ---- IterationTimer tests ---- ---- ----
     
@@ -487,6 +539,7 @@ def test_hooks(config):
 
     with open_dict(config):
         config.experiment_name = "test_hooks"
+        # config.hooks.hooks_list = list(config.hooks.hooks_list).append({'_target_': 'training.hooks.WeightDecayScheduleHook'})
         config.paths.resume_checkpointdir = None
 
 

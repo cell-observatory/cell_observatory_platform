@@ -1,12 +1,11 @@
-import logging
 import sys
+import logging
 from functools import partial
 
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from timm.layers import SwiGLU, DropPath
-from torch.utils.checkpoint import checkpoint
+
+from models.attention import Attention, RopeAttention
 
 logging.basicConfig(
 	stream=sys.stdout,
@@ -14,60 +13,6 @@ logging.basicConfig(
 	format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-
-class Attention(nn.Module):
-
-    def __init__(
-        self,
-        dim: int,
-        num_heads: int = 8,
-        qkv_bias: bool = True,
-        qk_norm: bool = False,
-        att_drop: float = 0.,
-        proj_drop: float = 0.,
-        norm_layer: nn.Module = partial(nn.LayerNorm, eps=1e-5),
-    ) -> None:
-        super().__init__()
-        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        self.att_drop = nn.Dropout(att_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x, return_attention=False):
-        B, L, C = x.shape
-        qkv = self.qkv(x).reshape(B, L, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
-        try:
-            with torch.backends.cuda.sdp_kernel(enable_flash=True, enable_mem_efficient=True, enable_math=True):
-                x = F.scaled_dot_product_attention(
-                    q, k, v,
-                    dropout_p=self.att_drop.p if self.training else 0.,
-                )
-
-        except NotImplementedError:
-            att = q @ k.transpose(-2, -1)
-            att = att.softmax(dim=-1)
-            att = self.att_drop(att)
-            x = att @ v
-
-        if return_attention:
-            return att
-        else:
-            x = x.transpose(1, 2).reshape(B, L, C)
-            x = self.proj(x)
-            x = self.proj_drop(x)
-            return x
 
 
 class Transformer(nn.Module):
@@ -84,46 +29,81 @@ class Transformer(nn.Module):
         norm_layer: nn.Module = partial(nn.LayerNorm, eps=1e-5),
         act_layer: nn.Module = nn.SiLU,
         mlp_layer: nn.Module = SwiGLU,
-        activation_checkpointing: bool = False
+        rope_pos_enc: bool = True,
+        rope_random_rotation_per_head: bool = True,
+        rope_mixed: bool = True,
+        rope_theta: float = 10.0,
+        input_fmt: str = "TZYXC",
+        input_shape: tuple = (16,128,128,128,2),
+        patch_size: tuple = (4,16,16,16),
+        wide_silu: bool = False,
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
-        self.att = Attention(
-            dim,
-            num_heads=num_heads,
-            qkv_bias=qkv_bias,
-            qk_norm=qk_norm,
-            att_drop=att_drop,
-            proj_drop=proj_drop,
-            norm_layer=norm_layer
-        )
+        
+        if rope_pos_enc:
+            self.att = RopeAttention(
+                dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                qk_norm=qk_norm,
+                att_drop=att_drop,
+                proj_drop=proj_drop,
+                norm_layer=norm_layer,
+                random_rotation_per_head=rope_random_rotation_per_head,
+                rope_mixed=rope_mixed,
+                rope_theta=rope_theta,
+                input_fmt=input_fmt,
+                input_shape=input_shape,
+                patch_size=patch_size
+            )
+        
+        else:
+            self.att = Attention(
+                dim,
+                num_heads=num_heads,
+                qkv_bias=qkv_bias,
+                qk_norm=qk_norm,
+                att_drop=att_drop,
+                proj_drop=proj_drop,
+                norm_layer=norm_layer
+            )
+            
         self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
 
         self.norm2 = norm_layer(dim)
+
+        # from: 
+        # https://github.com/facebookresearch/vjepa2/blob/main/src/models/utils/modules.py
+        if mlp_layer == SwiGLU:
+            hidden_features = int(dim * mlp_ratio)
+            if wide_silu:
+                swiglu_hidden_features = int(2 * hidden_features / 3)
+                align_as = 8
+                swiglu_hidden_features = (swiglu_hidden_features + align_as - 1) // align_as * align_as
+                hidden_features = swiglu_hidden_features
+
         self.mlp = mlp_layer(
             in_features=dim,
-            hidden_features=int(dim * mlp_ratio),
+            hidden_features=int(dim * mlp_ratio) if not wide_silu \
+                else hidden_features,
             drop=proj_drop,
             act_layer=act_layer,
         )
+        
         self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.activation_checkpointing = activation_checkpointing
 
-    def forward(self, x, return_attention=False):
-
+    def forward(self, x, masks=None, return_attention=False):
         ln1 = self.norm1(x)
 
         if return_attention:
-            return self.att(ln1, return_attention=True)
+            return self.att(ln1, masks=masks, return_attention=True)
         else:
-            att = self.att(ln1, return_attention=False)
+            att = self.att(ln1, masks=masks, return_attention=False)
             p1 = x + self.drop_path1(att)
 
             ffn = self.norm2(p1)
-            if self.activation_checkpointing:
-                ffn = checkpoint(self.mlp, ffn, use_reentrant=False)
-            else:
-                ffn = self.mlp(ffn)
+            ffn = self.mlp(ffn)
 
             p2 = p1 + self.drop_path2(ffn)
             return p2

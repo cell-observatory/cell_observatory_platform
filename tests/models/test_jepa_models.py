@@ -7,9 +7,9 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
-from training.helpers import summarize_model, get_masked_input_data
 from models.jepa import JEPA
 from tests.conftest import models_kargs
+from training.helpers import summarize_model, get_masked_input_data
 
 
 def test_jepa_custom(models_kargs):
@@ -41,7 +41,7 @@ def test_jepa_custom(models_kargs):
         modes=models_kargs['modes'],
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -79,7 +79,7 @@ def test_jepa_tiny(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -117,7 +117,7 @@ def test_jepa_small(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -155,7 +155,7 @@ def test_jepa_base(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -193,7 +193,7 @@ def test_jepa_large(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -231,7 +231,7 @@ def test_jepa_huge(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 

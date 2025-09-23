@@ -7,9 +7,12 @@ import torch.nn as nn
 
 from models.mlp import get_mlp
 from models.norm import get_norm
+from training.losses import get_loss_fn
+from training.helpers import init_weights
 from models.activation import get_activation
 from models.maskedencoder import MaskedEncoder
 from models.maskedpredictor import MaskedPredictor
+from models.patch_embeddings import calc_num_patches
 from data.masking.mask_generator import apply_masks
 
 logging.basicConfig(
@@ -147,9 +150,14 @@ class MaskedAutoEncoder(nn.Module):
         norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
         act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
         mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
-        use_conv_proj=False,
-        mask_ratio=.9,
-        window_mask_shape=None,
+        abs_sincos_enc: bool = False,
+        rope_pos_enc: bool = True,
+        rope_random_rotation_per_head: bool = True,
+        rope_mixed: bool = True,
+        rope_theta: float = 10.0,
+        weight_init_type: str = 'mae',
+        mlp_wide_silu: bool = False,
+        loss_fn: str = 'l2_masked',
         **kwargs,
     ):
         super().__init__()
@@ -174,9 +182,10 @@ class MaskedAutoEncoder(nn.Module):
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
-        self.img_size = input_shape[-2]
-        self.in_chans = input_shape[-1]
-        self.num_frames = input_shape[1]
+        
+        axis_to_value = dict(zip(input_fmt, input_shape[1:]))
+        self.in_chans = axis_to_value['C']
+        self.num_frames = axis_to_value['T']
 
         self.axial_patch_size = axial_patch_size
         self.lateral_patch_size = lateral_patch_size
@@ -186,14 +195,20 @@ class MaskedAutoEncoder(nn.Module):
         self.att_drop_rate = att_drop_rate
         self.drop_path_rate = drop_path_rate
         self.fixed_dropout_depth = fixed_dropout_depth
-        self.mask_ratio = mask_ratio
-        self.window_mask_shape = window_mask_shape
-
+        
         self.init_std = init_std
 
         self.norm_layer = get_norm(norm_layer)
         self.act_layer = get_activation(act_layer)
         self.mlp_layer = get_mlp(mlp_layer)
+
+        # positional encoding parameters
+        self.abs_sincos_enc = abs_sincos_enc
+        self.rope_pos_enc = rope_pos_enc
+        self.rope_mixed = rope_mixed
+        self.rope_theta = rope_theta
+        self.wide_silu = mlp_wide_silu
+        self.rope_random_rotation_per_head = rope_random_rotation_per_head
 
         self.masked_encoder = MaskedEncoder(
             input_fmt=self.input_fmt,
@@ -214,8 +229,12 @@ class MaskedAutoEncoder(nn.Module):
             act_layer=self.act_layer,
             mlp_layer=self.mlp_layer,
             init_std=self.init_std,
-            use_conv_proj=use_conv_proj,
-            cls_token=False,
+            abs_sincos_enc=self.abs_sincos_enc,
+            rope_pos_enc=self.rope_pos_enc,
+            rope_random_rotation_per_head=self.rope_random_rotation_per_head,
+            rope_mixed=self.rope_mixed,
+            rope_theta=self.rope_theta,
+            mlp_wide_silu=mlp_wide_silu
         )
 
         self.masked_decoder = MaskedPredictor(
@@ -239,8 +258,18 @@ class MaskedAutoEncoder(nn.Module):
             act_layer=self.act_layer,
             mlp_layer=self.mlp_layer,
             init_std=self.init_std,
-            cls_token=False,
+            abs_sincos_enc=self.abs_sincos_enc,
+            rope_pos_enc=self.rope_pos_enc,
+            rope_random_rotation_per_head=self.rope_random_rotation_per_head,
+            rope_mixed=self.rope_mixed,
+            rope_theta=self.rope_theta,
+            mlp_wide_silu=mlp_wide_silu
         )
+
+        self.weight_init_type = weight_init_type
+        init_weights(self, weight_init_type=weight_init_type)
+
+        self.loss_fn = get_loss_fn(loss_fn)
 
     @torch.jit.ignore
     def get_encoder(self):
@@ -252,8 +281,18 @@ class MaskedAutoEncoder(nn.Module):
 
     @torch.jit.ignore
     def get_num_patches(self):
-        return self.masked_encoder.pos_embedding.num_patches
-
+        if self.abs_sincos_enc:
+            return self.pos_embedding.num_patches
+        else:
+            num_patches, _ = calc_num_patches(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                lateral_patch_size=self.lateral_patch_size,
+                axial_patch_size=self.axial_patch_size,
+                temporal_patch_size=self.temporal_patch_size,
+            )
+            return num_patches
+    
     def forward(self, data_sample: dict):
         inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
         masks, context_masks = meta['masks'][0], meta['context_masks'][0]
@@ -265,16 +304,8 @@ class MaskedAutoEncoder(nn.Module):
         # compute loss over masked patches
         targets = apply_masks(patches, masks=target_masks)
         predictions = apply_masks(x, masks=target_masks)
-
-        # TODO: (1) solve memory issues with loss computation
-        loss = (targets - predictions) ** 2
-        loss = loss.mean(dim=-1)  # mean loss per patch
-        loss = loss.sum() / masks.sum()
-
-        # NOTE: potential partial fix
-        # loss = nn.functional.mse_loss(predictions, targets, reduction='mean')
+        loss = self.loss_fn(predictions, targets, masks)
         
-        loss = loss.to(targets.dtype)
         loss_dict = {
             "step_loss": loss,
         }

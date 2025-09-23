@@ -1,0 +1,71 @@
+defaults:
+  - _self_
+
+# nsys_env:
+#   nsight: 
+#     # image appears to be too old
+#     pytorch: autograd-shapes-nvtx
+#     cuda-memory-usage: true
+#     # OPTIONS:
+#     # "t": "cuda, nvtx, cuda-hw,"
+#     #     "cublas-verbose"
+#     #     "cusparse-verbose, cudnn, cudla-verbose,"
+#     #     "cusolver-verbose, opengl, opengl-annotations, "
+#     #     "openacc, openmp, osrt, mpi, nvvideo, vulkan, vulkan-annotations, "
+#     #     "dx11, dx11-annotations, dx12, dx12-annotations, openxr, openxr-annotations, "
+#     #     "oshmem, ucx, wddm, tegra-accelerators, python-gil",
+#     t: cuda,nvtx,cudnn,cublas,osrt
+#     s: process-tree
+#     # "gpu-metrics-devices": "cuda-visible",
+#     capture-range: cudaProfilerApi
+#     capture-range-end: stop-shutdown
+#     nvtx-capture: range@domain
+#     cudabacktrace: all:10000
+#     backtrace: dwarf
+#     # "python-backtrace": "cuda",
+#     # "osrt-threshold": "10000",
+#     # "python-sampling": "true",
+#     # "python-sampling-frequency": "1000"
+
+nsys_env: null
+
+hooks_list:
+  - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.SamplerSetter
+  - _target_: training.hooks.LRScheduler
+  - _target_: training.hooks.IterationTimer
+  - _target_: training.hooks.PeriodicWriter
+  - _target_: training.hooks.PeriodicCheckpointer
+    period: 1
+    file_prefix: latest_model
+  - _target_: training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true
+  - _target_: training.hooks.WeightDecayScheduleHook
+  # - _target_: training.hooks.NsysProfilerHook
+  #   start_iter: 40
+  #   end_iter: 90
+  # - _target_: training.hooks.TorchProfiler
+  #   output_dir: ${loggers.logdir}/profiler
+  #   schedule:
+  #     skip_first: 1
+  #     warmup: 1
+  #     active: 3
+  #     repeat: 2
+  #     wait: 1  
+  #   activities: 
+  #     - CUDA
+  #     - CPU
+  #   save_tensorboard: true
+  # - _target_: training.hooks.TorchMemoryStats
+  #   step_period: 20
+  #   epoch_period: 1
+  #   logdir: ${loggers.logdir}
+  # - _target_: training.hooks.EarlyStopHook
+  #   patience: 10
+  #   stopping_threshold: 0.01
+  #   mode: ${evaluation.val_mode}
+  #   metric_name: ${evaluation.val_metric}

@@ -5,19 +5,20 @@ defaults:
   - /clusters/local                          # configs/clusters/local.yaml
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
   - /models/mae/large                        # configs/models/mae/large.yaml
-  - /hooks/hooks                             # configs/hooks/hooks.yaml
+  - /hooks/hooks_with_weight_decay           # configs/hooks/hooks_with_weight_decay.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
-  - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /schedulers/test_warmup_stable_decay     # configs/schedulers/test_warmup_stable_decay.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: benchmark_multinode_training_h100s_ray_v2_bf16
-wandb_project: benchmark_multinode_training_h100s_ray_v2_bf16
+experiment_name: new_benchmark_multinode_training_h100s
+wandb_project: new_benchmark_multinode_training_h100s
 
 # task
 task: pretrain_mae
@@ -47,7 +48,8 @@ loop_per_worker_script: training.loops.train_loop_per_worker
 quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
 
 # dtype for training data
-dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
+# NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model 
+dataset_dtype: float16 # data type for loading data, options: float32, float16 
 
 # dataset layout in the zarr files
 dataset_layout_order: TZYXC
@@ -110,7 +112,8 @@ datasets:
 # hooks
 hooks:
   hooks_list:
-#  - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.WeightDecayScheduleHook
   - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer
   - _target_: training.hooks.PeriodicWriter

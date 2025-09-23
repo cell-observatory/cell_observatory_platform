@@ -40,7 +40,7 @@ def test_vit_custom(models_kargs):
         modes=models_kargs['modes'],
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -79,7 +79,7 @@ def test_vit_tiny(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -118,7 +118,7 @@ def test_vit_small(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -156,7 +156,7 @@ def test_vit_base(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -195,7 +195,7 @@ def test_vit_large(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -233,7 +233,7 @@ def test_vit_huge(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 

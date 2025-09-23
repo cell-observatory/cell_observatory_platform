@@ -1,0 +1,10 @@
+opt: lamb
+lr: 5e-3 # initial learning rate
+wd: 5e-4 # initial weight decay
+ld: null # optional layer decay
+clip_grad: 0.5
+betas: [0.9, 0.99]
+eps: 1e-08
+
+param_group_split_mode: vjepa2
+zero_init_bias_wd: true

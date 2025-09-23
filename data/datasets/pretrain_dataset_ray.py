@@ -1,38 +1,48 @@
 import os
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Literal, Optional
+from typing import List, Optional, Dict, Any, Iterable, Callable, Literal, Optional
 
+import ujson
 import numpy as np
+import pandas as pd
 import pyarrow as pa
-import ray
 import tensorstore as ts
+
+from omegaconf import OmegaConf
+from omegaconf import DictConfig
+from hydra.utils import instantiate, get_method
+
 import torch
 from hydra.utils import get_method, instantiate
 from omegaconf import DictConfig, OmegaConf
+
+import ray
 from ray.data._internal.delegating_block_builder import DelegatingBlockBuilder
 from ray.data.block import Block, BlockMetadata
 from ray.data.datasource import Datasource, ReadTask
+from ray.data._internal.delegating_block_builder import DelegatingBlockBuilder
 
 from data.data_shapes import MULTICHANNEL_HYPERCUBE
+from utils.profiling import pprof_class
+from data.io import read_zarr, load_hypercubes_dataframe
 from data.data_types import TENSORSTORE_DTYPES, TORCH_DTYPES
-from data.io import load_hypercubes_dataframe, read_zarr
 
 
+@pprof_class
 class PinnedTensorCollator:
     """
-    Convert FixedShapeTensorArray/FixedSizeListArray 
-    column in Arrow to a pinned Torch tensor using
-    one host-side copy. 
+    Convert FixedShapeTensorArray/FixedSizeListArray
+    column in Arrow to a pinned Torch tensor using one host-side copy.
     """
 
     def __init__(self, 
-        dtype: str, 
-        sample_shape: List[int], 
+        dtype: str,
+        sample_shape: List[int],
         pin_memory: bool = True,
         impl_type: Literal["FixedShapeTensorArray", "FixedSizeListArray"] = "FixedSizeListArray",
         copy_to_pinned_array: bool = False, # to stack and copy data to pinned memory
-        skip_metadata: bool = True 
+        skip_metadata: bool = True
     ):
         self.impl_type = impl_type
         self.pin_memory = pin_memory
@@ -58,7 +68,7 @@ class PinnedTensorCollator:
         offset = 0
         for item in chunks_arr.chunks:            
             item = torch.from_numpy(item.to_numpy_ndarray())
-            
+
             if item.dtype != self.dtype:
                 # ray.logger.warning(f"Casting colatted data to {self.dtype}")
                 item = item.to(self.dtype)
@@ -66,7 +76,7 @@ class PinnedTensorCollator:
             if self.copy_to_pinned_array:
                 # copy to pinned memory (should be only real copy)
                 arr[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
-            else:   
+            else:
                 arr.append(item)
 
             offset += item.shape[0]
@@ -89,7 +99,7 @@ class PinnedTensorCollator:
             flat = chunk.values.to_numpy(zero_copy_only=True)
             np_view = flat.reshape(M, *self.sample_shape)
             tensor = torch.from_numpy(np_view)
-            
+
             if tensor.dtype != self.dtype:
                 # ray.logger.warning(f"Casting colatted data to {self.dtype}")
                 tensor = tensor.to(self.dtype)
@@ -99,9 +109,9 @@ class PinnedTensorCollator:
                 arr[offset:offset+M].copy_(tensor, non_blocking=True)
             else:
                 arr.append(tensor)
-                
+
             offset += M
-            
+
         return arr
 
     def __call__(self, batch: pa.Table | pa.RecordBatch) -> Dict[str, Any]:
@@ -114,12 +124,12 @@ class PinnedTensorCollator:
             data_tensor = self._copy_arrow_list_array(chunks_arr, pin_memory=self.pin_memory)
         else:
             raise ValueError(f"Unsupported impl_type: {self.impl_type}")
-        
+
         if self.skip_metadata:
             meta = {}
         else:
             meta = {name: batch.column(name).to_pylist() for name in batch.schema.names if name != 'data_tensor'}
-            
+
         meta['collate_time'] = time.time() - t0
 
         return {"data_tensor": data_tensor, "metainfo": meta}
@@ -128,30 +138,49 @@ class PinnedTensorCollator:
 # -------- -------- -------- v1 -------- -------- --------
 
 
-def _slice_hypercube(data_tensor, meta: Dict[str, Any]) -> np.ndarray:
+def _slice_hypercube(
+    data_tensor,
+    meta: Dict[str, Any],
+    channels_subset: Optional[List[int]] = None
+) -> np.ndarray:
     t = slice(meta["time_start"], meta["time_start"] + meta["time_size"])
-    c = slice(0, meta["channel_size"])
     z = slice(meta["z_start"], meta["z_start"] + meta["cube_size"])
     y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
     x = slice(meta["x_start"], meta["x_start"] + meta["cube_size"])
-    return data_tensor[t, z, y, x, c].read().result()
+
+    if channels_subset is None:
+        c = slice(0, meta["channel_size"])
+        view = data_tensor[t, z, y, x, c]
+    else:
+        view = data_tensor[t, z, y, x, channels_subset]
+
+    return view.read().result()
 
 
-def _load_cube(meta: Dict[str, Any], dtype) -> np.ndarray:
+def _load_cube(
+    meta: Dict[str, Any],
+    dtype: TENSORSTORE_DTYPES,
+    channels_subset: Optional[List[int]] = None
+) -> np.ndarray:
     handle = read_zarr(
         os.path.join(meta["server_folder"], meta["output_folder"], meta["tile_name"]),
         dtype=dtype,
     )
-    cube = _slice_hypercube(handle, meta)
+    cube = _slice_hypercube(handle, meta, channels_subset)
     del handle
     return cube
 
 
-def _read_block(records: List[Dict[str, Any]], timing: bool, dtype) -> Iterable[Block]:
+def _read_block(
+    records: List[Dict[str, Any]],
+    timing: bool,
+    dtype: TENSORSTORE_DTYPES,
+    channels_subset: Optional[List[int]] = None
+) -> Iterable[Block]:
     builder = DelegatingBlockBuilder()
     for meta in records:
         t0 = time.time() if timing else None
-        img_tensor = _load_cube(meta, dtype)
+        img_tensor = _load_cube(meta, dtype, channels_subset)
 
         # TODO: numpy support for ImageList
         # img_sample = ImageList(
@@ -196,9 +225,12 @@ class PretrainDatasourceRay(Datasource):
          hpf_list: Optional[Iterable[int]] = None,
          roi_list: Optional[Iterable[int]] = None,
          tile_list: Optional[Iterable[str]] = None,
-         occupancy_threshold: Optional[float] = None
+         occupancy_threshold: Optional[float] = None,
+         channels_subset: Optional[List[int]] = None
     ):
         self.input_layout = input_layout
+
+        self.channels_subset = list(channels_subset) if channels_subset is not None else None
 
         hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
         if not hypercubes_dataframe_path.exists():
@@ -217,27 +249,33 @@ class PretrainDatasourceRay(Datasource):
             occupancy_threshold=occupancy_threshold
         )
 
-        if indices is not None:
+        if indices is not None and len(indices) > 0:
             self.hypercubes_dataframe = self.hypercubes_dataframe.iloc[indices].reset_index(drop=True)
 
         self._hypercubes_records: List[Dict[str, Any]] = self.hypercubes_dataframe.to_dict(orient="records")
-        self._dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+        self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
         # pre-compute bytes / cube for size estimates
-        self._bytes_per_cube = self._compute_bytes_per_record(record=self._hypercubes_records[0], dtype=self._dtype)
+        self._bytes_per_cube = self._compute_bytes_per_record(record=self._hypercubes_records[0])
 
         self.time = time
 
-    def _compute_bytes_per_record(self, record: Dict[str, Any], dtype: TENSORSTORE_DTYPES) -> int:
-        voxels = (
-                record["time_size"] * record["channel_size"] * record["cube_size"] ** 3
-        )
-        if dtype == ts.float16 or dtype == ts.bfloat16:
+    def _compute_bytes_per_record(self, record: Dict[str, Any]) -> int:
+        if self.channels_subset is not None:
+            voxels = (
+                record["time_size"] * len(self.channels_subset) * record["cube_size"] ** 3
+            )
+        else:
+            voxels = (
+                    record["time_size"] * record["channel_size"] * record["cube_size"] ** 3
+            )
+
+        if (self.dtype == TENSORSTORE_DTYPES['fp16']) or (self.dtype == TENSORSTORE_DTYPES['bf16']):
             return voxels * 2
-        elif dtype == ts.float32:
+        elif self.dtype == TENSORSTORE_DTYPES['fp32']:
             return voxels * 4
         else:
-            raise ValueError(f"Unsupported dtype: {dtype}")
+            raise ValueError(f"Unsupported dtype: {self.dtype}")
 
     def get_name(self) -> str:
         return "PretrainHypercube"
@@ -262,11 +300,22 @@ class PretrainDatasourceRay(Datasource):
 
             # avoid big serialization
             shard_ref = ray.put(list(shard))
-            dtype = self._dtype
+            dtype = self.dtype
             timing = self.time
+            channels_subset = self.channels_subset
 
-            def _make_read_task(records_ref=shard_ref, dtype=dtype, timing=timing):
-                return _read_block(ray.get(records_ref), timing, dtype)
+            def _make_read_task(
+                records_ref=shard_ref,
+                dtype=dtype,
+                timing=timing,
+                channels_subset=channels_subset
+            ):
+                return _read_block(
+                    records=ray.get(records_ref),
+                    timing=timing,
+                    dtype=dtype,
+                    channels_subset=channels_subset
+                )
 
             # NOTE: we have seen issues before with Ray's fifo_bundle_queue
             #       where we get:
@@ -275,13 +324,13 @@ class PretrainDatasourceRay(Datasource):
             #       got -134217744 bytes instead.`
             #       if this persists, consider setting size_bytes to None
             #       or debug further
-            shard_size = sum(self._compute_bytes_per_record(r, self._dtype) for r in shard)
+            shard_size = sum(self._compute_bytes_per_record(r, self.dtype) for r in shard)
 
             meta = BlockMetadata(
                 num_rows=len(shard),
                 size_bytes=shard_size,
                 input_files=None,
-                exec_stats=None
+                exec_stats=None,
             )
             tasks.append(ReadTask(_make_read_task, meta))
 
@@ -291,39 +340,42 @@ class PretrainDatasourceRay(Datasource):
 # -------- -------- -------- v2 -------- -------- --------
 
 
+@pprof_class
 class RayLoaderActor:
     """
     Ray actor that loads hypercubes from a Arrow Table.
     Used for Ray Data v2.
     """
-    def __init__(self, 
-                 context_spec: Dict[str, Any],
-                 input_layout: str,
-                 with_batched_api: bool = True, 
-                 dtype: str = "fp16",
-                 impl_type: Literal["FixedShapeTensorArray", "FixedSizeListArray"] = "FixedSizeListArray"
+    def __init__(
+        self,
+        context_spec: Dict[str, Any],
+        input_layout: str,
+        with_batched_api: bool = True,
+        dtype: str = "fp16",
+        impl_type: Literal["FixedShapeTensorArray", "FixedSizeListArray"] = "FixedSizeListArray",
+        channels_subset: Optional[List[int]] = None
 ):
         self.impl_type = impl_type
         self.ctx = ts.Context(context_spec)
+        self.channels_subset = list(channels_subset) if channels_subset is not None else None
         self.input_layout = input_layout.upper()
         self.with_batched_api = with_batched_api
         self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-        
-        if self.dtype == TENSORSTORE_DTYPES.bf16.value:
-            # ray.logger.warning(
-            #     "Using fp16 for PyArrow, Collator will cast data to bf16"
-            # )
-            self.dtype = TENSORSTORE_DTYPES.fp16.value
-
         self._handles = {}  # lazy loading of handles
 
     def _slice_hypercube(self, data_tensor, meta: Dict[str, Any], ts_batch=None):
         t = slice(meta["time_start"], meta["time_start"] + meta["time_size"])
-        c = slice(0, meta["channel_size"])
         z = slice(meta["z_start"], meta["z_start"] + meta["cube_size"])
         y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
         x = slice(meta["x_start"], meta["x_start"] + meta["cube_size"])
-        return data_tensor[t, z, y, x, c].read(batch=ts_batch, order="C")
+
+        if self.channels_subset is not None:
+            view = data_tensor[t, z, y, x, self.channels_subset]
+        else:
+            c = slice(0, meta["channel_size"])
+            view = data_tensor[t, z, y, x, c]
+
+        return view.read(batch=ts_batch, order="C")
 
     def _get_handle(self, path: str):
         h = self._handles.get(path)
@@ -341,12 +393,16 @@ class RayLoaderActor:
     
     def _get_sample_size(self, record) -> int:
         if self.input_layout == 'TZYXC':
-            return int(record["time_size"] * record["cube_size"] ** 3 * record["channel_size"])
+            if self.channels_subset is not None:
+                return int(record["time_size"] * record["cube_size"] ** 3 * len(self.channels_subset))
+            else:
+                return int(record["time_size"] * record["cube_size"] ** 3 * record["channel_size"])
         else:
             #TODO: add support for other layouts
             raise ValueError(f"Unsupported dataset layout order: {self.input_layout}")
 
     def __call__(self, batch):
+        read_time = time.perf_counter()
         records = batch.to_pylist()
 
         futs = []
@@ -355,7 +411,6 @@ class RayLoaderActor:
                 for i, r in enumerate(records):
                     p = os.path.join(r["server_folder"], r["output_folder"], r["tile_name"])
                     futs.append(self._slice_hypercube(self._get_handle(p), r, ts_batch=b))
-                b.submit()
         else:
             for i, r in enumerate(records):
                 p = os.path.join(r["server_folder"], r["output_folder"], r["tile_name"])
@@ -376,29 +431,38 @@ class RayLoaderActor:
             col = pa.chunked_array(chunks)
         
         elif self.impl_type == "FixedShapeTensorArray":
-            chunks  = [pa.FixedShapeTensorArray.from_numpy_ndarray(self._np_as_strided_view(a)) 
-                        for a in arrays]
+            chunks  = [pa.FixedShapeTensorArray.from_numpy_ndarray(self._np_as_strided_view(a)) for a in arrays]
             col = pa.chunked_array(chunks)
         
         else:
             raise ValueError(f"Unsupported impl_type: {self.impl_type}")
 
-        return batch.append_column("data_tensor", col)
+        read_time = time.perf_counter() - read_time
+        read_time_col = pa.array([read_time] * batch.num_rows, type=pa.float64())
+
+        batch = batch.append_column("data_tensor", col)
+        return batch.append_column("read_time", read_time_col)
 
 
 # -------- -------- --------  -------- -------- --------
 
 
 def get_dataset_ray(
-    cfg: DictConfig, 
-    indices: Optional[List[int]], 
+    cfg: DictConfig,
+    indices: Optional[List[int]],
     database: Optional[Any] = None,
     columns: list = [ # metadata columns to keep from the original dataframe (adding more columns will slow down our collate)
-        'x_start', 'y_start', 'z_start', 'time_start', 
+        'x_start', 'y_start', 'z_start', 'time_start',
         'channel_size', 'cube_size', 'time_size',
         'server_folder', 'output_folder', 'tile_name',
     ]
 ):
+    if cfg.datasets.channels_subset is not None:
+        num_channels = cfg.datasets.input_shape[cfg.dataset_layout_order.index("C")]
+        assert len(list(cfg.datasets.channels_subset)) == num_channels, \
+            f"channels_subset length {len(cfg.datasets.channels_subset)} " \
+            f"does not match number of channels {num_channels} in input_shape {cfg.datasets.input_shape}"
+
     if not cfg.datasets.ray_data_v2:
         datasource = instantiate(
             cfg.datasets.dataset,
@@ -413,7 +477,8 @@ def get_dataset_ray(
             hpf_list=cfg.datasets.hpf_list,
             roi_list=cfg.datasets.roi_list,
             tile_list=cfg.datasets.tile_list,
-            occupancy_threshold=cfg.datasets.occupancy_threshold
+            occupancy_threshold=cfg.datasets.occupancy_threshold,
+            channels_subset=cfg.datasets.channels_subset
         )
 
         dataset = ray.data.read_datasource(datasource, 
@@ -449,9 +514,9 @@ def get_dataset_ray(
         ts_ctx = OmegaConf.to_container(cfg.datasets.context, resolve=True)
         # remove None values from context spec
         ctx_spec = {k: v for k, v in ts_ctx.items() if v is not None}
-        
+
         table = pa.table(
-            database.hypercubes_dataframe[columns].iloc[indices] 
+            database.hypercubes_dataframe[columns].iloc[indices]
             if indices is not None else database.hypercubes_dataframe[columns]
         )
         
@@ -470,7 +535,8 @@ def get_dataset_ray(
                 "with_batched_api": cfg.datasets.with_batched_api,
                 "dtype": cfg.dataset_dtype,
                 "impl_type": cfg.datasets.impl_type,
-                "input_layout": cfg.datasets.dataset.input_layout.value
+                "input_layout": cfg.datasets.dataset.input_layout.value,
+                "channels_subset": cfg.datasets.channels_subset
             },
             # consider fractional values for jobs with much I/O, i.e.
             # num_cpus=0.5,
