@@ -4,8 +4,8 @@ defaults:
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
   - /clusters/local                          # configs/clusters/local.yaml
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
-  - /models/mae/large                         # configs/models/mae/large.yaml
-  - /hooks/hooks                             # configs/hooks/hooks.yaml
+  - /models/mae/large                        # configs/models/mae/large.yaml
+  - /hooks/hooks_with_weight_decay           # configs/hooks/hooks_with_weight_decay.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml

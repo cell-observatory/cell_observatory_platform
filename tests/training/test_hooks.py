@@ -539,7 +539,7 @@ def test_hooks(config):
 
     with open_dict(config):
         config.experiment_name = "test_hooks"
-        config.hooks.hook_list = list(config.hooks.hook_list).append({'_target_': 'training.hooks.WeightDecayScheduleHook'})
+        # config.hooks.hooks_list = list(config.hooks.hooks_list).append({'_target_': 'training.hooks.WeightDecayScheduleHook'})
         config.paths.resume_checkpointdir = None
 
 

@@ -3,13 +3,13 @@ defaults:
   - paths: local                             # configs/paths/local.yaml
   - datasets: pretrain_dataset               # configs/datasets/pretrain_dataset.yaml
   - models: mae/tiny                         # configs/models/mae/tiny.yaml
-  - hooks: hooks                             # configs/hooks/hooks.yaml
+  - hooks: hooks_with_weight_decay             # configs/hooks/hooks_with_weight_decay.yaml
   - checkpoint: checkpoint                   # configs/checkpoint/checkpoint.yaml
   - loggers: loggers                         # configs/loggers/loggers.yaml
   - evaluation: base_evaluator               # configs/evaluation/base_evaluator.yaml
   - deepspeed: zero3                         # configs/deepspeed/zero3.yaml
   - optimizers: lamb                         # configs/optimizers/lamb.yaml
-  - schedulers: test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
+  - schedulers: test_warmup_stable_decay     # configs/schedulers/test_warmup_stable_decay.yaml
   - optimizations: optimizations             # configs/optimizations/optimizations.yaml
   - profiling: profiling                     # configs/profiling/profiling.yaml
   - _self_
@@ -113,6 +113,7 @@ loggers:
 
 hooks:
   hooks_list:
+  - _target_: training.hooks.WeightDecayScheduleHook
   - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.SamplerSetter
   - _target_: training.hooks.LRScheduler

@@ -232,7 +232,7 @@ class LRScheduler(HookBase):
         if self.update_type == "epoch":
             self.scheduler.step(epoch=self.trainer._epoch)
         elif self.update_type == "step":
-            self.scheduler.step(self.trainer_iter)
+            self.scheduler.step(self.trainer._iter)
         else:
             raise NotImplementedError(f'{self.update_type=} is not supported')
 
