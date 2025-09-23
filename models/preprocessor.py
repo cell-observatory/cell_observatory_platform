@@ -36,7 +36,7 @@ class TorchPreprocessor(torch.nn.Module):
         if inputs.dtype != self.dtype:
             # ray.logger.warning(f"Casting inputs to {self.dtype}")
             inputs = inputs.to(self.dtype)
-            
+        
         assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
         
         if self.with_masking:
@@ -167,7 +167,7 @@ class RayPreprocessor(torch.nn.Module):
             transform_time = time.time() - transform_t0
 
         assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
-        
+
         if self.with_masking:
             masking_time = time.time()
             masks, context_masks, target_masks, \
