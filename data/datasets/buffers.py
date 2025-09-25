@@ -15,9 +15,7 @@ from multiprocessing import shared_memory
 from data.data_types import NUMPY_DTYPES, TORCH_DTYPES
 from utils.context import (local_rank, 
                            node_id,
-                           bind_current_process_to_node,
-                           pin_to_numa_node,
-                           torch_gpu_to_numa)
+                           bind_current_process_to_node)
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -111,6 +109,7 @@ class HostMemoryBuffer:
 
 def set_buffers(local_rank: int,
                 global_rank: int,
+                numa_node: int,
                 dtype: str,
                 batch_size: tuple,
                 input_shape: tuple,
@@ -118,12 +117,9 @@ def set_buffers(local_rank: int,
                 buffer_capacity: int,
                 pin_to_numa_node: bool,
                 node_id: int,
-                max_concurrent_calls: int = 256,
-                numa_node: int = None
+                max_concurrent_calls: int = 256
 ):
     if buffer_type == "host_memory":
-        if numa_node is None:
-            numa_node = torch_gpu_to_numa(local_rank)["numa_node"]
         name = f"host_pinned_shm_buffer_numa_{numa_node}_rank_{global_rank}"
 
         ray.logger.info(f"Global rank {global_rank} creating host buffer actor "
@@ -150,6 +146,8 @@ def set_buffers(local_rank: int,
         buffer_cfg = ray.get(buffer.get_config.remote())
 
         ray.logger.info(f"Shared memory buffer actor '{name}' "
+                    f"on NUMA node {numa_node} and local rank {local_rank} "
+                    f"and node id {node_id} and global rank {global_rank} "
                     f"with capacity {buffer_capacity} and batch shape "
                     f"{(batch_size, *input_shape)} set up.")
 

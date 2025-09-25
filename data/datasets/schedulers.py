@@ -10,8 +10,7 @@ from utils.context import (list_numa_nodes,
                             cpus_for_node,
                             node_id,
                             read_numa_distance_row,
-                            get_world_size,
-                            torch_gpu_to_numa)
+                            get_world_size)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +30,7 @@ class NumaNodeAffinityScheduler:
     def __init__(self, 
                  node_id: int,
                  gpu_numa_nodes: List[int],
+                 gpu_to_numa_map: Dict[int, int],
                  policy: str = "distance", 
                  oversub_factor: float = 1.0,
     ):  
@@ -47,6 +47,7 @@ class NumaNodeAffinityScheduler:
         self.node_capacity = {
             n: int(len(self.cpus_for_node[n]) * self.oversub_factor) for n in self.numa_nodes
         }
+        self.gpu_to_numa_map = gpu_to_numa_map
 
         # distance map: lower is closer (10=self, 12=20% slower, etc.)
         self.distance = self._build_distance_map(self.numa_nodes)
@@ -120,9 +121,10 @@ class NumaNodeAffinityScheduler:
     def list_cpu_only_nodes(self):
         return list(self.cpu_only_nodes)
 
-    def schedule_actor_for_gpu(self, torch_gpu_index: int) -> int:        
-        info = torch_gpu_to_numa(torch_gpu_index)
-        gpu_numa = int(info["numa_node"])
+    def schedule_actor_for_gpu(self, torch_gpu_index: int) -> int:
+        gpu_numa = self.gpu_to_numa_map.get(torch_gpu_index)
+        if gpu_numa is None:
+            raise ValueError(f"Unknown GPU index {torch_gpu_index}")
         return self.schedule_actor(gpu_numa)
 
     def schedule_actor(self, requested_numa: int) -> int:

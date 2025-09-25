@@ -20,6 +20,8 @@ import ray
 from ray.train import get_context
 from contextlib import contextmanager, nullcontext
 
+import cupy as cp
+
 import torch
 from torch import distributed as dist
 
@@ -197,25 +199,26 @@ def get_node_process_group():
     return dist.new_group(ranks=ranks)
 
 
-def get_local_numa_nodes():
-    worker_numa = int(torch_gpu_to_numa(local_rank())["numa_node"])
+def get_local_numa_nodes(worker_numa_node: int):
     if not dist.is_initialized():
         # single-process case
-        return [worker_numa]
+        return [worker_numa_node]
 
     pg = get_node_process_group()
     lrank = local_rank()
     lsize = get_local_world_size()
 
     dev = torch.device(f"cuda:{lrank}")
-    worker_numa = torch.tensor([worker_numa], dtype=torch.int32, device=dev)
+    worker_numa = torch.tensor([worker_numa_node], dtype=torch.int32, device=dev)
     buf = torch.empty(lsize, dtype=torch.int32, device=dev)
 
     # gather each local rank's NUMA id
     dist.all_gather_into_tensor(buf, worker_numa, group=pg)
 
     if lrank == 0:
-        return buf.cpu().tolist()
+        buf = buf.cpu().tolist()
+        buf = {i: n for i, n in enumerate(buf)}
+        return buf
     else:
         return None
 
@@ -236,15 +239,18 @@ def _nvml_init():
 
 def _nvml_handle_for_torch_index(torch_idx: int):
     _nvml_init()
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if not cvd:
-        return nvml.nvmlDeviceGetHandleByIndex(torch_idx)
-    tokens = [t.strip() for t in cvd.split(",") if t.strip()]
-    tok = tokens[torch_idx]
-    if tok.isdigit():
-        return nvml.nvmlDeviceGetHandleByIndex(int(tok))
-    else:
-        raise ValueError(f"Invalid CUDA_VISIBLE_DEVICES token: {tok}")
+    # NOTE: NVML idx and CUDA idx may not be correlated hence
+    #       we use PCIBusId
+    device_PCIBusId = cp.cuda.runtime.deviceGetPCIBusId(torch_idx)
+    # prefer v2 if available
+    for fn_name in ("nvmlDeviceGetHandleByPciBusId_v2", "nvmlDeviceGetHandleByPciBusId"):
+        pci_info_func = getattr(nvml, fn_name, None)
+        if pci_info_func is None:
+            continue
+        handle = pci_info_func(device_PCIBusId)
+        if handle is None:
+            raise RuntimeError(f"NVML handle not found for PCI {device_PCIBusId}")
+        return handle
 
 
 _BUSID_RE = re.compile(
@@ -360,24 +366,6 @@ def _local_cpulist_for_dev(pci_bus_id: str) -> List[int]:
     return _parse_range_list(s)
 
 
-def list_numa_nodes_with_gpus(device_count: int, strict: bool = True) -> list[int]:
-    nodes = set()
-    for ti in range(device_count):
-        try:
-            info = torch_gpu_to_numa(ti)
-            n = info.get("numa_node")
-            if n is not None and n >= 0:
-                nodes.add(int(n))
-        except Exception:
-            pass
-
-    if strict:
-        online = set(list_numa_nodes())
-        nodes &= online
-
-    return sorted(nodes)
-
-
 def list_numa_nodes() -> List[int]:
     base = Path("/sys/devices/system/node")
     online = _read_text(base / "online")
@@ -434,6 +422,12 @@ def read_numa_distance_row(node: int) -> Optional[List[int]]:
         return None
 
 
+# TODO: This function must be called from a process that 
+#       has visibility of a CUDA capable device, else
+#       will throw. There may be a way to get the 
+#       correct NVML handle without this requirement
+#       however since the CUDA idx may not always 
+#       correlate with NVML idx this will require care.
 def torch_gpu_to_numa(torch_idx: int) -> Dict:
     h = _nvml_handle_for_torch_index(torch_idx)
     pci = _pci_bus_id(h)
@@ -481,19 +475,6 @@ def bind_current_process_to_node(node: int):
         logger.warning(f"numa.schedule/memory bind failed: {e}")
         os.sched_setaffinity(0, chosen)
     return node
-
-
-def pin_to_numa_node(gpu_id: int) -> Optional[int]:
-    info = torch_gpu_to_numa(gpu_id)
-    n = info.get("numa_node")
-    if n is not None:
-        # TODO: handle case where compute node has no CPUs in affinity scheduler
-        assert len(cpus_for_node(n)) > 0, \
-            f"NUMA node {n} has no CPUs, we do not currently support this case"
-        bind_current_process_to_node(n)
-    else:
-        raise RuntimeError(f"Cannot pin to NUMA node for GPU {gpu_id}, info: {info}")
-    return n
 
 
 def unlink_shared_memory():

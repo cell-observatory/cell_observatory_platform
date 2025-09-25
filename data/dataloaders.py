@@ -23,7 +23,8 @@ from utils.context import (process_rank,
                            barrier,
                            get_local_numa_nodes, 
                            local_rank, 
-                           node_id)
+                           node_id,
+                           torch_gpu_to_numa)
 from data.datasets.buffers import set_buffers
 from data.datasets.schedulers import NumaNodeAffinityScheduler
 from data.datasets.pretrain_dataset_ray import get_dataloader_ray
@@ -301,7 +302,8 @@ def get_dataloader(config: DictConfig):
 
     elif config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
         # get numa nodes for this node (gathered on local_rank 0)
-        gpu_numa_nodes = get_local_numa_nodes()
+        gpu_to_numa_map = get_local_numa_nodes(worker_numa_node=torch_gpu_to_numa(local_rank())["numa_node"])
+        gpu_numa_nodes = list(gpu_to_numa_map.values()) if gpu_to_numa_map is not None else []
 
         # start numa scheduler actor on rank 0 of each node
         if local_rank() == 0:
@@ -322,6 +324,7 @@ def get_dataloader(config: DictConfig):
                     node_id=node_id(),
                     # get unique list of NUMA nodes with GPUs on this node
                     gpu_numa_nodes=list(set(gpu_numa_nodes)),
+                    gpu_to_numa_map=gpu_to_numa_map
                 )
 
         buffer_actor, buffer_cfg = set_buffers(
@@ -335,7 +338,7 @@ def get_dataloader(config: DictConfig):
             pin_to_numa_node=config.datasets.pin_numa_node,
             max_concurrent_calls=config.datasets.max_concurrent_calls,
             node_id=node_id(),
-            numa_node=None,
+            numa_node=torch_gpu_to_numa(local_rank())["numa_node"],
         )
 
         if isinstance(config.datasets.collate_fn, DictConfig):

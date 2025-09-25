@@ -23,11 +23,9 @@ from torch.utils.data import random_split
 
 from data.io import read_zarr
 from utils.context import (process_rank,
-                            get_local_world_size,
                            torch_gpu_to_numa, 
                            local_rank,
                            get_world_size,
-                           pin_to_numa_node,
                            bind_current_process_to_node,
                            node_id)
 from utils.profiling import pprof_func, pprof_class
@@ -107,7 +105,9 @@ class CollatorActor:
             dtype=buffer_dtype
         )
 
-        ray.logger.info(f"CollatorActor on rank {self.global_rank} using host shared memory buffer "
+        ray.logger.info(f"CollatorActor on rank {self.global_rank} and Numa Node {self.numa_node} "
+                    f"using host shared memory buffer with pin_numa_node={pin_numa_node} "
+                    f"with local rank {self.local_rank} and node id {self.node_id} "
                     f"with name {cfg['name']} and capacity {cfg['capacity']} and HostMemoryBuffer "
                     f"with pin_pages={self._pinned}")
 
@@ -133,10 +133,10 @@ class CollatorActor:
         dst_ptr = ctypes.c_void_p(dst.data_ptr())
         # cupy function handle: 
         # cupy.cuda.runtime.memcpyAsync(intptr_t dst, intptr_t src, size_t size, int kind, intptr_t stream)
-        cudart.memcpyAsync(dst_ptr.value, 
-                            src_ptr.value, 
+        cudart.memcpyAsync(dst_ptr.value,
+                            src_ptr.value,
                             src.nbytes,
-                            cudart.memcpyHostToDevice, 
+                            cudart.memcpyHostToDevice,
                             int(self.cp_stream.ptr))
 
     def __call__(self, batch):        
@@ -193,6 +193,7 @@ class LoaderActor:
                  node_id: int,
                  local_rank: int,
                  global_rank: int,
+                 numa_node: int,
                  batch_size: int,
                  input_layout: str,
                  context_spec: Dict[str, Any],
@@ -203,7 +204,7 @@ class LoaderActor:
                  channels_subset: Optional[List[int]] = None
 ):       
         self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
-        self.driver_process_numa_node = torch_gpu_to_numa(local_rank)["numa_node"]
+        self.driver_process_numa_node = numa_node
         if pin_numa_node:
             self.actor_scheduler = ray.get_actor(f"numa_node_affinity_scheduler_node_{self.node_id}", 
                                                  namespace="schedulers")
@@ -246,7 +247,9 @@ class LoaderActor:
         self.batch_shape = tuple(cfg["batch_shape"])
         self._shm = shared_memory.SharedMemory(name=cfg["name"])
 
-        ray.logger.info(f"LoaderActor on global rank {self.global_rank} using shared memory buffer "
+        ray.logger.info(f"LoaderActor on global rank {self.global_rank} and numa node {self.driver_process_numa_node} "
+                    f"using shared memory buffer and placed on numa node {self.numa_node} "
+                    f"with local rank {self.local_rank} and node id {self.node_id} "
                     f"with name {cfg['name']} and capacity {cfg['capacity']}")
 
     def __del__(self):
@@ -390,6 +393,7 @@ def get_dataset_ray(
             "local_rank": local_rank(),
             "global_rank": process_rank(),
             "node_id": node_id(),
+            "numa_node": torch_gpu_to_numa(local_rank())["numa_node"],
         },
         concurrency=(cfg.datasets.num_actors_min, cfg.datasets.num_actors_max),
     )
