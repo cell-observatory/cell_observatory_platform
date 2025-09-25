@@ -14,6 +14,8 @@ from multiprocessing import shared_memory
 
 from data.data_types import NUMPY_DTYPES, TORCH_DTYPES
 from utils.context import (local_rank, 
+                           node_id,
+                           bind_current_process_to_node,
                            pin_to_numa_node,
                            torch_gpu_to_numa)
 
@@ -59,7 +61,7 @@ class DeviceMemoryBuffer:
 @ray.remote(namespace="buffers", lifetime="detached", num_cpus=0)
 class HostMemoryBuffer:
     def __init__(self, 
-                 local_rank: int,
+                 numa_node: int,
                  name: str,
                  capacity: int, 
                  input_shape: tuple,
@@ -68,7 +70,7 @@ class HostMemoryBuffer:
                  pin_numa_node: bool = True
 ):
         if pin_numa_node:
-            pin_to_numa_node(local_rank)
+            bind_current_process_to_node(numa_node)
 
         self.actor_name = name
         self.cap = int(capacity)
@@ -108,37 +110,46 @@ class HostMemoryBuffer:
 
 
 def set_buffers(local_rank: int,
-                global_rank: int, 
+                global_rank: int,
                 dtype: str,
                 batch_size: tuple,
                 input_shape: tuple,
                 buffer_type: str,
                 buffer_capacity: int,
                 pin_to_numa_node: bool,
-                max_concurrent_calls: int = 256
+                node_id: int,
+                max_concurrent_calls: int = 256,
+                numa_node: int = None
 ):
     if buffer_type == "host_memory":
-        numa_node = torch_gpu_to_numa(local_rank)["numa_node"]
+        if numa_node is None:
+            numa_node = torch_gpu_to_numa(local_rank)["numa_node"]
         name = f"host_pinned_shm_buffer_numa_{numa_node}_rank_{global_rank}"
-        logger.info(f"Process rank {global_rank} creating host buffer actor "
-                    f"on rank {global_rank} and NUMA node {numa_node}")
 
+        ray.logger.info(f"Global rank {global_rank} creating host buffer actor "
+                    f"on local rank {local_rank} and NUMA node {numa_node}")
+
+        scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+            node_id=node_id,
+            soft=False,
+        )
         buffer = HostMemoryBuffer.options(name=name,
-                                      namespace="buffers",
+                                      namespace=f"buffers_node_{node_id}",
                                       lifetime="detached",
                                       # allow concurrent get/put calls
-                                      max_concurrency=max_concurrent_calls
+                                      max_concurrency=max_concurrent_calls,
+                                      scheduling_strategy=scheduling_strategy
                                       ).remote(
                                           name=name,
-                                          local_rank=local_rank,
                                           dtype=dtype,
                                           capacity=buffer_capacity,
                                           batch_size=batch_size,
                                           input_shape=input_shape,
-                                          pin_numa_node=pin_to_numa_node)
+                                          pin_numa_node=pin_to_numa_node,
+                                          numa_node=numa_node)
         buffer_cfg = ray.get(buffer.get_config.remote())
 
-        logger.info(f"Shared memory buffer actor '{name}' "
+        ray.logger.info(f"Shared memory buffer actor '{name}' "
                     f"with capacity {buffer_capacity} and batch shape "
                     f"{(batch_size, *input_shape)} set up.")
 
@@ -148,11 +159,14 @@ def set_buffers(local_rank: int,
         raise ValueError(f"Unsupported buffer type: {buffer_type}")
     
 
-def get_buffers(type: str, local_rank: int, global_rank: int):
+def get_buffers(type: str, 
+                global_rank: int, 
+                local_rank: int, 
+                node_id: int, 
+                numa_node: int = None
+):
     if type == "host_memory":
-        numa_node = torch_gpu_to_numa(local_rank)["numa_node"]
         name = f"host_pinned_shm_buffer_numa_{numa_node}_rank_{global_rank}"
-        return ray.get_actor(name, namespace="buffers")
-
+        return ray.get_actor(name, namespace=f"buffers_node_{node_id}")
     else:
         raise ValueError(f"Unsupported buffer type: {type}")

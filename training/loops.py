@@ -30,9 +30,9 @@ from training.hooks import HookBase
 from training.loggers import EventRecorder
 from data.dataloaders import get_dataloader
 from training.optimizers import get_optimizer
-from utils.context import inference_context, process_rank
 from training.schedulers import get_schedulers, get_param_groups
 from training.registry import build_dependency_graph_and_instantiate
+from utils.context import inference_context, process_rank, unlink_shared_memory
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)

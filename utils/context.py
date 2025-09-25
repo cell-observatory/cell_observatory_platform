@@ -1,13 +1,16 @@
 import os
 import re
+import ctypes
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
+
+from multiprocessing import shared_memory
 
 import warnings
 warnings.filterwarnings("ignore")
 
 import pynvml as nvml
-# from numa import schedule, memory
+from numa import schedule, memory, info
 
 import logging
 from enum import Enum
@@ -96,6 +99,17 @@ def process_rank() -> int:
     return 0
 
 
+def get_local_world_size() -> int:
+    try:
+        return get_context().get_local_world_size()
+    except RuntimeError:
+        pass
+    if is_torch_dist_initialized():
+        return int(os.getenv("LOCAL_WORLD_SIZE", "1"))
+    else:
+        return 1
+
+
 def get_world_size() -> int:
     """
     Return the global world size, falling 
@@ -173,6 +187,39 @@ def get_visible_devices():
     return [int(d) for d in devices if d.isdigit()]
 
 
+def get_node_process_group():
+    assert dist.is_initialized()
+    g_rank = process_rank()
+    l_rank = local_rank()
+    l_size = get_local_world_size()
+    base = g_rank - l_rank
+    ranks = list(range(base, base + l_size))
+    return dist.new_group(ranks=ranks)
+
+
+def get_local_numa_nodes():
+    worker_numa = int(torch_gpu_to_numa(local_rank())["numa_node"])
+    if not dist.is_initialized():
+        # single-process case
+        return [worker_numa]
+
+    pg = get_node_process_group()
+    lrank = local_rank()
+    lsize = get_local_world_size()
+
+    dev = torch.device(f"cuda:{lrank}")
+    worker_numa = torch.tensor([worker_numa], dtype=torch.int32, device=dev)
+    buf = torch.empty(lsize, dtype=torch.int32, device=dev)
+
+    # gather each local rank's NUMA id
+    dist.all_gather_into_tensor(buf, worker_numa, group=pg)
+
+    if lrank == 0:
+        return buf.cpu().tolist()
+    else:
+        return None
+
+
 # ---------------- NVML helpers ----------------
 
 
@@ -200,27 +247,69 @@ def _nvml_handle_for_torch_index(torch_idx: int):
         raise ValueError(f"Invalid CUDA_VISIBLE_DEVICES token: {tok}")
 
 
+_BUSID_RE = re.compile(
+    r'^(?:(?P<domain>[0-9A-Fa-f]{4,8}):)?(?P<bus>[0-9A-Fa-f]{2}):(?P<dev>[0-9A-Fa-f]{2})(?:\.(?P<func>[0-7]))?$'
+)
+
+
+def _decode_c_buffer(x):
+    if isinstance(x, bytes):
+        s = x.decode("utf-8", "ignore")
+    elif isinstance(x, str):
+        s = x
+    elif isinstance(x, (ctypes.Array,)):
+        s = ctypes.string_at(x).decode("utf-8", "ignore")
+    else:
+        s = str(x)
+    return s.split("\x00", 1)[0].strip()
+
+
+def _format_from_fields(domain: int, bus: int, dev: int, func: int | None) -> str:
+    d = f"{int(domain):04x}"
+    b = f"{int(bus):02x}"
+    de = f"{int(dev):02x}"
+    f = str(func) if func is not None else "0"
+    return f"{d}:{b}:{de}.{f}"
+
+
+def _try_struct_fields(pci) -> str | None:
+    if all(hasattr(pci, attr) for attr in ("domain", "bus", "device")):
+        func = None
+        # try to recover function number from busId if present
+        raw = getattr(pci, "busId", None)
+        if raw is not None:
+            m = _BUSID_RE.match(_decode_c_buffer(raw))
+            if m and m.group("func"):
+                func = int(m.group("func"))
+        return _format_from_fields(pci.domain, pci.bus, pci.device, func)
+    return None
+
+
 def _pci_bus_id(handle) -> str:
-    # see: https://docs.nvidia.com/deploy/nvml-api/structnvmlPciInfo__t.html#structnvmlPciInfo__t
-    pci = nvml.nvmlDeviceGetPciInfo(handle)
-    domain, bb, dd_func = pci.busId.split(":", 2)
-    domain = f"{int(domain, 16):04x}"
-    return f"{domain}:{bb}:{dd_func}".lower()
+    # 1) prefer v3 if available
+    for fn_name in ("nvmlDeviceGetPciInfo_v3", "nvmlDeviceGetPciInfo"):
+        pci_info_func = getattr(nvml, fn_name, None)
+        if pci_info_func is None:
+            continue
+        pci = pci_info_func(handle)
+        s = _try_struct_fields(pci)
+        if s:
+            return s.lower()
 
+        # 2) fallback: parse busId text
+        if hasattr(pci, "busId"):
+            raw = _decode_c_buffer(pci.busId)
+            m = _BUSID_RE.match(raw)
+            if not m:
+                raise RuntimeError(f"Unrecognized NVML busId format: {raw!r}")
+            domain = int(m.group("domain"), 16) if m.group("domain") else 0
+            bus = int(m.group("bus"), 16)
+            dev = int(m.group("dev"), 16)
+            func = int(m.group("func")) if m.group("func") else 0
+            return _format_from_fields(domain, bus, dev, func).lower()
 
-def _nvml_cpu_affinity_cpus(handle) -> List[int]:
-    _nvml_init()
-    ncpu = os.cpu_count()
-    cpus = []
-    mask = nvml.nvmlDeviceGetCpuAffinity(handle, ncpu)
-    for word_i, word in enumerate(mask):
-        w = int(word)
-        for b in range(64):
-            if w & (1 << b):
-                c = word_i * 64 + b
-                if c < ncpu:
-                    cpus.append(c)
-    return sorted(set(cpus))
+    # if none of the getters exist (very old NVML), this will run:
+    raise RuntimeError("No NVML pci info function available")
 
 
 # ---------------- sysfs parsing ----------------
@@ -288,6 +377,7 @@ def list_numa_nodes_with_gpus(device_count: int, strict: bool = True) -> list[in
 
     return sorted(nodes)
 
+
 def list_numa_nodes() -> List[int]:
     base = Path("/sys/devices/system/node")
     online = _read_text(base / "online")
@@ -303,18 +393,10 @@ def list_numa_nodes() -> List[int]:
     return sorted(nodes)
 
 
-def _cpus_for_node(node: int) -> List[int]:
-    p = Path(f"/sys/devices/system/node/node{node}/cpulist")
-    s = _read_text(p)
-    if not s:
-        return []
-    return _parse_range_list(s)
-
-
 def _cpu_to_node_map() -> Dict[int, int]:
     m = {}
     for n in list_numa_nodes():
-        for c in _cpus_for_node(n):
+        for c in cpus_for_node(n):
             m[c] = n
     return m
 
@@ -330,6 +412,26 @@ def _infer_nodes_from_cpus(cpus: List[int]) -> List[Tuple[int, int]]:
 
 
 # ---------------- public API ----------------
+
+
+def cpus_for_node(node: int) -> List[int]:
+    p = Path(f"/sys/devices/system/node/node{node}/cpulist")
+    s = _read_text(p)
+    if not s:
+        return []
+    return _parse_range_list(s)
+
+
+def read_numa_distance_row(node: int) -> Optional[List[int]]:
+    # /sys/devices/system/node/nodeX/distance -> "10 20 20 10 ..."
+    p = Path(f"/sys/devices/system/node/node{node}/distance")
+    s = _read_text(p)
+    if not s:
+        return None
+    try:
+        return [int(x) for x in s.split()]
+    except Exception:
+        return None
 
 
 def torch_gpu_to_numa(torch_idx: int) -> Dict:
@@ -359,34 +461,25 @@ def torch_gpu_to_numa(torch_idx: int) -> Dict:
                 "candidates": candidates,
             }
 
-    # 3) NVML CPU affinity
-    aff_cpus = _nvml_cpu_affinity_cpus(h)
-    if aff_cpus:
-        candidates = _infer_nodes_from_cpus(aff_cpus)
-        if candidates:
-            best, _ = candidates[0]
-            return {
-                "torch_index": torch_idx,
-                "pci_bus_id": pci,
-                "numa_node": best,
-                "method": "nvml.cpu_affinity",
-                "candidates": candidates,
-            }
-
     raise RuntimeError(f"Cannot determine NUMA node for torch GPU index {torch_idx}, PCI {pci}")
 
 
 def bind_current_process_to_node(node: int):
     if node is None:
         raise RuntimeError("Cannot bind: NUMA node is None")
-    target = set(_cpus_for_node(node))
+    target = set(cpus_for_node(node))
     if not target:
         raise RuntimeError(f"Node {node} has no CPUs")
     allowed = set(os.sched_getaffinity(0))
     chosen = sorted(target & allowed)
     if not chosen:
         raise RuntimeError(f"Node {node} CPUs not in current cpuset; allowed={sorted(allowed)}")
-    os.sched_setaffinity(0, chosen)
+    try:
+        schedule.run_on_nodes(node)
+        memory.set_membind_nodes(node)
+    except Exception as e:
+        logger.warning(f"numa.schedule/memory bind failed: {e}")
+        os.sched_setaffinity(0, chosen)
     return node
 
 
@@ -394,10 +487,26 @@ def pin_to_numa_node(gpu_id: int) -> Optional[int]:
     info = torch_gpu_to_numa(gpu_id)
     n = info.get("numa_node")
     if n is not None:
+        # TODO: handle case where compute node has no CPUs in affinity scheduler
+        assert len(cpus_for_node(n)) > 0, \
+            f"NUMA node {n} has no CPUs, we do not currently support this case"
         bind_current_process_to_node(n)
     else:
         raise RuntimeError(f"Cannot pin to NUMA node for GPU {gpu_id}, info: {info}")
     return n
+
+
+def unlink_shared_memory():
+    # TODO: change naming scheme of shared memory segments
+    paths = Path("/dev/shm").glob("psm_*")
+    for p in paths:
+        name = p.name
+        try:
+            shm = shared_memory.SharedMemory(name=name)
+            shm.close()
+            shm.unlink()
+        except FileNotFoundError:
+            pass
 
 
 # ---------------- ---------------- ----------------

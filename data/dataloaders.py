@@ -14,12 +14,18 @@ from omegaconf import DictConfig, OmegaConf
 if (hasattr(OmegaConf, "has_resolver") and not OmegaConf.has_resolver("eval")):
     OmegaConf.register_new_resolver("eval", eval)
 
+import ray
 import ray.train.torch as raytorch
 
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 
-from utils.context import process_rank, barrier, local_rank
+from utils.context import (process_rank, 
+                           barrier,
+                           get_local_numa_nodes, 
+                           local_rank, 
+                           node_id)
 from data.datasets.buffers import set_buffers
+from data.datasets.schedulers import NumaNodeAffinityScheduler
 from data.datasets.pretrain_dataset_ray import get_dataloader_ray
 from data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
 
@@ -294,6 +300,30 @@ def get_dataloader(config: DictConfig):
             return dali_loader, None, None, None
 
     elif config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
+        # get numa nodes for this node (gathered on local_rank 0)
+        gpu_numa_nodes = get_local_numa_nodes()
+
+        # start numa scheduler actor on rank 0 of each node
+        if local_rank() == 0:
+            ray.logger.info(f"Starting NumaNodeAffinityScheduler on node {node_id()}")
+            ray.logger.info(f"NUMA nodes found on this node: {gpu_numa_nodes}")
+            scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                node_id=node_id(),
+                soft=False,
+            )
+            actor_scheduler = NumaNodeAffinityScheduler.options(
+                name=f"numa_node_affinity_scheduler_node_{node_id()}",
+                namespace="schedulers", lifetime="detached",
+                max_concurrency=config.datasets.max_concurrent_calls,
+                scheduling_strategy=scheduling_strategy
+                ).remote(
+                    policy=config.datasets.numa_node_affinity_policy,
+                    oversub_factor=config.datasets.numa_oversub_factor,
+                    node_id=node_id(),
+                    # get unique list of NUMA nodes with GPUs on this node
+                    gpu_numa_nodes=list(set(gpu_numa_nodes)),
+                )
+
         buffer_actor, buffer_cfg = set_buffers(
             local_rank=local_rank(),
             global_rank=process_rank(),
@@ -303,13 +333,15 @@ def get_dataloader(config: DictConfig):
             dtype=config.storage_dtype,
             buffer_capacity=config.datasets.buffer_capacity,
             pin_to_numa_node=config.datasets.pin_numa_node,
-            max_concurrent_calls=config.datasets.max_concurrent_calls
+            max_concurrent_calls=config.datasets.max_concurrent_calls,
+            node_id=node_id(),
+            numa_node=None,
         )
 
         if isinstance(config.datasets.collate_fn, DictConfig):
-            collate_fn = instantiate(config.datasets.collate_fn)
+            collate_fn = instantiate(config.datasets.collate_fn, node_id=node_id())
         else:
-            collate_fn = get_method(config.datasets.collate_fn)
+            collate_fn = get_method(config.datasets.collate_fn, node_id=node_id())
 
         train_dataloader, val_dataloader = get_dataloader_ray(
             cfg=config,

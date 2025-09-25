@@ -959,23 +959,16 @@ class FreeDeviceBufferHook(HookBase):
     Important to use to prevent deadlocks.
     """
     def before_train(self):
-        self.host_buffer_actor = self.trainer.host_buffer_actor
         self.device_buffer = self.trainer.device_buffer
 
     def after_step(self, **kwargs):
-        host_buffer_idx = kwargs['data_sample']['metainfo']['host_buffer_idx']
         device_buffer_idx = kwargs['data_sample']['metainfo']['device_buffer_idx']
-        ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
         self.device_buffer.put_free(device_buffer_idx)
 
     def after_test_step(self, data_sample, outputs, loss_dict):
-        host_buffer_idx = data_sample['metainfo']['host_buffer_idx']
         device_buffer_idx = data_sample['metainfo']['device_buffer_idx']
-        ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
         self.device_buffer.put_free(device_buffer_idx)
         
     def after_val_step(self, data_sample, outputs, loss_dict):
-        host_buffer_idx = data_sample['metainfo']['host_buffer_idx']
         device_buffer_idx = data_sample['metainfo']['device_buffer_idx']
-        ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
         self.device_buffer.put_free(device_buffer_idx)

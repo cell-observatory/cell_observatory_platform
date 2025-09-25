@@ -55,18 +55,21 @@ dataset:
   input_layout:
     _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}
-  
+
 use_arrow_tensor_v2: true # use Arrow Tensor v2
 locality_with_output: true # whether to use locality with output for the Ray tasks
 rows_per_block: ${clusters.batch_size_per_gpu} # ${clusters.batch_size} # number of rows per block for the Ray dataset
-buffer_capacity: 20
+buffer_capacity: 24
 pin_numa_node: true
 pin_memory: true
-max_concurrent_calls: 256
+max_concurrent_calls: 512
+numa_node_affinity_policy: "distance"
+numa_oversub_factor: 2.0
+actor_oversub_factor: 2.0
 
 channels_subset: null # subset of channels to use, e.g. [0, 1] for first two channels
-num_actors_min: 8
-num_actors_max: 16
+num_actors_min: 12
+num_actors_max: 12
 with_batched_api: true
 context:
   file_io_concurrency: null # concurrency for file I/O operations
