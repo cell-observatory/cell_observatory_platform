@@ -327,6 +327,8 @@ def get_dataloader(config: DictConfig):
                     gpu_to_numa_map=gpu_to_numa_map
                 )
 
+        barrier()
+        
         buffer_actor, buffer_cfg = set_buffers(
             local_rank=local_rank(),
             global_rank=process_rank(),

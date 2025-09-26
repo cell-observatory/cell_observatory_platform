@@ -91,7 +91,9 @@ class CollatorActor:
         else:
             self._pinned = False
 
-        self.device = torch.device(f"cuda:{torch.cuda.current_device()}")
+        idx = self._get_device_index()
+        torch.cuda.set_device(idx)
+        self.device = torch.device(f"cuda:{idx}")
         with cp.cuda.Device(self.device.index):
             self.cp_stream = cp.cuda.Stream(non_blocking=True)
         # wrap the same stream for torch ops
@@ -102,16 +104,26 @@ class CollatorActor:
             capacity=self.device_buffer_capacity,
             input_shape=self.input_shape,
             batch_size=self.batch_size,
-            dtype=buffer_dtype
+            dtype=buffer_dtype,
+            device_idx=idx
         )
 
         ray.logger.info(f"CollatorActor on rank {self.global_rank} and Numa Node {self.numa_node} "
                     f"using host shared memory buffer with pin_numa_node={pin_numa_node} "
                     f"with local rank {self.local_rank} and node id {self.node_id} "
                     f"with name {cfg['name']} and capacity {cfg['capacity']} and HostMemoryBuffer "
-                    f"with pin_pages={self._pinned}")
+                    f"with pin_pages={self._pinned} and ray.get_gpu_ids()={ray.get_gpu_ids()} "
+                    f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')} "
+                    f"torch_dev={torch.cuda.current_device()} "
+                    f"cupy_dev={cp.cuda.runtime.getDevice()} "
+                    f"torch_count={torch.cuda.device_count()}")
 
         self.debug = debug
+
+    def _get_device_index(self) -> int:
+        gpu_ids = ray.get_gpu_ids()
+        assert gpu_ids, "No GPUs assigned to this worker by Ray"
+        return int(gpu_ids[0])
 
     def __del__(self):
         try:
@@ -139,49 +151,50 @@ class CollatorActor:
                             cudart.memcpyHostToDevice,
                             int(self.cp_stream.ptr))
 
-    def __call__(self, batch):        
-        host_buffer_idx = int(batch["buffer_idx"][0])
-        h_view = np.ndarray(self.batch_shape, dtype=self.buffer_dtype,
-                            buffer=self._shm.buf, offset=host_buffer_idx * self.slot_bytes)
+    def __call__(self, batch):
+        with torch.cuda.device(self.device.index), cp.cuda.Device(self.device.index):
+            host_buffer_idx = int(batch["buffer_idx"][0])
+            h_view = np.ndarray(self.batch_shape, dtype=self.buffer_dtype,
+                                buffer=self._shm.buf, offset=host_buffer_idx * self.slot_bytes)
 
-        device_buffer_idx = self.device_buffer.get_free()
-        dst_device = self.device_buffer.device_buffers[device_buffer_idx]
+            device_buffer_idx = self.device_buffer.get_free()
+            dst_device = self.device_buffer.device_buffers[device_buffer_idx]
 
-        with torch.cuda.stream(self.copy_stream):
-            self.copy_h2d(dst=dst_device, src=h_view)
+            with torch.cuda.stream(self.copy_stream):
+                self.copy_h2d(dst=dst_device, src=h_view)
 
-            def _release_buffer_on_done(stream, error_status, user_data):
-                actor_reference = user_data["actor"]
-                host_buffer_idx = user_data["host_buffer_idx"]
-                # runs after all prior ops in stream
-                try:
-                    actor_reference.put_free.remote(host_buffer_idx)
-                except Exception as e:
-                    logger.exception(f"put_free failed for {host_buffer_idx}: {e}")
+                def _release_buffer_on_done(stream, error_status, user_data):
+                    actor_reference = user_data["actor"]
+                    host_buffer_idx = user_data["host_buffer_idx"]
+                    # runs after all prior ops in stream
+                    try:
+                        actor_reference.put_free.remote(host_buffer_idx)
+                    except Exception as e:
+                        logger.exception(f"put_free failed for {host_buffer_idx}: {e}")
 
-            with cp.cuda.Device(self.device.index), self.cp_stream:
-                self.cp_stream.add_callback(
-                    _release_buffer_on_done,
-                    {"actor": self.host_buffer_actor, "host_buffer_idx": host_buffer_idx},
-                )
+                with self.cp_stream:
+                    self.cp_stream.add_callback(
+                        _release_buffer_on_done,
+                        {"actor": self.host_buffer_actor, "host_buffer_idx": host_buffer_idx},
+                    )
 
-        # tells caching allocator & scheduler on training stream 
-        # that dst_device is owned by copy_stream
-        torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
-        dst_device.record_stream(self.copy_stream)
+            # tells caching allocator & scheduler on training stream 
+            # that dst_device is owned by copy_stream
+            torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
+            dst_device.record_stream(self.copy_stream)
 
-        metainfo = {
-            "host_buffer_idx": host_buffer_idx,
-            "device_buffer_idx": device_buffer_idx
-        }
+            metainfo = {
+                "host_buffer_idx": host_buffer_idx,
+                "device_buffer_idx": device_buffer_idx
+            }
 
-        if self.debug:
-            # NOTE: for testing only, put_free(idx) otherwise called by hooks in 
-            #       training loop, see training/hooks.py:FreeDeviceBufferHook
-            ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
-            self.device_buffer.put_free(device_buffer_idx)
+            if self.debug:
+                # NOTE: for testing only, put_free(idx) otherwise called by hooks in 
+                #       training loop, see training/hooks.py:FreeDeviceBufferHook
+                ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+                self.device_buffer.put_free(device_buffer_idx)
 
-        return {"data_tensor": dst_device, "metainfo": metainfo}
+            return {"data_tensor": dst_device, "metainfo": metainfo}
 
 
 # -------- -------- Loader Actors -------- --------

@@ -32,7 +32,7 @@ from data.dataloaders import get_dataloader
 from training.optimizers import get_optimizer
 from training.schedulers import get_schedulers, get_param_groups
 from training.registry import build_dependency_graph_and_instantiate
-from utils.context import inference_context, process_rank, unlink_shared_memory
+from utils.context import inference_context, process_rank
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)

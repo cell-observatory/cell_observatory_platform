@@ -189,38 +189,25 @@ def get_visible_devices():
     return [int(d) for d in devices if d.isdigit()]
 
 
-def get_node_process_group():
-    assert dist.is_initialized()
-    g_rank = process_rank()
-    l_rank = local_rank()
-    l_size = get_local_world_size()
-    base = g_rank - l_rank
-    ranks = list(range(base, base + l_size))
-    return dist.new_group(ranks=ranks)
-
-
 def get_local_numa_nodes(worker_numa_node: int):
     if not dist.is_initialized():
-        # single-process case
-        return [worker_numa_node]
+        return {0: worker_numa_node}
 
-    pg = get_node_process_group()
+    node = node_id()
     lrank = local_rank()
-    lsize = get_local_world_size()
+    world_size = get_world_size()
 
-    dev = torch.device(f"cuda:{lrank}")
-    worker_numa = torch.tensor([worker_numa_node], dtype=torch.int32, device=dev)
-    buf = torch.empty(lsize, dtype=torch.int32, device=dev)
+    rank_data_tuple = (node, lrank, worker_numa_node)
+    gathered = [None] * world_size
+    dist.all_gather_object(gathered, rank_data_tuple)
 
-    # gather each local rank's NUMA id
-    dist.all_gather_into_tensor(buf, worker_numa, group=pg)
+    local_map = {
+        lr: numa
+        for nid, lr, numa in gathered
+        if nid == node
+    }
 
-    if lrank == 0:
-        buf = buf.cpu().tolist()
-        buf = {i: n for i, n in enumerate(buf)}
-        return buf
-    else:
-        return None
+    return local_map if lrank == 0 else None
 
 
 # ---------------- NVML helpers ----------------
@@ -314,7 +301,6 @@ def _pci_bus_id(handle) -> str:
             func = int(m.group("func")) if m.group("func") else 0
             return _format_from_fields(domain, bus, dev, func).lower()
 
-    # if none of the getters exist (very old NVML), this will run:
     raise RuntimeError("No NVML pci info function available")
 
 
@@ -475,19 +461,6 @@ def bind_current_process_to_node(node: int):
         logger.warning(f"numa.schedule/memory bind failed: {e}")
         os.sched_setaffinity(0, chosen)
     return node
-
-
-def unlink_shared_memory():
-    # TODO: change naming scheme of shared memory segments
-    paths = Path("/dev/shm").glob("psm_*")
-    for p in paths:
-        name = p.name
-        try:
-            shm = shared_memory.SharedMemory(name=name)
-            shm.close()
-            shm.unlink()
-        except FileNotFoundError:
-            pass
 
 
 # ---------------- ---------------- ----------------

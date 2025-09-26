@@ -32,19 +32,22 @@ class DeviceMemoryBuffer:
                  input_shape: tuple,
                  batch_size: int, 
                  dtype: str,
+                 device_idx: int
     ):
         self.name = name
         self.capacity = int(capacity)
         self.batch_shape = (int(batch_size), *tuple(input_shape))
         self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
-        self.device = torch.device(f"cuda:{torch.cuda.current_device()}")
+        self.device = torch.device(f"cuda:{device_idx}")
         torch.cuda.set_device(self.device)
 
-        self.device_buffers = [
-            torch.empty(self.batch_shape, dtype=self.dtype, device=self.device).contiguous()
-            for _ in range(self.capacity)
-        ]
+        with torch.cuda.device(self.device):
+            self.device_buffers = [
+                torch.empty(self.batch_shape, dtype=self.dtype, device=self.device).contiguous()
+                for _ in range(self.capacity)
+            ]
+
         self._free = queue.SimpleQueue()
         for i in range(self.capacity):
             self._free.put(i)
