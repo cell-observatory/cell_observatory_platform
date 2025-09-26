@@ -41,6 +41,6 @@
 			}
 		}
 	},
-	"postCreateCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && pip install --upgrade psutil && pip install nvitop bpytop && cp ~/.bashrc /tmp/host_bashrc && echo 'source /tmp/host_bashrc' >> ~/.bashrc && python3 --version",
+	"postCreateCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && pip install bpytop  --no-dependencies && cp ~/.bashrc /tmp/host_bashrc && echo 'source /tmp/host_bashrc' >> ~/.bashrc && python3 --version",
 	"postStartCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && export PYTHONPATH=/workspace/cell_observatory_platform && source ~/.bashrc"
 }
