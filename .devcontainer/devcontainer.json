@@ -50,7 +50,9 @@
 				}
 			},
 			"extensions": [
-				"ms-python.python"
+				"ms-python.python",
+				"eamodio.gitlens",
+				"github.vscode-github-actions"
 			]
 		}
 	},
