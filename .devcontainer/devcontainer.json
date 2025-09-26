@@ -1,6 +1,16 @@
 {
 	"name": "Cell Observatory Platform",
-	"image": "ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08",
+	"build": {
+		// These lines will build from Dockerfile otherwise comment these and uncomment "image" below		
+		"dockerfile": "../Dockerfile",
+		"context": "..",
+		"options": [
+			"--progress=plain"
+		],
+		"target": "torch_25_08"
+	},
+	// Uncomment this to use a pre-built image instead of building from the Dockerfile
+	// "image": "ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08",
 	"workspaceFolder": "/workspace/cell_observatory_platform",
 	"containerUser": "ubuntu",
 	"overrideCommand": true,
