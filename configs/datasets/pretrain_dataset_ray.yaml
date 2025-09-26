@@ -76,3 +76,5 @@ context:
   data_copy_concurrency: null # concurrency for data copy operations
   cache_pool: 
     total_bytes_limit: 0
+
+debug: false

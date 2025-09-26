@@ -344,9 +344,13 @@ def get_dataloader(config: DictConfig):
         )
 
         if isinstance(config.datasets.collate_fn, DictConfig):
-            collate_fn = instantiate(config.datasets.collate_fn, node_id=node_id())
+            collate_fn = instantiate(config.datasets.collate_fn, 
+                                     node_id=node_id(),
+                                     debug=config.datasets.debug)
         else:
-            collate_fn = get_method(config.datasets.collate_fn, node_id=node_id())
+            collate_fn = get_method(config.datasets.collate_fn, 
+                                    node_id=node_id(), 
+                                    debug=config.datasets.debug)
 
         train_dataloader, val_dataloader = get_dataloader_ray(
             cfg=config,

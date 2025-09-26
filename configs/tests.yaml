@@ -44,6 +44,7 @@ loop_per_worker_script: training.loops.train_loop_per_worker
 
 # training quantization
 quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
+storage_dtype: uint16 # data type for storage
 
 # dtype for training data
 dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
