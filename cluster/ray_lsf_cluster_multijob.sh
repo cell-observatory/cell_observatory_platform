@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # NCCL settings optimized for Ethernet without InfiniBand
 export NCCL_DEBUG=INFO
 export NCCL_IB_DISABLE=1
@@ -54,7 +56,18 @@ export head_node
 export head_node_ip
 export cluster_address
 
-apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory &
+apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind \
+    --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
+    -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory &
+head_bg_pid=$!
+
+sleep 10
+
+check_headnode="apptainer exec --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray status --address $head_node_ip:$port"
+while ! $check_headnode; do
+    echo "Waiting for head node..."
+    sleep 3
+done
 
 ############################## ADD WORKER NODES
 
@@ -66,7 +79,7 @@ do
     echo "Adding worker: ${outdir}/ray_worker_${i}"
     if [[ "$exclusive" == "true" ]]; then
         echo "Exclusive mode is enabled"
-        job="bsub -cwd "$(pwd)" \
+        bsub -cwd "$(pwd)" \
             -q $partition \
             -J "${jobname}_ray_worker_${i}" \
             -x \
@@ -76,9 +89,9 @@ do
             apptainer exec --userns --nv \
               --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
                 $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory"
+                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i
     else
-        job="bsub -cwd "$(pwd)" \
+        bsub -cwd "$(pwd)" \
             -q $partition \
             -J "${jobname}_ray_worker_${i}" \
             -n $cpus \
@@ -87,12 +100,8 @@ do
             apptainer exec --userns --nv \
               --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_${i}:$tmpdir \
                 $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory"
+                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i
     fi
-
-    echo $job
-    $job
-
 
     jid=$(bjobs -r -J "${jobname}_ray_worker_${i}" | awk 'NR==2 {print $1;}')
     while [ -z "$jid" ]
@@ -107,7 +116,8 @@ done
 
 ############################# CHECK STATUS
 
-apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r $nodes
+apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind \
+    --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r $nodes
 
 ############################## RUN WORKLOAD
 
@@ -117,15 +127,45 @@ apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bi
 
 ############################## CLEANUP
 
-echo "Stop ray"
-ps aux | grep prometheus | awk '{print $2}' | xargs kill -9
-apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
+wait_for_lsf_jobs() {
+    local -i timeout="$1"; shift
+    (( $# == 0 )) && return 0
 
-echo "Shutting down the Job"
+    local -a jids=("$@")
+    local -i t=0
+    while (( t < timeout )); do
+        local any=0
+        for jid in "${jids[@]}"; do
+            if bjobs -noheader "$jid" >/dev/null 2>&1; then
+                any=1
+            fi
+        done
+        (( any == 0 )) && return 0
+        sleep 1; ((t++))
+    done
+    return 1
+}
 
-for jid in "${worker_ids[@]}"
-do
-    bkill $jid
-done
+head_pid=$(cat "$outdir/cleanup_head.pid" 2>/dev/null || true)
+if [[ -n "$head_pid" ]]; then
+    kill -TERM "$head_pid" 2>/dev/null || true
+    for _ in {1..30}; do
+        kill -0 "$head_pid" 2>/dev/null || break
+        sleep 1
+    done
+    kill -KILL "$head_pid" 2>/dev/null || true
+fi
 
+if (( ${#worker_ids[@]} )); then
+    for jid in "${worker_ids[@]}"; do
+        bkill -s TERM "$jid" 2>/dev/null || true
+    done
+    if ! wait_for_lsf_jobs 30 "${worker_ids[@]}"; then
+        for jid in "${worker_ids[@]}"; do
+            bkill "$jid" 2>/dev/null || true
+        done
+    fi
+fi
+
+echo "Shutting down the job"
 bkill $LSB_JOBID

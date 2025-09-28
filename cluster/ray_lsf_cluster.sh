@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # NCCL settings optimized for Ethernet without InfiniBand
 export NCCL_DEBUG=INFO
 export NCCL_IB_DISABLE=1
@@ -67,7 +69,10 @@ blaunch -z $head_node "
         $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
         -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory
 " &
+head_bg_pid=$!
+
 sleep 10
+
 apptainer exec --userns --nv \
     --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
     $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
@@ -76,6 +81,7 @@ apptainer exec --userns --nv \
 
 ############################## ADD WORKER NODES
 
+worker_pids=()
 workers=("${hosts[@]:1}")
 if [ ${nodes} -gt 1 ]; then
     i=0
@@ -86,8 +92,9 @@ if [ ${nodes} -gt 1 ]; then
             apptainer exec --userns --nv \
                 --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
                 $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory
+                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i
         " &
+        worker_pids+=($!)
         i+=1
     done
 fi
@@ -99,7 +106,7 @@ blaunch -z $head_node "
         --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
         $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
         -a $cluster_address -r $nodes 
-" &
+"
 
 ############################## RUN WORKLOAD
 
@@ -109,16 +116,55 @@ apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bi
 
 ############################## CLEANUP
 
-echo "Stop ray"
-ps aux | grep prometheus | awk '{print $2}' | xargs kill -9
+blaunch -z $head_node bash -lc "
+    apptainer exec --userns --nv \
+        --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+        $env bash -lc '
+        pf=\"$tmpdir/cleanup_head.pid\"
+        GRACE_SECONDS=20
+        if [ -f \"\$pf\" ]; then
+            pid=\$(cat \"\$pf\")
+            kill -TERM \"\$pid\" 2>/dev/null || true
+            for ((i=0;i<GRACE_SECONDS;i++)); do
+                kill -0 \"\$pid\" 2>/dev/null || exit 0
+                sleep 1
+            done
+            kill -KILL \"\$pid\" 2>/dev/null || true
+        fi
+        '
+    " >/dev/null 2>&1 &
 
-for host in "${hosts[@]}"; do
-    blaunch -z $host " 
-        apptainer exec --userns --nv \
-            --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
-            $env ray stop --force 
-    " &
+num_workers=${#workers[@]}
+if (( num_workers > 0 )); then
+    i=0
+    for host in "${workers[@]}"; do
+        blaunch -z $host bash -lc "
+            apptainer exec --userns --nv \
+            --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
+            $env bash -lc '
+                pf=\"$tmpdir/cleanup_${i}.pid\"
+                GRACE_SECONDS=20
+                if [ -f \"\$pf\" ]; then
+                    pid=\$(cat \"\$pf\")
+                    kill -TERM \"\$pid\" 2>/dev/null || true
+                    for ((j=0;j<GRACE_SECONDS;j++)); do
+                        kill -0 \"\$pid\" 2>/dev/null || exit 0
+                        sleep 1
+                    done
+                    kill -KILL \"\$pid\" 2>/dev/null || true
+                fi
+            '
+        " >/dev/null 2>&1 &
+        i=$((i+1))
+    done
+fi
+
+kill -KILL $head_bg_pid 2>/dev/null || true
+for pid in "${worker_pids[@]}"; do
+    kill -KILL "$pid" 2>/dev/null || true
 done
+
+wait || true
 
 echo "Shutting down the job"
 bkill $LSB_JOBID
