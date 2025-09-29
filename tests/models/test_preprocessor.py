@@ -91,7 +91,7 @@ def test_dali_preprocessor_with_mask_includes_fields_and_timings():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for RayPreprocessor tests")
 def test_ray_preprocessor_transform_and_masking_on_cuda():
     B, C = 2, 3
-    inputs = torch.ones(B, C, dtype=torch.float32)
+    inputs = torch.ones(B, C, dtype=torch.float32, device='cuda')
     sample = {"data_tensor": inputs, "metainfo": {"k": "v"}}
 
     def add_five(x: torch.Tensor) -> torch.Tensor:
@@ -110,7 +110,7 @@ def test_ray_preprocessor_transform_and_masking_on_cuda():
     meta = out["metainfo"]
 
     assert data.is_cuda
-    assert torch.allclose(data.cpu(), inputs + 5)
+    assert torch.allclose(data, inputs + 5)
 
     for k in ("masks", "context_masks", "target_masks", "original_patch_indices", "channels_to_mask"):
         assert k in meta and isinstance(meta[k], list) and len(meta[k]) == 1
@@ -123,7 +123,7 @@ def test_ray_preprocessor_transform_and_masking_on_cuda():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for RayPreprocessor tests")
 def test_ray_preprocessor_no_mask_returns_empty_meta():
-    inputs = torch.zeros(2, 2, dtype=torch.float32)
+    inputs = torch.zeros(2, 2, dtype=torch.float32, device='cuda')
     sample = {"data_tensor": inputs, "metainfo": {}}
 
     proc = RayPreprocessor(dtype=torch.float32, with_masking=False, mask_generator=_dummy_mask_generator)

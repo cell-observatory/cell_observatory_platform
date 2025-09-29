@@ -23,8 +23,6 @@ logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
 
-
-def record_dataset_len(config, num_train_steps: int, num_val_steps: int):
 def record_dataset_len(config, num_train_rows: int, num_val_rows: int):
     bs = config.clusters.batch_size_per_gpu
 
