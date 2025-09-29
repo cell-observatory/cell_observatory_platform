@@ -41,7 +41,7 @@ def test_mae_custom(models_kargs):
         modes=models_kargs['modes'],
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -80,7 +80,7 @@ def test_mae_tiny(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -119,7 +119,7 @@ def test_mae_small(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -158,7 +158,7 @@ def test_mae_base(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -197,7 +197,7 @@ def test_mae_large(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -236,7 +236,7 @@ def test_mae_huge(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 

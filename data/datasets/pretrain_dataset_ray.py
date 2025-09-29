@@ -23,7 +23,7 @@ from torch.utils.data import random_split
 
 from data.io import read_zarr
 from utils.context import (process_rank,
-                           torch_gpu_to_numa, 
+                           torch_gpu_to_numa,
                            local_rank,
                            get_world_size,
                            bind_current_process_to_node,
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 @pprof_class
 class CollatorActor:
-    def __init__(self, 
+    def __init__(self,
                  batch_size: int,
                  input_shape: tuple,
                  device_buffer_capacity: int,
@@ -71,9 +71,9 @@ class CollatorActor:
         self.buffer_dtype = NUMPY_DTYPES[buffer_dtype].value \
             if isinstance(buffer_dtype, str) else buffer_dtype
 
-        self.host_buffer_actor = get_buffers(type="host_memory", 
+        self.host_buffer_actor = get_buffers(type="host_memory",
                                              numa_node=self.numa_node,
-                                             local_rank=self.local_rank, 
+                                             local_rank=self.local_rank,
                                              global_rank=self.global_rank,
                                              node_id=self.node_id)
         cfg = ray.get(self.host_buffer_actor.get_config.remote())
@@ -81,7 +81,7 @@ class CollatorActor:
         self.batch_shape = tuple(cfg["batch_shape"])
         self.capacity = int(cfg["capacity"])
         self._shm = shared_memory.SharedMemory(name=cfg["name"])
-        
+
         self.pin_pages = pin_pages
         if pin_pages:
             base_ptr = ctypes.addressof(ctypes.c_char.from_buffer(self._shm.buf))
@@ -98,7 +98,7 @@ class CollatorActor:
             self.cp_stream = cp.cuda.Stream(non_blocking=True)
         # wrap the same stream for torch ops
         self.copy_stream = torch.cuda.ExternalStream(int(self.cp_stream.ptr), device=self.device)
-        
+
         self.device_buffer = DeviceMemoryBuffer(
             name=f"device_buffer_rank_{self.global_rank}",
             capacity=self.device_buffer_capacity,
@@ -143,7 +143,7 @@ class CollatorActor:
         src_ptr = ctypes.c_void_p(src.__array_interface__["data"][0])
         # see: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.data_ptr.html
         dst_ptr = ctypes.c_void_p(dst.data_ptr())
-        # cupy function handle: 
+        # cupy function handle:
         # cupy.cuda.runtime.memcpyAsync(intptr_t dst, intptr_t src, size_t size, int kind, intptr_t stream)
         cudart.memcpyAsync(dst_ptr.value,
                             src_ptr.value,
@@ -178,7 +178,7 @@ class CollatorActor:
                         {"actor": self.host_buffer_actor, "host_buffer_idx": host_buffer_idx},
                     )
 
-            # tells caching allocator & scheduler on training stream 
+            # tells caching allocator & scheduler on training stream
             # that dst_device is owned by copy_stream
             torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
             dst_device.record_stream(self.copy_stream)
@@ -189,7 +189,7 @@ class CollatorActor:
             }
 
             if self.debug:
-                # NOTE: for testing only, put_free(idx) otherwise called by hooks in 
+                # NOTE: for testing only, put_free(idx) otherwise called by hooks in
                 #       training loop, see training/hooks.py:FreeDeviceBufferHook
                 ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
                 self.device_buffer.put_free(device_buffer_idx)
@@ -202,7 +202,7 @@ class CollatorActor:
 
 @pprof_class
 class LoaderActor:
-    def __init__(self, 
+    def __init__(self,
                  node_id: int,
                  local_rank: int,
                  global_rank: int,
@@ -215,11 +215,11 @@ class LoaderActor:
                  pin_numa_node: bool = True,
                  with_batched_api: bool = True,
                  channels_subset: Optional[List[int]] = None
-):       
+):
         self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
         self.driver_process_numa_node = numa_node
         if pin_numa_node:
-            self.actor_scheduler = ray.get_actor(f"numa_node_affinity_scheduler_node_{self.node_id}", 
+            self.actor_scheduler = ray.get_actor(f"numa_node_affinity_scheduler_node_{self.node_id}",
                                                  namespace="schedulers")
             self.numa_node = ray.get(self.actor_scheduler.schedule_actor_for_gpu.remote(local_rank))
             ray.logger.info(f"Binding LoaderActor on rank {global_rank} to NUMA node {self.numa_node}")
@@ -243,18 +243,18 @@ class LoaderActor:
         self.buffer_dtype = NUMPY_DTYPES[buffer_dtype].value \
             if isinstance(buffer_dtype, str) else buffer_dtype
 
-        # tensorstore 
+        # tensorstore
         self._handles= {}
         self.ctx = ts.Context(context_spec)
         self.with_batched_api = with_batched_api
 
         # memory buffer
         self.buffer_actor = get_buffers(type=f"host_memory",
-                                        node_id=self.node_id, 
+                                        node_id=self.node_id,
                                         local_rank=self.local_rank,
-                                        global_rank=self.global_rank, 
+                                        global_rank=self.global_rank,
                                         numa_node=self.driver_process_numa_node)
- 
+
         cfg = ray.get(self.buffer_actor.get_config.remote())
         self.slot_bytes = int(cfg["slot_bytes"])
         self.batch_shape = tuple(cfg["batch_shape"])
@@ -267,7 +267,7 @@ class LoaderActor:
 
     def __del__(self):
         try:
-            actor_scheduler = ray.get_actor(f"numa_node_affinity_scheduler_node_{self.node_id}", 
+            actor_scheduler = ray.get_actor(f"numa_node_affinity_scheduler_node_{self.node_id}",
                                             namespace="schedulers")
             actor_scheduler.free.remote(self.numa_node)
         except Exception:
@@ -293,10 +293,10 @@ class LoaderActor:
             h = read_zarr(path, dtype=self.dtype, context=self.ctx, cast=False)
             self._handles[path] = h
         return h
-    
+
     def __call__(self, batch):
         buffer = ray.get(self.buffer_actor.get_free.remote())
-        dst = np.ndarray(self.batch_shape, 
+        dst = np.ndarray(self.batch_shape,
                          dtype=self.buffer_dtype,
                          buffer=self._shm.buf,
                          offset=buffer["slot"] * self.slot_bytes)
@@ -347,8 +347,8 @@ def get_dataset_ray(
     cfg: DictConfig,
     indices: Optional[List[int]],
     database: Optional[Any] = None,
-    columns: list = [ 
-        # metadata columns to keep from the original dataframe 
+    columns: list = [
+        # metadata columns to keep from the original dataframe
         # adding more columns may slow down collate
         'x_start', 'y_start', 'z_start', 'time_start',
         'channel_size', 'cube_size', 'time_size',
@@ -371,14 +371,14 @@ def get_dataset_ray(
 
     dataset = ray.data.from_arrow(table)
     dataset = dataset.split(n = get_world_size(), equal = True)[process_rank()]
-    
+
     # TODO: reimplement to prevent two .count() calls
     if cfg.datasets.drop_last_policy:
         B = cfg.clusters.batch_size_per_gpu
         dataset = dataset.limit((dataset.count() // B) * B)
 
     dataset_len = dataset.count()
-    
+
     dataset = dataset.repartition(
         target_num_rows_per_block=cfg.datasets.rows_per_block,
         shuffle=False

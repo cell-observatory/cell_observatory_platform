@@ -49,13 +49,6 @@ def test_torch_preprocessor_with_mask_includes_mask_info():
     assert meta["a"] == 7
 
 
-def test_torch_preprocessor_wrong_dtype_raises():
-    sample = {"data_tensor": torch.zeros(3, 4, dtype=torch.float64), "metainfo": {}}
-    proc = TorchPreprocessor(dtype=torch.float32, with_masking=False, mask_generator=None)
-    with pytest.raises(AssertionError):
-        _ = proc(sample, data_time=0.0)
-
-
 # -------------------------
 # DaliPreprocessor tests
 # -------------------------
@@ -88,15 +81,6 @@ def test_dali_preprocessor_with_mask_includes_fields_and_timings():
     assert isinstance(meta["masking_time"], float)
     assert meta["get_item_time"] == 0.5
     assert meta["data_time"] == 0.25
-
-
-def test_dali_preprocessor_wrong_dtype_raises():
-    inputs = torch.zeros(2, 2, dtype=torch.float32)
-    dali_sample = ({"data_tensor": inputs},)
-
-    proc = DaliPreprocessor(dtype=torch.float16, with_masking=False, mask_generator=None)
-    with pytest.raises(AssertionError):
-        _ = proc(dali_sample, data_time=0.0)
 
 
 # -------------------------

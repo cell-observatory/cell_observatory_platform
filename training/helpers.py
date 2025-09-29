@@ -19,13 +19,12 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 
 from omegaconf import DictConfig, open_dict
 
-import ray
-
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
 
 
+def record_dataset_len(config, num_train_steps: int, num_val_steps: int):
 def record_dataset_len(config, num_train_rows: int, num_val_rows: int):
     bs = config.clusters.batch_size_per_gpu
 
@@ -129,8 +128,7 @@ def resume_model_state(config: DictConfig, checkpoint_manager):
 def resume_run(trainer, config: DictConfig):
     Path(config.paths.outdir).mkdir(exist_ok=True, parents=True)
     if config.paths.resume_checkpointdir:
-        best_loss, iter, epoch = resume_model_state(config, 
-                                    checkpoint_manager=trainer.checkpoint_manager)        
+        best_loss, iter, epoch = resume_model_state(config, checkpoint_manager=trainer.checkpoint_manager)
         trainer.event_recorder.resume(
             iter=iter, 
             epoch=epoch
@@ -197,10 +195,8 @@ def summarize_model(
     model_logbook['forward_pass_bytes'] = model_stats.total_output_bytes
     model_logbook['forward_backward_pass_bytes'] = train_stats.total_output_bytes
 
-    model_logbook['eval_model_bytes'] = model_logbook['param_bytes'] \
-        + model_logbook['forward_pass_bytes']
-    model_logbook['training_model_bytes'] = model_logbook['param_bytes'] \
-        + model_logbook['forward_backward_pass_bytes']
+    model_logbook['eval_model_bytes'] = model_logbook['param_bytes'] + model_logbook['forward_pass_bytes']
+    model_logbook['training_model_bytes'] = model_logbook['param_bytes'] + model_logbook['forward_backward_pass_bytes']
 
     model_logbook['eval_bytes'] = model_logbook['input_bytes'] + \
         model_logbook['eval_model_bytes']
@@ -313,12 +309,12 @@ def log_data_timings(
         )
 
 
-def get_input_data(model, inputs, device: Optional[torch.device] = None):
+def get_input_data(model, inputs, device: Optional[torch.device] = 'cuda'):
     input_data = ({"data_tensor": torch.randn(*inputs, device=device), "metainfo": {}},)
     return input_data
 
 
-def get_masked_input_data(model, inputs, device: Optional[torch.device] = None, mask_ratio: float = 0.75):
+def get_masked_input_data(model, inputs, device: Optional[torch.device] = 'cuda', mask_ratio: float = 0.75):
     n_patches = model.get_num_patches()
     context_len = int(n_patches * (1 - mask_ratio))
     context_idx = torch.arange(context_len, dtype=torch.long, device=device).unsqueeze(0)
@@ -351,10 +347,10 @@ def enable_optimizations(cfg: DictConfig, model: nn.Module):
     if cfg.optimizations.deterministic:
         torch.use_deterministic_algorithms(mode=True)
 
-    # activation checkpointing 
+    # activation checkpointing
     if cfg.optimizations.activation_checkpoint.enabled:
         apply_activation_checkpointing(cfg, model)
-    
+
     # torch compile optimizations
     if cfg.optimizations.torch_compile.enabled:
         model = apply_compile(model, cfg)
@@ -363,7 +359,7 @@ def enable_optimizations(cfg: DictConfig, model: nn.Module):
     return model
 
 
-# many of the below functions are based on: 
+# many of the below functions are based on:
 # https://github.com/pytorch/torchtitan/main/torchtitan/models/llama3/infra/parallelize.py
 def apply_activation_checkpointing(cfg: DictConfig, model: nn.Module):
     """Apply activation checkpointing to the model."""
@@ -397,8 +393,8 @@ _save_list = {
 }
 
 
-def _as_stack(path_str: str, 
-              submod, 
+def _as_stack(path_str: str,
+              submod,
               blocks_nomenclature: str = "transformer_blocks"
 ) -> Tuple[str, nn.ModuleList]:
     """
@@ -421,7 +417,7 @@ def _as_stack(path_str: str,
     )
 
 
-# TODO: break `yield_transformer_stacks_for_act_ckpt` and 
+# TODO: break `yield_transformer_stacks_for_act_ckpt` and
 #       `yield_transformer_stacks_for_compile` into one helper function
 #        and two smaller functions that yield the stacks for each case to
 #        avoid code duplication
@@ -439,13 +435,13 @@ def yield_transformer_stacks_for_act_ckpt(cfg, model: nn.Module):
             stack_fqn, stack = _as_stack(module_fqn, submod, blocks_nomenclature=blocks_name)
             yield (stack_fqn, stack)
         return
-    
+
     # if user does not provide explicit modules, we auto-discover
-    # transformer stacks in the model. 
+    # transformer stacks in the model.
     # since our current activation checkpointing implementation
     # is based on correctly identifying transformer blocks
     # we catch model class names that are not supported here
-    # if model.__class__.__name__ is not in _ac_ckpt_supported_models_list 
+    # if model.__class__.__name__ is not in _ac_ckpt_supported_models_list
     # then the user should extend these functions to support their model
     # or explicitly provide the modules to apply activation checkpointing
     # via the config.
@@ -455,7 +451,7 @@ def yield_transformer_stacks_for_act_ckpt(cfg, model: nn.Module):
             f"Supported models: {_ac_ckpt_supported_models_list}"
         )
 
-    # fallback auto-discovery 
+    # fallback auto-discovery
     # MAE
     if hasattr(model, "masked_encoder") and hasattr(model.masked_encoder, "encoder"):
         if hasattr(model.masked_encoder.encoder, blocks_name):
@@ -545,7 +541,7 @@ def _rhs_shape_for(func, args):
 
 def _apply_ac_to_module(
     module: nn.Module,
-    act_ckpt_mode: str, 
+    act_ckpt_mode: str,
     base_fqn: Optional[str] = None,
     selective_ac_option: Optional[Union[str, int]] = None,
     per_op_sac_force_recompute_mm_shapes_by_fqns: Optional[List[str]] = None,
@@ -570,7 +566,7 @@ def _apply_ac_to_module(
             f"Invalid selective AC option: {selective_ac_option}. "
             f"Valid options: 'op' or a positive int representing layer frequency"
         )
-    
+
     if use_op_sac:
         from torch.utils.checkpoint import (
             CheckpointPolicy,
@@ -578,26 +574,26 @@ def _apply_ac_to_module(
         )
 
         mm_recompute_shapes, per_op_act_ckpt_fqns = set(), []
-        # True if len(per_op_sac_force_recompute_mm_shapes_by_fqns) > 0 or 
-        # per_op_sac_force_recompute_mm_shapes_by_fqns is not None 
+        # True if len(per_op_sac_force_recompute_mm_shapes_by_fqns) > 0 or
+        # per_op_sac_force_recompute_mm_shapes_by_fqns is not None
         if per_op_sac_force_recompute_mm_shapes_by_fqns:
             for module_fqn, submod in module.named_modules():
                 fqn = module_fqn
                 if base_fqn is not None:
                     fqn = f"{base_fqn}.{module_fqn}"
-                
+
                 if not any(
                     filter_fqn in fqn
                     for filter_fqn in per_op_sac_force_recompute_mm_shapes_by_fqns
                 ):
                     continue
-                
+
                 if not isinstance(submod, nn.Linear):
                     raise ValueError(
                         "per_op_sac_force_recompute_mm_shapes_by_fqns expected to match "
                         f"a nn.Linear, but got: {submod}"
                     )
-                
+
                 # use rhs shapes to identify the mm ops to recompute
                 out_f, in_f = submod.weight.shape
                 mm_recompute_shapes.add((in_f, out_f))
@@ -608,7 +604,7 @@ def _apply_ac_to_module(
                 )
 
                 per_op_act_ckpt_fqns.append(fqn)
-            
+
             logger.info(
                 f"Activation checkpointing summary:     \n"
                 f"Selective op AC mode: {act_ckpt_mode} \n"
@@ -624,7 +620,7 @@ def _apply_ac_to_module(
             def _custom_policy(ctx, func, *args, **kwargs):
                 mode = "recompute" if ctx.is_recompute else "forward"
                 mm_count_key = f"{mode}_mm_count"
-                
+
                 is_mm = func in _MM_FUNCS
                 if is_mm:
                     rhs = _rhs_shape_for(func, args)
@@ -634,7 +630,7 @@ def _apply_ac_to_module(
                         # but MUST_XXX is always respected
                         return CheckpointPolicy.PREFER_RECOMPUTE
                     meta[mm_count_key] += 1
-                
+
                 # saves output of all compute ops, except every mm_recompute_frac mm
                 to_save = func in _save_list and not (
                     is_mm and meta[mm_count_key] % mm_recompute_frac == 0
@@ -646,11 +642,11 @@ def _apply_ac_to_module(
                 )
 
             return _custom_policy
-        
+
         def selective_checkpointing_context_fn():
             meta = defaultdict(int)
-            return create_selective_checkpoint_contexts(_get_custom_policy(meta, 
-                                                                           mm_recompute_frac, 
+            return create_selective_checkpoint_contexts(_get_custom_policy(meta,
+                                                                           mm_recompute_frac,
                                                                            mm_recompute_shapes))
 
         # selective checkpointing of mm ops as well every mm_recompute_frac-th
@@ -660,7 +656,7 @@ def _apply_ac_to_module(
             context_fn=selective_checkpointing_context_fn,
             preserve_rng_state=False,
         )
-    
+
     elif use_layer_sac:
         # checkpoint every `selective_ac_option` of the modules passed to this function
         ac_freq = int(selective_ac_option)
@@ -692,7 +688,7 @@ def apply_compile(model: nn.Module, cfg: DictConfig):
             f"Invalid torch compile mode: {cfg.optimizations.torch_compile.mode}. "
             "Valid modes: 'full' or 'block_based'"
         )
-    
+
     return model
 
 
@@ -723,7 +719,7 @@ def _apply_compile_over_discovered_stacks(cfg, model: nn.Module):
     return num_blocks_compiled
 
 
-# helpers for printing model structure with 
+# helpers for printing model structure with
 # activation checkpointing to ensure correctness
 def unwrap_checkpoint(m):
     if isinstance(m, CheckpointWrapper):
@@ -815,7 +811,7 @@ def init_weights(model: nn.Module, weight_init_type: str):
         w = model.masked_encoder.patch_embedding.proj.weight.data
         torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
 
-        # timm's trunc_normal_(std=.02) is effectively 
+        # timm's trunc_normal_(std=.02) is effectively
         # normal_(std=0.02) as cutoff is too big (2.)
         torch.nn.init.normal_(model.masked_decoder.token_param, std=.02)
 
@@ -823,7 +819,7 @@ def init_weights(model: nn.Module, weight_init_type: str):
         model.apply(_mae_init_weights)
 
     elif weight_init_type == "vjepa":
-        # helpers from: 
+        # helpers from:
         # https://github.com/facebookresearch/ijepa/blob/main/src/models/vision_transformer.py
         def _vjepa_fix_init_weight(model):
             def rescale(param, layer_id):
@@ -881,7 +877,7 @@ def init_weights(model: nn.Module, weight_init_type: str):
                 trunc_normal_(m.weight, std=model.init_std)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-        
+
         def _vjepa2_rescale_blocks(model):
             def rescale(param, layer_id):
                 param.div_(math.sqrt(2.0 * layer_id))

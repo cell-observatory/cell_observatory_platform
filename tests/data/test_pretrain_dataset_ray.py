@@ -1,13 +1,12 @@
 import pytest
 from pathlib import Path
 from omegaconf import open_dict
-from hydra.utils import instantiate, get_class
+from hydra.utils import get_class
 
 import torch
 from ray.train import report
 
-from utils.cleanup import unlink_shared_memory
-from tests.conftest import distributed_test, config
+from tests.conftest import distributed_test
 
 
 def test_access_to_storage_server(config):
@@ -24,13 +23,23 @@ def _test_dataloader_ray_dist(config):
     for idx, data_sample in enumerate(trainer.train_dataloader):
         data_tensor = data_sample["data_tensor"]
 
-        assert isinstance(data_tensor, torch.Tensor), "data_tensor should be a Torch tensor"
-        assert data_tensor.ndim == expected_dims, (
-            f"Expected {expected_dims} dims (including batch), got {data_tensor.ndim}"
-        )
-        assert data_tensor.shape[1:] == tuple(config.datasets.input_shape), (
-            f"Expected input shape {config.datasets.input_shape}, got {data_tensor.shape[1:]}"
-        )
+        if isinstance(data_tensor, torch.Tensor):
+            assert data_tensor.ndim == expected_dims, (
+                f"Expected {expected_dims} dims (including batch), got {data_tensor.ndim}"
+            )
+            assert data_tensor.shape[1:] == tuple(config.datasets.input_shape), (
+                f"Expected input shape {config.datasets.input_shape}, got {data_tensor.shape[1:]}"
+            )
+        elif isinstance(data_tensor, list):
+            assert data_tensor[0].ndim == expected_dims, (
+                f"Expected {expected_dims} dims, got {data_tensor[0].ndim}"
+            )
+            assert data_tensor[0].shape[1:] == tuple(config.datasets.input_shape), (
+                f"Expected input shape {config.datasets.input_shape}, got {data_tensor[0].shape[1:]}"
+            )
+        else:
+            raise f"Unsupported type: {type(data_tensor)=}"
+            
 
         if idx >= 2:
             break
@@ -38,82 +47,62 @@ def _test_dataloader_ray_dist(config):
     return report({"success": True})
 
 
-def test_data_pipeline_ray_distributed(config):
+@pytest.mark.parametrize(
+    "mode",
+    [
+        # TODO: fixed_shape_tensor_v2 works when training, but fails in the test with 
+        # `ValueError: ('Unhandled Arrow array type:', FixedShapeTensorType`
+        # {"name": "arrow_tensor_v1", "ray_data_v2": False, "use_arrow_tensor_v2": False, "impl_type": "FixedShapeTensorArray", "split": None},
+        {"name": "fixed_size_list_v2", "ray_data_v2": True, "use_arrow_tensor_v2": True, "impl_type": "FixedSizeListArray", "split": None},
+        # {"name": "arrow_tensor_v1", "ray_data_v2": False, "use_arrow_tensor_v2": False, "impl_type": "FixedShapeTensorArray", "split": 0.2},
+        {"name": "fixed_size_list_v2", "ray_data_v2": True, "use_arrow_tensor_v2": True, "impl_type": "FixedSizeListArray", "split": 0.2},
+    ],
+    ids=lambda m: f"dist_{m['name']}",
+)
+def test_data_pipeline_ray_distributed(config, mode):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for distributed Ray test")
 
     with open_dict(config):
-        config.datasets.split = 0.2
-        config.datasets.return_dataloader = True
-        config.datasets.distributed_sampler = True
-        config.datasets.prefetch_factor = 1
-        config.datasets.num_workers = "${clusters.cpus_per_worker}"
-
-        config.datasets.drop_last_policy = True
-
-        config.datasets.collate_fn = {
-            "_target_": "data.datasets.pretrain_dataset_ray.CollatorActor",
-            "dtype": "${dataset_dtype}",
-            "buffer_dtype": "${storage_dtype}",
-            "batch_size": "${clusters.batch_size_per_gpu}",
-            "input_shape": "${datasets.input_shape}",
-            "device_buffer_capacity": 2,
-            "pin_numa_node": "${datasets.pin_numa_node}",
-            "pin_pages": "${datasets.pin_memory}",
-        }
-
-        config.datasets.dataset = {
-            "_target_": "data.datasets.pretrain_dataset_ray.PretrainDatasourceRay",
-            "hypercubes_dataframe_path": "${datasets.hypercubes_dataframe_path}",
-            "server_folder_path": "${datasets.server_folder_path}",
-            "max_rois": "${datasets.max_rois}",
-            "max_tiles": "${datasets.max_tiles}",
-            "max_hypercubes": "${datasets.max_hypercubes}",
-            "hpf_list": "${datasets.hpf_list}",
-            "roi_list": "${datasets.roi_list}",
-            "tile_list": "${datasets.tile_list}",
-            "input_layout": {
-                "_target_": "data.data_shapes.MULTICHANNEL_HYPERCUBE",
-                "value": "${dataset_layout_order}",
-            },
-        }
-
-        config.datasets.channels_subset = None
-        config.datasets.use_arrow_tensor_v2 = True
-        config.datasets.locality_with_output = True
-        config.datasets.rows_per_block = "${clusters.batch_size_per_gpu}"
-        config.datasets.buffer_capacity = 4
-        config.datasets.pin_numa_node = True
-        config.datasets.pin_memory = True
-        config.datasets.max_concurrent_calls = 512
-        config.datasets.numa_node_affinity_policy = "distance"
-        config.datasets.numa_oversub_factor = 2.0
-        config.datasets.actor_oversub_factor = 2.0
-        config.datasets.debug = True
-
-        config.datasets.context = {
-            "file_io_concurrency": None,
-            "data_copy_concurrency": None,
-            "cache_pool": {"total_bytes_limit": 0},
-        }
-
-        config.experiment_name = f"test_data_pipeline_ray"
+        config.experiment_name = f"test_data_pipeline_ray_{mode['name']}"
         config.paths.resume_checkpointdir = None
 
+        config.datasets.ray_data_v2 = mode["ray_data_v2"]
+        config.datasets.impl_type = mode["impl_type"]
+        config.datasets.split = mode["split"]
+        config.datasets.use_arrow_tensor_v2 = mode["use_arrow_tensor_v2"]
+
+        config.datasets.transforms.transforms_list = []
+
+        config.datasets.dataset._target_ = "data.datasets.pretrain_dataset_ray.PretrainDatasourceRay"
+
+        config.datasets.drop_last_policy = True
+        config.datasets.auto_transfer = False
         config.datasets.with_batched_api = True
         config.datasets.num_actors_min = 1
-        config.datasets.num_actors_max = 1
+        config.datasets.num_actors_max = 2
+        config.datasets.channels_subset = None
+        config.datasets.locality_with_output = True 
+        config.datasets.rows_per_block = "${datasets.batch_size}"
+
+        config.datasets.collate_fn = {
+            "_target_": "data.datasets.pretrain_dataset_ray.PinnedTensorCollator",
+            "dtype": "${dataset_dtype}",
+            "sample_shape": "${datasets.input_shape}",
+            "pin_memory": True,
+            "impl_type": mode["impl_type"],
+        }
 
         config.datasets.context = {
             "file_io_concurrency": None,
             "data_copy_concurrency": None,
-            "cache_pool": {"total_bytes_limit": 0},
+            "cache_pool": {
+                "total_bytes_limit": 0
+            }
         }
 
     metrics = distributed_test(
         cfg=config,
         test="tests.data.test_pretrain_dataset_ray._test_dataloader_ray_dist",
     )
-    assert metrics.get("success", False), f"Distributed Ray dataloader test failed"
-
-    unlink_shared_memory()
+    assert metrics.get("success", False), f"Distributed Ray dataloader test failed for {mode['name']}"

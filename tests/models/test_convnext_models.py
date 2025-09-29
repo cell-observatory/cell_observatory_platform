@@ -36,7 +36,7 @@ def test_convnext_custom(models_kargs):
         modes=models_kargs['modes'],
         depths=(3, 3, 9, 3),
         dims=(96, 192, 384, 768),
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -71,7 +71,7 @@ def test_convnext_tiny(models_kargs):
         input_fmt='ZYXC',
         input_shape=inputs,
         modes=models_kargs['modes'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -106,7 +106,7 @@ def test_convnext_small(models_kargs):
         input_fmt='ZYXC',
         input_shape=inputs,
         modes=models_kargs['modes'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -141,7 +141,7 @@ def test_convnext_base(models_kargs):
         input_fmt='ZYXC',
         input_shape=inputs,
         modes=models_kargs['modes'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -175,7 +175,7 @@ def test_convnext_large(models_kargs):
         input_fmt='ZYXC',
         input_shape=inputs,
         modes=models_kargs['modes'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 

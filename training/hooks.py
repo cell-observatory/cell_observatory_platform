@@ -5,29 +5,26 @@ https://github.com/open-mmlab/mmengine/tree/main/mmengine/hooks
 """
 
 
+import datetime
+import logging
+import math
+import operator
 import os
 import sys
 import time
-import math
-import logging
-import operator
-import datetime
+from collections import Counter
 from enum import Enum
 from pathlib import Path
-from collections import Counter
-from typing import Optional, Union, Sequence, Literal
+from typing import Literal, Optional, Sequence, Union
 
 import torch
-from torch.profiler import ProfilerActivity
 from fvcore.common.timer import Timer
-
-import ray
 from ray.train import Checkpoint, report
+from torch.profiler import ProfilerActivity
 
-from training.loggers import EventWriter
 from training.helpers import log_data_timings
-from utils.context import is_main_process, gather_and_reduce, process_rank
-
+from training.loggers import EventWriter
+from utils.context import gather_and_reduce, is_main_process, process_rank
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -197,6 +194,7 @@ class LRScheduler(HookBase):
     def before_train(self):
         self.optimizer = self.trainer.opt
         self.scheduler = self.trainer.scheduler
+        self.update_type = self.trainer.scheduler.update_type
 
         self._group_labels = [
             g.get("name", f"group{i}") for i, g in enumerate(self.optimizer.param_groups)
@@ -230,7 +228,12 @@ class LRScheduler(HookBase):
         # NOTE: alternatively, we can summarize all LR groups
         # for label, group in zip(self._group_labels, self.optimizer.param_groups):
         #     self.trainer.event_recorder.put_scalar(f"lr/{label}", group["lr"])
-        self.scheduler.step(epoch=self.trainer._epoch)
+        if self.update_type == "epoch":
+            self.scheduler.step(epoch=self.trainer._epoch)
+        elif self.update_type == "step":
+            self.scheduler.step(self.trainer._iter)
+        else:
+            raise NotImplementedError(f'{self.update_type=} is not supported')
 
 
 class IterationTimer(HookBase):
@@ -932,9 +935,9 @@ class EMASchedulerHook(HookBase):
 
 class WeightDecayScheduleHook(HookBase):
     def before_train(self):
-        self.wd_sched = self.trainer.wd_sched
-        assert self.wd_sched is not None, \
-            "WeightDecayScheduleHook requires wd_sched to be set in the trainer."
+        self.wd_scheduler = self.trainer.wd_scheduler
+        assert self.wd_scheduler is not None, \
+            "WeightDecayScheduleHook requires wd_scheduler to be set in the trainer."
         self.event_recorder = self.trainer.event_recorder
         if self.event_recorder is None:
             logger.warning("WeightDecayScheduleHook requires event_recorder to be set in the trainer. \
@@ -944,31 +947,10 @@ class WeightDecayScheduleHook(HookBase):
         # DeepSpeed performs the optimizer step at boundary
         # after that prepare WD for the next optimizer step
         # is_gradient_accumulation_boundary queries whether the current
-        # micro-batch is at the boundary of gradient accumulation, and 
+        # micro-batch is at the boundary of gradient accumulation, and
         # thus will trigger gradient reductions and an optimizer step
         if self.trainer.model.is_gradient_accumulation_boundary():
-            self.wd_sched.step()
+            self.wd_scheduler.step()
             if self.event_recorder:
                 wd0 = self.trainer.opt.param_groups[0]["weight_decay"]
                 self.event_recorder.put_scalars(scope="step", wd=wd0)
-
-
-class FreeDeviceBufferHook(HookBase):
-    """
-    A hook that frees memory buffers after each step. 
-    Important to use to prevent deadlocks.
-    """
-    def before_train(self):
-        self.device_buffer = self.trainer.device_buffer
-
-    def after_step(self, **kwargs):
-        device_buffer_idx = kwargs['data_sample']['metainfo']['device_buffer_idx']
-        self.device_buffer.put_free(device_buffer_idx)
-
-    def after_test_step(self, data_sample, outputs, loss_dict):
-        device_buffer_idx = data_sample['metainfo']['device_buffer_idx']
-        self.device_buffer.put_free(device_buffer_idx)
-        
-    def after_val_step(self, data_sample, outputs, loss_dict):
-        device_buffer_idx = data_sample['metainfo']['device_buffer_idx']
-        self.device_buffer.put_free(device_buffer_idx)

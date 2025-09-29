@@ -10,6 +10,9 @@ from models.positional_encoding import (
     positional_encoding_3d,
     positional_encoding_4d,
     PosEmbedding,
+)
+
+from models.rope import (
     generate_frequency_spectrum,
     generate_grid_indices,
     compute_mixed_cis,

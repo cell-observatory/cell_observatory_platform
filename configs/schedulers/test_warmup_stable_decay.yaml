@@ -1,13 +1,13 @@
-type: cosine
-epochs: 500
-warmup: 10
-cooldown: 50
+type: warmup_stable_decay
+epochs: 6
+warmup: 1
+cooldown: 1
 fixedlr: false
 ema: [0.998, 1.0]
 warmup_min_ratio: 0.5
-cos_min_ratio: 0.0001
+final_lr_ratio: 0.0001
 warmup_type: linear
-update_type: epoch
+update_type: step
 
 wd_scheduler:
   enabled: true

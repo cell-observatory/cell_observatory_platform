@@ -167,7 +167,8 @@ def get_schedulers(
             T_max=config.schedulers.epochs * steps_per_epoch,
             start_lr=config.schedulers.warmup_min_ratio * config.optimizers.lr,
             ref_lr=config.optimizers.lr,
-            final_lr=config.schedulers.final_lr_ratio * config.optimizers.lr
+            final_lr=config.schedulers.final_lr_ratio * config.optimizers.lr,
+            update_type=config.schedulers.update_type,
         )
 
     elif config.schedulers.type == "cosine":
@@ -200,6 +201,7 @@ def get_schedulers(
             min_lr=cos_min_lr,
             warmup_lr=warmup_min_lr,
         )
+        scheduler.update_type = config.schedulers.update_type
 
     else:
         raise NotImplementedError(f"Unknown scheduler: {config.schedulers.type}")
@@ -215,7 +217,6 @@ def get_schedulers(
         _hook_is_registered = False
         for hook in list(config.hooks.hooks_list):
             if hook._target_.endswith("WeightDecayScheduleHook"):
-                hook.wd_scheduler = wd_scheduler
                 _hook_is_registered = True
                 break
         if not _hook_is_registered:
@@ -237,7 +238,8 @@ class WarmupStableDecaySchedule(object):
                  T_max, 
                  start_lr, 
                  ref_lr, 
-                 final_lr=0.0
+                 final_lr=0.0,
+                 update_type='step'
 ):
         self._step = 0.0
         self.optimizer = optimizer
@@ -250,8 +252,9 @@ class WarmupStableDecaySchedule(object):
         self.warmup_steps = warmup_steps
         
         self.T_max = T_max - warmup_steps - anneal_steps
+        self.update_type = update_type
 
-    def step(self):
+    def step(self, epoch):
         self._step += 1
         if self._step < self.warmup_steps:
             progress = float(self._step) / float(max(1, self.warmup_steps))

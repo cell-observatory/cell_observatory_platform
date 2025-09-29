@@ -33,6 +33,10 @@ class TorchPreprocessor(torch.nn.Module):
         # if torch.isnan(inputs).all() or torch.isinf(inputs).all():
         #     raise ValueError(f"Invalid training data")
 
+        if inputs.dtype != self.dtype:
+            # ray.logger.warning(f"Casting inputs to {self.dtype}")
+            inputs = inputs.to(self.dtype)
+
         assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 
         if self.with_masking:
@@ -81,6 +85,10 @@ class DaliPreprocessor(torch.nn.Module):
         #        or skipping this check
         # if torch.isnan(inputs).all() or torch.isinf(inputs).all():
         #     raise ValueError(f"Invalid training data")
+
+        if inputs.dtype != self.dtype:
+            # ray.logger.warning(f"Casting inputs to {self.dtype}")
+            inputs = inputs.to(self.dtype)
 
         assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 

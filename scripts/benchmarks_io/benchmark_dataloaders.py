@@ -2,12 +2,9 @@ import os
 import sys
 import time
 import logging
-from pathlib import Path
 from typing import List
-
 from tqdm import tqdm
-
-import pandas as pd
+from pathlib import Path
 
 import torch
 
@@ -18,8 +15,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from data.dataloaders import get_dataloader
-from data.datasets.buffers import set_buffers
-from utils.context import process_rank, barrier, local_rank
+from utils.context import process_rank, barrier
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -188,7 +184,7 @@ def _measure_loader(loader, num_batches: int, warmup: int, batch_size: int, byte
     return stats
 
 
-def benchmark_dataloader(cfg):    
+def benchmark_dataloader(cfg):
     loader, _, _, _ = get_dataloader(cfg)
 
     time_size, cube_size, channel_size = _get_hypercube_shape(cfg)
