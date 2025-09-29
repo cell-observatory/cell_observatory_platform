@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 
 from ray.train import report
 
-from tests.conftest import distributed_test
+from tests.conftest import distributed_test, config
 
 
 def test_access_to_storage_server(config):

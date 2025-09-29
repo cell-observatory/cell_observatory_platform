@@ -7,7 +7,7 @@ from torch.utils.data import get_worker_info
 from dask.dataframe.tests.test_pyarrow_compat import dtype
 
 from data.io import read_zarr
-from data.data_types import TENSORSTORE_DTYPES
+from data.data_types import TENSORSTORE_DTYPES, TORCH_DTYPES
 from data.structures.data_sample import DataSample
 from data.structures.image_list import ImageList, cat_image_lists
 from data.datasets.base_dataset import BaseDataset, default_collate
@@ -88,7 +88,7 @@ class PretrainDataset(BaseDataset):
         return dict(meta=meta, image=img)
 
     def _collate(self, _data: Dict[str, Any]) -> DataSample:
-        img_tensor = torch.from_numpy(_data["image"])
+        img_tensor = torch.from_numpy(_data["image"]).to(dtype=torch.float16)
 
         if torch.isnan(img_tensor).all() or torch.isinf(img_tensor).all():
             raise ValueError(f"Invalid training data: {_data['meta']}")
