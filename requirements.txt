@@ -7,6 +7,7 @@ ipdb==0.13.13
 line-profiler==5.0.0
 line-profiler-pycharm==1.2.0
 nvitop==1.5.3
+numa==1.4.6
 omegaconf==2.3.0
 py-libnuma==1.2
 pytest==8.4.2  # needed because old pytest is installed in the base image
