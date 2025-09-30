@@ -33,6 +33,7 @@ class PretrainDatasetDali:
     ):
         self.input_layout = input_layout
         self.dtype = DALI_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+        self.np_dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
         self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
@@ -120,6 +121,9 @@ class PretrainDatasetDali:
         sample_idx = self.perm[sample_info.idx_in_epoch + self.shard_offset]
         sample = self._index[sample_idx]
         data = self._load_sample(sample)
+
+        if data.dtype != self.np_dtype:
+            data = data.astype(self.np_dtype)
 
         # TODO: add support for timing data load with DALI
         if self.time:

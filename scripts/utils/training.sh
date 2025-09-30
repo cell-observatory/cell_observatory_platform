@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# --- ABC
+
 # USAGE: bash /clusterfs/nvme/hph/git_managed/cell_observatory_platform/scripts/utils/training.sh
 
 # CFG="test_pretrain_4d_mae_local.yaml"
@@ -10,6 +12,18 @@
 # CFG="experiments/abc/pretrain_mae_test_tune_07_18_2025.yaml"
 # CFG="experiments/abc/pretrain_mae_improve_utilization_07_23_2025.yaml"
 # CFG="benchmarks/abc/benchmark_training_4d_dataloader.yaml"
-CFG="benchmarks/abc/benchmark_scaling_4d_base.yaml"
+# CFG="benchmarks/abc/benchmark_scaling_4d_base.yaml"
 
-python3 /clusterfs/nvme/hph/git_managed/cell_observatory_platform/manager.py --config-name=${CFG}
+# python3 /clusterfs/nvme/hph/git_managed/cell_observatory_platform/manager.py --config-name=${CFG}
+
+# --- Janelia 
+
+# LSF interactive example cmd:
+# bsub -Is -q gpu_h100_parallel -J "debug_job" -n 96 -gpu "num=8:mode=shared" -o "/groups/betzig/betziglab/hph/cell_observatory_project/log.%J" /bin/bash
+
+# USAGE: bash /groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform/scripts/utils/training.sh
+
+CFG="benchmarks/janelia/benchmark_training_dataloader.yaml"
+
+# Janelia
+python3 /groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform/manager.py --config-name=${CFG}

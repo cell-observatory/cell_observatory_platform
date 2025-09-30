@@ -19,16 +19,16 @@ import torch
 from deepspeed import initialize
 from ray.train import get_context
 
-from data.dataloaders import get_dataloader
 from training.helpers import (
     enable_optimizations,
     get_masked_input_data,
     get_steps_per_epoch,
     resume_run,
-    summarize_model,
+    summarize_model
 )
 from training.hooks import HookBase
 from training.loggers import EventRecorder
+from data.dataloaders import get_dataloader
 from training.optimizers import get_optimizer
 from training.registry import build_dependency_graph_and_instantiate
 from training.schedulers import get_param_groups, get_schedulers
@@ -249,7 +249,8 @@ class EpochBasedTrainer(BaseTrainer):
         # get_dataloader() returns a tuple of dataloaders
         # (train_dataloader, val_dataloader) where
         # val_dataloader is None if no validation set is provided
-        self.train_dataloader, self.val_dataloader = get_dataloader(cfg)
+        self.train_dataloader, self.val_dataloader, \
+            self.host_buffer_actor, self.device_buffer = get_dataloader(cfg)
 
         self.steps_per_epoch, self.val_steps_per_epoch = get_steps_per_epoch(
             train_dataloader=self.train_dataloader,
@@ -264,7 +265,7 @@ class EpochBasedTrainer(BaseTrainer):
         #       instead of recursive instantiation
         model = build_dependency_graph_and_instantiate(cfg.models)
 
-        # FIXME: there seems to be a bug in model definitions where we  
+        # TODO: there seems to be a bug in model definitions where we  
         #       have the model defined in a subfolder (e.g. models/abc/model.py)
         #       this hack works for one folder deep models but should be fixed
         model, = model.values() if isinstance(model, dict) else (model,)
