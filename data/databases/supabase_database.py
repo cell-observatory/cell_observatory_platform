@@ -460,17 +460,27 @@ class SupabaseDatabase:
         return len(self.get_columns(table_name))
 
     def get_random_rois(self, num_rois: int = 1) -> List[int]:
+        filter = ""
+        if self.hpf_list is not None:
+            filter += self._age_filter(
+                hpfs=self.hpf_list, table_name="prepared_tiles_view"
+            )
         query = f"""
             SELECT DISTINCT ON (prepared_id) prepared_id 
-            FROM prepared_tiles_view 
+            FROM prepared_tiles_view {filter}
             LIMIT {num_rois}
         """
         return self.execute_query(query).values.squeeze().tolist()
 
     def get_random_tiles(self, num_tiles: int = 1) -> List[int]:
+        filter = ""
+        if self.hpf_list is not None:
+            filter += self._age_filter(
+                hpfs=self.hpf_list, table_name="prepared_tiles_view"
+            )
         query = f"""
             SELECT DISTINCT ON (prepared_id, tile_name) prepared_id, tile_name 
-            FROM prepared_tiles_view 
+            FROM prepared_tiles_view {filter}
             LIMIT {num_tiles}
         """
         return self.execute_query(query).values.squeeze().tolist()
