@@ -41,7 +41,8 @@ To later update to the latest, greatest
 git pull --recurse-submodules
 ```
 
-> [!NOTE] If you want to run a local version of the image, see the [Dockerfile](https://github.com/cell-observatory/cell_observatory_platform/blob/main/Dockerfile)
+> [!NOTE]
+> If you want to run a local version of the image, see the [Dockerfile](https://github.com/cell-observatory/cell_observatory_platform/blob/main/Dockerfile)
 
 ## Setup Supabase and W&B accounts
 
@@ -53,7 +54,8 @@ Once you have created your Supabase and W&B accounts, you'll need to add your AP
 ## Setup environment variables
 Rename `.env.example` file to `.env` which will be automatically loaded into the container and will be gitignored. The Supabase related environment variables enable database functionality. The W&B API key enables logging functionality. The `REPO_NAME`, `DATA_DIR`, and `STORAGE_SERVER_DIR` environment variables are leverged in the `configs/paths` configuration files to ensure that jobs run and save outputs as expected.
 
-> [!NOTE] `STORAGE_SERVER_DIR` is usually set to the root directory of your files. See example below:
+> [!NOTE]
+> `STORAGE_SERVER_DIR` is usually set to the root directory of your files. See example below:
 > ```shell
 > STORAGE_SERVER_DIR="/clusterfs/scratch/user/"
 > REPO_DIR="/clusterfs/scratch/user/cell_observatory_platform"
@@ -77,7 +79,8 @@ STORAGE_SERVER_DIR=REPLACE_ME_WITH_YOUR_STORAGE_SERVER_DIR_WHERE_DATA_SERVER_IS_
 PYTHONPATH=REPLACE_ME_WITH_YOUR_ROOT_REPO_DIR
 ````
 
-> [!IMPORTANT] Username/password and IDs for supabase will be provided upon request. 
+> [!IMPORTANT]
+> Username/password and IDs for supabase will be provided upon request. 
 
 
 # Running docker image
@@ -111,7 +114,8 @@ Then you can run the following command to build a complete image:
 apptainer build --arch amd64 --nv --force develop_torch_25_08.sif apptainerfile.def
 ```
 
-> [!IMPORTANT] Make sure to pass in the right argument for your system  (`amd64` or `arm64`)
+> [!IMPORTANT]
+> Make sure to pass in the right argument for your system  (`amd64` or `arm64`)
 
 # Get started
 
