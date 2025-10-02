@@ -513,7 +513,7 @@ class SupabaseDatabase:
         if self.check_view_exists(table_name):
 
             if self.verbose:
-                print(f"Using table: {table_name} from the {self.dbname}.")
+                print(f"Using table: {table_name} from the database named: {self.dbname}.")
 
             self.last_query = self._query_t_128_128_128_2_hypercube_view(
                 table_name=table_name,
@@ -553,6 +553,8 @@ class SupabaseDatabase:
             print('\n'.join(self.last_query) if isinstance(self.last_query, list) else self.last_query)
 
         table = self.execute_query(self.last_query)
+        num_rows, num_cols = table.shape
+        print(f"\nRetrieved {num_rows} rows. \t Retrieved {num_cols} columns.")
 
         if hypercubes_dataframe_path is not None:
             self.save_hypercubes_dataframe(table, hypercubes_dataframe_path=hypercubes_dataframe_path)
