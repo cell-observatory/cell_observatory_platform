@@ -245,6 +245,7 @@ def test_1_128_128_128_2_hypercubes_database(config):
 
     assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
     assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
 def test_16_128_128_128_2_hypercubes_database(config):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database"
@@ -263,6 +264,7 @@ def test_16_128_128_128_2_hypercubes_database(config):
 
     assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
     assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
 def test_16_128_128_128_2_hypercubes_database_with_filters(config):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_with_filters"
@@ -286,6 +288,7 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config):
     assert len(table['prepared_id'].unique()) <= config.datasets.databases.max_rois, f"Only {config.datasets.databases.max_rois} ROI should be returned"
     assert len(table['tile_name'].unique()) <= config.datasets.databases.max_tiles, f"Only {config.datasets.databases.max_tiles} tiles should be returned"
     assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
     assert table['hpf'].isin(config.datasets.databases.hpf_list).all(), f"Only hpf in {config.datasets.databases.hpf_list} should be returned"
 
 def test_16_128_128_128_2_hypercubes_database_10k(config):
@@ -306,6 +309,7 @@ def test_16_128_128_128_2_hypercubes_database_10k(config):
     assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
 
     assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
     assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique value"
 
@@ -330,6 +334,7 @@ def test_16_128_128_128_2_hypercubes_database_100k(config):
     assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
 
     assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
     assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique values"
 
