@@ -267,6 +267,7 @@ def test_16_128_128_128_2_hypercubes_database(config):
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
 def test_16_128_128_128_2_hypercubes_database_with_filters(config):
+    previous_config = config.datasets.databases.copy()
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_with_filters"
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_rois = 2
@@ -291,10 +292,15 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config):
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
     assert table['hpf'].isin(config.datasets.databases.hpf_list).all(), f"Only hpf in {config.datasets.databases.hpf_list} should be returned"
 
+    config.datasets.databases = previous_config.copy()  #  Restore previous config state.  For the tests that follow, this will clear 'filters' we just added 
+    
 def test_16_128_128_128_2_hypercubes_database_10k(config):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_10k"
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_hypercubes = 10000
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
     config.datasets.databases.fetch_hypercubes_dataframe = True
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
@@ -320,6 +326,9 @@ def test_16_128_128_128_2_hypercubes_database_100k(config):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_100k"
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_hypercubes = 100000
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
     config.datasets.databases.fetch_hypercubes_dataframe = True
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
