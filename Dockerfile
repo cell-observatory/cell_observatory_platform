@@ -97,7 +97,7 @@ COPY requirements.txt requirements.txt
 
 FROM pip_install AS torch_25_08
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt --progress-bar off --cache-dir /root/.cache/pip
+    pip install -r requirements.txt --progress-bar off --root-user-action=ignore --cache-dir /root/.cache/pip
 
 # Code to avoid running as root
 ARG USERNAME=user1000
