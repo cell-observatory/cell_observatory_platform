@@ -1,3 +1,6 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
 # NCCL settings optimized for Ethernet without InfiniBand
 export LC_ALL=C.UTF-8
 export LANG=C.UTF-8
@@ -46,13 +49,30 @@ while getopts ":i:p:d:c:g:t:q:" option;do
     esac
 done
 
+_cleaned=0
+cleanup() {
+    (( _cleaned )) && return
+    _cleaned=1
+    echo "Running head node cleanup..."
+    [ -f "$tmpdir/prometheus.pid" ] && kill "$(cat "$tmpdir/prometheus.pid")" 2>/dev/null || true
+    [ -f "$tmpdir/grafana.pid"    ] && kill "$(cat "$tmpdir/grafana.pid")"    2>/dev/null || true
+    ray stop --force >/dev/null 2>&1 || true
+    python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+}
+trap 'cleanup' EXIT
+trap 'cleanup; exit 143' TERM INT USR1
+
+
 mkdir -p /tmp/ray
 cluster_address="$ip:$port"
 
 echo "Starting ray head node @ $(hostname) => $cluster_address with CPUs[$cpus] & GPUs [$gpus]"
-job="ray start --head --node-ip-address=$ip --port=$port --dashboard-port=$dashboard_port --dashboard-host=0.0.0.0 --min-worker-port 18999 --max-worker-port 19999 --temp-dir=$tmpdir --num-cpus=$cpus --num-gpus=$gpus --object-store-memory=$object_store_memory"
+job="ray start --block --head --node-ip-address=$ip --port=$port --dashboard-port=$dashboard_port --dashboard-host=0.0.0.0 --min-worker-port 18999 --max-worker-port 19999 --temp-dir=$tmpdir --num-cpus=$cpus --num-gpus=$gpus --object-store-memory=$object_store_memory"
 echo $job
 $job &
+head_pid=$!
+
+echo "$$" > "$tmpdir/cleanup_head.pid"
 
 # wait for the head node to start/create a new session
 # directory to ensure that prometheus and grafana 
@@ -73,11 +93,11 @@ latest_session_dir() {
     [ -e "$1" ] || return 1
 
     {
-      for p do
-        b=$(basename "$p")
-        key=$(printf %s "$b" |
-              sed -n 's/^session_\([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]-[0-9][0-9]-[0-9][0-9]\).*/\1/p') || key=
-        [ -n "$key" ] && printf '%s\t%s\n' "$key" "$p"
+        for p do
+            b=$(basename "$p")
+            key=$(printf %s "$b" |
+                    sed -n 's/^session_\([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_[0-9][0-9]-[0-9][0-9]-[0-9][0-9]\).*/\1/p') || key=
+            [ -n "$key" ] && printf '%s\t%s\n' "$key" "$p"
       done
     } | LC_ALL=C sort | tail -n1 | awk -F '	' '{print $2}'
 }
@@ -91,22 +111,22 @@ grafana_config="$session_directory/metrics/grafana/grafana.ini"
 grafana_provisioning_config="$session_directory/metrics/grafana/provisioning"
 
 if [ -z "$prometheus_config" ]; then
-  echo "WARN: no Prometheus config found under $tmpdir" >&2
+    echo "WARN: no Prometheus config found under $tmpdir" >&2
 else
-  echo "Using Prometheus config: $prometheus_config"
+    echo "Using Prometheus config: $prometheus_config"
 
-  prometheus --config.file="$prometheus_config" \
-    --storage.tsdb.path="$tmpdir/prometheus" \
-    --web.enable-lifecycle >"$tmpdir/prometheus.log" 2>&1 &
-  echo "$!" > "$tmpdir/prometheus.pid"
+    prometheus --config.file="$prometheus_config" \
+        --storage.tsdb.path="$tmpdir/prometheus" \
+        --web.enable-lifecycle >"$tmpdir/prometheus.log" 2>&1 &
+    echo "$!" > "$tmpdir/prometheus.pid"
 fi
 
 ############################## START GRAFANA
 
 if [ -z "$grafana_config" ]; then
-  echo "WARN: no grafana.ini found under $tmpdir" >&2
+    echo "WARN: no grafana.ini found under $tmpdir" >&2
 else
-  echo "Using Grafana config: $grafana_config"
+    echo "Using Grafana config: $grafana_config"
     
     GRAFANA_DATA="$tmpdir/grafana/data"
     GRAFANA_LOGS="$tmpdir/grafana/logs"
@@ -122,4 +142,4 @@ else
     echo "$!" > "$tmpdir/grafana.pid"
 fi
 
-sleep infinity
+wait "$head_pid"

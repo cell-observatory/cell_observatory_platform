@@ -3,7 +3,7 @@ defaults:
   - /paths/abc                               # configs/paths/abc.yaml
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
   - /clusters/local                          # configs/clusters/local.yaml
-  - /datasets/pretrain_dataset_ray               # configs/datasets/pretrain_dataset.yaml
+  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
   - /models/mae/large                        # configs/models/mae/large.yaml
   - /hooks/hooks                             # configs/hooks/hooks.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
@@ -13,11 +13,12 @@ defaults:
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /profiling/profiling                      # configs/profiling/profiling.yaml
   - _self_
 
 # experiment name (used for logging)
 experiment_name: performance_profiling
-wandb_project: test_ray_dataset_v2
+wandb_project: test_ray_dataset_v3
 
 # task
 task: pretrain_mae
@@ -46,9 +47,8 @@ loop_per_worker_script: training.loops.train_loop_per_worker
 # training quantization
 quantization: bfloat16 # data type for training, options: float32, float16
 
-# dtype for training data
-# NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model 
-dataset_dtype: float16 # data type for loading data, options: float32, float16 
+# NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model
+dataset_dtype: float16 # data type for loading data, options: float32, float16
 
 # dataset layout in the zarr files
 dataset_layout_order: TZYXC
@@ -59,16 +59,16 @@ dataset_layout_order: TZYXC
 # clusters
 clusters:
   ray_queue_memory: 0.2
-  batch_size: 32 # total batch size
+  batch_size: 256 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 126 # number of cpu cores per gpu
+  gpus_per_worker: 8 # number of gpus per worker node
+  cpus_per_gpu: 16 # number of cpu cores per gpu
   mem_per_cpu: 21000 # ram per cpu core
   scaling_config:
     use_gpu: true
     num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
     resources_per_worker:
-      CPU: 0
+      CPU: 1
       GPU: 1
     trainer_resources:
       CPU: 0 
@@ -84,49 +84,21 @@ paths:
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-  input_shape: [16, 128, 128, 128, 1] # NOTE: important that this matches database hypercube shape
+  input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
-
-  split: 0.1
-  return_dataloader: true
-  distributed_sampler: true
-
-  use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
-  locality_with_output: true # whether to use locality with output for the Ray tasks
-
-  # ray_remote_args:
-  #   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
-
-  # implementation type for the data tensor array 
-  # options: FixedShapeTensorArray, FixedSizeListArray, ArrowTensorArray
-  impl_type: FixedSizeListArray
-  ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
-  
-  prefetch_factor: 3
-  num_actors_min: 4
-  num_actors_max: 64
-
-  # only train on channel 0
-  # channels_subset: [0]
-  
-  with_batched_api: true
-  context:
-    file_io_concurrency: null # concurrency for file I/O operations
-    data_copy_concurrency: null # concurrency for data copy operations
-    cache_pool: 
-      total_bytes_limit: 0
 
   databases:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-    max_hypercubes: 10000 # maximum number of hypercubes to return
-    use_cached_hypercubes_dataframe: false
-    hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
+    max_hypercubes: 20000 # maximum number of hypercubes to return
+    use_cached_hypercubes_dataframe: true # whether to use the cached hypercubes dataframe
+    hypercubes_dataframe_path: /clusterfs/nvme/segment_4d/pretrained_models/benchmark_dataloader_with_obs_new/database/hypercubes_dataframe.csv
+    server_folder_path: /clusterfs/vast/Data/read_speed_tests/large_test_zarrs
     protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 
 # schedulers
 schedulers:
-  epochs: 5
+  epochs: 2
 
 # test activation checkpointing
 # optimizations:
@@ -171,12 +143,13 @@ hooks:
   # - _target_: training.hooks.NsysProfilerHook
   #   start_iter: 20
   #   end_iter: 25
+  - _target_: training.hooks.FreeDeviceBufferHook
   - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer
   - _target_: training.hooks.PeriodicWriter
   - _target_: training.hooks.PeriodicCheckpointer
-    period: 100
+    period: 1
     file_prefix: latest_model
   - _target_: training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}

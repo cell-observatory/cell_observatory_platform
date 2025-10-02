@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 export NCCL_DEBUG=INFO
 export NCCL_DEBUG_SUBSYS=GRAPH
 export RAY_DEDUP_LOGS=0
@@ -45,28 +47,44 @@ export cluster_address
 
 ############################## START HEAD NODE
 
-apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir -q $object_store_memory &
+apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind /dev/shm:/dev/shm \
+    --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
+    -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir -q $object_store_memory &
 sleep 10
+
+check_headnode="apptainer exec --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray status --address $head_node_ip:$port"
+while ! $check_headnode; do
+    echo "Waiting for head node..."
+    sleep 3
+done
 
 rpids=$(pgrep -u $USER ray)
 echo "Ray head node PID:"
 echo $rpids
 
-############################## CHECK STATUS
+############################## CLEANUP
 
-# add exit trap to ensure cleanup on script exit
-# this will ensure that we stop the Ray cluster and cancel worker jobs
-# even if the script fails at any point henceforth
 cleanup() {
-    ec=$? # exit code of the last command that triggered the trap
-    echo "running cleanup (exit code: $ec)"
-
-    # stop Ray on the head node
-    apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
+    ec=$?
+    echo "Running job cleanup (exit code: $ec)"
+    head_pid=$(cat "$outdir/cleanup_head.pid" 2>/dev/null || true)
+    if [[ -n "$head_pid" ]]; then
+        kill -TERM "$head_pid" 2>/dev/null || true
+        for _ in {1..120}; do
+            kill -0 "$head_pid" 2>/dev/null || break
+            sleep 1
+        done
+        kill -KILL "$head_pid" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
+trap 'exit 143' SIGTERM SIGINT
 
-echo apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r 1
+############################## CHECK STATUS
+
+echo apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind \
+    --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
+    -a $cluster_address -r 1
 
 ############################## RUN WORKLOAD
 

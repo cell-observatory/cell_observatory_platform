@@ -65,7 +65,7 @@ def read_zarr(
     zarr_driver: str = "zarr3",
     dtype: Optional[TENSORSTORE_DTYPES | str] = None,
     context: ts.Context | None = None,
-    cast: bool = True
+    cast: bool = False
 ) -> np.ndarray:
     """ Read a Zarr file and return the data as a NumPy array """
     spec = {
@@ -265,49 +265,64 @@ def apply_hypercubes_dataframe_selections(
     roi_list: Optional[Iterable[int]] = None,
     tile_list: Optional[Iterable[str]] = None,
 ):
+    df = hypercubes_dataframe
+
     logger.info(
         f"\nApplied selections:\n"
-        f"{hpf_list=}\n"
-        f"{roi_list=}\n"
-        f"{tile_list=}\n"
-        f"{max_rois=}\n"
-        f"{max_tiles=}\n"
-        f"{max_hypercubes=}"
+        f"hpf_list={hpf_list}\n"
+        f"roi_list={roi_list}\n"
+        f"tile_list={tile_list}\n"
+        f"max_rois={max_rois}\n"
+        f"max_tiles={max_tiles}\n"
+        f"max_hypercubes={max_hypercubes}"
     )
 
-    if roi_list is not None or tile_list is not None:
-        rois = list(roi_list)
-        tiles = list(tile_list)
+    def _to_list_or_none(x):
+        if x is None or len(list(x)) == 0:
+            return None
+        else:
+            return list(x)
 
-        if rois is not None and tiles is not None:
-            hypercubes_dataframe = hypercubes_dataframe[
-                (hypercubes_dataframe['prepared_id'].isin(rois)) & (hypercubes_dataframe['tile_name'].isin(tiles))
-                ]
+    rois  = _to_list_or_none(roi_list)
+    tiles = _to_list_or_none(tile_list)
+    hpfs = _to_list_or_none(hpf_list)
+
+    if rois is not None or tiles is not None:
+        conds = []
+        if rois is not None and 'prepared_id' in df.columns:
+            conds.append(df['prepared_id'].isin(rois))
         elif rois is not None:
-            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['prepared_id'].isin(rois)]
+            logger.warning("Column 'prepared_id' not found; skipping ROI filter.")
+
+        if tiles is not None and 'tile_name' in df.columns:
+            conds.append(df['tile_name'].isin(tiles))
         elif tiles is not None:
-            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['tile_name'].isin(tiles)]
+            logger.warning("Column 'tile_name' not found; skipping tile filter.")
 
-    if hpf_list is not None:
-        hpfs = list(hpf_list)
-        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['hpf'].isin(hpfs)]
+        if conds:
+            cond = conds[0]
+            for c in conds[1:]:
+                cond &= c
+            df = df[cond]
 
-    if max_rois is not None:
-        unique_rois = hypercubes_dataframe['prepared_id'].unique().tolist()
-        hypercubes_dataframe = hypercubes_dataframe[
-            hypercubes_dataframe['prepared_id'].isin(unique_rois[:max_rois])
-        ]
+    if hpfs is not None:
+        if 'hpf' in df.columns:
+            df = df[df['hpf'].isin(hpfs)]
+        else:
+            logger.warning("Column 'hpf' not found; skipping HPF filter.")
 
-    if max_tiles is not None:
-        unique_tiles = hypercubes_dataframe['tile_name'].unique().tolist()
-        hypercubes_dataframe = hypercubes_dataframe[
-            hypercubes_dataframe['tile_name'].isin(unique_tiles[:max_tiles])
-        ]
+    if max_rois is not None and 'prepared_id' in df.columns:
+        keep_rois = df['prepared_id'].drop_duplicates().head(max_rois).tolist()
+        df = df[df['prepared_id'].isin(keep_rois)]
+
+    if max_tiles is not None and 'tile_name' in df.columns:
+        keep_tiles = df['tile_name'].drop_duplicates().head(max_tiles).tolist()
+        df = df[df['tile_name'].isin(keep_tiles)]
 
     if max_hypercubes is not None:
-        hypercubes_dataframe = hypercubes_dataframe.head(max_hypercubes)
+        df = df.head(max_hypercubes)
 
-    return hypercubes_dataframe
+    return df
 
 
 def apply_occupancy_threshold(
@@ -387,11 +402,6 @@ def load_hypercubes_dataframe(
     hypercubes = filter_hypercubes_dataframe_storage_server(
         hypercubes_dataframe=hypercubes,
         server_folder_path=server_folder_path,
-    )
-
-    hypercubes = apply_hypercubes_dataframe_filters(
-        hypercubes_dataframe=hypercubes,
-        occupancy_threshold=occupancy_threshold,
     )
 
     hypercubes = apply_hypercubes_dataframe_selections(

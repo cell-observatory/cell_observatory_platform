@@ -32,22 +32,15 @@ num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
 
 drop_last_policy: true # whether to drop the last batch if it is smaller than the batch size
 
-auto_transfer: false
-
-# collate function options:
-# Ray collate function OR class PinnedTensorCollator
-# class keeps a permanent pinned tensor in memory and allows
-# for keeping state between batches
-# collate_fn: data.datasets.pretrain_dataset_ray.base_collate_fn_ray
-# OR:
 collate_fn:
-  _target_: data.datasets.pretrain_dataset_ray.PinnedTensorCollator
+  _target_: data.datasets.pretrain_dataset_ray.CollatorActor
   dtype: ${dataset_dtype}
-  sample_shape: ${datasets.input_shape}
-  pin_memory: false
-  impl_type: ${datasets.impl_type} # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
-  copy_to_pinned_array: false # option to stack and copy data to pinned memory in the collate function
-  skip_metadata: true # skip collating metadata 
+  buffer_dtype: ${storage_dtype}
+  batch_size: ${clusters.batch_size_per_gpu}
+  input_shape: ${datasets.input_shape}
+  device_buffer_capacity: 2
+  pin_numa_node: ${datasets.pin_numa_node}
+  pin_pages: ${datasets.pin_memory}
 
 dataset:
   _target_: data.datasets.pretrain_dataset_ray.PretrainDatasourceRay
@@ -62,22 +55,26 @@ dataset:
   input_layout:
     _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}
-  
+
 use_arrow_tensor_v2: true # use Arrow Tensor v2
 locality_with_output: true # whether to use locality with output for the Ray tasks
-rows_per_block: ${datasets.batch_size} # number of rows per block for the Ray dataset
-
-# ray_remote_args:
-#   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
+rows_per_block: ${clusters.batch_size_per_gpu} # ${clusters.batch_size} # number of rows per block for the Ray dataset
+buffer_capacity: 24
+pin_numa_node: true
+pin_memory: true
+max_concurrent_calls: 512
+numa_node_affinity_policy: "distance"
+numa_oversub_factor: 2.0
+actor_oversub_factor: 2.0
 
 channels_subset: null # subset of channels to use, e.g. [0, 1] for first two channels
-impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
-ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
-num_actors_min: 4
-num_actors_max: 64
+num_actors_min: 12
+num_actors_max: 12
 with_batched_api: true
 context:
   file_io_concurrency: null # concurrency for file I/O operations
   data_copy_concurrency: null # concurrency for data copy operations
   cache_pool: 
     total_bytes_limit: 0
+
+debug: false

@@ -45,6 +45,7 @@ loop_per_worker_script: training.loops.train_loop_per_worker
 
 # training quantization
 quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
+storage_dtype: uint16 # data type for storage
 
 # dtype for training data
 # NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model 
@@ -117,6 +118,7 @@ hooks:
   - _target_: training.hooks.AnomalyDetector
   - _target_: training.hooks.SamplerSetter
   - _target_: training.hooks.LRScheduler
+  - _target_: training.hooks.WeightDecayScheduleHook
   - _target_: training.hooks.IterationTimer
     warmup_iter: 2
   - _target_: training.hooks.PeriodicWriter

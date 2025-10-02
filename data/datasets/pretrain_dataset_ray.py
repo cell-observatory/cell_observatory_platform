@@ -1,367 +1,277 @@
 import os
-import time
-from pathlib import Path
-from typing import List, Optional, Dict, Any, Iterable, Callable, Literal, Optional
+import sys
+import logging
+from typing import List, Optional, Dict, Any, Callable
 
-import ujson
+import ctypes
+import cupy as cp
 import numpy as np
-import pandas as pd
-import pyarrow as pa
-import tensorstore as ts
+from cupy.cuda import runtime as cudart
 
-from omegaconf import OmegaConf
-from omegaconf import DictConfig
-from hydra.utils import instantiate, get_method
-
-import torch
-from hydra.utils import get_method, instantiate
-from omegaconf import DictConfig, OmegaConf
+from hydra.utils import instantiate
+from omegaconf import OmegaConf, DictConfig
 
 import ray
-from ray.data._internal.delegating_block_builder import DelegatingBlockBuilder
-from ray.data.block import Block, BlockMetadata
-from ray.data.datasource import Datasource, ReadTask
-from ray.data._internal.delegating_block_builder import DelegatingBlockBuilder
+import pyarrow as pa
 
-from data.data_shapes import MULTICHANNEL_HYPERCUBE
-from utils.profiling import pprof_class
-from data.io import read_zarr, load_hypercubes_dataframe
-from data.data_types import TENSORSTORE_DTYPES, TORCH_DTYPES
+import tensorstore as ts
+
+from multiprocessing import shared_memory
+
+import torch
+from torch.utils.data import random_split
+
+from data.io import read_zarr
+from utils.context import (process_rank,
+                           torch_gpu_to_numa,
+                           local_rank,
+                           get_world_size,
+                           bind_current_process_to_node,
+                           node_id)
+from utils.profiling import pprof_func, pprof_class
+from data.datasets.buffers import get_buffers, DeviceMemoryBuffer
+from data.data_types import (NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES)
+from training.helpers import record_dataset_len
+
+logging.basicConfig(stream=sys.stdout, level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+
+# -------- -------- Collators -------- --------
 
 
 @pprof_class
-class PinnedTensorCollator:
-    """
-    Convert FixedShapeTensorArray/FixedSizeListArray
-    column in Arrow to a pinned Torch tensor using one host-side copy.
-    """
-
-    def __init__(self, 
-        dtype: str,
-        sample_shape: List[int],
-        pin_memory: bool = True,
-        impl_type: Literal["FixedShapeTensorArray", "FixedSizeListArray"] = "FixedSizeListArray",
-        copy_to_pinned_array: bool = False, # to stack and copy data to pinned memory
-        skip_metadata: bool = True
-    ):
-        self.impl_type = impl_type
-        self.pin_memory = pin_memory
-        self.sample_shape = sample_shape
-        self.dtype = TORCH_DTYPES[dtype].value
-        self.copy_to_pinned_array = copy_to_pinned_array
-        self.skip_metadata = skip_metadata
-
-    def _create_pinned_mem_array(self, batch_size: int, pin_memory: bool) -> None:
-        shape = (batch_size, *self.sample_shape)
-        data_tensor = torch.empty(shape, dtype=self.dtype, pin_memory=pin_memory)
-        return data_tensor
-
-    def _copy_arrow_tensor_array(self, chunks_arr: pa.ChunkedArray, pin_memory: bool) -> torch.Tensor:
-        if self.copy_to_pinned_array:
-            arr = self._create_pinned_mem_array(
-                batch_size=chunks_arr.num_chunks,
-                pin_memory=pin_memory
-            )
-        else:
-            arr = []
-
-        offset = 0
-        for item in chunks_arr.chunks:            
-            item = torch.from_numpy(item.to_numpy_ndarray())
-
-            if item.dtype != self.dtype:
-                # ray.logger.warning(f"Casting colatted data to {self.dtype}")
-                item = item.to(self.dtype)
-
-            if self.copy_to_pinned_array:
-                # copy to pinned memory (should be only real copy)
-                arr[offset:offset + item.shape[0]].copy_(item, non_blocking=True)
-            else:
-                arr.append(item)
-
-            offset += item.shape[0]
-            arr.append(item)
-
-        return arr
-
-    def _copy_arrow_list_array(self, chunks_arr: pa.ChunkedArray, pin_memory: bool) -> torch.Tensor:
-        if self.copy_to_pinned_array:
-            arr = self._create_pinned_mem_array(
-                batch_size=chunks_arr.num_chunks,
-                pin_memory=pin_memory
-            )
-        else:
-            arr = []
-
-        offset = 0
-        for chunk in chunks_arr.chunks:
-            M = len(chunk)
-            flat = chunk.values.to_numpy(zero_copy_only=True)
-            np_view = flat.reshape(M, *self.sample_shape)
-            tensor = torch.from_numpy(np_view)
-
-            if tensor.dtype != self.dtype:
-                # ray.logger.warning(f"Casting colatted data to {self.dtype}")
-                tensor = tensor.to(self.dtype)
-
-            if self.copy_to_pinned_array:
-                # copy to pinned memory (should be only real copy)
-                arr[offset:offset+M].copy_(tensor, non_blocking=True)
-            else:
-                arr.append(tensor)
-
-            offset += M
-
-        return arr
-
-    def __call__(self, batch: pa.Table | pa.RecordBatch) -> Dict[str, Any]:
-        t0 = time.time()
-
-        chunks_arr = batch.column('data_tensor')
-        if self.impl_type == "FixedShapeTensorArray":
-            data_tensor = self._copy_arrow_tensor_array(chunks_arr, pin_memory=self.pin_memory)
-        elif self.impl_type == "FixedSizeListArray":
-            data_tensor = self._copy_arrow_list_array(chunks_arr, pin_memory=self.pin_memory)
-        else:
-            raise ValueError(f"Unsupported impl_type: {self.impl_type}")
-
-        if self.skip_metadata:
-            meta = {}
-        else:
-            meta = {name: batch.column(name).to_pylist() for name in batch.schema.names if name != 'data_tensor'}
-
-        meta['collate_time'] = time.time() - t0
-
-        return {"data_tensor": data_tensor, "metainfo": meta}
-
-
-# -------- -------- -------- v1 -------- -------- --------
-
-
-def _slice_hypercube(
-    data_tensor,
-    meta: Dict[str, Any],
-    channels_subset: Optional[List[int]] = None
-) -> np.ndarray:
-    t = slice(meta["time_start"], meta["time_start"] + meta["time_size"])
-    z = slice(meta["z_start"], meta["z_start"] + meta["cube_size"])
-    y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
-    x = slice(meta["x_start"], meta["x_start"] + meta["cube_size"])
-
-    if channels_subset is None:
-        c = slice(0, meta["channel_size"])
-        view = data_tensor[t, z, y, x, c]
-    else:
-        view = data_tensor[t, z, y, x, channels_subset]
-
-    return view.read().result()
-
-
-def _load_cube(
-    meta: Dict[str, Any],
-    dtype: TENSORSTORE_DTYPES,
-    channels_subset: Optional[List[int]] = None
-) -> np.ndarray:
-    handle = read_zarr(
-        os.path.join(meta["server_folder"], meta["output_folder"], meta["tile_name"]),
-        dtype=dtype,
-    )
-    cube = _slice_hypercube(handle, meta, channels_subset)
-    del handle
-    return cube
-
-
-def _read_block(
-    records: List[Dict[str, Any]],
-    timing: bool,
-    dtype: TENSORSTORE_DTYPES,
-    channels_subset: Optional[List[int]] = None
-) -> Iterable[Block]:
-    builder = DelegatingBlockBuilder()
-    for meta in records:
-        t0 = time.time() if timing else None
-        img_tensor = _load_cube(meta, dtype, channels_subset)
-
-        # TODO: numpy support for ImageList
-        # img_sample = ImageList(
-        #     torch.from_numpy(img_tensor),
-        #     layout=self.input_layout,
-        #     image_sizes=[img_tensor.shape]
-        # )
-        # NOTE:
-        # (1) if we support numpy in ImageList, we can use:
-        # builder.add({**data_sample.to_dict()})
-        if timing:
-            builder.add({"data_tensor": img_tensor, "slice_time": time.time() - t0})
-        else:
-            builder.add({"data_tensor": img_tensor})
-
-    block = builder.build()
-    yield block
-
-
-# based on: https://github.com/ray-project/ray/python/ray/data/datasource/file_based_datasource.py
-class PretrainDatasourceRay(Datasource):
-    """
-    Ray Datasource that reads one Zarr hypercube per block.
-
-    Each CSV row must contain:
-        server_folder, output_folder, tile_name,
-        time_start, time_size,
-        z_start, y_start, x_start, cube_size,
-        channel_size
-    """
-
+class CollatorActor:
     def __init__(self,
-         hypercubes_dataframe_path: Path,
-         input_layout: MULTICHANNEL_HYPERCUBE,
-         server_folder_path: Optional[Path] = None,
-         dtype: TENSORSTORE_DTYPES = TENSORSTORE_DTYPES.fp16,
-         indices: Optional[List[int]] = None,
-         time: bool = True,
-         max_rois: Optional[int] = None,
-         max_tiles: Optional[int] = None,
-         max_hypercubes: Optional[int] = None,
-         hpf_list: Optional[Iterable[int]] = None,
-         roi_list: Optional[Iterable[int]] = None,
-         tile_list: Optional[Iterable[str]] = None,
-         occupancy_threshold: Optional[float] = None,
-         channels_subset: Optional[List[int]] = None
+                 batch_size: int,
+                 input_shape: tuple,
+                 device_buffer_capacity: int,
+                 dtype: str,
+                 buffer_dtype: str,
+                 pin_numa_node: bool,
+                 pin_pages: bool,
+                 node_id: int,
+                 debug: bool = False
     ):
-        self.input_layout = input_layout
+        self.node_id = node_id
+        self.local_rank = local_rank()
+        self.global_rank = process_rank()
 
-        self.channels_subset = list(channels_subset) if channels_subset is not None else None
+        self.batch_size = batch_size
+        self.input_shape = tuple(input_shape)
+        self.device_buffer_capacity = device_buffer_capacity
 
-        hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
-        if not hypercubes_dataframe_path.exists():
-            raise FileNotFoundError(hypercubes_dataframe_path)
+        self.numa_node = torch_gpu_to_numa(self.local_rank)["numa_node"]
+        if pin_numa_node:
+            bind_current_process_to_node(self.numa_node)
 
-        self.server_folder_path = str(server_folder_path) if server_folder_path else None
-        self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
-            hypercubes_dataframe_path=hypercubes_dataframe_path,
-            server_folder_path=server_folder_path,
-            max_rois=max_rois,
-            max_tiles=max_tiles,
-            max_hypercubes=max_hypercubes,
-            hpf_list=hpf_list,
-            roi_list=roi_list,
-            tile_list=tile_list,
-            occupancy_threshold=occupancy_threshold
+        self.out_dtype = TORCH_DTYPES[dtype].value \
+            if isinstance(dtype, str) else dtype
+        self.buffer_dtype = NUMPY_DTYPES[buffer_dtype].value \
+            if isinstance(buffer_dtype, str) else buffer_dtype
+
+        self.host_buffer_actor = get_buffers(type="host_memory",
+                                             numa_node=self.numa_node,
+                                             local_rank=self.local_rank,
+                                             global_rank=self.global_rank,
+                                             node_id=self.node_id)
+        cfg = ray.get(self.host_buffer_actor.get_config.remote())
+        self.slot_bytes = int(cfg["slot_bytes"])
+        self.batch_shape = tuple(cfg["batch_shape"])
+        self.capacity = int(cfg["capacity"])
+        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+
+        self.pin_pages = pin_pages
+        if pin_pages:
+            base_ptr = ctypes.addressof(ctypes.c_char.from_buffer(self._shm.buf))
+            self.host_buffer_ptr = base_ptr
+            cp.cuda.runtime.hostRegister(base_ptr, self.slot_bytes * self.capacity, 0)
+            self._pinned = True
+        else:
+            self._pinned = False
+
+        idx = self._get_device_index()
+        torch.cuda.set_device(idx)
+        self.device = torch.device(f"cuda:{idx}")
+        with cp.cuda.Device(self.device.index):
+            self.cp_stream = cp.cuda.Stream(non_blocking=True)
+        # wrap the same stream for torch ops
+        self.copy_stream = torch.cuda.ExternalStream(int(self.cp_stream.ptr), device=self.device)
+
+        self.device_buffer = DeviceMemoryBuffer(
+            name=f"device_buffer_rank_{self.global_rank}",
+            capacity=self.device_buffer_capacity,
+            input_shape=self.input_shape,
+            batch_size=self.batch_size,
+            dtype=buffer_dtype,
+            device_idx=idx
         )
 
-        if indices is not None and len(indices) > 0:
-            self.hypercubes_dataframe = self.hypercubes_dataframe.iloc[indices].reset_index(drop=True)
+        ray.logger.info(f"CollatorActor on rank {self.global_rank} and Numa Node {self.numa_node} "
+                    f"using host shared memory buffer with pin_numa_node={pin_numa_node} "
+                    f"with local rank {self.local_rank} and node id {self.node_id} "
+                    f"with name {cfg['name']} and capacity {cfg['capacity']} and HostMemoryBuffer "
+                    f"with pin_pages={self._pinned} and ray.get_gpu_ids()={ray.get_gpu_ids()} "
+                    f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')} "
+                    f"torch_dev={torch.cuda.current_device()} "
+                    f"cupy_dev={cp.cuda.runtime.getDevice()} "
+                    f"torch_count={torch.cuda.device_count()}")
 
-        self._hypercubes_records: List[Dict[str, Any]] = self.hypercubes_dataframe.to_dict(orient="records")
-        self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+        self.debug = debug
 
-        # pre-compute bytes / cube for size estimates
-        self._bytes_per_cube = self._compute_bytes_per_record(record=self._hypercubes_records[0])
+    def _get_device_index(self) -> int:
+        gpu_ids = ray.get_gpu_ids()
+        assert gpu_ids, "No GPUs assigned to this worker by Ray"
+        return int(gpu_ids[0])
 
-        self.time = time
+    def __del__(self):
+        try:
+            if getattr(self, "_pinned", False) and self.host_buffer_ptr is not None:
+                cp.cuda.runtime.hostUnregister(self.host_buffer_ptr)
+            if hasattr(self, "_shm"):
+                self._shm.close()
+        except Exception:
+            pass
 
-    def _compute_bytes_per_record(self, record: Dict[str, Any]) -> int:
-        if self.channels_subset is not None:
-            voxels = (
-                record["time_size"] * len(self.channels_subset) * record["cube_size"] ** 3
-            )
-        else:
-            voxels = (
-                    record["time_size"] * record["channel_size"] * record["cube_size"] ** 3
-            )
+    def copy_h2d(self, dst, src):
+        assert src.flags["C_CONTIGUOUS"], "src must be contiguous"
+        # __array_interface__ protocol: data field is a
+        #  2-tuple whose first argument is a Python integer that points
+        # to the data-area storing the array contents
+        # see: https://numpy.org/doc/stable/reference/arrays.interface.html
+        src_ptr = ctypes.c_void_p(src.__array_interface__["data"][0])
+        # see: https://docs.pytorch.org/docs/stable/generated/torch.Tensor.data_ptr.html
+        dst_ptr = ctypes.c_void_p(dst.data_ptr())
+        # cupy function handle:
+        # cupy.cuda.runtime.memcpyAsync(intptr_t dst, intptr_t src, size_t size, int kind, intptr_t stream)
+        cudart.memcpyAsync(dst_ptr.value,
+                            src_ptr.value,
+                            src.nbytes,
+                            cudart.memcpyHostToDevice,
+                            int(self.cp_stream.ptr))
 
-        if (self.dtype == TENSORSTORE_DTYPES['fp16']) or (self.dtype == TENSORSTORE_DTYPES['bf16']):
-            return voxels * 2
-        elif self.dtype == TENSORSTORE_DTYPES['fp32']:
-            return voxels * 4
-        else:
-            raise ValueError(f"Unsupported dtype: {self.dtype}")
+    def __call__(self, batch):
+        with torch.cuda.device(self.device.index), cp.cuda.Device(self.device.index):
+            host_buffer_idx = int(batch["buffer_idx"][0])
+            h_view = np.ndarray(self.batch_shape, dtype=self.buffer_dtype,
+                                buffer=self._shm.buf, offset=host_buffer_idx * self.slot_bytes)
 
-    def get_name(self) -> str:
-        return "PretrainHypercube"
+            device_buffer_idx = self.device_buffer.get_free()
+            dst_device = self.device_buffer.device_buffers[device_buffer_idx]
 
-    def estimate_inmemory_data_size(self) -> int:
-        return self._bytes_per_cube * len(self._hypercubes_records)
+            with torch.cuda.stream(self.copy_stream):
+                self.copy_h2d(dst=dst_device, src=h_view)
 
-    # get_read_tasks returns a list of ReadTask objects, each containing a
-    # ReadTask which is a class that wraps a read task function with associated
-    # metadata. the read task function returns an iterable which yields blocks of data.
-    # blocks may be built using a DelegatingBlockBuilder, which allows for passing
-    # rows of data to the block builder followed by a build() call.
-    def get_read_tasks(self, parallelism: int) -> List[ReadTask]:
-        # parallelism is user configured or inferred by Ray
-        parallelism = min(parallelism, len(self._hypercubes_records))
-        splits = np.array_split(self._hypercubes_records, parallelism)
+                def _release_buffer_on_done(stream, error_status, user_data):
+                    actor_reference = user_data["actor"]
+                    host_buffer_idx = user_data["host_buffer_idx"]
+                    # runs after all prior ops in stream
+                    try:
+                        actor_reference.put_free.remote(host_buffer_idx)
+                    except Exception as e:
+                        logger.exception(f"put_free failed for {host_buffer_idx}: {e}")
 
-        tasks: List[ReadTask] = []
-        for shard in splits:
-            if len(shard) == 0:
-                continue
+                with self.cp_stream:
+                    self.cp_stream.add_callback(
+                        _release_buffer_on_done,
+                        {"actor": self.host_buffer_actor, "host_buffer_idx": host_buffer_idx},
+                    )
 
-            # avoid big serialization
-            shard_ref = ray.put(list(shard))
-            dtype = self.dtype
-            timing = self.time
-            channels_subset = self.channels_subset
+            # tells caching allocator & scheduler on training stream
+            # that dst_device is owned by copy_stream
+            torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
+            dst_device.record_stream(self.copy_stream)
 
-            def _make_read_task(
-                records_ref=shard_ref,
-                dtype=dtype,
-                timing=timing,
-                channels_subset=channels_subset
-            ):
-                return _read_block(
-                    records=ray.get(records_ref),
-                    timing=timing,
-                    dtype=dtype,
-                    channels_subset=channels_subset
-                )
+            metainfo = {
+                "host_buffer_idx": host_buffer_idx,
+                "device_buffer_idx": device_buffer_idx
+            }
 
-            # NOTE: we have seen issues before with Ray's fifo_bundle_queue
-            #       where we get:
-            #       `AssertionError: Expected the total size of
-            #       objects in the queue to be non-negative, but
-            #       got -134217744 bytes instead.`
-            #       if this persists, consider setting size_bytes to None
-            #       or debug further
-            shard_size = sum(self._compute_bytes_per_record(r, self.dtype) for r in shard)
+            if self.debug:
+                # NOTE: for testing only, put_free(idx) otherwise called by hooks in
+                #       training loop, see training/hooks.py:FreeDeviceBufferHook
+                ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+                self.device_buffer.put_free(device_buffer_idx)
 
-            meta = BlockMetadata(
-                num_rows=len(shard),
-                size_bytes=shard_size,
-                input_files=None,
-                exec_stats=None,
-            )
-            tasks.append(ReadTask(_make_read_task, meta))
+            return {"data_tensor": dst_device, "metainfo": metainfo}
 
-        return tasks
-    
 
-# -------- -------- -------- v2 -------- -------- --------
+# -------- -------- Loader Actors -------- --------
 
 
 @pprof_class
-class RayLoaderActor:
-    """
-    Ray actor that loads hypercubes from a Arrow Table.
-    Used for Ray Data v2.
-    """
-    def __init__(
-        self,
-        context_spec: Dict[str, Any],
-        input_layout: str,
-        with_batched_api: bool = True,
-        dtype: str = "fp16",
-        impl_type: Literal["FixedShapeTensorArray", "FixedSizeListArray"] = "FixedSizeListArray",
-        channels_subset: Optional[List[int]] = None
+class LoaderActor:
+    def __init__(self,
+                 node_id: int,
+                 local_rank: int,
+                 global_rank: int,
+                 numa_node: int,
+                 batch_size: int,
+                 input_layout: str,
+                 context_spec: Dict[str, Any],
+                 dtype: str = "fp16",
+                 buffer_dtype: str = "uint16",
+                 pin_numa_node: bool = True,
+                 with_batched_api: bool = True,
+                 channels_subset: Optional[List[int]] = None
 ):
-        self.impl_type = impl_type
-        self.ctx = ts.Context(context_spec)
-        self.channels_subset = list(channels_subset) if channels_subset is not None else None
+        self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
+        self.driver_process_numa_node = numa_node
+        if pin_numa_node:
+            self.actor_scheduler = ray.get_actor(f"numa_node_affinity_scheduler_node_{self.node_id}",
+                                                 namespace="schedulers")
+            self.numa_node = ray.get(self.actor_scheduler.schedule_actor_for_gpu.remote(local_rank))
+            ray.logger.info(f"Binding LoaderActor on rank {global_rank} to NUMA node {self.numa_node}")
+            bind_current_process_to_node(self.numa_node)
+
+        # input data layout
+        self.channels_subset = list(channels_subset) \
+            if channels_subset is not None else None
         self.input_layout = input_layout.upper()
-        self.with_batched_api = with_batched_api
+        self.batch_size = batch_size
+
+        # dtypes
         self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-        self._handles = {}  # lazy loading of handles
+
+        if self.dtype == TENSORSTORE_DTYPES.bf16.value:
+            # ray.logger.warning(
+            #     "Using fp16 for PyArrow, Collator will cast data to bf16"
+            # )
+            self.dtype = TENSORSTORE_DTYPES.fp16.value
+
+        self.buffer_dtype = NUMPY_DTYPES[buffer_dtype].value \
+            if isinstance(buffer_dtype, str) else buffer_dtype
+
+        # tensorstore
+        self._handles= {}
+        self.ctx = ts.Context(context_spec)
+        self.with_batched_api = with_batched_api
+
+        # memory buffer
+        self.buffer_actor = get_buffers(type=f"host_memory",
+                                        node_id=self.node_id,
+                                        local_rank=self.local_rank,
+                                        global_rank=self.global_rank,
+                                        numa_node=self.driver_process_numa_node)
+
+        cfg = ray.get(self.buffer_actor.get_config.remote())
+        self.slot_bytes = int(cfg["slot_bytes"])
+        self.batch_shape = tuple(cfg["batch_shape"])
+        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+
+        ray.logger.info(f"LoaderActor on global rank {self.global_rank} and numa node {self.driver_process_numa_node} "
+                    f"using shared memory buffer and placed on numa node {self.numa_node} "
+                    f"with local rank {self.local_rank} and node id {self.node_id} "
+                    f"with name {cfg['name']} and capacity {cfg['capacity']}")
+
+    def __del__(self):
+        try:
+            actor_scheduler = ray.get_actor(f"numa_node_affinity_scheduler_node_{self.node_id}",
+                                            namespace="schedulers")
+            actor_scheduler.free.remote(self.numa_node)
+        except Exception:
+            pass
 
     def _slice_hypercube(self, data_tensor, meta: Dict[str, Any], ts_batch=None):
         t = slice(meta["time_start"], meta["time_start"] + meta["time_size"])
@@ -375,7 +285,7 @@ class RayLoaderActor:
             c = slice(0, meta["channel_size"])
             view = data_tensor[t, z, y, x, c]
 
-        return view.read(batch=ts_batch, order="C")
+        return view
 
     def _get_handle(self, path: str):
         h = self._handles.get(path)
@@ -383,75 +293,63 @@ class RayLoaderActor:
             h = read_zarr(path, dtype=self.dtype, context=self.ctx, cast=False)
             self._handles[path] = h
         return h
-    
-    def _np_as_strided_view(self, array: np.ndarray) -> np.ndarray:
-        return np.lib.stride_tricks.as_strided(
-            array,
-            shape=(1, *array.shape),
-            strides=(array.nbytes, *array.strides),
-        )
-    
-    def _get_sample_size(self, record) -> int:
-        if self.input_layout == 'TZYXC':
-            if self.channels_subset is not None:
-                return int(record["time_size"] * record["cube_size"] ** 3 * len(self.channels_subset))
-            else:
-                return int(record["time_size"] * record["cube_size"] ** 3 * record["channel_size"])
-        else:
-            #TODO: add support for other layouts
-            raise ValueError(f"Unsupported dataset layout order: {self.input_layout}")
 
     def __call__(self, batch):
-        read_time = time.perf_counter()
-        records = batch.to_pylist()
+        buffer = ray.get(self.buffer_actor.get_free.remote())
+        dst = np.ndarray(self.batch_shape,
+                         dtype=self.buffer_dtype,
+                         buffer=self._shm.buf,
+                         offset=buffer["slot"] * self.slot_bytes)
 
-        futs = []
-        if self.with_batched_api:
-            with ts.Batch() as b:
-                for i, r in enumerate(records):
-                    p = os.path.join(r["server_folder"], r["output_folder"], r["tile_name"])
-                    futs.append(self._slice_hypercube(self._get_handle(p), r, ts_batch=b))
-        else:
-            for i, r in enumerate(records):
-                p = os.path.join(r["server_folder"], r["output_folder"], r["tile_name"])
-                futs.append(self._slice_hypercube(self._get_handle(p), r, ts_batch=None))
+        write_futs = []
+        with ts.Batch() as b:
+            for i in range(self.batch_size):
+                p = os.path.join(batch["server_folder"][i],
+                                batch["output_folder"][i],
+                                batch["tile_name"][i])
+                meta = {
+                    "time_start":  batch["time_start"][i],
+                    "time_size": batch["time_size"][i],
+                    "z_start": batch["z_start"][i],
+                    "y_start": batch["y_start"][i],
+                    "x_start": batch["x_start"][i],
+                    "cube_size": batch["cube_size"][i],
+                    "channel_size": batch["channel_size"][i],
+                }
+                src_view = self._slice_hypercube(self._get_handle(p), meta=meta, ts_batch=b)
+                write_futs.append(ts.array(dst[i]).write(src_view))
 
-        arrays = [f.result() for f in futs]
+        for f in write_futs:
+            f.result()
 
-        # NOTE: FixedSizeListArray seems to be faster 
-        #       based on initial tests
-        if self.impl_type == "FixedSizeListArray":            
-            chunks = []
-            for a in arrays:
-                flat = a.reshape(-1)
-                values = pa.array(flat)
-                fs1 = pa.FixedSizeListArray.from_arrays(values, list_size=self._get_sample_size(records[0]))
-                chunks.append(fs1)
-
-            col = pa.chunked_array(chunks)
-        
-        elif self.impl_type == "FixedShapeTensorArray":
-            chunks  = [pa.FixedShapeTensorArray.from_numpy_ndarray(self._np_as_strided_view(a)) for a in arrays]
-            col = pa.chunked_array(chunks)
-        
-        else:
-            raise ValueError(f"Unsupported impl_type: {self.impl_type}")
-
-        read_time = time.perf_counter() - read_time
-        read_time_col = pa.array([read_time] * batch.num_rows, type=pa.float64())
-
-        batch = batch.append_column("data_tensor", col)
-        return batch.append_column("read_time", read_time_col)
+        batch["buffer_name"] = np.array([buffer["name"]] * self.batch_size)
+        batch["buffer_idx"] = np.full((self.batch_size,), buffer["slot"], dtype=np.int32)
+        return batch
 
 
-# -------- -------- --------  -------- -------- --------
+# -------- -------- dataset helpers / API -------- -------- --------
+
+
+def set_data_context(cfg: DictConfig):
+    ctx = ray.data.DataContext.get_current()
+    ctx.use_arrow_tensor_v2 = cfg.datasets.use_arrow_tensor_v2
+    ctx.execution_options.locality_with_output = cfg.datasets.locality_with_output
+    ctx._enable_actor_pool_on_exit_hook = True
+
+
+def get_context_spec(cfg: DictConfig) -> Dict[str, Any]:
+    ts_ctx = OmegaConf.to_container(cfg.datasets.context, resolve=True)
+    ctx_spec = {k: v for k, v in ts_ctx.items() if v is not None}
+    return ctx_spec
 
 
 def get_dataset_ray(
     cfg: DictConfig,
     indices: Optional[List[int]],
     database: Optional[Any] = None,
-    columns: list = [ # metadata columns to keep from the original dataframe (adding more columns will slow down our collate)
+    columns: list = [
+        # metadata columns to keep from the original dataframe
+        # adding more columns may slow down collate
         'x_start', 'y_start', 'z_start', 'time_start',
         'channel_size', 'cube_size', 'time_size',
         'server_folder', 'output_folder', 'tile_name',
@@ -463,180 +361,99 @@ def get_dataset_ray(
             f"channels_subset length {len(cfg.datasets.channels_subset)} " \
             f"does not match number of channels {num_channels} in input_shape {cfg.datasets.input_shape}"
 
-    if not cfg.datasets.ray_data_v2:
-        datasource = instantiate(
-            cfg.datasets.dataset,
-            hypercubes_dataframe_path=cfg.datasets.databases.hypercubes_dataframe_path,
-            server_folder_path=cfg.paths.server_folder_path,
-            dtype=cfg.dataset_dtype,
-            input_layout=cfg.datasets.dataset.input_layout,
-            indices=indices,
-            max_rois=cfg.datasets.max_rois,
-            max_tiles=cfg.datasets.max_tiles,
-            max_hypercubes=cfg.datasets.max_hypercubes,
-            hpf_list=cfg.datasets.hpf_list,
-            roi_list=cfg.datasets.roi_list,
-            tile_list=cfg.datasets.tile_list,
-            occupancy_threshold=cfg.datasets.occupancy_threshold,
-            channels_subset=cfg.datasets.channels_subset
-        )
+    set_data_context(cfg)
+    ctx_spec = get_context_spec(cfg)
 
-        dataset = ray.data.read_datasource(datasource, 
-                                        #    ray_remote_args={
-                                        #          "num_cpus": cfg.datasets.ray_remote_args.num_cpus}
-                                        )
+    table = pa.table(
+        database.hypercubes_dataframe[columns].iloc[indices]
+        if indices is not None else database.hypercubes_dataframe[columns]
+    )
 
-        # set Data Context for the dataset
-        ctx = ray.data.DataContext.get_current()
-        # ctx.execution_options.locality_with_output = cfg.datasets.locality_with_output
-        ctx.use_arrow_tensor_v2 = cfg.datasets.use_arrow_tensor_v2
+    dataset = ray.data.from_arrow(table)
+    dataset = dataset.split(n = get_world_size(), equal = True)[process_rank()]
 
-        # we include transforms here for completion but if data loading
-        # is performance critical, the transforms may also be applied
-        # in the preprocessor on device
-        transforms = []
-        for t in cfg.datasets.transforms.transforms_list:
-            if isinstance(t, DictConfig):
-                transforms.append(instantiate(t))
-            else:
-                transforms.append(get_method(t))
+    # TODO: reimplement to prevent two .count() calls
+    if cfg.datasets.drop_last_policy:
+        B = cfg.clusters.batch_size_per_gpu
+        dataset = dataset.limit((dataset.count() // B) * B)
 
-        for transform in transforms:
-            dataset = dataset.map_batches(transform, batch_size=cfg.clusters.batch_size_per_gpu)
-        return dataset
-    
-    else:
-        # set Data Context for the dataset
-        ray_ctx = ray.data.DataContext.get_current()
-        # ray_ctx.execution_options.locality_with_output = cfg.datasets.locality_with_output
-        ray_ctx.use_arrow_tensor_v2 = cfg.datasets.use_arrow_tensor_v2
+    dataset_len = dataset.count()
 
-        ts_ctx = OmegaConf.to_container(cfg.datasets.context, resolve=True)
-        # remove None values from context spec
-        ctx_spec = {k: v for k, v in ts_ctx.items() if v is not None}
+    dataset = dataset.repartition(
+        target_num_rows_per_block=cfg.datasets.rows_per_block,
+        shuffle=False
+    )
 
-        table = pa.table(
-            database.hypercubes_dataframe[columns].iloc[indices]
-            if indices is not None else database.hypercubes_dataframe[columns]
-        )
-        
-        # convert to Ray Dataset
-        dataset = ray.data.from_arrow(table).repartition(
-            target_num_rows_per_block=cfg.datasets.rows_per_block,
-            shuffle=False
-        )
+    scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+        node_id=node_id(),
+        soft=False,
+    )
+    dataset = dataset.map_batches(
+        LoaderActor,
+        scheduling_strategy=scheduling_strategy,
+        num_cpus=1/cfg.datasets.actor_oversub_factor,
+        batch_size=cfg.clusters.batch_size_per_gpu,
+        batch_format="numpy",
+        fn_constructor_kwargs={
+            "batch_size": cfg.clusters.batch_size_per_gpu,
+            "context_spec": ctx_spec,
+            "with_batched_api": cfg.datasets.with_batched_api,
+            "dtype": cfg.dataset_dtype,
+            "buffer_dtype": cfg.storage_dtype,
+            "pin_numa_node": cfg.datasets.pin_numa_node,
+            "input_layout": cfg.datasets.dataset.input_layout.value,
+            "channels_subset": cfg.datasets.channels_subset,
+            "local_rank": local_rank(),
+            "global_rank": process_rank(),
+            "node_id": node_id(),
+            "numa_node": torch_gpu_to_numa(local_rank())["numa_node"],
+        },
+        concurrency=(cfg.datasets.num_actors_min, cfg.datasets.num_actors_max),
+    )
 
-        dataset = dataset.map_batches(
-            RayLoaderActor,
-            batch_size=cfg.clusters.batch_size_per_gpu,
-            batch_format="pyarrow",
-            fn_constructor_kwargs={
-                "context_spec": ctx_spec,
-                "with_batched_api": cfg.datasets.with_batched_api,
-                "dtype": cfg.dataset_dtype,
-                "impl_type": cfg.datasets.impl_type,
-                "input_layout": cfg.datasets.dataset.input_layout.value,
-                "channels_subset": cfg.datasets.channels_subset
-            },
-            # consider fractional values for jobs with much I/O, i.e.
-            # num_cpus=0.5,
-            concurrency=(cfg.datasets.num_actors_min, cfg.datasets.num_actors_max),
-        )
-
-        return dataset
+    return dataset, dataset_len
 
 
-def get_dataloader_ray(dataset: ray.data.Dataset,
+def get_dataloader_ray(cfg: DictConfig,
                        batch_size: int,
-                       drop_last: bool = True,
-                       collate_fn: Optional[Callable] = None,
-                       prefetch_factor: int = None,
-                       auto_transfer: bool = False
+                       collate_fn: Optional[Callable],
+                       drop_last: bool = True
 ):
-    # we use _iter_batches instead of iter_torch_batches
-    # to avoid a costly conversion to torch tensors that
-    # the current implementation of iter_torch_batches does
-    if auto_transfer:
-        wrapped_loader = _WrappedRayDataLoader(
-            dataset._iter_batches(
-                batch_size=batch_size,
-                prefetch_batches=prefetch_factor,
-                _collate_fn=collate_fn,
-                batch_format="pyarrow"
-            ),
-            device=torch.cuda.current_device(),
-            tensor_keys=("data_tensor",)
+    db = instantiate(cfg.datasets.databases)
+    dataset_len = len(db.hypercubes_dataframe)
+
+    if cfg.datasets.split is not None:
+        val_size = round(dataset_len * cfg.datasets.split)
+        train_subset, val_subset = random_split(
+            range(dataset_len),
+            lengths=[dataset_len - val_size, val_size]
         )
-        return wrapped_loader
-    else:
-        return dataset._iter_batches(
+        train_indices, val_indices = train_subset.indices, val_subset.indices
+
+        train_dataset, train_dataset_len = get_dataset_ray(cfg, indices=train_indices, database=db)
+        val_dataset, val_dataset_len = get_dataset_ray(cfg, indices=val_indices, database=db)
+
+        record_dataset_len(cfg, train_dataset_len, val_dataset_len)
+
+        train_dataloader = train_dataset.iterator()._iter_batches(
             batch_size=batch_size,
-            prefetch_batches=prefetch_factor,
-            drop_last=drop_last,
-            _collate_fn=collate_fn,
-            batch_format="pyarrow"
+            _finalize_fn=collate_fn,
+            batch_format="numpy"
         )
+        val_dataloader = val_dataset.iterator()._iter_batches(
+            batch_size=batch_size,
+            _finalize_fn=collate_fn,
+            batch_format="numpy"
+        )
+        return train_dataloader, val_dataloader
 
+    else:
+        train_dataset, train_dataset_len = get_dataset_ray(cfg, indices=None, database=db)
+        record_dataset_len(cfg, train_dataset_len, 0)
 
-# based on: _WrappedDataLoader in ray/train/torch/train_loop_utils.py
-class _WrappedRayDataLoader:
-    """
-    Wrap any iterator that yields batches with Torch tensors.
-    Each call prefetches the NEXT batch to GPU on its own
-    stream while the default stream works on the current batch.
-    """
-
-    def __init__(self, data_iter, device, tensor_keys=("data_tensor",)):
-        self.device, self.data_iter = device, iter(data_iter)
-
-        self.tensor_keys = (tensor_keys
-                            if isinstance(tensor_keys, (tuple, list))
-                            else (tensor_keys,))
-        self._stream = torch.cuda.Stream(device=device)
-
-        self._next_batch = None
-        # TODO: move this later in the training logic?
-        self._prefetch_next_batch()
-
-    def _to_cuda(self, batch):
-        """Non-recursive helper that only touches the listed keys."""
-        with torch.cuda.stream(self._stream):
-            for k in self.tensor_keys:
-                batch[k] = batch[k].to(self.device, non_blocking=True)
-        return batch
-
-    def _prefetch_next_batch(self):
-        try:
-            batch = next(self.data_iter)
-        except StopIteration:
-            self._next_batch = None
-            return
-        self._next_batch = self._to_cuda(batch)
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self._next_batch is None:
-            raise StopIteration
-
-        batch = self._next_batch
-
-        # Reference:
-        # https://pytorch.org/docs/stable/generated/torch.Tensor.record_stream.html
-        # The training stream (current) needs to wait until
-        # the memory copy stream finishes.
-        torch.cuda.current_stream().wait_stream(self._stream)
-
-        # When a tensor is used by CUDA streams different from
-        # its original allocator, we need to call `record_stream`
-        # to inform the allocator of all these streams. Otherwise,
-        # the tensor might be freed once it is no longer used by
-        # the creator stream.
-        for k in self.tensor_keys:
-            batch[k].record_stream(torch.cuda.current_stream())
-
-        # prefetch the NEXT batch while we are computing on the current one
-        # is being processed
-        self._prefetch_next_batch()
-        return batch
+        train_dataloader = train_dataset.iterator()._iter_batches(
+            batch_size=batch_size,
+            _finalize_fn=collate_fn,
+            batch_format="numpy"
+        )
+        return train_dataloader, None

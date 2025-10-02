@@ -31,7 +31,7 @@ def tokens_from(fmt: str, input_shape: tuple, patch_size: tuple) -> int:
 def test_attention_shapes(dim, num_heads, qk_norm, B, L):
     torch.manual_seed(0)
     x = torch.randn(B, L, dim, device='cuda')
-    m = Attention(dim=dim, 
+    m = Attention(dim=dim,
                   num_heads=num_heads, 
                   qk_norm=qk_norm).to('cuda')
     m.eval()

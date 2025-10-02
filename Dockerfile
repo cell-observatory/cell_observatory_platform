@@ -68,6 +68,7 @@ RUN apt-get update \
   libxslt-dev \ 
   xsltproc \ 
   docbook-xsl \
+  libnuma-dev \
   && rm -rf /var/lib/apt/lists/*
 
 

@@ -16,7 +16,7 @@ defaults:
   - /profiling/profiling                      # configs/profiling/profiling.yaml
   - _self_
 
-experiment_name: benchmark_dataloader_with_obs
+experiment_name: benchmark_dataloader_with_obs_new
 
 # task
 task: pretrain_mae
@@ -46,7 +46,8 @@ loop_per_worker_script: scripts.benchmarks_io.benchmark_dataloaders.benchmark_da
 quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
 
 # dtype for training data
-dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
+dataset_dtype: bfloat16 # data type for training, options: float32, float16
+storage_dtype: uint16 # data type for storage
 
 # dataset layout in the zarr files
 dataset_layout_order: TZYXC
@@ -61,6 +62,9 @@ clusters:
   cpus_per_gpu: 12 # number of cpu cores per gpu
   mem_per_cpu: 40000 # ram per cpu core
 
+  scaling_config:
+    resources_per_worker:
+      CPU: 1.0
 
 paths:
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
@@ -88,33 +92,14 @@ datasets:
   roi_list: null # list of specific ROIs to filter
   tile_list: null # list of specific tiles to filter
 
-  prefetch_factor: 4
-  use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
-  locality_with_output: true # whether to use locality with output for the Ray tasks
-
-  # ray_remote_args:
-  #   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
-
-  impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
-  ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
-  num_actors: 32
-  with_batched_api: true
-  context:
-    file_io_concurrency: null # concurrency for file I/O operations
-    data_copy_concurrency: null # concurrency for data copy operations
-    cache_pool: 
-      total_bytes_limit: 0
-
-  collate_fn:
-    _target_: data.datasets.pretrain_dataset_ray.PinnedTensorCollator
-    dtype: ${dataset_dtype}
-    sample_shape: ${datasets.input_shape}
-    pin_memory: true
+  prefetch_factor: 1
+  num_actors_min: 2
+  num_actors_max: 8
 
 # benchmarking
 # --------------------------------------------------------------------------------
 
 csv_out: ${paths.outdir}/benchmark_dataloader.csv # path to save the benchmark results
 
-warmup: 5
+warmup: 1
 num_batches: ${eval:'(${datasets.max_hypercubes} // ${clusters.batch_size}) - ${warmup}'} # number of batches to run for the benchmark

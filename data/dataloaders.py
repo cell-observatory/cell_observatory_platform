@@ -3,6 +3,7 @@ import sys
 import logging
 from pathlib import Path
 
+import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
@@ -18,7 +19,14 @@ import ray.train.torch as raytorch
 
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 
-from utils.context import process_rank, barrier
+from utils.context import (process_rank, 
+                           barrier,
+                           get_local_numa_nodes, 
+                           local_rank, 
+                           node_id,
+                           torch_gpu_to_numa)
+from data.datasets.buffers import set_buffers
+from data.datasets.schedulers import NumaNodeAffinityScheduler
 from data.datasets.pretrain_dataset_ray import get_dataloader_ray
 from data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
 
@@ -189,7 +197,7 @@ def get_dataloader(config: DictConfig):
                     train = raytorch.prepare_data_loader(train)
                     val = raytorch.prepare_data_loader(val)
 
-                return train, val
+                return train, val, None, None
 
             else:
                 dataloader = DataLoader(
@@ -211,7 +219,7 @@ def get_dataloader(config: DictConfig):
                 if config.distributed_framework == "ray":
                     dataloader = raytorch.prepare_data_loader(dataloader)
 
-                return dataloader, None
+                return dataloader, None, None, None
         else:
             return dataset
 
@@ -236,7 +244,7 @@ def get_dataloader(config: DictConfig):
                 prefetch_queue_depth=config.datasets.prefetch_factor,
                 exec_async=config.datasets.exec_async,
                 exec_pipelined=config.datasets.exec_pipelined,
-                device_id=process_rank()
+                exec_dynamic=True,
             )
             train_pipe.build()
             dali_train_loader = DALIGenericIterator(
@@ -256,7 +264,7 @@ def get_dataloader(config: DictConfig):
                 prefetch_queue_depth=config.datasets.prefetch_factor,
                 exec_async=config.datasets.exec_async,
                 exec_pipelined=config.datasets.exec_pipelined,
-                device_id=process_rank()
+                exec_dynamic=True,
             )
             val_pipe.build()
             dali_val_loader = DALIGenericIterator(
@@ -267,7 +275,7 @@ def get_dataloader(config: DictConfig):
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
 
-            return dali_train_loader, dali_val_loader
+            return dali_train_loader, dali_val_loader, None, None
 
         else:
             # DALI dataloader
@@ -280,7 +288,7 @@ def get_dataloader(config: DictConfig):
                 prefetch_queue_depth=config.datasets.prefetch_factor,
                 exec_async=config.datasets.exec_async,
                 exec_pipelined=config.datasets.exec_pipelined,
-                device_id=process_rank()
+                exec_dynamic=True
             )
             pipe.build()
             dali_loader = DALIGenericIterator(
@@ -290,47 +298,67 @@ def get_dataloader(config: DictConfig):
                 auto_reset=True,
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
-            return dali_loader, None
+            return dali_loader, None, None, None
 
     elif config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
-        if isinstance(config.datasets.collate_fn, DictConfig):
-            collate_fn = instantiate(config.datasets.collate_fn)
-        else:
-            collate_fn = get_method(config.datasets.collate_fn)
+        # get numa nodes for this node (gathered on local_rank 0)
+        gpu_to_numa_map = get_local_numa_nodes(worker_numa_node=torch_gpu_to_numa(local_rank())["numa_node"])
+        gpu_numa_nodes = list(gpu_to_numa_map.values()) if gpu_to_numa_map is not None else []
 
-        if config.datasets.split is not None:
-            train_dataset = ray.train.get_dataset_shard("train")
-            val_dataset = ray.train.get_dataset_shard("val")
-            
-            train_dataloader = get_dataloader_ray(
-                dataset=train_dataset,
-                batch_size=config.clusters.batch_size_per_gpu,
-                drop_last=config.datasets.drop_last_policy,
-                collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor,
-                auto_transfer=config.datasets.auto_transfer
+        # start numa scheduler actor on rank 0 of each node
+        if local_rank() == 0:
+            ray.logger.info(f"Starting NumaNodeAffinityScheduler on node {node_id()}")
+            ray.logger.info(f"NUMA nodes found on this node: {gpu_numa_nodes}")
+            scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                node_id=node_id(),
+                soft=False,
             )
-            val_dataloader = get_dataloader_ray(
-                dataset=val_dataset,
-                batch_size=config.clusters.batch_size_per_gpu,
-                drop_last=config.datasets.drop_last_policy,
-                collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor,
-                auto_transfer=config.datasets.auto_transfer
-            )
-            return train_dataloader, val_dataloader
+            actor_scheduler = NumaNodeAffinityScheduler.options(
+                name=f"numa_node_affinity_scheduler_node_{node_id()}",
+                namespace="schedulers", lifetime="detached",
+                max_concurrency=config.datasets.max_concurrent_calls,
+                scheduling_strategy=scheduling_strategy
+                ).remote(
+                    policy=config.datasets.numa_node_affinity_policy,
+                    oversub_factor=config.datasets.numa_oversub_factor,
+                    node_id=node_id(),
+                    # get unique list of NUMA nodes with GPUs on this node
+                    gpu_numa_nodes=list(set(gpu_numa_nodes)),
+                    gpu_to_numa_map=gpu_to_numa_map
+                )
+
+        barrier()
         
-        else: 
-            train_dataset = ray.train.get_dataset_shard("train")
-            train_dataloader = get_dataloader_ray(
-                dataset=train_dataset,
-                batch_size=config.clusters.batch_size_per_gpu,
-                drop_last=config.datasets.drop_last_policy,
-                collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor,
-                auto_transfer=config.datasets.auto_transfer
-            )
-            return train_dataloader, None
+        buffer_actor, buffer_cfg = set_buffers(
+            local_rank=local_rank(),
+            global_rank=process_rank(),
+            buffer_type="host_memory",
+            batch_size=config.clusters.batch_size_per_gpu,
+            input_shape=config.datasets.input_shape,
+            dtype=config.storage_dtype,
+            buffer_capacity=config.datasets.buffer_capacity,
+            pin_to_numa_node=config.datasets.pin_numa_node,
+            max_concurrent_calls=config.datasets.max_concurrent_calls,
+            node_id=node_id(),
+            numa_node=torch_gpu_to_numa(local_rank())["numa_node"],
+        )
+
+        if isinstance(config.datasets.collate_fn, DictConfig):
+            collate_fn = instantiate(config.datasets.collate_fn, 
+                                     node_id=node_id(),
+                                     debug=config.datasets.debug)
+        else:
+            collate_fn = get_method(config.datasets.collate_fn, 
+                                    node_id=node_id(), 
+                                    debug=config.datasets.debug)
+
+        train_dataloader, val_dataloader = get_dataloader_ray(
+            cfg=config,
+            batch_size=config.clusters.batch_size_per_gpu,
+            drop_last=config.datasets.drop_last_policy,
+            collate_fn=collate_fn
+        )
+        return train_dataloader, val_dataloader, buffer_actor, collate_fn.device_buffer
     
     else:
         raise NotImplementedError(
