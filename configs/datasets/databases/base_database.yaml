@@ -1,7 +1,7 @@
 defaults:
   - _self_
 
-_target_: data.databases.supabase_database.SupabaseDatabase
+_target_: data.databases.base_database.TrinoDatabase
 dbname: 'staging'
 
 num_timepoints: ${datasets.input_shape.0} # number of timepoints for each hypercube

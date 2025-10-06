@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="test_supabase_database" type="PythonConfigurationType" factoryName="Python" folderName="tests">
+  <configuration default="false" name="test_base_database" type="PythonConfigurationType" factoryName="Python" folderName="tests">
     <module name="cell_observatory_platform" />
     <option name="ENV_FILES" value="" />
     <option name="INTERPRETER_OPTIONS" value="" />
@@ -49,7 +49,7 @@
     </EXTENSION>
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="pytest" />
-    <option name="PARAMETERS" value="-s -vv --disable-pytest-warnings --color=yes tests/data/test_supabase_database.py" />
+    <option name="PARAMETERS" value="-s -vv --disable-pytest-warnings --color=yes tests/data/test_base_database.py" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="true" />

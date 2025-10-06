@@ -1,5 +1,5 @@
 defaults:
-  - databases: supabase_database  # Loads configs/datasets/databases/supabase_database.yaml
+  - databases: base_database  # Loads configs/datasets/databases/base_database.yaml
   - masking: mask_generator       # Loads configs/datasets/masking/mask_generator.yaml
   - transforms: transforms        # Loads configs/datasets/transforms/transforms.yaml
   - preprocessor: torch_preprocessor    # Loads configs/datasets/preprocessor/torch_preprocessor.yaml

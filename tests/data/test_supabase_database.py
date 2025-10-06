@@ -16,7 +16,7 @@ def database(config):
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / "database/hypercubes_dataframe.csv"
-    pprint(OmegaConf.to_container(config, resolve=True))
+    # pprint(OmegaConf.to_container(config, resolve=True))
 
     print(f"Initializing database...")
     return instantiate(config.datasets.databases)
@@ -256,7 +256,7 @@ def test_16_128_128_128_2_hypercubes_database(config):
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
-    pprint(OmegaConf.to_container(config, resolve=True))
+    # pprint(OmegaConf.to_container(config, resolve=True))
 
     database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
@@ -279,7 +279,7 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config):
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
-    pprint(OmegaConf.to_container(config, resolve=True))
+    # pprint(OmegaConf.to_container(config, resolve=True))
 
     database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
@@ -306,7 +306,7 @@ def test_16_128_128_128_2_hypercubes_database_10k(config):
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
-    pprint(OmegaConf.to_container(config, resolve=True))
+    # pprint(OmegaConf.to_container(config, resolve=True))
 
     database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
@@ -334,7 +334,7 @@ def test_16_128_128_128_2_hypercubes_database_100k(config):
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(f"Initializing database...")
-    pprint(OmegaConf.to_container(config, resolve=True))
+    # pprint(OmegaConf.to_container(config, resolve=True))
 
     database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe

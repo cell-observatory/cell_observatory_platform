@@ -3,11 +3,13 @@ import sys
 import logging
 from pathlib import Path
 from typing import Optional, Any, List, Literal, Iterable
+from abc import ABC, abstractmethod
 
 import ujson
 import pandas as pd
 from dotenv import load_dotenv
 import connectorx as cx
+import trino
 
 from data.io import load_hypercubes_dataframe
 
@@ -19,7 +21,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class SupabaseDatabase:
+class ParentDatabase(ABC):
     def __init__(
             self,
             num_timepoints: Optional[int] = 1,
@@ -35,7 +37,7 @@ class SupabaseDatabase:
             fetch_hypercubes_dataframe: bool = True,
             hypercubes_dataframe_path: Optional[Path] = None,
             use_cached_hypercubes_dataframe: Optional[bool] = False,
-            protocol: Literal["binary", "csv", "cursor"] = "binary",
+            protocol: cx.Protocol | None = None,   # Literal["csv", "binary", "cursor", "simple", "text"]
             max_partitions: Optional[int] = 10,
             server_folder_path: Optional[Path|str] = None,
             occupancy_threshold: Optional[float] = None
@@ -129,24 +131,11 @@ class SupabaseDatabase:
 
         else:
             self.hypercubes_dataframe = None
-
-    def _load_uri(self):
-
-        if 'SUPABASE_STAGING_URI' not in os.environ or 'SUPABASE_PROD_URI' not in os.environ:
-            assert Path(self.dotenv_path).exists(), f"{self.dotenv_path} was not found"
-            if self.verbose:
-                print(f"Loading additional environment variables from {self.dotenv_path}")
-            load_dotenv(self.dotenv_path, verbose=True)
-
-        if self.dbname == 'staging':
-            uri = os.environ.get("SUPABASE_STAGING_URI")
-        elif self.dbname == 'production':
-            uri = os.environ.get("SUPABASE_PROD_URI")
-        else:
-            raise ValueError(f"Unknown database name: {self.dbname}")
-
-        assert uri is not None, "SUPABASE_URI_* environment variable not set"
-        return uri
+    
+    @abstractmethod
+    def _load_uri(self) -> str:
+        ''' To override '''
+        pass
 
     def _choose_filter(
         self,
@@ -169,6 +158,8 @@ class SupabaseDatabase:
             return f"WHERE {table_name}.prepared_id IN {rois}"
         elif tiles is not None:
             return f"WHERE {table_name}.tile_name IN {tiles}"
+        else:
+            raise ValueError("_choose_filter doesn't cover this case")
 
     def _limit_filter(
         self,
@@ -220,13 +211,13 @@ class SupabaseDatabase:
     ) -> str:
 
         if self.server_folder_path is None or str(self.server_folder_path).startswith('/clusterfs'):
-            filters = f"WHERE {table_name_shortcut}.exists IS TRUE"
+            filters = f"WHERE {table_name_shortcut}.exists = TRUE"
         elif str(self.server_folder_path).startswith('/groups'):
-            filters = f"WHERE {table_name_shortcut}.exists_prfs IS TRUE"
+            filters = f"WHERE {table_name_shortcut}.exists_prfs = TRUE"
         elif str(self.server_folder_path).startswith('/aws'):
-            filters = f"WHERE {table_name_shortcut}.exists_aws IS TRUE"
+            filters = f"WHERE {table_name_shortcut}.exists_aws = TRUE"
         elif str(self.server_folder_path).startswith('/lustre'):
-            filters = f"WHERE {table_name_shortcut}.exists_oak IS TRUE"
+            filters = f"WHERE {table_name_shortcut}.exists_oak = TRUE"
         else:
             raise ValueError(f"Unknown server_folder_path: {self.server_folder_path}")
 
@@ -301,36 +292,53 @@ class SupabaseDatabase:
             roi_list=roi_list,
             tile_list=tile_list,
         )
-
-        max_rows = self.count_rows(table_name=table_name)
-
-        if max_hypercubes is None:
-            max_hypercubes = max_rows
-
-        if max_hypercubes > max_rows:
-            max_hypercubes = max_rows
-
-        if max_hypercubes > 1000:
-            # select max number of partitions that divides the number of rows in each partition evenly
-            partition_num = max([i for i in range(1, self.max_partitions + 1) if
-                                 max_hypercubes % i == 0]) if max_hypercubes is not None else 1
-            print(f"Using {partition_num} partitions to query.")
-        else:
+        if self.max_partitions is None or self.max_partitions <= 1 :
+            # Single partition
+            if max_hypercubes:
+                limit = f"LIMIT {max_hypercubes}"
+            else:
+                limit = ""
             partition_num = 1
+            return  [f"""
+                        SELECT
+                            {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
+                        FROM {table_name} {table_name_shortcut}
+                        {filters} 
+                        ORDER BY first_pc_id DESC
+                        {limit}
+                    """]
 
-        rows_per_partition = max_hypercubes // partition_num
-        return [
-            f"""
-                SELECT
-                    {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
-                FROM {table_name} {table_name_shortcut}
-                {filters} 
-                ORDER BY first_pc_id DESC
-                LIMIT {rows_per_partition}
-                OFFSET {rows_per_partition * i}
-            """
-            for i in range(partition_num)
-        ]
+        else:
+            # Multiple partitions, with limit and offset
+            max_rows = self.count_rows(table_name=table_name)
+
+            if max_hypercubes is None:
+                max_hypercubes = max_rows
+
+            if max_hypercubes > max_rows:
+                max_hypercubes = max_rows
+
+            if max_hypercubes > 1000:
+                # select max number of partitions that divides the number of rows in each partition evenly
+                partition_num = max([i for i in range(1, self.max_partitions + 1) if
+                                    max_hypercubes % i == 0]) if max_hypercubes is not None else 1
+                print(f"Using {partition_num} partitions to query. Max hypercubes: {max_hypercubes}.")
+            else:
+                partition_num = 1
+        
+            rows_per_partition = max_hypercubes // partition_num
+            return  [
+                    f"""
+                        SELECT
+                            {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
+                        FROM {table_name} {table_name_shortcut}
+                        {filters} 
+                        ORDER BY first_pc_id DESC
+                        LIMIT {rows_per_partition}
+                        OFFSET {rows_per_partition * i}
+                    """
+                    for i in range(partition_num)
+                ]
 
     def _create_t_128_128_128_2_hypercube_view(
             self,
@@ -432,6 +440,7 @@ class SupabaseDatabase:
                 query=query,
                 protocol=self.protocol,
                 return_type="arrow",
+                pre_execution_query=["SET statement_timeout='10min'", "SET idle_session_timeout='10min'"]
             )
             df = result.to_pandas(split_blocks=False, date_as_object=False)
             return df
@@ -490,8 +499,9 @@ class SupabaseDatabase:
             SELECT EXISTS (
                 SELECT 1
                 FROM information_schema.tables
-                WHERE table_schema = 'public'
-                AND table_name = '{table_name}'
+                WHERE 
+                -- table_schema = 'public' AND   -- commented out to allow for non-'public' schemas like in Trino
+                table_name = '{table_name}'
             )
         """
         return self.execute_query(query).values.squeeze().tolist()
@@ -529,7 +539,7 @@ class SupabaseDatabase:
         else:
 
             if self.verbose:
-                print(f"Table: {table_name} not found in the {self.dbname}. Creating a new view...")
+                print(f"Table: {table_name} not found in database: {self.dbname}. Creating a new view...")
 
             self.table_query = self._create_t_128_128_128_2_hypercube_view(
                 num_timepoints=num_timepoints,
@@ -560,3 +570,76 @@ class SupabaseDatabase:
             self.save_hypercubes_dataframe(table, hypercubes_dataframe_path=hypercubes_dataframe_path)
 
         return table
+
+class SupabaseDatabase(ParentDatabase):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def _load_uri(self):
+
+        if 'SUPABASE_STAGING_URI' not in os.environ or 'SUPABASE_PROD_URI' not in os.environ:
+            assert Path(self.dotenv_path).exists(), f"{self.dotenv_path} was not found"
+            if self.verbose:
+                print(f"Loading additional environment variables from {self.dotenv_path}")
+            load_dotenv(self.dotenv_path, verbose=True)
+
+        if self.dbname == 'staging':
+            uri = os.environ.get("SUPABASE_STAGING_URI")
+        elif self.dbname == 'production':
+            uri = os.environ.get("SUPABASE_PROD_URI")
+        else:
+            raise ValueError(f"Unknown database name: {self.dbname}")
+
+        assert uri is not None, "SUPABASE_URI_* environment variable not set"
+        return uri
+    
+class TrinoDatabase(ParentDatabase):
+    TRINO_HOST='trino-ocp.int.janelia.org'
+    TRINO_USER='trino'
+    TRINO_CATALOG='betzigvast'
+    TRINO_SCHEMA='betzigdb/cellobservatory'
+    TRINO_PORT=443
+
+    def __init__(self, **kwargs):
+        kwargs['max_partitions'] = 1  # using trino direct (not through connector-x) so just 1 partition is possible
+        super().__init__(**kwargs)
+
+    def _load_uri(self):
+        uri = f'trino+https://{self.TRINO_USER}:password@{self.TRINO_HOST}:{self.TRINO_PORT}/{self.TRINO_CATALOG}'     # connection token
+        uri = f'trino+https://{self.TRINO_HOST}:{self.TRINO_PORT}/{self.TRINO_CATALOG}/{self.TRINO_SCHEMA}?verify=false&user=trino'     # connection token
+
+        assert uri is not None, "TRINO_URI_* environment variable not set"
+        return uri
+    
+    def execute_query(self, query: str | List[str]) -> pd.DataFrame:
+        
+        # Convert list to string
+        if isinstance(query, list):
+            assert len(query) == 1, f"code does not handle trino with a batch of queries and given query has length of {len(query)}, max partitions {self.max_partitions}, query {" ".join(query.split())}."
+            query = query[0]
+        
+        query=query.replace(";", "")  # trino does not like semicolons
+        query=query.replace(".exists,", '."exists",')  # trino does not like exists without quotes
+        
+
+        conn = trino.dbapi.connect(
+            host=self.TRINO_HOST,
+            user=self.TRINO_USER,
+            catalog=self.TRINO_CATALOG,
+            http_scheme="https",
+            schema=self.TRINO_SCHEMA
+        )
+        TRINO_PORT = conn.port  # will be port 443 for https
+        cur = conn.cursor()
+    
+        try:
+            cur.execute(query)
+            rows = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+            # pandas:
+            df = pd.DataFrame(rows, columns=columns)
+            return df
+        except Exception as e:
+            normalized_query = " ".join(query.split())
+            logger.error(f"Failed to execute query: {e}. Query was: {normalized_query}")
+            raise
