@@ -354,6 +354,50 @@
             "justMyCode": false
         },
         {
+            "name": "🧪 Test Supabase 10k",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_supabase_database.py::test_16_128_128_128_2_hypercubes_database_10k"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Supabase 100k",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_supabase_database.py::test_16_128_128_128_2_hypercubes_database_100k"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
             "name": "🧪 Test Supabase",
             "type": "debugpy",
             "request": "launch",
@@ -423,7 +467,8 @@
             "name": "🛠️ Test Preprocessor",
             "type": "debugpy",
             "request": "launch",
-            "module": "pytest",            "args": [
+            "module": "pytest",
+            "args": [
                 "-s",
                 "-vvv",
                 "--cache-clear",
