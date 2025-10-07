@@ -146,7 +146,9 @@ def test_hypercubes_max_hypercubes_filter(database):
     assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
 
 def test_hypercubes_list_roi_filter(database):
-    roi_list = [312]
+    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, max_rois=1)
+    roi_list = table.prepared_id.unique().tolist()
+    print(f"test_hypercubes_list_roi_filter using {roi_list=}")
     table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, roi_list=roi_list)
     print(database.last_query)
     print(table)
@@ -173,12 +175,14 @@ def test_hypercubes_list_tiles_filter(database):
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
 def test_hypercubes_list_filters(database):
-    roi_list = [312]
+    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, max_rois=1)
+    roi_list = table.prepared_id.unique().tolist()
+    print(f"test_hypercubes_list_roi_filter using {roi_list=}")
     tile_list = ['000x_000y_000z.zarr', '000x_000y_001z.zarr', '000x_000y_002z.zarr']
 
     table = database.get_t_128_128_128_2_hypercubes(
         num_timepoints=16,
-        roi_list=[312],
+        roi_list=roi_list,
         tile_list=['000x_000y_000z.zarr', '000x_000y_001z.zarr', '000x_000y_002z.zarr']
     )
     print(database.last_query)
