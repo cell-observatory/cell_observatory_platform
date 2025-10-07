@@ -227,7 +227,7 @@ def test_get_t_128_128_128_2_hypercubes(database):
         check_names=False,
     )
 
-@pytest.mark.skip('Table is empty. Database connection not available')
+# @pytest.mark.skip('Table is empty. Database connection not available')
 def test_1_128_128_128_2_hypercubes_database(config):
     config.experiment_name = "test_1_128_128_128_2_hypercubes_database"
     config.datasets.databases.num_timepoints = 1
