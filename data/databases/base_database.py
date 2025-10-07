@@ -669,3 +669,20 @@ class TrinoDatabase(ParentDatabase):
             normalized_query = " ".join(query.split())
             logger.error(f"Failed to execute query: {e}. Query was: {normalized_query}")
             raise
+
+    def list_tables(self) -> Any:
+        return self.execute_query(f'''
+                                  SELECT table_name
+                                    FROM information_schema.tables
+                                    WHERE table_catalog = '{self.TRINO_CATALOG}'
+                                    AND table_schema = '{self.TRINO_SCHEMA}'
+                                    AND table_type = 'BASE TABLE'
+                                  ''')
+
+    def list_views(self) -> Any:
+        return self.execute_query(f'''
+                                  SELECT table_name
+                                    FROM information_schema.views
+                                    WHERE table_catalog = '{self.TRINO_CATALOG}'
+                                    AND table_schema = '{self.TRINO_SCHEMA}'
+                                  ''')
