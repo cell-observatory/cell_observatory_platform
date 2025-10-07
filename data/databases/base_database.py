@@ -174,7 +174,7 @@ class ParentDatabase(ABC):
             if isinstance(unique_rois, Iterable):
                 filters = f"WHERE {table_name}.prepared_id IN {tuple(unique_rois)}"
             else:
-                filters = f"WHERE {table_name}.prepared_id IN ('{unique_rois}')"
+                filters = f"WHERE {table_name}.prepared_id IN ({unique_rois})"
         else:
             if max_tiles > 1:
                 unique_rois, unique_tiles = zip(*self.get_random_tiles(max_tiles))
@@ -185,8 +185,8 @@ class ParentDatabase(ABC):
                 filters = f"WHERE {table_name}.prepared_id IN {tuple(unique_rois)} " \
                           f"AND {table_name}.tile_name IN {tuple(unique_tiles)}"
             else:
-                filters = f"WHERE {table_name}.prepared_id IN ('{unique_rois}') " \
-                          f"AND {table_name}.tile_name IN ('{unique_tiles}')"
+                filters = f"WHERE {table_name}.prepared_id IN ({unique_rois}) " \
+                          f"AND {table_name}.tile_name IN ({unique_tiles})"
         return filters
 
     def _age_filter(
