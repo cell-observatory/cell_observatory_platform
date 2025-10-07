@@ -16,6 +16,7 @@ def database(config):
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / "database/hypercubes_dataframe.csv"
+    config.datasets.databases.fetch_hypercubes_dataframe = False
     # pprint(OmegaConf.to_container(config, resolve=True))
 
     print(f"Initializing database...")
