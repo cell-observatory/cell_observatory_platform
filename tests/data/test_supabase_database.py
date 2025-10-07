@@ -32,6 +32,7 @@ def test_all_database_tables(database):
     tables = database.list_tables()
     print(f"Available tables: {tables.values.squeeze()}")
 
+    assert len(tables) > 0, f"Zero tables were returned"
     for t in tables.values.squeeze():
         cols = database.count_columns(t)
         rows = database.count_rows(t)
@@ -82,6 +83,7 @@ def test_create_1_128_128_128_2_hypercubes(database):
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 1).all(), "All time sizes should be 1"
     assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
     pd.testing.assert_series_equal(
         table['time_size'],
@@ -101,6 +103,7 @@ def test_create_16_128_128_128_2_hypercubes(database):
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
     assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
     pd.testing.assert_series_equal(
         table['time_size'],
@@ -128,7 +131,7 @@ def test_hypercubes_max_tiles_filter(database):
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
     assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
+    assert table.shape[0] > 0, f"Zero tiles were returned"
     assert len(table['tile_name'].unique()) <= 10, "Only ten tiles should be returned"
 
 def test_hypercubes_max_hypercubes_filter(database):
@@ -139,7 +142,7 @@ def test_hypercubes_max_hypercubes_filter(database):
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
     assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
     assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
 
 def test_hypercubes_list_roi_filter(database):
@@ -153,6 +156,7 @@ def test_hypercubes_list_roi_filter(database):
     assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
 
     assert table['prepared_id'].isin(roi_list).all(), f"Only ROIs in {roi_list} should be returned"
+    assert table.shape[0] > 0, f"Zero ROIs were returned"
 
 def test_hypercubes_list_tiles_filter(database):
     tile_list = ['000x_000y_000z.zarr', '000x_000y_001z.zarr', '000x_000y_002z.zarr']
@@ -166,6 +170,7 @@ def test_hypercubes_list_tiles_filter(database):
     assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
 
     assert table['tile_name'].isin(tile_list).all(), f"Only tiles in {tile_list} should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
 def test_hypercubes_list_filters(database):
     roi_list = [312]
@@ -185,6 +190,7 @@ def test_hypercubes_list_filters(database):
 
     assert table['prepared_id'].isin(roi_list).all(), f"Only ROIs in {roi_list} should be returned"
     assert table['tile_name'].isin(tile_list).all(), f"Only tiles in {tile_list} should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
 def test_hypercubes_hpf_filter(database):
     hpf_list = [72]
@@ -202,6 +208,7 @@ def test_hypercubes_hpf_filter(database):
 
     assert table['hpf'].isin(hpf_list).all(), f"Only hpf in {hpf_list} should be returned"
     assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
 @pytest.mark.skip('Table is empty. Database connection not available')
 def test_get_t_128_128_128_2_hypercubes(database):
