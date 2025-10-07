@@ -176,9 +176,11 @@ class ParentDatabase(ABC):
             else:
                 filters = f"WHERE {table_name}.prepared_id IN ({unique_rois})"
         else:
-            if max_tiles > 1:
+            if max_tiles is None:
+                return ""
+            elif max_tiles > 1:
                 unique_rois, unique_tiles = zip(*self.get_random_tiles(max_tiles))
-            else:
+            elif max_tiles == 1:
                 unique_rois, unique_tiles = self.get_random_tiles(max_tiles)
 
             if isinstance(unique_tiles, Iterable) and isinstance(unique_rois, Iterable):
@@ -210,16 +212,7 @@ class ParentDatabase(ABC):
             tile_list: Optional[Iterable[str]] = None,
     ) -> str:
 
-        if self.server_folder_path is None or str(self.server_folder_path).startswith('/clusterfs'):
-            filters = f"WHERE {table_name_shortcut}.exists = TRUE"
-        elif str(self.server_folder_path).startswith('/groups'):
-            filters = f"WHERE {table_name_shortcut}.exists_prfs = TRUE"
-        elif str(self.server_folder_path).startswith('/aws'):
-            filters = f"WHERE {table_name_shortcut}.exists_aws = TRUE"
-        elif str(self.server_folder_path).startswith('/lustre'):
-            filters = f"WHERE {table_name_shortcut}.exists_oak = TRUE"
-        else:
-            raise ValueError(f"Unknown server_folder_path: {self.server_folder_path}")
+        filters = self._exists_filter(table_name_shortcut)
 
         if roi_list is not None or tile_list is not None:
             filters += self._choose_filter(
@@ -241,6 +234,19 @@ class ParentDatabase(ABC):
 
         if self.verbose:
             print(f"Using filters: {filters}")
+        return filters
+
+    def _exists_filter(self, table_name_shortcut) -> str:
+        if self.server_folder_path is None or str(self.server_folder_path).startswith('/clusterfs'):
+            filters = f"WHERE {table_name_shortcut}.exists = TRUE"
+        elif str(self.server_folder_path).startswith('/groups'):
+            filters = f"WHERE {table_name_shortcut}.exists_prfs = TRUE"
+        elif str(self.server_folder_path).startswith('/aws'):
+            filters = f"WHERE {table_name_shortcut}.exists_aws = TRUE"
+        elif str(self.server_folder_path).startswith('/lustre'):
+            filters = f"WHERE {table_name_shortcut}.exists_oak = TRUE"
+        else:
+            raise ValueError(f"Unknown server_folder_path: {self.server_folder_path}")
         return filters
 
     def _query_t_128_128_128_2_hypercube_view(
@@ -294,11 +300,9 @@ class ParentDatabase(ABC):
         )
         if self.max_partitions is None or self.max_partitions <= 1 :
             # Single partition
-            if max_hypercubes:
-                limit = f"LIMIT {max_hypercubes}"
-            else:
-                limit = ""
             partition_num = 1
+            limit = f"LIMIT {max_hypercubes}" if max_hypercubes else ""
+            
             return  [f"""
                         SELECT
                             {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
@@ -469,29 +473,51 @@ class ParentDatabase(ABC):
         return len(self.get_columns(table_name))
 
     def get_random_rois(self, num_rois: int = 1) -> List[int]:
-        filter = ""
+        filter = self._exists_filter("prepared_tiles_view")
+        
         if self.hpf_list is not None:
             filter += self._age_filter(
                 hpfs=self.hpf_list, table_name="prepared_tiles_view"
-            )
+            ).replace('WHERE', ' AND ')
+        if self.tile_list is not None:
+            filter += self._choose_filter(
+                tiles=self.tile_list, table_name="prepared_tiles_view"
+            ).replace('WHERE', ' AND ')
+        if self.roi_list is not None:
+            filter += self._choose_filter(
+                rois=self.roi_list, table_name="prepared_tiles_view"
+            ).replace('WHERE', ' AND ')
+
         query = f"""
-            SELECT DISTINCT ON (prepared_id) prepared_id 
+            -- Getting random ROIs
+            SELECT DISTINCT prepared_id 
             FROM prepared_tiles_view {filter}
-            LIMIT {num_rois}
-        """
+            LIMIT {num_rois}            
+        """ # ORDER BY random() could be slow on large tables
         return self.execute_query(query).values.squeeze().tolist()
 
-    def get_random_tiles(self, num_tiles: int = 1) -> List[int]:
-        filter = ""
+    def get_random_tiles(self, num_tiles: int = 1) -> List[tuple[int, str]]:
+        filter = self._exists_filter("prepared_tiles_view")
+        
         if self.hpf_list is not None:
             filter += self._age_filter(
                 hpfs=self.hpf_list, table_name="prepared_tiles_view"
-            )
+            ).replace('WHERE', ' AND ')
+        if self.tile_list is not None:
+            filter += self._choose_filter(
+                tiles=self.tile_list, table_name="prepared_tiles_view"
+            ).replace('WHERE', ' AND ')
+        if self.roi_list is not None:
+            filter += self._choose_filter(
+                rois=self.roi_list, table_name="prepared_tiles_view"
+            ).replace('WHERE', ' AND ')
+
         query = f"""
-            SELECT DISTINCT ON (prepared_id, tile_name) prepared_id, tile_name 
+            -- Getting random tiles
+            SELECT DISTINCT prepared_id, tile_name 
             FROM prepared_tiles_view {filter}
             LIMIT {num_tiles}
-        """
+        """ # ORDER BY random() could be slow on large tables
         return self.execute_query(query).values.squeeze().tolist()
 
     def check_view_exists(self, table_name: str) -> bool:
