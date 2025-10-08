@@ -435,22 +435,23 @@ class ParentDatabase(ABC):
             ujson.dump(configs, f, indent=4, sort_keys=True, escape_forward_slashes=False)
         print(f"Saved hypercubes dataframe configs to {self.hypercubes_dataframe_path.with_suffix('.json')}")
 
-    def execute_query(self, query: str | List[str]) -> pd.DataFrame:
-        try:
-            # avoid the costly COUNT query for pandas by using arrow as an intermediate step
-            # https://sfu-db.github.io/connector-x/freq_questions.html
-            result = cx.read_sql(
-                conn=self._database_url,
-                query=query,
-                protocol=self.protocol,
-                return_type="arrow",
-                pre_execution_query=["SET statement_timeout='10min'", "SET idle_session_timeout='10min'"]
-            )
-            df = result.to_pandas(split_blocks=False, date_as_object=False)
-            return df
-        except Exception as e:
-            logger.error(f"Failed to execute query: {e}")
-            raise
+    def execute_query(self, query: str | list[str]) -> pd.DataFrame:   
+        for i in range(3): 
+            try:
+                # avoid the costly COUNT query for pandas by using arrow as an intermediate step
+                # https://sfu-db.github.io/connector-x/freq_questions.html
+                result = cx.read_sql(
+                    conn=self._database_url,
+                    query=query,
+                    protocol=self.protocol,
+                    return_type="arrow"
+                )
+                df = result.to_pandas(split_blocks=False, date_as_object=False)
+                return df
+            except Exception as e:
+                logger.warning(f"Attempt {i+1} failed with error: {e}. Retrying...")
+        logger.error(f"Failed to execute query: {e}")
+        raise
 
     def list_tables(self) -> Any:
         return self.execute_query("SELECT tablename FROM pg_tables WHERE schemaname = 'public';")
