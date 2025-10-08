@@ -10,18 +10,19 @@ from tests.conftest import config
 import warnings
 warnings.filterwarnings("ignore")
 
-@pytest.fixture(scope="module")
-def database(config):
-    config.experiment_name = "test_database"
+database_types = ['TrinoDatabase', 'SupabaseDatabase']   # List of database types to add to test matrix
+
+@pytest.fixture(scope="module", params=database_types)
+def database(config, request):
+    database_type = request.param
+    config.experiment_name = f"test_{database_type}"
+    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / "database/hypercubes_dataframe.csv"
     config.datasets.databases.fetch_hypercubes_dataframe = False
-    # pprint(OmegaConf.to_container(config, resolve=True))
-
-    print(f"Initializing database...")
+    print(f"Initializing {config.datasets.databases._target_}...")
     return instantiate(config.datasets.databases)
-
 
 def test_database_connection(database):
     tables = database.list_tables()
@@ -238,9 +239,10 @@ def test_get_t_128_128_128_2_hypercubes(database):
         check_names=False,
     )
 
-# @pytest.mark.skip('Table is empty. Database connection not available')
-def test_1_128_128_128_2_hypercubes_database(config):
+@pytest.mark.parametrize("database_type", database_types)
+def test_1_128_128_128_2_hypercubes_database(config, database_type):
     config.experiment_name = "test_1_128_128_128_2_hypercubes_database"
+    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
     config.datasets.databases.num_timepoints = 1
     config.datasets.databases.max_hypercubes = 100
     config.datasets.databases.fetch_hypercubes_dataframe = True
@@ -248,7 +250,7 @@ def test_1_128_128_128_2_hypercubes_database(config):
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
     print(config.datasets.databases.hypercubes_dataframe_path)
-    print(f"Initializing database...")
+    print(f"Initializing {config.datasets.databases._target_}...")
     pprint(OmegaConf.to_container(config, resolve=True))
 
     database = instantiate(config.datasets.databases)
@@ -259,15 +261,17 @@ def test_1_128_128_128_2_hypercubes_database(config):
     assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
-def test_16_128_128_128_2_hypercubes_database(config):
+@pytest.mark.parametrize("database_type", database_types)
+def test_16_128_128_128_2_hypercubes_database(config, database_type):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database"
+    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_hypercubes = 100
     config.datasets.databases.fetch_hypercubes_dataframe = True
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
-    print(f"Initializing database...")
+    print(f"Initializing {config.datasets.databases._target_}...")
     # pprint(OmegaConf.to_container(config, resolve=True))
 
     database = instantiate(config.datasets.databases)
@@ -278,9 +282,11 @@ def test_16_128_128_128_2_hypercubes_database(config):
     assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
-def test_16_128_128_128_2_hypercubes_database_with_filters(config):
+@pytest.mark.parametrize("database_type", database_types)
+def test_16_128_128_128_2_hypercubes_database_with_filters(config, database_type):
     previous_config = config.datasets.databases.copy()
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_with_filters"
+    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_rois = 2
     config.datasets.databases.max_tiles = 2
@@ -290,7 +296,7 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config):
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
-    print(f"Initializing database...")
+    print(f"Initializing {config.datasets.databases._target_}...")
     # pprint(OmegaConf.to_container(config, resolve=True))
 
     database = instantiate(config.datasets.databases)
@@ -306,8 +312,10 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config):
 
     config.datasets.databases = previous_config.copy()  #  Restore previous config state.  For the tests that follow, this will clear 'filters' we just added 
     
-def test_16_128_128_128_2_hypercubes_database_10k(config):
+@pytest.mark.parametrize("database_type", database_types)
+def test_16_128_128_128_2_hypercubes_database_10k(config, database_type):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_10k"
+    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_hypercubes = 10000
     config.datasets.databases.max_rois = None
@@ -317,7 +325,7 @@ def test_16_128_128_128_2_hypercubes_database_10k(config):
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
-    print(f"Initializing database...")
+    print(f"Initializing {config.datasets.databases._target_}...")
     # pprint(OmegaConf.to_container(config, resolve=True))
 
     database = instantiate(config.datasets.databases)
@@ -333,9 +341,10 @@ def test_16_128_128_128_2_hypercubes_database_10k(config):
 
     assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
 
-
-def test_16_128_128_128_2_hypercubes_database_100k(config):
+@pytest.mark.parametrize("database_type", database_types)
+def test_16_128_128_128_2_hypercubes_database_100k(config, database_type):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_100k"
+    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_hypercubes = 100000
     config.datasets.databases.max_rois = None
@@ -345,7 +354,7 @@ def test_16_128_128_128_2_hypercubes_database_100k(config):
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
 
-    print(f"Initializing database...")
+    print(f"Initializing {config.datasets.databases._target_}...")
     # pprint(OmegaConf.to_container(config, resolve=True))
 
     database = instantiate(config.datasets.databases)
