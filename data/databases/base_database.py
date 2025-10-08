@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Optional, Any, List, Literal, Iterable
+from typing import Optional, Any, Literal, Sequence
 from abc import ABC, abstractmethod
 
 import ujson
@@ -28,9 +28,9 @@ class ParentDatabase(ABC):
             max_rois: Optional[int] = None,
             max_tiles: Optional[int] = None,
             max_hypercubes: Optional[int] = None,
-            hpf_list: Optional[Iterable[int]] = None,
-            roi_list: Optional[Iterable[int]] = None,
-            tile_list: Optional[Iterable[str]] = None,
+            hpf_list: Optional[Sequence[int]] = None,
+            roi_list: Optional[Sequence[int]] = None,
+            tile_list: Optional[Sequence[str]] = None,
             dbname: Literal['staging', 'production'] = 'staging',
             dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
             verbose: bool = False,
@@ -139,8 +139,8 @@ class ParentDatabase(ABC):
 
     def _choose_filter(
         self,
-        rois: Optional[Iterable[int | str]] = None,
-        tiles: Optional[Iterable[str]] = None,
+        rois: Optional[Sequence[int | str]] = None,
+        tiles: Optional[Sequence[str]] = None,
         table_name: str = 'ptv'
     ) -> str:
 
@@ -171,7 +171,7 @@ class ParentDatabase(ABC):
 
         if max_rois is not None:
             unique_rois = self.get_random_rois(max_rois)
-            if isinstance(unique_rois, Iterable):
+            if isinstance(unique_rois, Sequence):
                 filters = f"WHERE {table_name}.prepared_id IN {tuple(unique_rois)}"
             else:
                 filters = f"WHERE {table_name}.prepared_id IN ({unique_rois})"
@@ -183,7 +183,7 @@ class ParentDatabase(ABC):
             elif max_tiles == 1:
                 unique_rois, unique_tiles = self.get_random_tiles(max_tiles)
 
-            if isinstance(unique_tiles, Iterable) and isinstance(unique_rois, Iterable):
+            if isinstance(unique_tiles, Sequence) and isinstance(unique_rois, Sequence):
                 filters = f"WHERE {table_name}.prepared_id IN {tuple(unique_rois)} " \
                           f"AND {table_name}.tile_name IN {tuple(unique_tiles)}"
             else:
@@ -193,7 +193,7 @@ class ParentDatabase(ABC):
 
     def _age_filter(
             self,
-            hpfs: Iterable[int],
+            hpfs: Sequence[int],
             table_name: str = 'ptv'
     ) -> str:
         assert hpfs is not None, "hpfs must be provided"
@@ -207,9 +207,9 @@ class ParentDatabase(ABC):
             table_name_shortcut: str = 'hc',
             max_rois: Optional[int] = None,
             max_tiles: Optional[int] = None,
-            hpf_list: Optional[Iterable[int]] = None,
-            roi_list: Optional[Iterable[int]] = None,
-            tile_list: Optional[Iterable[str]] = None,
+            hpf_list: Optional[Sequence[int]] = None,
+            roi_list: Optional[Sequence[int]] = None,
+            tile_list: Optional[Sequence[str]] = None,
     ) -> str:
 
         filters = self._exists_filter(table_name_shortcut)
@@ -257,11 +257,11 @@ class ParentDatabase(ABC):
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
         max_hypercubes: Optional[int] = None,
-        hpf_list: Optional[Iterable[int]] = None,
-        roi_list: Optional[Iterable[int]] = None,
-        tile_list: Optional[Iterable[str]] = None,
+        hpf_list: Optional[Sequence[int]] = None,
+        roi_list: Optional[Sequence[int]] = None,
+        tile_list: Optional[Sequence[str]] = None,
         occupancy_threshold: Optional[float] = None
-    ) -> List[str]:
+    ) -> list[str]:
         column_names = [
             'first_pc_id',
             'prepared_id',
@@ -461,7 +461,7 @@ class ParentDatabase(ABC):
     def get_table(self, table_name: str) -> Any:
         return self.execute_query(f"SELECT * FROM {table_name};")
 
-    def get_columns(self, table_name: str) -> List[str]:
+    def get_columns(self, table_name: str) -> list[str]:
         return self.execute_query(
             f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}';"
         ).column_name.to_list()
@@ -472,7 +472,7 @@ class ParentDatabase(ABC):
     def count_columns(self, table_name: str) -> int:
         return len(self.get_columns(table_name))
 
-    def get_random_rois(self, num_rois: int = 1) -> List[int]:
+    def get_random_rois(self, num_rois: int = 1) -> list[int]:
         filter = self._exists_filter("prepared_tiles_view")
         
         if self.hpf_list is not None:
@@ -496,7 +496,7 @@ class ParentDatabase(ABC):
         """ # ORDER BY random() could be slow on large tables
         return self.execute_query(query).values.squeeze().tolist()
 
-    def get_random_tiles(self, num_tiles: int = 1) -> List[tuple[int, str]]:
+    def get_random_tiles(self, num_tiles: int = 1) -> list[tuple[int, str]]:
         filter = self._exists_filter("prepared_tiles_view")
         
         if self.hpf_list is not None:
@@ -538,9 +538,9 @@ class ParentDatabase(ABC):
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
         max_hypercubes: Optional[int] = None,
-        hpf_list: Optional[Iterable[int]] = None,
-        roi_list: Optional[Iterable[int]] = None,
-        tile_list: Optional[Iterable[str]] = None,
+        hpf_list: Optional[Sequence[int]] = None,
+        roi_list: Optional[Sequence[int]] = None,
+        tile_list: Optional[Sequence[str]] = None,
         hypercubes_dataframe_path: Optional[Path] = None,
         occupancy_threshold: Optional[float] = None
     ) -> pd.DataFrame:
@@ -637,7 +637,7 @@ class TrinoDatabase(ParentDatabase):
         assert uri is not None, "TRINO_URI_* environment variable not set"
         return uri
     
-    def execute_query(self, query: str | List[str]) -> pd.DataFrame:
+    def execute_query(self, query: str | list[str]) -> pd.DataFrame:
         
         # Convert list to string
         if isinstance(query, list):
