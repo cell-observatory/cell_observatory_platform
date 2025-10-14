@@ -1,8 +1,11 @@
+import os
 import sys
 import logging
 from typing import Any
 import pandas as pd
 import trino
+from pathlib import Path
+from dotenv import load_dotenv
 
 from data.databases.base_database import ParentDatabase
 
@@ -15,19 +18,21 @@ logger = logging.getLogger(__name__)
 
 
 class TrinoDatabase(ParentDatabase):
-    TRINO_HOST='trino-ocp.int.janelia.org'
-    TRINO_USER='trino'
-    TRINO_CATALOG='betzigvast'
-    TRINO_SCHEMA='betzigdb/cellobservatory'
-    TRINO_PORT=443
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs):          
+        # TODO: update env vars when db is completely setup       
+        self.trino_host = 'trino' # os.environ.get("TRINO_HOST")
+        self.trino_user = 'trino-ocp.int.janelia.org' # os.environ.get("TRINO_USER")
+        self.trino_port = 443
+        self.trino_catalog = 'betzigvast'
+        self.trino_schema = 'betzigdb/cellobservatory'
+
         kwargs['max_partitions'] = 1  # using trino direct (not through connector-x) so just 1 partition is possible
         super().__init__(**kwargs)
 
     def _load_uri(self):
-        uri = f'trino+https://{self.TRINO_USER}:password@{self.TRINO_HOST}:{self.TRINO_PORT}/{self.TRINO_CATALOG}'     # connection token
-        uri = f'trino+https://{self.TRINO_HOST}:{self.TRINO_PORT}/{self.TRINO_CATALOG}/{self.TRINO_SCHEMA}?verify=false&user=trino'     # connection token
+        # uri = f'trino+https://{self.trino_user}:password@{self.trino_host}:{self.trino_port}/{self.trino_catalog}'     # connection token
+        uri = f'trino+https://{self.trino_host}:{self.trino_port}/{self.trino_catalog}/{self.trino_schema}?verify=false&user=trino'     # connection token
 
         assert uri is not None, "TRINO_URI_* environment variable not set"
         return uri
@@ -44,13 +49,13 @@ class TrinoDatabase(ParentDatabase):
         
 
         conn = trino.dbapi.connect(
-            host=self.TRINO_HOST,
-            user=self.TRINO_USER,
-            catalog=self.TRINO_CATALOG,
+            host=self.trino_host,
+            user=self.trino_user,
+            catalog=self.trino_catalog,
             http_scheme="https",
-            schema=self.TRINO_SCHEMA
+            schema=self.trino_schema
         )
-        TRINO_PORT = conn.port  # will be port 443 for https
+        trino_port = conn.port  # will be port 443 for https
         cur = conn.cursor()
     
         try:
@@ -69,8 +74,8 @@ class TrinoDatabase(ParentDatabase):
         return self.execute_query(f'''
                                   SELECT table_name
                                     FROM information_schema.tables
-                                    WHERE table_catalog = '{self.TRINO_CATALOG}'
-                                    AND table_schema = '{self.TRINO_SCHEMA}'
+                                    WHERE table_catalog = '{self.trino_catalog}'
+                                    AND table_schema = '{self.trino_schema}'
                                     AND table_type = 'BASE TABLE'
                                   ''')
 
@@ -78,6 +83,6 @@ class TrinoDatabase(ParentDatabase):
         return self.execute_query(f'''
                                   SELECT table_name
                                     FROM information_schema.views
-                                    WHERE table_catalog = '{self.TRINO_CATALOG}'
-                                    AND table_schema = '{self.TRINO_SCHEMA}'
+                                    WHERE table_catalog = '{self.trino_catalog}'
+                                    AND table_schema = '{self.trino_schema}'
                                   ''')
