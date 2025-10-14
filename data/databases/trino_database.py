@@ -21,11 +21,11 @@ class TrinoDatabase(ParentDatabase):
 
     def __init__(self, **kwargs):          
         # TODO: update env vars when db is completely setup       
-        self.trino_host = 'trino' # os.environ.get("TRINO_HOST")
-        self.trino_user = 'trino-ocp.int.janelia.org' # os.environ.get("TRINO_USER")
-        self.trino_port = 443
+        self.trino_host = 'trino-ocp.int.janelia.org' # os.environ.get("TRINO_HOST")
+        self.trino_user = 'trino' # os.environ.get("TRINO_USER")
         self.trino_catalog = 'betzigvast'
         self.trino_schema = 'betzigdb/cellobservatory'
+        self.trino_port = 443
 
         kwargs['max_partitions'] = 1  # using trino direct (not through connector-x) so just 1 partition is possible
         super().__init__(**kwargs)
