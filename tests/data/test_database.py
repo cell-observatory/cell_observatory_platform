@@ -10,13 +10,21 @@ from tests.conftest import config
 import warnings
 warnings.filterwarnings("ignore")
 
-database_types = ['TrinoDatabase', 'SupabaseDatabase']   # List of database types to add to test matrix
+database_types = ['SupabaseDatabase','TrinoDatabase']   # List of database types to add to test matrix
+
+def get_database_class(database_type):
+    if database_type == 'TrinoDatabase':
+        return f"data.databases.trino_database.{database_type}"
+    elif database_type == 'SupabaseDatabase':
+        return f"data.databases.supabase_database.{database_type}"
+    else:
+        raise ValueError(f"Invalid database type: {database_type}")
 
 @pytest.fixture(scope="module", params=database_types)
 def database(config, request):
     database_type = request.param
     config.experiment_name = f"test_{database_type}"
-    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
+    config.datasets.databases._target_ = get_database_class(database_type) 
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / "database/hypercubes_dataframe.csv"
@@ -242,7 +250,7 @@ def test_get_t_128_128_128_2_hypercubes(database):
 @pytest.mark.parametrize("database_type", database_types)
 def test_1_128_128_128_2_hypercubes_database(config, database_type):
     config.experiment_name = "test_1_128_128_128_2_hypercubes_database"
-    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
+    config.datasets.databases._target_ = get_database_class(database_type) 
     config.datasets.databases.num_timepoints = 1
     config.datasets.databases.max_hypercubes = 100
     config.datasets.databases.fetch_hypercubes_dataframe = True
@@ -264,7 +272,7 @@ def test_1_128_128_128_2_hypercubes_database(config, database_type):
 @pytest.mark.parametrize("database_type", database_types)
 def test_16_128_128_128_2_hypercubes_database(config, database_type):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database"
-    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
+    config.datasets.databases._target_ = get_database_class(database_type) 
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_hypercubes = 100
     config.datasets.databases.fetch_hypercubes_dataframe = True
@@ -286,7 +294,7 @@ def test_16_128_128_128_2_hypercubes_database(config, database_type):
 def test_16_128_128_128_2_hypercubes_database_with_filters(config, database_type):
     previous_config = config.datasets.databases.copy()
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_with_filters"
-    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
+    config.datasets.databases._target_ = get_database_class(database_type) 
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_rois = 2
     config.datasets.databases.max_tiles = 2
@@ -315,7 +323,7 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config, database_type
 @pytest.mark.parametrize("database_type", database_types)
 def test_16_128_128_128_2_hypercubes_database_10k(config, database_type):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_10k"
-    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
+    config.datasets.databases._target_ = get_database_class(database_type) 
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_hypercubes = 10000
     config.datasets.databases.max_rois = None
@@ -344,7 +352,7 @@ def test_16_128_128_128_2_hypercubes_database_10k(config, database_type):
 @pytest.mark.parametrize("database_type", database_types)
 def test_16_128_128_128_2_hypercubes_database_100k(config, database_type):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database_100k"
-    config.datasets.databases._target_ = f"data.databases.base_database.{database_type}" 
+    config.datasets.databases._target_ = get_database_class(database_type) 
     config.datasets.databases.num_timepoints = 16
     config.datasets.databases.max_hypercubes = 100000
     config.datasets.databases.max_rois = None

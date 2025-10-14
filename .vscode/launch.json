@@ -354,7 +354,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Supabase 10k",
+            "name": "🧪 Test Database 10k",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -366,7 +366,7 @@
                 "--disable-pytest-warnings",
                 "--color=yes",
                 "-r fEX",
-                "tests/data/test_supabase_database.py::test_16_128_128_128_2_hypercubes_database_10k"
+                "tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database_10k"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -376,7 +376,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Supabase 100k",
+            "name": "🧪 Test Database 100k",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -388,7 +388,7 @@
                 "--disable-pytest-warnings",
                 "--color=yes",
                 "-r fEX",
-                "tests/data/test_supabase_database.py::test_16_128_128_128_2_hypercubes_database_100k"
+                "tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database_100k"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -398,7 +398,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Supabase",
+            "name": "🧪 Test Database",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -410,7 +410,7 @@
                 "--disable-pytest-warnings",
                 "--color=yes",
                 "-r fEX",
-                "tests/data/test_supabase_database.py"
+                "tests/data/test_database.py"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
