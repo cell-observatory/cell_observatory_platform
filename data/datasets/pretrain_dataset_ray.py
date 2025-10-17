@@ -31,7 +31,7 @@ from utils.context import (process_rank,
 from utils.profiling import pprof_func, pprof_class
 from data.datasets.buffers import get_buffers, DeviceMemoryBuffer
 from data.data_types import (NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES)
-from training.helpers import record_dataset_len
+from training.helpers import record_dataset_len, get_data_dim
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -52,8 +52,16 @@ class CollatorActor:
                  pin_numa_node: bool,
                  pin_pages: bool,
                  node_id: int,
+                 columns: List[str] = [
+                        # metadata columns to keep from the original dataframe
+                        "x_start", "y_start", "z_start", "time_start",
+                        "channel_size", "cube_size", "time_size",
+                        "server_folder", "output_folder", "tile_name", "prepared_id"
+                 ],
                  debug: bool = False
     ):
+        self.columns = columns
+
         self.node_id = node_id
         self.local_rank = local_rank()
         self.global_rank = process_rank()
@@ -185,8 +193,11 @@ class CollatorActor:
 
             metainfo = {
                 "host_buffer_idx": host_buffer_idx,
-                "device_buffer_idx": device_buffer_idx
+                "device_buffer_idx": device_buffer_idx,
             }
+            for k in self.columns:
+                if k in batch:
+                    metainfo[k] = batch[k]
 
             if self.debug:
                 # NOTE: for testing only, put_free(idx) otherwise called by hooks in
@@ -203,6 +214,7 @@ class CollatorActor:
 @pprof_class
 class LoaderActor:
     def __init__(self,
+                 dim: int,
                  node_id: int,
                  local_rank: int,
                  global_rank: int,
@@ -216,6 +228,7 @@ class LoaderActor:
                  with_batched_api: bool = True,
                  channels_subset: Optional[List[int]] = None
 ):
+        self.dim = dim
         self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
         self.driver_process_numa_node = numa_node
         if pin_numa_node:
@@ -285,6 +298,9 @@ class LoaderActor:
             c = slice(0, meta["channel_size"])
             view = data_tensor[t, z, y, x, c]
 
+        if self.dim == 3:
+            view = view[meta["time_start"], ...]
+
         return view
 
     def _get_handle(self, path: str):
@@ -352,8 +368,10 @@ def get_dataset_ray(
         # adding more columns may slow down collate
         'x_start', 'y_start', 'z_start', 'time_start',
         'channel_size', 'cube_size', 'time_size',
-        'server_folder', 'output_folder', 'tile_name',
-    ]
+        'server_folder', 'output_folder', 
+        'tile_name', 'prepared_id'
+    ],
+    sort_by: Optional[List[str]] = None,
 ):
     if cfg.datasets.channels_subset is not None:
         num_channels = cfg.datasets.input_shape[cfg.dataset_layout_order.index("C")]
@@ -368,6 +386,13 @@ def get_dataset_ray(
         database.hypercubes_dataframe[columns].iloc[indices]
         if indices is not None else database.hypercubes_dataframe[columns]
     )
+
+    # NOTE: for inference we sort by output_folder to try to ensure that
+    #       hypercubes from the same tile are processed closer in time
+    #       to prevent Inferencer from needing to store too many predicted 
+    #       volumes in RAM at any given time, does not guarantee ordering
+    if sort_by is not None:
+        table = table.sort_by(sort_by)
 
     dataset = ray.data.from_arrow(table)
     dataset = dataset.split(n = get_world_size(), equal = True)[process_rank()]
@@ -407,6 +432,7 @@ def get_dataset_ray(
             "global_rank": process_rank(),
             "node_id": node_id(),
             "numa_node": torch_gpu_to_numa(local_rank())["numa_node"],
+            "dim": get_data_dim(cfg.dataset_layout_order)
         },
         concurrency=(cfg.datasets.num_actors_min, cfg.datasets.num_actors_max),
     )
@@ -420,6 +446,7 @@ def get_dataloader_ray(cfg: DictConfig,
                        drop_last: bool = True
 ):
     db = instantiate(cfg.datasets.databases)
+    database_df = db.hypercubes_dataframe
     dataset_len = len(db.hypercubes_dataframe)
 
     if cfg.datasets.split is not None:
@@ -445,7 +472,7 @@ def get_dataloader_ray(cfg: DictConfig,
             _finalize_fn=collate_fn,
             batch_format="numpy"
         )
-        return train_dataloader, val_dataloader
+        return train_dataloader, val_dataloader, database_df
 
     else:
         train_dataset, train_dataset_len = get_dataset_ray(cfg, indices=None, database=db)
@@ -456,4 +483,4 @@ def get_dataloader_ray(cfg: DictConfig,
             _finalize_fn=collate_fn,
             batch_format="numpy"
         )
-        return train_dataloader, None
+        return train_dataloader, None, database_df

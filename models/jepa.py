@@ -187,7 +187,7 @@ class JEPA(nn.Module):
         self.input_shape = input_shape
         axis_to_value = dict(zip(input_fmt, input_shape[1:]))
         self.in_chans = axis_to_value['C']
-        self.num_frames = axis_to_value['T']
+        self.num_frames = axis_to_value.get("T", None)
 
         self.axial_patch_size = axial_patch_size
         self.lateral_patch_size = lateral_patch_size
@@ -331,7 +331,6 @@ class JEPA(nn.Module):
             original_patch_indices=original_patch_indices,
             target_masks=target_masks
         )
-
 
         with torch.no_grad():
             targets, _ = self.target_encoder(inputs)

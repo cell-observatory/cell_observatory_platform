@@ -1,6 +1,7 @@
 import sys
 import logging
 from functools import partial
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -101,7 +102,9 @@ class RopeAttention(nn.Module):
         rope_theta: float = 10.0,
         input_fmt: str = "TZXYC",
         input_shape: tuple = (16,128,128,128,2),
-        patch_size: tuple = (4,16,16,16),
+        temporal_patch_size: Optional[int] = 4,
+        axial_patch_size: Optional[int] = 16,
+        lateral_patch_size: int = 16,
         device: str = 'cuda',
         dtype: torch.dtype = torch.bfloat16
     ) -> None:
@@ -152,8 +155,8 @@ class RopeAttention(nn.Module):
             # NOTE: works as long as we follow channel-last convention
             #       otherwise we need a more robust solution
             assert input_fmt[-1] == 'C', "input_fmt must follow channel-last convention"
-            end_x = input_shape[1:][input_fmt.index('X')] // patch_size[input_fmt.index('X')]
-            end_y = input_shape[1:][input_fmt.index('Y')] // patch_size[input_fmt.index('Y')]
+            end_x = input_shape[1:][input_fmt.index('X')] // lateral_patch_size
+            end_y = input_shape[1:][input_fmt.index('Y')] // lateral_patch_size
 
             if self.input_fmt == "YXC":
                 _, _, t_y, t_x = generate_grid_indices(end_x=end_x, 
@@ -167,7 +170,7 @@ class RopeAttention(nn.Module):
                 self.grid_indices = (None, None, t_y, t_x)
 
             elif self.input_fmt == "ZYXC":
-                end_z = input_shape[1:][input_fmt.index('Z')] // patch_size[input_fmt.index('Z')]
+                end_z = input_shape[1:][input_fmt.index('Z')] // axial_patch_size
                 _, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                          end_y=end_y, 
                                                          end_z=end_z, 
@@ -181,7 +184,7 @@ class RopeAttention(nn.Module):
                 self.grid_indices = (None, t_z, t_y, t_x)
 
             elif self.input_fmt == "TYXC":
-                end_t = input_shape[1:][input_fmt.index('T')] // patch_size[input_fmt.index('T')]
+                end_t = input_shape[1:][input_fmt.index('T')] // temporal_patch_size
                 t_t, _, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                          end_y=end_y, 
                                                          end_t=end_t, 
@@ -195,8 +198,8 @@ class RopeAttention(nn.Module):
                 self.grid_indices = (t_t, None, t_y, t_x)
 
             elif self.input_fmt == "TZYXC":
-                end_z = input_shape[1:][input_fmt.index('Z')] // patch_size[input_fmt.index('Z')]
-                end_t = input_shape[1:][input_fmt.index('T')] // patch_size[input_fmt.index('T')]
+                end_z = input_shape[1:][input_fmt.index('Z')] // axial_patch_size
+                end_t = input_shape[1:][input_fmt.index('T')] // temporal_patch_size
                 t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
                                                            end_y=end_y, 
                                                            end_z=end_z, 
@@ -215,16 +218,16 @@ class RopeAttention(nn.Module):
                 raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
 
         else:
-            end_x = input_shape[1:][input_fmt.index('X')] // patch_size[input_fmt.index('X')]
-            end_y = input_shape[1:][input_fmt.index('Y')] // patch_size[input_fmt.index('Y')]
+            end_x = input_shape[1:][input_fmt.index('X')] // lateral_patch_size
+            end_y = input_shape[1:][input_fmt.index('Y')] // lateral_patch_size
 
             if 'Z' in input_fmt:
-                end_z = input_shape[1:][input_fmt.index('Z')] // patch_size[input_fmt.index('Z')]
+                end_z = input_shape[1:][input_fmt.index('Z')] // axial_patch_size
             else:
                 end_z = None
 
             if 'T' in input_fmt:
-                end_t = input_shape[1:][input_fmt.index('T')] // patch_size[input_fmt.index('T')]
+                end_t = input_shape[1:][input_fmt.index('T')] // temporal_patch_size
             else:
                 end_t = None
 

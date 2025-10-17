@@ -1,0 +1,504 @@
+import os
+import logging
+from pathlib import Path
+from typing import Callable, Literal, Optional, Tuple, Iterable, List
+
+import pandas as pd
+import numpy as np
+
+import ray
+
+import torch
+
+import connectorx as cx
+from dotenv import load_dotenv
+
+from cell_observatory_finetune.cell_observatory_platform.data.io import save_file
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+
+class InferencerWorker:
+    def __init__(self,
+                 task: str,
+                 model: torch.nn.Module,
+                 database: pd.DataFrame,
+                 timepoint_list: Optional[List[int]],
+                 num_output_channels: int,
+                 input_format: str, 
+                 inference_mode: str,
+                 activation: Optional[Callable],
+                 decoder_head_type: str,
+                 roi_tile_list: List[Tuple[int, str]],
+                 save_dir: Path | str,
+                 dtype: torch.dtype = torch.float32,
+                 protocol: Literal["binary", "csv", "cursor"] = "binary",
+                 dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
+                 dbname: Literal['staging', 'production'] = 'staging',
+                 server_folder_path: Optional[Path] = None,
+                 verbose: bool = False,
+                 max_hypercubes: Optional[int] = None,
+                 max_partitions: int = 10,
+                 save_format: Literal['tiff','zarr'] = 'tiff',
+                 zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
+                 zarr_shard_shape: Optional[Tuple[int, ...]] = None,
+    ):
+        self.database = database
+        # TODO: consider alternative methods for only performing inference
+        #       on a subset of timepoints without storing a prediction for all timepoints
+        self.timepoint_list = timepoint_list
+        self.num_output_channels = num_output_channels
+        
+        self.dtype = dtype
+        self.input_format = input_format
+
+        # roi_tile_list is a list of (roi_id, tile_name) tuples
+        # to restrict inference to
+        self.roi_tile_list = roi_tile_list
+        self.roi_list = list(set([x[0] for x in roi_tile_list]))
+        self.tile_list = list(set([x[1] for x in roi_tile_list]))
+
+        self.model = model
+
+        self.task = task
+        self.inference_mode = inference_mode
+
+        self.inference_activation = activation
+        self.decoder_head_type = decoder_head_type
+
+        self.inference_save_dir = save_dir
+        self.inference_save_format = save_format
+        self.inference_zarr_chunk_shape = zarr_chunk_shape
+        self.inference_zarr_shard_shape = zarr_shard_shape
+
+        self.dbname = dbname
+        self.verbose = verbose
+        self.protocol = protocol
+        self.dotenv_path = dotenv_path
+        self.server_folder_path = server_folder_path
+        self._database_url = self._load_uri()
+
+        self.max_hypercubes = max_hypercubes
+        self.max_partitions = max_partitions
+
+        self.prediction_df = self._get_data_tiles_metadata()
+        self._build_state()
+
+        ray.logger.info(f"Inference Database: {self.prediction_df}")
+
+    def _get_data_tiles_metadata(self) -> pd.DataFrame:
+        query = self._get_query(
+            roi_list=self.roi_list
+        )
+        table = self.execute_query(query)
+
+        roi_ids = table["id"].tolist()
+        tiles = self._get_tiles_from_rois(roi_ids)
+        table = table.merge(tiles, left_on="id", right_on="prepared_id", how="left")
+
+        allowed = (
+            pd.DataFrame(self.roi_tile_list, columns=["id", "tile_name"])
+            .drop_duplicates()
+        )
+        table = table.merge(allowed, on=["id", "tile_name"], how="inner")
+        table = table.drop_duplicates(subset=["tile_name", "output_folder"], keep="first")
+
+        table["prediction"] = [None] * len(table)
+        table["count"] = [None] * len(table)
+
+        return table
+    
+    def _load_uri(self):
+        if 'SUPABASE_STAGING_URI' not in os.environ or 'SUPABASE_PROD_URI' not in os.environ:
+            assert Path(self.dotenv_path).exists(), f"{self.dotenv_path} was not found"
+            if self.verbose:
+                print(f"Loading additional environment variables from {self.dotenv_path}")
+            load_dotenv(self.dotenv_path, verbose=True)
+
+        if self.dbname == 'staging':
+            uri = os.environ.get("SUPABASE_STAGING_URI")
+        elif self.dbname == 'production':
+            uri = os.environ.get("SUPABASE_PROD_URI")
+        else:
+            raise ValueError(f"Unknown database name: {self.dbname}")
+
+        assert uri is not None, "SUPABASE_URI_* environment variable not set"
+        return uri
+    
+    def execute_query(self, query: str | List[str]) -> pd.DataFrame:
+        try:
+            # avoid the costly COUNT query for pandas by using arrow as an intermediate step
+            # https://sfu-db.github.io/connector-x/freq_questions.html
+            result = cx.read_sql(
+                conn=self._database_url,
+                query=query,
+                protocol=self.protocol,
+                return_type="arrow",
+            )
+            df = result.to_pandas(split_blocks=False, date_as_object=False)
+            return df
+        except Exception as e:
+            logger.error(f"Failed to execute query: {e}")
+            raise
+
+    def _get_tiles_from_rois(self, 
+                             roi_ids: list, 
+                             table_name_shortcut: str = "hc",
+                             tile_list: Optional[list] = None,
+                             table_name: str = "prepared_tiles",
+                             idx_col: str = "prepared_id"
+    ) -> pd.DataFrame:
+        query = f"""
+            SELECT
+                *
+            FROM {table_name}
+            WHERE {idx_col} IN ({', '.join(map(str, roi_ids))})
+        """
+        table = self.execute_query(query)
+        if tile_list is not None:
+            table = table[table["tile_name"].isin(tile_list)]
+        return table
+
+    def _get_query(self, 
+                   roi_list: list, 
+                   tile_list: Optional[list] = None,
+                   column_names: list = [
+                        "id", 
+                        "y_start", "x_start", "z_start",
+                        "y_end", "x_end", "z_end",
+                        "channel_size", "time_size",
+                        "output_folder", 
+                   ],
+                   table_name: str = "prepared",
+                   table_name_shortcut: str = "hc",
+                   idx_col: str = "id"
+    ) -> str:
+        filters = self._filters_to_string(
+            table_name_shortcut=table_name_shortcut,
+            roi_list=roi_list,
+            tile_list=tile_list,
+        )
+        max_rows = self.count_rows(table_name=table_name)
+
+        if self.max_hypercubes is None:
+            max_hypercubes = max_rows
+        else:
+            max_hypercubes = self.max_hypercubes
+
+        if max_hypercubes > max_rows:
+            max_hypercubes = max_rows
+
+        if max_hypercubes > 1000:
+            # select max number of partitions that divides the number of rows in each partition evenly
+            partition_num = max([i for i in range(1, self.max_partitions + 1) if
+                                 max_hypercubes % i == 0]) if max_hypercubes is not None else 1
+            print(f"Using {partition_num} partitions to query.")
+        else:
+            partition_num = 1
+
+        rows_per_partition = max_hypercubes // partition_num
+        queries = [
+            f"""
+                SELECT
+                    {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
+                FROM {table_name} {table_name_shortcut}
+                {filters}
+                ORDER BY {idx_col} DESC
+                LIMIT {rows_per_partition}
+                OFFSET {rows_per_partition * i}
+            """
+            for i in range(partition_num)
+        ]
+
+        return queries
+
+    def _filters_to_string(
+        self,
+        table_name_shortcut: str = 'hc',
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        hpf_list: Optional[Iterable[int]] = None,
+        roi_list: Optional[Iterable[int]] = None,
+        tile_list: Optional[Iterable[str]] = None,
+    ) -> str:
+
+        if self.server_folder_path is None or str(self.server_folder_path).startswith('/clusterfs'):
+            filters = f"WHERE {table_name_shortcut}.exists IS TRUE"
+        elif str(self.server_folder_path).startswith('/groups'):
+            filters = f"WHERE {table_name_shortcut}.exists_prfs IS TRUE"
+        elif str(self.server_folder_path).startswith('/aws'):
+            filters = f"WHERE {table_name_shortcut}.exists_aws IS TRUE"
+        elif str(self.server_folder_path).startswith('/lustre'):
+            filters = f"WHERE {table_name_shortcut}.exists_oak IS TRUE"
+        else:
+            raise ValueError(f"Unknown server_folder_path: {self.server_folder_path}")
+
+        if roi_list is not None or tile_list is not None:
+            filters += self._choose_filter(
+                rois=roi_list,
+                tiles=tile_list,
+                table_name=table_name_shortcut
+            ).replace('WHERE', ' AND ')
+        elif max_rois is not None or max_tiles is not None:
+            filters += self._limit_filter(
+                max_rois=max_rois,
+                max_tiles=max_tiles,
+                table_name=table_name_shortcut
+            ).replace('WHERE', ' AND ')
+
+        if hpf_list is not None:
+            filters += self._age_filter(
+                hpfs=hpf_list, table_name=table_name_shortcut
+            ).replace('WHERE', ' AND ')
+
+        if self.verbose:
+            print(f"Using filters: {filters}")
+        return filters
+    
+    def _age_filter(
+            self,
+            hpfs: Iterable[int],
+            table_name: str = 'ptv'
+    ) -> str:
+        assert hpfs is not None, "hpfs must be provided"
+
+        hpfs = tuple(hpfs) if len(hpfs) > 1 else f"({hpfs[0]})"
+        return f"WHERE {table_name}.hpf IN {hpfs}"
+    
+    def _limit_filter(
+        self,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        table_name: str = 'ptv',
+        idx_col: str = 'id'
+    ) -> str:
+        assert max_rois is not None or max_tiles is not None, "At least one of max_rois or max_tiles must be provided"
+
+        if max_rois is not None:
+            unique_rois = self.get_random_rois(max_rois)
+            if isinstance(unique_rois, Iterable):
+                filters = f"WHERE {table_name}.{idx_col} IN {tuple(unique_rois)}"
+            else:
+                filters = f"WHERE {table_name}.{idx_col} IN ('{unique_rois}')"
+        else:
+            if max_tiles > 1:
+                unique_rois, unique_tiles = zip(*self.get_random_tiles(max_tiles))
+            else:
+                unique_rois, unique_tiles = self.get_random_tiles(max_tiles)
+
+            if isinstance(unique_tiles, Iterable) and isinstance(unique_rois, Iterable):
+                filters = f"WHERE {table_name}.{idx_col} IN {tuple(unique_rois)} " \
+                          f"AND {table_name}.tile_name IN {tuple(unique_tiles)}"
+            else:
+                filters = f"WHERE {table_name}.{idx_col} IN ('{unique_rois}') " \
+                          f"AND {table_name}.tile_name IN ('{unique_tiles}')"
+        return filters
+    
+    def _choose_filter(
+        self,
+        rois: Optional[Iterable[int | str]] = None,
+        tiles: Optional[Iterable[str]] = None,
+        table_name: str = 'ptv',
+        idx_col: str = 'id'
+    ) -> str:
+        
+        def _sql_in_list(values):
+            out = []
+            for v in values:
+                if isinstance(v, (int, float)) or (isinstance(v, str) and v.isnumeric()):
+                    out.append(str(v))
+                else:
+                    out.append("'" + str(v).replace("'", "''") + "'")
+            return "(" + ",".join(out) + ")"
+
+        assert rois is not None or tiles is not None, "At least one of rois or tiles must be provided"
+        
+        clauses = []
+        if rois is not None:
+            rois_list = list(rois)
+            clauses.append(f"{table_name}.{idx_col} IN {_sql_in_list(rois_list)}")
+
+        if tiles is not None:
+            tiles_list = list(tiles)
+            clauses.append(f"{table_name}.tile_name IN {_sql_in_list(tiles_list)}")
+
+        return "WHERE " + " AND ".join(clauses)
+
+    def count_rows(self, table_name: str) -> int:
+        return self.execute_query(f"SELECT COUNT(*) FROM {table_name};").iloc[0, 0]
+
+    def _predict(self, batch_tensor: torch.Tensor, data_sample: dict) -> torch.Tensor:
+        # NOTE: see cell_observatory_finetune for available decoders / heads
+        if self.decoder_head_type == "mask2former":
+            if self.task != "semantic_segmentation":
+                raise NotImplementedError(
+                    f"Task {self.task} not implemented for Mask2Former sliding window inference."
+                )
+            crop_out = self.model.predict(batch_tensor, rescale_to=batch_tensor.shape[2:])
+            mask_pred = crop_out["pred_masks"].sigmoid()
+            mask_cls = torch.softmax(crop_out["pred_logits"], dim=-1)[..., :-1]
+            pred_hypercubes = torch.einsum("bqc,bq...->bc...", mask_cls, mask_pred)
+
+        elif self.decoder_head_type in {"vit", "linear"}:
+            if self.task not in {"upsample_space", "upsample_time", "upsample_space_time", "channel_split"}:
+                raise NotImplementedError(
+                    f"Task {self.task} not implemented for {self.decoder_head_type} sliding window inference."
+                )
+            pred_hypercubes = self.model.predict(data_sample)
+
+        elif self.decoder_head_type == "maskdino":
+            raise NotImplementedError("MaskDINO decoder head not yet supported for sliding window inference.")
+
+        elif self.decoder_head_type == "dpt":
+            raise NotImplementedError("Dense Prediction Head not yet supported for sliding window inference.")
+
+        else:
+            raise NotImplementedError(
+                f"Decoder head type {self.decoder_head_type} not supported for sliding window inference."
+            )
+
+        return pred_hypercubes
+
+    def _build_state(self):
+        self._tile_state = {}
+        for idx, row in self.prediction_df.iterrows():
+            key = (int(row["id"]), str(row["tile_name"]))
+            
+            vol_T = int(row["time_size"])
+            vol_Z = int(row["z_end"] - row["z_start"])
+            vol_Y = int(row["y_end"] - row["y_start"])
+            vol_X = int(row["x_end"] - row["x_start"])
+
+            out_spatial_shape = (vol_T, vol_Z, vol_Y, vol_X)
+
+            tile_rows = self.database[
+                (self.database["prepared_id"].astype(int) == int(row["id"])) &
+                (self.database["tile_name"].astype(str) == str(row["tile_name"]))
+            ]
+            n_cubes = int(tile_rows.shape[0])
+            cube_sz = int(tile_rows["cube_size"].iloc[0])
+            if self.input_format == "TZYXC" and "time_size" in tile_rows.columns:
+                t_per_cube = int(tile_rows["time_size"].iloc[0])
+            else:
+                t_per_cube = 1
+
+            # FIXME: we should not assume uniform cube sizes anywhere in the codebase
+            voxels_per_cube = t_per_cube * cube_sz * cube_sz * cube_sz
+            tile_volume = n_cubes * voxels_per_cube
+
+            self._tile_state[key] = {
+                "idx": idx,
+                "row": row,
+                "shape": (*out_spatial_shape, self.num_output_channels),
+                "pred": None,
+                "cnt":  None,
+                "remaining": tile_volume,
+                "done": False,
+            }
+        os.makedirs(self.inference_save_dir, exist_ok=True)
+
+    def _get_or_init_buffers(self, key):
+        st = self._tile_state[key]
+        if st["pred"] is None:
+            shp = st["shape"]
+            st["pred"] = torch.zeros(shp, dtype=self.dtype)
+            # NOTE: assumes last dim is channel dim
+            st["cnt"]  = torch.zeros((*shp[:-1], 1), dtype=torch.uint8)
+        return st["pred"], st["cnt"]
+    
+    def _to_ome_tiff_array(self, preds_tzyxc: torch.Tensor, keep_time: bool) -> tuple[np.ndarray, str]:
+        arr = preds_tzyxc.cpu().numpy()
+
+        if keep_time and arr.shape[0] > 1:
+            # T,Z,Y,X,C  ->  T,C,Z,Y,X
+            arr = np.transpose(arr, (0, 4, 1, 2, 3)).copy(order="C")
+            axes = "TCZYX"
+        else:
+            if arr.ndim == 5 and arr.shape[0] == 1:
+                arr = arr[0]
+            # Z,Y,X,C -> C,Z,Y,X
+            arr = np.transpose(arr, (3, 0, 1, 2)).copy(order="C")
+            axes = "CZYX"
+
+        return arr, axes
+
+    def _finish_if_done(self, key, force: bool = False):
+        st = self._tile_state[key]
+        if st["done"] or st["pred"] is None:
+            return False
+        if st["remaining"] != 0 and not force:
+            return False
+
+        preds = st["pred"] / st["cnt"].clamp_min(1)
+        if self.inference_activation is not None:
+            preds = self.inference_activation(preds)
+
+        if self.timepoint_list is not None:
+            preds = preds[self.timepoint_list, ...]
+
+        keep_time = (preds.shape[0] > 1)
+        np_arr, axes = self._to_ome_tiff_array(preds, keep_time=keep_time)
+
+        sample_name = str(st["row"]["output_folder"]).replace("/", "_") + "_" + str(st["row"]["tile_name"])
+        if sample_name.endswith(".zarr"):
+            sample_name = sample_name.replace(".zarr", "")
+        elif sample_name.endswith(".tiff"):
+            sample_name = sample_name.replace(".tiff", "")
+
+        if self.inference_save_format == "tiff":
+            save_path = Path(self.inference_save_dir) / f"pred_{sample_name}.tiff"
+            save_file(save_path, np_arr, with_fiji=True, axes=axes)
+        elif self.inference_save_format == "zarr":
+            save_path = Path(self.inference_save_dir) / f"pred_{sample_name}.zarr"
+            save_file(save_path, np_arr, chunk_shape=self.inference_zarr_chunk_shape,
+                    shard_cube_shape=self.inference_zarr_shard_shape)
+        else:
+            raise ValueError(f"Unsupported save format: {self.inference_save_format}")
+
+        ray.logger.info(f"Saved prediction {sample_name} to {save_path}")
+        st["done"] = True
+        return True
+
+    def predict(self, data_sample):
+        X = data_sample["data_tensor"]
+        metadata = data_sample["metainfo"]
+
+        with torch.no_grad():
+            pred_hypercubes = self._predict(X, data_sample).cpu()
+        pred_hypercubes = pred_hypercubes.contiguous()
+
+        for b in range(X.shape[0]):
+            roi_id = int(metadata["prepared_id"][b])
+            tile_nm = str(metadata["tile_name"][b])
+            key = (roi_id, tile_nm)
+
+            t0 = int(metadata["time_start"][b]); t1 = t0 + int(metadata["time_size"][b])
+            z0 = int(metadata["z_start"][b]); z1 = z0 + int(metadata["cube_size"][b])
+            y0 = int(metadata["y_start"][b]); y1 = y0 + int(metadata["cube_size"][b])
+            x0 = int(metadata["x_start"][b]); x1 = x0 + int(metadata["cube_size"][b])
+
+            pred_t, cnt_t = self._get_or_init_buffers(key)
+
+            patch = pred_hypercubes[b]
+            if self.input_format == "ZYXC" and patch.ndim == 4:
+                patch = patch.unsqueeze(0)
+
+            # logic to fill in prediction and count number of voxels filled
+            cnt_view = cnt_t[t0:t1, z0:z1, y0:y1, x0:x1, 0]
+            zeros_before = (cnt_view == 0).sum()
+
+            pred_t[t0:t1, z0:z1, y0:y1, x0:x1, :] += patch
+            cnt_view += 1
+
+            zeros_after = (cnt_view == 0).sum()
+            filled_voxels = (zeros_before - zeros_after).item()
+            self._tile_state[key]["remaining"] -= filled_voxels
+
+            volume_status = self._finish_if_done(key)
+            if volume_status and self.verbose:
+                ray.logger.info(f"Finished prediction for ROI {roi_id}, Tile {tile_nm}")
+    
+    def finalize(self):
+        for key in self._tile_state.keys():
+            self._finish_if_done(key, force=True)

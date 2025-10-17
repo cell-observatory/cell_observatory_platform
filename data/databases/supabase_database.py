@@ -29,6 +29,7 @@ class SupabaseDatabase:
             hpf_list: Optional[Iterable[int]] = None,
             roi_list: Optional[Iterable[int]] = None,
             tile_list: Optional[Iterable[str]] = None,
+            timepoint_list: Optional[Iterable[int]] = None,
             dbname: Literal['staging', 'production'] = 'staging',
             dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
             verbose: bool = False,
@@ -55,6 +56,7 @@ class SupabaseDatabase:
             hpf_list: list of specific HPFs (hours-post-fertilization in hours) to filter
             roi_list: list of specific ROIs to filter
             tile_list: list of specific tiles to filter
+            timepoint_list: list of specific timepoints to filter
             dbname: database name ('staging' or 'production')
             dotenv_path: path to .env file with URIs to access Supabase
             verbose: whether to print debug messages
@@ -79,14 +81,19 @@ class SupabaseDatabase:
 
         self.dbname = dbname
         self.dotenv_path = dotenv_path
+        
         self.num_timepoints = num_timepoints
+        
         self.max_rois = max_rois
         self.max_tiles = max_tiles
         self.max_hypercubes = max_hypercubes
         self.hpf_list = hpf_list
         self.roi_list = roi_list
         self.tile_list = tile_list
+        self.timepoint_list = timepoint_list
+        
         self.verbose = verbose
+        
         self.fetch_hypercubes_dataframe = fetch_hypercubes_dataframe
         self.use_cached_hypercubes_dataframe = use_cached_hypercubes_dataframe
         self.protocol = protocol
@@ -108,6 +115,7 @@ class SupabaseDatabase:
                     hpf_list=hpf_list,
                     roi_list=roi_list,
                     tile_list=tile_list,
+                    timepoint_list=timepoint_list,
                     occupancy_threshold=occupancy_threshold
                 )
 
@@ -120,6 +128,7 @@ class SupabaseDatabase:
                     hpf_list=hpf_list,
                     roi_list=roi_list,
                     tile_list=tile_list,
+                    timepoint_list=timepoint_list,
                     occupancy_threshold=occupancy_threshold
                 )
                 self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
@@ -152,23 +161,36 @@ class SupabaseDatabase:
         self,
         rois: Optional[Iterable[int | str]] = None,
         tiles: Optional[Iterable[str]] = None,
-        table_name: str = 'ptv'
+        timepoints: Optional[Iterable[int]] = None,
+        table_name: str = 'ptv',
+        idx_col: str = 'prepared_id'
     ) -> str:
+        
+        def _sql_in_list(values):
+            out = []
+            for v in values:
+                if isinstance(v, (int, float)) or (isinstance(v, str) and v.isnumeric()):
+                    out.append(str(v))
+                else:
+                    out.append("'" + str(v).replace("'", "''") + "'")
+            return "(" + ",".join(out) + ")"
 
         assert rois is not None or tiles is not None, "At least one of rois or tiles must be provided"
-
+        
+        clauses = []
         if rois is not None:
-            rois = tuple(rois) if len(rois) > 1 else f"({rois[0]})"
+            rois_list = list(rois)
+            clauses.append(f"{table_name}.{idx_col} IN {_sql_in_list(rois_list)}")
 
         if tiles is not None:
-            tiles = tuple(tiles) if len(tiles) > 1 else f"({tiles[0]})"
+            tiles_list = list(tiles)
+            clauses.append(f"{table_name}.tile_name IN {_sql_in_list(tiles_list)}")
 
-        if rois is not None and tiles is not None:
-            return f"WHERE {table_name}.prepared_id IN {rois} AND {table_name}.tile_name IN {tiles}"
-        elif rois is not None:
-            return f"WHERE {table_name}.prepared_id IN {rois}"
-        elif tiles is not None:
-            return f"WHERE {table_name}.tile_name IN {tiles}"
+        if timepoints is not None:
+            timepoints_list = list(timepoints)
+            clauses.append(f"{table_name}.time_start IN {_sql_in_list(timepoints_list)}")
+
+        return "WHERE " + " AND ".join(clauses)
 
     def _limit_filter(
         self,
@@ -217,6 +239,7 @@ class SupabaseDatabase:
             hpf_list: Optional[Iterable[int]] = None,
             roi_list: Optional[Iterable[int]] = None,
             tile_list: Optional[Iterable[str]] = None,
+            timepoint_list: Optional[Iterable[int]] = None
     ) -> str:
 
         if self.server_folder_path is None or str(self.server_folder_path).startswith('/clusterfs'):
@@ -230,10 +253,11 @@ class SupabaseDatabase:
         else:
             raise ValueError(f"Unknown server_folder_path: {self.server_folder_path}")
 
-        if roi_list is not None or tile_list is not None:
+        if roi_list is not None or tile_list is not None or timepoint_list is not None:
             filters += self._choose_filter(
                 rois=roi_list,
                 tiles=tile_list,
+                timepoints=timepoint_list,
                 table_name=table_name_shortcut
             ).replace('WHERE', ' AND ')
         elif max_rois is not None or max_tiles is not None:
@@ -263,6 +287,7 @@ class SupabaseDatabase:
         hpf_list: Optional[Iterable[int]] = None,
         roi_list: Optional[Iterable[int]] = None,
         tile_list: Optional[Iterable[str]] = None,
+        timepoint_list: Optional[Iterable[int]] = None,
         occupancy_threshold: Optional[float] = None
     ) -> List[str]:
         column_names = [
@@ -300,6 +325,7 @@ class SupabaseDatabase:
             hpf_list=hpf_list,
             roi_list=roi_list,
             tile_list=tile_list,
+            timepoint_list=timepoint_list,
         )
 
         max_rows = self.count_rows(table_name=table_name)
@@ -495,6 +521,7 @@ class SupabaseDatabase:
         hpf_list: Optional[Iterable[int]] = None,
         roi_list: Optional[Iterable[int]] = None,
         tile_list: Optional[Iterable[str]] = None,
+        timepoint_list: Optional[Iterable[int]] = None,
         hypercubes_dataframe_path: Optional[Path] = None,
         occupancy_threshold: Optional[float] = None
     ) -> pd.DataFrame:
@@ -514,6 +541,7 @@ class SupabaseDatabase:
                 hpf_list=hpf_list,
                 roi_list=roi_list,
                 tile_list=tile_list,
+                timepoint_list=timepoint_list,
                 occupancy_threshold=occupancy_threshold
             )
         else:
@@ -535,6 +563,7 @@ class SupabaseDatabase:
                 hpf_list=hpf_list,
                 roi_list=roi_list,
                 tile_list=tile_list,
+                timepoint_list=timepoint_list,
                 occupancy_threshold=occupancy_threshold
             )
 

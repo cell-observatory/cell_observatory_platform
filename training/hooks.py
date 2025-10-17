@@ -5,14 +5,15 @@ https://github.com/open-mmlab/mmengine/tree/main/mmengine/hooks
 """
 
 
-import datetime
-import logging
-import math
-import operator
 import os
 import sys
+import math
 import time
+import logging
+import datetime
+import operator
 from collections import Counter
+
 from enum import Enum
 from pathlib import Path
 from typing import Literal, Optional, Sequence, Union
@@ -436,6 +437,11 @@ class IterationTimer(HookBase):
         if iter_done > self._warmup_iter:
             sec = self._test_timer.seconds()
             self.trainer.event_recorder.put_scalars(test_step_time=sec)
+            log_data_timings(self.trainer, 
+                         self.trainer._iter+1, 
+                         data_sample, 
+                         loss_dict, 
+                         type="test")
         else:
             # reset _total_timer and _start_time
             # to avoid counting the warmup iterations
@@ -464,7 +470,8 @@ class PeriodicWriter(HookBase):
         self._writers = writers
         
         for w in self._writers.writers:
-            assert isinstance(w, EventWriter), "All writers must be EventWriter instances."
+            assert isinstance(w, EventWriter), "All writers must be \
+                EventWriter instances. But got: {}".format(type(w))
 
     def after_epoch(self):
         self._writers.write()
@@ -962,6 +969,9 @@ class FreeDeviceBufferHook(HookBase):
     Important to use to prevent deadlocks.
     """
     def before_train(self):
+        self.device_buffer = self.trainer.device_buffer
+
+    def before_test(self):
         self.device_buffer = self.trainer.device_buffer
 
     def after_step(self, **kwargs):

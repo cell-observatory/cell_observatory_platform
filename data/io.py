@@ -12,6 +12,7 @@ import torch
 import numpy as np
 import tensorstore as ts
 
+from tifffile import imwrite
 from tifffile import TiffFile
 from skimage.io import imread, imsave
 
@@ -27,7 +28,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def read_npy(image_path: str, dtype: NUMPY_DTYPES | str = NUMPY_DTYPES.fp16) -> np.ndarray:
+def read_npy(image_path: str, dtype: NUMPY_DTYPES | str = None) -> np.ndarray:
     if isinstance(image_path, torch.Tensor):
         path = Path(str(image_path.numpy(), "utf-8"))
     else:
@@ -45,19 +46,23 @@ def read_npy(image_path: str, dtype: NUMPY_DTYPES | str = NUMPY_DTYPES.fp16) -> 
     if np.isnan(np.sum(img)):
         logger.error("NaN!")
 
-    dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-    return img.astype(dtype)
+    if dtype is not None:
+        dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+        img = img.astype(dtype)
+    return img
 
 
-def read_tiff(image_path: str, dtype: NUMPY_DTYPES | str = NUMPY_DTYPES.fp16) -> np.ndarray:
+def read_tiff(image_path: str, dtype: NUMPY_DTYPES | str = None) -> np.ndarray:
     """ Read a TIFF file and return the data as a NumPy array """
     img = imread(image_path)
 
     if np.isnan(np.sum(img)):
         logger.error("NaN!")
 
-    dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-    return img.astype(dtype)
+    if dtype is not None:
+        dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+        img = img.astype(dtype)
+    return img
 
 
 def read_zarr(
@@ -83,7 +88,7 @@ def read_zarr(
 
 def read_file(
     image_path: str | Path,
-    dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | str = NUMPY_DTYPES.fp16,
+    dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | str = None,
 ) -> np.ndarray:
     """ Infer the file format of the image based on its extension """
     image_path = str(image_path)
@@ -104,13 +109,12 @@ def read_file(
 def save_file(image_path: str, data: np.ndarray, **kwargs) -> None:
     """ Save a NumPy array to a file based on its extension """
     Path(image_path).parent.mkdir(parents=True, exist_ok=True)
+    image_path = str(image_path)
 
     if image_path.endswith(".zarr"):
         save_zarr(image_path, data, **kwargs)
-
     elif image_path.endswith(".tiff") or image_path.endswith(".tif"):
-        save_tiff(image_path, data)
-
+        save_tiff(image_path, data, **kwargs)
     else:
         raise ValueError(f"Unsupported file format for {image_path}")
 
@@ -195,8 +199,20 @@ def save_zarr(
     ds[:] = data
 
 
-def save_tiff(image_path: str, data: np.ndarray) -> None:
-    imsave(image_path, data)
+def save_tiff(image_path: str, data: np.ndarray, axes: str, with_fiji: bool = False) -> None:
+    if with_fiji:
+        data = np.ascontiguousarray(data)
+        image_path = str(image_path).replace('.tif', '.ome.tif')
+        imwrite(
+            image_path,
+            data,
+            ome=True,
+            metadata={"axes": axes},
+            bigtiff=True,
+            photometric="minisblack"
+        )
+    else:
+        imsave(image_path, data)
 
 
 def get_shape_from_file_tiff(image_path: str) -> tuple:
@@ -264,6 +280,7 @@ def apply_hypercubes_dataframe_selections(
     hpf_list: Optional[Iterable[int]] = None,
     roi_list: Optional[Iterable[int]] = None,
     tile_list: Optional[Iterable[str]] = None,
+    timepoint_list: Optional[Iterable[int]] = None,
 ):
     df = hypercubes_dataframe
 
@@ -272,6 +289,7 @@ def apply_hypercubes_dataframe_selections(
         f"hpf_list={hpf_list}\n"
         f"roi_list={roi_list}\n"
         f"tile_list={tile_list}\n"
+        f"timepoint_list={timepoint_list}\n"
         f"max_rois={max_rois}\n"
         f"max_tiles={max_tiles}\n"
         f"max_hypercubes={max_hypercubes}"
@@ -298,6 +316,11 @@ def apply_hypercubes_dataframe_selections(
             conds.append(df['tile_name'].isin(tiles))
         elif tiles is not None:
             logger.warning("Column 'tile_name' not found; skipping tile filter.")
+
+        if timepoint_list is not None and 'time_start' in df.columns:
+            conds.append(df['time_start'].isin(timepoint_list))
+        elif timepoint_list is not None:
+            logger.warning("Column 'time_start' not found; skipping timepoint filter.")
 
         if conds:
             cond = conds[0]
@@ -387,6 +410,7 @@ def load_hypercubes_dataframe(
     hpf_list: Optional[Iterable[int]] = None,
     roi_list: Optional[Iterable[int]] = None,
     tile_list: Optional[Iterable[str]] = None,
+    timepoint_list: Optional[Iterable[int]] = None,
     server_folder_path: Optional[Path | str] = None,
     occupancy_threshold: Optional[float] = None
 ) -> Tuple[pd.DataFrame, Dict]:
@@ -412,6 +436,7 @@ def load_hypercubes_dataframe(
         hpf_list=hpf_list,
         roi_list=roi_list,
         tile_list=tile_list,
+        timepoint_list=timepoint_list,
     )
 
     logger.info(f"Loaded hypercubes dataframe with {hypercubes.shape}")

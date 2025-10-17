@@ -201,7 +201,10 @@ class CheckpointManager:
         tag_dir = Path(ckpt_dir)
         # see https://github.com/deepspeedai/DeepSpeed/deepspeed/checkpoint/constants.py
         # for naming used in DeepSpeed checkpoint nomenclature
-        f = next(tag_dir.glob("*_model_states.pt"))
+        try:
+            f = next(tag_dir.glob("*_model_states.pt"))
+        except StopIteration:
+            raise ValueError(f"No DeepSpeed checkpoint found in {ckpt_dir}")
         z = torch.load(f, map_location="cpu")
         stage = z["ds_config"]["zero_optimization"]["stage"]
         del z  # free memory

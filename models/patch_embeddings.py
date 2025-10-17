@@ -1,5 +1,6 @@
 import sys
 import logging
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -99,6 +100,11 @@ class PatchEmbedding(nn.Module):
         self.embed_dim = embed_dim
         self.channels = channels
 
+        if self.input_fmt not in ["TZYXC", "ZYXC"] and self.axial_patch_size is not None:
+            raise ValueError("axial_patch_size must not be specified for inputs without Z dimension.")
+        elif self.input_fmt not in ["TYXC", "TZYXC"] and self.temporal_patch_size is not None:
+            raise ValueError("temporal_patch_size must not be specified for inputs without time dimension.")
+
         self.num_patches, self.token_shape = calc_num_patches(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
@@ -197,6 +203,64 @@ class PatchEmbedding(nn.Module):
         #       contiguous returns the tensor
         patches = patches.contiguous().view(b, self.num_patches, self.pixels_per_patch)
         return patches
+    
+    @torch.no_grad()
+    def unpatchify(self, patches: torch.Tensor, out_channels: Optional[int]) -> torch.Tensor:
+        b = patches.shape[0]
+
+        t, z, y, x, c = self.token_shape
+        if out_channels is not None:
+            c = out_channels
+        Ti = self.temporal_patch_size if self.temporal_patch_size is not None else 1
+        Zi = self.axial_patch_size if self.axial_patch_size is not None else 1
+        Li = self.lateral_patch_size
+
+        if self.input_fmt == "TZYXC":
+            # Forward patchify did:
+            # reshape -> (b, t, Ti, z, Zi, y, Li, x, Li, c)
+            # einsum "btizjykxvc->btzyxijkvc"
+            # view -> (b, num_patches, pixels_per_patch)
+            tensor = patches.view(b, t, z, y, x, Ti, Zi, Li, Li, c)
+            tensor = torch.einsum("btzyxijkvc->btizjykxvc", tensor)
+            tensor = tensor.reshape(b, t * Ti, z * Zi, y * Li, x * Li, c)
+            return tensor.contiguous()
+
+        elif self.input_fmt == "ZYXC":
+            # Forward patchify did:
+            # reshape -> (b, z, Zi, y, Li, x, Li, c)
+            # einsum "bzjykxvc->bzyxjkvc" (j=Zi, k=Li, v=Li)
+            tensor = patches.view(b, z, y, x, Zi, Li, Li, c)
+            tensor = torch.einsum("bzyxjkvc->bzjykxvc", tensor)
+            tensor = tensor.reshape(b, z * Zi, y * Li, x * Li, c)
+            return tensor.contiguous()
+
+        elif self.input_fmt == "TYXC":
+            # Forward patchify did:
+            # reshape -> (b, t, Ti, y, Li, x, Li, c)
+            # einsum "btiykxvc->btyxikvc"
+            tensor = patches.view(b, t, y, x, Ti, Li, Li, c)
+            tensor = torch.einsum("btyxikvc->btiykxvc", tensor)
+            tensor = tensor.reshape(b, t * Ti, y * Li, x * Li, c)
+            return tensor.contiguous()
+
+        elif self.input_fmt == "YXC":
+            # Forward patchify did:
+            # reshape -> (b, y, Li, x, Li, c)
+            # einsum "bykxvc->byxkvc"
+            tensor = patches.view(b, y, x, Li, Li, c)
+            tensor = torch.einsum("byxkvc->bykxvc", tensor)
+            tensor = tensor.reshape(b, y * Li, x * Li, c)
+            return tensor.contiguous()
+
+        elif self.input_fmt == "XC":
+            # Forward patchify did:
+            # reshape -> (b, x, Li, c)
+            tensor = patches.view(b, x, Li, c)
+            tensor = tensor.reshape(b, x * Li, c)
+            return tensor.contiguous()
+
+        else:
+            raise NotImplementedError(f"input_fmt not supported: {self.input_fmt}")
 
     def forward(self, inputs, return_patches=False):
         patches = self.patchify(inputs)

@@ -1,6 +1,6 @@
 import logging
 import sys
-from typing import Literal, Union
+from typing import Literal, Union, List
 
 import torch
 import torch.nn as nn
@@ -122,6 +122,7 @@ class MaskedEncoder(nn.Module):
         rope_mixed: bool = True,
         rope_theta: float = 10.0,
         mlp_wide_silu: bool = False,
+        out_layers: List[int] = None,
         **kwargs,
     ):
         super().__init__()
@@ -143,7 +144,7 @@ class MaskedEncoder(nn.Module):
         
         axis_to_value = dict(zip(input_fmt, input_shape[1:]))
         self.in_chans = axis_to_value['C']
-        self.num_frames = axis_to_value['T']
+        self.num_frames = axis_to_value.get("T", None)
 
         self.axial_patch_size = axial_patch_size
         self.lateral_patch_size = lateral_patch_size
@@ -217,8 +218,11 @@ class MaskedEncoder(nn.Module):
                         self.axial_patch_size,
                         self.lateral_patch_size,
                         self.lateral_patch_size),
-            mlp_wide_silu=mlp_wide_silu
+            mlp_wide_silu=mlp_wide_silu,
+            out_layers=out_layers
         )
+
+        self.out_layers = out_layers
 
     @torch.jit.ignore
     def get_num_layers(self):
@@ -252,5 +256,13 @@ class MaskedEncoder(nn.Module):
             x = apply_masks(x, masks, concat=concat_masks)
 
         x = self.encoder(x, masks=masks)
+        
+        if self.out_layers is not None:
+            outs = []
+            for x_i in x:
+                x_i = self.norm(x_i)
+                outs.append(x_i)
+            return outs, patches
+
         x = self.norm(x)
         return x, patches

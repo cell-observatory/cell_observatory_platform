@@ -352,13 +352,13 @@ def get_dataloader(config: DictConfig):
                                     node_id=node_id(), 
                                     debug=config.datasets.debug)
 
-        train_dataloader, val_dataloader = get_dataloader_ray(
+        train_dataloader, val_dataloader, database_df = get_dataloader_ray(
             cfg=config,
             batch_size=config.clusters.batch_size_per_gpu,
             drop_last=config.datasets.drop_last_policy,
             collate_fn=collate_fn
         )
-        return train_dataloader, val_dataloader, buffer_actor, collate_fn.device_buffer
+        return train_dataloader, val_dataloader, buffer_actor, collate_fn.device_buffer, database_df
     
     else:
         raise NotImplementedError(

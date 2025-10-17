@@ -185,7 +185,7 @@ class MaskedAutoEncoder(nn.Module):
         
         axis_to_value = dict(zip(input_fmt, input_shape[1:]))
         self.in_chans = axis_to_value['C']
-        self.num_frames = axis_to_value['T']
+        self.num_frames = axis_to_value.get("T", None)
 
         self.axial_patch_size = axial_patch_size
         self.lateral_patch_size = lateral_patch_size
@@ -282,7 +282,7 @@ class MaskedAutoEncoder(nn.Module):
     @torch.jit.ignore
     def get_num_patches(self):
         if self.abs_sincos_enc:
-            return self.pos_embedding.num_patches
+            return self.masked_encoder.pos_embedding.num_patches
         else:
             num_patches, _ = calc_num_patches(
                 input_fmt=self.input_fmt,
