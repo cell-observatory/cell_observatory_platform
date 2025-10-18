@@ -13,7 +13,11 @@ import torch
 import connectorx as cx
 from dotenv import load_dotenv
 
+from torch import distributed as dist
+
 from cell_observatory_finetune.cell_observatory_platform.data.io import save_file
+from cell_observatory_finetune.cell_observatory_platform.utils.context import get_world_size, process_rank, barrier
+from cell_observatory_finetune.cell_observatory_platform.inference.utils import stable_key_owner, tile_hash
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -32,7 +36,7 @@ class InferencerWorker:
                  decoder_head_type: str,
                  roi_tile_list: List[Tuple[int, str]],
                  save_dir: Path | str,
-                 dtype: torch.dtype = torch.float32,
+                 dtype: torch.dtype = torch.float16,
                  protocol: Literal["binary", "csv", "cursor"] = "binary",
                  dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
                  dbname: Literal['staging', 'production'] = 'staging',
@@ -361,52 +365,213 @@ class InferencerWorker:
         return pred_hypercubes
 
     def _build_state(self):
-        self._tile_state = {}
-        for idx, row in self.prediction_df.iterrows():
-            key = (int(row["id"]), str(row["tile_name"]))
-            
+        self._tile_state, self._row_by_key, self._name_by_key = {}, {}, {}
+        ws, rank = get_world_size(), process_rank()
+        self._key_by_rank = {}
+
+        for _, row in self.prediction_df.iterrows():
+            roi = int(row["id"])
+            name = str(row["tile_name"])
+            owner = stable_key_owner(roi, name, ws)
+            self._key_by_rank.setdefault(owner, []).append((roi, name))
+
+        for (roi, name) in self._key_by_rank.get(rank, []):
+            row = self.prediction_df[(self.prediction_df["id"]==roi) &
+                                    (self.prediction_df["tile_name"]==name)].iloc[0]
+
             vol_T = int(row["time_size"])
             vol_Z = int(row["z_end"] - row["z_start"])
             vol_Y = int(row["y_end"] - row["y_start"])
             vol_X = int(row["x_end"] - row["x_start"])
-
             out_spatial_shape = (vol_T, vol_Z, vol_Y, vol_X)
 
             tile_rows = self.database[
-                (self.database["prepared_id"].astype(int) == int(row["id"])) &
-                (self.database["tile_name"].astype(str) == str(row["tile_name"]))
+                (self.database["prepared_id"].astype(int) == roi) &
+                (self.database["tile_name"].astype(str) == name)
             ]
             n_cubes = int(tile_rows.shape[0])
             cube_sz = int(tile_rows["cube_size"].iloc[0])
-            if self.input_format == "TZYXC" and "time_size" in tile_rows.columns:
-                t_per_cube = int(tile_rows["time_size"].iloc[0])
-            else:
-                t_per_cube = 1
+            t_per_cube = int(tile_rows["time_size"].iloc[0]) \
+                if (self.input_format == "TZYXC" and "time_size" in tile_rows.columns) else 1
 
-            # FIXME: we should not assume uniform cube sizes anywhere in the codebase
             voxels_per_cube = t_per_cube * cube_sz * cube_sz * cube_sz
             tile_volume = n_cubes * voxels_per_cube
 
+            key = (roi, tile_hash(name))
             self._tile_state[key] = {
-                "idx": idx,
                 "row": row,
                 "shape": (*out_spatial_shape, self.num_output_channels),
-                "pred": None,
-                "cnt":  None,
+                "pred": None, "cnt": None,
                 "remaining": tile_volume,
                 "done": False,
             }
+            self._row_by_key[key] = row
+            self._name_by_key[key] = name
+
+            ray.logger.info(f"Rank {rank} will process tile {name} (ROI {roi})")
+
         os.makedirs(self.inference_save_dir, exist_ok=True)
 
-    def _get_or_init_buffers(self, key):
-        st = self._tile_state[key]
-        if st["pred"] is None:
-            shp = st["shape"]
-            st["pred"] = torch.zeros(shp, dtype=self.dtype)
-            # NOTE: assumes last dim is channel dim
-            st["cnt"]  = torch.zeros((*shp[:-1], 1), dtype=torch.uint8)
-        return st["pred"], st["cnt"]
+    def _build_pred_buckets(self, pred_hypercubes: torch.Tensor, meta: dict):
+        ws = get_world_size()
+        pred_buckets = {r: [] for r in range(ws)}
+        for b in range(pred_hypercubes.size(0)):
+            roi = int(meta["prepared_id"][b])
+            tile_nm = str(meta["tile_name"][b])
+            owner_rank = stable_key_owner(roi, tile_nm, ws)
+
+            t0 = int(meta["time_start"][b]); T = int(meta["time_size"][b]); t1 = t0 + T
+            z0 = int(meta["z_start"][b]); S = int(meta["cube_size"][b]); z1 = z0 + S
+            y0 = int(meta["y_start"][b]); y1 = y0 + S
+            x0 = int(meta["x_start"][b]); x1 = x0 + S
+
+            patch = pred_hypercubes[b]
+            if self.input_format == "ZYXC" and patch.ndim == 4:
+                patch = patch.unsqueeze(0)
+            pred_buckets[owner_rank].append((
+                torch.tensor([roi, tile_hash(tile_nm)], device=patch.device, dtype=torch.long),
+                torch.tensor([t0,t1,z0,z1,y0,y1,x0,x1], device=patch.device, dtype=torch.int32),
+                patch
+            ))
+        return pred_buckets
     
+    def _pack_for_alltoall(
+        self,
+        chunks, # List[(dst_rank, tensor)]
+        world_size: int,
+        device: torch.device,
+        tail_shape: tuple,
+        dtype: torch.dtype
+    ):
+        outs, splits = [], []
+        for dst in range(world_size):
+            found = next((x for x in chunks if x[0] == dst), None)
+            if found is None:
+                outs.append(torch.empty((0,) + tail_shape, device=device, dtype=dtype))
+                splits.append(0)
+            else:
+                outs.append(found[1])
+                splits.append(found[1].size(0))
+        send = torch.cat(outs, dim=0) if outs else torch.empty((0,) + tail_shape, device=device, dtype=dtype)
+        return send, splits
+
+    def _alltoall(self, buckets, metadata: dict):
+        ws, rk = get_world_size(), process_rank()
+        device = torch.device('cuda', torch.cuda.current_device())
+
+        send_counts = torch.zeros(ws, dtype=torch.int32, device=device)
+        keys_bucket, coords_bucket, pred_hypercubes_bucket = [], [], []
+
+        for dst in range(ws):
+            # bucket: {rank: [(key, coord, patch), ...], ...}
+            bucket = buckets[dst]
+            if not bucket:
+                continue
+            # keys: [N,2]
+            pred_keys = torch.stack([t[0] for t in bucket], dim=0)
+            # coords: [N,8]
+            pred_coords = torch.stack([t[1] for t in bucket], dim=0)
+            # patches: [N,T,S,S,S,C]
+            pred_hypercube = torch.stack([t[2] for t in bucket], dim=0)
+            keys_bucket.append((dst, pred_keys))
+            coords_bucket.append((dst, pred_coords))
+            pred_hypercubes_bucket.append((dst, pred_hypercube))
+            send_counts[dst] = pred_keys.size(0)
+
+        keys_send, keys_splits = self._pack_for_alltoall(keys_bucket, 
+                                                         world_size=ws,
+                                                         device=device, 
+                                                         tail_shape=(2,), 
+                                                         dtype=torch.long)
+        coords_send, coords_splits = self._pack_for_alltoall(coords_bucket, 
+                                                             world_size=ws,
+                                                             device=device, 
+                                                             tail_shape=(8,), 
+                                                             dtype=torch.int32)
+
+        # NOTE: assumes uniform hypercube shape with specific format
+        if pred_hypercubes_bucket:
+            tail = pred_hypercubes_bucket[0][1].shape[1:]  # (T,S,S,S,C)
+        else:
+            T = int(metadata["time_size"][0]) if "time_size" in metadata else 1
+            S = int(metadata["cube_size"][0])
+            C = self.num_output_channels
+            tail = (T, S, S, S, C)
+        pred_hypercubes_send, pred_hypercubes_splits = self._pack_for_alltoall(pred_hypercubes_bucket, 
+                                                               world_size=ws,
+                                                               device=device, 
+                                                               tail_shape=tail,
+                                                               dtype=self.dtype)
+
+        send_counts_cuda = send_counts.to(device)
+        recv_counts_cuda = torch.empty_like(send_counts_cuda)
+        dist.all_to_all_single(output=recv_counts_cuda, input=send_counts_cuda)
+        recv_counts = recv_counts_cuda.cpu().tolist()
+        total_recv = sum(recv_counts)
+
+        if keys_send is None:
+            keys_recv = torch.empty((0,2), device=device, dtype=torch.long)
+            coords_recv = torch.empty((0,8), device=device, dtype=torch.int32)
+            pred_hypercubes_recv = torch.empty((0,)+tail, 
+                                               device=device, 
+                                               dtype=pred_hypercubes_bucket[0][1].dtype) if tail else None
+        else:
+            keys_recv = torch.empty((total_recv, 2), device=device, dtype=keys_send.dtype)
+            coords_recv = torch.empty((total_recv, 8), device=device, dtype=coords_send.dtype)
+            pred_hypercubes_recv = torch.empty((total_recv,)+tail, device=device, dtype=pred_hypercubes_send.dtype)
+
+            dist.all_to_all_single(
+                output=keys_recv, input=keys_send,
+                output_split_sizes=recv_counts, input_split_sizes=keys_splits
+            )
+            dist.all_to_all_single(
+                output=coords_recv, input=coords_send,
+                output_split_sizes=recv_counts, input_split_sizes=coords_splits
+            )
+            dist.all_to_all_single(
+                output=pred_hypercubes_recv, input=pred_hypercubes_send,
+                output_split_sizes=recv_counts, input_split_sizes=pred_hypercubes_splits
+            )
+
+        return keys_recv, coords_recv, pred_hypercubes_recv
+    
+    def _apply_recv(self, keys, coords, pred_hypercubes):
+        N = keys.size(0)
+        if N == 0:
+            return set()
+
+        done_keys = set()
+        pred_hypercubes, keys, coords = pred_hypercubes.to("cpu"), keys.to("cpu"), coords.to("cpu")
+        for i in range(N):
+            roi_id = int(keys[i,0].item())
+            tile_h = int(keys[i,1].item())
+            key = (roi_id, tile_h)
+
+            t0,t1,z0,z1,y0,y1,x0,x1 = coords[i].tolist()
+            pred_hypercube = pred_hypercubes[i]
+
+            pred_t, cnt_t = self._get_or_init_buffers(key)
+
+            pred_view = pred_t[t0:t1, z0:z1, y0:y1, x0:x1, :]
+            cnt_view = cnt_t[t0:t1, z0:z1, y0:y1, x0:x1, 0]
+
+            zeros_before = (cnt_view == 0).sum()
+
+            pred_view.add_(pred_hypercube)
+            cnt_view.add_(1)
+
+            zeros_after = (cnt_view == 0).sum()
+            filled = int((zeros_before - zeros_after).item())
+            self._tile_state[key]["remaining"] -= filled
+
+            if self._tile_state[key]["remaining"] <= 0:
+                # TODO: this should most likely happen on a separate Actor
+                #       to avoid blocking the main inference loop for saving files
+                if self._finish_if_done(key):
+                    done_keys.add(key)
+
+        return done_keys
+
     def _to_ome_tiff_array(self, preds_tzyxc: torch.Tensor, keep_time: bool) -> tuple[np.ndarray, str]:
         arr = preds_tzyxc.cpu().numpy()
 
@@ -420,6 +585,10 @@ class InferencerWorker:
             # Z,Y,X,C -> C,Z,Y,X
             arr = np.transpose(arr, (3, 0, 1, 2)).copy(order="C")
             axes = "CZYX"
+
+        # OME does not support data type 'float16'
+        if self.dtype == torch.float16:
+            arr = arr.astype(np.float32)
 
         return arr, axes
 
@@ -440,7 +609,11 @@ class InferencerWorker:
         keep_time = (preds.shape[0] > 1)
         np_arr, axes = self._to_ome_tiff_array(preds, keep_time=keep_time)
 
-        sample_name = str(st["row"]["output_folder"]).replace("/", "_") + "_" + str(st["row"]["tile_name"])
+        row = self._row_by_key[key]
+        name = self._name_by_key[key]
+        sample_name = str(row["output_folder"]).replace("/", "_") + "_" + name
+        sample_name = sample_name.replace(".zarr","").replace(".tiff","")
+
         if sample_name.endswith(".zarr"):
             sample_name = sample_name.replace(".zarr", "")
         elif sample_name.endswith(".tiff"):
@@ -460,45 +633,26 @@ class InferencerWorker:
         st["done"] = True
         return True
 
+    def _get_or_init_buffers(self, key):
+        st = self._tile_state[key]
+        if st["pred"] is None:
+            st["pred"] = torch.zeros(st["shape"], dtype=self.dtype, device='cpu')
+            st["cnt"] = torch.zeros((*st["shape"][:-1], 1), dtype=torch.int32, device='cpu')
+        return st["pred"], st["cnt"]
+    
     def predict(self, data_sample):
         X = data_sample["data_tensor"]
         metadata = data_sample["metainfo"]
 
-        with torch.no_grad():
-            pred_hypercubes = self._predict(X, data_sample).cpu()
-        pred_hypercubes = pred_hypercubes.contiguous()
+        # NOTE: this function is called within inference_context manager
+        #       see training/loops.py for details
+        pred_hypercubes = self._predict(X, data_sample)
 
-        for b in range(X.shape[0]):
-            roi_id = int(metadata["prepared_id"][b])
-            tile_nm = str(metadata["tile_name"][b])
-            key = (roi_id, tile_nm)
+        buckets = self._build_pred_buckets(pred_hypercubes, metadata)
+        keys_recv, coords_recv, pred_hypercubes_recv = self._alltoall(buckets, metadata)
+        done_keys = self._apply_recv(keys_recv, coords_recv, pred_hypercubes_recv)
 
-            t0 = int(metadata["time_start"][b]); t1 = t0 + int(metadata["time_size"][b])
-            z0 = int(metadata["z_start"][b]); z1 = z0 + int(metadata["cube_size"][b])
-            y0 = int(metadata["y_start"][b]); y1 = y0 + int(metadata["cube_size"][b])
-            x0 = int(metadata["x_start"][b]); x1 = x0 + int(metadata["cube_size"][b])
-
-            pred_t, cnt_t = self._get_or_init_buffers(key)
-
-            patch = pred_hypercubes[b]
-            if self.input_format == "ZYXC" and patch.ndim == 4:
-                patch = patch.unsqueeze(0)
-
-            # logic to fill in prediction and count number of voxels filled
-            cnt_view = cnt_t[t0:t1, z0:z1, y0:y1, x0:x1, 0]
-            zeros_before = (cnt_view == 0).sum()
-
-            pred_t[t0:t1, z0:z1, y0:y1, x0:x1, :] += patch
-            cnt_view += 1
-
-            zeros_after = (cnt_view == 0).sum()
-            filled_voxels = (zeros_before - zeros_after).item()
-            self._tile_state[key]["remaining"] -= filled_voxels
-
-            volume_status = self._finish_if_done(key)
-            if volume_status and self.verbose:
-                ray.logger.info(f"Finished prediction for ROI {roi_id}, Tile {tile_nm}")
-    
     def finalize(self):
-        for key in self._tile_state.keys():
+        for key in list(self._tile_state.keys()):
             self._finish_if_done(key, force=True)
+        barrier()
