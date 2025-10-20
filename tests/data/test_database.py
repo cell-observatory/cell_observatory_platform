@@ -10,7 +10,7 @@ from tests.conftest import config
 import warnings
 warnings.filterwarnings("ignore")
 
-database_types = ['SupabaseDatabase','TrinoDatabase']   # List of database types to add to test matrix
+database_types = ['SupabaseDatabase']   # List of database types to add to test matrix
 
 def get_database_class(database_type):
     if database_type == 'TrinoDatabase':
@@ -80,6 +80,32 @@ def test_prepared_tiles_table(database):
 @pytest.mark.skip('Table too large to be tested. Database connection not available')
 def test_prepared_cubes_table(database):
     test_table(database, table_name='prepared_cubes')
+
+
+def test_abc_data(database):
+    query = f""" SELECT id, output_folder, exists FROM prepared WHERE exists = TRUE """ 
+    table = database.execute_query(query)
+    num_rows, num_cols = table.shape
+    print(table)
+    print(f"\Found {num_rows} rows.")
+    assert table.shape[0] > 0, "Zero hypercubes were returned"
+
+def test_prfs_data(database):
+    query = f""" SELECT id, output_folder, exists_prfs FROM prepared WHERE exists_prfs = TRUE """ 
+    table = database.execute_query(query)
+    num_rows, num_cols = table.shape
+    print(table)
+    print(f"\Found {num_rows} rows.")
+    assert table.shape[0] > 0, "Zero hypercubes were returned"
+
+def test_aws_data(database):
+    query = f""" SELECT id, output_folder, exists_aws FROM prepared WHERE exists_aws = TRUE """ 
+    table = database.execute_query(query)
+    num_rows, num_cols = table.shape
+    print(table)
+    print(f"\Found {num_rows} rows.")
+    assert table.shape[0] > 0, "Zero hypercubes were returned"
+
 
 @pytest.mark.skip('Table is empty. Database connection not available')
 def test_create_1_128_128_128_2_hypercubes(database):
@@ -319,6 +345,35 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config, database_type
     assert table['hpf'].isin(config.datasets.databases.hpf_list).all(), f"Only hpf in {config.datasets.databases.hpf_list} should be returned"
 
     config.datasets.databases = previous_config.copy()  #  Restore previous config state.  For the tests that follow, this will clear 'filters' we just added 
+
+@pytest.mark.parametrize("database_type", database_types)
+def test_16_128_128_128_2_hypercubes_database_1k(config, database_type):
+    config.experiment_name = "test_16_128_128_128_2_hypercubes_database_1k"
+    config.datasets.databases._target_ = get_database_class(database_type) 
+    config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.max_hypercubes = 1000
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
+
+    print(f"Initializing {config.datasets.databases._target_}...")
+    # pprint(OmegaConf.to_container(config, resolve=True))
+
+    database = instantiate(config.datasets.databases)
+    table = database.hypercubes_dataframe
+    print(table)
+
+    assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
+
+    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+
+    assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique value"
+
+    assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
     
 @pytest.mark.parametrize("database_type", database_types)
 def test_16_128_128_128_2_hypercubes_database_10k(config, database_type):

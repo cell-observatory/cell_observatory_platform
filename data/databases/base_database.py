@@ -30,7 +30,7 @@ class ParentDatabase():
             roi_list: Optional[Sequence[int]] = None,
             tile_list: Optional[Sequence[str]] = None,
             timepoint_list: Optional[Iterable[int]] = None,
-            dbname: Literal['staging', 'production'] = 'staging',
+            dbname: Literal['staging', 'prod'] = 'prod',
             dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
             verbose: bool = False,
             fetch_hypercubes_dataframe: bool = True,
@@ -57,7 +57,7 @@ class ParentDatabase():
             roi_list: list of specific ROIs to filter
             tile_list: list of specific tiles to filter
             timepoint_list: list of specific timepoints to filter
-            dbname: database name ('staging' or 'production')
+            dbname: database name ('staging' or 'prod')
             dotenv_path: path to .env file with URIs to access Supabase
             verbose: whether to print debug messages
             fetch_hypercubes_dataframe: this will automatically initialize the database based on the provided parameters
@@ -471,7 +471,7 @@ class ParentDatabase():
                 return df
             except Exception as e:
                 logger.warning(f"Attempt {i+1} failed with error: {e}. Retrying...")
-        logger.error(f"Failed to execute query: {e}")
+        logger.error(f"Failed to execute query: {query}")
         raise
 
     def list_tables(self) -> Any:
@@ -621,3 +621,27 @@ class ParentDatabase():
             self.save_hypercubes_dataframe(table, hypercubes_dataframe_path=hypercubes_dataframe_path)
 
         return table
+
+
+    def update_data_locations(self, col='exists_aws', rows_filters=['2025/9%', '2025/10%']) -> pd.DataFrame:
+        filters = " OR ".join([f"output_folder LIKE '{f}'" for f in rows_filters])
+
+        query = f"""
+            UPDATE prepared
+            SET {col} = True
+            WHERE {filters}
+        """ 
+        self.execute_query(query)
+        
+        query = f"""
+            SELECT id, output_folder, {col}
+            FROM prepared
+            WHERE {filters}
+        """ 
+        
+        table = self.execute_query(query)
+        num_rows, num_cols = table.shape
+        print(table)
+        print(f"\nUpdated {num_rows} rows using {filters=}.")
+        return table
+    

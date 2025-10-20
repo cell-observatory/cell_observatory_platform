@@ -354,6 +354,138 @@
             "justMyCode": false
         },
         {
+            "name": "🧪 Test Database",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Database Prepared Table",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_prepared_table"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Database (ABC)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_abc_data"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Database (PRFS)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_prfs_data"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Database (AWS)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_aws_data"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 Test Database 1k",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database_1k"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
             "name": "🧪 Test Database 10k",
             "type": "debugpy",
             "request": "launch",
@@ -389,28 +521,6 @@
                 "--color=yes",
                 "-r fEX",
                 "tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database_100k"
-            ],
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONUNBUFFERED": "1"
-            },
-            "justMyCode": false
-        },
-        {
-            "name": "🧪 Test Database",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "pytest",
-            "args": [
-                "-s",
-                "-vvv",
-                "--cache-clear",
-                "--disable-warnings",
-                "--disable-pytest-warnings",
-                "--color=yes",
-                "-r fEX",
-                "tests/data/test_database.py"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
