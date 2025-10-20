@@ -1,7 +1,5 @@
-defaults:
-  - _self_
-
-_target_: data.databases.supabase_database.SupabaseDatabase
+# This gets overridden in tests/data/test_database.py to test both classes.
+_target_: data.databases.supabase_database.SupabaseDatabase # e.g. data.databases.trino_database.TrinoDatabase  
 dbname: 'staging'
 
 num_timepoints: ${datasets.input_shape.0} # number of timepoints for each hypercube
