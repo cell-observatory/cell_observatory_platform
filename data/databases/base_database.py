@@ -336,7 +336,7 @@ class ParentDatabase():
         else:
             # Multiple partitions, with limit and offset
             if max_hypercubes is None:
-                limit = ""
+                limit, partition_num = "", 1
             elif max_hypercubes > 1000:
                 # select max number of partitions that divides the number of rows in each partition evenly
                 partition_num = max([i for i in range(1, self.max_partitions + 1) if
@@ -345,6 +345,7 @@ class ParentDatabase():
                 rows_per_partition = max_hypercubes // partition_num
                 limit = f"LIMIT {rows_per_partition}"
             else:
+                partition_num = 1
                 rows_per_partition = max_hypercubes
                 limit = f"LIMIT {max_hypercubes}"
 
