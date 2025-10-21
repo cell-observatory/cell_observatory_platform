@@ -1,3 +1,4 @@
+from ast import Dict
 import os
 import sys
 import logging
@@ -9,7 +10,7 @@ import ujson
 import pandas as pd
 import connectorx as cx
 
-from data.io import load_hypercubes_dataframe
+from data.io import load_hypercubes_dataframe, _string_set_to_list
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -21,25 +22,25 @@ logger = logging.getLogger(__name__)
 
 class ParentDatabase():
     def __init__(
-            self,
-            num_timepoints: Optional[int] = 1,
-            max_rois: Optional[int] = None,
-            max_tiles: Optional[int] = None,
-            max_hypercubes: Optional[int] = None,
-            hpf_list: Optional[Sequence[int]] = None,
-            roi_list: Optional[Sequence[int]] = None,
-            tile_list: Optional[Sequence[str]] = None,
-            timepoint_list: Optional[Iterable[int]] = None,
-            dbname: Literal['staging', 'prod'] = 'prod',
-            dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
-            verbose: bool = False,
-            fetch_hypercubes_dataframe: bool = True,
-            hypercubes_dataframe_path: Optional[Path] = None,
-            use_cached_hypercubes_dataframe: Optional[bool] = False,
-            protocol: cx.Protocol | None = None,   # Literal["csv", "binary", "cursor", "simple", "text"]
-            max_partitions: Optional[int] = 10,
-            server_folder_path: Optional[Path|str] = None,
-            occupancy_threshold: Optional[float] = None
+        self,
+        num_timepoints: Optional[int] = 1,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        max_hypercubes: Optional[int] = None,
+        hpf_list: Optional[Sequence[int]] = None,
+        roi_list: Optional[Sequence[int]] = None,
+        tile_list: Optional[Sequence[str]] = None,
+        timepoint_list: Optional[Iterable[int]] = None,
+        dbname: Literal['staging', 'prod'] = 'prod',
+        dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
+        verbose: bool = False,
+        fetch_hypercubes_dataframe: bool = True,
+        hypercubes_dataframe_path: Optional[Path] = None,
+        use_cached_hypercubes_dataframe: Optional[bool] = False,
+        protocol: cx.Protocol | None = None,   # Literal["csv", "binary", "cursor", "simple", "text"]
+        max_partitions: Optional[int] = 10,
+        server_folder_path: Optional[Path|str] = None,
+        occupancy_threshold: Optional[float] = None,
     ):
         """
         A class for accessing Supabase database and retrieving hypercubes.
@@ -69,8 +70,6 @@ class ParentDatabase():
             server_folder_path: path to override default server folder found in the supabase database
                 update this path based on where the data is stored on your local machine
             occupancy_threshold: to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
-
-        # TODO: Only works for `Tx128x128x128x2`, need to extend class to work with other hypercube sizes
         """
 
         if hypercubes_dataframe_path is None:
@@ -334,21 +333,26 @@ class ParentDatabase():
                     """]
 
         else:
-            # Multiple partitions, with limit and offset
+           # Multiple partitions, with limit and offset
+            max_rows = self.count_rows(table_name=table_name)
+
             if max_hypercubes is None:
-                limit, partition_num = "", 1
-            elif max_hypercubes > 1000:
+                max_hypercubes = max_rows
+
+            if max_hypercubes > max_rows:
+                max_hypercubes = max_rows
+
+            assert max_hypercubes != 0, f"{table_name} is empty"
+            
+            if max_hypercubes > 1000:
                 # select max number of partitions that divides the number of rows in each partition evenly
                 partition_num = max([i for i in range(1, self.max_partitions + 1) if
                                     max_hypercubes % i == 0]) if max_hypercubes is not None else 1
                 print(f"Using {partition_num} partitions to query. Max hypercubes: {max_hypercubes}.")
-                rows_per_partition = max_hypercubes // partition_num
-                limit = f"LIMIT {rows_per_partition}"
             else:
                 partition_num = 1
-                rows_per_partition = max_hypercubes
-                limit = f"LIMIT {max_hypercubes}"
-
+        
+            rows_per_partition = max_hypercubes // partition_num
             return  [
                     f"""
                         SELECT
@@ -356,7 +360,7 @@ class ParentDatabase():
                         FROM {table_name} {table_name_shortcut}
                         {filters} 
                         ORDER BY first_pc_id DESC
-                        {limit}
+                        LIMIT {rows_per_partition}
                         OFFSET {rows_per_partition * i}
                     """
                     for i in range(partition_num)

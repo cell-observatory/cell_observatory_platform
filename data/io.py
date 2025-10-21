@@ -347,25 +347,25 @@ def apply_hypercubes_dataframe_selections(
 
     return df
 
+def _string_set_to_list(value):
+    if isinstance(value, str):
+        clean_str = value.strip('{}')
+        if clean_str.startswith('[') and clean_str.endswith(']'):
+            clean_str = clean_str.strip('[]')
+        if clean_str:
+            return [float(x.strip()) for x in clean_str.split(' ') if x.strip()]
+        else:
+            return []
+    elif isinstance(value, list):
+        return [float(x) for x in value]
+    else:
+        return [float(value)] if value is not None else []
+
 
 def apply_occupancy_threshold(
     hypercubes_dataframe: pd.DataFrame,
     occupancy_threshold: Optional[float] = 0.
 ):
-    def _string_set_to_list(value):
-        if isinstance(value, str):
-            clean_str = value.strip('{}')
-            if clean_str.startswith('[') and clean_str.endswith(']'):
-                clean_str = clean_str.strip('[]')
-            if clean_str:
-                return [float(x.strip()) for x in clean_str.split(' ') if x.strip()]
-            else:
-                return []
-        elif isinstance(value, list):
-            return [float(x) for x in value]
-        else:
-            return [float(value)] if value is not None else []
-
     t = 0. if occupancy_threshold is None else occupancy_threshold
 
     logger.info(f"\nApplied filters:\n{occupancy_threshold=}")
