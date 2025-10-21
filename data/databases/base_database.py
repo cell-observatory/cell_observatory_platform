@@ -1,16 +1,17 @@
 from ast import Dict
-import os
+from sqlite3 import NotSupportedError
 import sys
 import logging
 from pathlib import Path
 from typing import Optional, Any, Literal, Sequence, Iterable
 from abc import abstractmethod
+import numpy as np
 
 import ujson
 import pandas as pd
 import connectorx as cx
 
-from data.io import load_hypercubes_dataframe, _string_set_to_list
+from data.io import load_hypercubes_dataframe
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -41,6 +42,9 @@ class ParentDatabase():
         max_partitions: Optional[int] = 10,
         server_folder_path: Optional[Path|str] = None,
         occupancy_threshold: Optional[float] = None,
+        z_slices: Optional[int] = 128,
+        y_slices: Optional[int] = 128,
+        x_slices: Optional[int] = 128,
     ):
         """
         A class for accessing Supabase database and retrieving hypercubes.
@@ -70,6 +74,9 @@ class ParentDatabase():
             server_folder_path: path to override default server folder found in the supabase database
                 update this path based on where the data is stored on your local machine
             occupancy_threshold: to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
+            z_slices: number of planes in the Z axis
+            y_slices: number of planes in the Y axis
+            x_slices: number of planes in the X axis
         """
 
         if hypercubes_dataframe_path is None:
@@ -95,6 +102,21 @@ class ParentDatabase():
         self.max_partitions = max_partitions
         self.server_folder_path = server_folder_path
         self.occupancy_threshold = occupancy_threshold
+        
+        if z_slices not in [128]:
+            raise NotSupportedError(f"{z_slices=} is not supported yet, please chose from [128]")
+        else:
+            self.z_slices = z_slices
+        
+        if y_slices not in [128, 256, 384]:
+            raise NotSupportedError(f"{y_slices=} is not supported yet, please chose from [128, 256, 384]")
+        else:
+            self.y_slices = y_slices
+        
+        if x_slices not in [128, 256, 384, 512, 640, 896, 1024]:
+            raise NotSupportedError(f"{x_slices=} is not supported yet, please chose from [128, 256, 384, 512, 640, 896, 1024]")
+        else:
+            self.x_slices = x_slices
 
         self._database_url = self._load_uri()
 
@@ -133,6 +155,13 @@ class ParentDatabase():
 
         else:
             self.hypercubes_dataframe = None
+        
+        if self.z_slices != 128 or self.y_slices != 128 or self.x_slices != 128:
+            self.aggregate_hypercubes(z_slices=z_slices, y_slices=self.y_slices, x_slices=self.x_slices)
+        
+        self.hypercubes_dataframe["z_size"] = self.z_slices
+        self.hypercubes_dataframe["y_size"] = self.y_slices
+        self.hypercubes_dataframe["x_size"] = self.x_slices
     
     @abstractmethod
     def _load_uri(self) -> str:
@@ -646,3 +675,44 @@ class ParentDatabase():
         print(f"\nUpdated {num_rows} rows using {filters=}.")
         return table
     
+    def aggregate_hypercubes(
+        self, 
+        z_slices: int = 128,
+        y_slices: int = 128,
+        x_slices: int = 128,
+        group_cols: Iterable = ["time_start", "z_start", "y_start", "x_start", "prepared_id", "tile_name"],
+        agg: Dict = {
+            "cube_size": "first",
+            "time_size": "first",
+            "channel_size": "first",
+            "first_pc_id": "first",
+            "hpf": "first",
+            "server_folder": "first",
+            "output_folder": "first",
+            "metadata_json": "first",
+            "unique_targets": "first",
+            "imaged_locations": "first",
+            "date_crossed": "first",
+            "exists": "max",
+            "exists_prfs": "max",
+            "exists_aws": "max",
+            "metadata_tile_json": "sum",
+            "occupancy_ratios_ch_0": lambda s: np.mean(np.vstack(s.tolist()), axis=0).tolist(),
+            "occupancy_ratios_ch_1": lambda s: np.mean(np.vstack(s.tolist()), axis=0).tolist(),
+        },
+    ):
+        
+        self.hypercubes_dataframe["z_start"] = (self.hypercubes_dataframe["z_start"] // z_slices) * z_slices
+        self.hypercubes_dataframe["y_start"] = (self.hypercubes_dataframe["y_start"] // y_slices) * y_slices
+        self.hypercubes_dataframe["x_start"] = (self.hypercubes_dataframe["x_start"] // x_slices) * x_slices
+        self.hypercubes_dataframe = self.hypercubes_dataframe.groupby(group_cols, as_index=False).agg(agg)
+        
+        # print(self.hypercubes_dataframe[[*group_cols, "occupancy_ratios_ch_0"]])
+        # print(self.hypercubes_dataframe.shape)
+        # print(f"prepared_id: {self.hypercubes_dataframe.prepared_id.nunique()}, {sorted(self.hypercubes_dataframe.prepared_id.unique())}")
+        # print(f"tile_name: {self.hypercubes_dataframe.tile_name.nunique()}, {sorted(self.hypercubes_dataframe.tile_name.unique())}")
+        # print(f"time_start: {self.hypercubes_dataframe.time_start.nunique()}, {sorted(self.hypercubes_dataframe.time_start.unique())}")
+        # print(f"z_start: {self.hypercubes_dataframe.z_start.nunique()}, {sorted(self.hypercubes_dataframe.z_start.unique())}")
+        # print(f"y_start: {self.hypercubes_dataframe.y_start.nunique()}, {sorted(self.hypercubes_dataframe.y_start.unique())}")
+        # print(f"x_start: {self.hypercubes_dataframe.x_start.nunique()}, {sorted(self.hypercubes_dataframe.x_start.unique())}")
+        # print(f"occupancy_ratios_ch_0: {sorted(self.hypercubes_dataframe['occupancy_ratios_ch_0'].apply(len).unique())}")

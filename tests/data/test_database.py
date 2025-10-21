@@ -1,3 +1,4 @@
+from pyarrow import Table
 import pytest
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
@@ -10,7 +11,7 @@ from tests.conftest import config
 import warnings
 warnings.filterwarnings("ignore")
 
-database_types = ['SupabaseDatabase']   # List of database types to add to test matrix
+database_types = ['SupabaseDatabase']  #'TrinoDatabase' # List of database types to add to test matrix
 
 def get_database_class(database_type):
     if database_type == 'TrinoDatabase':
@@ -87,7 +88,7 @@ def test_abc_data(database):
     table = database.execute_query(query)
     num_rows, num_cols = table.shape
     print(table)
-    print(f"\Found {num_rows} rows.")
+    print(f"Found {num_rows} rows.")
     assert table.shape[0] > 0, "Zero hypercubes were returned"
 
 def test_prfs_data(database):
@@ -95,7 +96,7 @@ def test_prfs_data(database):
     table = database.execute_query(query)
     num_rows, num_cols = table.shape
     print(table)
-    print(f"\Found {num_rows} rows.")
+    print(f"Found {num_rows} rows.")
     assert table.shape[0] > 0, "Zero hypercubes were returned"
 
 def test_aws_data(database):
@@ -103,7 +104,7 @@ def test_aws_data(database):
     table = database.execute_query(query)
     num_rows, num_cols = table.shape
     print(table)
-    print(f"\Found {num_rows} rows.")
+    print(f"Found {num_rows} rows.")
     assert table.shape[0] > 0, "Zero hypercubes were returned"
 
 
@@ -432,3 +433,52 @@ def test_16_128_128_128_2_hypercubes_database_100k(config, database_type):
     assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique values"
 
     assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
+
+@pytest.mark.parametrize("database_type", database_types)
+@pytest.mark.parametrize("z_slices,y_slices,x_slices", [
+    (128, 128, 128),
+    (128, 256, 256),
+    (128, 384, 384),
+    (128, 256, 512),
+    (128, 384, 512),
+])
+def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slices):
+    config.experiment_name = "test_aggregate_hypercubes"
+    config.datasets.databases._target_ = get_database_class(database_type) 
+    config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.max_hypercubes = 1000
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
+    config.datasets.databases.z_slices = z_slices
+    config.datasets.databases.y_slices = y_slices
+    config.datasets.databases.x_slices = x_slices
+
+    print(f"Initializing {config.datasets.databases._target_}...")
+    # pprint(OmegaConf.to_container(config, resolve=True))
+
+    database = instantiate(config.datasets.databases)
+    table = database.hypercubes_dataframe
+    print(table)
+
+    assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
+
+    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+
+    assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique values"
+
+    assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
+
+    assert (table['z_size'] == z_slices).all() , f"{table["z_size"].unique()} != {z_slices}"
+    assert (table['y_size'] == y_slices).all() , f"{table["y_size"].unique()} != {y_slices}"
+    assert (table['x_size'] == x_slices).all() , f"{table["x_size"].unique()} != {x_slices}"
+    
+    assert all(table['z_start'] % z_slices) == 0, f"Starting indices for z_start doesn't match {z_slices}"
+    assert all(table['y_start'] % y_slices) == 0, f"Starting indices for y_start doesn't match {y_slices}"
+    assert all(table['x_start'] % x_slices) == 0, f"Starting indices for x_start doesn't match {x_slices}"
+    
+    assert table['occupancy_ratios_ch_0'].apply(len).unique()[0] == config.datasets.databases.num_timepoints, "Should only have a single ratio for each timepoint"
