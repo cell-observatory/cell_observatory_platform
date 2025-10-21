@@ -153,15 +153,16 @@ class ParentDatabase():
             if self.server_folder_path is not None:
                 self.hypercubes_dataframe['server_folder'] = self.server_folder_path
 
+            if self.z_slices != 128 or self.y_slices != 128 or self.x_slices != 128:
+                self.aggregate_hypercubes(z_slices=z_slices, y_slices=self.y_slices, x_slices=self.x_slices)
+            
+            self.hypercubes_dataframe["z_size"] = self.z_slices
+            self.hypercubes_dataframe["y_size"] = self.y_slices
+            self.hypercubes_dataframe["x_size"] = self.x_slices
+        
         else:
             self.hypercubes_dataframe = None
         
-        if self.z_slices != 128 or self.y_slices != 128 or self.x_slices != 128:
-            self.aggregate_hypercubes(z_slices=z_slices, y_slices=self.y_slices, x_slices=self.x_slices)
-        
-        self.hypercubes_dataframe["z_size"] = self.z_slices
-        self.hypercubes_dataframe["y_size"] = self.y_slices
-        self.hypercubes_dataframe["x_size"] = self.x_slices
     
     @abstractmethod
     def _load_uri(self) -> str:
