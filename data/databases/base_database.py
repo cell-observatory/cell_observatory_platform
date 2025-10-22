@@ -156,6 +156,11 @@ class ParentDatabase():
             if self.z_slices != 128 or self.y_slices != 128 or self.x_slices != 128:
                 self.aggregate_hypercubes(z_slices=z_slices, y_slices=self.y_slices, x_slices=self.x_slices)
             
+            if any(self.hypercubes_dataframe['time_size'] != self.num_timepoints):
+                print(f"`time_sizes` for all rows in the dataframe should be {self.num_timepoints} found {self.hypercubes_dataframe['time_size'].unique()}")
+                print('Overriding values in the dataframe')
+                self.hypercubes_dataframe['time_size'] = self.num_timepoints
+                        
             self.hypercubes_dataframe["z_size"] = self.z_slices
             self.hypercubes_dataframe["y_size"] = self.y_slices
             self.hypercubes_dataframe["x_size"] = self.x_slices
@@ -651,6 +656,9 @@ class ParentDatabase():
             table["y_size"] = self.y_slices
             table["x_size"] = self.x_slices
         
+        if any(table['time_size'] != self.num_timepoints):
+            table['time_size'] = self.num_timepoints
+
         num_rows, num_cols = table.shape
         print(f"\nRetrieved {num_rows} rows. \t Retrieved {num_cols} columns.")
 
