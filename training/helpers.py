@@ -939,9 +939,10 @@ def append_kwargs_to_model(cfg):
             decoder = None
             decoder_args = None
 
-        cfg.models = cfg.models.get(cfg.network)
-        
-        if cfg.tasks is not None:
+        if cfg.get("network", None) is  not None and cfg.models.get(cfg.network, None) is not None:
+            cfg.models = cfg.models.get(cfg.network, None)
+
+        if cfg.get("tasks", None) is not None:
             cfg.models.task = cfg.tasks.task
 
             input_shape= tuple(cfg.datasets.input_shape)
