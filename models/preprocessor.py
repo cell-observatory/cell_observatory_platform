@@ -120,13 +120,13 @@ class DaliPreprocessor(torch.nn.Module):
 
 
 class RayPreprocessor(torch.nn.Module):
-    def __init__(self, dtype: torch.dtype, with_masking: bool,  mask_generator, **kwargs):
+    def __init__(self, dtype: torch.dtype, with_masking: bool,  mask_generator, transforms_list=None):
         super().__init__()  
         self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
         self.with_masking = with_masking
         self.mask_generator = mask_generator
         self.transforms = []
-        for t in kwargs.get("transforms_list", []):
+        for t in transforms_list or []:
             if isinstance(t, DictConfig):
                 # not yet instantiated
                 self.transforms.append(instantiate(t))

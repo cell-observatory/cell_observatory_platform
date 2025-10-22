@@ -85,9 +85,9 @@ datasets:
   num_workers: 4
 
   max_hypercubes: 100 # maximum number of hypercubes to return
-  use_cached_hypercubes_dataframe: true
+  use_cached_hypercubes_dataframe: false
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
-
+  
   exec_async: true
   exec_pipelined: true
 

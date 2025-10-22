@@ -11,7 +11,9 @@ mask_generators:
   - _target_: data.masking.mask_generator.MaskGenerator
     layout: ${datasets.dataset.input_layout}
     input_shape: ${datasets.input_shape}
-    patch_shape: ${datasets.patch_shape}
+    temporal_patch_size: ${datasets.patch_shape.0}
+    lateral_patch_size: ${datasets.patch_shape.1}
+    axial_patch_size: ${datasets.patch_shape.2}
 
     lateral_mask_scale: 0.5
     axial_mask_scale: 0.5

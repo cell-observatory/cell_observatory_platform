@@ -2,15 +2,31 @@
 # Cell Observatory Platform
 **The Cell Observatory Platform** is a comprehensive framework for training and evaluating machine learning models on biological image and video datasets. Built with [PyTorch](https://pytorch.org/), accelerated and scaled with [Ray](https://www.ray.io/), model sharding using [DeepSpeed](https://www.deepspeed.ai/), and flexibly configured using [Hydra](https://hydra.cc/), it provides a modular architecture for easy customization and extension.
 
+- [Cell Observatory Platform](#cell-observatory-platform)
 - [Installation](#installation)
-   - [Docker \& Apptainer images](#docker--apptainer-images)
-   - [Clone repository to your host system](#clone-repository-to-your-host-system)
+  - [Docker images](#docker-images)
+  - [Clone the repository to your host system](#clone-the-repository-to-your-host-system)
+  - [Setup Supabase and W\&B accounts](#setup-supabase-and-wb-accounts)
+  - [Setup environment variables](#setup-environment-variables)
 - [Running docker image](#running-docker-image)
+  - [Running docker image on a cluster via apptainer](#running-docker-image-on-a-cluster-via-apptainer)
+    - [amd64/x86\_64](#amd64x86_64)
+    - [arm64/aarch64](#arm64aarch64)
+  - [Building a new apptainer image with a different torch version](#building-a-new-apptainer-image-with-a-different-torch-version)
 - [Get started](#get-started)
   - [Local setup](#local-setup)
+    - [1. Update experiment name](#1-update-experiment-name)
+    - [2. Update your paths](#2-update-your-paths)
+    - [3. Edit resource requirements](#3-edit-resource-requirements)
+    - [4. Run local training job with `manager.py`](#4-run-local-training-job-with-managerpy)
+    - [5. Launch multiple training jobs or Ray Tune jobs with `manager.py`](#5-launch-multiple-training-jobs-or-ray-tune-jobs-with-managerpy)
   - [Cluster setup](#cluster-setup)
+    - [SLURM Setup](#slurm-setup)
+    - [LSF Setup](#lsf-setup)
 - [Configuration layout](#configuration-layout)
   - [Model configurations](#model-configurations)
+    - [1. Select base configurations](#1-select-base-configurations)
+    - [2. Override only what you need](#2-override-only-what-you-need)
   - [Adding new models](#adding-new-models)
 - [Data Pipeline](#data-pipeline)
   - [Structures](#structures)
@@ -19,7 +35,7 @@
   - [Preprocessors](#preprocessors)
   - [MaskGenerator](#maskgenerator)
   - [Transformations](#transformations)
-- [Evaluators](#evaluators)
+  - [Evaluators](#evaluators)
 - [License](#license)
 
 
@@ -65,6 +81,8 @@ Rename `.env.example` file to `.env` which will be automatically loaded into the
 ```shell
 SUPABASE_USER=REPLACE_ME_WITH_YOUR_SUPABASE_USERNAME
 SUPABASE_PASS=REPLACE_ME_WITH_YOUR_SUPABASE_PASSWORD
+TRINO_USER=REPLACE_ME_WITH_YOUR_TRINO_USERNAME
+TRINO_PASS=REPLACE_ME_WITH_YOUR_TRINO_PASSWORD
 SUPABASE_STAGING_ID=REPLACE_ME_WITH_YOUR_SUPABASE_STAGING_ID
 SUPABASE_PROD_ID=REPLACE_ME_WITH_YOUR_SUPABASE_PROD_ID
 WANDB_API_KEY=REPLACE_ME_WITH_YOUR_WANDB_API_KEY

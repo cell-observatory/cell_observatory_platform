@@ -76,6 +76,8 @@ def models_kargs():
         workers=1,
         gpu_workers=1,
         cpu_workers=8,
+        abs_sincos_enc=True,
+        rope_pos_enc=False,
     )
     return models_kargs
 

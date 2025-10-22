@@ -24,7 +24,8 @@ from training.helpers import (
     get_masked_input_data,
     get_steps_per_epoch,
     resume_run,
-    summarize_model
+    summarize_model,
+    append_kwargs_to_model
 )
 from training.hooks import HookBase
 from training.loggers import EventRecorder
@@ -51,11 +52,14 @@ def train_loop_per_worker(config):
         trainer_per_worker.run()
     elif config.job_type == "test":
         trainer_per_worker.test()
+    elif config.job_type == "predict":
+        trainer_per_worker.predict()
     else:
         raise ValueError(f"Unknown job type: {config.job_type}. "
                          f"Expected 'train' or 'test', got '{config.job_type}'.")
     
-    return {"best_metric": trainer_per_worker.best_metric}
+    return {"best_metric": trainer_per_worker.best_metric 
+            if hasattr(trainer_per_worker, 'best_metric') else None}
 
 
 class BaseTrainer:
@@ -250,7 +254,7 @@ class EpochBasedTrainer(BaseTrainer):
         # (train_dataloader, val_dataloader) where
         # val_dataloader is None if no validation set is provided
         self.train_dataloader, self.val_dataloader, \
-            self.host_buffer_actor, self.device_buffer = get_dataloader(cfg)
+            self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
 
         self.steps_per_epoch, self.val_steps_per_epoch = get_steps_per_epoch(
             train_dataloader=self.train_dataloader,
@@ -263,12 +267,13 @@ class EpochBasedTrainer(BaseTrainer):
         # initialize model
         # TODO: consider migrating to BUILD() based initialization
         #       instead of recursive instantiation
+        cfg, decoder_args = append_kwargs_to_model(cfg)
         model = build_dependency_graph_and_instantiate(cfg.models)
 
         # TODO: there seems to be a bug in model definitions where we  
         #       have the model defined in a subfolder (e.g. models/abc/model.py)
         #       this hack works for one folder deep models but should be fixed
-        model, = model.values() if isinstance(model, dict) else (model,)
+        # model = model.values() if isinstance(model, dict) else (model,)
 
         if cfg.optimizations.with_model_summary:
             rank = process_rank()
@@ -454,7 +459,8 @@ class TestTrainer(BaseTrainer):
         self._iter, self.start_iter, self.start_epoch = 0, 0, 0
 
         # initialize dataset and dataloader
-        self.test_dataloader, _ = get_dataloader(cfg)
+        self.test_dataloader, _, \
+            self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
 
         self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
             train_dataloader=self.test_dataloader,
@@ -465,7 +471,9 @@ class TestTrainer(BaseTrainer):
         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
         # initialize model
+        cfg, decoder_args = append_kwargs_to_model(cfg)  
         model = build_dependency_graph_and_instantiate(cfg.models)
+        logger.info(f"Model instantiated: {model}")
 
         # initialize optimizer
         opt, _ = get_optimizer(
@@ -474,6 +482,12 @@ class TestTrainer(BaseTrainer):
             optimizer=cfg.optimizers.opt,
             steps_per_epoch=self.steps_per_epoch
         )
+
+        # enable optimizations if specified
+        # includes setting Torch backend flags, 
+        # activation checkpointing, and torch Compile 
+        if cfg.optimizations is not None:
+            model = enable_optimizations(cfg=cfg, model=model)
 
         # initialize deepspeed
         self.model, self.opt, _, _ = initialize(
@@ -501,12 +515,16 @@ class TestTrainer(BaseTrainer):
 
         with inference_context(self.model):
             with torch.no_grad():
+                end = time.perf_counter()
                 for idx, data_sample in enumerate(self.test_dataloader):
+                    data_time = time.perf_counter() - end
+                    data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
                     self.run_test_step(idx, data_sample)
+                    end = time.perf_counter()
         
         metrics = self.evaluator.evaluate()
         self.event_recorder.put_scalars(
-            prefix="test_",
+            prefix="evaluator_",
             scope="epoch",
             **{k: (v.item() if torch.is_tensor(v) else v)
                 for k, v in metrics.items()
@@ -522,10 +540,110 @@ class TestTrainer(BaseTrainer):
         """
         self.before_test_step()
 
-        data_sample = self.preprocessor(data_sample)
         loss_dict, outputs = self.model(data_sample)
         self.evaluator.process(data_sample, outputs, loss_dict)
 
+        # for short testing runs:
+        # if idx > 25:
+        #     raise RuntimeError(
+        #         f"Test stopped at step {idx} for debugging."
+        #     )
+        # logger.info(f"step_loss: {loss_dict['step_loss']}")
+
         self.after_test_step(data_sample=data_sample, 
                              outputs=outputs, loss_dict=loss_dict)
+        self._iter += 1
+
+
+class Inferencer(BaseTrainer):
+    def __init__(self, cfg: DictConfig) -> None:
+        super().__init__(cfg)
+        
+        self.ray_context = get_context()
+        self.event_recorder._iter = 0
+        self.event_recorder._epoch = 0
+        self._iter, self.start_iter, self.start_epoch = 0, 0, 0
+
+        # initialize dataset and dataloader
+        self.test_dataloader, _, \
+            self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
+
+        self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
+            train_dataloader=self.test_dataloader,
+            val_dataloader=None,
+            config=cfg
+        )
+
+        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+
+        # initialize model
+        cfg, decoder_args = append_kwargs_to_model(cfg)  
+        model = build_dependency_graph_and_instantiate(cfg.models)
+        logger.info(f"Model instantiated: {model}")
+
+        # initialize optimizer
+        opt, _ = get_optimizer(
+            params=model.parameters(),
+            config=cfg,
+            optimizer=cfg.optimizers.opt,
+            steps_per_epoch=self.steps_per_epoch
+        )
+
+        # enable optimizations if specified
+        # includes setting Torch backend flags, 
+        # activation checkpointing, and torch Compile 
+        if cfg.optimizations is not None:
+            model = enable_optimizations(cfg=cfg, model=model)
+
+        # initialize deepspeed
+        self.model, self.opt, _, _ = initialize(
+            model=model,
+            optimizer=opt,
+            config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
+        )
+
+        # initialize checkpoint manager and
+        # load model state from checkpoint
+        self.checkpoint_manager = instantiate(
+            cfg.checkpoint.checkpoint_manager,
+            model=self.model
+        )
+        self.checkpoint_manager.load()
+
+
+        # initialize inferencer_worker
+        self.inferencer_worker = instantiate(cfg.inference, 
+                                             model=self.model, 
+                                             decoder_head_type=decoder_args['name'],
+                                             database=database_df)
+
+    def predict(self):
+        """
+        Run Model prediction.
+        """
+        self.before_test()
+
+        with inference_context(self.model):
+            with torch.no_grad():
+                end = time.perf_counter()
+                for idx, data_sample in enumerate(self.test_dataloader):
+                    data_time = time.perf_counter() - end
+                    data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
+                    self.run_inference_step(idx, data_sample)
+                    end = time.perf_counter()
+        
+        self.inferencer_worker.finalize()
+
+        self.after_test()
+
+    def run_inference_step(self, idx: int, data_sample: Sequence[dict]) -> None:
+        """
+        Iterate one prediction step.
+        """
+        self.before_test_step()
+
+        self.inferencer_worker.predict(data_sample=data_sample)
+
+        self.after_test_step(data_sample=data_sample, 
+                             outputs=None, loss_dict=None)
         self._iter += 1

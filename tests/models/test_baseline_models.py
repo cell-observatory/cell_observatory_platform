@@ -42,6 +42,8 @@ def test_baseline_custom(models_kargs):
         modes=models_kargs['modes'],
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
     ).to('cuda')
 
     input_data = get_input_data(model, inputs)
@@ -81,6 +83,8 @@ def test_baseline_tiny(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
     ).to('cuda')
 
     input_data = get_input_data(model, inputs)
@@ -120,6 +124,8 @@ def test_baseline_small(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
     ).to('cuda')
 
     input_data = get_input_data(model, inputs)
@@ -159,6 +165,8 @@ def test_baseline_base(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
     ).to('cuda')
 
     input_data = get_input_data(model, inputs)
@@ -198,6 +206,8 @@ def test_baseline_large(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
     ).to('cuda')
 
     input_data = get_input_data(model, inputs)
@@ -237,6 +247,8 @@ def test_baseline_huge(models_kargs):
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
     ).to('cuda')
 
     input_data = get_input_data(model, inputs)

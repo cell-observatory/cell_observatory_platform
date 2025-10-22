@@ -1,15 +1,18 @@
+import os
 import math
 import ujson
 import logging
+import itertools
 from pathlib import Path
 from operator import attrgetter
 from collections import defaultdict
-from typing import Optional, List, Union, Callable, Tuple
+from typing import Optional, List, Union, Callable, Tuple, Sequence, Literal
 
 import numpy as np
 
 import torch
 import torch.nn as nn
+import torch.functional as F
 from torchinfo import summary
 from timm.layers.weight_init import trunc_normal_
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
@@ -19,9 +22,12 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 
 from omegaconf import DictConfig, open_dict
 
+from data.io import save_file
+
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
+
 
 def record_dataset_len(config, num_train_rows: int, num_val_rows: int):
     bs = config.clusters.batch_size_per_gpu
@@ -811,7 +817,8 @@ def init_weights(model: nn.Module, weight_init_type: str):
 
         # timm's trunc_normal_(std=.02) is effectively
         # normal_(std=0.02) as cutoff is too big (2.)
-        torch.nn.init.normal_(model.masked_decoder.token_param, std=.02)
+        if hasattr(model.masked_decoder, "token_param"):
+            torch.nn.init.normal_(model.masked_decoder.token_param, std=.02)
 
         # initialize nn.Linear and nn.LayerNorm
         model.apply(_mae_init_weights)
@@ -886,7 +893,83 @@ def init_weights(model: nn.Module, weight_init_type: str):
 
         model.apply(_vjepa2_init_weights)
         _vjepa2_rescale_blocks(model.input_encoder)
-        _vjepa2_rescale_blocks(model.target_predictor)
+        
+        if hasattr(model.target_predictor, "encoder"):
+            _vjepa2_rescale_blocks(model.target_predictor)
+
+    elif weight_init_type == "vit_adapter":
+        def _vit_adapter_init_weights(m):
+            if isinstance(m, nn.Linear):
+                torch.nn.init.trunc_normal_(m.weight, std=0.02)
+                if isinstance(m, nn.Linear) and m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm) \
+                or isinstance(m, nn.BatchNorm3d)\
+                or isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+            elif isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d):
+                fan_out = m.kernel_size[0] * m.kernel_size[1] * m.kernel_size[2] * m.out_channels
+                fan_out //= m.groups
+                m.weight.data.normal_(0, math.sqrt(2.0 / fan_out))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.Conv1d) or isinstance(m, nn.ConvTranspose1d):
+                fan_out = m.kernel_size[0] * m.out_channels
+                fan_out //= m.groups
+                m.weight.data.normal_(0, math.sqrt(2.0 / fan_out))
+
+        model.up.apply(_vit_adapter_init_weights)
+        model.spatial_prior_module.apply(_vit_adapter_init_weights)
+        model.interactions.apply(_vit_adapter_init_weights)
+        torch.nn.init.normal_(model.level_embed)
 
     else:
         raise ValueError(f"Unknown weight initialization type: {weight_init_type}")
+    
+
+# FIXME: perhaps not the cleanest solution, but helps prevent
+#       making configs more complicated to configure
+def append_kwargs_to_model(cfg):
+    with open_dict(cfg):
+        if cfg.models.get("decoders", None):
+            decoder = cfg.models.decoders.name
+            decoder_args = cfg.models.decoders
+        else:
+            decoder = None
+            decoder_args = None
+
+        if cfg.get("network", None) is  not None and cfg.models.get(cfg.network, None) is not None:
+            cfg.models = cfg.models.get(cfg.network, None)
+
+        if cfg.get("tasks", None) is not None:
+            cfg.models.task = cfg.tasks.task
+
+            input_shape= tuple(cfg.datasets.input_shape)
+            input_format = str(cfg.dataset_layout_order)
+            output_channels = {axis: shape for axis, shape in zip(input_format, input_shape)}
+            cfg.models.output_channels = output_channels["C"]
+            
+            if cfg.tasks.task == "channel_split":
+                input_shape = cfg.models.input_shape
+                input_shape[-1] = cfg.tasks.input_channels
+                cfg.models.input_shape = input_shape
+
+        if decoder is not None or decoder_args is not None:
+            cfg.models.decoder = decoder
+            cfg.models.decoder_args = decoder_args
+
+    return cfg, decoder_args
+
+
+def get_data_dim(layout_order: str) -> int:
+    if layout_order == "TZYXC":
+        return 4
+    elif layout_order == "ZYXC":
+        return 3
+    elif layout_order == "YXC":
+        return 2
+    elif layout_order == "TYXC":
+        return 3
+    else:
+        raise ValueError(f"Unknown dataset layout order: {layout_order}")

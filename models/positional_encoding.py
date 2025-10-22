@@ -2,6 +2,7 @@ import sys
 import logging
 from typing import Optional, Tuple
 
+import math
 import numpy as np
 
 import torch
@@ -193,7 +194,7 @@ class PosEmbedding(nn.Module):
         channels=1,
         cls_token=False,
         interpolate=False,
-    ):   
+    ):
         super().__init__()
 
         self.input_fmt = input_fmt

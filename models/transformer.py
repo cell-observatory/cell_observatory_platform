@@ -1,7 +1,9 @@
 import sys
 import logging
 from functools import partial
+from typing import Optional
 
+import torch
 import torch.nn as nn
 from timm.layers import SwiGLU, DropPath
 
@@ -35,8 +37,11 @@ class Transformer(nn.Module):
         rope_theta: float = 10.0,
         input_fmt: str = "TZYXC",
         input_shape: tuple = (16,128,128,128,2),
-        patch_size: tuple = (4,16,16,16),
+        temporal_patch_size: Optional[int] = 4,
+        axial_patch_size: Optional[int] = 16,
+        lateral_patch_size: int = 16,
         wide_silu: bool = False,
+        dtype: torch.dtype = torch.bfloat16
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -55,7 +60,10 @@ class Transformer(nn.Module):
                 rope_theta=rope_theta,
                 input_fmt=input_fmt,
                 input_shape=input_shape,
-                patch_size=patch_size
+                temporal_patch_size=temporal_patch_size,
+                axial_patch_size=axial_patch_size,
+                lateral_patch_size=lateral_patch_size,
+                dtype=dtype
             )
         
         else:

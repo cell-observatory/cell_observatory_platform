@@ -1,9 +1,11 @@
-import os
+from ast import Dict
+from sqlite3 import NotSupportedError
 import sys
 import logging
 from pathlib import Path
-from typing import Optional, Any, Literal, Sequence
+from typing import Optional, Any, Literal, Sequence, Iterable
 from abc import abstractmethod
+import numpy as np
 
 import ujson
 import pandas as pd
@@ -21,24 +23,28 @@ logger = logging.getLogger(__name__)
 
 class ParentDatabase():
     def __init__(
-            self,
-            num_timepoints: Optional[int] = 1,
-            max_rois: Optional[int] = None,
-            max_tiles: Optional[int] = None,
-            max_hypercubes: Optional[int] = None,
-            hpf_list: Optional[Sequence[int]] = None,
-            roi_list: Optional[Sequence[int]] = None,
-            tile_list: Optional[Sequence[str]] = None,
-            dbname: Literal['staging', 'production'] = 'staging',
-            dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
-            verbose: bool = False,
-            fetch_hypercubes_dataframe: bool = True,
-            hypercubes_dataframe_path: Optional[Path] = None,
-            use_cached_hypercubes_dataframe: Optional[bool] = False,
-            protocol: cx.Protocol | None = None,   # Literal["csv", "binary", "cursor", "simple", "text"]
-            max_partitions: Optional[int] = 10,
-            server_folder_path: Optional[Path|str] = None,
-            occupancy_threshold: Optional[float] = None
+        self,
+        num_timepoints: Optional[int] = 1,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        max_hypercubes: Optional[int] = None,
+        hpf_list: Optional[Sequence[int]] = None,
+        roi_list: Optional[Sequence[int]] = None,
+        tile_list: Optional[Sequence[str]] = None,
+        timepoint_list: Optional[Iterable[int]] = None,
+        dbname: Literal['staging', 'prod'] = 'prod',
+        dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
+        verbose: bool = False,
+        fetch_hypercubes_dataframe: bool = True,
+        hypercubes_dataframe_path: Optional[Path] = None,
+        use_cached_hypercubes_dataframe: Optional[bool] = False,
+        protocol: cx.Protocol | None = None,   # Literal["csv", "binary", "cursor", "simple", "text"]
+        max_partitions: Optional[int] = 10,
+        server_folder_path: Optional[Path|str] = None,
+        occupancy_threshold: Optional[float] = None,
+        z_slices: Optional[int] = 128,
+        y_slices: Optional[int] = 128,
+        x_slices: Optional[int] = 128,
     ):
         """
         A class for accessing Supabase database and retrieving hypercubes.
@@ -55,7 +61,8 @@ class ParentDatabase():
             hpf_list: list of specific HPFs (hours-post-fertilization in hours) to filter
             roi_list: list of specific ROIs to filter
             tile_list: list of specific tiles to filter
-            dbname: database name ('staging' or 'production')
+            timepoint_list: list of specific timepoints to filter
+            dbname: database name ('staging' or 'prod')
             dotenv_path: path to .env file with URIs to access Supabase
             verbose: whether to print debug messages
             fetch_hypercubes_dataframe: this will automatically initialize the database based on the provided parameters
@@ -67,8 +74,9 @@ class ParentDatabase():
             server_folder_path: path to override default server folder found in the supabase database
                 update this path based on where the data is stored on your local machine
             occupancy_threshold: to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
-
-        # TODO: Only works for `Tx128x128x128x2`, need to extend class to work with other hypercube sizes
+            z_slices: number of planes in the Z axis
+            y_slices: number of planes in the Y axis
+            x_slices: number of planes in the X axis
         """
 
         if hypercubes_dataframe_path is None:
@@ -86,6 +94,7 @@ class ParentDatabase():
         self.hpf_list = hpf_list
         self.roi_list = roi_list
         self.tile_list = tile_list
+        self.timepoint_list = timepoint_list
         self.verbose = verbose
         self.fetch_hypercubes_dataframe = fetch_hypercubes_dataframe
         self.use_cached_hypercubes_dataframe = use_cached_hypercubes_dataframe
@@ -93,6 +102,21 @@ class ParentDatabase():
         self.max_partitions = max_partitions
         self.server_folder_path = server_folder_path
         self.occupancy_threshold = occupancy_threshold
+        
+        if z_slices not in [128]:
+            raise NotSupportedError(f"{z_slices=} is not supported yet, please chose from [128]")
+        else:
+            self.z_slices = z_slices
+        
+        if y_slices not in [128, 256, 384]:
+            raise NotSupportedError(f"{y_slices=} is not supported yet, please chose from [128, 256, 384]")
+        else:
+            self.y_slices = y_slices
+        
+        if x_slices not in [128, 256, 384, 512, 640, 896, 1024]:
+            raise NotSupportedError(f"{x_slices=} is not supported yet, please chose from [128, 256, 384, 512, 640, 896, 1024]")
+        else:
+            self.x_slices = x_slices
 
         self._database_url = self._load_uri()
 
@@ -108,6 +132,7 @@ class ParentDatabase():
                     hpf_list=hpf_list,
                     roi_list=roi_list,
                     tile_list=tile_list,
+                    timepoint_list=timepoint_list,
                     occupancy_threshold=occupancy_threshold
                 )
 
@@ -120,6 +145,7 @@ class ParentDatabase():
                     hpf_list=hpf_list,
                     roi_list=roi_list,
                     tile_list=tile_list,
+                    timepoint_list=timepoint_list,
                     occupancy_threshold=occupancy_threshold
                 )
                 self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
@@ -127,8 +153,21 @@ class ParentDatabase():
             if self.server_folder_path is not None:
                 self.hypercubes_dataframe['server_folder'] = self.server_folder_path
 
+            if self.z_slices != 128 or self.y_slices != 128 or self.x_slices != 128:
+                self.aggregate_hypercubes(z_slices=z_slices, y_slices=self.y_slices, x_slices=self.x_slices)
+            
+            if any(self.hypercubes_dataframe['time_size'] != self.num_timepoints):
+                print(f"`time_sizes` for all rows in the dataframe should be {self.num_timepoints} found {self.hypercubes_dataframe['time_size'].unique()}")
+                print('Overriding values in the dataframe')
+                self.hypercubes_dataframe['time_size'] = self.num_timepoints
+                        
+            self.hypercubes_dataframe["z_size"] = self.z_slices
+            self.hypercubes_dataframe["y_size"] = self.y_slices
+            self.hypercubes_dataframe["x_size"] = self.x_slices
+        
         else:
             self.hypercubes_dataframe = None
+        
     
     @abstractmethod
     def _load_uri(self) -> str:
@@ -139,25 +178,36 @@ class ParentDatabase():
         self,
         rois: Optional[Sequence[int | str]] = None,
         tiles: Optional[Sequence[str]] = None,
-        table_name: str = 'ptv'
+        timepoints: Optional[Iterable[int]] = None,
+        table_name: str = 'ptv',
+        idx_col: str = 'prepared_id'
     ) -> str:
+
+        def _sql_in_list(values):
+            out = []
+            for v in values:
+                if isinstance(v, (int, float)) or (isinstance(v, str) and v.isnumeric()):
+                    out.append(str(v))
+                else:
+                    out.append("'" + str(v).replace("'", "''") + "'")
+            return "(" + ",".join(out) + ")"
 
         assert rois is not None or tiles is not None, "At least one of rois or tiles must be provided"
 
+        clauses = []
         if rois is not None:
-            rois = tuple(rois) if len(rois) > 1 else f"({rois[0]})"
+            rois_list = list(rois)
+            clauses.append(f"{table_name}.{idx_col} IN {_sql_in_list(rois_list)}")
 
         if tiles is not None:
-            tiles = tuple(tiles) if len(tiles) > 1 else f"({tiles[0]})"
+            tiles_list = list(tiles)
+            clauses.append(f"{table_name}.tile_name IN {_sql_in_list(tiles_list)}")
 
-        if rois is not None and tiles is not None:
-            return f"WHERE {table_name}.prepared_id IN {rois} AND {table_name}.tile_name IN {tiles}"
-        elif rois is not None:
-            return f"WHERE {table_name}.prepared_id IN {rois}"
-        elif tiles is not None:
-            return f"WHERE {table_name}.tile_name IN {tiles}"
-        else:
-            raise ValueError("_choose_filter doesn't cover this case")
+        if timepoints is not None:
+            timepoints_list = list(timepoints)
+            clauses.append(f"{table_name}.time_start IN {_sql_in_list(timepoints_list)}")
+
+        return "WHERE " + " AND ".join(clauses)
 
     def _limit_filter(
         self,
@@ -208,17 +258,22 @@ class ParentDatabase():
             hpf_list: Optional[Sequence[int]] = None,
             roi_list: Optional[Sequence[int]] = None,
             tile_list: Optional[Sequence[str]] = None,
+            timepoint_list: Optional[Iterable[int]] = None
     ) -> str:
 
         filters = self._exists_filter(table_name_shortcut)
 
-        if roi_list is not None or tile_list is not None:
+        if roi_list is not None \
+        or tile_list is not None \
+        or timepoint_list is not None:
             filters += self._choose_filter(
                 rois=roi_list,
                 tiles=tile_list,
+                timepoints=timepoint_list,
                 table_name=table_name_shortcut
             ).replace('WHERE', ' AND ')
-        elif max_rois is not None or max_tiles is not None:
+        elif max_rois is not None \
+        or max_tiles is not None:
             filters += self._limit_filter(
                 max_rois=max_rois,
                 max_tiles=max_tiles,
@@ -258,6 +313,7 @@ class ParentDatabase():
         hpf_list: Optional[Sequence[int]] = None,
         roi_list: Optional[Sequence[int]] = None,
         tile_list: Optional[Sequence[str]] = None,
+        timepoint_list: Optional[Iterable[int]] = None,
         occupancy_threshold: Optional[float] = None
     ) -> list[str]:
         column_names = [
@@ -295,6 +351,7 @@ class ParentDatabase():
             hpf_list=hpf_list,
             roi_list=roi_list,
             tile_list=tile_list,
+            timepoint_list=timepoint_list,
         )
         if self.max_partitions is None or self.max_partitions <= 1 :
             # Single partition
@@ -311,7 +368,7 @@ class ParentDatabase():
                     """]
 
         else:
-            # Multiple partitions, with limit and offset
+           # Multiple partitions, with limit and offset
             max_rows = self.count_rows(table_name=table_name)
 
             if max_hypercubes is None:
@@ -320,6 +377,8 @@ class ParentDatabase():
             if max_hypercubes > max_rows:
                 max_hypercubes = max_rows
 
+            assert max_hypercubes != 0, f"{table_name} is empty"
+            
             if max_hypercubes > 1000:
                 # select max number of partitions that divides the number of rows in each partition evenly
                 partition_num = max([i for i in range(1, self.max_partitions + 1) if
@@ -448,7 +507,7 @@ class ParentDatabase():
                 return df
             except Exception as e:
                 logger.warning(f"Attempt {i+1} failed with error: {e}. Retrying...")
-        logger.error(f"Failed to execute query: {e}")
+        logger.error(f"Failed to execute query: {query}")
         raise
 
     def list_tables(self) -> Any:
@@ -540,6 +599,7 @@ class ParentDatabase():
         hpf_list: Optional[Sequence[int]] = None,
         roi_list: Optional[Sequence[int]] = None,
         tile_list: Optional[Sequence[str]] = None,
+        timepoint_list: Optional[Iterable[int]] = None,
         hypercubes_dataframe_path: Optional[Path] = None,
         occupancy_threshold: Optional[float] = None
     ) -> pd.DataFrame:
@@ -559,6 +619,7 @@ class ParentDatabase():
                 hpf_list=hpf_list,
                 roi_list=roi_list,
                 tile_list=tile_list,
+                timepoint_list=timepoint_list,
                 occupancy_threshold=occupancy_threshold
             )
         else:
@@ -580,6 +641,7 @@ class ParentDatabase():
                 hpf_list=hpf_list,
                 roi_list=roi_list,
                 tile_list=tile_list,
+                timepoint_list=timepoint_list,
                 occupancy_threshold=occupancy_threshold
             )
 
@@ -588,6 +650,15 @@ class ParentDatabase():
             print('\n'.join(self.last_query) if isinstance(self.last_query, list) else self.last_query)
 
         table = self.execute_query(self.last_query)
+        
+        if "z_size" not in table.columns or "y_size" not in table.columns or "x_size" not in table.columns:
+            table["z_size"] = self.z_slices
+            table["y_size"] = self.y_slices
+            table["x_size"] = self.x_slices
+        
+        if any(table['time_size'] != self.num_timepoints):
+            table['time_size'] = self.num_timepoints
+
         num_rows, num_cols = table.shape
         print(f"\nRetrieved {num_rows} rows. \t Retrieved {num_cols} columns.")
 
@@ -595,3 +666,68 @@ class ParentDatabase():
             self.save_hypercubes_dataframe(table, hypercubes_dataframe_path=hypercubes_dataframe_path)
 
         return table
+
+
+    def update_data_locations(self, col='exists_aws', rows_filters=['2025/9%', '2025/10%']) -> pd.DataFrame:
+        filters = " OR ".join([f"output_folder LIKE '{f}'" for f in rows_filters])
+
+        query = f"""
+            UPDATE prepared
+            SET {col} = True
+            WHERE {filters}
+        """ 
+        self.execute_query(query)
+        
+        query = f"""
+            SELECT id, output_folder, {col}
+            FROM prepared
+            WHERE {filters}
+        """ 
+        
+        table = self.execute_query(query)
+        num_rows, num_cols = table.shape
+        print(table)
+        print(f"\nUpdated {num_rows} rows using {filters=}.")
+        return table
+    
+    def aggregate_hypercubes(
+        self, 
+        z_slices: int = 128,
+        y_slices: int = 128,
+        x_slices: int = 128,
+        group_cols: Iterable = ["time_start", "z_start", "y_start", "x_start", "prepared_id", "tile_name"],
+        agg: Dict = {
+            "cube_size": "first",
+            "time_size": "first",
+            "channel_size": "first",
+            "first_pc_id": "first",
+            "hpf": "first",
+            "server_folder": "first",
+            "output_folder": "first",
+            "metadata_json": "first",
+            "unique_targets": "first",
+            "imaged_locations": "first",
+            "date_crossed": "first",
+            "exists": "max",
+            "exists_prfs": "max",
+            "exists_aws": "max",
+            "metadata_tile_json": "sum",
+            "occupancy_ratios_ch_0": lambda s: np.mean(np.vstack(s.tolist()), axis=0).tolist(),
+            "occupancy_ratios_ch_1": lambda s: np.mean(np.vstack(s.tolist()), axis=0).tolist(),
+        },
+    ):
+        
+        self.hypercubes_dataframe["z_start"] = (self.hypercubes_dataframe["z_start"] // z_slices) * z_slices
+        self.hypercubes_dataframe["y_start"] = (self.hypercubes_dataframe["y_start"] // y_slices) * y_slices
+        self.hypercubes_dataframe["x_start"] = (self.hypercubes_dataframe["x_start"] // x_slices) * x_slices
+        self.hypercubes_dataframe = self.hypercubes_dataframe.groupby(group_cols, as_index=False).agg(agg)
+        
+        # print(self.hypercubes_dataframe[[*group_cols, "occupancy_ratios_ch_0"]])
+        # print(self.hypercubes_dataframe.shape)
+        # print(f"prepared_id: {self.hypercubes_dataframe.prepared_id.nunique()}, {sorted(self.hypercubes_dataframe.prepared_id.unique())}")
+        # print(f"tile_name: {self.hypercubes_dataframe.tile_name.nunique()}, {sorted(self.hypercubes_dataframe.tile_name.unique())}")
+        # print(f"time_start: {self.hypercubes_dataframe.time_start.nunique()}, {sorted(self.hypercubes_dataframe.time_start.unique())}")
+        # print(f"z_start: {self.hypercubes_dataframe.z_start.nunique()}, {sorted(self.hypercubes_dataframe.z_start.unique())}")
+        # print(f"y_start: {self.hypercubes_dataframe.y_start.nunique()}, {sorted(self.hypercubes_dataframe.y_start.unique())}")
+        # print(f"x_start: {self.hypercubes_dataframe.x_start.nunique()}, {sorted(self.hypercubes_dataframe.x_start.unique())}")
+        # print(f"occupancy_ratios_ch_0: {sorted(self.hypercubes_dataframe['occupancy_ratios_ch_0'].apply(len).unique())}")

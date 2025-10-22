@@ -1,3 +1,4 @@
+from pyarrow import Table
 import pytest
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
@@ -10,7 +11,8 @@ from tests.conftest import config
 import warnings
 warnings.filterwarnings("ignore")
 
-database_types = ['SupabaseDatabase','TrinoDatabase']   # List of database types to add to test matrix
+database_types = ['SupabaseDatabase']  # List of database types to add to test matrix
+# database_types = ['SupabaseDatabase', 'TrinoDatabase']  # List of database types to add to test matrix
 
 def get_database_class(database_type):
     if database_type == 'TrinoDatabase':
@@ -26,6 +28,9 @@ def database(config, request):
     config.experiment_name = f"test_{database_type}"
     config.datasets.databases._target_ = get_database_class(database_type) 
     config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.z_slices = 128
+    config.datasets.databases.y_slices = 128
+    config.datasets.databases.x_slices = 128
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / "database/hypercubes_dataframe.csv"
     config.datasets.databases.fetch_hypercubes_dataframe = False
@@ -57,6 +62,26 @@ def test_all_database_tables(database):
         except AssertionError:
             print(f"Table `{t}` is empty. Check access to this table in the database.")
 
+def test_all_database_views(database):
+    views = database.list_views()
+    print(f"Available views: {views.values.squeeze()}")
+
+    assert len(views) > 0, f"Zero views were returned"
+    for t in views.values.squeeze():
+        cols = database.count_columns(t)
+        rows = database.count_rows(t)
+
+        print(f"View `{t}` has {cols} column(s) and {rows} row(s).")
+        try:
+            assert cols > 0
+        except AssertionError:
+            print(f"View `{t}` has no columns. Check if the view exists in the database.")
+
+        try:
+            assert rows > 0
+        except AssertionError:
+            print(f"View `{t}` is empty. Check access to this view in the database.")
+
 def test_table(database, table_name='prepared'):
     print(f"Testing table `{table_name}`...")
     cols = database.get_columns(table_name)
@@ -81,6 +106,32 @@ def test_prepared_tiles_table(database):
 def test_prepared_cubes_table(database):
     test_table(database, table_name='prepared_cubes')
 
+
+def test_abc_data(database):
+    query = f""" SELECT id, output_folder, exists FROM prepared WHERE exists = TRUE """ 
+    table = database.execute_query(query)
+    num_rows, num_cols = table.shape
+    print(table)
+    print(f"Found {num_rows} rows.")
+    assert table.shape[0] > 0, "Zero hypercubes were returned"
+
+def test_prfs_data(database):
+    query = f""" SELECT id, output_folder, exists_prfs FROM prepared WHERE exists_prfs = TRUE """ 
+    table = database.execute_query(query)
+    num_rows, num_cols = table.shape
+    print(table)
+    print(f"Found {num_rows} rows.")
+    assert table.shape[0] > 0, "Zero hypercubes were returned"
+
+def test_aws_data(database):
+    query = f""" SELECT id, output_folder, exists_aws FROM prepared WHERE exists_aws = TRUE """ 
+    table = database.execute_query(query)
+    num_rows, num_cols = table.shape
+    print(table)
+    print(f"Found {num_rows} rows.")
+    assert table.shape[0] > 0, "Zero hypercubes were returned"
+
+
 @pytest.mark.skip('Table is empty. Database connection not available')
 def test_create_1_128_128_128_2_hypercubes(database):
     table = database.get_t_128_128_128_2_hypercubes(num_timepoints=1, max_hypercubes=100)
@@ -91,7 +142,9 @@ def test_create_1_128_128_128_2_hypercubes(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 1).all(), "All time sizes should be 1"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
     pd.testing.assert_series_equal(
@@ -111,7 +164,9 @@ def test_create_16_128_128_128_2_hypercubes(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
     pd.testing.assert_series_equal(
@@ -128,7 +183,9 @@ def test_hypercubes_max_roi_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
 
     assert len(table['prepared_id'].unique()) == 1, "Only one ROI should be returned"
 
@@ -139,7 +196,9 @@ def test_hypercubes_max_tiles_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table.shape[0] > 0, f"Zero tiles were returned"
     assert len(table['tile_name'].unique()) <= 10, "Only ten tiles should be returned"
 
@@ -150,7 +209,9 @@ def test_hypercubes_max_hypercubes_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
     assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
 
@@ -164,8 +225,9 @@ def test_hypercubes_list_roi_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table['prepared_id'].isin(roi_list).all(), f"Only ROIs in {roi_list} should be returned"
     assert table.shape[0] > 0, f"Zero ROIs were returned"
 
@@ -178,8 +240,9 @@ def test_hypercubes_list_tiles_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table['tile_name'].isin(tile_list).all(), f"Only tiles in {tile_list} should be returned"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
@@ -199,8 +262,9 @@ def test_hypercubes_list_filters(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table['prepared_id'].isin(roi_list).all(), f"Only ROIs in {roi_list} should be returned"
     assert table['tile_name'].isin(tile_list).all(), f"Only tiles in {tile_list} should be returned"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
@@ -217,8 +281,9 @@ def test_hypercubes_hpf_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table['hpf'].isin(hpf_list).all(), f"Only hpf in {hpf_list} should be returned"
     assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
@@ -319,6 +384,35 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config, database_type
     assert table['hpf'].isin(config.datasets.databases.hpf_list).all(), f"Only hpf in {config.datasets.databases.hpf_list} should be returned"
 
     config.datasets.databases = previous_config.copy()  #  Restore previous config state.  For the tests that follow, this will clear 'filters' we just added 
+
+@pytest.mark.parametrize("database_type", database_types)
+def test_16_128_128_128_2_hypercubes_database_1k(config, database_type):
+    config.experiment_name = "test_16_128_128_128_2_hypercubes_database_1k"
+    config.datasets.databases._target_ = get_database_class(database_type) 
+    config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.max_hypercubes = 1000
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
+
+    print(f"Initializing {config.datasets.databases._target_}...")
+    # pprint(OmegaConf.to_container(config, resolve=True))
+
+    database = instantiate(config.datasets.databases)
+    table = database.hypercubes_dataframe
+    print(table)
+
+    assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
+
+    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+
+    assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique value"
+
+    assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
     
 @pytest.mark.parametrize("database_type", database_types)
 def test_16_128_128_128_2_hypercubes_database_10k(config, database_type):
@@ -377,3 +471,91 @@ def test_16_128_128_128_2_hypercubes_database_100k(config, database_type):
     assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique values"
 
     assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
+
+@pytest.mark.parametrize("database_type", database_types)
+@pytest.mark.parametrize("z_slices,y_slices,x_slices", [
+    (128, 128, 128),
+    (128, 256, 256),
+    (128, 384, 384),
+    (128, 256, 512),
+    (128, 384, 512),
+])
+def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slices):
+    config.experiment_name = "test_aggregate_hypercubes"
+    config.datasets.databases._target_ = get_database_class(database_type) 
+    config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.max_hypercubes = 1000
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
+    config.datasets.databases.z_slices = z_slices
+    config.datasets.databases.y_slices = y_slices
+    config.datasets.databases.x_slices = x_slices
+
+    print(f"Initializing {config.datasets.databases._target_}...")
+    # pprint(OmegaConf.to_container(config, resolve=True))
+
+    database = instantiate(config.datasets.databases)
+    table = database.hypercubes_dataframe
+    print(table)
+
+    assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints}"
+
+    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+
+    assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique values"
+
+    assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
+
+    assert (table['z_size'] == z_slices).all() , f"{table["z_size"].unique()} != {z_slices}"
+    assert (table['y_size'] == y_slices).all() , f"{table["y_size"].unique()} != {y_slices}"
+    assert (table['x_size'] == x_slices).all() , f"{table["x_size"].unique()} != {x_slices}"
+    
+    assert all(table['z_start'] % z_slices) == 0, f"Starting indices for z_start doesn't match {z_slices}"
+    assert all(table['y_start'] % y_slices) == 0, f"Starting indices for y_start doesn't match {y_slices}"
+    assert all(table['x_start'] % x_slices) == 0, f"Starting indices for x_start doesn't match {x_slices}"
+    
+    assert table['occupancy_ratios_ch_0'].apply(len).unique()[0] == config.datasets.databases.num_timepoints, "Should only have a single ratio for each timepoint"
+    
+@pytest.mark.parametrize("database_type", database_types)
+def test_csv_dataframe(config, database_type):
+    config.experiment_name = "test_csv_dataframe"
+    config.datasets.databases._target_ = get_database_class(database_type) 
+    config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.z_slices = 128
+    config.datasets.databases.y_slices = 128
+    config.datasets.databases.x_slices = 128
+    config.datasets.databases.max_hypercubes = None
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = True
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.server_folder_path) / 'databases' / "hypercube_dataframe.csv"
+
+    print(f"Initializing {config.datasets.databases._target_}...")
+    # pprint(OmegaConf.to_container(config, resolve=True))
+
+    database = instantiate(config.datasets.databases)
+    table = database.hypercubes_dataframe
+    print(table)
+    # database.save_hypercubes_dataframe(hypercubes_dataframe_path=Path(config.paths.server_folder_path) / 'databases' / "hypercube_dataframe.csv")
+
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+    assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique values"
+    assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
+
+    assert (table['time_size'] == config.datasets.databases.num_timepoints).all(), f"All time sizes should be {config.datasets.databases.num_timepoints} found {table['time_size'].unique()}"
+    assert (table['z_size'] == config.datasets.databases.z_slices).all() , f"{table["z_size"].unique()} != {config.datasets.databases.z_slices} found {table['z_slices'].unique()}"
+    assert (table['y_size'] == config.datasets.databases.y_slices).all() , f"{table["y_size"].unique()} != {config.datasets.databases.y_slices} found {table['y_slices'].unique()}"
+    assert (table['x_size'] == config.datasets.databases.x_slices).all() , f"{table["x_size"].unique()} != {config.datasets.databases.x_slices} found {table['x_slices'].unique()}"
+    
+    assert all(table['z_start'] % config.datasets.databases.z_slices) == 0, f"Starting indices for z_start doesn't match {config.datasets.databases.z_slices}"
+    assert all(table['y_start'] % config.datasets.databases.y_slices) == 0, f"Starting indices for y_start doesn't match {config.datasets.databases.y_slices}"
+    assert all(table['x_start'] % config.datasets.databases.x_slices) == 0, f"Starting indices for x_start doesn't match {config.datasets.databases.x_slices}"
+    
+    assert table['occupancy_ratios_ch_0'].apply(len).unique()[0] == config.datasets.databases.num_timepoints, "Should only have a single ratio for each timepoint"

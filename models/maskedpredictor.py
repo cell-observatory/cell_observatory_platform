@@ -122,6 +122,7 @@ class MaskedPredictor(nn.Module):
         rope_mixed: bool = True,
         rope_theta: float = 10.0,
         mlp_wide_silu: bool = False,
+        dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
@@ -146,7 +147,7 @@ class MaskedPredictor(nn.Module):
 
         axis_to_value = dict(zip(input_fmt, input_shape[1:]))
         self.in_chans = axis_to_value['C']
-        self.num_frames = axis_to_value['T']
+        self.num_frames = axis_to_value.get("T", None)
 
         self.axial_patch_size = axial_patch_size
         self.lateral_patch_size = lateral_patch_size
@@ -221,7 +222,8 @@ class MaskedPredictor(nn.Module):
                         self.axial_patch_size,
                         self.lateral_patch_size,
                         self.lateral_patch_size),
-            mlp_wide_silu=mlp_wide_silu
+            mlp_wide_silu=mlp_wide_silu,
+            dtype=dtype
         )
         
     @torch.jit.ignore
@@ -246,18 +248,21 @@ class MaskedPredictor(nn.Module):
             )
             return num_patches
 
-    def forward(self, inputs, original_patch_indices, target_masks):
+
+    def forward(self, inputs, original_patch_indices=None, target_masks=None):
         batch_size = inputs.shape[0]
 
         tokens = self.patch_projection(inputs)
-        mask_tokens = self.token_param.repeat(batch_size, target_masks.shape[1], 1)
-
-        patches = torch.cat([tokens, mask_tokens], dim=1)
-        patches = torch.gather(
-            patches,
-            dim=1,
-            index=original_patch_indices.unsqueeze(-1).repeat(1, 1, self.embed_dim)
-        ) # reorder patches to original order
+        if target_masks is not None:
+            mask_tokens = self.token_param.repeat(batch_size, target_masks.shape[1], 1)
+            patches = torch.cat([tokens, mask_tokens], dim=1)
+            patches = torch.gather(
+                patches,
+                dim=1,
+                index=original_patch_indices.unsqueeze(-1).repeat(1, 1, self.embed_dim)
+            ) # reorder patches to original order
+        else:
+            patches = tokens
 
         if self.abs_sincos_enc:
             x = patches + self.pos_embedding(patches)

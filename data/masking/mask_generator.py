@@ -83,7 +83,9 @@ class MaskGenerator(object):
         self,
         layout: MULTICHANNEL_HYPERCUBE,
         input_shape: Tuple[int, int, int, int, int] = (32, 128, 128, 128, 2),
-        patch_shape: Tuple[int, int, int, int] = (32, 16, 16, 16),
+        temporal_patch_size: Optional[int] = None,
+        axial_patch_size: int = 16,
+        lateral_patch_size: int = 16,
         lateral_mask_scale: float = (0.2, 0.4),
         axial_mask_scale: float = (0.2, 0.4),
         temporal_mask_scale: float = (0.2, 0.4),
@@ -97,10 +99,18 @@ class MaskGenerator(object):
     ):
         self.device = device
 
+        if isinstance(layout, str):
+            try:
+                layout = MULTICHANNEL_HYPERCUBE[layout]
+            except KeyError:
+                layout = MULTICHANNEL_HYPERCUBE(layout)
+
         self.layout = layout
         
         self.input_shape = input_shape
-        self.patch_shape = patch_shape
+        self.temporal_patch_size = temporal_patch_size
+        self.axial_patch_size = axial_patch_size
+        self.lateral_patch_size = lateral_patch_size
 
         self.lateral_mask_scale = lateral_mask_scale
         self.axial_mask_scale = axial_mask_scale
@@ -129,7 +139,9 @@ class MaskGenerator(object):
 
         self.time, self.depth, self.height, self.width = self._get_input_shape_patches(
             input_shape=self.input_shape,
-            patch_shape=self.patch_shape,
+            temporal_patch_size=self.temporal_patch_size,
+            axial_patch_size=self.axial_patch_size,
+            lateral_patch_size=self.lateral_patch_size,
             layout=self.layout
         )
         self.input_shape_patches = (
@@ -139,7 +151,13 @@ class MaskGenerator(object):
             self.width
         )
 
-    def _get_input_shape_patches(self, input_shape, patch_shape, layout):
+    def _get_input_shape_patches(self, 
+                                 input_shape, 
+                                 temporal_patch_size, 
+                                 axial_patch_size, 
+                                 lateral_patch_size, 
+                                 layout
+    ):
         axis_to_value = dict(zip(layout.value, input_shape))
 
         t = axis_to_value.get("T", 1)
@@ -148,23 +166,24 @@ class MaskGenerator(object):
         x = axis_to_value.get("X", 1)
 
         if t > 1 and z > 1:
-            time = t // patch_shape[0] 
-            depth = z // patch_shape[1]
-            height = y // patch_shape[2] 
-            width = x // patch_shape[3]
+            time = t // temporal_patch_size
+            depth = z // axial_patch_size
+            height = y // lateral_patch_size
+            width = x // lateral_patch_size
         elif t > 1 and z == 1:
-            time = t // patch_shape[0]
+            time = t // temporal_patch_size
             depth = 1
-            height = y // patch_shape[1]
-            width = x // patch_shape[2]
+            height = y // lateral_patch_size
+            width = x // lateral_patch_size
         elif t == 1 and z > 1:
             time = 1
-            depth = z // patch_shape[0]
-            height = y // patch_shape[1]
-            width = x // patch_shape[2]
+            depth = z // axial_patch_size
+            height = y // lateral_patch_size
+            width = x // lateral_patch_size
         else:
             raise ValueError(
-                f"Invalid input shape {input_shape} and patch shape {patch_shape} for layout {layout}. "
+                f"Invalid input shape {input_shape} and patch shape "
+                "{(temporal_patch_size, axial_patch_size, lateral_patch_size, lateral_patch_size)} for layout {layout}. "
                 "Expected at least one of time or depth to be greater than 1."
             )
 
@@ -317,38 +336,53 @@ class MaskGenerator(object):
         original_patch_indices = torch.utils.data.default_collate(original_indices_list)
         return masks, collated_masks_context, collated_masks_target, original_patch_indices
     
-    # NOTE: not to be used for pretraining but for upsampling finetuning
-    #       task hence we do not return context/target masks
-    def _generate_blocked_mask_patterned(self, batch_size):
-        """
-        Generates masks that downsample the time dimension by a given factor. 
-        """
-        mask_pattern = torch.tensor(self.time_downsample_pattern, 
-                                    dtype=torch.bool, 
-                                    device=self.device)  
-        K = mask_pattern.shape[0]  
-        
-        # mod all time values by K to extend 
-        # the mask pattern across the time dimension
-        time_indices = torch.arange(self.time, device=self.device) % K    
-        time_mask = mask_pattern[time_indices]                            
+    def _generate_blocked_mask_patterned(self, batch_size: int):
+        if self.time_downsample_pattern is None:
+            raise ValueError("time_downsample_pattern must be provided for BLOCKED_PATTERNED.")
 
-        # mask: (time,) -> (time, (depth), height, width) -> (bs, time * (depth) * height * width)
-        # later, we repeat across channel dimension
-        if self.depth:
-            mask = time_mask.view(self.time, 1, 1, 1).expand(-1, self.depth, self.height, self.width)
-            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, -1, -1)
-            mask = mask.contiguous().view(batch_size, -1)
+        pattern = torch.as_tensor(self.time_downsample_pattern, dtype=torch.bool, device=self.device)
+        if pattern.ndim != 1 or pattern.numel() == 0:
+            raise ValueError("time_downsample_pattern must be a 1D non-empty sequence of 0/1 values.")
+
+        K = pattern.numel()
+        time_idx = torch.arange(self.time, device=self.device) % K
+        time_mask = pattern[time_idx]
+
+        if self.depth > 1:
+            base = time_mask.view(self.time, 1, 1, 1).expand(-1, self.depth, self.height, self.width)
         else:
-            mask = time_mask.view(self.time, 1, 1).expand(-1, self.height, self.width)
-            mask = mask.unsqueeze(0).expand(batch_size, -1, -1, -1)
-            mask = mask.contiguous().view(batch_size, -1)
+            base = time_mask.view(self.time, 1, 1).expand(-1, self.height, self.width)
 
-        # masked patches are 1, unmasked are 0
-        # so argsort will give us the original patch indices in (B,L)
-        original_patch_indices = mask.int().argsort(dim=1, stable=True)
-        
-        return mask, None, None, original_patch_indices
+        masks = base.reshape(1, -1).expand(batch_size, -1).to(torch.int32)  # (B, L)
+
+        num_tgt = masks.sum(dim=1)
+        num_ctx = masks.shape[1] - num_tgt
+        if (num_tgt == 0).any() or (num_ctx == 0).any():
+            raise ValueError(
+                "Pattern produced empty context or target in at least one sample. "
+                "Ensure pattern has at least one 0 and one 1."
+            )
+
+        ctx_pos = (masks == 0).nonzero(as_tuple=False)  # (N_ctx_total, 2)
+        tgt_pos = (masks == 1).nonzero(as_tuple=False)  # (N_tgt_total, 2)
+
+        ctx_list, tgt_list, orig_list = [], [], []
+        for b in range(batch_size):
+            ctx_idx = ctx_pos[ctx_pos[:, 0] == b][:, 1]  # (L_ctx,)
+            tgt_idx = tgt_pos[tgt_pos[:, 0] == b][:, 1]  # (L_tgt,)
+
+            perm = torch.cat([ctx_idx, tgt_idx], dim=0) # (L,)
+            orig = torch.argsort(perm, dim=0, stable=True) # (L,)
+
+            ctx_list.append(ctx_idx)
+            tgt_list.append(tgt_idx)
+            orig_list.append(orig)
+
+        context_masks = torch.utils.data.default_collate(ctx_list) # (B, L_ctx)
+        target_masks  = torch.utils.data.default_collate(tgt_list) # (B, L_tgt)
+        original_patch_indices = torch.utils.data.default_collate(orig_list) # (B, L)
+
+        return masks, context_masks, target_masks, original_patch_indices
 
     def _generate_random_mask(self, batch_size: int, space_only=False, device="cuda"):
         B, T = batch_size, self.time

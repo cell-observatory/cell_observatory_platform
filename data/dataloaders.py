@@ -197,7 +197,7 @@ def get_dataloader(config: DictConfig):
                     train = raytorch.prepare_data_loader(train)
                     val = raytorch.prepare_data_loader(val)
 
-                return train, val, None, None
+                return train, val, None, None, None
 
             else:
                 dataloader = DataLoader(
@@ -219,7 +219,7 @@ def get_dataloader(config: DictConfig):
                 if config.distributed_framework == "ray":
                     dataloader = raytorch.prepare_data_loader(dataloader)
 
-                return dataloader, None, None, None
+                return dataloader, None, None, None, None
         else:
             return dataset
 
@@ -275,7 +275,7 @@ def get_dataloader(config: DictConfig):
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
 
-            return dali_train_loader, dali_val_loader, None, None
+            return dali_train_loader, dali_val_loader, None, None, None
 
         else:
             # DALI dataloader
@@ -298,7 +298,7 @@ def get_dataloader(config: DictConfig):
                 auto_reset=True,
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
-            return dali_loader, None, None, None
+            return dali_loader, None, None, None, None
 
     elif config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
         # get numa nodes for this node (gathered on local_rank 0)
@@ -352,13 +352,13 @@ def get_dataloader(config: DictConfig):
                                     node_id=node_id(), 
                                     debug=config.datasets.debug)
 
-        train_dataloader, val_dataloader = get_dataloader_ray(
+        train_dataloader, val_dataloader, database_df = get_dataloader_ray(
             cfg=config,
             batch_size=config.clusters.batch_size_per_gpu,
             drop_last=config.datasets.drop_last_policy,
             collate_fn=collate_fn
         )
-        return train_dataloader, val_dataloader, buffer_actor, collate_fn.device_buffer
+        return train_dataloader, val_dataloader, buffer_actor, collate_fn.device_buffer, database_df
     
     else:
         raise NotImplementedError(

@@ -1,6 +1,6 @@
 import sys
 import logging
-from typing import Literal, Union
+from typing import Literal, Union, Optional
 
 import numpy as np
 import torch
@@ -40,8 +40,12 @@ class Encoder(nn.Module):
         rope_theta: float = 10.0,
         input_fmt: str = "TZYXC",
         input_shape: tuple = (16, 128, 128, 128, 2),
-        patch_size: tuple = (4, 16, 16, 16),
+        temporal_patch_size: Optional[int] = 4,
+        axial_patch_size: Optional[int] = 16,
+        lateral_patch_size: int = 16,
         wide_silu: bool = False,
+        out_layers: list = None,
+        dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
@@ -56,7 +60,7 @@ class Encoder(nn.Module):
         self.drop_path_rate = drop_path_rate
 
         # stochastic depth decay rule
-        if not fixed_dropout_depth and self.drop_path_rate > 0.0:
+        if not fixed_dropout_depth:
             dpr = np.linspace(0, self.drop_path_rate, self.depth)
 
         self.norm_layer = get_norm(norm_layer)
@@ -70,8 +74,7 @@ class Encoder(nn.Module):
                 mlp_ratio=mlp_ratio,
                 proj_drop=self.proj_drop_rate,
                 att_drop=self.att_drop_rate,
-                drop_path=self.drop_path_rate if fixed_dropout_depth \
-                    and self.drop_path_rate > 0.0 else dpr[i],
+                drop_path=self.drop_path_rate if fixed_dropout_depth else dpr[i],
                 norm_layer=self.norm_layer,
                 act_layer=self.act_layer,
                 mlp_layer=self.mlp_layer,
@@ -81,8 +84,11 @@ class Encoder(nn.Module):
                 rope_theta=rope_theta,
                 input_fmt=input_fmt,
                 input_shape=input_shape,
-                patch_size=patch_size,
+                temporal_patch_size=temporal_patch_size,
+                axial_patch_size=axial_patch_size,
+                lateral_patch_size=lateral_patch_size,
                 wide_silu=wide_silu,
+                dtype=dtype
             )
             for i in range(self.depth)
         ])
@@ -90,11 +96,20 @@ class Encoder(nn.Module):
                                   num_chs=self.embed_dim) for i in range(self.depth)]
         self.init_std = init_std
 
+        self.out_layers = out_layers
+
     @torch.jit.ignore
     def get_num_layers(self):
         return len(self.transformer_blocks)
 
     def forward(self, x, masks=None):
+        outs = []
         for i, t in enumerate(self.transformer_blocks):
             x = t(x, masks=masks, return_attention=False)
+            if self.out_layers is not None and i in self.out_layers:
+                outs.append(x)
+        
+        if self.out_layers is not None:
+            return outs
+
         return x

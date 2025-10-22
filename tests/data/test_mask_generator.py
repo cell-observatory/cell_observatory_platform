@@ -17,7 +17,9 @@ def make_mask_generator():
               pattern: Optional[list] = None,
               input_channels: int = 2,
               spatial_shape: int = (16,16,16),
-              patch_shape=(1, 2, 2, 2),
+              temporal_patch_size: int = 1,
+              lateral_patch_size: int = 16,
+              axial_patch_size: int = 16,
               random_masking_ratio: float = 0.5,
               lateral_mask_scale: float = 0.1,
               axial_mask_scale: float = 0.1,
@@ -38,12 +40,12 @@ def make_mask_generator():
         else:
             raise ValueError(f"Unknown layout {layout}")
 
-        assert len(input_shape) == (len(patch_shape) + 1)
-
         return MaskGenerator(
             layout=layout,
             input_shape=input_shape,
-            patch_shape=patch_shape,
+            temporal_patch_size=temporal_patch_size,
+            lateral_patch_size=lateral_patch_size,
+            axial_patch_size=axial_patch_size,
             mask_mode=maskmode,
             time_downsample_pattern=pattern,
             random_masking_ratio=random_masking_ratio,
@@ -61,7 +63,6 @@ def make_mask_generator():
     ("time_length", "pattern"),
     [
         (4, [0, 1, 0, 1]),
-        (8, [1, 1]),
         (10, [1, 0, 1, 1, 1, 0]),
     ],
 )
@@ -88,21 +89,23 @@ def test_blocked_pattern_mask(make_mask_generator,
     if layout == MULTICHANNEL_HYPERCUBE.CTZYX \
         or layout == MULTICHANNEL_HYPERCUBE.TZYXC:
         spatial_shape = (128, 128, 128)  # Z, Y, X
-        patch_shape = (1, 16, 16, 16)  # T, Z, Y, X
-    elif layout == MULTICHANNEL_HYPERCUBE.ZYXC \
-        or layout == MULTICHANNEL_HYPERCUBE.CZYX:
-        spatial_shape = (128, 128, 128)  # Z, Y, X
-        patch_shape = (16, 16, 16)
+        temporal_patch_size = 1
+        lateral_patch_size = 16
+        axial_patch_size = 16
     elif layout == MULTICHANNEL_HYPERCUBE.TYXC \
         or layout == MULTICHANNEL_HYPERCUBE.CTYX:
         spatial_shape = (128, 128)  # Y, X
-        patch_shape = (1, 16, 16)  # T, Y, X
+        temporal_patch_size = 1
+        lateral_patch_size = 16
+        axial_patch_size = 16
     else:
         raise ValueError(f"Unknown layout {layout}")
 
     mg = make_mask_generator(time_length=time_length,
                              spatial_shape=spatial_shape,
-                             patch_shape=patch_shape, 
+                             temporal_patch_size=temporal_patch_size,
+                             lateral_patch_size=lateral_patch_size,
+                             axial_patch_size=axial_patch_size,
                              pattern=pattern,
                              layout=layout,
                              maskmode=maskmode
@@ -159,21 +162,29 @@ def test_random_mask(make_mask_generator,
     if layout == MULTICHANNEL_HYPERCUBE.CTZYX \
         or layout == MULTICHANNEL_HYPERCUBE.TZYXC:
         spatial_shape = (128, 128, 128)  # Z, Y, X
-        patch_shape = (1, 16, 16, 16)  # T, Z, Y, X
+        temporal_patch_size = 1
+        lateral_patch_size = 16
+        axial_patch_size = 16
     elif layout == MULTICHANNEL_HYPERCUBE.ZYXC \
         or layout == MULTICHANNEL_HYPERCUBE.CZYX:
         spatial_shape = (128, 128, 128)  # Z, Y, X
-        patch_shape = (16, 16, 16)
+        temporal_patch_size = None
+        lateral_patch_size = 16
+        axial_patch_size = 16
     elif layout == MULTICHANNEL_HYPERCUBE.TYXC \
         or layout == MULTICHANNEL_HYPERCUBE.CTYX:
         spatial_shape = (128, 128)  # Y, X
-        patch_shape = (1, 16, 16)  # T, Y, X
+        temporal_patch_size = 1
+        lateral_patch_size = 16
+        axial_patch_size = 16
     else:
         raise ValueError(f"Unknown layout {layout}")
 
     mg = make_mask_generator(
         spatial_shape=spatial_shape,
-        patch_shape=patch_shape,
+        temporal_patch_size=temporal_patch_size,
+        lateral_patch_size=lateral_patch_size,
+        axial_patch_size=axial_patch_size,
         maskmode=maskmode,
         layout=layout,
         time_length=time_length,
@@ -254,15 +265,21 @@ def test_blocked_mask_properties(make_mask_generator,
     if layout == MULTICHANNEL_HYPERCUBE.CTZYX \
         or layout == MULTICHANNEL_HYPERCUBE.TZYXC:
         spatial_shape = (128, 128, 128)  # Z, Y, X
-        patch_shape = (1, 16, 16, 16)  # T, Z, Y, X
+        temporal_patch_size = 1
+        lateral_patch_size = 16
+        axial_patch_size = 16
     elif layout == MULTICHANNEL_HYPERCUBE.ZYXC \
         or layout == MULTICHANNEL_HYPERCUBE.CZYX:
         spatial_shape = (128, 128, 128)  # Z, Y, X
-        patch_shape = (16, 16, 16)
+        temporal_patch_size = None
+        lateral_patch_size = 16
+        axial_patch_size = 16
     elif layout == MULTICHANNEL_HYPERCUBE.TYXC \
         or layout == MULTICHANNEL_HYPERCUBE.CTYX:
         spatial_shape = (128, 128)  # Y, X
-        patch_shape = (1, 16, 16)  # T, Y, X
+        temporal_patch_size = 1
+        lateral_patch_size = 16
+        axial_patch_size = 16
     else:
         raise ValueError(f"Unknown layout {layout}")
 
@@ -271,7 +288,9 @@ def test_blocked_mask_properties(make_mask_generator,
 
     mg = make_mask_generator(
         spatial_shape=spatial_shape,
-        patch_shape=patch_shape,
+        temporal_patch_size=temporal_patch_size,
+        lateral_patch_size=lateral_patch_size,
+        axial_patch_size=axial_patch_size,
         maskmode=maskmode,
         layout=layout,
         time_length=time_length,

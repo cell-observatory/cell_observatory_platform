@@ -1,8 +1,11 @@
 # This gets overridden in tests/data/test_database.py to test both classes.
 _target_: data.databases.supabase_database.SupabaseDatabase # e.g. data.databases.trino_database.TrinoDatabase  
-dbname: 'staging'
+dbname: 'prod'
 
 num_timepoints: ${datasets.input_shape.0} # number of timepoints for each hypercube
+z_slices: ${datasets.input_shape.1} # number of planes in the Z axis
+y_slices: ${datasets.input_shape.2} # number of planes in the Y axis
+x_slices: ${datasets.input_shape.3} # number of planes in the X axis
 
 max_rois: ${datasets.max_rois} # maximum number of ROIs (each ROI can have dozens of tiles)
 max_tiles: ${datasets.max_tiles} # maximum number of tiles (each tile can have thousands of hypercubes)

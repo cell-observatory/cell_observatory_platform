@@ -11,6 +11,8 @@ from cupy.cuda import runtime as cudart
 from hydra.utils import instantiate
 from omegaconf import OmegaConf, DictConfig
 
+import pandas as pd
+
 import ray
 import pyarrow as pa
 
@@ -31,7 +33,8 @@ from utils.context import (process_rank,
 from utils.profiling import pprof_func, pprof_class
 from data.datasets.buffers import get_buffers, DeviceMemoryBuffer
 from data.data_types import (NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES)
-from training.helpers import record_dataset_len
+from training.helpers import record_dataset_len, get_data_dim
+from inference.utils import tile_owner
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -52,8 +55,16 @@ class CollatorActor:
                  pin_numa_node: bool,
                  pin_pages: bool,
                  node_id: int,
+                 columns: List[str] = [
+                        # metadata columns to keep from the original dataframe
+                        "x_start", "y_start", "z_start", "time_start",
+                        "channel_size", "cube_size", "time_size",
+                        "server_folder", "output_folder", "tile_name", "prepared_id"
+                 ],
                  debug: bool = False
     ):
+        self.columns = columns
+
         self.node_id = node_id
         self.local_rank = local_rank()
         self.global_rank = process_rank()
@@ -185,8 +196,11 @@ class CollatorActor:
 
             metainfo = {
                 "host_buffer_idx": host_buffer_idx,
-                "device_buffer_idx": device_buffer_idx
+                "device_buffer_idx": device_buffer_idx,
             }
+            for k in self.columns:
+                if k in batch:
+                    metainfo[k] = batch[k]
 
             if self.debug:
                 # NOTE: for testing only, put_free(idx) otherwise called by hooks in
@@ -203,6 +217,7 @@ class CollatorActor:
 @pprof_class
 class LoaderActor:
     def __init__(self,
+                 dim: int,
                  node_id: int,
                  local_rank: int,
                  global_rank: int,
@@ -216,6 +231,7 @@ class LoaderActor:
                  with_batched_api: bool = True,
                  channels_subset: Optional[List[int]] = None
 ):
+        self.dim = dim
         self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
         self.driver_process_numa_node = numa_node
         if pin_numa_node:
@@ -285,6 +301,9 @@ class LoaderActor:
             c = slice(0, meta["channel_size"])
             view = data_tensor[t, z, y, x, c]
 
+        if self.dim == 3:
+            view = view[meta["time_start"], ...]
+
         return view
 
     def _get_handle(self, path: str):
@@ -305,6 +324,8 @@ class LoaderActor:
         with ts.Batch() as b:
             for i in range(self.batch_size):
                 p = os.path.join(batch["server_folder"][i],
+                                # TODO: remove these replacements once new database is ready
+                                # batch["output_folder"][i].replace("2025/7/4", "2025/10/1"),
                                 batch["output_folder"][i],
                                 batch["tile_name"][i])
                 meta = {
@@ -312,6 +333,7 @@ class LoaderActor:
                     "time_size": batch["time_size"][i],
                     "z_start": batch["z_start"][i],
                     "y_start": batch["y_start"][i],
+                    # "y_start": 0,
                     "x_start": batch["x_start"][i],
                     "cube_size": batch["cube_size"][i],
                     "channel_size": batch["channel_size"][i],
@@ -343,6 +365,56 @@ def get_context_spec(cfg: DictConfig) -> Dict[str, Any]:
     return ctx_spec
 
 
+def partition_indices_for_inference(
+    df: pd.DataFrame,
+    world_size: int,
+    batch_size: int,
+    drop_last_policy: bool,
+    roi_col: str = "prepared_id",
+    tile_col: str = "tile_name",
+) -> list[list[int]]:
+    total = len(df)
+    num_samples_per_rank = total // world_size
+
+    if drop_last_policy:
+        num_samples_per_rank = (num_samples_per_rank // batch_size) * batch_size
+
+    # round-robin assignment if not enough samples
+    if num_samples_per_rank == 0:
+        rows_per_rank = [[] for _ in range(world_size)]
+        for i, idx in enumerate(df.index.tolist()):
+            rows_per_rank[i % world_size].append(int(idx))
+        return rows_per_rank
+
+    df_sub = df.iloc[: world_size * num_samples_per_rank]
+
+    df_row_by_rank = df_sub.apply(lambda r: tile_owner(int(r[roi_col]), str(r[tile_col]), world_size), axis=1)
+    idxs = df_sub.index.to_numpy()
+
+    df_rank_to_row = {r: [] for r in range(world_size)}
+    for i, own in zip(idxs, df_row_by_rank.to_numpy()):
+        df_rank_to_row[int(own)].append(int(i))
+
+    rows_per_rank = [[] for _ in range(world_size)]
+    row_remainders = []
+    for r in range(world_size):
+        locality_matched_samples = df_rank_to_row[r][:num_samples_per_rank]
+        rank_row_remainders = df_rank_to_row[r][num_samples_per_rank:]
+        rows_per_rank[r].extend(locality_matched_samples)
+        row_remainders.extend(rank_row_remainders)
+
+    for r in range(world_size):
+        non_locality_matched_rows = num_samples_per_rank - len(rows_per_rank[r])
+        if non_locality_matched_rows > 0:
+            rows_per_rank[r].extend(row_remainders[:non_locality_matched_rows])
+            row_remainders = row_remainders[non_locality_matched_rows:]
+
+    assert all(len(x) == num_samples_per_rank for x in rows_per_rank), \
+        "Not all ranks have equal size data shards after partitioning."
+    
+    return rows_per_rank
+
+
 def get_dataset_ray(
     cfg: DictConfig,
     indices: Optional[List[int]],
@@ -352,7 +424,8 @@ def get_dataset_ray(
         # adding more columns may slow down collate
         'x_start', 'y_start', 'z_start', 'time_start',
         'channel_size', 'cube_size', 'time_size',
-        'server_folder', 'output_folder', 'tile_name',
+        'server_folder', 'output_folder', 
+        'tile_name', 'prepared_id'
     ]
 ):
     if cfg.datasets.channels_subset is not None:
@@ -360,24 +433,47 @@ def get_dataset_ray(
         assert len(list(cfg.datasets.channels_subset)) == num_channels, \
             f"channels_subset length {len(cfg.datasets.channels_subset)} " \
             f"does not match number of channels {num_channels} in input_shape {cfg.datasets.input_shape}"
-
+        
     set_data_context(cfg)
     ctx_spec = get_context_spec(cfg)
 
-    table = pa.table(
-        database.hypercubes_dataframe[columns].iloc[indices]
-        if indices is not None else database.hypercubes_dataframe[columns]
-    )
+    base_df = database.hypercubes_dataframe[columns]
+    if indices is not None:
+        base_df = base_df.iloc[indices]
 
-    dataset = ray.data.from_arrow(table)
-    dataset = dataset.split(n = get_world_size(), equal = True)[process_rank()]
+    ws, rk = get_world_size(), process_rank()
+    if cfg.job_type == "predict":
+        per_rank_indices = partition_indices_for_inference(
+            df=base_df,
+            world_size=ws,
+            batch_size=cfg.clusters.batch_size_per_gpu,
+            drop_last_policy=cfg.datasets.drop_last_policy,
+            roi_col="prepared_id",
+            tile_col="tile_name",
+        )
+        local_idx = per_rank_indices[rk]
+        local_df = base_df.loc[local_idx]
 
-    # TODO: reimplement to prevent two .count() calls
-    if cfg.datasets.drop_last_policy:
-        B = cfg.clusters.batch_size_per_gpu
-        dataset = dataset.limit((dataset.count() // B) * B)
+        ray.logger.info(f"Rank {rk} assigned dataframe: {local_df}")
+        ray.logger.info(f"Rank {rk} dataframe unique tiles: {local_df['tile_name'].nunique()}")
 
-    dataset_len = dataset.count()
+        table = pa.table(local_df)
+        dataset = ray.data.from_arrow(table)
+
+        dataset_len = len(local_df)
+
+    else:
+        table = pa.table(base_df)
+        dataset = ray.data.from_arrow(table)
+        dataset = dataset.split(n=ws, equal=True)[rk]
+
+        if cfg.datasets.drop_last_policy:
+            B = cfg.clusters.batch_size_per_gpu
+            n = dataset.count()
+            dataset = dataset.limit((n // B) * B)
+            dataset_len = dataset.count()
+        else:
+            dataset_len = dataset.count()
 
     dataset = dataset.repartition(
         target_num_rows_per_block=cfg.datasets.rows_per_block,
@@ -407,6 +503,7 @@ def get_dataset_ray(
             "global_rank": process_rank(),
             "node_id": node_id(),
             "numa_node": torch_gpu_to_numa(local_rank())["numa_node"],
+            "dim": get_data_dim(cfg.dataset_layout_order)
         },
         concurrency=(cfg.datasets.num_actors_min, cfg.datasets.num_actors_max),
     )
@@ -420,6 +517,7 @@ def get_dataloader_ray(cfg: DictConfig,
                        drop_last: bool = True
 ):
     db = instantiate(cfg.datasets.databases)
+    database_df = db.hypercubes_dataframe
     dataset_len = len(db.hypercubes_dataframe)
 
     if cfg.datasets.split is not None:
@@ -445,7 +543,7 @@ def get_dataloader_ray(cfg: DictConfig,
             _finalize_fn=collate_fn,
             batch_format="numpy"
         )
-        return train_dataloader, val_dataloader
+        return train_dataloader, val_dataloader, database_df
 
     else:
         train_dataset, train_dataset_len = get_dataset_ray(cfg, indices=None, database=db)
@@ -456,4 +554,4 @@ def get_dataloader_ray(cfg: DictConfig,
             _finalize_fn=collate_fn,
             batch_format="numpy"
         )
-        return train_dataloader, None
+        return train_dataloader, None, database_df

@@ -61,6 +61,23 @@ def test_rope_attention_shapes(dim, num_heads, rope_mixed, case):
     L = tokens_from(input_fmt, input_shape[1:], patch_size)
     B = 2
 
+    if input_fmt == "YXC":
+        axial_patch_size = 1
+        lateral_patch_size = patch_size[0]
+        temporal_patch_size = 1
+    elif input_fmt == "ZYXC":
+        axial_patch_size = patch_size[0]
+        lateral_patch_size = patch_size[1]
+        temporal_patch_size = 1
+    elif input_fmt == "TYXC":
+        axial_patch_size = 1
+        lateral_patch_size = patch_size[1]
+        temporal_patch_size = patch_size[0]
+    elif input_fmt == "TZYXC":
+        axial_patch_size = patch_size[1]
+        lateral_patch_size = patch_size[2]
+        temporal_patch_size = patch_size[0]
+
     x = torch.randn(B, L, dim, device='cuda')
     m = RopeAttention(
         dim=dim,
@@ -74,11 +91,14 @@ def test_rope_attention_shapes(dim, num_heads, rope_mixed, case):
         rope_theta=10.0,
         input_fmt=input_fmt,
         input_shape=input_shape,
-        patch_size=patch_size,
+        axial_patch_size=axial_patch_size,
+        lateral_patch_size=lateral_patch_size,
+        temporal_patch_size=temporal_patch_size,
     ).to('cuda')
     m.eval()
     y = m(x)
     assert y.shape == (B, L, dim)
+
 
 
 # ----------------------- Transformer block: with and without RoPE -------------------------------
@@ -94,6 +114,23 @@ def test_transformer_shapes(rope_pos_enc, dim, num_heads, mlp_ratio, case):
     input_fmt, input_shape, patch_size = case
     L = tokens_from(input_fmt, input_shape[1:], patch_size)
     B = 2
+
+    if input_fmt == "YXC":
+        axial_patch_size = 1
+        lateral_patch_size = patch_size[0]
+        temporal_patch_size = 1
+    elif input_fmt == "ZYXC":
+        axial_patch_size = patch_size[0]
+        lateral_patch_size = patch_size[1]
+        temporal_patch_size = 1
+    elif input_fmt == "TYXC":
+        axial_patch_size = 1
+        lateral_patch_size = patch_size[1]
+        temporal_patch_size = patch_size[0]
+    elif input_fmt == "TZYXC":
+        axial_patch_size = patch_size[1]
+        lateral_patch_size = patch_size[2]
+        temporal_patch_size = patch_size[0]
 
     x = torch.randn(B, L, dim, device='cuda')
     m = Transformer(
@@ -111,9 +148,12 @@ def test_transformer_shapes(rope_pos_enc, dim, num_heads, mlp_ratio, case):
         rope_theta=10.0,
         input_fmt=input_fmt,
         input_shape=input_shape,
-        patch_size=patch_size,
+        axial_patch_size=axial_patch_size,
+        lateral_patch_size=lateral_patch_size,
+        temporal_patch_size=temporal_patch_size,
         wide_silu=False,
     ).to('cuda')
     m.eval()
     y = m(x)
     assert y.shape == (B, L, dim)
+    

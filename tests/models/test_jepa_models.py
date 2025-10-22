@@ -39,6 +39,8 @@ def test_jepa_custom(models_kargs):
         num_heads=models_kargs['heads'],
         depth=models_kargs['repeats'],
         modes=models_kargs['modes'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     ).to('cuda')
@@ -78,6 +80,8 @@ def test_jepa_tiny(models_kargs):
         axial_patch_size=1,
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     ).to('cuda')
 
@@ -116,6 +120,8 @@ def test_jepa_small(models_kargs):
         axial_patch_size=1,
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     ).to('cuda')
 
@@ -154,6 +160,8 @@ def test_jepa_base(models_kargs):
         axial_patch_size=1,
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     ).to('cuda')
 
@@ -192,6 +200,8 @@ def test_jepa_large(models_kargs):
         axial_patch_size=1,
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     ).to('cuda')
 
@@ -230,6 +240,8 @@ def test_jepa_huge(models_kargs):
         axial_patch_size=1,
         temporal_patch_size=1,
         proj_drop_rate=models_kargs['dropout'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
     ).to('cuda')
 
