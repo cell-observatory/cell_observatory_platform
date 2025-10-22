@@ -123,6 +123,7 @@ class MaskedEncoder(nn.Module):
         rope_theta: float = 10.0,
         mlp_wide_silu: bool = False,
         out_layers: List[int] = None,
+        dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
@@ -219,7 +220,8 @@ class MaskedEncoder(nn.Module):
                         self.lateral_patch_size,
                         self.lateral_patch_size),
             mlp_wide_silu=mlp_wide_silu,
-            out_layers=out_layers
+            out_layers=out_layers,
+            dtype=dtype
         )
 
         self.out_layers = out_layers

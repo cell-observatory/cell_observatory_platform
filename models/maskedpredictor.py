@@ -122,6 +122,7 @@ class MaskedPredictor(nn.Module):
         rope_mixed: bool = True,
         rope_theta: float = 10.0,
         mlp_wide_silu: bool = False,
+        dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
@@ -221,7 +222,8 @@ class MaskedPredictor(nn.Module):
                         self.axial_patch_size,
                         self.lateral_patch_size,
                         self.lateral_patch_size),
-            mlp_wide_silu=mlp_wide_silu
+            mlp_wide_silu=mlp_wide_silu,
+            dtype=dtype
         )
         
     @torch.jit.ignore

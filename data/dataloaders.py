@@ -197,7 +197,7 @@ def get_dataloader(config: DictConfig):
                     train = raytorch.prepare_data_loader(train)
                     val = raytorch.prepare_data_loader(val)
 
-                return train, val, None, None
+                return train, val, None, None, None
 
             else:
                 dataloader = DataLoader(
@@ -219,7 +219,7 @@ def get_dataloader(config: DictConfig):
                 if config.distributed_framework == "ray":
                     dataloader = raytorch.prepare_data_loader(dataloader)
 
-                return dataloader, None, None, None
+                return dataloader, None, None, None, None
         else:
             return dataset
 
@@ -275,7 +275,7 @@ def get_dataloader(config: DictConfig):
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
 
-            return dali_train_loader, dali_val_loader, None, None
+            return dali_train_loader, dali_val_loader, None, None, None
 
         else:
             # DALI dataloader
@@ -298,7 +298,7 @@ def get_dataloader(config: DictConfig):
                 auto_reset=True,
                 last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
             )
-            return dali_loader, None, None, None
+            return dali_loader, None, None, None, None
 
     elif config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
         # get numa nodes for this node (gathered on local_rank 0)

@@ -161,6 +161,7 @@ class JEPA(nn.Module):
         weight_init_type: str = 'vjepa2',
         mlp_wide_silu: bool = False,
         loss_fn: str = 'l1_masked',
+        dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
@@ -236,7 +237,8 @@ class JEPA(nn.Module):
             rope_random_rotation_per_head=self.rope_random_rotation_per_head,
             rope_mixed=self.rope_mixed,
             rope_theta=self.rope_theta,
-            mlp_wide_silu=mlp_wide_silu
+            mlp_wide_silu=mlp_wide_silu,
+            dtype=dtype
         )
 
         self.target_predictor = MaskedPredictor(
@@ -265,7 +267,8 @@ class JEPA(nn.Module):
             rope_random_rotation_per_head=self.rope_random_rotation_per_head,
             rope_mixed=self.rope_mixed,
             rope_theta=self.rope_theta,
-            mlp_wide_silu=mlp_wide_silu
+            mlp_wide_silu=mlp_wide_silu,
+            dtype=dtype
         )
 
         self.weight_init_type = weight_init_type

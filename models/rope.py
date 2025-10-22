@@ -357,4 +357,3 @@ def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
         xk_out = xk_rot
 
     return xq_out.type_as(xq).to(xq.device), xk_out.type_as(xk).to(xk.device)
-

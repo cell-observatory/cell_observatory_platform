@@ -45,6 +45,7 @@ class Encoder(nn.Module):
         lateral_patch_size: int = 16,
         wide_silu: bool = False,
         out_layers: list = None,
+        dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
@@ -87,6 +88,7 @@ class Encoder(nn.Module):
                 axial_patch_size=axial_patch_size,
                 lateral_patch_size=lateral_patch_size,
                 wide_silu=wide_silu,
+                dtype=dtype
             )
             for i in range(self.depth)
         ])

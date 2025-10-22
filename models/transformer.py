@@ -3,6 +3,7 @@ import logging
 from functools import partial
 from typing import Optional
 
+import torch
 import torch.nn as nn
 from timm.layers import SwiGLU, DropPath
 
@@ -40,6 +41,7 @@ class Transformer(nn.Module):
         axial_patch_size: Optional[int] = 16,
         lateral_patch_size: int = 16,
         wide_silu: bool = False,
+        dtype: torch.dtype = torch.bfloat16
     ) -> None:
         super().__init__()
         self.norm1 = norm_layer(dim)
@@ -61,6 +63,7 @@ class Transformer(nn.Module):
                 temporal_patch_size=temporal_patch_size,
                 axial_patch_size=axial_patch_size,
                 lateral_patch_size=lateral_patch_size,
+                dtype=dtype
             )
         
         else:

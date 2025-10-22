@@ -147,7 +147,8 @@ class RopeAttention(nn.Module):
                 num_heads=self.num_heads, 
                 theta=rope_theta,
                 random_rotation_per_head=self.random_rotation_per_head,
-                input_fmt=input_fmt
+                input_fmt=input_fmt,
+                dtype=dtype,
             )
                 
             self.freqs = nn.Parameter(freqs, requires_grad=True)
@@ -296,4 +297,3 @@ class RopeAttention(nn.Module):
             x = self.proj(x)
             x = self.proj_drop(x)
             return x
-

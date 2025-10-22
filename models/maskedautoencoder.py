@@ -9,6 +9,7 @@ from models.mlp import get_mlp
 from models.norm import get_norm
 from training.losses import get_loss_fn
 from training.helpers import init_weights
+from data.data_types import TORCH_DTYPES
 from models.activation import get_activation
 from models.maskedencoder import MaskedEncoder
 from models.maskedpredictor import MaskedPredictor
@@ -158,6 +159,7 @@ class MaskedAutoEncoder(nn.Module):
         weight_init_type: str = 'mae',
         mlp_wide_silu: bool = False,
         loss_fn: str = 'l2_masked',
+        dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
@@ -179,6 +181,8 @@ class MaskedAutoEncoder(nn.Module):
             self.num_heads = num_heads
             self.decoder_num_heads = decoder_num_heads
             self.mlp_ratio = mlp_ratio
+
+        self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
@@ -234,7 +238,8 @@ class MaskedAutoEncoder(nn.Module):
             rope_random_rotation_per_head=self.rope_random_rotation_per_head,
             rope_mixed=self.rope_mixed,
             rope_theta=self.rope_theta,
-            mlp_wide_silu=mlp_wide_silu
+            mlp_wide_silu=mlp_wide_silu,
+            dtype=self.dtype
         )
 
         self.masked_decoder = MaskedPredictor(
@@ -263,7 +268,8 @@ class MaskedAutoEncoder(nn.Module):
             rope_random_rotation_per_head=self.rope_random_rotation_per_head,
             rope_mixed=self.rope_mixed,
             rope_theta=self.rope_theta,
-            mlp_wide_silu=mlp_wide_silu
+            mlp_wide_silu=mlp_wide_silu,
+            dtype=self.dtype
         )
 
         self.weight_init_type = weight_init_type

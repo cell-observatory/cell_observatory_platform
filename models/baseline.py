@@ -124,6 +124,7 @@ class Baseline(nn.Module):
         rope_mixed: bool = True,
         rope_theta: float = 10.0,
         mlp_wide_silu: bool = False,
+        dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
@@ -218,7 +219,8 @@ class Baseline(nn.Module):
                         self.axial_patch_size,
                         self.lateral_patch_size,
                         self.lateral_patch_size),
-            mlp_wide_silu=mlp_wide_silu
+            mlp_wide_silu=mlp_wide_silu,
+            dtype=dtype
         )
 
         self.global_pool = global_pool
