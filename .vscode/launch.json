@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "🗂️ Test All",
+            "name": "🗂️ tests/",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -24,7 +24,7 @@
             "justMyCode": false
         },
         {
-            "name": "🗂️ Test Utils",
+            "name": "🗂️ tests/utils",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -46,7 +46,7 @@
             "justMyCode": false
         },
         {
-            "name": "🗂️ Test Models",
+            "name": "🗂️ tests/models",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -68,7 +68,7 @@
             "justMyCode": false
         },
         {
-            "name": "🗂️ Test Training",
+            "name": "🗂️ tests/training",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -90,7 +90,7 @@
             "justMyCode": false
         },
         {
-            "name": "🗂️ Test Data",
+            "name": "🗂️ tests/data",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -112,7 +112,7 @@
             "justMyCode": false
         },
         {
-            "name": "🪏 Test Hooks",
+            "name": "🪏 tests/training/test_hooks",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -134,7 +134,7 @@
             "justMyCode": false
         },
         {
-            "name": "🪏 Test Checkpoint",
+            "name": "🪏 tests/training/test_checkpoint",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -156,7 +156,7 @@
             "justMyCode": false
         },
         {
-            "name": "🪏 Test Loggers",
+            "name": "🪏 tests/training/test_loggers",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -178,7 +178,7 @@
             "justMyCode": false
         },
         {
-            "name": "🪏 Test Loops",
+            "name": "🪏 tests/training/test_loops",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -200,7 +200,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Data Samples",
+            "name": "🧪 tests/data/test_data_samples",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -222,7 +222,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Data Shapes",
+            "name": "🧪 tests/data/test_data_shapes",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -244,7 +244,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Image List",
+            "name": "🧪 tests/data/test_image_list",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -266,7 +266,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Mask Generator",
+            "name": "🧪 tests/data/test_mask_generator",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -288,7 +288,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Pretrain Dataset (TORCH)",
+            "name": "🧪 tests/data/test_pretrain_dataset (TORCH)",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -310,7 +310,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Pretrain Dataset (DALI)",
+            "name": "🧪 tests/data/test_pretrain_dataset_dali (DALI)",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -332,7 +332,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Pretrain Dataset (RAY)",
+            "name": "🧪 tests/data/test_pretrain_dataset_ray",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -354,7 +354,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Database",
+            "name": "🧪 tests/data/test_database",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -376,7 +376,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Database Prepared Table",
+            "name": "🧪 tests/data/test_database.py::test_prepared_table",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -398,7 +398,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Database (ABC)",
+            "name": "🧪 tests/data/test_database.py::test_abc_data",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -420,7 +420,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Database (PRFS)",
+            "name": "🧪 tests/data/test_database.py::test_prfs_data",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -442,7 +442,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Database (AWS)",
+            "name": "🧪 tests/data/test_database.py::test_aws_data",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -464,7 +464,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Database 1k",
+            "name": "🧪 tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database_1k",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -486,7 +486,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Database 10k",
+            "name": "🧪 tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database_10k",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -508,7 +508,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Database 100k",
+            "name": "🧪 tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database_100k",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -530,7 +530,7 @@
             "justMyCode": false
         },
         {
-            "name": "🧪 Test Aggregate Hypercubes",
+            "name": "🧪 tests/data/test_database.py::test_aggregate_hypercubes",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -552,7 +552,95 @@
             "justMyCode": false
         },
         {
-            "name": "🛠️ Test Patch Embeddings",
+            "name": "🧪 tests/data/test_database.py::test_hypercubes_max_roi_filter",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_hypercubes_max_roi_filter"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 tests/data/test_database.py::test_hypercubes_max_hypercubes_filter",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_hypercubes_max_hypercubes_filter"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 tests/data/test_database.py::test_hypercubes_list_roi_filter",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_hypercubes_list_roi_filter"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 tests/data/test_database.py::test_hypercubes_list_tiles_filter",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_hypercubes_list_tiles_filter"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🛠️ tests/models/test_patch_embeddings",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -574,7 +662,7 @@
             "justMyCode": false
         },
         {
-            "name": "🛠️ Test Positional Encoding",
+            "name": "🛠️ tests/models/test_positional_encodings",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -596,7 +684,7 @@
             "justMyCode": false
         },
         {
-            "name": "🛠️ Test Preprocessor",
+            "name": "🛠️ tests/models/test_preprocessor",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -618,7 +706,7 @@
             "justMyCode": false
         },
         {
-            "name": "🛠️ Test Transformer",
+            "name": "🛠️ tests/models/test_transformer",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -640,7 +728,7 @@
             "justMyCode": false
         },
         {
-            "name": "🛠️ Test Parameters Groups",
+            "name": "🛠️ tests/models/test_get_param_groups",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -662,7 +750,7 @@
             "justMyCode": false
         },
         {
-            "name": "🤖 Test MAE Models",
+            "name": "🤖 tests/models/test_mae_models",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -684,7 +772,7 @@
             "justMyCode": false
         },
         {
-            "name": "🤖 Test ViT Models",
+            "name": "🤖 tests/models/test_vit_models",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -706,7 +794,7 @@
             "justMyCode": false
         },
         {
-            "name": "🤖 Test ConvNeXt Models",
+            "name": "🤖 tests/models/test_convnext_models",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -728,7 +816,7 @@
             "justMyCode": false
         },
         {
-            "name": "🤖 Test JEPA Models",
+            "name": "🤖 tests/models/test_jepa_models",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
@@ -750,7 +838,7 @@
             "justMyCode": false
         },
         {
-            "name": "🤖 Test Baseline Models",
+            "name": "🤖 tests/models/test_baseline_models",
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",

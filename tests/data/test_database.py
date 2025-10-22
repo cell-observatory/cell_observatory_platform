@@ -27,6 +27,9 @@ def database(config, request):
     config.experiment_name = f"test_{database_type}"
     config.datasets.databases._target_ = get_database_class(database_type) 
     config.datasets.databases.num_timepoints = 16
+    config.datasets.databases.z_slices = 128
+    config.datasets.databases.y_slices = 128
+    config.datasets.databases.x_slices = 128
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / "database/hypercubes_dataframe.csv"
     config.datasets.databases.fetch_hypercubes_dataframe = False
@@ -118,7 +121,9 @@ def test_create_1_128_128_128_2_hypercubes(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 1).all(), "All time sizes should be 1"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
     pd.testing.assert_series_equal(
@@ -138,7 +143,9 @@ def test_create_16_128_128_128_2_hypercubes(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
     pd.testing.assert_series_equal(
@@ -155,7 +162,9 @@ def test_hypercubes_max_roi_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
 
     assert len(table['prepared_id'].unique()) == 1, "Only one ROI should be returned"
 
@@ -166,7 +175,9 @@ def test_hypercubes_max_tiles_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table.shape[0] > 0, f"Zero tiles were returned"
     assert len(table['tile_name'].unique()) <= 10, "Only ten tiles should be returned"
 
@@ -177,7 +188,9 @@ def test_hypercubes_max_hypercubes_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
     assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
 
@@ -191,8 +204,9 @@ def test_hypercubes_list_roi_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table['prepared_id'].isin(roi_list).all(), f"Only ROIs in {roi_list} should be returned"
     assert table.shape[0] > 0, f"Zero ROIs were returned"
 
@@ -205,8 +219,9 @@ def test_hypercubes_list_tiles_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table['tile_name'].isin(tile_list).all(), f"Only tiles in {tile_list} should be returned"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
@@ -226,8 +241,9 @@ def test_hypercubes_list_filters(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table['prepared_id'].isin(roi_list).all(), f"Only ROIs in {roi_list} should be returned"
     assert table['tile_name'].isin(tile_list).all(), f"Only tiles in {tile_list} should be returned"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
@@ -244,8 +260,9 @@ def test_hypercubes_hpf_filter(database):
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['time_size'] == 16).all(), "All time sizes should be 16"
-    assert (table['cube_size'] == 128).all(), "All cube sizes should be 128"
-
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
     assert table['hpf'].isin(hpf_list).all(), f"Only hpf in {hpf_list} should be returned"
     assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
