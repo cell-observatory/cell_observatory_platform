@@ -645,6 +645,12 @@ class ParentDatabase():
             print('\n'.join(self.last_query) if isinstance(self.last_query, list) else self.last_query)
 
         table = self.execute_query(self.last_query)
+        
+        if "z_size" not in table.columns or "y_size" not in table.columns or "x_size" not in table.columns:
+            table["z_size"] = self.z_slices
+            table["y_size"] = self.y_slices
+            table["x_size"] = self.x_slices
+        
         num_rows, num_cols = table.shape
         print(f"\nRetrieved {num_rows} rows. \t Retrieved {num_cols} columns.")
 
