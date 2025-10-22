@@ -248,20 +248,24 @@ def filter_hypercubes_dataframe_storage_server(
     server_folder_path: Optional[Path | str] = None
 ):
     if server_folder_path is None or str(server_folder_path).startswith('/clusterfs'):
+        hypercubes_dataframe['exists'].replace({'t': True, 'f': False}, inplace=True)
         hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists']]
         logger.info(f"Using ABC {server_folder_path=}, {hypercubes_dataframe.shape}")
 
     elif str(server_folder_path).startswith('/groups'):
+        hypercubes_dataframe['exists_prfs'].replace({'t': True, 'f': False}, inplace=True)
         hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_prfs']]
         hypercubes_dataframe['server_folder'] = server_folder_path
         logger.info(f"Using Janelia {server_folder_path=}, {hypercubes_dataframe.shape}")
 
     elif str(server_folder_path).startswith('/aws'):
+        hypercubes_dataframe['exists_aws'].replace({'t': True, 'f': False}, inplace=True)
         hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_aws']]
         hypercubes_dataframe['server_folder'] = server_folder_path
         logger.info(f"Using AWS {server_folder_path=}, {hypercubes_dataframe.shape}")
 
     elif str(server_folder_path).startswith('/lustre'):
+        hypercubes_dataframe['exists_oak'].replace({'t': True, 'f': False}, inplace=True)
         hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_oak']]
         hypercubes_dataframe['server_folder'] = server_folder_path
         logger.info(f"Using OakRidge {server_folder_path=}, {hypercubes_dataframe.shape}")
@@ -418,7 +422,7 @@ def load_hypercubes_dataframe(
     if not Path(hypercubes_dataframe_path).exists():
         raise FileNotFoundError(f"{hypercubes_dataframe_path} does not exist")
 
-    hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
+    hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=None, header=0)
     logger.info(
         f"Setup hypercubes dataframe from {hypercubes_dataframe_path} {hypercubes.shape}"
     )

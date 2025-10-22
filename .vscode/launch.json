@@ -684,6 +684,28 @@
             "justMyCode": false
         },
         {
+            "name": "🧪 tests/data/test_database.py::test_csv_dataframe",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_csv_dataframe"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
             "name": "🛠️ tests/models/test_patch_embeddings",
             "type": "debugpy",
             "request": "launch",
