@@ -376,6 +376,50 @@
             "justMyCode": false
         },
         {
+            "name": "🧪 tests/data/test_database.py::test_all_database_tables",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_all_database_tables"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "🧪 tests/data/test_database.py::test_all_database_views",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_all_database_views"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
             "name": "🧪 tests/data/test_database.py::test_prepared_table",
             "type": "debugpy",
             "request": "launch",

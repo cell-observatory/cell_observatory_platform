@@ -11,7 +11,8 @@ from tests.conftest import config
 import warnings
 warnings.filterwarnings("ignore")
 
-database_types = ['SupabaseDatabase']  #'TrinoDatabase' # List of database types to add to test matrix
+database_types = ['SupabaseDatabase']  # List of database types to add to test matrix
+# database_types = ['SupabaseDatabase', 'TrinoDatabase']  # List of database types to add to test matrix
 
 def get_database_class(database_type):
     if database_type == 'TrinoDatabase':
@@ -60,6 +61,26 @@ def test_all_database_tables(database):
             assert rows > 0
         except AssertionError:
             print(f"Table `{t}` is empty. Check access to this table in the database.")
+
+def test_all_database_views(database):
+    views = database.list_views()
+    print(f"Available views: {views.values.squeeze()}")
+
+    assert len(views) > 0, f"Zero views were returned"
+    for t in views.values.squeeze():
+        cols = database.count_columns(t)
+        rows = database.count_rows(t)
+
+        print(f"View `{t}` has {cols} column(s) and {rows} row(s).")
+        try:
+            assert cols > 0
+        except AssertionError:
+            print(f"View `{t}` has no columns. Check if the view exists in the database.")
+
+        try:
+            assert rows > 0
+        except AssertionError:
+            print(f"View `{t}` is empty. Check access to this view in the database.")
 
 def test_table(database, table_name='prepared'):
     print(f"Testing table `{table_name}`...")

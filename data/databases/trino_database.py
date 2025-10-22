@@ -21,8 +21,9 @@ class TrinoDatabase(ParentDatabase):
 
     def __init__(self, **kwargs):          
         # TODO: update env vars when db is completely setup       
-        self.trino_host = 'trino-ocp.int.janelia.org' # os.environ.get("TRINO_HOST")
-        self.trino_user = 'trino' # os.environ.get("TRINO_USER")
+        self.trino_host = 'trino-ocp.int.janelia.org'
+        self.trino_user = os.environ.get("TRINO_USER")
+        self.trino_pass = os.environ.get("TRINO_PASS")
         self.trino_catalog = 'betzigvast'
         self.trino_schema = 'betzigdb/cellobservatory'
         self.trino_port = 443
@@ -30,13 +31,6 @@ class TrinoDatabase(ParentDatabase):
         kwargs['max_partitions'] = 1  # using trino direct (not through connector-x) so just 1 partition is possible
         super().__init__(**kwargs)
 
-    def _load_uri(self):
-        # uri = f'trino+https://{self.trino_user}:password@{self.trino_host}:{self.trino_port}/{self.trino_catalog}'     # connection token
-        uri = f'trino+https://{self.trino_host}:{self.trino_port}/{self.trino_catalog}/{self.trino_schema}?verify=false&user=trino'     # connection token
-
-        assert uri is not None, "TRINO_URI_* environment variable not set"
-        return uri
-    
     def execute_query(self, query: str | list[str]) -> pd.DataFrame:
         
         # Convert list to string
@@ -53,7 +47,8 @@ class TrinoDatabase(ParentDatabase):
             user=self.trino_user,
             catalog=self.trino_catalog,
             http_scheme="https",
-            schema=self.trino_schema
+            schema=self.trino_schema,
+            auth=trino.auth.BasicAuthentication(self.trino_user, self.trino_pass)
         )
         trino_port = conn.port  # will be port 443 for https
         cur = conn.cursor()
