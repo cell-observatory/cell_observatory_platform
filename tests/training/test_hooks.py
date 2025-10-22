@@ -248,7 +248,8 @@ def _test_hooks_dist(cfg):
     for tstep in range(4):
         timer.before_test_step()
         time.sleep(0.15)
-        timer.after_test_step(None, None, {})
+        dummy_data_sample = {'metainfo': {"data_time": 0.05}}
+        timer.after_test_step(dummy_data_sample, None, None)
         trainer._iter = tstep + 1
     timer.after_test()
 
