@@ -4,6 +4,7 @@ import shlex
 import logging
 import subprocess
 import warnings
+import itertools
 from pathlib import Path
 from subprocess import call, run
 
@@ -44,6 +45,49 @@ def get_defaults_overrides(defaults_overrides: list[dict] | None):
     return defaults
 
 
+def _get_sweep_list(d):
+    def _walk(prefix, obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                yield from _walk(f"{prefix}.{k}" if prefix else k, v)
+        else:
+            yield (prefix, obj)
+
+    leafs = list(_walk("", d))
+    leaf_lists = [(k, v) for (k, v) in leafs if isinstance(v, list)]
+    assert len(leaf_lists) == 1, \
+        f"sweep element must contain exactly one list-valued leaf; got: {leaf_lists}"
+    return leaf_lists[0]
+
+
+def get_sweep_axes(sweep_cfg):
+    if sweep_cfg is None:
+        return []
+
+    d = OmegaConf.to_container(sweep_cfg, resolve=True)
+
+    if isinstance(d, list):
+        axes = []
+        for item in d:
+            assert isinstance(item, dict), f"Each sweep entry must be a dict; got {type(item)}"
+            key, values = _get_sweep_list(item)
+            axes.append((key, values))
+        return axes
+
+    if isinstance(d, dict):
+        key, values = _get_sweep_list(d)
+        return [(key, values)]
+
+    raise TypeError(f"Unsupported sweep type: {type(d)}")
+
+
+def sanitize_name(val):
+    if isinstance(val, float):
+        s = f"{val}"
+        return s.replace(".", "p")
+    return str(val).lower()
+
+
 def set_env_from_cfg(cfg: DictConfig) -> None:
     def _to_str(v):
         return "1" if isinstance(v, bool) and v \
@@ -62,7 +106,7 @@ def set_env_from_cfg(cfg: DictConfig) -> None:
 
 
 # modify Hydra config on cmd line to use different models
-@hydra.main(config_path="configs", config_name="test_pretrain_4d_mae_local")
+@hydra.main(config_path="configs", config_name=None)
 def main(cfg: DictConfig):
     logger.info(f"Launch config: {OmegaConf.to_yaml(cfg)}")
 
@@ -92,45 +136,65 @@ def main(cfg: DictConfig):
             override_cfg = OmegaConf.create(OmegaConf.to_container(run.overrides))
             run_cfg = OmegaConf.merge(run_cfg, override_cfg)
 
-            if cfg.get("data_base_dir"):
-                logger.info(f"Root directory for runs set to: {cfg.data_base_dir}")
-                run_path = run_cfg.paths.outdir / Path(cfg.data_base_dir) / Path(run.name).with_suffix("")
-                run_path.mkdir(parents=True, exist_ok=True)
+            sweep_axes = get_sweep_axes(cfg.get("sweep", None))
+            if sweep_axes:
+                sweep_combinations = itertools.product(*[[(k, v) for v in vals] for (k, vals) in sweep_axes])
             else:
-                logger.info(f"Root directory for runs set to: {run_cfg.paths.outdir}")
-                run_path = run_cfg.paths.outdir / Path(run.name).with_suffix("")
-                run_path.mkdir(parents=True, exist_ok=True)
+                sweep_combinations = [()]
 
-            with open_dict(run_cfg.paths):
-                run_cfg.paths.outdir = str(run_path)
-                logger.info(f"Output directory for this run: {run_cfg.paths.outdir}")
+            for sweep_combination in sweep_combinations:
+                run_cfg_sweep = run_cfg
+                run_name = run.name
 
-            if cfg.get("wandb_tags"):
-                logger.info(f"Adding W&B tags: {cfg.wandb_tags}")
-                # TODO: we should consider making event_writers a dict
-                #       instead of a list to prevent these kinds of loops
-                with open_dict(run_cfg):
-                    for event_writer in run_cfg.loggers.event_writers:
-                        if event_writer._target_.endswith("WandBEventWriter"):
-                            event_writer.tags = event_writer.tags + list(cfg.wandb_tags)
+                if sweep_combination:
+                    dotlist = [f"{k}={v}" for (k, v) in sweep_combination]
+                    run_cfg_sweep = OmegaConf.merge(run_cfg, OmegaConf.from_dotlist(dotlist))
 
-            with open_dict(run_cfg):
-                run_cfg.experiment_name = run.name.replace(".yaml", "")
+                    sweep_cfg_name_suffix = []
+                    for k, v in sweep_combination:
+                        safe_key = k.replace('.', '_')
+                        sweep_cfg_name_suffix.append(f"{safe_key}_{sanitize_name(v)}")
+                    run_name = f"{Path(run_name).with_suffix('')}_sweep_" + "_".join(sweep_cfg_name_suffix) + ".yaml"
 
-            # save the run config to a file for reproducibility
-            # and so we can pass to the runner and inject
-            # package global variable since we are saving
-            # config in `experiments` folder
-            run_cfg_path = run_path / run.name
-            run_cfg_yml = OmegaConf.to_yaml(run_cfg)
-            run_cfg_yml = "#@package _global_\n" + run_cfg_yml
-            run_cfg_path.write_text(run_cfg_yml)
+                if cfg.get("data_base_dir"):
+                    logger.info(f"Root directory for runs set to: {cfg.data_base_dir}")
+                    run_path = run_cfg_sweep.paths.outdir / Path(cfg.data_base_dir) / Path(run_name).with_suffix("")
+                    run_path.mkdir(parents=True, exist_ok=True)
+                else:
+                    logger.info(f"Root directory for runs set to: {run_cfg_sweep.paths.outdir}")
+                    run_path = run_cfg_sweep.paths.outdir / Path(run_name).with_suffix("")
+                    run_path.mkdir(parents=True, exist_ok=True)
 
-            logger.info(f"Run config saved to: {run_cfg_path}")
+                with open_dict(run_cfg_sweep.paths):
+                    run_cfg_sweep.paths.outdir = str(run_path)
+                    logger.info(f"Output directory for this run: {run_cfg_sweep.paths.outdir}")
 
-            # launch the job
-            logger.info(f"Run config after overrides: {run_cfg_yml}")
-            launch_job(run_cfg, run_config_name=run_cfg_path)
+                if cfg.get("wandb_tags"):
+                    logger.info(f"Adding W&B tags: {cfg.wandb_tags}")
+                    # TODO: we should consider making event_writers a dict
+                    #       instead of a list to prevent these kinds of loops
+                    with open_dict(run_cfg_sweep):
+                        for event_writer in run_cfg_sweep.loggers.event_writers:
+                            if event_writer._target_.endswith("WandBEventWriter"):
+                                event_writer.tags = event_writer.tags + list(cfg.wandb_tags)
+
+                with open_dict(run_cfg_sweep):
+                    run_cfg_sweep.experiment_name = run_name.replace(".yaml", "")
+
+                # save the run config to a file for reproducibility
+                # and so we can pass to the runner and inject
+                # package global variable since we are saving
+                # config in `experiments` folder
+                run_cfg_path = run_path / run_name
+                run_cfg_yml = OmegaConf.to_yaml(run_cfg_sweep)
+                run_cfg_yml = "#@package _global_\n" + run_cfg_yml
+                run_cfg_path.write_text(run_cfg_yml)
+
+                logger.info(f"Run config saved to: {run_cfg_path}")
+
+                # launch the job
+                logger.info(f"Run config after overrides: {run_cfg_yml}")
+                launch_job(run_cfg_sweep, run_config_name=run_cfg_path)
 
     elif cfg.run_type == "single_run" or cfg.run_type == "tune":
         logger.info("Launching a single training job...")

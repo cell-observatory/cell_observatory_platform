@@ -116,7 +116,7 @@ class MaskGenerator(object):
         self.axial_mask_scale = axial_mask_scale
         self.temporal_mask_scale = temporal_mask_scale
         
-        self.aspect_ratio_scale_hw = aspect_ratio_scale_hw
+        self.aspect_ratio_scale_hw = tuple(aspect_ratio_scale_hw)
 
         self.random_masking_ratio = random_masking_ratio
         self.num_blocks = num_blocks
@@ -183,7 +183,7 @@ class MaskGenerator(object):
         else:
             raise ValueError(
                 f"Invalid input shape {input_shape} and patch shape "
-                "{(temporal_patch_size, axial_patch_size, lateral_patch_size, lateral_patch_size)} for layout {layout}. "
+                f"{(temporal_patch_size, axial_patch_size, lateral_patch_size, lateral_patch_size)} for layout {layout}. "
                 "Expected at least one of time or depth to be greater than 1."
             )
 

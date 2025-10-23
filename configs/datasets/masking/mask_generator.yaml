@@ -18,10 +18,10 @@ mask_generators:
     lateral_mask_scale: 0.5
     axial_mask_scale: 0.5
     temporal_mask_scale: 0.5
-
-    aspect_ratio_scale_hw: 0.5
-    random_masking_ratio: 0.75
+    aspect_ratio_scale_hw: [0.75, 1.5]
     num_blocks: 2
+
+    random_masking_ratio: 0.75
 
     channels_to_mask: null
     time_downsample_pattern: null
