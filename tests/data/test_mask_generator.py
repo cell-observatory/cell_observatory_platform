@@ -108,7 +108,8 @@ def test_blocked_pattern_mask(make_mask_generator,
                              axial_patch_size=axial_patch_size,
                              pattern=pattern,
                              layout=layout,
-                             maskmode=maskmode
+                             maskmode=maskmode,
+                             aspect_ratio_scale_hw=(1.0, 1.0),
                              )
 
     masks, ctx, tgt, orig_idx, _ = mg(batch_size=batch_size)
@@ -190,6 +191,7 @@ def test_random_mask(make_mask_generator,
         time_length=time_length,
         random_masking_ratio=random_ratio,
         pattern=None,
+        aspect_ratio_scale_hw=(1.0, 1.0),
     )
 
     masks, ctx_idx, tgt_idx, orig_idx, _ = mg(batch_size=batch_size)
