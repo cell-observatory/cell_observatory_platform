@@ -535,7 +535,7 @@ def test_csv_dataframe(config, database_type):
     config.datasets.databases.hpf_list = None
     config.datasets.databases.fetch_hypercubes_dataframe = True
     config.datasets.databases.use_cached_hypercubes_dataframe = True
-    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.server_folder_path) / 'databases' / "hypercube_dataframe.csv"
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.server_folder_path) / 'databases' / "training_hypercubes_dataframe.csv"
 
     print(f"Initializing {config.datasets.databases._target_}...")
     # pprint(OmegaConf.to_container(config, resolve=True))
@@ -543,7 +543,7 @@ def test_csv_dataframe(config, database_type):
     database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
     print(table)
-    # database.save_hypercubes_dataframe(hypercubes_dataframe_path=Path(config.paths.server_folder_path) / 'databases' / "hypercube_dataframe.csv")
+    # database.save_hypercubes_dataframe(hypercubes_dataframe_path=Path(config.paths.server_folder_path) / 'databases' / "training_hypercubes_dataframe.csv")
 
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
     assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique values"
