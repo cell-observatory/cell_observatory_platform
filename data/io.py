@@ -1,7 +1,7 @@
 import sys
 import logging
 from pathlib import Path
-from typing import Tuple, Literal, Optional, Iterable, Dict
+from typing import Tuple, Literal, Optional, Iterable, Dict, Any
 
 import ujson
 import inspect
@@ -351,19 +351,25 @@ def apply_hypercubes_dataframe_selections(
 
     return df
 
-def _string_set_to_list(value):
+def _string_seq_to_float_list(value: Any) -> list[float]:
+    if isinstance(value, (list, tuple, np.ndarray, pd.Series)):
+        return [float(x) for x in np.asarray(value).ravel().tolist()]
+    if isinstance(value, (int, float, np.floating, np.integer)):
+        return [float(value)]
     if isinstance(value, str):
-        clean_str = value.strip('{}')
-        if clean_str.startswith('[') and clean_str.endswith(']'):
-            clean_str = clean_str.strip('[]')
-        if clean_str:
-            return [float(x.strip()) for x in clean_str.split(',') if x.strip()]
-        else:
-            return []
-    elif isinstance(value, list):
-        return [float(x) for x in value]
+        s = value.strip()
+        if s == "" or s.lower() in {"null", "none", "nan"}:
+            raise ValueError("Cannot convert empty or null string to float list")
+        s = s.strip("[]{}()").replace("\n", " ")
+        s = s.translate(str.maketrans("", "", "\"'"))
+        if s == "":
+            raise ValueError("Cannot convert empty string to float list")
+        s = re.sub(r"[,\s]+", " ", s)
+        arr = np.fromstring(s, sep=" ", dtype=float)
+        return arr.tolist()
+    
     else:
-        return [float(value)] if value is not None else []
+        raise TypeError(f"Cannot convert value of type {type(value)} to float list")
 
 
 def apply_occupancy_threshold(
@@ -374,12 +380,12 @@ def apply_occupancy_threshold(
 
     logger.info(f"\nApplied filters:\n{occupancy_threshold=}")
 
-    hypercubes_dataframe['occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(_string_set_to_list)
+    hypercubes_dataframe['occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(_string_seq_to_float_list)
     hypercubes_dataframe['mean_occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(np.mean)
     hypercubes_dataframe['min_occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(np.min)
     hypercubes_dataframe['med_occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(np.median)
 
-    hypercubes_dataframe['occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(_string_set_to_list)
+    hypercubes_dataframe['occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(_string_seq_to_float_list)
     hypercubes_dataframe['mean_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.mean)
     hypercubes_dataframe['min_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.min)
     hypercubes_dataframe['med_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.median)

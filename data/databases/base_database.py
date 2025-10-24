@@ -169,6 +169,11 @@ class ParentDatabase():
                 print('Overriding values in the dataframe')
                 self.hypercubes_dataframe['time_size'] = self.num_timepoints
 
+            # NOTE: may be reset below in check_hypercube_sizes 
+            self.hypercubes_dataframe["z_size"] = self.z_slices
+            self.hypercubes_dataframe["y_size"] = self.y_slices
+            self.hypercubes_dataframe["x_size"] = self.x_slices
+
             print(f"Loading ROIs dataframe to check hypercube sizes...")
             # FIXME: assumes that all tiles per ROI share the same shape
             #        which is true currently but unsafe, we should adjust logic 
