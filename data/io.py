@@ -357,7 +357,7 @@ def _string_set_to_list(value):
         if clean_str.startswith('[') and clean_str.endswith(']'):
             clean_str = clean_str.strip('[]')
         if clean_str:
-            return [float(x.strip()) for x in clean_str.split(' ') if x.strip()]
+            return [float(x.strip()) for x in clean_str.split(',') if x.strip()]
         else:
             return []
     elif isinstance(value, list):
@@ -441,6 +441,11 @@ def load_hypercubes_dataframe(
         roi_list=roi_list,
         tile_list=tile_list,
         timepoint_list=timepoint_list,
+    )
+
+    hypercubes = apply_hypercubes_dataframe_filters(
+        hypercubes_dataframe=hypercubes,
+        occupancy_threshold=occupancy_threshold,
     )
 
     logger.info(f"Loaded hypercubes dataframe with {hypercubes.shape}")

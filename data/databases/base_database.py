@@ -1,10 +1,11 @@
-from ast import Dict
+from abc import abstractmethod
 from sqlite3 import NotSupportedError
+
 import sys
 import logging
 from pathlib import Path
-from typing import Optional, Any, Literal, Sequence, Iterable
-from abc import abstractmethod
+from typing import Optional, Any, Literal, Sequence, Iterable, Dict
+
 import numpy as np
 
 import ujson
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 class ParentDatabase():
     def __init__(
         self,
+        dataset_layout_order: str,
         num_timepoints: Optional[int] = 1,
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
@@ -45,6 +47,10 @@ class ParentDatabase():
         z_slices: Optional[int] = 128,
         y_slices: Optional[int] = 128,
         x_slices: Optional[int] = 128,
+        base_cube_size: Optional[int] = 128,
+        valid_z_sizes: Optional[Sequence[int]] = [128],
+        valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384],
+        valid_x_sizes: Optional[Sequence[int]] = [128, 256, 384, 512, 640, 896, 1024],
     ):
         """
         A class for accessing Supabase database and retrieving hypercubes.
@@ -102,19 +108,20 @@ class ParentDatabase():
         self.max_partitions = max_partitions
         self.server_folder_path = server_folder_path
         self.occupancy_threshold = occupancy_threshold
-        
-        if z_slices not in [128]:
-            raise NotSupportedError(f"{z_slices=} is not supported yet, please chose from [128]")
+        self.dataset_layout_order = dataset_layout_order
+
+        if z_slices not in valid_z_sizes:
+            raise NotSupportedError(f"{z_slices=} is not supported yet, please chose from {valid_z_sizes}")
         else:
             self.z_slices = z_slices
-        
-        if y_slices not in [128, 256, 384]:
-            raise NotSupportedError(f"{y_slices=} is not supported yet, please chose from [128, 256, 384]")
+
+        if y_slices not in valid_y_sizes:
+            raise NotSupportedError(f"{y_slices=} is not supported yet, please chose from {valid_y_sizes}")
         else:
             self.y_slices = y_slices
-        
-        if x_slices not in [128, 256, 384, 512, 640, 896, 1024]:
-            raise NotSupportedError(f"{x_slices=} is not supported yet, please chose from [128, 256, 384, 512, 640, 896, 1024]")
+
+        if x_slices not in valid_x_sizes:
+            raise NotSupportedError(f"{x_slices=} is not supported yet, please chose from {valid_x_sizes}")
         else:
             self.x_slices = x_slices
 
@@ -153,22 +160,57 @@ class ParentDatabase():
             if self.server_folder_path is not None:
                 self.hypercubes_dataframe['server_folder'] = self.server_folder_path
 
-            if self.z_slices != 128 or self.y_slices != 128 or self.x_slices != 128:
-                self.aggregate_hypercubes(z_slices=z_slices, y_slices=self.y_slices, x_slices=self.x_slices)
-            
+            if self.z_slices != base_cube_size or self.y_slices != base_cube_size or self.x_slices != base_cube_size:
+                print(f"Size of volume axes not equal to base cube size of {base_cube_size}, aggregating hypercubes...")
+                self.aggregate_hypercubes(z_slices=self.z_slices, y_slices=self.y_slices, x_slices=self.x_slices)
+
             if any(self.hypercubes_dataframe['time_size'] != self.num_timepoints):
                 print(f"`time_sizes` for all rows in the dataframe should be {self.num_timepoints} found {self.hypercubes_dataframe['time_size'].unique()}")
                 print('Overriding values in the dataframe')
                 self.hypercubes_dataframe['time_size'] = self.num_timepoints
-                        
-            self.hypercubes_dataframe["z_size"] = self.z_slices
-            self.hypercubes_dataframe["y_size"] = self.y_slices
-            self.hypercubes_dataframe["x_size"] = self.x_slices
-        
+
+            print(f"Loading ROIs dataframe to check hypercube sizes...")
+            # FIXME: assumes that all tiles per ROI share the same shape
+            #        which is true currently but unsafe, we should adjust logic 
+            #        to get tile shapes per tile
+            self.rois_dataframe = self.get_rois_dataframe()
+            print(f"Checking hypercube sizes against ROIs dataframe for {len(self.hypercubes_dataframe)} hypercubes...")
+            self.hypercubes_dataframe = self.check_hypercube_sizes(
+                df=self.hypercubes_dataframe,
+                shape_df=self.rois_dataframe,
+                layout=self.dataset_layout_order,
+            )
+            print(f"Final length of hypercubes dataframe: {len(self.hypercubes_dataframe)}")
+
         else:
             self.hypercubes_dataframe = None
         
-    
+    def get_rois_dataframe(self) -> pd.DataFrame:
+        roi_csv = self.hypercubes_dataframe_path.with_name(
+            f"{self.hypercubes_dataframe_path.stem}_rois.csv"
+        )
+        if (not self.use_cached_hypercubes_dataframe) or (not roi_csv.exists()):
+            query = f"""
+                SELECT id,
+                    z_end, y_end, x_end,
+                    time_size, channel_size
+                FROM prepared
+            """
+            rois_df = self.execute_query(query)
+            rois_df = rois_df.rename(columns={"id": "prepared_id", 
+                                                "z_end": "tile_z_end",
+                                                "y_end": "tile_y_end",
+                                                "x_end": "tile_x_end",
+                                                "time_size": "tile_time_size",
+                                                "channel_size": "tile_channel_size"})
+            rois_df.to_csv(roi_csv, index=True, header=True)
+            print(f"Saved roi dataframe to {roi_csv}")
+
+        else:
+            rois_df = pd.read_csv(roi_csv, index_col=0)
+
+        return rois_df
+
     @abstractmethod
     def _load_uri(self) -> str:
         ''' To override '''
@@ -714,12 +756,12 @@ class ParentDatabase():
             "metadata_tile_json": "sum",
             "occupancy_ratios_ch_0": lambda s: np.mean(np.vstack(s.tolist()), axis=0).tolist(),
             "occupancy_ratios_ch_1": lambda s: np.mean(np.vstack(s.tolist()), axis=0).tolist(),
-        },
-    ):
-        
+        }
+    ):                
         self.hypercubes_dataframe["z_start"] = (self.hypercubes_dataframe["z_start"] // z_slices) * z_slices
         self.hypercubes_dataframe["y_start"] = (self.hypercubes_dataframe["y_start"] // y_slices) * y_slices
         self.hypercubes_dataframe["x_start"] = (self.hypercubes_dataframe["x_start"] // x_slices) * x_slices
+
         self.hypercubes_dataframe = self.hypercubes_dataframe.groupby(group_cols, as_index=False).agg(agg)
         
         # print(self.hypercubes_dataframe[[*group_cols, "occupancy_ratios_ch_0"]])
@@ -731,3 +773,57 @@ class ParentDatabase():
         # print(f"y_start: {self.hypercubes_dataframe.y_start.nunique()}, {sorted(self.hypercubes_dataframe.y_start.unique())}")
         # print(f"x_start: {self.hypercubes_dataframe.x_start.nunique()}, {sorted(self.hypercubes_dataframe.x_start.unique())}")
         # print(f"occupancy_ratios_ch_0: {sorted(self.hypercubes_dataframe['occupancy_ratios_ch_0'].apply(len).unique())}")
+
+    def check_hypercube_sizes(
+        self,
+        df: pd.DataFrame,
+        shape_df: pd.DataFrame,
+        layout: str,
+        join_keys: tuple[str, ...] = ("prepared_id",),
+    ) -> pd.DataFrame:
+        L = layout.upper()
+        work = df.merge(shape_df[list(join_keys) + [
+            "tile_z_end",   "tile_y_end",   "tile_x_end",
+            "tile_time_size", "tile_channel_size"
+        ]], how="left", on=list(join_keys))
+
+        coord_map = {
+            "T": {"start": "time_start", "size": "time_size",
+            },
+            "Z": {"start": "z_start", "size": "z_size", 
+            },
+            "Y": {"start": "y_start", "size": "y_size", 
+            },
+            "X": {"start": "x_start", "size": "x_size", 
+            },
+            "C": {"start": None, "size": "channel_size",
+            },
+        }
+
+        def _as_int(s):
+            return pd.to_numeric(s).astype("int64")
+
+        for col in ["time_start","z_start","z_size","y_start","y_size", "x_start","x_size","channel_size",
+                    "tile_z_end","tile_y_end","tile_x_end","tile_time_size","tile_channel_size"]:
+            work[col] = _as_int(work[col])
+
+        axes_end_map = {
+            "T": work["tile_time_size"],
+            "Z": work["tile_z_end"],
+            "Y": work["tile_y_end"],
+            "X": work["tile_x_end"],
+            "C": work["tile_channel_size"],
+        }
+
+        for ax in L:
+            meta = coord_map.get(ax)
+            start_col, size_col = meta["start"], meta["size"]
+
+            start = work[start_col] if start_col in work.columns else pd.Series(0, index=work.index, dtype="int64")
+            req = work[size_col]
+
+            end = axes_end_map[ax]
+            effective_size = np.minimum(req, np.clip(end - start, 0, None)).astype("int64")
+            work[size_col] = effective_size
+
+        return work

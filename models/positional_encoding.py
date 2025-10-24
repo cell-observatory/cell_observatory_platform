@@ -60,7 +60,8 @@ def positional_encoding_1d(
 
 def positional_encoding_2d(
     embed_dim,
-    lateral_sequence_length,
+    lateral_y_sequence_length,
+    lateral_x_sequence_length,
     temperature=10000,
     cls_token=False,
     dtype=None
@@ -76,8 +77,8 @@ def positional_encoding_2d(
     d = int(np.floor(embed_dim / (2*num_dims)) * 2)
     pad = embed_dim - (d * num_dims)
 
-    xgrid = np.arange(lateral_sequence_length, dtype=dtype)
-    ygrid = np.arange(lateral_sequence_length, dtype=dtype)
+    xgrid = np.arange(lateral_x_sequence_length, dtype=dtype)
+    ygrid = np.arange(lateral_y_sequence_length, dtype=dtype)
     ygrid, xgrid = np.meshgrid(ygrid, xgrid, indexing='ij')
 
     # outer product of y/x index for each (y,x) in LxL and frequencies
@@ -96,7 +97,8 @@ def positional_encoding_2d(
 
 def positional_encoding_3d(
     embed_dim,
-    lateral_sequence_length,
+    lateral_x_sequence_length,
+    lateral_y_sequence_length,
     axial_sequence_length=None,
     temporal_sequence_length=None,
     temperature=10000,
@@ -117,8 +119,8 @@ def positional_encoding_3d(
     if axial_sequence_length is not None and temporal_sequence_length is not None:
         raise ValueError("Use `positional_encoding_4d` if you have both axial and temporal sequence_length")
 
-    xgrid = np.arange(lateral_sequence_length, dtype=dtype)
-    ygrid = np.arange(lateral_sequence_length, dtype=dtype)
+    xgrid = np.arange(lateral_x_sequence_length, dtype=dtype)
+    ygrid = np.arange(lateral_y_sequence_length, dtype=dtype)
 
     if axial_sequence_length is not None:
         zgrid = np.arange(axial_sequence_length, dtype=dtype)
@@ -143,7 +145,8 @@ def positional_encoding_3d(
 
 def positional_encoding_4d(
     embed_dim,
-    lateral_sequence_length,
+    lateral_x_sequence_length,
+    lateral_y_sequence_length,
     axial_sequence_length,
     temporal_sequence_length,
     temperature=10000,
@@ -161,8 +164,8 @@ def positional_encoding_4d(
     d = int(np.floor(embed_dim / (2*num_dims)) * 2)
     pad = embed_dim - (d * num_dims)
 
-    xgrid = np.arange(lateral_sequence_length, dtype=dtype)
-    ygrid = np.arange(lateral_sequence_length, dtype=dtype)
+    xgrid = np.arange(lateral_x_sequence_length, dtype=dtype)
+    ygrid = np.arange(lateral_y_sequence_length, dtype=dtype)
     zgrid = np.arange(axial_sequence_length, dtype=dtype)
     tgrid = np.arange(temporal_sequence_length, dtype=dtype)
     tgrid, zgrid, ygrid, xgrid = np.meshgrid(tgrid, zgrid, ygrid, xgrid, indexing='ij')
@@ -230,7 +233,8 @@ class PosEmbedding(nn.Module):
                 embed_dim=self.embed_dim,
                 temporal_sequence_length=self.input_shape[1] // self.temporal_patch_size,
                 axial_sequence_length=self.input_shape[2] // self.axial_patch_size,
-                lateral_sequence_length=self.input_shape[3] // self.lateral_patch_size,
+                lateral_y_sequence_length=self.input_shape[3] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[4] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
@@ -239,7 +243,8 @@ class PosEmbedding(nn.Module):
                 embed_dim=self.embed_dim,
                 temporal_sequence_length=None,
                 axial_sequence_length=self.input_shape[1] // self.axial_patch_size,
-                lateral_sequence_length=self.input_shape[2] // self.lateral_patch_size,
+                lateral_y_sequence_length=self.input_shape[2] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[3] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
@@ -248,14 +253,16 @@ class PosEmbedding(nn.Module):
                 embed_dim=self.embed_dim,
                 axial_sequence_length=None,
                 temporal_sequence_length=self.input_shape[1] // self.temporal_patch_size,
-                lateral_sequence_length=self.input_shape[2] // self.lateral_patch_size,
+                lateral_y_sequence_length=self.input_shape[2] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[3] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
         elif self.input_fmt == "YXC":
             sincos = positional_encoding_2d(
                 embed_dim=self.embed_dim,
-                lateral_sequence_length=self.input_shape[1] // self.lateral_patch_size,
+                lateral_y_sequence_length=self.input_shape[1] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[2] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
