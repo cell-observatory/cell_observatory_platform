@@ -11,6 +11,7 @@ CASES = [
         input_fmt="TZYXC",
         input_shape=(2, 8, 16, 32, 32, 3),  # (B, T, Z, Y, X, C)
         lateral_patch_size=8,
+        patch_shape=(2, 4, 8, 8, None),
         axial_patch_size=4,
         temporal_patch_size=2,
         channels=3,
@@ -24,6 +25,7 @@ CASES = [
         lateral_patch_size=8,
         axial_patch_size=3,
         temporal_patch_size=None,
+        patch_shape=(3, 8, 8, None),
         channels=1,
         embed_dim=96,
     ),
@@ -35,6 +37,7 @@ CASES = [
         lateral_patch_size=6,
         axial_patch_size=None,
         temporal_patch_size=5,
+        patch_shape=(5, 6, 6, None),
         channels=2,
         embed_dim=48,
     ),
@@ -46,6 +49,7 @@ CASES = [
         lateral_patch_size=4,
         axial_patch_size=None,
         temporal_patch_size=None,
+        patch_shape=(4, 4, None),
         channels=1,
         embed_dim=32,
     ),
@@ -57,6 +61,7 @@ CASES = [
         lateral_patch_size=5,
         axial_patch_size=None,
         temporal_patch_size=None,
+        patch_shape=(5, None),
         channels=4,
         embed_dim=16,
     ),
@@ -75,10 +80,8 @@ def _expected_pixels_per_patch(case):
 def test_patchify_shapes_reshape(case):
     pe = PatchEmbedding(
         input_fmt=case["input_fmt"],
-        input_shape=case["input_shape"],
-        lateral_patch_size=case["lateral_patch_size"],
-        axial_patch_size=case.get("axial_patch_size"),
-        temporal_patch_size=case.get("temporal_patch_size"),
+        input_shape=case["input_shape"][1:],
+        patch_shape=case["patch_shape"],
         embed_dim=case["embed_dim"],
         channels=case["channels"],
     )
@@ -86,7 +89,7 @@ def test_patchify_shapes_reshape(case):
     x = torch.randn(case["input_shape"])
     num_patches, token_shape = calc_num_patches(
         input_fmt=case["input_fmt"],
-        input_shape=case["input_shape"],
+        input_shape=case["input_shape"][1:],
         lateral_patch_size=case["lateral_patch_size"],
         axial_patch_size=case.get("axial_patch_size"),
         temporal_patch_size=case.get("temporal_patch_size"),

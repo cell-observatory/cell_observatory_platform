@@ -973,3 +973,28 @@ def get_data_dim(layout_order: str) -> int:
         return 3
     else:
         raise ValueError(f"Unknown dataset layout order: {layout_order}")
+
+
+def get_patch_sizes(input_format: str, patch_shape: List[int]):
+    if input_format == "TZYXC":
+        # temporal, axial, lateral
+        return (patch_shape[0], patch_shape[1], patch_shape[2])
+    
+    elif input_format == "TYXC":
+        # temporal, lateral
+        return (patch_shape[0], None, patch_shape[1])
+    
+    elif input_format == "ZYXC":
+        # axial, lateral
+        return (None, patch_shape[0], patch_shape[1])
+
+    elif input_format == "YXC":
+        # lateral only
+        return (None, None, patch_shape[0])
+
+    elif input_format == "XC":
+        # lateral only (1D)
+        return (None, None, patch_shape[0])
+
+    else:
+        raise ValueError(f"Unknown dataset layout order: {input_format}")

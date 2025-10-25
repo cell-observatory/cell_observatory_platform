@@ -218,6 +218,7 @@ class CollatorActor:
 class LoaderActor:
     def __init__(self,
                  dim: int,
+                 input_format: str,
                  node_id: int,
                  local_rank: int,
                  global_rank: int,
@@ -233,6 +234,7 @@ class LoaderActor:
                  pad_mode: Literal["zero"] = "zero"
 ):
         self.dim = dim
+        self.input_format = input_format.upper()
         self.pad_mode = pad_mode
 
         self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
@@ -299,13 +301,22 @@ class LoaderActor:
         x = slice(meta["x_start"], meta["x_start"] + meta["x_size"])
 
         if self.channels_subset is not None:
-            view = data_tensor[t, z, y, x, self.channels_subset]
+            if self.input_format == "ZYXC" or self.input_format == "TZYXC":
+                view = data_tensor[t, z, y, x, self.channels_subset]
+            else:
+                raise NotImplementedError(f"Channel subsetting not implemented for input format {self.input_format}")
         else:
-            c = slice(0, meta["channel_size"])
-            view = data_tensor[t, z, y, x, c]
+            if self.input_format == "ZYXC" or self.input_format == "TZYXC":
+                c = slice(0, meta["channel_size"])
+                view = data_tensor[t, z, y, x, c]
+            else:
+                raise NotImplementedError(f"Input format {self.input_format} not implemented")
 
         if self.dim == 3:
-            view = view[meta["time_start"], ...]
+            if self.input_format == "ZYXC":
+                view = view[meta["time_start"], ...]
+            else:
+                raise NotImplementedError(f"Input format {self.input_format} not implemented for 3D data")
 
         return view
 
@@ -346,31 +357,42 @@ class LoaderActor:
                 src_view = self._slice_hypercube(self._get_handle(p), meta=meta, ts_batch=b)
                 
                 if self.dim == 3:
-                    tz, ty, tx, tc = src_view.shape
-                    dst_slice = (slice(0, tz), slice(0, ty), slice(0, tx), slice(0, tc))
+                    if self.input_format == "ZYXC":
+                        tz, ty, tx, tc = src_view.shape
+                        dst_slice = (slice(0, tz), slice(0, ty), slice(0, tx), slice(0, tc))
+                    else:
+                        raise NotImplementedError(f"Input format {self.input_format} not implemented for 3D data")
                 else:
-                    tt, tz, ty, tx, tc = src_view.shape
-                    dst_slice = (slice(0, tt), slice(0, tz), slice(0, ty), slice(0, tx), slice(0, tc))
+                    if self.input_format == "TZYXC":
+                        tt, tz, ty, tx, tc = src_view.shape
+                        dst_slice = (slice(0, tt), slice(0, tz), slice(0, ty), slice(0, tx), slice(0, tc))
+                    else:
+                        raise NotImplementedError(f"Input format {self.input_format} not implemented for 4D data")
 
                 write_futs.append(ts.array(dst[i][dst_slice]).write(src_view))
                 
                 # NOTE: pad the tail after write, currently we only support zero padding
                 if self.pad_mode == "zero":
                     if self.dim == 3:
-                        B, Z, Y, X, C = self.batch_shape
-                        if tz < Z: dst[i][tz:, :,  :,  :].fill(0)
-                        if ty < Y: dst[i][:tz , ty:, :,  :].fill(0)
-                        if tx < X: dst[i][:tz , :ty , tx:, :].fill(0)
-                        if tc < C: dst[i][:tz , :ty , :tx , tc:].fill(0)
+                        if self.input_format == "ZYXC":
+                            B, Z, Y, X, C = self.batch_shape
+                            if tz < Z: dst[i][tz:, :,  :,  :].fill(0)
+                            if ty < Y: dst[i][:tz , ty:, :,  :].fill(0)
+                            if tx < X: dst[i][:tz , :ty , tx:, :].fill(0)
+                            if tc < C: dst[i][:tz , :ty , :tx , tc:].fill(0)
+                        else:
+                            raise NotImplementedError(f"Input format {self.input_format} not implemented for 3D data")
                     else:
-                        B, T, Z, Y, X, C = self.batch_shape
-                        # NOTE: broadcast last valid slice along time axis
-                        if tt < T: dst[i][tt:T, ...] = dst[i][tt-1, ...]
-                        if tz < Z: dst[i][:tt, tz:,  :,  :,  :].fill(0)
-                        if ty < Y: dst[i][:tt, :tz,  ty:, :,  :].fill(0)
-                        if tx < X: dst[i][:tt, :tz,  :ty, tx:, :].fill(0)
-                        if tc < C: dst[i][:tt, :tz,  :ty, :tx, tc:].fill(0)
-
+                        if self.input_format == "TZYXC":
+                            B, T, Z, Y, X, C = self.batch_shape
+                            # NOTE: broadcast last valid slice along time axis
+                            if tt < T: dst[i][tt:T, ...] = dst[i][tt-1, ...]
+                            if tz < Z: dst[i][:tt, tz:,  :,  :,  :].fill(0)
+                            if ty < Y: dst[i][:tt, :tz,  ty:, :,  :].fill(0)
+                            if tx < X: dst[i][:tt, :tz,  :ty, tx:, :].fill(0)
+                            if tc < C: dst[i][:tt, :tz,  :ty, :tx, tc:].fill(0)
+                        else:
+                            raise NotImplementedError(f"Input format {self.input_format} not implemented for 4D data")
                 else:
                     raise NotImplementedError(f"Pad mode {self.pad_mode} not implemented")
 
@@ -462,6 +484,7 @@ def get_dataset_ray(
     ]
 ):
     if cfg.datasets.channels_subset is not None:
+        # NOTE: this always works because dataset_layout_order is 1-1 matched
         num_channels = cfg.datasets.input_shape[cfg.dataset_layout_order.index("C")]
         assert len(list(cfg.datasets.channels_subset)) == num_channels, \
             f"channels_subset length {len(cfg.datasets.channels_subset)} " \
@@ -536,7 +559,8 @@ def get_dataset_ray(
             "global_rank": process_rank(),
             "node_id": node_id(),
             "numa_node": torch_gpu_to_numa(local_rank())["numa_node"],
-            "dim": get_data_dim(cfg.dataset_layout_order)
+            "dim": get_data_dim(cfg.dataset_layout_order),
+            "input_format": cfg.dataset_layout_order,
         },
         concurrency=(cfg.datasets.num_actors_min, cfg.datasets.num_actors_max),
     )

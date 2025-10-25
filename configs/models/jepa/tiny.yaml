@@ -1,9 +1,7 @@
 _target_: models.jepa.JEPA
 input_fmt: ${dataset_layout_order}
-input_shape: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
-temporal_patch_size: ${datasets.patch_shape.0}
-lateral_patch_size: ${datasets.patch_shape.1}
-axial_patch_size: ${datasets.patch_shape.2}
+input_shape: ${datasets.input_shape}
+patch_shape: ${datasets.patch_shape}
 
 embed_dim: 192
 predictor_embed_dim: 96

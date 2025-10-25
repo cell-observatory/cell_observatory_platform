@@ -132,10 +132,8 @@ class MaskedAutoEncoder(nn.Module):
             'mae-gigantic'
         ] = 'mae',
         input_fmt='TZYXC',
-        input_shape=(1, 6, 64, 64, 1),
-        lateral_patch_size=16,
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape: tuple = (16, 128, 128, 128, 2),
+        patch_shape: tuple = (4, 16, 16, 16),
         embed_dim=768,
         decoder_embed_dim=256,
         depth=12,
@@ -187,13 +185,11 @@ class MaskedAutoEncoder(nn.Module):
         self.input_fmt = input_fmt
         self.input_shape = input_shape
         
-        axis_to_value = dict(zip(input_fmt, input_shape[1:]))
+        axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value['C']
         self.num_frames = axis_to_value.get("T", None)
 
-        self.axial_patch_size = axial_patch_size
-        self.lateral_patch_size = lateral_patch_size
-        self.temporal_patch_size = temporal_patch_size
+        self.patch_shape = patch_shape
 
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
@@ -217,9 +213,7 @@ class MaskedAutoEncoder(nn.Module):
         self.masked_encoder = MaskedEncoder(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
-            lateral_patch_size=self.lateral_patch_size,
-            axial_patch_size=self.axial_patch_size,
-            temporal_patch_size=self.temporal_patch_size,
+            patch_shape=self.patch_shape,
             channels=self.in_chans,
             embed_dim=self.embed_dim,
             depth=self.depth,
@@ -245,9 +239,7 @@ class MaskedAutoEncoder(nn.Module):
         self.masked_decoder = MaskedPredictor(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
-            lateral_patch_size=self.lateral_patch_size,
-            axial_patch_size=self.axial_patch_size,
-            temporal_patch_size=self.temporal_patch_size,
+            patch_shape=self.patch_shape,
             channels=self.in_chans,
             input_embed_dim=self.embed_dim,
             output_embed_dim=self.masked_encoder.patch_embedding.pixels_per_patch,
@@ -293,9 +285,7 @@ class MaskedAutoEncoder(nn.Module):
             num_patches, _ = calc_num_patches(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
-                lateral_patch_size=self.lateral_patch_size,
-                axial_patch_size=self.axial_patch_size,
-                temporal_patch_size=self.temporal_patch_size,
+                patch_shape=self.patch_shape,
             )
             return num_patches
     

@@ -43,40 +43,22 @@ def test_attention_shapes(dim, num_heads, qk_norm, B, L):
 
 
 ROPE_CASES = [
-    # (input_fmt, input_shape, patch_size)
-    ("YXC",   (1, 64, 64, 2),           (16, 16)),        # 2D
-    ("ZYXC",  (1, 8, 64, 64, 2),       (4, 16, 16)),      # 3D (no time)
-    ("TYXC",  (1, 8, 64, 64, 2),       (4, 16, 16)),      # 2D + time
-    ("TZYXC", (1, 4, 16, 32, 32, 2),   (2, 8, 16, 16)),   # 3D + time
+    ("YXC",   (1, 64, 64, 2),           (16,)),        # lateral only
+    ("ZYXC",  (1, 8, 64, 64, 2),        (4, 16)),      # axial, lateral
+    ("TYXC",  (1, 8, 64, 64, 2),        (4, 16)),      # temporal, lateral
+    ("TZYXC", (1, 4, 16, 32, 32, 2),    (2, 8, 16)),   # temporal, axial, lateral
 ]
 
-
 @pytest.mark.parametrize("dim,num_heads,rope_mixed", [
-    (32, 4, True),   # learnable / mixed RoPE path
-    (32, 4, False),  # axial (fixed) RoPE path
+    (32, 4, True),
+    (32, 4, False),
 ])
 @pytest.mark.parametrize("case", ROPE_CASES, ids=[c[0] for c in ROPE_CASES])
 def test_rope_attention_shapes(dim, num_heads, rope_mixed, case):
-    input_fmt, input_shape, patch_size = case
-    L = tokens_from(input_fmt, input_shape[1:], patch_size)
+    input_fmt, input_shape_batched, patch_shape = case
+    input_shape = input_shape_batched[1:]
+    L = tokens_from(input_fmt, input_shape, patch_shape)
     B = 2
-
-    if input_fmt == "YXC":
-        axial_patch_size = 1
-        lateral_patch_size = patch_size[0]
-        temporal_patch_size = 1
-    elif input_fmt == "ZYXC":
-        axial_patch_size = patch_size[0]
-        lateral_patch_size = patch_size[1]
-        temporal_patch_size = 1
-    elif input_fmt == "TYXC":
-        axial_patch_size = 1
-        lateral_patch_size = patch_size[1]
-        temporal_patch_size = patch_size[0]
-    elif input_fmt == "TZYXC":
-        axial_patch_size = patch_size[1]
-        lateral_patch_size = patch_size[2]
-        temporal_patch_size = patch_size[0]
 
     x = torch.randn(B, L, dim, device='cuda')
     m = RopeAttention(
@@ -91,14 +73,11 @@ def test_rope_attention_shapes(dim, num_heads, rope_mixed, case):
         rope_theta=10.0,
         input_fmt=input_fmt,
         input_shape=input_shape,
-        axial_patch_size=axial_patch_size,
-        lateral_patch_size=lateral_patch_size,
-        temporal_patch_size=temporal_patch_size,
-    ).to('cuda')
-    m.eval()
+        patch_shape=patch_shape,
+    ).to('cuda').eval()
+
     y = m(x)
     assert y.shape == (B, L, dim)
-
 
 
 # ----------------------- Transformer block: with and without RoPE -------------------------------
@@ -111,26 +90,10 @@ def test_rope_attention_shapes(dim, num_heads, rope_mixed, case):
 ])
 @pytest.mark.parametrize("case", ROPE_CASES, ids=[c[0] for c in ROPE_CASES])
 def test_transformer_shapes(rope_pos_enc, dim, num_heads, mlp_ratio, case):
-    input_fmt, input_shape, patch_size = case
-    L = tokens_from(input_fmt, input_shape[1:], patch_size)
+    input_fmt, input_shape_batched, patch_shape = case
+    input_shape = input_shape_batched[1:]
+    L = tokens_from(input_fmt, input_shape, patch_shape)
     B = 2
-
-    if input_fmt == "YXC":
-        axial_patch_size = 1
-        lateral_patch_size = patch_size[0]
-        temporal_patch_size = 1
-    elif input_fmt == "ZYXC":
-        axial_patch_size = patch_size[0]
-        lateral_patch_size = patch_size[1]
-        temporal_patch_size = 1
-    elif input_fmt == "TYXC":
-        axial_patch_size = 1
-        lateral_patch_size = patch_size[1]
-        temporal_patch_size = patch_size[0]
-    elif input_fmt == "TZYXC":
-        axial_patch_size = patch_size[1]
-        lateral_patch_size = patch_size[2]
-        temporal_patch_size = patch_size[0]
 
     x = torch.randn(B, L, dim, device='cuda')
     m = Transformer(
@@ -148,9 +111,7 @@ def test_transformer_shapes(rope_pos_enc, dim, num_heads, mlp_ratio, case):
         rope_theta=10.0,
         input_fmt=input_fmt,
         input_shape=input_shape,
-        axial_patch_size=axial_patch_size,
-        lateral_patch_size=lateral_patch_size,
-        temporal_patch_size=temporal_patch_size,
+        patch_shape=patch_shape,
         wide_silu=False,
     ).to('cuda')
     m.eval()

@@ -55,11 +55,11 @@ def tokens(fmt, shape, lps, aps, tps):
 
 def fmt_shapes_and_patches():
     return [
-        ("XC",    (1, 8, 1),               (2, 1, 1)),
-        ("YXC",   (1, 4, 4, 1),            (2, 1, 1)),
-        ("TYXC",  (1, 3, 4, 4, 1),         (2, 1, 1)),
-        ("ZYXC",  (1, 3, 4, 4, 1),         (2, 1, 1)),
-        ("TZYXC", (1, 2, 3, 4, 4, 1),      (2, 1, 1)),
+        ("XC",    (1, 8, 1),               (2, 1, 1), (1, None)),
+        ("YXC",   (1, 4, 4, 1),            (2, 1, 1), (1, 1, None)),
+        ("TYXC",  (1, 3, 4, 4, 1),         (2, 1, 1), (2, 1, 1, None)),
+        ("ZYXC",  (1, 3, 4, 4, 1),         (2, 1, 1), (1, 1, 1, None)),
+        ("TZYXC", (1, 2, 3, 4, 4, 1),      (2, 1, 1), (2, 1, 1, 1, None)),
     ]
 
 
@@ -80,20 +80,21 @@ def test_posenc_1d_shapes():
 
 @pytest.mark.parametrize("embed_dim,lateral", [(16, 3), (32, 2)])
 def test_posenc_2d_shapes(embed_dim, lateral):
-    emb = positional_encoding_2d(embed_dim, lateral, cls_token=False)
-    emb_cls = positional_encoding_2d(embed_dim, lateral, cls_token=True)
+    emb = positional_encoding_2d(embed_dim, lateral, lateral, cls_token=False)
+    emb_cls = positional_encoding_2d(embed_dim, lateral, lateral, cls_token=True)
     assert emb.shape == (lateral * lateral, embed_dim)
     assert emb_cls.shape == (1 + lateral * lateral, embed_dim)
 
 def test_posenc_3d_axial_and_temporal_shapes():
-    emb_ax = positional_encoding_3d(24, lateral_sequence_length=2, axial_sequence_length=3, cls_token=False)
-    emb_tm = positional_encoding_3d(24, lateral_sequence_length=2, temporal_sequence_length=3, cls_token=False)
+    emb_ax = positional_encoding_3d(24, lateral_x_sequence_length=2, lateral_y_sequence_length=2, axial_sequence_length=3, cls_token=False)
+    emb_tm = positional_encoding_3d(24, lateral_x_sequence_length=2, lateral_y_sequence_length=2, temporal_sequence_length=3, cls_token=False)
     assert emb_ax.shape == (3 * 2 * 2, 24)
     assert emb_tm.shape == (3 * 2 * 2, 24)
 
 def test_posenc_4d_shapes():
     emb = positional_encoding_4d(32, 
-                                 lateral_sequence_length=2, 
+                                 lateral_x_sequence_length=2, 
+                                 lateral_y_sequence_length=2, 
                                  axial_sequence_length=3, 
                                  temporal_sequence_length=2, 
                                  cls_token=False)
@@ -105,35 +106,67 @@ def test_posenc_4d_shapes():
 # ------------------------------------------------------
 
 
-@pytest.mark.parametrize("fmt,shape,patches", fmt_shapes_and_patches())
-def test_pos_embedding_forward_no_interp_shapes(fmt, shape, patches):
+def _patch_shape_from(fmt, lps, aps, tps):
+    if fmt == "TZYXC":
+        return (tps, aps, lps, None)
+    if fmt == "ZYXC":
+        return (aps, lps, None)
+    if fmt == "TYXC":
+        return (tps, lps, None)
+    if fmt == "YXC":
+        return (lps, None)
+    if fmt == "XC":
+        return (lps, None)
+    raise ValueError(f"unknown fmt {fmt}")
+
+
+def fmt_shapes_and_patches():
+    cases = [
+        ("XC",    (1, 8, 1),               (2, 1, 1)),
+        ("YXC",   (1, 4, 4, 1),            (2, 1, 1)),
+        ("TYXC",  (1, 3, 4, 4, 1),         (2, 1, 1)),
+        ("ZYXC",  (1, 3, 4, 4, 1),         (2, 1, 1)),
+        ("TZYXC", (1, 2, 3, 4, 4, 1),      (2, 1, 1)),
+    ]
+    out = []
+    for fmt, shape, (lps, aps, tps) in cases:
+        patch_shape = _patch_shape_from(fmt, lps, aps, tps)
+        out.append((fmt, shape, (lps, aps, tps), patch_shape))
+    return out
+
+
+@pytest.mark.parametrize("fmt,shape,patches,patch_shape", fmt_shapes_and_patches())
+def test_pos_embedding_forward_no_interp_shapes(fmt, shape, patches, patch_shape):
     lps, aps, tps = patches
-    pe = PosEmbedding(fmt, shape, lps, aps, tps, embed_dim=16, cls_token=False, interpolate=False)
+    pe = PosEmbedding(fmt, shape[1:], patch_shape, embed_dim=16, cls_token=False, interpolate=False) 
     x = torch.zeros(shape)
     y = pe(x)
     assert y.shape == (1, tokens(fmt, shape, lps, aps, tps), 16)
 
-@pytest.mark.parametrize("fmt,shape,patches", fmt_shapes_and_patches())
-def test_pos_embedding_forward_interp_identity_shapes(fmt, shape, patches):
+
+@pytest.mark.parametrize("fmt,shape,patches,patch_shape", fmt_shapes_and_patches())
+def test_pos_embedding_forward_interp_identity_shapes(fmt, shape, patches, patch_shape):
     lps, aps, tps = patches
-    pe = PosEmbedding(fmt, shape, lps, aps, tps, embed_dim=16, cls_token=False, interpolate=True)
+    pe = PosEmbedding(fmt, shape[1:], patch_shape, embed_dim=16, cls_token=False, interpolate=True)
     x = torch.zeros(shape)
     y = pe(x)
     assert y.shape == (1, tokens(fmt, shape, lps, aps, tps), 16)
+
 
 @pytest.mark.parametrize(
     "fmt,shape,new_shape,patches",
     [
-        ("XC",    (1, 8, 1),          (1, 12, 1),         (2, 1, 1)),
-        ("YXC",   (1, 4, 4, 1),       (1, 6, 6, 1),       (2, 1, 1)),
-        ("TYXC",  (1, 3, 4, 4, 1),    (1, 6, 6, 6, 1),    (2, 1, 1)),
-        ("ZYXC",  (1, 3, 4, 4, 1),    (1, 3, 6, 6, 1),    (2, 1, 1)),
-        ("TZYXC", (1, 2, 3, 4, 4, 1), (1, 6, 6, 6, 6, 1), (2, 1, 1)),
+        ("XC",    (1,  8, 1),         (1, 12, 1),        (2, 1, 1)),
+        ("YXC",   (1,  4, 4, 1),      (1,  6, 6, 1),     (2, 1, 1)),
+        ("TYXC",  (1,  3, 4, 4, 1),   (1,  6, 6, 6, 1),  (2, 1, 1)),
+        ("ZYXC",  (1,  3, 4, 4, 1),   (1,  3, 6, 6, 1),  (2, 1, 1)),
+        ("TZYXC", (1,  2, 3, 4, 4, 1),(1,  6, 6, 6, 6,1),(2, 1, 1)),
     ],
 )
 def test_pos_embedding_forward_interp_resized_shapes(fmt, shape, new_shape, patches):
     lps, aps, tps = patches
-    pe = PosEmbedding(fmt, shape, lps, aps, tps, embed_dim=16, cls_token=False, interpolate=True)
+    patch_shape = _patch_shape_from(fmt, lps, aps, tps)
+    pe = PosEmbedding(fmt, shape[1:], patch_shape, embed_dim=16, cls_token=False, interpolate=True)
     x = torch.zeros(new_shape)
     y = pe(x)
     assert y.shape == (1, tokens(fmt, new_shape, lps, aps, tps), 16)

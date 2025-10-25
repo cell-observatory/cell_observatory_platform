@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models import patch_embeddings
+from training.helpers import get_patch_sizes
 
 logging.basicConfig(
 	stream=sys.stdout,
@@ -189,10 +190,8 @@ class PosEmbedding(nn.Module):
     def __init__(
         self,
         input_fmt="TZYXC",
-        input_shape=(1, 16, 128, 128, 128, 1),
-        lateral_patch_size=16,
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=(16, 128, 128, 128, 2),
+        patch_shape: tuple = (4, 16, 16, 16),
         embed_dim=768,
         channels=1,
         cls_token=False,
@@ -203,9 +202,10 @@ class PosEmbedding(nn.Module):
         self.input_fmt = input_fmt
         self.input_shape = input_shape
 
-        self.axial_patch_size = axial_patch_size
-        self.lateral_patch_size = lateral_patch_size
-        self.temporal_patch_size = temporal_patch_size
+        self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
+            input_format=input_fmt,
+            patch_shape=patch_shape
+        )
 
         self.embed_dim = embed_dim
         self.channels = channels
@@ -231,10 +231,10 @@ class PosEmbedding(nn.Module):
         if self.input_fmt == "TZYXC":
             sincos = positional_encoding_4d(
                 embed_dim=self.embed_dim,
-                temporal_sequence_length=self.input_shape[1] // self.temporal_patch_size,
-                axial_sequence_length=self.input_shape[2] // self.axial_patch_size,
-                lateral_y_sequence_length=self.input_shape[3] // self.lateral_patch_size,
-                lateral_x_sequence_length=self.input_shape[4] // self.lateral_patch_size,
+                temporal_sequence_length=self.input_shape[0] // self.temporal_patch_size,
+                axial_sequence_length=self.input_shape[1] // self.axial_patch_size,
+                lateral_y_sequence_length=self.input_shape[2] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[3] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
@@ -242,9 +242,9 @@ class PosEmbedding(nn.Module):
             sincos = positional_encoding_3d(
                 embed_dim=self.embed_dim,
                 temporal_sequence_length=None,
-                axial_sequence_length=self.input_shape[1] // self.axial_patch_size,
-                lateral_y_sequence_length=self.input_shape[2] // self.lateral_patch_size,
-                lateral_x_sequence_length=self.input_shape[3] // self.lateral_patch_size,
+                axial_sequence_length=self.input_shape[0] // self.axial_patch_size,
+                lateral_y_sequence_length=self.input_shape[1] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[2] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
@@ -252,24 +252,24 @@ class PosEmbedding(nn.Module):
             sincos = positional_encoding_3d(
                 embed_dim=self.embed_dim,
                 axial_sequence_length=None,
-                temporal_sequence_length=self.input_shape[1] // self.temporal_patch_size,
-                lateral_y_sequence_length=self.input_shape[2] // self.lateral_patch_size,
-                lateral_x_sequence_length=self.input_shape[3] // self.lateral_patch_size,
+                temporal_sequence_length=self.input_shape[0] // self.temporal_patch_size,
+                lateral_y_sequence_length=self.input_shape[1] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[2] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
         elif self.input_fmt == "YXC":
             sincos = positional_encoding_2d(
                 embed_dim=self.embed_dim,
-                lateral_y_sequence_length=self.input_shape[1] // self.lateral_patch_size,
-                lateral_x_sequence_length=self.input_shape[2] // self.lateral_patch_size,
+                lateral_y_sequence_length=self.input_shape[0] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[1] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
         elif self.input_fmt == "XC":
             sincos = positional_encoding_1d(
                 embed_dim=self.embed_dim,
-                sequence_length=self.input_shape[1] // self.lateral_patch_size,
+                sequence_length=self.input_shape[0] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 

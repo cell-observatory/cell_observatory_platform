@@ -5,6 +5,8 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from training.helpers import get_patch_sizes
+
 logging.basicConfig(
 	stream=sys.stdout,
 	level=logging.INFO,
@@ -15,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def calc_num_patches(
     input_fmt="TZYXC",
-    input_shape=(1, 16, 64, 64, 64, 1),
+    input_shape=(16, 128, 128, 128, 2),
     lateral_patch_size=1,
     axial_patch_size=1,
     temporal_patch_size=1,
@@ -25,10 +27,10 @@ def calc_num_patches(
         assert axial_patch_size != None, "axial_patch_size cannot be None"
         assert temporal_patch_size != None, "temporal_patch_size cannot be None"
 
-        t = input_shape[1] // temporal_patch_size
-        z = input_shape[2] // axial_patch_size
-        y = input_shape[3] // lateral_patch_size
-        x = input_shape[4] // lateral_patch_size
+        t = input_shape[0] // temporal_patch_size
+        z = input_shape[1] // axial_patch_size
+        y = input_shape[2] // lateral_patch_size
+        x = input_shape[3] // lateral_patch_size
         c = input_shape[-1]
         num_patches = t * z * y * x
 
@@ -37,9 +39,9 @@ def calc_num_patches(
         assert axial_patch_size != None, "axial_patch_size cannot be None"
 
         t = None
-        z = input_shape[1] // axial_patch_size
-        y = input_shape[2] // lateral_patch_size
-        x = input_shape[3] // lateral_patch_size
+        z = input_shape[0] // axial_patch_size
+        y = input_shape[1] // lateral_patch_size
+        x = input_shape[2] // lateral_patch_size
         c = input_shape[-1]
         num_patches = z * y * x
 
@@ -48,9 +50,9 @@ def calc_num_patches(
         assert temporal_patch_size != None, "temporal_patch_size cannot be None"
 
         z = None
-        t = input_shape[1] // temporal_patch_size
-        y = input_shape[2] // lateral_patch_size
-        x = input_shape[3] // lateral_patch_size
+        t = input_shape[0] // temporal_patch_size
+        y = input_shape[1] // lateral_patch_size
+        x = input_shape[2] // lateral_patch_size
         c = input_shape[-1]
         num_patches = t * y * x
 
@@ -58,8 +60,8 @@ def calc_num_patches(
         assert lateral_patch_size != None, "lateral_patch_size cannot be None"
 
         t, z = None, None
-        y = input_shape[1] // lateral_patch_size
-        x = input_shape[2] // lateral_patch_size
+        y = input_shape[0] // lateral_patch_size
+        x = input_shape[1] // lateral_patch_size
         c = input_shape[-1]
         num_patches = y * x
 
@@ -67,7 +69,7 @@ def calc_num_patches(
         assert lateral_patch_size != None, "lateral_patch_size cannot be None"
 
         t, z, y = None, None, None
-        x = input_shape[1] // lateral_patch_size
+        x = input_shape[0] // lateral_patch_size
         c = input_shape[-1]
         num_patches = x
     
@@ -82,10 +84,8 @@ class PatchEmbedding(nn.Module):
     def __init__(
         self,
         input_fmt="ZYXC",
-        input_shape=(1, 6, 64, 64, 1),
-        lateral_patch_size=16,
-        axial_patch_size=None,
-        temporal_patch_size=None,
+        input_shape=(16, 128, 128, 128, 2),
+        patch_shape: tuple = (4, 16, 16, 16),
         embed_dim=768,
         channels=1,
     ):
@@ -93,9 +93,10 @@ class PatchEmbedding(nn.Module):
         self.input_shape = input_shape
         self.input_fmt = input_fmt
 
-        self.axial_patch_size = axial_patch_size
-        self.lateral_patch_size = lateral_patch_size
-        self.temporal_patch_size = temporal_patch_size
+        self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
+            input_format=input_fmt,
+            patch_shape=patch_shape
+        )
         
         self.embed_dim = embed_dim
         self.channels = channels

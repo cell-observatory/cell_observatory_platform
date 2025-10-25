@@ -100,11 +100,9 @@ class Baseline(nn.Module):
             'baseline-gigantic'
         ] = 'baseline',
         input_fmt='TZYXC',
-        input_shape=(1, 6, 64, 64, 1),
+        input_shape: tuple = (16, 128, 128, 128, 2),
+        patch_shape: tuple = (4, 16, 16, 16),
         modes=15,
-        lateral_patch_size=16,
-        axial_patch_size=1,
-        temporal_patch_size=1,
         embed_dim=768,
         depth=12,
         num_heads=12,
@@ -143,13 +141,11 @@ class Baseline(nn.Module):
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
-        axis_to_value = dict(zip(input_fmt, input_shape[1:]))
+        axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value['C']
         self.num_frames = axis_to_value['T']
 
-        self.axial_patch_size = axial_patch_size
-        self.lateral_patch_size = lateral_patch_size
-        self.temporal_patch_size = temporal_patch_size
+        self.patch_shape = patch_shape
 
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
@@ -177,9 +173,7 @@ class Baseline(nn.Module):
         self.patch_embedding = PatchEmbedding(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
-            lateral_patch_size=self.lateral_patch_size,
-            axial_patch_size=self.axial_patch_size,
-            temporal_patch_size=self.temporal_patch_size,
+            patch_shape=self.patch_shape,
             embed_dim=self.embed_dim,
             channels=self.in_chans,
         )
@@ -188,8 +182,7 @@ class Baseline(nn.Module):
             self.pos_embedding = PosEmbedding(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
-                lateral_patch_size=self.lateral_patch_size,
-                axial_patch_size=self.axial_patch_size,
+                patch_shape=self.patch_shape,
                 embed_dim=self.embed_dim,
                 channels=self.in_chans,
                 cls_token=False
@@ -214,11 +207,7 @@ class Baseline(nn.Module):
             rope_theta=rope_theta,
             input_fmt=input_fmt,
             input_shape=input_shape,
-            # (T, Z, Y, X, C)
-            patch_size=(self.temporal_patch_size,
-                        self.axial_patch_size,
-                        self.lateral_patch_size,
-                        self.lateral_patch_size),
+            patch_shape=self.patch_shape,
             mlp_wide_silu=mlp_wide_silu,
             dtype=dtype
         )
@@ -254,9 +243,7 @@ class Baseline(nn.Module):
             num_patches, _ = calc_num_patches(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
-                lateral_patch_size=self.lateral_patch_size,
-                axial_patch_size=self.axial_patch_size,
-                temporal_patch_size=self.temporal_patch_size,
+                patch_shape=self.patch_shape,
             )
             return num_patches
 

@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 class ParentDatabase():
     def __init__(
         self,
+        input_shape: tuple,
         dataset_layout_order: str,
-        num_timepoints: Optional[int] = 1,
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
         max_hypercubes: Optional[int] = None,
@@ -44,9 +44,6 @@ class ParentDatabase():
         max_partitions: Optional[int] = 10,
         server_folder_path: Optional[Path|str] = None,
         occupancy_threshold: Optional[float] = None,
-        z_slices: Optional[int] = 128,
-        y_slices: Optional[int] = 128,
-        x_slices: Optional[int] = 128,
         base_cube_size: Optional[int] = 128,
         valid_z_sizes: Optional[Sequence[int]] = [128],
         valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384],
@@ -91,9 +88,10 @@ class ParentDatabase():
         else:
             self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
 
+        self.input_shape = input_shape
+
         self.dbname = dbname
         self.dotenv_path = dotenv_path
-        self.num_timepoints = num_timepoints
         self.max_rois = max_rois
         self.max_tiles = max_tiles
         self.max_hypercubes = max_hypercubes
@@ -109,6 +107,11 @@ class ParentDatabase():
         self.server_folder_path = server_folder_path
         self.occupancy_threshold = occupancy_threshold
         self.dataset_layout_order = dataset_layout_order
+
+        self.num_timepoints, z_slices, y_slices, x_slices = self._get_slices_from_layout_order(
+            input_format=self.dataset_layout_order,
+            input_shape=self.input_shape
+        )
 
         if z_slices not in valid_z_sizes:
             raise NotSupportedError(f"{z_slices=} is not supported yet, please chose from {valid_z_sizes}")
@@ -189,7 +192,22 @@ class ParentDatabase():
 
         else:
             self.hypercubes_dataframe = None
-        
+
+    def _get_slices_from_layout_order(self, input_format: str, input_shape: tuple):
+        if input_format == "TZYXC":
+            num_timepoints = input_shape[0]
+            z_slices = input_shape[1]
+            y_slices = input_shape[2]
+            x_slices = input_shape[3]
+        elif input_format == "ZYXC":
+            num_timepoints = 1
+            z_slices = input_shape[0]
+            y_slices = input_shape[1]
+            x_slices = input_shape[2]
+        else:
+            raise NotSupportedError(f"Input format {input_format} is not supported yet.")
+        return num_timepoints, z_slices, y_slices, x_slices
+
     def get_rois_dataframe(self) -> pd.DataFrame:
         roi_csv = self.hypercubes_dataframe_path.with_name(
             f"{self.hypercubes_dataframe_path.stem}_rois.csv"
@@ -197,6 +215,7 @@ class ParentDatabase():
         if (not self.use_cached_hypercubes_dataframe) or (not roi_csv.exists()):
             query = f"""
                 SELECT id,
+                    x_start, y_start, z_start,
                     z_end, y_end, x_end,
                     time_size, channel_size
                 FROM prepared
@@ -206,6 +225,9 @@ class ParentDatabase():
                                                 "z_end": "tile_z_end",
                                                 "y_end": "tile_y_end",
                                                 "x_end": "tile_x_end",
+                                                "z_start": "tile_z_start",
+                                                "y_start": "tile_y_start",
+                                                "x_start": "tile_x_start",
                                                 "time_size": "tile_time_size",
                                                 "channel_size": "tile_channel_size"})
             rois_df.to_csv(roi_csv, index=True, header=True)
@@ -789,6 +811,7 @@ class ParentDatabase():
         L = layout.upper()
         work = df.merge(shape_df[list(join_keys) + [
             "tile_z_end",   "tile_y_end",   "tile_x_end",
+            "tile_x_start", "tile_y_start", "tile_z_start",
             "tile_time_size", "tile_channel_size"
         ]], how="left", on=list(join_keys))
 
@@ -814,9 +837,9 @@ class ParentDatabase():
 
         axes_end_map = {
             "T": work["tile_time_size"],
-            "Z": work["tile_z_end"],
-            "Y": work["tile_y_end"],
-            "X": work["tile_x_end"],
+            "Z": work["tile_z_end"] - work["tile_z_start"],
+            "Y": work["tile_y_end"] - work["tile_y_start"],
+            "X": work["tile_x_end"] - work["tile_x_start"],
             "C": work["tile_channel_size"],
         }
 
