@@ -50,14 +50,12 @@ class ParentDatabase():
         valid_x_sizes: Optional[Sequence[int]] = [128, 256, 384, 512, 640, 896, 1024],
     ):
         """
-        A class for accessing Supabase database and retrieving hypercubes.
-        The class is only setup to work with the a hypercube view of `Tx128x128x128x2` (TZYXC).
+        A class for accessing database and retrieving hypercubes.
         It'll check database for existing views or create them if they don't exist based on the given `num_timepoints`.
         The results are stored in a pandas dataframe `self.hypercubes_dataframe`
         unless `fetch_hypercubes_dataframe` is set to False.
 
         Args:
-            num_timepoints: number of timepoints for each hypercube
             max_rois: maximum number of ROIs (each ROI can have dozens of tiles)
             max_tiles: maximum number of tiles (each tile can have thousands of hypercubes)
             max_hypercubes: maximum number of hypercubes to return
@@ -77,9 +75,6 @@ class ParentDatabase():
             server_folder_path: path to override default server folder found in the supabase database
                 update this path based on where the data is stored on your local machine
             occupancy_threshold: to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
-            z_slices: number of planes in the Z axis
-            y_slices: number of planes in the Y axis
-            x_slices: number of planes in the X axis
         """
 
         if hypercubes_dataframe_path is None:
@@ -148,7 +143,7 @@ class ParentDatabase():
 
             else:
                 self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
-                    num_timepoints=num_timepoints,
+                    num_timepoints=self.num_timepoints,
                     max_rois=max_rois,
                     max_tiles=max_tiles,
                     max_hypercubes=max_hypercubes,
