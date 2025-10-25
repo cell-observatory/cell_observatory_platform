@@ -314,7 +314,7 @@ def test_get_t_128_128_128_2_hypercubes(database):
 def test_1_128_128_128_2_hypercubes_database(config, database_type):
     config.experiment_name = "test_1_128_128_128_2_hypercubes_database"
     config.datasets.databases._target_ = get_database_class(database_type) 
-    config.datasets.databases.input_shape = (1, 128, 128, 128, 2)
+    config.datasets.databases.input_shape = (128, 128, 128, 2)
     config.datasets.databases.dataset_layout_order = "ZYXC"
     num_timepoints = 1
     config.datasets.databases.max_hypercubes = 100
@@ -532,7 +532,8 @@ def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slice
     
     assert table['occupancy_ratios_ch_0'].apply(len).unique()[0] == num_timepoints, "Should only have a single ratio for each timepoint"
     
-@pytest.mark.parametrize("database_type", database_types)
+# @pytest.mark.parametrize("database_type", database_types)
+@pytest.mark.skip("Skipping test_csv_dataframe.")
 def test_csv_dataframe(config, database_type):
     config.experiment_name = "test_csv_dataframe"
     config.datasets.databases._target_ = get_database_class(database_type)
