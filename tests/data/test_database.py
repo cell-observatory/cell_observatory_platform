@@ -29,9 +29,6 @@ def database(config, request):
     config.datasets.databases._target_ = get_database_class(database_type) 
     config.datasets.databases.input_shape = (16, 128, 128, 128, 2)
     config.datasets.databases.dataset_layout_order = "TZYXC"
-    config.datasets.databases.z_slices = 128
-    config.datasets.databases.y_slices = 128
-    config.datasets.databases.x_slices = 128
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / "database/hypercubes_dataframe.csv"
     config.datasets.databases.fetch_hypercubes_dataframe = False
@@ -496,7 +493,7 @@ def test_16_128_128_128_2_hypercubes_database_100k(config, database_type):
 def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slices):
     config.experiment_name = "test_aggregate_hypercubes"
     config.datasets.databases._target_ = get_database_class(database_type) 
-    config.datasets.databases.input_shape = (16, 128, 128, 128, 2)
+    config.datasets.databases.input_shape = (16, z_slices, y_slices, x_slices, 2)
     num_timepoints = 16
     config.datasets.databases.dataset_layout_order = "TZYXC"
     config.datasets.databases.max_hypercubes = 1000
@@ -506,9 +503,6 @@ def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slice
     config.datasets.databases.fetch_hypercubes_dataframe = True
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
-    config.datasets.databases.z_slices = z_slices
-    config.datasets.databases.y_slices = y_slices
-    config.datasets.databases.x_slices = x_slices
 
     print(f"Initializing {config.datasets.databases._target_}...")
     # pprint(OmegaConf.to_container(config, resolve=True))
@@ -541,13 +535,11 @@ def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slice
 @pytest.mark.parametrize("database_type", database_types)
 def test_csv_dataframe(config, database_type):
     config.experiment_name = "test_csv_dataframe"
-    config.datasets.databases._target_ = get_database_class(database_type) 
-    config.datasets.databases.input_shape = (16, 128, 128, 128, 2)
+    config.datasets.databases._target_ = get_database_class(database_type)
+    z_slices, y_slices, x_slices = 128, 128, 128 
+    config.datasets.databases.input_shape = (16, z_slices, y_slices, x_slices, 2)
     num_timepoints = 16
     config.datasets.databases.dataset_layout_order = "TZYXC"    
-    config.datasets.databases.z_slices = 128
-    config.datasets.databases.y_slices = 128
-    config.datasets.databases.x_slices = 128
     config.datasets.databases.max_hypercubes = None
     config.datasets.databases.max_rois = None
     config.datasets.databases.max_tiles = None
@@ -569,12 +561,12 @@ def test_csv_dataframe(config, database_type):
     assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
 
     assert (table['time_size'] == num_timepoints).all(), f"All time sizes should be {num_timepoints} found {table['time_size'].unique()}"
-    assert (table['z_size'] == config.datasets.databases.z_slices).all() , f"{table["z_size"].unique()} != {config.datasets.databases.z_slices} found {table['z_slices'].unique()}"
-    assert (table['y_size'] == config.datasets.databases.y_slices).all() , f"{table["y_size"].unique()} != {config.datasets.databases.y_slices} found {table['y_slices'].unique()}"
-    assert (table['x_size'] == config.datasets.databases.x_slices).all() , f"{table["x_size"].unique()} != {config.datasets.databases.x_slices} found {table['x_slices'].unique()}"
-    
-    assert all(table['z_start'] % config.datasets.databases.z_slices) == 0, f"Starting indices for z_start doesn't match {config.datasets.databases.z_slices}"
-    assert all(table['y_start'] % config.datasets.databases.y_slices) == 0, f"Starting indices for y_start doesn't match {config.datasets.databases.y_slices}"
-    assert all(table['x_start'] % config.datasets.databases.x_slices) == 0, f"Starting indices for x_start doesn't match {config.datasets.databases.x_slices}"
+    assert (table['z_size'] == z_slices).all() , f"{table['z_size'].unique()} != {z_slices} found {table['z_slices'].unique()}"
+    assert (table['y_size'] == y_slices).all() , f"{table['y_size'].unique()} != {y_slices} found {table['y_slices'].unique()}"
+    assert (table['x_size'] == x_slices).all() , f"{table['x_size'].unique()} != {x_slices} found {table['x_slices'].unique()}"
+
+    assert all(table['z_start'] % z_slices) == 0, f"Starting indices for z_start doesn't match {z_slices}"
+    assert all(table['y_start'] % y_slices) == 0, f"Starting indices for y_start doesn't match {y_slices}"
+    assert all(table['x_start'] % x_slices) == 0, f"Starting indices for x_start doesn't match {x_slices}"
 
     assert table['occupancy_ratios_ch_0'].apply(len).unique()[0] == num_timepoints, "Should only have a single ratio for each timepoint"
