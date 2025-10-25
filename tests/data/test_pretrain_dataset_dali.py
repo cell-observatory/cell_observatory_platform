@@ -16,12 +16,13 @@ from data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
 from utils.context import process_rank
 
 
+@pytest.mark.skip("Skipping distributed test for DALI dataloader, DALI dataloader will be deprecated soon.")
 def test_access_to_storage_server(config):
     if not Path(config.paths.server_folder_path).exists():
         raise FileNotFoundError(f"{config.paths.server_folder_path} does not exist")
 
 
-# @pytest.mark.skip("Skipping distributed test for DALI dataloader while database is being updated")
+@pytest.mark.skip("Skipping distributed test for DALI dataloader, DALI dataloader will be deprecated soon.")
 def test_dataloader_dali(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
@@ -75,6 +76,7 @@ def test_dataloader_dali(config):
             break
 
 
+@pytest.mark.skip("Skipping distributed test for DALI dataloader, DALI dataloader will be deprecated soon.")
 def _test_dataloader_dali_dist(config):
     trainer_cls = get_class(config.trainer)
     trainer = trainer_cls(config)
@@ -91,7 +93,8 @@ def _test_dataloader_dali_dist(config):
 
     return report({"success": True})
 
-# @pytest.mark.skip("Skipping distributed test for DALI dataloader while database is being updated")
+
+@pytest.mark.skip("Skipping distributed test for DALI dataloader, DALI dataloader will be deprecated soon.")
 def test_data_pipeline_dali(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")

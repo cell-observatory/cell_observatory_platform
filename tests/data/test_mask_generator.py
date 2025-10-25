@@ -16,48 +16,69 @@ def make_mask_generator():
               time_length: int,
               pattern: Optional[list] = None,
               input_channels: int = 2,
-              spatial_shape: int = (16,16,16),
-              temporal_patch_size: int = 1,
+              spatial_shape: tuple = (16,16,16),
+              temporal_patch_size: Optional[int] = 1,
               lateral_patch_size: int = 16,
               axial_patch_size: int = 16,
               random_masking_ratio: float = 0.5,
               lateral_mask_scale: float = 0.1,
               axial_mask_scale: float = 0.1,
               temporal_mask_scale: float = 0.1,
-              aspect_ratio_scale_hw: float = 0.1,
+              aspect_ratio_scale_hw = 0.1,
               num_blocks: int = 1
               ):
-        if layout == MULTICHANNEL_HYPERCUBE.CTZYX or \
-            layout == MULTICHANNEL_HYPERCUBE.CTYX:
-            input_shape = (input_channels, time_length, *spatial_shape)
-        elif layout == MULTICHANNEL_HYPERCUBE.TZYXC or \
-            layout == MULTICHANNEL_HYPERCUBE.TYXC:
-            input_shape = (time_length, *spatial_shape, input_channels)
-        elif layout == MULTICHANNEL_HYPERCUBE.ZYXC:
-            input_shape = (*spatial_shape, input_channels)
-        elif layout == MULTICHANNEL_HYPERCUBE.CZYX:
-            input_shape = (input_channels, *spatial_shape)
+        fmt = layout.value
+        has_T = "T" in fmt
+        has_Z = "Z" in fmt
+
+        if has_Z:
+            assert len(spatial_shape) == 3, "3D layout expects spatial_shape=(Z,Y,X)"
+            Z, Y, X = spatial_shape
         else:
-            raise ValueError(f"Unknown layout {layout}")
+            assert len(spatial_shape) == 2, "2D layout expects spatial_shape=(Y,X)"
+            Z = 1
+            Y, X = spatial_shape
+
+        T = time_length if has_T else 1
+        C = input_channels
+
+        axis_size = {"C": C, "T": T, "Z": Z, "Y": Y, "X": X}
+        input_shape = tuple(axis_size[a] for a in fmt)
+
+        axis_patch = {
+            "C": 1,
+            "T": (temporal_patch_size if has_T and temporal_patch_size is not None else 1),
+            "Z": (axial_patch_size if has_Z else 1),
+            "Y": lateral_patch_size,
+            "X": lateral_patch_size,
+        }
+        patch_shape = tuple(axis_patch[a] for a in fmt)
+
+        def _to_range(v):
+            return (v, v) if isinstance(v, (int, float)) else tuple(v)
+
+        lateral_mask_scale_ = _to_range(lateral_mask_scale)
+        axial_mask_scale_ = _to_range(axial_mask_scale)
+        temporal_mask_scale_ = _to_range(temporal_mask_scale)
+        aspect_ratio_scale_hw_ = _to_range(aspect_ratio_scale_hw)
 
         return MaskGenerator(
             layout=layout,
             input_shape=input_shape,
-            temporal_patch_size=temporal_patch_size,
-            lateral_patch_size=lateral_patch_size,
-            axial_patch_size=axial_patch_size,
+            patch_shape=patch_shape,
             mask_mode=maskmode,
             time_downsample_pattern=pattern,
             random_masking_ratio=random_masking_ratio,
-            lateral_mask_scale=lateral_mask_scale,
-            axial_mask_scale=axial_mask_scale,
-            temporal_mask_scale=temporal_mask_scale,
-            aspect_ratio_scale_hw=aspect_ratio_scale_hw,
+            lateral_mask_scale=lateral_mask_scale_,
+            axial_mask_scale=axial_mask_scale_,
+            temporal_mask_scale=temporal_mask_scale_,
+            aspect_ratio_scale_hw=aspect_ratio_scale_hw_,
             num_blocks=num_blocks,
             device=torch.device("cpu"),
         )
 
     return _make
+
 
 @pytest.mark.parametrize(
     ("time_length", "pattern"),
