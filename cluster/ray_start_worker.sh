@@ -56,6 +56,9 @@ cleanup() {
 trap 'cleanup' EXIT
 trap 'cleanup; exit 143' TERM INT USR1
 
+# remove any leftover shared memory segments
+python3 /workspace/cell_observatory_platform/utils/cleanup.py
+
 echo "Starting ray worker @ $(hostname) with CPUs[$cpus] & GPUs [$gpus] => $cluster_address"
 job="ray start --block --address=$cluster_address --num-cpus=$cpus --num-gpus=$gpus --temp-dir=$tmpdir --object-store-memory=$object_store_memory"
 $job &

@@ -66,6 +66,9 @@ trap 'cleanup; exit 143' TERM INT USR1
 mkdir -p /tmp/ray
 cluster_address="$ip:$port"
 
+# remove any leftover shared memory segments
+python3 /workspace/cell_observatory_platform/utils/cleanup.py
+
 echo "Starting ray head node @ $(hostname) => $cluster_address with CPUs[$cpus] & GPUs [$gpus]"
 job="ray start --block --head --node-ip-address=$ip --port=$port --dashboard-port=$dashboard_port --dashboard-host=0.0.0.0 --min-worker-port 18999 --max-worker-port 19999 --temp-dir=$tmpdir --num-cpus=$cpus --num-gpus=$gpus --object-store-memory=$object_store_memory"
 echo $job
