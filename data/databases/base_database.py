@@ -90,7 +90,6 @@ class ParentDatabase():
         self.dotenv_path = dotenv_path
         self.max_rois = max_rois
         self.max_tiles = max_tiles
-        self.max_hypercubes = max_hypercubes
         self.hpf_list = hpf_list
         self.roi_list = roi_list
         self.tile_list = tile_list
@@ -109,7 +108,7 @@ class ParentDatabase():
             input_format=self.dataset_layout_order,
             input_shape=self.input_shape
         )
-
+        
         if z_slices not in valid_z_sizes:
             raise NotSupportedError(f"{z_slices=} is not supported yet, please chose from {valid_z_sizes}")
         else:
@@ -125,6 +124,14 @@ class ParentDatabase():
         else:
             self.x_slices = x_slices
 
+        if self.z_slices != base_cube_size or self.y_slices != base_cube_size or self.x_slices != base_cube_size:
+            self.max_hypercubes = max_hypercubes
+            self.max_hypercubes_128 = max_hypercubes * (self.z_slices//base_cube_size) * (self.y_slices//base_cube_size) * (self.x_slices//base_cube_size)
+            print(f"Requesting {self.max_hypercubes_128 - max_hypercubes} extra hypercubes to get {max_hypercubes} hypercubes after aggregation")
+        else:
+            self.max_hypercubes = max_hypercubes
+            self.max_hypercubes_128 = max_hypercubes
+
         self._database_url = self._load_uri()
 
         if self.fetch_hypercubes_dataframe:
@@ -133,28 +140,28 @@ class ParentDatabase():
                 self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
                     hypercubes_dataframe_path=self.hypercubes_dataframe_path,
                     server_folder_path=server_folder_path,
-                    max_rois=max_rois,
-                    max_tiles=max_tiles,
-                    max_hypercubes=max_hypercubes,
-                    hpf_list=hpf_list,
-                    roi_list=roi_list,
-                    tile_list=tile_list,
-                    timepoint_list=timepoint_list,
-                    occupancy_threshold=occupancy_threshold,
-                    occupancy_threshold_filter_type=occupancy_threshold_filter_type
+                    max_rois=self.max_rois,
+                    max_tiles=self.max_tiles,
+                    max_hypercubes=self.max_hypercubes_128,
+                    hpf_list=self.hpf_list,
+                    roi_list=self.roi_list,
+                    tile_list=self.tile_list,
+                    timepoint_list=self.timepoint_list,
+                    occupancy_threshold=self.occupancy_threshold,
+                    occupancy_threshold_filter_type=self.occupancy_threshold_filter_type
                 )
 
             else:
                 self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
                     num_timepoints=self.num_timepoints,
-                    max_rois=max_rois,
-                    max_tiles=max_tiles,
-                    max_hypercubes=max_hypercubes,
-                    hpf_list=hpf_list,
-                    roi_list=roi_list,
-                    tile_list=tile_list,
-                    timepoint_list=timepoint_list,
-                    occupancy_threshold=occupancy_threshold
+                    max_rois=self.max_rois,
+                    max_tiles=self.max_tiles,
+                    max_hypercubes=self.max_hypercubes_128,
+                    hpf_list=self.hpf_list,
+                    roi_list=self.roi_list,
+                    tile_list=self.tile_list,
+                    timepoint_list=self.timepoint_list,
+                    occupancy_threshold=self.occupancy_threshold
                 )
                 self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
 
@@ -186,6 +193,7 @@ class ParentDatabase():
                 shape_df=self.rois_dataframe,
                 layout=self.dataset_layout_order,
             )
+            self.hypercubes_dataframe = self.hypercubes_dataframe.head(self.max_hypercubes)
             print(f"Final length of hypercubes dataframe: {len(self.hypercubes_dataframe)}")
 
         else:
