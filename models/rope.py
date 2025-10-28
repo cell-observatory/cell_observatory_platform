@@ -16,7 +16,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-
 def generate_frequency_spectrum(dim: int, 
                                 num_heads: int, 
                                 theta: float = 10.0, 
@@ -110,6 +109,7 @@ def generate_frequency_spectrum(dim: int,
     
     return freqs.to(dtype=dtype, device=device)
 
+
 def generate_grid_indices(
     end_x: int,
     end_y: int,
@@ -150,6 +150,7 @@ def generate_grid_indices(
     x = x.to(dtype=dtype, device=device)
 
     return (t, z, y, x)
+
 
 def compute_mixed_cis(freqs: torch.Tensor,
                       num_heads: int,
@@ -305,6 +306,7 @@ def compute_axial_cis(dim: int,
         freqs_cis_t = torch.polar(torch.ones_like(freqs_t), freqs_t)
         return torch.cat([freqs_cis_x, freqs_cis_y, freqs_cis_z, freqs_cis_t], dim=-1)
 
+
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     # freqs_cis: (N, J) branch
     if freqs_cis.shape == (x.shape[-2], x.shape[-1]):
@@ -323,6 +325,7 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     else:
         raise ValueError(f"Unexpected freqs_cis shape: {freqs_cis.shape} for x shape: {x.shape}")
     return freqs_cis.view(*shape)
+
 
 def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor):
     # xq: [B,H,N,D]

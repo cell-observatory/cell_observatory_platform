@@ -236,8 +236,7 @@ class MaskedPredictor(nn.Module):
             )
             return num_patches
 
-
-    def forward(self, inputs, original_patch_indices=None, target_masks=None):
+    def forward(self, inputs, original_patch_indices=None, target_masks=None, patches_used=None):
         batch_size = inputs.shape[0]
 
         tokens = self.patch_projection(inputs)
@@ -253,11 +252,11 @@ class MaskedPredictor(nn.Module):
             patches = tokens
 
         if self.abs_sincos_enc:
-            x = patches + self.pos_embedding(patches)
+            x = patches + self.pos_embedding(patches, patches_used=patches_used)
         else:
             x = patches
 
-        x = self.encoder(x)
+        x = self.encoder(x, masks=patches_used)
         x = self.norm(x)
         x = self.output_projection(x)
         return x

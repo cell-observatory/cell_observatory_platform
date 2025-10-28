@@ -44,6 +44,7 @@ class ParentDatabase():
         max_partitions: Optional[int] = 10,
         server_folder_path: Optional[Path|str] = None,
         occupancy_threshold: Optional[float] = None,
+        occupancy_threshold_filter_type: str = 'min_all',
         base_cube_size: Optional[int] = 128,
         valid_z_sizes: Optional[Sequence[int]] = [128],
         valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384],
@@ -101,6 +102,7 @@ class ParentDatabase():
         self.max_partitions = max_partitions
         self.server_folder_path = server_folder_path
         self.occupancy_threshold = occupancy_threshold
+        self.occupancy_threshold_filter_type = occupancy_threshold_filter_type
         self.dataset_layout_order = dataset_layout_order
 
         self.num_timepoints, z_slices, y_slices, x_slices = self._get_slices_from_layout_order(
@@ -138,7 +140,8 @@ class ParentDatabase():
                     roi_list=roi_list,
                     tile_list=tile_list,
                     timepoint_list=timepoint_list,
-                    occupancy_threshold=occupancy_threshold
+                    occupancy_threshold=occupancy_threshold,
+                    occupancy_threshold_filter_type=occupancy_threshold_filter_type
                 )
 
             else:

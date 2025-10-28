@@ -467,7 +467,11 @@ class MaskGenerator(object):
         else:
             raise ValueError(f"Unknown mask mode: {self.mask_mode}")
 
-        return masks, context_masks, target_masks, original_patch_indices, self.channels_to_mask
+        # perm: [B, patches_used]
+        perm = torch.cat([context_masks, target_masks], dim=1)
+        patches_used, _ = torch.sort(perm, dim=1) 
+
+        return masks, context_masks, target_masks, original_patch_indices, self.channels_to_mask, patches_used
 
 
 def apply_masks(x, masks, concat=True):

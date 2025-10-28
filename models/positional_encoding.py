@@ -210,6 +210,7 @@ class PosEmbedding(nn.Module):
         self.embed_dim = embed_dim
         self.channels = channels
         self.cls_token = cls_token
+        assert not self.cls_token, "CLS token not yet supported for PosEmbedding"
         self.interpolate = interpolate
 
         self.num_patches, self.token_shape = patch_embeddings.calc_num_patches(
@@ -390,8 +391,40 @@ class PosEmbedding(nn.Module):
 
         return pos
 
-    def forward(self, x):
+    def gather_pos_table(self, pos_table, patches_used):
+        idx = patches_used.to(pos_table.device)
+        D = pos_table.size(-1)
+        # pos_table_batched: (B, L_full, D) -> (B, L_used, D)
+        out = torch.gather(pos_table, 
+                            dim=1,
+                            index=idx.unsqueeze(-1).expand(-1, -1, D))
+        return out
+
+    @property
+    def table(self) -> torch.Tensor:
+        # (L_full, D) without cls
+        return (self.pos_embed[:, 1:, :]
+                if self.cls_token else
+                self.pos_embed)
+
+    def forward(self, x: Optional[torch.Tensor] = None,
+                patches_used: Optional[torch.Tensor] = None) -> torch.Tensor:
         if self.interpolate:
-            return self.interpolate_positional_encoding(x, self.pos_embed)
-        else:
-            return self.pos_embed
+            # FIXME: interpolate_positional_encoding assumes x is grid format
+            #        but currently we pass in sequence format from modules
+            pos_table_interpolated = self.interpolate_positional_encoding(x, self.pos_embed)
+
+            if patches_used is not None:
+                # NOTE: gather_pos_table assumes batched pos_table
+                pos_table_subset = self.gather_pos_table(pos_table_interpolated, patches_used)
+                return pos_table_subset
+            else:
+                return pos_table_interpolated
+
+        if patches_used is not None:
+            pos_table = self.table
+            B, L_used = patches_used.shape
+            pos_table_batched = pos_table.expand(B, -1, -1)
+            return self.gather_pos_table(pos_table_batched, patches_used)
+
+        return self.pos_embed

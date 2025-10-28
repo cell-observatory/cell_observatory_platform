@@ -375,7 +375,8 @@ def _string_seq_to_float_list(value: Any) -> list[float]:
 
 def apply_occupancy_threshold(
     hypercubes_dataframe: pd.DataFrame,
-    occupancy_threshold: Optional[float] = 0.
+    occupancy_threshold: Optional[float] = 0.,
+    occupancy_threshold_filter_type: Literal['min_all', 'min_ch0', 'min_ch1'] = 'min_ch0'
 ):
     t = 0. if occupancy_threshold is None else occupancy_threshold
 
@@ -391,19 +392,32 @@ def apply_occupancy_threshold(
     hypercubes_dataframe['min_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.min)
     hypercubes_dataframe['med_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.median)
 
-    return hypercubes_dataframe[
-        (hypercubes_dataframe['min_occupancy_ratios_ch_0'] >= t) &
-        (hypercubes_dataframe['min_occupancy_ratios_ch_1'] >= t)
-    ]
+    if occupancy_threshold_filter_type == 'min_all':
+        return hypercubes_dataframe[
+            (hypercubes_dataframe['min_occupancy_ratios_ch_0'] >= t) &
+            (hypercubes_dataframe['min_occupancy_ratios_ch_1'] >= t)
+        ]
+    elif occupancy_threshold_filter_type == 'min_ch0':
+        return hypercubes_dataframe[
+            (hypercubes_dataframe['min_occupancy_ratios_ch_0'] >= t)
+        ]
+    elif occupancy_threshold_filter_type == 'min_ch1':
+        return hypercubes_dataframe[
+            (hypercubes_dataframe['min_occupancy_ratios_ch_1'] >= t)
+        ]
+    else:
+        raise ValueError(f"Unknown occupancy_threshold_filter_type: {occupancy_threshold_filter_type}")
 
 
 def apply_hypercubes_dataframe_filters(
     hypercubes_dataframe: pd.DataFrame,
-    occupancy_threshold: Optional[float] = 0.
+    occupancy_threshold: Optional[float] = 0.,
+    occupancy_threshold_filter_type: str = 'min_all'
 ):
     hypercubes_dataframe = apply_occupancy_threshold(
         hypercubes_dataframe=hypercubes_dataframe,
         occupancy_threshold=occupancy_threshold,
+        occupancy_threshold_filter_type=occupancy_threshold_filter_type
     )
 
     logger.info(hypercubes_dataframe[['min_occupancy_ratios_ch_0', 'min_occupancy_ratios_ch_1']].describe(
@@ -423,7 +437,8 @@ def load_hypercubes_dataframe(
     tile_list: Optional[Iterable[str]] = None,
     timepoint_list: Optional[Iterable[int]] = None,
     server_folder_path: Optional[Path | str] = None,
-    occupancy_threshold: Optional[float] = None
+    occupancy_threshold: Optional[float] = None,
+    occupancy_threshold_filter_type: str = 'min_all'
 ) -> Tuple[pd.DataFrame, Dict]:
 
     if not Path(hypercubes_dataframe_path).exists():
@@ -453,6 +468,7 @@ def load_hypercubes_dataframe(
     hypercubes = apply_hypercubes_dataframe_filters(
         hypercubes_dataframe=hypercubes,
         occupancy_threshold=occupancy_threshold,
+        occupancy_threshold_filter_type=occupancy_threshold_filter_type
     )
 
     logger.info(f"Loaded hypercubes dataframe with {hypercubes.shape}")

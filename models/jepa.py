@@ -316,21 +316,27 @@ class JEPA(nn.Module):
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
-        masks, context_masks = meta['masks'][0], meta['context_masks'][0]
+        masks, context_masks, patches_used = meta['masks'][0], meta['context_masks'][0], meta['patches_used'][0]
         target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
 
         embedding, patches = self.input_encoder(inputs, masks=context_masks)
         predictions = self.target_predictor(
             embedding,
             original_patch_indices=original_patch_indices,
-            target_masks=target_masks
+            target_masks=target_masks,
+            patches_used=patches_used
         )
 
         with torch.no_grad():
             targets, _ = self.target_encoder(inputs)
 
+        # compute loss over masked patches (re-index if blocked masking removed some patches)
+        if patches_used is not None:
+            target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
+        else:
+            target_idx_in_patches_used = target_masks
         targets = apply_masks(targets, masks=target_masks)
-        predictions = apply_masks(predictions, masks=target_masks)
+        predictions = apply_masks(predictions, masks=target_idx_in_patches_used)
         loss = self.loss_fn(predictions, targets, masks)
 
         loss_dict = {
