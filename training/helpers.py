@@ -329,6 +329,7 @@ def get_masked_input_data(model, inputs, device: Optional[torch.device] = 'cuda'
         "context_masks": [context_idx],
         "target_masks": [target_idx],
         "original_patch_indices": [torch.arange(n_patches, dtype=torch.long, device=device)],
+        "patches_used": [torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0).expand(inputs[0],-1)],
     }
 
     # summary() will unpack the input data but the fwd function in
