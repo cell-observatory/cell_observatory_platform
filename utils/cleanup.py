@@ -17,13 +17,14 @@ def unlink_shared_memory() -> int:
         name = p.name
         if not any(name.startswith(pref) for pref in PREFIXES):
             continue
-        try:
-            st = p.stat()
-        except FileNotFoundError:
-            continue
 
-        if st.st_uid != euid:
-            continue
+        # try:
+        #     st = p.stat()
+        # except FileNotFoundError:
+        #     continue
+
+        # if st.st_uid != euid:
+        #     continue
 
         try:
             shm = shared_memory.SharedMemory(name=name)
