@@ -496,7 +496,7 @@ def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slice
     config.datasets.databases.input_shape = (16, z_slices, y_slices, x_slices, 2)
     num_timepoints = 16
     config.datasets.databases.dataset_layout_order = "TZYXC"
-    config.datasets.databases.max_hypercubes = 1000
+    config.datasets.databases.max_hypercubes = 100000
     config.datasets.databases.max_rois = None
     config.datasets.databases.max_tiles = None
     config.datasets.databases.hpf_list = None
@@ -538,7 +538,7 @@ def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
     config.datasets.databases.hpf_list = None
     config.datasets.databases.fetch_hypercubes_dataframe = True
     config.datasets.databases.use_cached_hypercubes_dataframe = True
-    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.server_folder_path) / 'databases' / "training_hypercubes_dataframeV2.csv"
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.server_folder_path) / 'databases' / "prepared_16_128_128_128_2_hypercube_view.csv"
 
     print(f"Initializing {config.datasets.databases._target_}...")
     # pprint(OmegaConf.to_container(config, resolve=True))
@@ -546,7 +546,7 @@ def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
     database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
     print(table)
-    # database.save_hypercubes_dataframe(hypercubes_dataframe_path=Path(config.paths.server_folder_path) / 'databases' / "training_hypercubes_dataframeV2.csv")
+    # database.save_hypercubes_dataframe(hypercubes_dataframe_path=Path(config.paths.server_folder_path) / 'databases' / "prepared_16_128_128_128_2_hypercube_view.csv")
 
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
     assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique values"
