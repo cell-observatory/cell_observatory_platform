@@ -249,25 +249,65 @@ def filter_hypercubes_dataframe_storage_server(
     server_folder_path: Optional[Path | str] = None
 ):
     if server_folder_path is None or str(server_folder_path).startswith('/clusterfs'):
-        hypercubes_dataframe['exists'].replace({'t': True, 'f': False}, inplace=True)
-        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists']]
+        if hypercubes_dataframe['exists'].dtype == 'str' and hypercubes_dataframe['exists'].str.contains('|'.join(['t', 'f'])).any():
+            hypercubes_dataframe['exists'].replace({'t': True, 'f': False}, inplace=True)
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists']]
+            
+        elif hypercubes_dataframe['exists'].dtype == int:
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists'] == 1]
+            hypercubes_dataframe['exists'] = hypercubes_dataframe['exists'].astype(bool)
+            
+        else:
+            hypercubes_dataframe['exists'] = hypercubes_dataframe['exists'].astype(bool)
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists']]
+        
         logger.info(f"Using ABC {server_folder_path=}, {hypercubes_dataframe.shape}")
 
     elif str(server_folder_path).startswith('/groups'):
-        hypercubes_dataframe['exists_prfs'].replace({'t': True, 'f': False}, inplace=True)
-        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_prfs']]
+        if hypercubes_dataframe['exists_prfs'].dtype == 'str' and hypercubes_dataframe['exists_prfs'].str.contains('|'.join(['t', 'f'])).any():
+            hypercubes_dataframe['_'].replace({'t': True, 'f': False}, inplace=True)
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_prfs']]
+            
+        elif hypercubes_dataframe['exists_prfs'].dtype == int:
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_prfs'] == 1]
+            hypercubes_dataframe['exists_prfs'] = hypercubes_dataframe['exists_prfs'].astype(bool)
+            
+        else:
+            hypercubes_dataframe['exists_prfs'] = hypercubes_dataframe['exists_prfs'].astype(bool)
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_prfs']]
+
         hypercubes_dataframe['server_folder'] = server_folder_path
         logger.info(f"Using Janelia {server_folder_path=}, {hypercubes_dataframe.shape}")
 
     elif str(server_folder_path).startswith('/aws'):
-        hypercubes_dataframe['exists_aws'].replace({'t': True, 'f': False}, inplace=True)
-        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_aws']]
+        if hypercubes_dataframe['exists_aws'].dtype == 'str' and hypercubes_dataframe['exists_aws'].str.contains('|'.join(['t', 'f'])).any():
+            hypercubes_dataframe['exists_aws'].replace({'t': True, 'f': False}, inplace=True)
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_aws']]
+            
+        elif hypercubes_dataframe['exists_aws'].dtype == int:
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_aws'] == 1]
+            hypercubes_dataframe['exists_aws'] = hypercubes_dataframe['exists_aws'].astype(bool)
+            
+        else:
+            hypercubes_dataframe['exists_aws'] = hypercubes_dataframe['exists_aws'].astype(bool)
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_aws']]
+
         hypercubes_dataframe['server_folder'] = server_folder_path
         logger.info(f"Using AWS {server_folder_path=}, {hypercubes_dataframe.shape}")
 
     elif str(server_folder_path).startswith('/lustre'):
-        hypercubes_dataframe['exists_oak'].replace({'t': True, 'f': False}, inplace=True)
-        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_oak']]
+        if hypercubes_dataframe['exists_oak'].dtype == 'str' and hypercubes_dataframe['exists_oak'].str.contains('|'.join(['t', 'f'])).any():
+            hypercubes_dataframe['exists_oak'].replace({'t': True, 'f': False}, inplace=True)
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_oak']]
+            
+        elif hypercubes_dataframe['exists_oak'].dtype == int:
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_oak'] == 1]
+            hypercubes_dataframe['exists_oak'] = hypercubes_dataframe['exists_oak'].astype(bool)
+            
+        else:
+            hypercubes_dataframe['exists_oak'] = hypercubes_dataframe['exists_oak'].astype(bool)
+            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_oak']]
+
         hypercubes_dataframe['server_folder'] = server_folder_path
         logger.info(f"Using OakRidge {server_folder_path=}, {hypercubes_dataframe.shape}")
 
@@ -444,7 +484,7 @@ def load_hypercubes_dataframe(
     if not Path(hypercubes_dataframe_path).exists():
         raise FileNotFoundError(f"{hypercubes_dataframe_path} does not exist")
 
-    hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=None, header=0)
+    hypercubes = pd.read_csv(hypercubes_dataframe_path, header=0)
     logger.info(
         f"Setup hypercubes dataframe from {hypercubes_dataframe_path} {hypercubes.shape}"
     )
@@ -475,7 +515,10 @@ def load_hypercubes_dataframe(
     logger.info(f"Columns: {hypercubes.columns}")
     logger.info(hypercubes.head())
 
-    with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
-        configs = ujson.load(f)
-
+    try: 
+        with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
+            configs = ujson.load(f)
+    except FileNotFoundError:
+        configs = {}
+        
     return hypercubes, configs
