@@ -469,9 +469,10 @@ class PeriodicWriter(HookBase):
         #       `period` epochs? 
         self._writers = writers
         
-        for w in self._writers.writers:
-            assert isinstance(w, EventWriter), "All writers must be \
-                EventWriter instances. But got: {}".format(type(w))
+        # FIXME: errors related to use in cell_observatory_finetune
+        # for w in self._writers.writers:
+        #     assert isinstance(w, EventWriter), "All writers must be \
+        #         EventWriter instances. But got: {}".format(type(w))
 
     def after_epoch(self):
         self._writers.write()

@@ -18,10 +18,13 @@ logger = logging.getLogger(__name__)
 def calc_num_patches(
     input_fmt="TZYXC",
     input_shape=(16, 128, 128, 128, 2),
-    lateral_patch_size=1,
-    axial_patch_size=1,
-    temporal_patch_size=1,
+    patch_shape: tuple = (4, 16, 16, 16),
 ):
+    temporal_patch_size, axial_patch_size, lateral_patch_size = get_patch_sizes(
+        input_format=input_fmt,
+        patch_shape=patch_shape
+    )
+
     if input_fmt == "TZYXC":
         assert lateral_patch_size != None, "lateral_patch_size cannot be None"
         assert axial_patch_size != None, "axial_patch_size cannot be None"
@@ -109,9 +112,7 @@ class PatchEmbedding(nn.Module):
         self.num_patches, self.token_shape = calc_num_patches(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
-            lateral_patch_size=self.lateral_patch_size,
-            axial_patch_size=self.axial_patch_size,
-            temporal_patch_size=self.temporal_patch_size,
+            patch_shape=patch_shape,
         )
         self.pixels_per_patch = self._compute_num_pixels_per_patch()
 

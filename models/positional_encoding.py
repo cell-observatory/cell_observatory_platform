@@ -216,9 +216,7 @@ class PosEmbedding(nn.Module):
         self.num_patches, self.token_shape = patch_embeddings.calc_num_patches(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
-            lateral_patch_size=self.lateral_patch_size,
-            axial_patch_size=self.axial_patch_size,
-            temporal_patch_size=self.temporal_patch_size,
+            patch_shape=patch_shape
         )
 
         num_patches_pos_embed = self.num_patches + 1 if self.cls_token else self.num_patches

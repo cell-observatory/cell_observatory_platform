@@ -126,8 +126,11 @@ class ParentDatabase():
 
         if self.z_slices != base_cube_size or self.y_slices != base_cube_size or self.x_slices != base_cube_size:
             self.max_hypercubes = max_hypercubes
-            self.max_hypercubes_128 = max_hypercubes * (self.z_slices//base_cube_size) * (self.y_slices//base_cube_size) * (self.x_slices//base_cube_size)
-            print(f"Requesting {self.max_hypercubes_128 - max_hypercubes} extra hypercubes to get {max_hypercubes} hypercubes after aggregation")
+            if max_hypercubes is None:
+                self.max_hypercubes_128 = None
+            else:
+                self.max_hypercubes_128 = max_hypercubes * (self.z_slices//base_cube_size) * (self.y_slices//base_cube_size) * (self.x_slices//base_cube_size)
+                print(f"Requesting {self.max_hypercubes_128 - max_hypercubes} extra hypercubes to get {max_hypercubes} hypercubes after aggregation")
         else:
             self.max_hypercubes = max_hypercubes
             self.max_hypercubes_128 = max_hypercubes
