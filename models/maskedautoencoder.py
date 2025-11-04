@@ -313,3 +313,17 @@ class MaskedAutoEncoder(nn.Module):
             "step_loss": loss,
         }
         return loss_dict, predictions
+
+    def predict(self, data_sample: dict):
+        inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
+        masks, context_masks, patches_used = meta['masks'][0], meta['context_masks'][0], meta['patches_used'][0]
+        target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
+
+        x, patches = self.masked_encoder(inputs, masks=context_masks)
+        x = self.masked_decoder(x, 
+                                original_patch_indices=original_patch_indices, 
+                                target_masks=target_masks, 
+                                patches_used=patches_used)
+
+        predictions = self.masked_encoder.patch_embedding.unpatchify(x, out_channels=None)
+        return predictions

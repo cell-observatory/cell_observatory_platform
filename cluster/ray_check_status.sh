@@ -30,7 +30,8 @@ while true; do
       echo "Timeout after $TIMEOUT seconds"
       echo "Stopping ray"
       ps aux | grep prometheus | awk '{print $2}' | xargs kill -9
-      apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
+      # NOTE: currently called from within apptainer container
+    #   apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
       exit 1
   fi
 
@@ -42,7 +43,8 @@ while true; do
       echo "Cluster status command failed with exit code $status"
       echo "Stopping ray"
       ps aux | grep prometheus | awk '{print $2}' | xargs kill -9
-      apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
+      # NOTE: currently called from within apptainer container
+    #   apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray stop --force
       exit 1
   fi
 

@@ -30,6 +30,7 @@ class CheckpointManager:
                  zero_stage: int,
                  load_universal_checkpoint: bool,
                  save_checkpointdir: Union[str, Path],
+                 save_period: int = 1,
                  load_optimizer: bool = False,
                  load_dtype: Optional[str] = None,
                  resume_checkpointdir: Optional[Union[str, Path]] = None,
@@ -42,6 +43,7 @@ class CheckpointManager:
     ):
         self.model = model
         self.engine = engine
+        self.save_period = save_period
         self.zero_stage = zero_stage
         self.load_dtype = load_dtype
         self.checkpoint_tag = checkpoint_tag
@@ -58,8 +60,16 @@ class CheckpointManager:
         self.resume_checkpointdir = resume_checkpointdir
         self.pretrained_checkpointdir = pretrained_checkpointdir
 
-        self.load_optimizer = self.load_scheduler = bool(self.resume_checkpointdir is not None or load_optimizer)
-        self.load_module_only = not self.load_optimizer
+        # NOTE: if the user does not explicitly set load_optimizer,
+        #       we default to loading optimizer state only when resuming
+        if load_optimizer is not None:
+            logger.info("[CheckpointManager] loading optimizer state with DeepSpeed.")
+            self.load_optimizer = load_optimizer
+        else:
+            self.load_optimizer = self.resume_checkpointdir is not None
+            logger.info(f"[CheckpointManager] `load_optimizer` set to {self.load_optimizer}.")
+
+        self.load_scheduler, self.load_module_only = self.load_optimizer, not self.load_optimizer
 
         if resume_checkpointdir is not None:
             self.load_checkpointdir = Path(resume_checkpointdir)
@@ -262,9 +272,9 @@ class CheckpointManager:
                     return mapped[len("module."):] if mapped.startswith("module.") else mapped
             return k
 
-        def custom_load_fn(src_state_dict: Dict[str, torch.Tensor], dst_module: torch.nn.Module):
-            dst_state_dict = dst_module.state_dict()
-            src_state_dict = self._prefix_aware_load_state_dict(src_state_dict, dst_module)
+        def custom_load_fn(src: Dict[str, torch.Tensor], dst: torch.nn.Module):
+            dst_state_dict = dst.state_dict()
+            src_state_dict = self._prefix_aware_load_state_dict(src, dst)
 
             # apply key translations
             if translate_map:
@@ -293,7 +303,7 @@ class CheckpointManager:
                         tuple(dst_t.shape) if dst_t is not None else None
                     ))
 
-            missing, unexpected = dst_module.load_state_dict(keep, strict=False)
+            missing, unexpected = dst.load_state_dict(keep, strict=False)
 
             if dropped:
                 ray.logger.warning(

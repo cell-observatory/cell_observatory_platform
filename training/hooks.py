@@ -493,10 +493,12 @@ class PeriodicCheckpointer(HookBase):
     """
     Checkpointing, executed every ``period`` epoch and after the last epoch.
     """
-    def __init__(self, period=1, file_prefix="latest_model"):
+    def __init__(self, file_prefix="latest_model"):
         super().__init__()
-        self.period = period
         self.file_prefix = file_prefix
+
+    def before_train(self):
+        self.period = self.trainer.checkpoint_manager.save_period
 
     def after_epoch(self):
         """
@@ -506,7 +508,7 @@ class PeriodicCheckpointer(HookBase):
             self.trainer.checkpoint_manager.save(
                 prefix=self.file_prefix,
                 save_epoch=self.trainer._epoch + 1,
-                save_best_loss=self.trainer.best_metric,
+                save_best_loss=self.trainer._curr_val_metric,
                 save_step=self.trainer._iter
             )
         
@@ -518,29 +520,35 @@ class PeriodicCheckpointer(HookBase):
             self.trainer.checkpoint_manager.save(
                 prefix=self.file_prefix,
                 save_epoch=self.trainer._epoch + 1,
-                save_best_loss=self.trainer.best_metric,
+                save_best_loss=self.trainer._curr_val_metric,
                 save_step=self.trainer._iter
             )
 
 
 class BestCheckpointer(HookBase):
-    def __init__(self, checkpointdir: Union[str, Path], period=1):
+    def __init__(self, checkpointdir: Union[str, Path]):
         super().__init__()
-        self.period = period
+        # NOTE: period is same as in PeriodicCheckpointer 
         self.checkpoint_dir = Path(checkpointdir)
+
+    def before_train(self):
+        self.period = self.trainer.checkpoint_manager.save_period
     
     def after_validation(self):
         if (self.trainer._epoch + 1) % self.period == 0:
             checkpoint = Checkpoint.from_directory(self.checkpoint_dir)  \
                 if is_main_process() else None
-            report(
-                metrics={
-                    "best_loss": self.trainer.best_metric,
-                    "save_step": self.trainer._iter,
-                    "save_epoch": self.trainer._epoch + 1
-                },
-                checkpoint=checkpoint
-            )
+        else:
+            checkpoint = None
+
+        report(
+            metrics={
+                "best_loss": self.trainer._curr_val_metric,
+                "save_step": self.trainer._iter,
+                "save_epoch": self.trainer._epoch + 1
+            },
+            checkpoint=checkpoint
+        )
 
 
 class TorchMemoryStats(HookBase):
@@ -665,6 +673,7 @@ class BestMetricSaver(HookBase):
             latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
             latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, \
                                                                 device="cuda")).item()
+            self.trainer._curr_val_metric = latest_metric_val
             self.update_best_metrics(latest_metric_val)
     
     def after_epoch(self):
@@ -683,6 +692,7 @@ class BestMetricSaver(HookBase):
                 latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
                 latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, \
                                                                     device="cuda")).item()
+                self.trainer._curr_val_metric = latest_metric_val
                 self.update_best_metrics(latest_metric_val)
 
     def after_test(self):

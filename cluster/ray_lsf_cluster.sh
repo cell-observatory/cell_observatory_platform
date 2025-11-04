@@ -45,6 +45,70 @@ export dashboard_port
 export RAY_GRAFANA_HOST=${port}:3000
 export RAY_PROMETHEUS_HOST=${port}:9090
 
+########################### HELPER
+
+do_cleanup() {
+    cleanup_jobs=()
+
+    blaunch -z "$head_node" bash -lc "
+        apptainer exec --userns --nv \
+            --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+            $env bash -lc '
+            pf=\"$tmpdir/cleanup_head.pid\"
+            GRACE_SECONDS=60
+            if [ -f \"\$pf\" ]; then
+                pid=\$(cat \"\$pf\")
+                kill -TERM \"\$pid\" 2>/dev/null || true
+                for ((i=0;i<GRACE_SECONDS;i++)); do
+                    kill -0 \"\$pid\" 2>/dev/null || break
+                    sleep 1
+                done
+            fi
+            # fallback: run cleanup ourselves
+            python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+            ray stop --force >/dev/null 2>&1 || true
+            '
+    " >/dev/null 2>&1 &
+    cleanup_jobs+=($!)
+
+    num_workers=${#workers[@]}
+    if (( num_workers > 0 )); then
+        i=0
+        for host in "${workers[@]}"; do
+            blaunch -z "$host" bash -lc "
+                apptainer exec --userns --nv \
+                --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
+                $env bash -lc '
+                    pf=\"$tmpdir/cleanup_${i}.pid\"
+                    GRACE_SECONDS=60
+                    if [ -f \"\$pf\" ]; then
+                        pid=\$(cat \"\$pf\")
+                        kill -TERM \"\$pid\" 2>/dev/null || true
+                        for ((j=0;j<GRACE_SECONDS;j++)); do
+                            kill -0 \"\$pid\" 2>/dev/null || break
+                            sleep 1
+                        done
+                    fi
+                    # fallback: run cleanup ourselves
+                    python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+                    ray stop --force >/dev/null 2>&1 || true
+                '
+            " >/dev/null 2>&1 &
+            cleanup_jobs+=($!)
+            i=$((i+1))
+        done
+    fi
+
+    for pid in "${cleanup_jobs[@]}"; do
+        wait "$pid" || true
+    done
+
+    sleep 90
+
+    echo "Shutting down the job"
+    bkill $LSB_JOBID
+}
+
 ############################## START HEAD NODE
 
 # Get allocated hosts from LSF
@@ -63,11 +127,11 @@ export head_node
 export head_node_ip
 export cluster_address
 
-blaunch -z $head_node "
+blaunch -z "$head_node" "
     apptainer exec --userns --nv \
         --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
-        $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
-        -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory
+        $env bash -lc 'exec /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
+            -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory'
 " &
 head_bg_pid=$!
 
@@ -77,7 +141,12 @@ apptainer exec --userns --nv \
     --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
     $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
     -a $cluster_address -r 1
-
+rc=$?
+if [ $rc -ne 0 ]; then
+    echo "Head node failed to start correctly, exiting"
+    do_cleanup
+    exit $rc
+fi
 
 ############################## ADD WORKER NODES
 
@@ -88,27 +157,36 @@ if [ ${nodes} -gt 1 ]; then
     for host in "${workers[@]}"; do
         echo "Starting worker on: $host"
         mkdir -p $outdir/ray_worker_$i
-        blaunch -z $host "
-            apptainer exec --userns --nv \
-                --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
-                $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i
+        blaunch -z "$host" "
+        apptainer exec --userns --nv \
+            --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
+            $env bash -lc 'exec /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+            -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i'
         " &
         worker_pids+=($!)
         i+=1
     done
 fi
 
-############################# CHECK CLUSTER STATUS
+############################## RUN WORKLOAD
 
+# trap 'do_cleanup' EXIT
+trap 'do_cleanup; exit 130' INT # SIGINT
+trap 'do_cleanup; exit 143' TERM # SIGTERM like bkill
+
+# CHECK CLUSTER STATUS
 blaunch -z $head_node " 
     apptainer exec --userns --nv \
         --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
         $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
         -a $cluster_address -r $nodes 
 "
-
-############################## RUN WORKLOAD
+rc=$?
+if [ $rc -ne 0 ]; then
+    echo "Cluster failed to start correctly, exiting"
+    do_cleanup
+    exit $rc
+fi
 
 echo "Running user tasks"
 echo $tasks
@@ -116,55 +194,6 @@ apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bi
 
 ############################## CLEANUP
 
-blaunch -z $head_node bash -lc "
-    apptainer exec --userns --nv \
-        --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
-        $env bash -lc '
-        pf=\"$tmpdir/cleanup_head.pid\"
-        GRACE_SECONDS=20
-        if [ -f \"\$pf\" ]; then
-            pid=\$(cat \"\$pf\")
-            kill -TERM \"\$pid\" 2>/dev/null || true
-            for ((i=0;i<GRACE_SECONDS;i++)); do
-                kill -0 \"\$pid\" 2>/dev/null || exit 0
-                sleep 1
-            done
-            kill -KILL \"\$pid\" 2>/dev/null || true
-        fi
-        '
-    " >/dev/null 2>&1 &
-
-num_workers=${#workers[@]}
-if (( num_workers > 0 )); then
-    i=0
-    for host in "${workers[@]}"; do
-        blaunch -z $host bash -lc "
-            apptainer exec --userns --nv \
-            --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
-            $env bash -lc '
-                pf=\"$tmpdir/cleanup_${i}.pid\"
-                GRACE_SECONDS=20
-                if [ -f \"\$pf\" ]; then
-                    pid=\$(cat \"\$pf\")
-                    kill -TERM \"\$pid\" 2>/dev/null || true
-                    for ((j=0;j<GRACE_SECONDS;j++)); do
-                        kill -0 \"\$pid\" 2>/dev/null || exit 0
-                        sleep 1
-                    done
-                    kill -KILL \"\$pid\" 2>/dev/null || true
-                fi
-            '
-        " >/dev/null 2>&1 &
-        i=$((i+1))
-    done
-fi
-
-kill -KILL $head_bg_pid 2>/dev/null || true
-for pid in "${worker_pids[@]}"; do
-    kill -KILL "$pid" 2>/dev/null || true
-done
-
-wait || true
-
-echo "Shutting down the job"
-bkill $LSB_JOBID
+echo "User tasks completed, starting cleanup"
+do_cleanup
+exit 0

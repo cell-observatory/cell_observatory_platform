@@ -334,10 +334,11 @@ class EpochBasedTrainer(BaseTrainer):
         # and training/run.py
         best_metric, step, epoch = resume_run(self, cfg)
         self.start_epoch, self.start_iter, self.best_metric = epoch, step, best_metric
-        self._epoch, self._iter, self._val_iter = self.start_epoch, self.start_iter, 0
+        self._epoch, self._iter, self._val_iter, self._curr_val_metric = self.start_epoch, self.start_iter, 0, 0.0
 
-        if (self.start_iter > 0 or self.start_epoch > 0) and \
-           not self.checkpoint_manager.load_optimizer:
+        if self.start_iter > 0 and not self.checkpoint_manager.load_optimizer:
+            logger.info("[Trainer] Resuming training without loading previous optimizer state.")
+            logger.info(f"[Trainer] Fast forwarding lr and wd schedulers to iter {self.start_iter} and epoch {self.start_epoch}.")
             # fast forward lr and wd schedulers to the correct step
             # ideally we load with DeepSpeed but this is not always possible
             # hence we manually step the schedulers here and accept that 
@@ -622,7 +623,8 @@ class Inferencer(BaseTrainer):
         # initialize inferencer_worker
         self.inferencer_worker = instantiate(cfg.inference, 
                                              model=self.model, 
-                                             decoder_head_type=decoder_args['name'],
+                                             decoder_head_type=decoder_args["name"] \
+                                                if decoder_args else str(cfg.inference.decoder_head_type),
                                              database=database_df)
 
     def predict(self):

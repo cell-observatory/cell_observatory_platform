@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -euo pipefail
 
 # NCCL settings optimized for Ethernet without InfiniBand
 export LC_ALL=C.UTF-8
@@ -51,31 +51,44 @@ done
 
 _cleaned=0
 cleanup() {
-    (( _cleaned )) && return
     _cleaned=1
     echo "Running head node cleanup..."
+    ray stop --force >/dev/null 2>&1 || true
+    echo "Successfully stopped ray head node"
+    python3 /workspace/cell_observatory_platform/utils/cleanup.py
+    echo "Successfully ran cleanup.py"
     [ -f "$tmpdir/prometheus.pid" ] && kill "$(cat "$tmpdir/prometheus.pid")" 2>/dev/null || true
     [ -f "$tmpdir/grafana.pid"    ] && kill "$(cat "$tmpdir/grafana.pid")"    2>/dev/null || true
-    ray stop --force >/dev/null 2>&1 || true
-    python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+    echo "Successfully stopped prometheus and grafana"
 }
 trap 'cleanup' EXIT
-trap 'cleanup; exit 143' TERM INT USR1
-
+trap 'cleanup; exit 143' TERM INT
 
 mkdir -p /tmp/ray
 cluster_address="$ip:$port"
+
+pick_agent_port() {
+    local p=$((dashboard_port + 1))
+    # if port lands inside the worker range, bump it out
+    if (( p >= 18999 && p <= 19999 )); then
+        p=$((20000 + (RANDOM % 10000)))  # 20000–29999
+    fi
+    echo "$p"
+}
+DASHBOARD_AGENT_PORT=$(pick_agent_port)
 
 # remove any leftover shared memory segments
 python3 /workspace/cell_observatory_platform/utils/cleanup.py
 
 echo "Starting ray head node @ $(hostname) => $cluster_address with CPUs[$cpus] & GPUs [$gpus]"
-job="ray start --block --head --node-ip-address=$ip --port=$port --dashboard-port=$dashboard_port --dashboard-host=0.0.0.0 --min-worker-port 18999 --max-worker-port 19999 --temp-dir=$tmpdir --num-cpus=$cpus --num-gpus=$gpus --object-store-memory=$object_store_memory"
+job="ray start --block --head --node-ip-address=$ip --port=$port --dashboard-agent-listen-port=$DASHBOARD_AGENT_PORT --dashboard-host=0.0.0.0 --min-worker-port 18999 --max-worker-port 19999 --temp-dir=$tmpdir --num-cpus=$cpus --num-gpus=$gpus --object-store-memory=$object_store_memory"
 echo $job
 $job &
 head_pid=$!
 
 echo "$$" > "$tmpdir/cleanup_head.pid"
+
+echo "[HEAD NODE]: PID for cleanup is $$"
 
 # wait for the head node to start/create a new session
 # directory to ensure that prometheus and grafana 

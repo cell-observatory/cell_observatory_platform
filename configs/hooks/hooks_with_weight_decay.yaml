@@ -36,7 +36,6 @@ hooks_list:
   - _target_: training.hooks.IterationTimer
   - _target_: training.hooks.PeriodicWriter
   - _target_: training.hooks.PeriodicCheckpointer
-    period: 1
     file_prefix: latest_model
   - _target_: training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}

@@ -77,6 +77,16 @@ def get_steps_per_epoch(train_dataloader, val_dataloader, config: DictConfig):
         f"Steps per epoch: {steps_per_epoch}, "
         f"Validation steps per epoch: {val_steps_per_epoch}"
     )
+
+    if steps_per_epoch is None or steps_per_epoch <= 0:
+        raise ValueError(
+            f"Steps per epoch is None or <= 0. Cannot proceed with training."
+        )
+    
+    if (val_steps_per_epoch is None or val_steps_per_epoch <= 0) and val_dataloader is not None:
+        raise ValueError("Validation Dataloader is provided but validation steps per epoch is None or <= 0."
+        )
+
     return steps_per_epoch, val_steps_per_epoch
 
 
