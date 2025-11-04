@@ -386,28 +386,31 @@ def apply_hypercubes_dataframe_selections(
     return df
 
 def compute_df_stats(df: pl.DataFrame) -> pl.DataFrame:
-    def _normalize(expr: pl.Expr) -> pl.Expr:
+    def _parse_string_col(expr: pl.Expr) -> pl.Expr:
         return (
-            pl.when(expr.is_dtype(pl.List(pl.Float32)) | expr.is_dtype(pl.List(pl.Float64)))
-            .then(expr.cast(pl.List(pl.Float64)))
-            .when(expr.is_dtype(pl.Utf8))
-            .then(
-                expr.cast(pl.Utf8)
-                .str.strip_chars()
-                .str.replace_all(r'^[\[\{\(]\s*', '', literal=False)
-                .str.replace_all(r'\s*[\]\}\)]$', '', literal=False)
-                .str.replace_all("\n", " ", literal=True)
-                .str.replace_all('"', "", literal=True)
-                .str.replace_all("'", "", literal=True)
-                .str.replace_all(r"[,\s]+", " ", literal=False)
-                .str.strip_chars()
-                .str.extract_all(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?')
-                .list.eval(pl.element().cast(pl.Float64))
-            )
+            expr.cast(pl.Utf8)
+            .str.strip_chars()
+            .str.replace_all(r'^[\[\{\(]\s*', '', literal=False)
+            .str.replace_all(r'\s*[\]\}\)]$', '', literal=False)
+            .str.replace_all("\n", " ", literal=True)
+            .str.replace_all('"', "", literal=True)
+            .str.replace_all("'", "", literal=True)
+            .str.replace_all(r"[,\s]+", " ", literal=False)
+            .str.strip_chars()
+            .str.extract_all(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?')
+            .list.eval(pl.element().cast(pl.Float64))
         )
 
-    ch0 = _normalize(pl.col("occupancy_ratios_ch_0"))
-    ch1 = _normalize(pl.col("occupancy_ratios_ch_1"))
+    def _parse_occupancy_expr(colname: str, dtypes: Dict[str, pl.DataType]) -> pl.Expr:
+        dt = dtypes[colname]
+        if isinstance(dt, pl.List) and dt.inner in (pl.Float32, pl.Float64):
+            return pl.col(colname).cast(pl.List(pl.Float64))
+        if dt == pl.Utf8:
+            return _parse_string_col(pl.col(colname))
+        raise TypeError(f"Unsupported dtype for {colname}: {dt!r}")
+
+    ch0 = _parse_occupancy_expr("occupancy_ratios_ch_0", df.schema)
+    ch1 = _parse_occupancy_expr("occupancy_ratios_ch_1", df.schema)
 
     return df.with_columns(
         ch0.list.min().alias("min_occupancy_ratios_ch_0"),
