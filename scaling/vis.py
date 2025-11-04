@@ -1,5 +1,6 @@
 import matplotlib
 from matplotlib import pyplot as plt
+import matplotlib.ticker as ticker
 matplotlib.use('Agg')
 
 import warnings
@@ -7,12 +8,13 @@ warnings.filterwarnings("ignore")
 
 from pathlib import Path
 
+import re
 import numpy as np
 import seaborn as sns
 import logging
 import sys
-
-from utils.common import savesvg
+from typing import Union
+from functools import partial
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -20,6 +22,54 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def days_to_formatter(days, pos):
+
+    if days >= 365:
+        years = np.ceil(days / 365)
+        return f"{years:.0f}y"
+    elif days >= 1:
+        return f"{days:.0f}d"
+    elif days >= 1/24: 
+        hours = np.ceil(days * 24)
+        return f"{hours:.0f}h"
+    elif days >= 1/(24*60):
+        minutes = np.ceil(days * 24 * 60)
+        return f"{minutes:.0f}m"
+    else:
+        seconds = np.ceil(days * 24 * 60 * 60)
+        return f"{seconds:.0f}s"
+
+        
+
+def savesvg(
+    fig: plt.Figure,
+    savepath: Union[Path, str],
+    top: float = 0.9,
+    bottom: float = 0.1,
+    left: float = 0.1,
+    right: float = 0.9,
+    hspace: float = 0.35,
+    wspace: float = 0.1
+):
+
+    plt.subplots_adjust(top=top, bottom=bottom, left=left, right=right, hspace=hspace, wspace=wspace)
+    plt.savefig(savepath, bbox_inches='tight', dpi=300, pad_inches=.25)
+
+    if Path(savepath).suffix == '.svg':
+        # Read in the file
+        with open(savepath, 'r', encoding="utf-8") as f:
+            filedata = f.read()
+
+        # Replace the target string
+        filedata = re.sub('height="[0-9]+(\.[0-9]+)pt"', '', filedata)
+        filedata = re.sub('width="[0-9]+(\.[0-9]+)pt"', '', filedata)
+
+        # Write the file out again
+        with open(savepath, 'w', encoding="utf-8") as f:
+            f.write(filedata)
+
 
 def plot_parameter_scaling(
         df,
@@ -52,7 +102,7 @@ def plot_parameter_scaling(
     for background in ["default", "dark_background"]:
         plt.style.use(background)
         plt.rcParams.update({
-            'font.family': 'Helvetica',
+            #'font.family': 'Helvetica',
             'font.size': 12,
             'axes.titlesize': 14,
             'axes.labelsize': 14,
@@ -211,11 +261,12 @@ def plot_data_parameter_scaling(
             'Patch (x, y, c)',
                 f'(16, 16, 3)',
         ],
+        mfu=0.5
 ):
     for background in ["default", "dark_background"]:
         plt.style.use(background)
         plt.rcParams.update({
-            'font.family': 'Helvetica',
+            #'font.family': 'Helvetica',
             'font.size': 12,
             'axes.titlesize': 14,
             'axes.labelsize': 14,
@@ -238,7 +289,7 @@ def plot_data_parameter_scaling(
                 [ylabel, ytwinlabel1, ytwinlabel2, ytwinlabel3],
                 # [None, 'olive', 'magenta', 'r'],
                 [None, None, None, None],
-                [0, 0, .1, .2],
+                [0, 0, .125, .25],
         )):
             if yy is not None:
                 if ii == 0:
@@ -291,7 +342,7 @@ def plot_data_parameter_scaling(
 
                 axis.set_ylabel(ll)
                 if ytwin2 is not None and ii != 0:
-                    axis.yaxis.set_label_coords(1 + offset, 1.05)
+                    axis.yaxis.set_label_coords(1 + offset, 1.07)
 
                 if ylog:
                     axis.set_yscale('log')
@@ -308,6 +359,12 @@ def plot_data_parameter_scaling(
                         legend_handles, legend,
                         loc='upper left', ncol=1, title="", frameon=False
                     )
+                    
+                
+                formatter = ticker.FuncFormatter(days_to_formatter)
+                axis.yaxis.set_major_formatter(formatter)
+                axis.yaxis.set_minor_formatter(formatter)
+                axis.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=[0.25, 0.5]))
 
         if yscalelabel is not None:
             ann = ax.annotate(
@@ -386,6 +443,7 @@ def plot_individual_parameters(
         'Patch (x, y, z, t, c)',
         f'(16, 16, 16, 2, 3)',
     ],
+    mfu=0.5,
 ):
     df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
     df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
@@ -412,7 +470,7 @@ def plot_individual_parameters(
         )
 
     fois = {
-        f"training_h100_days_per_epoch": f"Training H100 days per epoch",
+        f"training_h100_days_per_epoch": f"Training H100 days per epoch (MFU={mfu:.2f})",
         f"training_h100_cost_per_epoch": f"H100 compute cost per epoch ($6/hr)",
         f"training_tflops_per_epoch": f"Training Tera-FLOPs (TFLOPs) per epoch",
     }
@@ -448,6 +506,7 @@ def plot_published_models(
         'Patch (x, y, c)',
         f'(16, 16, 3)',
     ],
+    mfu=0.5,
 ):
     batch_size = 4096
     df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
@@ -470,7 +529,7 @@ def plot_published_models(
     fois = {
         f"dataset_size": f"Training dataset size (millions of volumes)",
         f"training_volumes": f"Training volumes seen (billions)",
-        f"training_time": f"Training H100 days",
+        f"training_time": f"Training H100 days (MFU={mfu:.2f})",
         f"training_compute": f"Training TFLOPs",
         f"training_cost": f"Training cost",
     }
@@ -494,7 +553,7 @@ def plot_powerlaw(outdir):
         plt.style.use(background)
 
         plt.rcParams.update({
-            'font.family': 'Helvetica',
+            #'font.family': 'Helvetica',
             'font.size': 12,
             'axes.titlesize': 14,
             'axes.labelsize': 14,
@@ -654,7 +713,7 @@ def plot_gpt_vit(outdir):
         plt.style.use(background)
 
         plt.rcParams.update({
-            'font.family': 'Helvetica',
+            #'font.family': 'Helvetica',
             'font.size': 12,
             'axes.titlesize': 14,
             'axes.labelsize': 14,
