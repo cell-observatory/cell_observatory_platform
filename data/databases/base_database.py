@@ -774,17 +774,22 @@ class ParentDatabase():
     def _aggregate(self, df_pd, group_cols, z_slices=128, y_slices=128, x_slices=128):
         def _to_floats(expr: pl.Expr) -> pl.Expr:
             return (
-                expr.cast(pl.Utf8)
-                .str.strip_chars()
-                .str.replace_all(r'^[\[\{\(]\s*', '', literal=False)
-                .str.replace_all(r'\s*[\]\}\)]$', '', literal=False)
-                .str.replace_all("\n", " ", literal=True)
-                .str.replace_all('"', "", literal=True)
-                .str.replace_all("'", "", literal=True)
-                .str.replace_all(r"[,\s]+", " ", literal=False)
-                .str.strip_chars()
-                .str.extract_all(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?')
-                .list.eval(pl.element().cast(pl.Float64))
+                pl.when(expr.is_dtype(pl.List(pl.Float32)) | expr.is_dtype(pl.List(pl.Float64)))
+                .then(expr.cast(pl.List(pl.Float64)))
+                .when(expr.is_dtype(pl.Utf8))
+                .then(
+                    expr.cast(pl.Utf8)
+                    .str.strip_chars()
+                    .str.replace_all(r'^[\[\{\(]\s*', '', literal=False)
+                    .str.replace_all(r'\s*[\]\}\)]$', '', literal=False)
+                    .str.replace_all("\n", " ", literal=True)
+                    .str.replace_all('"', "", literal=True)
+                    .str.replace_all("'", "", literal=True)
+                    .str.replace_all(r"[,\s]+", " ", literal=False)
+                    .str.strip_chars()
+                    .str.extract_all(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?')
+                    .list.eval(pl.element().cast(pl.Float64))
+                )
             )
 
         df = pl.from_pandas(df_pd)
