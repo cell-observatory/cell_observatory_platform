@@ -388,17 +388,22 @@ def apply_hypercubes_dataframe_selections(
 def compute_df_stats(df: pl.DataFrame) -> pl.DataFrame:
     def _normalize(expr: pl.Expr) -> pl.Expr:
         return (
-            expr.cast(pl.Utf8)
-               .str.strip_chars()
-               .str.replace_all(r'^[\[\{\(]\s*', '', literal=False)
-               .str.replace_all(r'\s*[\]\}\)]$', '', literal=False)
-               .str.replace_all("\n", " ", literal=True)
-               .str.replace_all('"', "", literal=True)
-               .str.replace_all("'", "", literal=True)
-               .str.replace_all(r"[,\s]+", " ", literal=False)
-               .str.strip_chars()
-               .str.extract_all(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?')
-               .list.eval(pl.element().cast(pl.Float64))
+            pl.when(expr.is_dtype(pl.List(pl.Float32)) | expr.is_dtype(pl.List(pl.Float64)))
+            .then(expr.cast(pl.List(pl.Float64)))
+            .when(expr.is_dtype(pl.Utf8))
+            .then(
+                expr.cast(pl.Utf8)
+                .str.strip_chars()
+                .str.replace_all(r'^[\[\{\(]\s*', '', literal=False)
+                .str.replace_all(r'\s*[\]\}\)]$', '', literal=False)
+                .str.replace_all("\n", " ", literal=True)
+                .str.replace_all('"', "", literal=True)
+                .str.replace_all("'", "", literal=True)
+                .str.replace_all(r"[,\s]+", " ", literal=False)
+                .str.strip_chars()
+                .str.extract_all(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?')
+                .list.eval(pl.element().cast(pl.Float64))
+            )
         )
 
     ch0 = _normalize(pl.col("occupancy_ratios_ch_0"))
