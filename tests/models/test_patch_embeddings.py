@@ -90,9 +90,7 @@ def test_patchify_shapes_reshape(case):
     num_patches, token_shape = calc_num_patches(
         input_fmt=case["input_fmt"],
         input_shape=case["input_shape"][1:],
-        lateral_patch_size=case["lateral_patch_size"],
-        axial_patch_size=case.get("axial_patch_size"),
-        temporal_patch_size=case.get("temporal_patch_size"),
+        patch_shape=case["patch_shape"],
     )
 
     exp_pixels = _expected_pixels_per_patch(case)

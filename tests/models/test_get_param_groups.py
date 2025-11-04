@@ -61,7 +61,7 @@ def _cfg_mae(layer_decay=0.8, decoder_layer_decay=0.9, weight_decay=0.05, no_wd_
         param_group_split_mode="mae",
         layer_decay=layer_decay,
         decoder_layer_decay=decoder_layer_decay,
-        weight_decay=weight_decay,
+        wd=weight_decay,
         no_weight_decay_list=list(no_wd_list),
     ))
 

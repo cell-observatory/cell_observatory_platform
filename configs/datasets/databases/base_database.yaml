@@ -2,6 +2,8 @@
 _target_: data.databases.supabase_database.SupabaseDatabase # e.g. data.databases.trino_database.TrinoDatabase  
 dbname: 'prod'
 
+timepoint_list: null # list of specific timepoints to filter
+
 input_shape: ${datasets.input_shape} # shape of the input data
 dataset_layout_order: ${dataset_layout_order} # dataset layout in the zarr files (e.g. ZYXC)
 

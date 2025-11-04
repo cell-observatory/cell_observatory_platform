@@ -1,3 +1,4 @@
+import time
 from abc import abstractmethod
 from sqlite3 import NotSupportedError
 
@@ -10,7 +11,9 @@ import numpy as np
 
 import ujson
 import pandas as pd
+import polars as pl
 import connectorx as cx
+
 
 from data.io import load_hypercubes_dataframe
 
@@ -767,6 +770,71 @@ class ParentDatabase():
         print(table)
         print(f"\nUpdated {num_rows} rows using {filters=}.")
         return table
+
+    def _aggregate(self, df_pd, group_cols, z_slices=128, y_slices=128, x_slices=128):
+        def _to_floats(expr: pl.Expr) -> pl.Expr:
+            return (
+                expr.cast(pl.Utf8)
+                .str.strip_chars()
+                .str.replace_all(r'^[\[\{\(]\s*', '', literal=False)
+                .str.replace_all(r'\s*[\]\}\)]$', '', literal=False)
+                .str.replace_all("\n", " ", literal=True)
+                .str.replace_all('"', "", literal=True)
+                .str.replace_all("'", "", literal=True)
+                .str.replace_all(r"[,\s]+", " ", literal=False)
+                .str.strip_chars()
+                .str.extract_all(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?')
+                .list.eval(pl.element().cast(pl.Float64))
+            )
+
+        df = pl.from_pandas(df_pd)
+
+        df = df.with_columns(
+            (pl.col("z_start") // z_slices * z_slices).alias("z_start"),
+            (pl.col("y_start") // y_slices * y_slices).alias("y_start"),
+            (pl.col("x_start") // x_slices * x_slices).alias("x_start"),
+        )
+
+        df = df.with_columns(
+            _to_floats(pl.col("occupancy_ratios_ch_0")).alias("occ0"),
+            _to_floats(pl.col("occupancy_ratios_ch_1")).alias("occ1"),
+        )
+
+        T0 = int(df.select(pl.col("occ0").list.len().max()).item())
+        T1 = int(df.select(pl.col("occ1").list.len().max()).item())
+
+        occ0_mean_exprs = [pl.col("occ0").list.get(i).mean().alias(f"__occ0_{i}") for i in range(T0)]
+        occ1_mean_exprs = [pl.col("occ1").list.get(i).mean().alias(f"__occ1_{i}") for i in range(T1)]
+
+        out = (
+            df.group_by(group_cols)
+            .agg([
+                pl.col("cube_size").first(),
+                pl.col("time_size").first(),
+                pl.col("channel_size").first(),
+                pl.col("first_pc_id").first(),
+                pl.col("hpf").first(),
+                pl.col("server_folder").first(),
+                pl.col("output_folder").first(),
+                pl.col("metadata_json").first(),
+                pl.col("unique_targets").first(),
+                pl.col("imaged_locations").first(),
+                pl.col("date_crossed").first(),
+                pl.col("exists").max(),
+                pl.col("exists_prfs").max(),
+                pl.col("exists_aws").max(),
+                pl.col("metadata_tile_json").sum(),
+                *occ0_mean_exprs,
+                *occ1_mean_exprs,
+            ])
+            .with_columns(
+                pl.concat_list([pl.col(f"__occ0_{i}") for i in range(T0)]).alias("occupancy_ratios_ch_0"),
+                pl.concat_list([pl.col(f"__occ1_{i}") for i in range(T1)]).alias("occupancy_ratios_ch_1"),
+            )
+            .drop([*(f"__occ0_{i}" for i in range(T0)), *(f"__occ1_{i}" for i in range(T1))])
+        )
+
+        return out.to_pandas()
     
     def aggregate_hypercubes(
         self, 
@@ -794,12 +862,18 @@ class ParentDatabase():
             "occupancy_ratios_ch_1": lambda s: np.mean(np.vstack(s.tolist()), axis=0).tolist(),
         }
     ):                
-        self.hypercubes_dataframe["z_start"] = (self.hypercubes_dataframe["z_start"] // z_slices) * z_slices
-        self.hypercubes_dataframe["y_start"] = (self.hypercubes_dataframe["y_start"] // y_slices) * y_slices
-        self.hypercubes_dataframe["x_start"] = (self.hypercubes_dataframe["x_start"] // x_slices) * x_slices
+        logger.info("Aggregating hypercubes...")
+        t0 = time.perf_counter()        
+        self.hypercubes_dataframe = self._aggregate(
+            self.hypercubes_dataframe,
+            group_cols=group_cols,
+            z_slices=z_slices,
+            y_slices=y_slices,
+            x_slices=x_slices
+        )
+        t1 = time.perf_counter()
+        logger.info(f"Aggregated hypercubes in {t1 - t0:.2f} seconds.")
 
-        self.hypercubes_dataframe = self.hypercubes_dataframe.groupby(group_cols, as_index=False).agg(agg)
-        
         # print(self.hypercubes_dataframe[[*group_cols, "occupancy_ratios_ch_0"]])
         # print(self.hypercubes_dataframe.shape)
         # print(f"prepared_id: {self.hypercubes_dataframe.prepared_id.nunique()}, {sorted(self.hypercubes_dataframe.prepared_id.unique())}")
