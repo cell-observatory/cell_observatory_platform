@@ -13,11 +13,13 @@ from ray.train import report
 from tests.conftest import distributed_test, config
 
 
+@pytest.mark.skip("Skipping tests for Torch dataloader, Torch dataloader will be deprecated soon.")
 def test_access_to_storage_server(config):
     if not Path(config.paths.server_folder_path).exists():
         raise FileNotFoundError(f"{config.paths.server_folder_path} does not exist")
 
 
+@pytest.mark.skip("Skipping tests for Torch dataloader, Torch dataloader will be deprecated soon.")
 def test_dataloader(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
@@ -106,6 +108,7 @@ def _test_dataloader_dist(config):
     return report({"success": True})
 
 
+@pytest.mark.skip("Skipping distributed test for Torch dataloader, Torch dataloader will be deprecated soon.")
 def test_data_pipeline(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
