@@ -1,0 +1,23 @@
+docker_image: null
+apptainer_image: null
+
+# No need to change anything below
+# --------------------------------------------------------------------------------
+repo_path: ${oc.env:REPO_DIR}
+data_path: /workspace/cell_observatory_project
+server_folder_path: /workspace/CellObservatoryData
+workdir: /${oc.env:REPO_NAME} # mapping your repo path to this path inside the container
+
+# Relative paths will be updated in manager.py based on the running environment
+ray_script: /${oc.env:REPO_NAME}/cluster/ray_local_cluster.sh
+runner_script: /${oc.env:REPO_NAME}/training/runner.py
+dotenv_path: /${oc.env:REPO_NAME}/.env
+
+pvc_data_name: project-cell-observatory-pvc-120t
+pvc_outdir_name: project-cell-observatory-pvc
+
+# Keep them null to be set automatically or change in the main config file
+# --------------------------------------------------------------------------------
+resume_checkpointdir: null
+pretrained_checkpointdir: null
+outdir: null

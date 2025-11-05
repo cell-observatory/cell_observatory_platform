@@ -216,8 +216,9 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
 
     assert cfg.paths.outdir is not None, f"Missing output directory: {cfg.paths.outdir}"
 
-    assert Path(cfg.paths.data_path) in Path(cfg.paths.outdir).parents, \
-        f"Output directory [{cfg.paths.outdir}] not in data path [{cfg.paths.data_path}]"
+    if hasattr(cfg.paths, "data_path") and cfg.paths.data_path is not None:
+        assert Path(cfg.paths.data_path) in Path(cfg.paths.outdir).parents, \
+            f"Output directory [{cfg.paths.outdir}] not in data path [{cfg.paths.data_path}]"
 
     assert cfg.clusters.batch_size % cfg.clusters.worker_nodes == 0, (
         f"batch_size {cfg.clusters.batch_size} must divide evenly among "
@@ -275,6 +276,8 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         cfg.paths.ray_script = cfg.paths.ray_script.replace("ray_local_cluster.sh", "ray_slurm_cluster.sh")
     elif cfg.clusters.launcher_type == "lsf":
         cfg.paths.ray_script = cfg.paths.ray_script.replace("ray_local_cluster.sh", "ray_lsf_cluster.sh")
+    elif cfg.clusters.launcher_type == "runai":
+        cfg.paths.ray_script = cfg.paths.ray_script.replace("ray_local_cluster.sh", "ray_runai_cluster.sh")
 
     if run_config_name is not None:
         task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {Path(config_name).name} --config-dir={Path(config_name).parent}"
@@ -427,10 +430,60 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         print(cmd)
         subprocess.run(cmd, shell=True, check=True)
 
+    elif cfg.clusters.launcher_type == "runai":
+        '''
+            Currently, we only support requesting and allocating all resources
+            at once with RUNAI scheduler. We assume identical configurations
+            for all worker nodes.
+        '''
+
+        sjob_worker_nodes = ["ai job submit "]
+        sjob_worker_nodes.append(f"--project {cfg.clusters.runai_project}")
+        sjob_worker_nodes.append(f"--name {cfg.clusters.job_name}")
+
+        sjob_worker_nodes.append(f"--gpus {cfg.clusters.gpus_per_worker}")
+        sjob_worker_nodes.append(f"--pods {cfg.clusters.worker_nodes}")
+
+        outdir_bind = f'{cfg.paths.pvc_data_name}={cfg.paths.data_path}'
+        datadir_bind = f'{cfg.paths.pvc_outdir_name}={cfg.paths.server_folder_path}'
+
+        sjob_worker_nodes.append(f"--data {outdir_bind}")
+        sjob_worker_nodes.append(f"--data {datadir_bind}")
+
+        sjob_worker_nodes.append(f"--base {image}")
+        sjob_worker_nodes.append(f"--main {q(ray_wrap)}")
+
+        sjob_worker_nodes.append(f"--repo {cfg.clusters.repo_url}")
+        if cfg.clusters.repo_hash is not None:
+            sjob_worker_nodes.append(f"--hash {cfg.clusters.repo_hash}")
+
+        sjob_worker_nodes.append(f"--evar {JOB_NAME}={cfg.clusters.job_name}")
+        sjob_worker_nodes.append(f"--evar {PROJECT_NAME}={cfg.clusters.runai_project}")
+
+        if cfg.clusters.evar is not None:
+            for key, value in cfg.clusters.evar.items():
+                sjob_worker_nodes.append(f"--evar {key}={value}")
+
+        if cfg.clusters.svar is not None:
+            for key, value in cfg.clusters.svar.items():
+                sjob_worker_nodes.append(f"--svar {key}={value}")
+
+        if cfg.clusters.meta is not None:
+            for key, value in cfg.clusters.meta.items():
+                sjob_worker_nodes.append(f"--meta {key}={value}")
+
+        if cfg.clusters.init is not None:
+            sjob_worker_nodes.append(f"--init_script {cfg.clusters.init}")
+
+        print("Submitting runai job with configuration:")
+        cmd = " ".join(sjob_worker_nodes)
+        print(cmd)
+        subprocess.run(cmd, shell=True, check=True)
+
     else:
         raise ValueError(
             f"Unknown launcher type: {cfg.clusters.launcher_type}. "
-            f"Please set cfg.clusters.launcher_type to either 'local', 'slurm', or 'lsf'."
+            f"Please set cfg.clusters.launcher_type to either 'local', 'slurm', 'runai', or 'lsf'."
         )
 
 if __name__ == "__main__":
