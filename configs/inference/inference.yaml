@@ -1,0 +1,36 @@
+_target_: cell_observatory_platform.inference.inferencer.InferencerWorker
+
+num_output_channels: 2
+input_format: ${dataset_layout_order} 
+timepoint_list: ${datasets.databases.timepoint_list}
+
+task: null
+inference_mode: "sliding_window"
+activation: null
+decoder_head_type: "pretrain"
+
+roi_tile_list: 
+  - [519, "000x_000y_000z.zarr"]
+  - [518, "000x_000y_000z.zarr"]
+
+protocol: ${datasets.databases.protocol}
+dotenv_path: null
+dbname: ${datasets.databases.dbname}
+server_folder_path: ${paths.server_folder_path}
+verbose: false
+max_hypercubes: null
+max_partitions: 10
+
+save_dir: ${paths.outdir}/inference
+
+convert_to_ome_format: true
+
+# TIFF OPTION:
+# save_format: "tiff"
+# zarr_chunk_shape: null
+# zarr_shard_shape: null
+
+# ZARR OPTION:
+save_format: "zarr"
+zarr_chunk_shape: [32, 32, 32]
+zarr_shard_shape: [128, 128, 128]

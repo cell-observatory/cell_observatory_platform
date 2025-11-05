@@ -40,15 +40,15 @@ class Encoder(nn.Module):
         rope_theta: float = 10.0,
         input_fmt: str = "TZYXC",
         input_shape: tuple = (16, 128, 128, 128, 2),
-        temporal_patch_size: Optional[int] = 4,
-        axial_patch_size: Optional[int] = 16,
-        lateral_patch_size: int = 16,
+        patch_shape: tuple = (4, 16, 16, 16),
         wide_silu: bool = False,
         out_layers: list = None,
         dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
+        
+        self.patch_shape = patch_shape
 
         self.depth = depth
         self.embed_dim = embed_dim
@@ -84,9 +84,7 @@ class Encoder(nn.Module):
                 rope_theta=rope_theta,
                 input_fmt=input_fmt,
                 input_shape=input_shape,
-                temporal_patch_size=temporal_patch_size,
-                axial_patch_size=axial_patch_size,
-                lateral_patch_size=lateral_patch_size,
+                patch_shape=self.patch_shape,
                 wide_silu=wide_silu,
                 dtype=dtype
             )

@@ -98,6 +98,8 @@ apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bi
 
 ############################## RUN WORKLOAD
 
+# FIXME: (IMPORTANT!) we need to add a trap here to ensure cleanup on exit/signals
+
 echo "Running user tasks"
 echo $tasks
 apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks

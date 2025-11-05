@@ -174,7 +174,7 @@ class ConvNeXtV2(nn.Module):
             'convnext-large',
         ] = 'convnext',
         input_fmt='TZYXC',
-        input_shape=(1, 6, 64, 64, 1),
+        input_shape: tuple = (16, 128, 128, 128, 2),
         modes=15,
         depths=(3, 3, 9, 3),
         dims=(96, 192, 384, 768),
@@ -196,11 +196,14 @@ class ConvNeXtV2(nn.Module):
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
+        axis_to_value = dict(zip(input_fmt, input_shape))
+        self.in_chans = axis_to_value['C']
+
         self.modes = modes
 
         self.downsample_layers = nn.ModuleList()  # stem and 3 intermediate downsampling conv layers
         stem = nn.Sequential(
-            nn.Conv3d(self.input_shape[-1], self.dims[0], kernel_size=(1, 4, 4), stride=(1, 4, 4)),
+            nn.Conv3d(self.in_chans, self.dims[0], kernel_size=(1, 4, 4), stride=(1, 4, 4)),
             LayerNorm(self.dims[0], eps=1e-6, data_format="channels_first")
         )
         self.downsample_layers.append(stem)

@@ -17,19 +17,22 @@ def unlink_shared_memory() -> int:
         name = p.name
         if not any(name.startswith(pref) for pref in PREFIXES):
             continue
-        try:
-            st = p.stat()
-        except FileNotFoundError:
-            continue
 
-        if st.st_uid != euid:
-            continue
+        # try:
+        #     st = p.stat()
+        # except FileNotFoundError:
+        #     continue
+
+        # if st.st_uid != euid:
+        #     continue
 
         try:
             shm = shared_memory.SharedMemory(name=name)
         except FileNotFoundError:
+            print(f"Shared memory {name} not found when attempting to unlink.")
             continue
         except PermissionError:
+            print(f"Permission denied when attempting to access shared memory {name}.")
             continue
 
         try:
@@ -40,8 +43,10 @@ def unlink_shared_memory() -> int:
             shm.unlink()
             removed += 1
         except FileNotFoundError:
+            print(f"Shared memory {name} not found when attempting to unlink.")
             pass
         except PermissionError:
+            print(f"Permission denied when attempting to access shared memory {name}.")
             pass
 
     return removed

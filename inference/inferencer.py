@@ -44,6 +44,7 @@ class InferencerWorker:
                  verbose: bool = False,
                  max_hypercubes: Optional[int] = None,
                  max_partitions: int = 10,
+                 convert_to_ome_format: bool = True,
                  save_format: Literal['tiff','zarr'] = 'tiff',
                  zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
                  zarr_shard_shape: Optional[Tuple[int, ...]] = None,
@@ -67,6 +68,8 @@ class InferencerWorker:
 
         self.task = task
         self.inference_mode = inference_mode
+
+        self.convert_to_ome_format = convert_to_ome_format
 
         self.inference_activation = activation
         self.decoder_head_type = decoder_head_type
@@ -122,7 +125,7 @@ class InferencerWorker:
 
         if self.dbname == 'staging':
             uri = os.environ.get("SUPABASE_STAGING_URI")
-        elif self.dbname == 'production':
+        elif self.dbname == 'prod':
             uri = os.environ.get("SUPABASE_PROD_URI")
         else:
             raise ValueError(f"Unknown database name: {self.dbname}")
@@ -357,6 +360,9 @@ class InferencerWorker:
         elif self.decoder_head_type == "dpt":
             raise NotImplementedError("Dense Prediction Head not yet supported for sliding window inference.")
 
+        elif self.decoder_head_type == "pretrain":
+            pred_hypercubes = self.model.predict(data_sample)
+
         else:
             raise NotImplementedError(
                 f"Decoder head type {self.decoder_head_type} not supported for sliding window inference."
@@ -390,16 +396,22 @@ class InferencerWorker:
                 (self.database["tile_name"].astype(str) == name)
             ]
             n_cubes = int(tile_rows.shape[0])
-            cube_sz = int(tile_rows["cube_size"].iloc[0])
+            
+            z_size = int(tile_rows["z_size"].iloc[0])
+            y_size = int(tile_rows["y_size"].iloc[0])
+            x_size = int(tile_rows["x_size"].iloc[0])
+
             t_per_cube = int(tile_rows["time_size"].iloc[0]) \
                 if (self.input_format == "TZYXC" and "time_size" in tile_rows.columns) else 1
 
-            voxels_per_cube = t_per_cube * cube_sz * cube_sz * cube_sz
+            voxels_per_cube = t_per_cube * z_size * y_size * x_size
             tile_volume = n_cubes * voxels_per_cube
 
             key = (roi, tile_hash(name))
             self._tile_state[key] = {
                 "row": row,
+                # FIXME: at some point we should generalize this to support different 
+                #        output modalities (e.g., bounding boxes, ... etc.)
                 "shape": (*out_spatial_shape, self.num_output_channels),
                 "pred": None, "cnt": None,
                 "remaining": tile_volume,
@@ -421,9 +433,9 @@ class InferencerWorker:
             owner_rank = stable_key_owner(roi, tile_nm, ws)
 
             t0 = int(meta["time_start"][b]); T = int(meta["time_size"][b]); t1 = t0 + T
-            z0 = int(meta["z_start"][b]); S = int(meta["cube_size"][b]); z1 = z0 + S
-            y0 = int(meta["y_start"][b]); y1 = y0 + S
-            x0 = int(meta["x_start"][b]); x1 = x0 + S
+            z0 = int(meta["z_start"][b]); sz = int(meta["z_size"][b]); z1 = z0 + sz
+            y0 = int(meta["y_start"][b]); sy = int(meta["y_size"][b]); y1 = y0 + sy
+            x0 = int(meta["x_start"][b]); sx = int(meta["x_size"][b]); x1 = x0 + sx
 
             patch = pred_hypercubes[b]
             if self.input_format == "ZYXC" and patch.ndim == 4:
@@ -494,9 +506,12 @@ class InferencerWorker:
             tail = pred_hypercubes_bucket[0][1].shape[1:]  # (T,S,S,S,C)
         else:
             T = int(metadata["time_size"][0]) if "time_size" in metadata else 1
-            S = int(metadata["cube_size"][0])
+            Sz = int(metadata["z_size"][0])
+            Sy = int(metadata["y_size"][0])
+            Sx = int(metadata["x_size"][0])
             C = self.num_output_channels
-            tail = (T, S, S, S, C)
+            tail = (T, Sz, Sy, Sx, C)
+
         pred_hypercubes_send, pred_hypercubes_splits = self._pack_for_alltoall(pred_hypercubes_bucket, 
                                                                world_size=ws,
                                                                device=device, 
@@ -572,22 +587,31 @@ class InferencerWorker:
 
         return done_keys
 
-    def _to_ome_tiff_array(self, preds_tzyxc: torch.Tensor, keep_time: bool) -> tuple[np.ndarray, str]:
+    # FIXME: hacky, we should generalize, standardize, and cleanup
+    def _to_ome_compatible_array(self,
+                                preds_tzyxc: torch.Tensor, 
+                                keep_time: bool, 
+                                with_ome: bool,
+                                save_format: Literal['tiff','zarr']='tiff'
+    ) -> tuple[np.ndarray, str]:
         arr = preds_tzyxc.cpu().numpy()
 
         if keep_time and arr.shape[0] > 1:
-            # T,Z,Y,X,C  ->  T,C,Z,Y,X
-            arr = np.transpose(arr, (0, 4, 1, 2, 3)).copy(order="C")
-            axes = "TCZYX"
+            if with_ome:
+                # T,Z,Y,X,C -> T,C,Z,Y,X
+                arr = np.transpose(arr, (0, 4, 1, 2, 3)).copy(order="C")
+                axes = "TCZYX"
         else:
-            if arr.ndim == 5 and arr.shape[0] == 1:
+            if arr.ndim == 5 and arr.shape[0] == 1 and save_format == 'tiff':
                 arr = arr[0]
-            # Z,Y,X,C -> C,Z,Y,X
-            arr = np.transpose(arr, (3, 0, 1, 2)).copy(order="C")
-            axes = "CZYX"
+            if with_ome:
+                # Z,Y,X,C -> C,Z,Y,X
+                perm = (3, 0, 1, 2) if save_format == 'tiff' else (0, 4, 1, 2, 3)
+                arr = np.transpose(arr, perm).copy(order="C")
+                axes = "CZYX"
 
-        # OME does not support data type 'float16'
-        if self.dtype == torch.float16:
+        if save_format == 'tiff':
+            # OME does not support data type 'float16' or 'bfloat16'
             arr = arr.astype(np.float32)
 
         return arr, axes
@@ -606,9 +630,6 @@ class InferencerWorker:
         if self.timepoint_list is not None:
             preds = preds[self.timepoint_list, ...]
 
-        keep_time = (preds.shape[0] > 1)
-        np_arr, axes = self._to_ome_tiff_array(preds, keep_time=keep_time)
-
         row = self._row_by_key[key]
         name = self._name_by_key[key]
         sample_name = str(row["output_folder"]).replace("/", "_") + "_" + name
@@ -619,13 +640,28 @@ class InferencerWorker:
         elif sample_name.endswith(".tiff"):
             sample_name = sample_name.replace(".tiff", "")
 
+        if self.convert_to_ome_format:
+            keep_time = (preds.shape[0] > 1)
+            np_arr, axes = self._to_ome_compatible_array(preds, 
+                                                        keep_time=keep_time, 
+                                                        with_ome=True,
+                                                        save_format=self.inference_save_format)
+            with_fiji=True
+        else:
+            keep_time = (preds.shape[0] > 1)
+            np_arr, axes = self._to_ome_compatible_array(preds, 
+                                                        keep_time=keep_time, 
+                                                        with_ome=False, 
+                                                        save_format=self.inference_save_format)
+            with_fiji=False
+
         if self.inference_save_format == "tiff":
             save_path = Path(self.inference_save_dir) / f"pred_{sample_name}.tiff"
-            save_file(save_path, np_arr, with_fiji=True, axes=axes)
+            save_file(save_path, np_arr, with_fiji=with_fiji, axes=axes)
         elif self.inference_save_format == "zarr":
             save_path = Path(self.inference_save_dir) / f"pred_{sample_name}.zarr"
             save_file(save_path, np_arr, chunk_shape=self.inference_zarr_chunk_shape,
-                    shard_cube_shape=self.inference_zarr_shard_shape)
+                    shard_cube_shape=self.inference_zarr_shard_shape, input_format=self.input_format, dtype="float16")
         else:
             raise ValueError(f"Unsupported save format: {self.inference_save_format}")
 

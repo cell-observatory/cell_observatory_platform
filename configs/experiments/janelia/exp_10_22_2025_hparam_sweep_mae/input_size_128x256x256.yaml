@@ -5,19 +5,20 @@ defaults:
   - /clusters/local                          # configs/clusters/local.yaml
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
   - /models/mae/large                        # configs/models/mae/large.yaml
-  - /hooks/hooks                             # configs/hooks/hooks.yaml
+  - /hooks/hooks_with_weight_decay           # configs/hooks/hooks_with_weight_decay.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
-  - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /schedulers/warmup_cosine_decay_with_weight_decay # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /profiling/profiling
   - _self_
 
 # experiment name (used for logging)
-experiment_name: benchmark_multinode_training_h100s_ray_v3_bf16
-wandb_project: benchmark_multinode_training_h100s_ray_v3_bf16
+experiment_name: hyperparameter_sweep_input_size_128x128x128
+wandb_project: hyperparameter_sweep
 
 # task
 task: pretrain_mae
@@ -51,7 +52,7 @@ dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, fl
 storage_dtype: uint16 # data type for storage
 
 # dataset layout in the zarr files
-dataset_layout_order: TZYXC
+dataset_layout_order: ZYXC
 
 # overrides
 # --------------------------------------------------------------------------------
@@ -63,7 +64,7 @@ clusters:
   gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
   mem_per_cpu: 40000 # ram per cpu core
-  ray_queue_memory: 0.35
+  ray_queue_memory: 0.25
 
 #paths:
 paths:
@@ -75,8 +76,8 @@ paths:
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-  input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
-  patch_shape: [4, 16, 16, 16]
+  input_shape: [1, 128, 256, 256, 2] # NOTE: important that this matches database hypercube shape
+  patch_shape: [null, 16, 16, 16]
 
   split: 0.1
   return_dataloader: true
@@ -87,19 +88,30 @@ datasets:
   num_actors_max: 64
   num_workers: ${clusters.cpus_per_worker}
 
-  max_hypercubes: 100000 # maximum number of hypercubes to return
+  max_hypercubes: null # maximum number of hypercubes to return
   use_cached_hypercubes_dataframe: true
-  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/training_hypercubes_dataframe.csv
 
+schedulers:
+  epochs: 100
+
+# ROPE axial
+models:
+  mae:
+    abs_sincos_enc: false
+    rope_pos_enc: true
+    rope_random_rotation_per_head: true
+    rope_mixed: false
+    rope_theta: 100.0
 
 # hooks
 hooks:
   hooks_list:
+  - _target_: training.hooks.WeightDecayScheduleHook
+  - _target_: training.hooks.FreeDeviceBufferHook
   - _target_: training.hooks.AnomalyDetector
-  - _target_: training.hooks.SamplerSetter
   - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer
-    warmup_iter: 1
   - _target_: training.hooks.PeriodicWriter
   - _target_: training.hooks.PeriodicCheckpointer
     period: 1

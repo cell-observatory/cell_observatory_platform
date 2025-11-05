@@ -16,48 +16,69 @@ def make_mask_generator():
               time_length: int,
               pattern: Optional[list] = None,
               input_channels: int = 2,
-              spatial_shape: int = (16,16,16),
-              temporal_patch_size: int = 1,
+              spatial_shape: tuple = (16,16,16),
+              temporal_patch_size: Optional[int] = 1,
               lateral_patch_size: int = 16,
               axial_patch_size: int = 16,
               random_masking_ratio: float = 0.5,
               lateral_mask_scale: float = 0.1,
               axial_mask_scale: float = 0.1,
               temporal_mask_scale: float = 0.1,
-              aspect_ratio_scale_hw: float = 0.1,
+              aspect_ratio_scale_hw = 0.1,
               num_blocks: int = 1
               ):
-        if layout == MULTICHANNEL_HYPERCUBE.CTZYX or \
-            layout == MULTICHANNEL_HYPERCUBE.CTYX:
-            input_shape = (input_channels, time_length, *spatial_shape)
-        elif layout == MULTICHANNEL_HYPERCUBE.TZYXC or \
-            layout == MULTICHANNEL_HYPERCUBE.TYXC:
-            input_shape = (time_length, *spatial_shape, input_channels)
-        elif layout == MULTICHANNEL_HYPERCUBE.ZYXC:
-            input_shape = (*spatial_shape, input_channels)
-        elif layout == MULTICHANNEL_HYPERCUBE.CZYX:
-            input_shape = (input_channels, *spatial_shape)
+        fmt = layout.value
+        has_T = "T" in fmt
+        has_Z = "Z" in fmt
+
+        if has_Z:
+            assert len(spatial_shape) == 3, "3D layout expects spatial_shape=(Z,Y,X)"
+            Z, Y, X = spatial_shape
         else:
-            raise ValueError(f"Unknown layout {layout}")
+            assert len(spatial_shape) == 2, "2D layout expects spatial_shape=(Y,X)"
+            Z = 1
+            Y, X = spatial_shape
+
+        T = time_length if has_T else 1
+        C = input_channels
+
+        axis_size = {"C": C, "T": T, "Z": Z, "Y": Y, "X": X}
+        input_shape = tuple(axis_size[a] for a in fmt)
+
+        axis_patch = {
+            "C": 1,
+            "T": (temporal_patch_size if has_T and temporal_patch_size is not None else 1),
+            "Z": (axial_patch_size if has_Z else 1),
+            "Y": lateral_patch_size,
+            "X": lateral_patch_size,
+        }
+        patch_shape = tuple(axis_patch[a] for a in fmt)
+
+        def _to_range(v):
+            return (v, v) if isinstance(v, (int, float)) else tuple(v)
+
+        lateral_mask_scale_ = _to_range(lateral_mask_scale)
+        axial_mask_scale_ = _to_range(axial_mask_scale)
+        temporal_mask_scale_ = _to_range(temporal_mask_scale)
+        aspect_ratio_scale_hw_ = _to_range(aspect_ratio_scale_hw)
 
         return MaskGenerator(
             layout=layout,
             input_shape=input_shape,
-            temporal_patch_size=temporal_patch_size,
-            lateral_patch_size=lateral_patch_size,
-            axial_patch_size=axial_patch_size,
+            patch_shape=patch_shape,
             mask_mode=maskmode,
             time_downsample_pattern=pattern,
             random_masking_ratio=random_masking_ratio,
-            lateral_mask_scale=lateral_mask_scale,
-            axial_mask_scale=axial_mask_scale,
-            temporal_mask_scale=temporal_mask_scale,
-            aspect_ratio_scale_hw=aspect_ratio_scale_hw,
+            lateral_mask_scale=lateral_mask_scale_,
+            axial_mask_scale=axial_mask_scale_,
+            temporal_mask_scale=temporal_mask_scale_,
+            aspect_ratio_scale_hw=aspect_ratio_scale_hw_,
             num_blocks=num_blocks,
             device=torch.device("cpu"),
         )
 
     return _make
+
 
 @pytest.mark.parametrize(
     ("time_length", "pattern"),
@@ -108,10 +129,11 @@ def test_blocked_pattern_mask(make_mask_generator,
                              axial_patch_size=axial_patch_size,
                              pattern=pattern,
                              layout=layout,
-                             maskmode=maskmode
+                             maskmode=maskmode,
+                             aspect_ratio_scale_hw=(1.0, 1.0),
                              )
 
-    masks, ctx, tgt, orig_idx, _ = mg(batch_size=batch_size)
+    masks, ctx, tgt, orig_idx, _, _ = mg(batch_size=batch_size)
 
     expected_length = mg.time * mg.depth * mg.height * mg.width
     assert masks.shape == (batch_size, expected_length)
@@ -190,9 +212,10 @@ def test_random_mask(make_mask_generator,
         time_length=time_length,
         random_masking_ratio=random_ratio,
         pattern=None,
+        aspect_ratio_scale_hw=(1.0, 1.0),
     )
 
-    masks, ctx_idx, tgt_idx, orig_idx, _ = mg(batch_size=batch_size)
+    masks, ctx_idx, tgt_idx, orig_idx, _, _ = mg(batch_size=batch_size)
 
     S = mg.depth * mg.height * mg.width
     total_len = mg.time * S
@@ -302,7 +325,7 @@ def test_blocked_mask_properties(make_mask_generator,
         num_blocks=1,
     )
 
-    masks, ctx_idx, tgt_idx, orig_idx, _ = mg(batch_size=batch_size)
+    masks, ctx_idx, tgt_idx, orig_idx, _, _ = mg(batch_size=batch_size)
 
     t_lo, t_hi = mg.temporal_mask_scale
     a_lo, a_hi = mg.axial_mask_scale
@@ -382,3 +405,95 @@ def test_blocked_mask_properties(make_mask_generator,
                 w_min : w_max + 1]
 
         assert torch.all(box == 1), "masked block is not a block"
+
+
+@pytest.mark.parametrize(
+    "lateral_scale, axial_scale",
+    [
+        ((0.2, 0.3), (0.2, 0.3)),
+        ((0.4, 0.5), (0.4, 0.5)),
+        ((0.6, 0.7), (0.6, 0.7)),
+        ((0.8, 0.9), (0.8, 0.9)),
+    ],
+)
+def test_blocked_mask_3d_debug_prints(make_mask_generator,
+                                      lateral_scale,
+                                      axial_scale):
+    """
+    Debug-only printout:
+      - 3D ZYXC layout with image size (Z=128, Y=384, X=384, C=2)
+      - BLOCKED mode, num_blocks=2
+      - Iterate a few times per (lateral_scale, axial_scale) pair
+      - Print masked vs unmasked voxel counts
+
+    Example Output:
+
+    [blocked-3d] layout=ZYXC shape(Z,Y,X,C)=(128, 384, 384, 2) patch(T,Z,Y,X)=(1, 16, 16, 16) num_blocks=2 lateral_scale=(0.2, 0.3) axial_scale=(0.2, 0.3)
+    iter 00: masked=288  unmasked=4,320  masked%=6.25%  total=4,608
+    iter 01: masked=338  unmasked=4,270  masked%=7.34%  total=4,608
+    iter 02: masked=384  unmasked=4,224  masked%=8.33%  total=4,608
+    iter 03: masked=206  unmasked=4,402  masked%=4.47%  total=4,608
+    iter 04: masked=216  unmasked=4,392  masked%=4.69%  total=4,608
+    .
+    [blocked-3d] layout=ZYXC shape(Z,Y,X,C)=(128, 384, 384, 2) patch(T,Z,Y,X)=(1, 16, 16, 16) num_blocks=2 lateral_scale=(0.4, 0.5) axial_scale=(0.4, 0.5)
+    iter 00: masked=990  unmasked=3,618  masked%=21.48%  total=4,608
+    iter 01: masked=1,059  unmasked=3,549  masked%=22.98%  total=4,608
+    iter 02: masked=1,296  unmasked=3,312  masked%=28.12%  total=4,608
+    iter 03: masked=987  unmasked=3,621  masked%=21.42%  total=4,608
+    iter 04: masked=1,536  unmasked=3,072  masked%=33.33%  total=4,608
+    .
+    [blocked-3d] layout=ZYXC shape(Z,Y,X,C)=(128, 384, 384, 2) patch(T,Z,Y,X)=(1, 16, 16, 16) num_blocks=2 lateral_scale=(0.6, 0.7) axial_scale=(0.6, 0.7)
+    iter 00: masked=1,919  unmasked=2,689  masked%=41.64%  total=4,608
+    iter 01: masked=2,200  unmasked=2,408  masked%=47.74%  total=4,608
+    iter 02: masked=2,300  unmasked=2,308  masked%=49.91%  total=4,608
+    iter 03: masked=2,714  unmasked=1,894  masked%=58.90%  total=4,608
+    iter 04: masked=2,168  unmasked=2,440  masked%=47.05%  total=4,608
+    .
+    [blocked-3d] layout=ZYXC shape(Z,Y,X,C)=(128, 384, 384, 2) patch(T,Z,Y,X)=(1, 16, 16, 16) num_blocks=2 lateral_scale=(0.8, 0.9) axial_scale=(0.8, 0.9)
+    iter 00: masked=3,036  unmasked=1,572  masked%=65.89%  total=4,608
+    iter 01: masked=3,036  unmasked=1,572  masked%=65.89%  total=4,608
+    iter 02: masked=3,288  unmasked=1,320  masked%=71.35%  total=4,608
+    iter 03: masked=3,692  unmasked=916  masked%=80.12%  total=4,608
+    iter 04: masked=3,498  unmasked=1,110  masked%=75.91%  total=4,608
+    .
+    """
+    layout = MULTICHANNEL_HYPERCUBE.ZYXC   # channels last (Z,Y,X,C)
+    spatial_shape = (128, 384, 384)        # Z,Y,X
+    input_channels = 2
+    time_length = 1                        # no time axis variation (3D volume)
+    temporal_patch_size = None             # ignored since T==1
+    lateral_patch_size = 16
+    axial_patch_size = 16
+
+    mg = make_mask_generator(
+        maskmode=MaskModes.BLOCKED,
+        layout=layout,
+        time_length=time_length,
+        input_channels=input_channels,
+        spatial_shape=spatial_shape,
+        temporal_patch_size=temporal_patch_size,
+        lateral_patch_size=lateral_patch_size,
+        axial_patch_size=axial_patch_size,
+        # scales we vary per-param:
+        lateral_mask_scale=lateral_scale,
+        axial_mask_scale=axial_scale,
+        # temporal fixed (no T variation for ZYXC):
+        temporal_mask_scale=(1.0, 1.0),
+        # aspect ratio fixed to 1 to make area clearer (square H×W blocks):
+        aspect_ratio_scale_hw=(1.0, 1.0),
+        num_blocks=2,
+    )
+
+    total_len = mg.time * mg.depth * mg.height * mg.width
+    print(f"\n[blocked-3d] layout={layout.name} shape(Z,Y,X,C)={(spatial_shape[0], spatial_shape[1], spatial_shape[2], input_channels)} "
+          f"patch(T,Z,Y,X)={(1, axial_patch_size, lateral_patch_size, lateral_patch_size)} "
+          f"num_blocks=2 lateral_scale={lateral_scale} axial_scale={axial_scale}")
+
+    # run a few iterations to see variability
+    for itr in range(5):
+        masks, ctx_idx, tgt_idx, orig_idx, _, _ = mg(batch_size=1)
+        mask = masks[0]
+        n_unmasked = int((mask == 0).sum().item())
+        n_masked   = int((mask == 1).sum().item())
+        print(f"  iter {itr:02d}: masked={n_masked:,}  unmasked={n_unmasked:,}  "
+              f"masked%={100.0*n_masked/total_len:.2f}%  total={total_len:,}")

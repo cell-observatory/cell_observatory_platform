@@ -42,7 +42,7 @@ class TorchPreprocessor(torch.nn.Module):
         if self.with_masking:
             masking_time = time.time()
             masks, context_masks, target_masks, \
-            original_patch_indices, channels_to_mask = self.mask_generator(inputs.shape[0])
+            original_patch_indices, channels_to_mask, patches_used = self.mask_generator(inputs.shape[0])
             masking_time = time.time() - masking_time
 
             return {
@@ -53,6 +53,7 @@ class TorchPreprocessor(torch.nn.Module):
                     'target_masks': [target_masks] if self.with_masking else None,
                     'original_patch_indices': [original_patch_indices] if self.with_masking else None,
                     'channels_to_mask': [channels_to_mask] if self.with_masking else None,
+                    'patches_used': [patches_used] if self.with_masking else None,
                     'preprocess_time': time.time() - preprocess_time,
                     'data_time': data_time,
                     'masking_time': masking_time,
@@ -95,7 +96,7 @@ class DaliPreprocessor(torch.nn.Module):
         if self.with_masking:
             masking_time = time.time()
             masks, context_masks, target_masks, \
-            original_patch_indices, channels_to_mask = self.mask_generator(inputs.shape[0])
+            original_patch_indices, channels_to_mask, patches_used = self.mask_generator(inputs.shape[0])
             masking_time = time.time() - masking_time
 
             return {
@@ -106,6 +107,7 @@ class DaliPreprocessor(torch.nn.Module):
                     'target_masks': [target_masks] if self.with_masking else None,
                     'original_patch_indices': [original_patch_indices] if self.with_masking else None,
                     'channels_to_mask': [channels_to_mask] if self.with_masking else None,
+                    'patches_used': [patches_used] if self.with_masking else None,
                     'data_time': data_time,
                     'get_item_time': data_sample[0].get('get_item_time', None),
                     'preprocess_time': time.time() - preprocess_time,
@@ -166,7 +168,7 @@ class RayPreprocessor(torch.nn.Module):
         if self.with_masking:
             masking_time = time.time()
             masks, context_masks, target_masks, \
-            original_patch_indices, channels_to_mask = self.mask_generator(inputs.shape[0])
+            original_patch_indices, channels_to_mask, patches_used = self.mask_generator(inputs.shape[0])
             masking_time = time.time() - masking_time
 
             return {
@@ -177,6 +179,7 @@ class RayPreprocessor(torch.nn.Module):
                     'target_masks': [target_masks] if self.with_masking else None,
                     'original_patch_indices': [original_patch_indices] if self.with_masking else None,
                     'channels_to_mask': [channels_to_mask] if self.with_masking else None,
+                    'patches_used': [patches_used] if self.with_masking else None,
                     'preprocess_time': time.time() - preprocess_time,
                     'data_time': data_time,
                     'masking_time': masking_time,

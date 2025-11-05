@@ -159,7 +159,6 @@ login.bat
 src/LV_auto_batch.bat_predict_rois
 /SyntheticPSFCache/
 /benchmarks/
-/scaling/
 *.npy
 .testmondata
 /plots/

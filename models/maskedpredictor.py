@@ -98,10 +98,8 @@ class MaskedPredictor(nn.Module):
             'mp-gigantic'
         ] = 'mp',
         input_fmt='TZYXC',
-        input_shape=(1, 6, 64, 64, 1),
-        lateral_patch_size=16,
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape: tuple = (16, 128, 128, 128, 2),
+        patch_shape: tuple = (4, 16, 16, 16),
         input_embed_dim=768,
         output_embed_dim=768,
         embed_dim=384,
@@ -145,13 +143,11 @@ class MaskedPredictor(nn.Module):
         self.input_fmt = input_fmt
         self.input_shape = input_shape
 
-        axis_to_value = dict(zip(input_fmt, input_shape[1:]))
+        axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value['C']
         self.num_frames = axis_to_value.get("T", None)
 
-        self.axial_patch_size = axial_patch_size
-        self.lateral_patch_size = lateral_patch_size
-        self.temporal_patch_size = temporal_patch_size
+        self.patch_shape = patch_shape
 
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
@@ -192,9 +188,7 @@ class MaskedPredictor(nn.Module):
             self.pos_embedding = PosEmbedding(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
-                lateral_patch_size=self.lateral_patch_size,
-                axial_patch_size=self.axial_patch_size,
-                temporal_patch_size=self.temporal_patch_size,
+                patch_shape=self.patch_shape,
                 embed_dim=self.embed_dim
             )
 
@@ -217,11 +211,7 @@ class MaskedPredictor(nn.Module):
             rope_theta=rope_theta,
             input_fmt=input_fmt,
             input_shape=input_shape,
-            # (T, Z, Y, X, C)
-            patch_size=(self.temporal_patch_size,
-                        self.axial_patch_size,
-                        self.lateral_patch_size,
-                        self.lateral_patch_size),
+            patch_shape=self.patch_shape,
             mlp_wide_silu=mlp_wide_silu,
             dtype=dtype
         )
@@ -242,14 +232,11 @@ class MaskedPredictor(nn.Module):
             num_patches, _ = calc_num_patches(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
-                lateral_patch_size=self.lateral_patch_size,
-                axial_patch_size=self.axial_patch_size,
-                temporal_patch_size=self.temporal_patch_size,
+                patch_shape=self.patch_shape,
             )
             return num_patches
 
-
-    def forward(self, inputs, original_patch_indices=None, target_masks=None):
+    def forward(self, inputs, original_patch_indices=None, target_masks=None, patches_used=None):
         batch_size = inputs.shape[0]
 
         tokens = self.patch_projection(inputs)
@@ -265,11 +252,11 @@ class MaskedPredictor(nn.Module):
             patches = tokens
 
         if self.abs_sincos_enc:
-            x = patches + self.pos_embedding(patches)
+            x = patches + self.pos_embedding(patches, patches_used=patches_used)
         else:
             x = patches
 
-        x = self.encoder(x)
+        x = self.encoder(x, masks=patches_used)
         x = self.norm(x)
         x = self.output_projection(x)
         return x

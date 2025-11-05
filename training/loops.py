@@ -245,6 +245,8 @@ class EpochBasedTrainer(BaseTrainer):
     def __init__(self, cfg: DictConfig) -> None:
         super().__init__(cfg)
 
+        print(f"Run Config:\n{OmegaConf.to_yaml(cfg)}")
+
         self.ray_context = get_context()
         self.val_begin, self.val_interval = cfg.evaluation.val_begin, cfg.evaluation.val_interval
         self.stop_training, self._max_epochs = False, cfg.schedulers.epochs
@@ -270,10 +272,14 @@ class EpochBasedTrainer(BaseTrainer):
         cfg, decoder_args = append_kwargs_to_model(cfg)
         model = build_dependency_graph_and_instantiate(cfg.models)
 
-        # TODO: there seems to be a bug in model definitions where we  
-        #       have the model defined in a subfolder (e.g. models/abc/model.py)
-        #       this hack works for one folder deep models but should be fixed
-        # model = model.values() if isinstance(model, dict) else (model,)
+        # initialize checkpoint manager
+        self.checkpoint_manager = instantiate(
+            cfg.checkpoint.checkpoint_manager,
+            model=model
+        )
+
+        if cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir:
+            self.checkpoint_manager.load()
 
         if cfg.optimizations.with_model_summary:
             rank = process_rank()
@@ -315,24 +321,9 @@ class EpochBasedTrainer(BaseTrainer):
             optimizer=opt,
             config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
+        self.checkpoint_manager.model = self.model
 
-        # initialize checkpoint manager
-        self.checkpoint_manager = instantiate(
-            cfg.checkpoint.checkpoint_manager,
-            model=self.model
-        )
-
-        if cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir:
-            # load model state from checkpoint
-            # if load_checkpointdir is not None, 
-            # the model will be loaded from the specified directory.
-            # this is different from loading a checkpoint
-            # in resume_run() where a pre-existing checkpoint is  
-            # loaded to resume a job. here we load a checkpoint to
-            # start a new job with part of or the entire state of
-            # a pre-existing model (e.g. for fine-tuning) instead of
-            # for resuming a job that failed due to training instability.
-            # should only be used with resume_run=False.
+        if cfg.checkpoint.checkpoint_manager.resume_checkpointdir:
             self.checkpoint_manager.load()
 
         # if resume job, gather the state from the checkpoint
@@ -343,7 +334,26 @@ class EpochBasedTrainer(BaseTrainer):
         # and training/run.py
         best_metric, step, epoch = resume_run(self, cfg)
         self.start_epoch, self.start_iter, self.best_metric = epoch, step, best_metric
-        self._epoch, self._iter, self._val_iter = self.start_epoch, self.start_iter, 0
+        self._epoch, self._iter, self._val_iter, self._curr_val_metric = self.start_epoch, self.start_iter, 0, 0.0
+
+        if self.start_iter > 0 and not self.checkpoint_manager.load_optimizer:
+            logger.info("[Trainer] Resuming training without loading previous optimizer state.")
+            logger.info(f"[Trainer] Fast forwarding lr and wd schedulers to iter {self.start_iter} and epoch {self.start_epoch}.")
+            # fast forward lr and wd schedulers to the correct step
+            # ideally we load with DeepSpeed but this is not always possible
+            # hence we manually step the schedulers here and accept that 
+            # moments are fresh etc.
+            for _ in range(self.start_iter):
+                self.wd_scheduler.step()
+            
+            if self.scheduler.update_type == "epoch":
+                for epoch in range(self.start_epoch):
+                    self.scheduler.step(epoch)
+            elif self.scheduler.update_type == "step":
+                for iter in range(self.start_iter):
+                    self.scheduler.step(iter)
+            else:
+                raise NotImplementedError(f'{self.scheduler.update_type=} is not supported')
 
         # initialize evaluator
         self.evaluator = instantiate(cfg.evaluation.evaluator)
@@ -475,6 +485,14 @@ class TestTrainer(BaseTrainer):
         model = build_dependency_graph_and_instantiate(cfg.models)
         logger.info(f"Model instantiated: {model}")
 
+        # initialize checkpoint manager and
+        # load model state from checkpoint
+        self.checkpoint_manager = instantiate(
+            cfg.checkpoint.checkpoint_manager,
+            model=model
+        )
+        self.checkpoint_manager.load()
+
         # initialize optimizer
         opt, _ = get_optimizer(
             params=model.parameters(),
@@ -495,14 +513,6 @@ class TestTrainer(BaseTrainer):
             optimizer=opt,
             config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
-
-        # initialize checkpoint manager and
-        # load model state from checkpoint
-        self.checkpoint_manager = instantiate(
-            cfg.checkpoint.checkpoint_manager,
-            model=self.model
-        )
-        self.checkpoint_manager.load()
 
         # initialize evaluator
         self.evaluator = instantiate(cfg.evaluation.evaluator)
@@ -581,6 +591,14 @@ class Inferencer(BaseTrainer):
         model = build_dependency_graph_and_instantiate(cfg.models)
         logger.info(f"Model instantiated: {model}")
 
+        # initialize checkpoint manager and
+        # load model state from checkpoint
+        self.checkpoint_manager = instantiate(
+            cfg.checkpoint.checkpoint_manager,
+            model=model
+        )
+        self.checkpoint_manager.load()
+
         # initialize optimizer
         opt, _ = get_optimizer(
             params=model.parameters(),
@@ -602,19 +620,11 @@ class Inferencer(BaseTrainer):
             config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
 
-        # initialize checkpoint manager and
-        # load model state from checkpoint
-        self.checkpoint_manager = instantiate(
-            cfg.checkpoint.checkpoint_manager,
-            model=self.model
-        )
-        self.checkpoint_manager.load()
-
-
         # initialize inferencer_worker
         self.inferencer_worker = instantiate(cfg.inference, 
                                              model=self.model, 
-                                             decoder_head_type=decoder_args['name'],
+                                             decoder_head_type=decoder_args["name"] \
+                                                if decoder_args else str(cfg.inference.decoder_head_type),
                                              database=database_df)
 
     def predict(self):

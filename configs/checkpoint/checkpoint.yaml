@@ -20,8 +20,6 @@ checkpoint_manager:
   load_dtype: ${quantization}
   checkpoint_tag: latest_model
   engine: ${engine} # engine to use for training
-  # provide list of dotted module paths
-  # to freeze/activation checkpoint/load selectively
-  freeze_modules: null
-  state_dict_filter: null
-  activation_checkpoint_modules: null
+  use_custom_state_dict_filter: true
+  load_optimizer: null
+  save_period: 1 # save every n epochs

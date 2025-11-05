@@ -61,7 +61,7 @@ def _cfg_mae(layer_decay=0.8, decoder_layer_decay=0.9, weight_decay=0.05, no_wd_
         param_group_split_mode="mae",
         layer_decay=layer_decay,
         decoder_layer_decay=decoder_layer_decay,
-        weight_decay=weight_decay,
+        wd=weight_decay,
         no_weight_decay_list=list(no_wd_list),
     ))
 
@@ -134,14 +134,14 @@ def test_get_param_groups_mae_minimal_grouping_and_scales():
     g1 = _find_group_for_param(groups, p1)
     assert g1 is not None
     assert pytest.approx(g1["lr_scale"]) == enc_scales[0]
-    assert pytest.approx(g1["weight_decay"]) == cfg.optimizers.weight_decay
+    assert pytest.approx(g1["weight_decay"]) == cfg.optimizers.wd
 
     # 2) encoder.transformer_blocks.0.weight -> lid=1, decay
     p2 = name_map["masked_encoder.transformer_blocks.0.weight"]
     g2 = _find_group_for_param(groups, p2)
     assert g2 is not None
     assert pytest.approx(g2["lr_scale"]) == enc_scales[1]
-    assert pytest.approx(g2["weight_decay"]) == cfg.optimizers.weight_decay
+    assert pytest.approx(g2["weight_decay"]) == cfg.optimizers.wd
 
     # 3) encoder.norm.weight (1D) -> lid=L, NO decay
     p3 = name_map["masked_encoder.norm.weight"]
@@ -155,7 +155,7 @@ def test_get_param_groups_mae_minimal_grouping_and_scales():
     g4 = _find_group_for_param(groups, p4)
     assert g4 is not None
     assert pytest.approx(g4["lr_scale"]) == dec_scales[dec_L]
-    assert pytest.approx(g4["weight_decay"]) == cfg.optimizers.weight_decay
+    assert pytest.approx(g4["weight_decay"]) == cfg.optimizers.wd
 
     # 5) encoder.pos_embedding (ALWAYS_NO_WD_SUFFIX) -> no decay
     p5 = name_map["masked_encoder.pos_embedding"]

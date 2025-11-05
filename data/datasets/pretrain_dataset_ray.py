@@ -1,7 +1,7 @@
 import os
 import sys
 import logging
-from typing import List, Optional, Dict, Any, Callable
+from typing import List, Optional, Dict, Any, Callable, Literal
 
 import ctypes
 import cupy as cp
@@ -58,7 +58,7 @@ class CollatorActor:
                  columns: List[str] = [
                         # metadata columns to keep from the original dataframe
                         "x_start", "y_start", "z_start", "time_start",
-                        "channel_size", "cube_size", "time_size",
+                        "channel_size", "z_size", "y_size", "x_size", "time_size",
                         "server_folder", "output_folder", "tile_name", "prepared_id"
                  ],
                  debug: bool = False
@@ -218,6 +218,7 @@ class CollatorActor:
 class LoaderActor:
     def __init__(self,
                  dim: int,
+                 input_format: str,
                  node_id: int,
                  local_rank: int,
                  global_rank: int,
@@ -229,9 +230,13 @@ class LoaderActor:
                  buffer_dtype: str = "uint16",
                  pin_numa_node: bool = True,
                  with_batched_api: bool = True,
-                 channels_subset: Optional[List[int]] = None
+                 channels_subset: Optional[List[int]] = None,
+                 pad_mode: Literal["zero"] = "zero"
 ):
         self.dim = dim
+        self.input_format = input_format.upper()
+        self.pad_mode = pad_mode
+
         self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
         self.driver_process_numa_node = numa_node
         if pin_numa_node:
@@ -291,18 +296,27 @@ class LoaderActor:
 
     def _slice_hypercube(self, data_tensor, meta: Dict[str, Any], ts_batch=None):
         t = slice(meta["time_start"], meta["time_start"] + meta["time_size"])
-        z = slice(meta["z_start"], meta["z_start"] + meta["cube_size"])
-        y = slice(meta["y_start"], meta["y_start"] + meta["cube_size"])
-        x = slice(meta["x_start"], meta["x_start"] + meta["cube_size"])
+        z = slice(meta["z_start"], meta["z_start"] + meta["z_size"])
+        y = slice(meta["y_start"], meta["y_start"] + meta["y_size"])
+        x = slice(meta["x_start"], meta["x_start"] + meta["x_size"])
 
         if self.channels_subset is not None:
-            view = data_tensor[t, z, y, x, self.channels_subset]
+            if self.input_format == "ZYXC" or self.input_format == "TZYXC":
+                view = data_tensor[t, z, y, x, self.channels_subset]
+            else:
+                raise NotImplementedError(f"Channel subsetting not implemented for input format {self.input_format}")
         else:
-            c = slice(0, meta["channel_size"])
-            view = data_tensor[t, z, y, x, c]
+            if self.input_format == "ZYXC" or self.input_format == "TZYXC":
+                c = slice(0, meta["channel_size"])
+                view = data_tensor[t, z, y, x, c]
+            else:
+                raise NotImplementedError(f"Input format {self.input_format} not implemented")
 
         if self.dim == 3:
-            view = view[meta["time_start"], ...]
+            if self.input_format == "ZYXC":
+                view = view[meta["time_start"], ...]
+            else:
+                raise NotImplementedError(f"Input format {self.input_format} not implemented for 3D data")
 
         return view
 
@@ -335,11 +349,52 @@ class LoaderActor:
                     "y_start": batch["y_start"][i],
                     # "y_start": 0,
                     "x_start": batch["x_start"][i],
-                    "cube_size": batch["cube_size"][i],
+                    "z_size": batch["z_size"][i],
+                    "y_size": batch["y_size"][i],
+                    "x_size": batch["x_size"][i],
                     "channel_size": batch["channel_size"][i],
                 }
                 src_view = self._slice_hypercube(self._get_handle(p), meta=meta, ts_batch=b)
-                write_futs.append(ts.array(dst[i]).write(src_view))
+                
+                if self.dim == 3:
+                    if self.input_format == "ZYXC":
+                        tz, ty, tx, tc = src_view.shape
+                        dst_slice = (slice(0, tz), slice(0, ty), slice(0, tx), slice(0, tc))
+                    else:
+                        raise NotImplementedError(f"Input format {self.input_format} not implemented for 3D data")
+                else:
+                    if self.input_format == "TZYXC":
+                        tt, tz, ty, tx, tc = src_view.shape
+                        dst_slice = (slice(0, tt), slice(0, tz), slice(0, ty), slice(0, tx), slice(0, tc))
+                    else:
+                        raise NotImplementedError(f"Input format {self.input_format} not implemented for 4D data")
+
+                write_futs.append(ts.array(dst[i][dst_slice]).write(src_view))
+                
+                # NOTE: pad the tail after write, currently we only support zero padding
+                if self.pad_mode == "zero":
+                    if self.dim == 3:
+                        if self.input_format == "ZYXC":
+                            B, Z, Y, X, C = self.batch_shape
+                            if tz < Z: dst[i][tz:, :,  :,  :].fill(0)
+                            if ty < Y: dst[i][:tz , ty:, :,  :].fill(0)
+                            if tx < X: dst[i][:tz , :ty , tx:, :].fill(0)
+                            if tc < C: dst[i][:tz , :ty , :tx , tc:].fill(0)
+                        else:
+                            raise NotImplementedError(f"Input format {self.input_format} not implemented for 3D data")
+                    else:
+                        if self.input_format == "TZYXC":
+                            B, T, Z, Y, X, C = self.batch_shape
+                            # NOTE: broadcast last valid slice along time axis
+                            if tt < T: dst[i][tt:T, ...] = dst[i][tt-1, ...]
+                            if tz < Z: dst[i][:tt, tz:,  :,  :,  :].fill(0)
+                            if ty < Y: dst[i][:tt, :tz,  ty:, :,  :].fill(0)
+                            if tx < X: dst[i][:tt, :tz,  :ty, tx:, :].fill(0)
+                            if tc < C: dst[i][:tt, :tz,  :ty, :tx, tc:].fill(0)
+                        else:
+                            raise NotImplementedError(f"Input format {self.input_format} not implemented for 4D data")
+                else:
+                    raise NotImplementedError(f"Pad mode {self.pad_mode} not implemented")
 
         for f in write_futs:
             f.result()
@@ -423,12 +478,13 @@ def get_dataset_ray(
         # metadata columns to keep from the original dataframe
         # adding more columns may slow down collate
         'x_start', 'y_start', 'z_start', 'time_start',
-        'channel_size', 'cube_size', 'time_size',
-        'server_folder', 'output_folder', 
+        'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
+        'server_folder', 'output_folder',
         'tile_name', 'prepared_id'
     ]
 ):
     if cfg.datasets.channels_subset is not None:
+        # NOTE: this always works because dataset_layout_order is 1-1 matched
         num_channels = cfg.datasets.input_shape[cfg.dataset_layout_order.index("C")]
         assert len(list(cfg.datasets.channels_subset)) == num_channels, \
             f"channels_subset length {len(cfg.datasets.channels_subset)} " \
@@ -503,7 +559,8 @@ def get_dataset_ray(
             "global_rank": process_rank(),
             "node_id": node_id(),
             "numa_node": torch_gpu_to_numa(local_rank())["numa_node"],
-            "dim": get_data_dim(cfg.dataset_layout_order)
+            "dim": get_data_dim(cfg.dataset_layout_order),
+            "input_format": cfg.dataset_layout_order,
         },
         concurrency=(cfg.datasets.num_actors_min, cfg.datasets.num_actors_max),
     )

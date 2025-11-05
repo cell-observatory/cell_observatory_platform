@@ -1,22 +1,24 @@
 # @package _global_
 defaults:
-  - /paths/janelia                           # configs/paths/abc.yaml
+  - /paths/janelia                           # configs/paths/janelia.yaml
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
-  - /clusters/local                           # configs/clusters/local.yaml
+  - /clusters/local                          # configs/clusters/local.yaml
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
-  - /models/mae/tiny                         # configs/models/mae/tiny.yaml
-  - /hooks/hooks                             # configs/hooks/hooks.yaml
+  - /models/mae/large                        # configs/models/mae/large.yaml
+  - /hooks/hooks_with_weight_decay           # configs/hooks/hooks_with_weight_decay.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
-  - /deepspeed/zero2                         # configs/deepspeed/zero0.yaml
+  - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
-  - /profiling/profiling                      # configs/profiling/profiling.yaml
+  - /profiling/profiling
   - _self_
 
-experiment_name: benchmark_tensorstore_h100s
+# experiment name (used for logging)
+experiment_name: benchmark
+wandb_project: benchmark
 
 # task
 task: pretrain_mae
@@ -40,13 +42,14 @@ job_type: train # train or test
 trainer: training.loops.EpochBasedTrainer
 
 # loop per worker script
-loop_per_worker_script: scripts.benchmarks_io.benchmark_tensorstore.benchmark_tensorstore
+loop_per_worker_script: training.loops.train_loop_per_worker
 
 # training quantization
 quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
 
 # dtype for training data
 dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
+storage_dtype: uint16 # data type for storage
 
 # dataset layout in the zarr files
 dataset_layout_order: TZYXC
@@ -56,42 +59,60 @@ dataset_layout_order: TZYXC
 
 # clusters
 clusters:
-  batch_size: 32 # total batch size
+  batch_size: 256 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 96 # number of cpu cores per gpu
+  gpus_per_worker: 8 # number of gpus per worker node
+  cpus_per_gpu: 12 # number of cpu cores per gpu
   mem_per_cpu: 40000 # ram per cpu core
-  ray_queue_memory: 0.35
+  ray_queue_memory: 0.1
 
 #paths:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null 
+  resume_checkpointdir: null
   pretrained_checkpointdir: null
 
-# data 
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
+  occupancy_threshold: 0.
 
-  use_cached_hypercubes_dataframe: true # whether to use the cached hypercubes dataframe
-  hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv
-  occupancy_threshold: 0.0
+  split: 0.1
+  return_dataloader: true
+  distributed_sampler: true
 
-  # max nr of hypercubes to test for benchmark
-  max_hypercubes: 1000000
-  max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-  max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+  prefetch_factor: 4
+  num_actors_min: 4
+  num_actors_max: 64
+  num_workers: ${clusters.cpus_per_worker}
 
-  hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
-  roi_list: null # list of specific ROIs to filter
-  tile_list: null # list of specific tiles to filter
+  max_hypercubes: 100000 # maximum number of hypercubes to return
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_16_128_128_128_2_hypercube_view.csv
 
-# benchmarking
-# --------------------------------------------------------------------------------
 
-cpu_counts: [32] # number of cpu cores to test for scaling
-random_hypercubes: 2000
+# hooks
+hooks:
+  hooks_list:
+  - _target_: training.hooks.WeightDecayScheduleHook
+  - _target_: training.hooks.FreeDeviceBufferHook
+  - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.LRScheduler
+  - _target_: training.hooks.IterationTimer
+  - _target_: training.hooks.PeriodicWriter
+  - _target_: training.hooks.PeriodicCheckpointer
+    period: 1
+    file_prefix: latest_model
+  - _target_: training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: training.hooks.TorchMemoryStats
+    step_period: 1
+    epoch_period: 1
+    logdir: ${loggers.logdir}
+  - _target_: training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true

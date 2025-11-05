@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -Eeuo pipefail
+set -euo pipefail
 
 # NCCL settings optimized for Ethernet without InfiniBand
 export LC_ALL=C.UTF-8
@@ -51,10 +51,15 @@ cleanup() {
     _cleaned=1
     echo "Running worker node cleanup..."
     ray stop --force >/dev/null 2>&1 || true
-    python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+    echo "Successfully stopped ray worker"
+    python3 /workspace/cell_observatory_platform/utils/cleanup.py 
+    echo "Successfully ran cleanup.py"
 }
 trap 'cleanup' EXIT
-trap 'cleanup; exit 143' TERM INT USR1
+trap 'cleanup; exit 143' TERM INT
+
+# remove any leftover shared memory segments
+python3 /workspace/cell_observatory_platform/utils/cleanup.py
 
 echo "Starting ray worker @ $(hostname) with CPUs[$cpus] & GPUs [$gpus] => $cluster_address"
 job="ray start --block --address=$cluster_address --num-cpus=$cpus --num-gpus=$gpus --temp-dir=$tmpdir --object-store-memory=$object_store_memory"
@@ -64,6 +69,8 @@ ray_pid=$!
 if [[ -n "${worker_id:-}" ]]; then
   echo "$$" > "$tmpdir/cleanup_${worker_id}.pid"
 fi
+
+echo "[WORKER NODE]: PID for cleanup is $$"
 
 if [[ -n "${SLURM_JOB_ID:-}" ]]; then
     echo "SLURM detected (job ${SLURM_JOB_ID})"

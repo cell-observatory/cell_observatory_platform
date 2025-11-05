@@ -925,5 +925,97 @@
             },
             "justMyCode": false
         },
+        {
+            "name": "📈 scaling/published_models",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "forecast.py",
+            "args": [
+                "--arch", "published_models",
+                "--outdir", "../scaling/data",
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/scaling",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "📈 scaling/mae_ssl/16-128-128-128-2/4-16-16-16-2",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "forecast.py",
+            "args": [
+                "--arch", "mae_ssl",
+                "--ishape", "16-128-128-128-2",
+                "--ipatch", "4-16-16-16-2",
+                "--outdir", "../scaling/data",
+                "--mfu", "0.9"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/scaling",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "📈 scaling/mae_ssl/16-128-256-256-2/4-16-16-16-2",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "forecast.py",
+            "args": [
+                "--arch", "mae_ssl",
+                "--ishape", "16-128-256-256-2",
+                "--ipatch", "4-16-16-16-2",
+                "--outdir", "../scaling/data",
+                "--mfu", "0.9"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/scaling",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "📈 scaling/mae_ft/16-128-128-128-2/4-16-16-16-2",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "forecast.py",
+            "args": [
+                "--arch", "mae_ft",
+                "--ishape", "16-128-128-128-2",
+                "--ipatch", "4-16-16-16-2",
+                "--outdir", "../scaling/data",
+                "--mfu", "0.9"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/scaling",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "📈 scaling/mae_ft/16-128-256-256-2/4-16-16-16-2",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "forecast.py",
+            "args": [
+                "--arch", "mae_ft",
+                "--ishape", "16-128-256-256-2",
+                "--ipatch", "4-16-16-16-2",
+                "--outdir", "../scaling/data",
+                "--mfu", "0.9"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/scaling",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
     ]
 }

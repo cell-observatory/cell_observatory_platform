@@ -108,6 +108,7 @@ CONFIGS = {
         'predictor_num_heads': 16,
         'mlp_ratio': 64/13,
     },
+    
     'jepa-enormous': {
         'embed_dim': 1792,
         'predictor_embed_dim': 1024,
@@ -134,10 +135,8 @@ class JEPA(nn.Module):
             'jepa-gigantic'
         ] = 'jepa',
         input_fmt='TZYXC',
-        input_shape=(1, 6, 64, 64, 1),
-        lateral_patch_size=16,
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape: tuple = (16, 128, 128, 128, 2),
+        patch_shape: tuple = (4, 16, 16, 16),
         embed_dim=768,
         predictor_embed_dim=256,
         depth=12,
@@ -186,13 +185,11 @@ class JEPA(nn.Module):
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
-        axis_to_value = dict(zip(input_fmt, input_shape[1:]))
+        axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value['C']
         self.num_frames = axis_to_value.get("T", None)
 
-        self.axial_patch_size = axial_patch_size
-        self.lateral_patch_size = lateral_patch_size
-        self.temporal_patch_size = temporal_patch_size
+        self.patch_shape = patch_shape
 
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
@@ -216,9 +213,7 @@ class JEPA(nn.Module):
         self.input_encoder = MaskedEncoder(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
-            lateral_patch_size=self.lateral_patch_size,
-            axial_patch_size=self.axial_patch_size,
-            temporal_patch_size=self.temporal_patch_size,
+            patch_shape=self.patch_shape,
             channels=self.in_chans,
             embed_dim=self.embed_dim,
             depth=self.depth,
@@ -244,9 +239,7 @@ class JEPA(nn.Module):
         self.target_predictor = MaskedPredictor(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
-            lateral_patch_size=self.lateral_patch_size,
-            axial_patch_size=self.axial_patch_size,
-            temporal_patch_size=self.temporal_patch_size,
+            patch_shape=self.patch_shape,
             channels=self.in_chans,
             input_embed_dim=self.embed_dim,
             output_embed_dim=self.embed_dim,
@@ -317,29 +310,33 @@ class JEPA(nn.Module):
             num_patches, _ = calc_num_patches(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
-                lateral_patch_size=self.lateral_patch_size,
-                axial_patch_size=self.axial_patch_size,
-                temporal_patch_size=self.temporal_patch_size,
+                patch_shape=self.patch_shape,
             )
             return num_patches
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
-        masks, context_masks = meta['masks'][0], meta['context_masks'][0]
+        masks, context_masks, patches_used = meta['masks'][0], meta['context_masks'][0], meta['patches_used'][0]
         target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
 
         embedding, patches = self.input_encoder(inputs, masks=context_masks)
         predictions = self.target_predictor(
             embedding,
             original_patch_indices=original_patch_indices,
-            target_masks=target_masks
+            target_masks=target_masks,
+            patches_used=patches_used
         )
 
         with torch.no_grad():
             targets, _ = self.target_encoder(inputs)
 
+        # compute loss over masked patches (re-index if blocked masking removed some patches)
+        if patches_used is not None:
+            target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
+        else:
+            target_idx_in_patches_used = target_masks
         targets = apply_masks(targets, masks=target_masks)
-        predictions = apply_masks(predictions, masks=target_masks)
+        predictions = apply_masks(predictions, masks=target_idx_in_patches_used)
         loss = self.loss_fn(predictions, targets, masks)
 
         loss_dict = {

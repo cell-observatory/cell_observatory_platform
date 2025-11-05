@@ -25,10 +25,11 @@ def get_param_groups(
         return model.parameters()
 
     # adapted from: https://github.com/facebookresearch/mae/blob/main/util/lr_decay.py
+    # FIXME: remove unused config parameters and simplify
     if config.optimizers.param_group_split_mode == "mae":
         enc_layer_decay = float(getattr(config.optimizers, "layer_decay"))
         dec_layer_decay = float(getattr(config.optimizers, "decoder_layer_decay"))
-        weight_decay = float(getattr(config.optimizers, "weight_decay"))
+        weight_decay = float(getattr(config.optimizers, "wd"))
         no_wd_list = tuple(getattr(config.optimizers, "no_weight_decay_list"))
 
         ALWAYS_NO_WD_SUFFIX = ("pos_embedding", "cls_token", "token_param")
@@ -88,7 +89,7 @@ def get_param_groups(
             param_groups[gname]["params"].append(p)
             param_group_names[gname]["params"].append(n)
 
-        # print("parameter groups: \n%s" % json.dumps(param_group_names, indent=2))
+        print("parameter groups: \n%s" % json.dumps(param_group_names, indent=2))
 
         return list(param_groups.values())
 

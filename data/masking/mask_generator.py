@@ -8,6 +8,7 @@ import torch
 
 from multiprocessing import Value
 from data.data_shapes import MULTICHANNEL_HYPERCUBE
+from training.helpers import get_patch_sizes
 
 
 # DEPRECATED
@@ -82,14 +83,14 @@ class MaskGenerator(object):
     def __init__(
         self,
         layout: MULTICHANNEL_HYPERCUBE,
-        input_shape: Tuple[int, int, int, int, int] = (32, 128, 128, 128, 2),
-        temporal_patch_size: Optional[int] = None,
-        axial_patch_size: int = 16,
-        lateral_patch_size: int = 16,
-        lateral_mask_scale: float = (0.2, 0.4),
-        axial_mask_scale: float = (0.2, 0.4),
-        temporal_mask_scale: float = (0.2, 0.4),
-        aspect_ratio_scale_hw : float = (0.2, 0.4),
+        batch_size: int = 1,
+        input_format: str = "TZYXC",
+        input_shape: Tuple[int, int, int, int, int] = (128, 128, 128, 2),
+        patch_shape: Tuple[int, int, int] = (4, 16, 16, 16),
+        lateral_mask_scale: Tuple[float, float] = 0.5,
+        axial_mask_scale: Tuple[float, float] = 0.5,
+        temporal_mask_scale: Tuple[float, float] = 0.5,
+        aspect_ratio_scale_hw: Tuple[float, float] = (0.2, 0.4),
         num_blocks: int = 2,
         random_masking_ratio: float = 0.7,
         channels_to_mask: Optional[Sequence[int]] = None,
@@ -104,19 +105,18 @@ class MaskGenerator(object):
                 layout = MULTICHANNEL_HYPERCUBE[layout]
             except KeyError:
                 layout = MULTICHANNEL_HYPERCUBE(layout)
-
         self.layout = layout
-        
-        self.input_shape = input_shape
-        self.temporal_patch_size = temporal_patch_size
-        self.axial_patch_size = axial_patch_size
-        self.lateral_patch_size = lateral_patch_size
 
-        self.lateral_mask_scale = lateral_mask_scale
+        self.input_shape = input_shape
+        self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
+            input_format=input_format,
+            patch_shape=patch_shape
+        )
+
         self.axial_mask_scale = axial_mask_scale
+        self.lateral_mask_scale = lateral_mask_scale
         self.temporal_mask_scale = temporal_mask_scale
-        
-        self.aspect_ratio_scale_hw = aspect_ratio_scale_hw
+        self.aspect_ratio_scale_hw = tuple(aspect_ratio_scale_hw)
 
         self.random_masking_ratio = random_masking_ratio
         self.num_blocks = num_blocks
@@ -183,7 +183,7 @@ class MaskGenerator(object):
         else:
             raise ValueError(
                 f"Invalid input shape {input_shape} and patch shape "
-                "{(temporal_patch_size, axial_patch_size, lateral_patch_size, lateral_patch_size)} for layout {layout}. "
+                f"{(temporal_patch_size, axial_patch_size, lateral_patch_size, lateral_patch_size)} for layout {layout}. "
                 "Expected at least one of time or depth to be greater than 1."
             )
 
@@ -467,7 +467,11 @@ class MaskGenerator(object):
         else:
             raise ValueError(f"Unknown mask mode: {self.mask_mode}")
 
-        return masks, context_masks, target_masks, original_patch_indices, self.channels_to_mask
+        # perm: [B, patches_used]
+        perm = torch.cat([context_masks, target_masks], dim=1)
+        patches_used, _ = torch.sort(perm, dim=1) 
+
+        return masks, context_masks, target_masks, original_patch_indices, self.channels_to_mask, patches_used
 
 
 def apply_masks(x, masks, concat=True):

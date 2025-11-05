@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models import patch_embeddings
+from training.helpers import get_patch_sizes
 
 logging.basicConfig(
 	stream=sys.stdout,
@@ -60,7 +61,8 @@ def positional_encoding_1d(
 
 def positional_encoding_2d(
     embed_dim,
-    lateral_sequence_length,
+    lateral_y_sequence_length,
+    lateral_x_sequence_length,
     temperature=10000,
     cls_token=False,
     dtype=None
@@ -76,8 +78,8 @@ def positional_encoding_2d(
     d = int(np.floor(embed_dim / (2*num_dims)) * 2)
     pad = embed_dim - (d * num_dims)
 
-    xgrid = np.arange(lateral_sequence_length, dtype=dtype)
-    ygrid = np.arange(lateral_sequence_length, dtype=dtype)
+    xgrid = np.arange(lateral_x_sequence_length, dtype=dtype)
+    ygrid = np.arange(lateral_y_sequence_length, dtype=dtype)
     ygrid, xgrid = np.meshgrid(ygrid, xgrid, indexing='ij')
 
     # outer product of y/x index for each (y,x) in LxL and frequencies
@@ -96,7 +98,8 @@ def positional_encoding_2d(
 
 def positional_encoding_3d(
     embed_dim,
-    lateral_sequence_length,
+    lateral_x_sequence_length,
+    lateral_y_sequence_length,
     axial_sequence_length=None,
     temporal_sequence_length=None,
     temperature=10000,
@@ -117,8 +120,8 @@ def positional_encoding_3d(
     if axial_sequence_length is not None and temporal_sequence_length is not None:
         raise ValueError("Use `positional_encoding_4d` if you have both axial and temporal sequence_length")
 
-    xgrid = np.arange(lateral_sequence_length, dtype=dtype)
-    ygrid = np.arange(lateral_sequence_length, dtype=dtype)
+    xgrid = np.arange(lateral_x_sequence_length, dtype=dtype)
+    ygrid = np.arange(lateral_y_sequence_length, dtype=dtype)
 
     if axial_sequence_length is not None:
         zgrid = np.arange(axial_sequence_length, dtype=dtype)
@@ -143,7 +146,8 @@ def positional_encoding_3d(
 
 def positional_encoding_4d(
     embed_dim,
-    lateral_sequence_length,
+    lateral_x_sequence_length,
+    lateral_y_sequence_length,
     axial_sequence_length,
     temporal_sequence_length,
     temperature=10000,
@@ -161,8 +165,8 @@ def positional_encoding_4d(
     d = int(np.floor(embed_dim / (2*num_dims)) * 2)
     pad = embed_dim - (d * num_dims)
 
-    xgrid = np.arange(lateral_sequence_length, dtype=dtype)
-    ygrid = np.arange(lateral_sequence_length, dtype=dtype)
+    xgrid = np.arange(lateral_x_sequence_length, dtype=dtype)
+    ygrid = np.arange(lateral_y_sequence_length, dtype=dtype)
     zgrid = np.arange(axial_sequence_length, dtype=dtype)
     tgrid = np.arange(temporal_sequence_length, dtype=dtype)
     tgrid, zgrid, ygrid, xgrid = np.meshgrid(tgrid, zgrid, ygrid, xgrid, indexing='ij')
@@ -186,10 +190,8 @@ class PosEmbedding(nn.Module):
     def __init__(
         self,
         input_fmt="TZYXC",
-        input_shape=(1, 16, 128, 128, 128, 1),
-        lateral_patch_size=16,
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=(16, 128, 128, 128, 2),
+        patch_shape: tuple = (4, 16, 16, 16),
         embed_dim=768,
         channels=1,
         cls_token=False,
@@ -200,21 +202,21 @@ class PosEmbedding(nn.Module):
         self.input_fmt = input_fmt
         self.input_shape = input_shape
 
-        self.axial_patch_size = axial_patch_size
-        self.lateral_patch_size = lateral_patch_size
-        self.temporal_patch_size = temporal_patch_size
+        self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
+            input_format=input_fmt,
+            patch_shape=patch_shape
+        )
 
         self.embed_dim = embed_dim
         self.channels = channels
         self.cls_token = cls_token
+        assert not self.cls_token, "CLS token not yet supported for PosEmbedding"
         self.interpolate = interpolate
 
         self.num_patches, self.token_shape = patch_embeddings.calc_num_patches(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
-            lateral_patch_size=self.lateral_patch_size,
-            axial_patch_size=self.axial_patch_size,
-            temporal_patch_size=self.temporal_patch_size,
+            patch_shape=patch_shape
         )
 
         num_patches_pos_embed = self.num_patches + 1 if self.cls_token else self.num_patches
@@ -228,9 +230,10 @@ class PosEmbedding(nn.Module):
         if self.input_fmt == "TZYXC":
             sincos = positional_encoding_4d(
                 embed_dim=self.embed_dim,
-                temporal_sequence_length=self.input_shape[1] // self.temporal_patch_size,
-                axial_sequence_length=self.input_shape[2] // self.axial_patch_size,
-                lateral_sequence_length=self.input_shape[3] // self.lateral_patch_size,
+                temporal_sequence_length=self.input_shape[0] // self.temporal_patch_size,
+                axial_sequence_length=self.input_shape[1] // self.axial_patch_size,
+                lateral_y_sequence_length=self.input_shape[2] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[3] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
@@ -238,8 +241,9 @@ class PosEmbedding(nn.Module):
             sincos = positional_encoding_3d(
                 embed_dim=self.embed_dim,
                 temporal_sequence_length=None,
-                axial_sequence_length=self.input_shape[1] // self.axial_patch_size,
-                lateral_sequence_length=self.input_shape[2] // self.lateral_patch_size,
+                axial_sequence_length=self.input_shape[0] // self.axial_patch_size,
+                lateral_y_sequence_length=self.input_shape[1] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[2] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
@@ -247,22 +251,24 @@ class PosEmbedding(nn.Module):
             sincos = positional_encoding_3d(
                 embed_dim=self.embed_dim,
                 axial_sequence_length=None,
-                temporal_sequence_length=self.input_shape[1] // self.temporal_patch_size,
-                lateral_sequence_length=self.input_shape[2] // self.lateral_patch_size,
+                temporal_sequence_length=self.input_shape[0] // self.temporal_patch_size,
+                lateral_y_sequence_length=self.input_shape[1] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[2] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
         elif self.input_fmt == "YXC":
             sincos = positional_encoding_2d(
                 embed_dim=self.embed_dim,
-                lateral_sequence_length=self.input_shape[1] // self.lateral_patch_size,
+                lateral_y_sequence_length=self.input_shape[0] // self.lateral_patch_size,
+                lateral_x_sequence_length=self.input_shape[1] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
         elif self.input_fmt == "XC":
             sincos = positional_encoding_1d(
                 embed_dim=self.embed_dim,
-                sequence_length=self.input_shape[1] // self.lateral_patch_size,
+                sequence_length=self.input_shape[0] // self.lateral_patch_size,
                 cls_token=self.cls_token,
             )
 
@@ -383,8 +389,40 @@ class PosEmbedding(nn.Module):
 
         return pos
 
-    def forward(self, x):
+    def gather_pos_table(self, pos_table, patches_used):
+        idx = patches_used.to(pos_table.device)
+        D = pos_table.size(-1)
+        # pos_table_batched: (B, L_full, D) -> (B, L_used, D)
+        out = torch.gather(pos_table, 
+                            dim=1,
+                            index=idx.unsqueeze(-1).expand(-1, -1, D))
+        return out
+
+    @property
+    def table(self) -> torch.Tensor:
+        # (L_full, D) without cls
+        return (self.pos_embed[:, 1:, :]
+                if self.cls_token else
+                self.pos_embed)
+
+    def forward(self, x: Optional[torch.Tensor] = None,
+                patches_used: Optional[torch.Tensor] = None) -> torch.Tensor:
         if self.interpolate:
-            return self.interpolate_positional_encoding(x, self.pos_embed)
-        else:
-            return self.pos_embed
+            # FIXME: interpolate_positional_encoding assumes x is grid format
+            #        but currently we pass in sequence format from modules
+            pos_table_interpolated = self.interpolate_positional_encoding(x, self.pos_embed)
+
+            if patches_used is not None:
+                # NOTE: gather_pos_table assumes batched pos_table
+                pos_table_subset = self.gather_pos_table(pos_table_interpolated, patches_used)
+                return pos_table_subset
+            else:
+                return pos_table_interpolated
+
+        if patches_used is not None:
+            pos_table = self.table
+            B, L_used = patches_used.shape
+            pos_table_batched = pos_table.expand(B, -1, -1)
+            return self.gather_pos_table(pos_table_batched, patches_used)
+
+        return self.pos_embed

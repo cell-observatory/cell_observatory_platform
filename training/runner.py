@@ -164,7 +164,7 @@ def run_tune(cfg: DictConfig):
         sys.exit(1)
 
 
-@hydra.main(version_base=None, config_path=None, config_name=None)
+@hydra.main(version_base=None, config_path="../configs", config_name=None)
 def main(cfg: DictConfig):
 
     timeit = time.time()

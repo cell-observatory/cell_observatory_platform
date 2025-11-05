@@ -77,6 +77,16 @@ def get_steps_per_epoch(train_dataloader, val_dataloader, config: DictConfig):
         f"Steps per epoch: {steps_per_epoch}, "
         f"Validation steps per epoch: {val_steps_per_epoch}"
     )
+
+    if steps_per_epoch is None or steps_per_epoch <= 0:
+        raise ValueError(
+            f"Steps per epoch is None or <= 0. Cannot proceed with training."
+        )
+    
+    if (val_steps_per_epoch is None or val_steps_per_epoch <= 0) and val_dataloader is not None:
+        raise ValueError("Validation Dataloader is provided but validation steps per epoch is None or <= 0."
+        )
+
     return steps_per_epoch, val_steps_per_epoch
 
 
@@ -329,6 +339,7 @@ def get_masked_input_data(model, inputs, device: Optional[torch.device] = 'cuda'
         "context_masks": [context_idx],
         "target_masks": [target_idx],
         "original_patch_indices": [torch.arange(n_patches, dtype=torch.long, device=device)],
+        "patches_used": [torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0).expand(inputs[0],-1)],
     }
 
     # summary() will unpack the input data but the fwd function in
@@ -973,3 +984,28 @@ def get_data_dim(layout_order: str) -> int:
         return 3
     else:
         raise ValueError(f"Unknown dataset layout order: {layout_order}")
+
+
+def get_patch_sizes(input_format: str, patch_shape: List[int]):
+    if input_format == "TZYXC":
+        # temporal, axial, lateral
+        return (patch_shape[0], patch_shape[1], patch_shape[2])
+    
+    elif input_format == "TYXC":
+        # temporal, lateral
+        return (patch_shape[0], None, patch_shape[1])
+    
+    elif input_format == "ZYXC":
+        # axial, lateral
+        return (None, patch_shape[0], patch_shape[1])
+
+    elif input_format == "YXC":
+        # lateral only
+        return (None, None, patch_shape[0])
+
+    elif input_format == "XC":
+        # lateral only (1D)
+        return (None, None, patch_shape[0])
+
+    else:
+        raise ValueError(f"Unknown dataset layout order: {input_format}")

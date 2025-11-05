@@ -10,8 +10,7 @@ def _dummy_mask_generator(batch_size: int):
     tgt = torch.ones(batch_size, 1, dtype=torch.bool)
     orig_idx = torch.arange(batch_size)
     channels_to_mask = [0]
-    return masks, ctx, tgt, orig_idx, channels_to_mask
-
+    return masks, ctx, tgt, orig_idx, channels_to_mask, None
 
 # -------------------------
 # TorchPreprocessor tests
