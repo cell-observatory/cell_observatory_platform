@@ -933,6 +933,9 @@
             "args": [
                 "--arch", "published_models",
                 "--outdir", "../scaling/data",
+                "--ishape", "1-1-224-224-3",
+                "--ipatch", "1-1-16-16-3",
+                "--mfu", "0.9"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/scaling",
@@ -951,7 +954,6 @@
                 "--ishape", "16-128-128-128-2",
                 "--ipatch", "4-16-16-16-2",
                 "--outdir", "../scaling/data",
-                "--mfu", "0.9"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/scaling",
@@ -970,7 +972,6 @@
                 "--ishape", "16-128-256-256-2",
                 "--ipatch", "4-16-16-16-2",
                 "--outdir", "../scaling/data",
-                "--mfu", "0.9"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/scaling",
@@ -989,7 +990,6 @@
                 "--ishape", "16-128-128-128-2",
                 "--ipatch", "4-16-16-16-2",
                 "--outdir", "../scaling/data",
-                "--mfu", "0.9"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/scaling",
@@ -1008,7 +1008,6 @@
                 "--ishape", "16-128-256-256-2",
                 "--ipatch", "4-16-16-16-2",
                 "--outdir", "../scaling/data",
-                "--mfu", "0.9"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/scaling",
