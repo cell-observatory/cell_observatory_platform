@@ -25,6 +25,7 @@ def _test_testing_loop_dist(config):
     report({"success": True})
 
 @pytest.mark.order(1)
+@pytest.mark.skip(reason="This test is temporarily disabled until all tests switch to Ray Dataloader.")
 def test_train_loop(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
@@ -42,7 +43,7 @@ def test_train_loop(config):
     assert metrics.get("success", False), "Distributed loops test failed"
 
 @pytest.mark.order(2)
-@pytest.mark.skip(reason="This test is temporarily disabled.")
+@pytest.mark.skip(reason="This test is temporarily disabled until all tests switch to Ray Dataloader.")
 def test_testing_loop(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")

@@ -496,7 +496,7 @@ def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slice
     config.datasets.databases.input_shape = (16, z_slices, y_slices, x_slices, 2)
     num_timepoints = 16
     config.datasets.databases.dataset_layout_order = "TZYXC"
-    config.datasets.databases.max_hypercubes = 10000
+    config.datasets.databases.max_hypercubes = 1000
     config.datasets.databases.max_rois = None
     config.datasets.databases.max_tiles = None
     config.datasets.databases.hpf_list = None

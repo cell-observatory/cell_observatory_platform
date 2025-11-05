@@ -42,8 +42,9 @@ dashboard_port=$(getfreeport)
 echo "Dashboard will use port: $dashboard_port"
 export dashboard_port
 
-export RAY_GRAFANA_HOST=${port}:3000
-export RAY_PROMETHEUS_HOST=${port}:9090
+head_ip="$(hostname -I | awk '{print $1}')"
+export RAY_GRAFANA_HOST="${head_ip}:3000"
+export RAY_PROMETHEUS_HOST="${head_ip}:9090"
 
 ########################### HELPER
 

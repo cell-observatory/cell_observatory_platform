@@ -772,26 +772,6 @@ class ParentDatabase():
         return table
 
     def _aggregate(self, df_pd, group_cols, z_slices=128, y_slices=128, x_slices=128):
-        def _to_floats(expr: pl.Expr) -> pl.Expr:
-            return (
-                pl.when(expr.is_dtype(pl.List(pl.Float32)) | expr.is_dtype(pl.List(pl.Float64)))
-                .then(expr.cast(pl.List(pl.Float64)))
-                .when(expr.is_dtype(pl.Utf8))
-                .then(
-                    expr.cast(pl.Utf8)
-                    .str.strip_chars()
-                    .str.replace_all(r'^[\[\{\(]\s*', '', literal=False)
-                    .str.replace_all(r'\s*[\]\}\)]$', '', literal=False)
-                    .str.replace_all("\n", " ", literal=True)
-                    .str.replace_all('"', "", literal=True)
-                    .str.replace_all("'", "", literal=True)
-                    .str.replace_all(r"[,\s]+", " ", literal=False)
-                    .str.strip_chars()
-                    .str.extract_all(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?')
-                    .list.eval(pl.element().cast(pl.Float64))
-                )
-            )
-
         df = pl.from_pandas(df_pd)
 
         df = df.with_columns(
@@ -800,9 +780,32 @@ class ParentDatabase():
             (pl.col("x_start") // x_slices * x_slices).alias("x_start"),
         )
 
+        def _parse_string_col(expr: pl.Expr) -> pl.Expr:
+            return (
+                expr.cast(pl.Utf8)
+                .str.strip_chars()
+                .str.replace_all(r'^[\[\{\(]\s*', '', literal=False)
+                .str.replace_all(r'\s*[\]\}\)]$', '', literal=False)
+                .str.replace_all("\n", " ", literal=True)
+                .str.replace_all('"', "", literal=True)
+                .str.replace_all("'", "", literal=True)
+                .str.replace_all(r"[,\s]+", " ", literal=False)
+                .str.strip_chars()
+                .str.extract_all(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?')
+                .list.eval(pl.element().cast(pl.Float64))
+            )
+
+        def _parse_occupancy_expr(colname: str, dtypes: Dict[str, pl.DataType]) -> pl.Expr:
+            dt = dtypes[colname]
+            if isinstance(dt, pl.List) and dt.inner in (pl.Float32, pl.Float64):
+                return pl.col(colname).cast(pl.List(pl.Float64))
+            if dt == pl.Utf8:
+                return _parse_string_col(pl.col(colname))
+            raise TypeError(f"Unsupported dtype for {colname}: {dt!r}")
+
         df = df.with_columns(
-            _to_floats(pl.col("occupancy_ratios_ch_0")).alias("occ0"),
-            _to_floats(pl.col("occupancy_ratios_ch_1")).alias("occ1"),
+            _parse_occupancy_expr("occupancy_ratios_ch_0", df.schema).alias("occ0"),
+            _parse_occupancy_expr("occupancy_ratios_ch_1", df.schema).alias("occ1"),
         )
 
         T0 = int(df.select(pl.col("occ0").list.len().max()).item())
