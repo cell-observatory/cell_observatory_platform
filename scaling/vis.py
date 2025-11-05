@@ -86,17 +86,25 @@ def plot_parameter_scaling(
         rgb='rgb',
         legend=[
             'Data (x, y, z, t, c)',
-            '4D (224, 224, 112, 8, 3)',
-            '3D (224, 224, 112, 1, 3)',
-            '2D (224, 224, 1, 1, 3)',
+                '4D (224, 224, 112, 8, 3)',
+                '3D (224, 224, 112, 1, 3)',
+                '2D (224, 224, 1, 1, 3)',
             'Patch (x, y, z, t, c)',
-            f'(16, 16, 16, 2, 3)',
+                '(16, 16, 16, 2, 3)',
+            'Model FLOPs Utilization',
+                'MFU(0.3)',
+                'MFU(0.6)',
+                'MFU(0.9)',
         ],
         published_models_legend=[
             'Data (x, y, c)',
-            '2D (224, 224, 3)',
+                '2D (224, 224, 3)',
             'Patch (x, y, c)',
-            f'(16, 16, 3)',
+                '(16, 16, 3)',
+            'Model FLOPs Utilization',
+                'MFU(0.3)',
+                'MFU(0.6)',
+                'MFU(0.9)',
         ],
 ):
     for background in ["default", "dark_background"]:
@@ -120,14 +128,16 @@ def plot_parameter_scaling(
             data = df.loc[df['data'].str.match(r'.*\(rgb\)')]
 
         data = data[data['px'] == 16]
+        data.reset_index(drop=True, inplace=True)
 
         if published_models_only:
-            g = sns.lineplot(
+             g = sns.lineplot(
                 data=data,
                 x=x,
                 y=y,
                 hue='data',
-                style="px",
+                size="px",
+                style='mfu',
                 ax=ax,
                 legend=True,
                 markers=True,
@@ -142,7 +152,8 @@ def plot_parameter_scaling(
                 y=y,
                 hue='data',
                 hue_order=[f'4D({rgb})', f'3D({rgb})', f'2D({rgb})'],
-                style="px",
+                size="px",
+                style='mfu',
                 ax=ax,
                 legend=True,
                 markers=True,
@@ -150,8 +161,8 @@ def plot_parameter_scaling(
                 markeredgecolor='dimgrey' if background == 'default' else 'lightgrey',
                 markeredgewidth=.5
             )
-
-        d = data[(data['data'] == '2D(rgb)') & (data['px'] == 16)]
+            
+        d = data[(data['data'] == '2D(rgb)') & (data['px'] == 16) & (data['mfu'] == .3)]
 
         for line in range(0, d.shape[0]):
             xx = d[x][line]
@@ -202,6 +213,12 @@ def plot_parameter_scaling(
         ax.spines['right'].set_visible(False)
         ax.spines['top'].set_visible(False)
         legend_handles, _ = g.get_legend_handles_labels()
+        
+        if y == 'training_time':
+            formatter = ticker.FuncFormatter(days_to_formatter)
+            ax.yaxis.set_major_formatter(formatter)
+            ax.yaxis.set_minor_formatter(formatter)
+            ax.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=[0.25, 0.5]))
 
         if published_models_only:
             ax.legend(
@@ -253,15 +270,22 @@ def plot_data_parameter_scaling(
                 '3D (224, 224, 112, 1, 3)',
                 '2D (224, 224, 1, 1, 3)',
             'Patch (x, y, z, t, c)',
-                f'(16, 16, 16, 2, 3)',
+                '(16, 16, 16, 2, 3)',
+            'Model FLOPs Utilization',
+                'MFU(0.3)',
+                'MFU(0.6)',
+                'MFU(0.9)',
         ],
         published_models_legend=[
             'Data (x, y, c)',
                 '2D (224, 224, 3)',
             'Patch (x, y, c)',
-                f'(16, 16, 3)',
-        ],
-        mfu=0.5
+                '(16, 16, 3)',
+            'Model FLOPs Utilization',
+                'MFU(0.3)',
+                'MFU(0.6)',
+                'MFU(0.9)',
+        ]
 ):
     for background in ["default", "dark_background"]:
         plt.style.use(background)
@@ -305,7 +329,8 @@ def plot_data_parameter_scaling(
                         x=x,
                         y=yy,
                         hue='data',
-                        style="px",
+                        size="px",
+                        style="mfu",
                         ax=axis,
                         legend=True,
                         markers=True,
@@ -320,7 +345,8 @@ def plot_data_parameter_scaling(
                         y=yy,
                         hue='data',
                         hue_order=[f'4D({rgb})', f'3D({rgb})', f'2D({rgb})'],
-                        style="px",
+                        size="px",
+                        # style="mfu",
                         ax=axis,
                         legend=True,
                         markers=True,
@@ -340,6 +366,8 @@ def plot_data_parameter_scaling(
                     axis.spines["right"].set_edgecolor(cc)
                     axis.yaxis.label.set_color(cc)
 
+                ll = ll.replace('days', 'time')
+                
                 axis.set_ylabel(ll)
                 if ytwin2 is not None and ii != 0:
                     axis.yaxis.set_label_coords(1 + offset, 1.07)
@@ -359,12 +387,12 @@ def plot_data_parameter_scaling(
                         legend_handles, legend,
                         loc='upper left', ncol=1, title="", frameon=False
                     )
-                    
                 
-                formatter = ticker.FuncFormatter(days_to_formatter)
-                axis.yaxis.set_major_formatter(formatter)
-                axis.yaxis.set_minor_formatter(formatter)
-                axis.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=[0.25, 0.5]))
+                if y == 'training_time' or y.startswith('training_h100_days'):
+                    formatter = ticker.FuncFormatter(days_to_formatter)
+                    axis.yaxis.set_major_formatter(formatter)
+                    axis.yaxis.set_minor_formatter(formatter)
+                    axis.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=[0.25, 0.5]))
 
         if yscalelabel is not None:
             ann = ax.annotate(
@@ -376,7 +404,7 @@ def plot_data_parameter_scaling(
                 rotation=90
             )
 
-        d = data[(data['data'] == f'2D({rgb})') & (data['px'] == patch_size)]
+        d = data[(data['data'] == f'2D({rgb})') & (data['px'] == patch_size) & (data['mfu'] == .3)]
 
         for line in range(0, d.shape[0]):
             xx = d[x][line]
@@ -437,13 +465,16 @@ def plot_individual_parameters(
     rgb='rgb',
     legend=[
         'Data (x, y, z, t, c)',
-        '4D (224, 224, 112, 8, 3)',
-        '3D (224, 224, 112, 1, 3)',
-        '2D (224, 224, 1, 1, 3)',
+            '4D (224, 224, 112, 8, 3)',
+            '3D (224, 224, 112, 1, 3)',
+            '2D (224, 224, 1, 1, 3)',
         'Patch (x, y, z, t, c)',
-        f'(16, 16, 16, 2, 3)',
-    ],
-    mfu=0.5,
+            '(16, 16, 16, 2, 3)',
+        'Model FLOPs Utilization',
+            'MFU(0.3)',
+            'MFU(0.6)',
+            'MFU(0.9)',
+    ]
 ):
     df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
     df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
@@ -470,7 +501,7 @@ def plot_individual_parameters(
         )
 
     fois = {
-        f"training_h100_days_per_epoch": f"Training H100 days per epoch (MFU={mfu:.2f})",
+        f"training_h100_days_per_epoch": f"Training H100 time per epoch",
         f"training_h100_cost_per_epoch": f"H100 compute cost per epoch ($6/hr)",
         f"training_tflops_per_epoch": f"Training Tera-FLOPs (TFLOPs) per epoch",
     }
@@ -504,9 +535,12 @@ def plot_published_models(
         'Data (x, y, c)',
         '2D (224, 224, 3)',
         'Patch (x, y, c)',
-        f'(16, 16, 3)',
+        '(16, 16, 3)',
+        'Model FLOPs Utilization',
+        'MFU(0.3)',
+        'MFU(0.6)',
+        'MFU(0.9)',
     ],
-    mfu=0.5,
 ):
     batch_size = 4096
     df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
@@ -529,7 +563,7 @@ def plot_published_models(
     fois = {
         f"dataset_size": f"Training dataset size (millions of volumes)",
         f"training_volumes": f"Training volumes seen (billions)",
-        f"training_time": f"Training H100 days (MFU={mfu:.2f})",
+        f"training_time": f"Training H100 time",
         f"training_compute": f"Training TFLOPs",
         f"training_cost": f"Training cost",
     }
