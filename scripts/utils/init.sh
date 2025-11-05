@@ -7,4 +7,6 @@ uv pip install --upgrade \
 'pytest==8.4.2' 'pytest-order==1.3.0' 'pytest-testmon==2.1.3' 'pytorchvideo==0.1.5' \
 'ray[all]==2.49.2' 'scikit-image==0.25.2' 'seaborn==0.13.2' 'supabase==2.19.0' \
 'tensorstore==0.1.77' 'tifffile==2025.9.20' 'timm==1.0.20' 'torchinfo==1.8.0' \
-'torchmetrics==1.8.2' 'trino==0.336.0' 'ujson==5.11.0' 'wandb==0.22.0' 'zarr==3.1.3'
+'torchmetrics==1.8.2' 'trino==0.336.0' 'ujson==5.11.0' 'wandb==0.22.0' 'zarr==3.1.3' 'python-dotenv'
+
+source .venv/bin/activate

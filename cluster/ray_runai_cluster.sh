@@ -54,7 +54,7 @@ do_cleanup() {
             sleep 1
         done
     fi
-    python3 /cell_observatory_platform/utils/cleanup.py || true
+    python3 /work/cell_observatory_platform/utils/cleanup.py || true
     ray stop --force >/dev/null 2>&1 || true
     ) >/dev/null 2>&1 || true
 
@@ -85,13 +85,13 @@ if [ "$RANK" -eq 0 ]; then
     export head_node_ip cluster_address
 
     echo "[rank=$RANK] Starting Ray head at $cluster_address (dashboard $dashboard_port)"
-    bash -lc "/cell_observatory_platform/cluster/ray_start_cluster_runai.sh \
+    bash -lc "/work/cell_observatory_platform/cluster/ray_start_cluster_runai.sh \
         -i \"$head_node_ip\" -p \"$port\" -d \"$dashboard_port\" \
         -c \"${head_cpus}\" -g \"${head_gpus}\" -t \"$outdir\" -q \"${object_store_memory}\"" &
 
     sleep 10
 
-    bash -lc "/cell_observatory_platform/cluster/ray_check_status.sh -a \"$cluster_address\" -r 1"
+    bash -lc "/work/cell_observatory_platform/cluster/ray_check_status.sh -a \"$cluster_address\" -r 1"
     rc=$?
     if [ $rc -ne 0 ]; then
         echo "[rank=$RANK] Head failed to start; rc=$rc"
@@ -114,7 +114,7 @@ else
     mkdir -p "$outdir/ray_worker_${worker_index}"
 
     echo "[rank=$RANK] Starting Ray worker idx=$worker_index -> head at $cluster_address"
-    bash -lc "exec /cell_observatory_platform/cluster/ray_start_worker.sh \
+    bash -lc "exec /work/cell_observatory_platform/cluster/ray_start_worker.sh \
         -a \"$cluster_address\" \
         -c \"${cpus}\" \
         -g \"${gpus}\" \
@@ -125,7 +125,7 @@ fi
 
 ############################## CLUSTER HEALTH
 
-bash -lc "/cell_observatory_platform/cluster/ray_check_status.sh -a \"$cluster_address\" -r \"$WORLD_SIZE\""
+bash -lc "/work/cell_observatory_platform/cluster/ray_check_status.sh -a \"$cluster_address\" -r \"$WORLD_SIZE\""
 rc=$?
 if [ $rc -ne 0 ]; then
     echo "Cluster failed to start correctly, exiting"

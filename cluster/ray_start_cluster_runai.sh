@@ -55,7 +55,7 @@ cleanup() {
     echo "Running head node cleanup..."
     ray stop --force >/dev/null 2>&1 || true
     echo "Successfully stopped ray head node"
-    python3 /cell_observatory_platform/utils/cleanup.py
+    python3 /work/cell_observatory_platform//utils/cleanup.py
     echo "Successfully ran cleanup.py"
 }
 trap 'cleanup' EXIT
@@ -75,7 +75,7 @@ pick_agent_port() {
 DASHBOARD_AGENT_PORT=$(pick_agent_port)
 
 # remove any leftover shared memory segments
-python3 /cell_observatory_platform/utils/cleanup.py
+python3 /work/cell_observatory_platform/utils/cleanup.py
 
 echo "Starting ray head node @ $(hostname) => $cluster_address with CPUs[$cpus] & GPUs [$gpus]"
 job="ray start --block --head --node-ip-address=$ip --port=$port --dashboard-agent-listen-port=$DASHBOARD_AGENT_PORT --dashboard-host=0.0.0.0 --min-worker-port 18999 --max-worker-port 19999 --temp-dir=$tmpdir --num-cpus=$cpus --num-gpus=$gpus --object-store-memory=$object_store_memory"

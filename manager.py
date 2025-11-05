@@ -108,6 +108,11 @@ def set_env_from_cfg(cfg: DictConfig) -> None:
 # modify Hydra config on cmd line to use different models
 @hydra.main(config_path="configs", config_name=None)
 def main(cfg: DictConfig):
+    # re-load env variables
+    # assert cfg.paths.dotenv_path is not None and Path(cfg.paths.dotenv_path).exists(), \
+    #     f"Missing dotenv path: {cfg.paths.dotenv_path}"
+    load_dotenv(cfg.paths.dotenv_path, verbose=True)
+
     logger.info(f"Launch config: {OmegaConf.to_yaml(cfg)}")
 
     if cfg.run_type == "multi_run":
@@ -234,11 +239,6 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
 
         for k in ['outdir', 'ray_script', 'runner_script', 'dotenv_path']:
             cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
-
-    # load extra env variables
-    # assert cfg.paths.dotenv_path is not None and Path(cfg.paths.dotenv_path).exists(), \
-    #     f"Missing dotenv path: {cfg.paths.dotenv_path}"
-    load_dotenv(cfg.paths.dotenv_path, verbose=True)
 
     # ensure correct config is being passed to the runner
     config_name = run_config_name if run_config_name is not None else HydraConfig.get().job.config_name
@@ -453,12 +453,14 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         sjob_worker_nodes.append(f"--base {image}")
         sjob_worker_nodes.append(f"--main {q(ray_wrap)}")
 
+        sjob_worker_nodes.append(f"--node-pools {cfg.clusters.node_pool}")
+
         sjob_worker_nodes.append(f"--repo {cfg.clusters.repo_url}")
         if cfg.clusters.repo_hash is not None:
             sjob_worker_nodes.append(f"--hash {cfg.clusters.repo_hash}")
 
-        sjob_worker_nodes.append(f"--evar {JOB_NAME}={cfg.clusters.job_name}")
-        sjob_worker_nodes.append(f"--evar {PROJECT_NAME}={cfg.clusters.runai_project}")
+        sjob_worker_nodes.append(f"--evar JOB_NAME={cfg.clusters.job_name}")
+        sjob_worker_nodes.append(f"--evar PROJECT_NAME={cfg.clusters.runai_project}")
 
         if cfg.clusters.evar is not None:
             for key, value in cfg.clusters.evar.items():
@@ -472,13 +474,13 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             for key, value in cfg.clusters.meta.items():
                 sjob_worker_nodes.append(f"--meta {key}={value}")
 
-        if cfg.clusters.init is not None:
-            sjob_worker_nodes.append(f"--init_script {cfg.clusters.init}")
+        if cfg.clusters.init_script is not None:
+            sjob_worker_nodes.append(f"--init {cfg.clusters.init_script}")
 
         print("Submitting runai job with configuration:")
         cmd = " ".join(sjob_worker_nodes)
         print(cmd)
-        subprocess.run(cmd, shell=True, check=True)
+        # subprocess.run(cmd, shell=True, check=True)
 
     else:
         raise ValueError(

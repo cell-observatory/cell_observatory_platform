@@ -73,10 +73,12 @@ scaling_config:
 # runai specific settings
 runai_project: cell-observatory  # specify the runai project to use
 
+node_pool: training-h200-gpu
+
 repo_url: https://github.com/czi-ai/cell-observatory  # git url of the repo to clone
 repo_hash: null  # git hash of the repo to checkout
 
-init_script: null
+init_script: ./scripts/utils/init.sh
 
 evar: null
 svar: null

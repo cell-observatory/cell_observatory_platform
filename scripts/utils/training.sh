@@ -28,7 +28,14 @@
 
 # CFG="benchmarks/janelia/benchmark_training_dataloader.yaml"
 # CFG="benchmarks/janelia/exp_10_22_2025_mae_3d_batch_size.yaml"
-CFG="experiments/janelia/exp_10_22_2025_hparam_sweep_mae/input_size_128x128x128_X_lr_X_masking_sweep.yaml"
+# CFG="experiments/janelia/exp_10_22_2025_hparam_sweep_mae/input_size_128x128x128_X_lr_X_masking_sweep.yaml"
 
 # Janelia
-python3 /groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform/manager.py --config-name=${CFG}
+# python3 /groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform/manager.py --config-name=${CFG}
+
+# --- CoreWeave 
+
+# USAGE: bash /work/cell_observatory_platform/scripts/utils/training.sh
+
+CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain.yaml"
+python3 /work/cell_observatory_platform/manager.py --config-name=${CFG}
