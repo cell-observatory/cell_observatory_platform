@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# remove when i figure out what env vars are called
+echo "=== All environment variables ==="
+printenv
+echo "==============================="
+
 # NCCL settings optimized for Ethernet without InfiniBand
 export NCCL_DEBUG=INFO
 export NCCL_IB_DISABLE=1

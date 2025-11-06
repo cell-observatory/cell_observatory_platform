@@ -297,11 +297,6 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         cfg.paths.ray_script = cfg.paths.ray_script.replace("ray_local_cluster.sh", "ray_runai_cluster.sh")
 
     if run_config_name is not None:
-        task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {Path(config_name).name} --config-dir={Path(config_name).parent}"
-    else:
-        task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {config_name}"
-
-    if run_config_name is not None:
         config_dir = Path(config_name).parent
         config_dir = posixify(config_dir if is_remote else config_dir.resolve())
         task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {Path(config_name).name} --config-dir={config_dir}"
@@ -480,8 +475,8 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         if cfg.clusters.head_node_cpus not in (None, "", "None"):
             ray_args += ["-z", str(cfg.clusters.head_node_cpus)]
 
-        ray_wrap_posix = quote_posix_list(ray_args)
-        main_value = f"bash -lc {shlex.quote(ray_wrap_posix)}"
+        ray_wrap_posix = " ".join(shlex.quote(str(x)) for x in ray_args)
+        main_value = f'bash -lc "{ray_wrap_posix}"'
 
         runai_jobname = f"{str(cfg.job_type).lower().replace('_','-')}-{uuid.uuid4().hex[:8]}"
 
@@ -500,7 +495,6 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             "--evar",    f"CFG_SAVEDIR={posixify(OmegaConf.select(cfg,'paths.outdir'))}",
             "--evar",    f"EXP_NAME={OmegaConf.select(cfg,'experiment_name')}.yaml",
             "--init",    cfg.clusters.init_script,
-            "--logs ",
             "--main",    main_value,
         ]
         subprocess.run(args, check=True)
