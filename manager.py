@@ -519,7 +519,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None, cfg_b64 = None):
         print("Submitting runai job with configuration:")
         cmd = " ".join(sjob_worker_nodes)
         print(cmd)
-        # subprocess.run(cmd, shell=True, check=True)
+        subprocess.run(cmd, shell=True, check=True)
 
     else:
         raise ValueError(

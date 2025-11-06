@@ -78,7 +78,7 @@ node_pool: training-h200-gpu
 repo_url: https://github.com/czi-ai/cell-observatory  # git url of the repo to clone
 repo_hash: null  # git hash of the repo to checkout
 
-init_script: ./scripts/utils/init.sh
+init_script: /work/cell_observatory_platform/scripts/utils/init.sh
 
 evar: null
 svar: null

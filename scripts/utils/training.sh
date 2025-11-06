@@ -67,3 +67,6 @@ elif command -v python3 >/dev/null 2>&1; then
 else
   exec python "$MANAGER_PY" --config-name="$CFG"
 fi
+
+# ALL JOBS: ai job list --proj cell-observatory
+# LOGS: ai job follow --name <job_name> --project cell-observatory
