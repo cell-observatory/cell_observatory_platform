@@ -1,5 +1,6 @@
 import os
 import sys
+import uuid
 import shlex
 import logging
 import subprocess
@@ -7,7 +8,6 @@ import warnings
 import itertools
 from pathlib import Path
 from subprocess import call, run
-from pathlib import PurePosixPath
 
 import base64
 import zlib
@@ -203,18 +203,13 @@ def main(cfg: DictConfig):
                 run_cfg_path = run_path / run_name
                 run_cfg_yml = OmegaConf.to_yaml(run_cfg_sweep)
                 run_cfg_yml = "#@package _global_\n" + run_cfg_yml
-
-                if run_cfg_sweep.clusters.launcher_type == "runai":
-                    cfg_b64 = base64.b64encode(zlib.compress(run_cfg_yml.encode("utf-8"))).decode("ascii")
-                else:
-                    run_cfg_path.write_text(run_cfg_yml)
-                    cfg_b64 = None
+                run_cfg_path.write_text(run_cfg_yml)
 
                 logger.info(f"Run config saved to: {run_cfg_path}")
 
                 # launch the job
                 logger.info(f"Run config after overrides: {run_cfg_yml}")
-                launch_job(run_cfg_sweep, run_config_name=run_cfg_path, cfg_b64=cfg_b64)
+                launch_job(run_cfg_sweep, run_config_name=run_cfg_path)
 
     elif cfg.run_type == "single_run" or cfg.run_type == "tune":
         load_dotenv(cfg.paths.dotenv_path, verbose=True)
@@ -225,7 +220,7 @@ def main(cfg: DictConfig):
                          f"Please set cfg.run_type to either 'single_run', 'multi_run', or 'tune'.")
 
 
-def launch_job(cfg: DictConfig, run_config_name: str = None, cfg_b64 = None):
+def launch_job(cfg: DictConfig, run_config_name: str = None):
     # TODO: make sure this recapitulates the old ENV variable
     #       setting logic
     # set environment variables from the config
@@ -466,60 +461,49 @@ def launch_job(cfg: DictConfig, run_config_name: str = None, cfg_b64 = None):
             for all worker nodes.
         '''
 
-        if cfg.clusters.launcher_type == "runai" and cfg_b64 is None:
-            cfg_yaml = "#@package _global_\n" + OmegaConf.to_yaml(cfg, resolve=False)
-            cfg_b64 = base64.b64encode(zlib.compress(cfg_yaml.encode("utf-8"))).decode("ascii")
+        def quote_posix_list(argv):
+            return " ".join(shlex.quote(str(x)) for x in argv)
 
-        sjob_worker_nodes = ["ai job submit "]
-        sjob_worker_nodes.append(f"--project {cfg.clusters.runai_project}")
-        sjob_worker_nodes.append(f"--name {cfg.clusters.job_name}")
+        ray_args = [
+            "bash", cfg.paths.ray_script,
+            "-c", str(cfg.clusters.cpus_per_worker),
+            "-g", str(cfg.clusters.gpus_per_worker),
+            "-m", str(cfg.clusters.mem_per_worker),
+            "-n", str(cfg.clusters.worker_nodes),
+            "-o", str(outdir),
+            "-q", str(cfg.clusters.object_store_memory),
+            "-t", f"{task}",
+        ]
 
-        sjob_worker_nodes.append(f"--gpus {cfg.clusters.gpus_per_worker}")
-        sjob_worker_nodes.append(f"--pods {cfg.clusters.worker_nodes}")
+        if cfg.clusters.head_node_gpus not in (None, "", "None"):
+            ray_args += ["-y", str(cfg.clusters.head_node_gpus)]
+        if cfg.clusters.head_node_cpus not in (None, "", "None"):
+            ray_args += ["-z", str(cfg.clusters.head_node_cpus)]
 
-        outdir_bind = f'{cfg.paths.pvc_data_name}={cfg.paths.data_path}'
-        datadir_bind = f'{cfg.paths.pvc_outdir_name}={cfg.paths.server_folder_path}'
+        ray_wrap_posix = quote_posix_list(ray_args)
+        main_value = f"bash -lc {shlex.quote(ray_wrap_posix)}"
 
-        sjob_worker_nodes.append(f"--data {outdir_bind}")
-        sjob_worker_nodes.append(f"--data {datadir_bind}")
+        runai_jobname = f"{str(cfg.job_type).lower().replace('_','-')}-{uuid.uuid4().hex[:8]}"
 
-        sjob_worker_nodes.append(f"--base {image}")
-        sjob_worker_nodes.append(f"--main {q(ray_wrap)}")
-
-        sjob_worker_nodes.append(f"--node-pools {cfg.clusters.node_pool}")
-
-        sjob_worker_nodes.append(f"--repo {cfg.clusters.repo_url}")
-        if cfg.clusters.repo_hash is not None:
-            sjob_worker_nodes.append(f"--hash {cfg.clusters.repo_hash}")
-
-        cfg_savedir = posixify(OmegaConf.select(cfg, "paths.outdir"))
-        exp_name = OmegaConf.select(cfg, "experiment_name")
-
-        sjob_worker_nodes.append(f"--evar JOB_NAME={cfg.clusters.job_name}")
-        sjob_worker_nodes.append(f"--evar PROJECT_NAME={cfg.clusters.runai_project}")
-        sjob_worker_nodes.append(f"--evar CFG_B64={cfg_b64}")
-        sjob_worker_nodes.append(f"--evar CFG_SAVEDIR={cfg_savedir}")
-        sjob_worker_nodes.append(f"--evar EXP_NAME={exp_name}.yaml")
-
-        if cfg.clusters.evar is not None:
-            for key, value in cfg.clusters.evar.items():
-                sjob_worker_nodes.append(f"--evar {key}={value}")
-
-        if cfg.clusters.svar is not None:
-            for key, value in cfg.clusters.svar.items():
-                sjob_worker_nodes.append(f"--svar {key}={value}")
-
-        if cfg.clusters.meta is not None:
-            for key, value in cfg.clusters.meta.items():
-                sjob_worker_nodes.append(f"--meta {key}={value}")
-
-        if cfg.clusters.init_script is not None:
-            sjob_worker_nodes.append(f"--init {cfg.clusters.init_script}")
-
-        print("Submitting runai job with configuration:")
-        cmd = " ".join(sjob_worker_nodes)
-        print(cmd)
-        subprocess.run(cmd, shell=True, check=True)
+        args = [
+            "ai","job","submit",
+            "--project", cfg.clusters.runai_project,
+            "--name",    runai_jobname,
+            "--gpus",    str(cfg.clusters.gpus_per_worker),
+            "--pods",    str(cfg.clusters.worker_nodes),
+            "--data",    f"{cfg.paths.pvc_data_name}={cfg.paths.data_path}",
+            "--data",    f"{cfg.paths.pvc_outdir_name}={cfg.paths.server_folder_path}",
+            "--base",    image,
+            "--repo",    cfg.clusters.repo_url,
+            "--evar",    f"JOB_NAME={cfg.clusters.job_name}",
+            "--evar",    f"PROJECT_NAME={cfg.clusters.runai_project}",
+            "--evar",    f"CFG_SAVEDIR={posixify(OmegaConf.select(cfg,'paths.outdir'))}",
+            "--evar",    f"EXP_NAME={OmegaConf.select(cfg,'experiment_name')}.yaml",
+            "--init",    cfg.clusters.init_script,
+            "--logs ",
+            "--main",    main_value,
+        ]
+        subprocess.run(args, check=True)
 
     else:
         raise ValueError(
