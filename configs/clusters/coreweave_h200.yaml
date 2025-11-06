@@ -13,7 +13,7 @@ defaults:
 #        specified by the original allocation.
 
 job_name: ${experiment_name}
-launcher_type: coreweave # type of launcher to use
+launcher_type: runai # type of launcher to use
 partition: gpu_h200_parallel   # partition to submit the job to (use `parallel` parition if `multijob_submission` is not used)
 qos: null   # qos for the job
 python_env: python # python executable to use (if not using apptainer)

@@ -7,6 +7,7 @@ import warnings
 import itertools
 from pathlib import Path
 from subprocess import call, run
+from pathlib import PurePosixPath
 
 import base64
 import zlib
@@ -106,6 +107,15 @@ def set_env_from_cfg(cfg: DictConfig) -> None:
         env_key = key.upper()
         os.environ[env_key] = _to_str(val)
         logger.debug("Set %s=%s", env_key, os.environ[env_key])
+
+
+def posixify(s: str) -> str:
+    if s is None:
+        return s
+    s = str(s).replace("\\", "/")
+    if s.startswith("\\"):
+        s = "/" + s.lstrip("\\/")
+    return s
 
 
 # modify Hydra config on cmd line to use different models
@@ -255,9 +265,15 @@ def launch_job(cfg: DictConfig, run_config_name: str = None, cfg_b64 = None):
     print("\n" + OmegaConf.to_yaml(cfg))
 
     print(f"Current working directory: {Path.cwd()}")
+    is_remote = cfg.clusters.launcher_type in {"runai", "slurm", "lsf"}
     print(f"Creating output directory: {cfg.paths.outdir}...")
-    outdir = Path(cfg.paths.outdir).resolve()
-    outdir.mkdir(exist_ok=True, parents=True)
+    if is_remote:
+        outdir = posixify(cfg.paths.outdir)
+    else:
+        outdir = Path(cfg.paths.outdir).resolve()
+        outdir.mkdir(exist_ok=True, parents=True)
+        outdir = str(outdir)
+
     print(f"Output directory for training job: {outdir}")
 
     # bind path is --bind <host_path> : <container_path>
@@ -287,6 +303,13 @@ def launch_job(cfg: DictConfig, run_config_name: str = None, cfg_b64 = None):
 
     if run_config_name is not None:
         task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {Path(config_name).name} --config-dir={Path(config_name).parent}"
+    else:
+        task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {config_name}"
+
+    if run_config_name is not None:
+        config_dir = Path(config_name).parent
+        config_dir = posixify(config_dir if is_remote else config_dir.resolve())
+        task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {Path(config_name).name} --config-dir={config_dir}"
     else:
         task = f"{cfg.clusters.python_env} {cfg.paths.runner_script} --config-name {config_name}"
 
@@ -469,7 +492,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None, cfg_b64 = None):
         if cfg.clusters.repo_hash is not None:
             sjob_worker_nodes.append(f"--hash {cfg.clusters.repo_hash}")
 
-        cfg_savedir = OmegaConf.select(cfg, "paths.outdir")
+        cfg_savedir = posixify(OmegaConf.select(cfg, "paths.outdir"))
         exp_name = OmegaConf.select(cfg, "experiment_name")
 
         sjob_worker_nodes.append(f"--evar JOB_NAME={cfg.clusters.job_name}")
