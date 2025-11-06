@@ -37,5 +37,8 @@
 
 # USAGE: bash /work/cell_observatory_platform/scripts/utils/training.sh
 
-CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain.yaml"
+# CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain.yaml"
+CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain_test_sweep.yaml"
+
+
 python3 /work/cell_observatory_platform/manager.py --config-name=${CFG}

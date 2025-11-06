@@ -92,7 +92,7 @@ datasets:
   # max_hypercubes: null
   # max_hypercubes: 2000000
   # max_hypercubes: 50000
-  max_hypercubes: 10000
+  max_hypercubes: 1000
 
   use_cached_hypercubes_dataframe: false
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv

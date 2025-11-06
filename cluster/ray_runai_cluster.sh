@@ -16,6 +16,26 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$DIR/args_parser.sh"
 
+mkdir -p "$outdir"
+
+# only rank 0 writes the submitted config
+if [ "${RANK:-0}" -eq 0 ] && [ -n "${CFG_B64:-}" ]; then
+  python3 - <<'PY'
+import os, base64, zlib, pathlib
+outdir = os.environ.get("CFG_SAVEDIR")
+exp_name = os.environ.get("EXP_NAME")
+p = pathlib.Path(outdir).expanduser().resolve()
+p.mkdir(parents=True, exist_ok=True)
+b64 = os.environ["CFG_B64"]
+data = zlib.decompress(base64.b64decode(b64.encode("ascii")))
+dest = p / exp_name
+dest.write_bytes(data)
+print(f"[cfg] wrote {dest}")
+PY
+fi
+
+sleep 10
+
 ############################## SETUP PORTS
 
 # for debugging
@@ -30,6 +50,23 @@ function getfreeport()
         CHECK=$(netstat -a | grep $port)
     done
     echo $port
+}
+
+wait_for_head() {
+    local addr="$1"; local timeout="${2:-180}"; local interval="${3:-2}"
+    local host="${addr%:*}"; local port="${addr##*:}"
+    local deadline=$((SECONDS + timeout))
+    echo "[wait] Waiting for head at ${host}:${port} (timeout=${timeout}s, interval=${interval}s)"
+    while (( SECONDS < deadline )); do
+        if exec 3<>"/dev/tcp/${host}/${port}" 2>/dev/null; then
+            exec 3>&- 3<&-
+            echo "[wait] Head is reachable at ${host}:${port}"
+            return 0
+        fi
+        sleep "${interval}"
+    done
+    echo "[wait] Timed out waiting for head at ${host}:${port} after ${timeout}s"
+    return 1
 }
 
 ############################## CLEANUP
@@ -109,6 +146,8 @@ else
     fi
 
     export cluster_address
+
+    wait_for_head "$cluster_address" 180 2 || { echo "[rank=$RANK] Head not ready; exiting"; exit 1; }
 
     worker_index=$((RANK - 1))
     mkdir -p "$outdir/ray_worker_${worker_index}"

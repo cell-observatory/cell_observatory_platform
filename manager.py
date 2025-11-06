@@ -8,6 +8,9 @@ import itertools
 from pathlib import Path
 from subprocess import call, run
 
+import base64
+import zlib
+
 import hydra
 from hydra import compose
 from dotenv import load_dotenv
@@ -108,11 +111,6 @@ def set_env_from_cfg(cfg: DictConfig) -> None:
 # modify Hydra config on cmd line to use different models
 @hydra.main(config_path="configs", config_name=None)
 def main(cfg: DictConfig):
-    # re-load env variables
-    # assert cfg.paths.dotenv_path is not None and Path(cfg.paths.dotenv_path).exists(), \
-    #     f"Missing dotenv path: {cfg.paths.dotenv_path}"
-    load_dotenv(cfg.paths.dotenv_path, verbose=True)
-
     logger.info(f"Launch config: {OmegaConf.to_yaml(cfg)}")
 
     if cfg.run_type == "multi_run":
@@ -125,6 +123,8 @@ def main(cfg: DictConfig):
             logger.info(f"Launching job with overrides: {run.overrides}")
 
             run_cfg = compose(config_name=run.cfg)
+
+            load_dotenv(run_cfg.paths.dotenv_path, verbose=True)
 
             # first we merge the defaults_overrides with the run config
             defaults_overrides = get_defaults_overrides(run.get("defaults_overrides", None))
@@ -193,15 +193,21 @@ def main(cfg: DictConfig):
                 run_cfg_path = run_path / run_name
                 run_cfg_yml = OmegaConf.to_yaml(run_cfg_sweep)
                 run_cfg_yml = "#@package _global_\n" + run_cfg_yml
-                run_cfg_path.write_text(run_cfg_yml)
+
+                if run_cfg_sweep.clusters.launcher_type == "runai":
+                    cfg_b64 = base64.b64encode(zlib.compress(run_cfg_yml.encode("utf-8"))).decode("ascii")
+                else:
+                    run_cfg_path.write_text(run_cfg_yml)
+                    cfg_b64 = None
 
                 logger.info(f"Run config saved to: {run_cfg_path}")
 
                 # launch the job
                 logger.info(f"Run config after overrides: {run_cfg_yml}")
-                launch_job(run_cfg_sweep, run_config_name=run_cfg_path)
+                launch_job(run_cfg_sweep, run_config_name=run_cfg_path, cfg_b64=cfg_b64)
 
     elif cfg.run_type == "single_run" or cfg.run_type == "tune":
+        load_dotenv(cfg.paths.dotenv_path, verbose=True)
         logger.info("Launching a single training job...")
         launch_job(cfg)
     else:
@@ -209,7 +215,7 @@ def main(cfg: DictConfig):
                          f"Please set cfg.run_type to either 'single_run', 'multi_run', or 'tune'.")
 
 
-def launch_job(cfg: DictConfig, run_config_name: str = None):
+def launch_job(cfg: DictConfig, run_config_name: str = None, cfg_b64 = None):
     # TODO: make sure this recapitulates the old ENV variable
     #       setting logic
     # set environment variables from the config
@@ -437,6 +443,10 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             for all worker nodes.
         '''
 
+        if cfg.clusters.launcher_type == "runai" and cfg_b64 is None:
+            cfg_yaml = "#@package _global_\n" + OmegaConf.to_yaml(cfg, resolve=False)
+            cfg_b64 = base64.b64encode(zlib.compress(cfg_yaml.encode("utf-8"))).decode("ascii")
+
         sjob_worker_nodes = ["ai job submit "]
         sjob_worker_nodes.append(f"--project {cfg.clusters.runai_project}")
         sjob_worker_nodes.append(f"--name {cfg.clusters.job_name}")
@@ -459,8 +469,14 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         if cfg.clusters.repo_hash is not None:
             sjob_worker_nodes.append(f"--hash {cfg.clusters.repo_hash}")
 
+        cfg_savedir = OmegaConf.select(cfg, "paths.outdir")
+        exp_name = OmegaConf.select(cfg, "experiment_name")
+
         sjob_worker_nodes.append(f"--evar JOB_NAME={cfg.clusters.job_name}")
         sjob_worker_nodes.append(f"--evar PROJECT_NAME={cfg.clusters.runai_project}")
+        sjob_worker_nodes.append(f"--evar CFG_B64={cfg_b64}")
+        sjob_worker_nodes.append(f"--evar CFG_SAVEDIR={cfg_savedir}")
+        sjob_worker_nodes.append(f"--evar EXP_NAME={exp_name}.yaml")
 
         if cfg.clusters.evar is not None:
             for key, value in cfg.clusters.evar.items():
