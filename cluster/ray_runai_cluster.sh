@@ -39,27 +39,28 @@ set -x
 
 #bias to selection of higher range ports
 getfreeport() {
-    # pick from 20000–60000
-    while :; do
-        port=$(( (RANDOM % 40000) + 20000 ))
-        # Try to bind with Python; success => free
-        if python3 - <<PY >/dev/null 2>&1
+  while :; do
+    port=$(( (RANDOM % 40000) + 20000 ))
+    if python3 - "$port" <<'PY' >/dev/null 2>&1
 import socket, sys
+port = int(sys.argv[1])
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 try:
-s.bind(("0.0.0.0", $port))
+    s.bind(("0.0.0.0", port))
 except OSError:
-sys.exit(1)  # in use
+    sys.exit(1)  # in use
 finally:
-try: s.close()
-except Exception: pass
+    try:
+        s.close()
+    except Exception:
+        pass
 PY
-        then
-            echo "$port"
-            return 0
-        fi
-    done
+    then
+      echo "$port"
+      return 0
+    fi
+  done
 }
 
 ############################## HELPERS
