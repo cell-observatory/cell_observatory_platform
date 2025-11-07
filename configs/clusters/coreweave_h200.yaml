@@ -83,3 +83,5 @@ init_script: /work/cell_observatory_platform/scripts/utils/init.sh
 evar: null
 svar: null
 meta: null
+
+interactive_session_type: false

@@ -458,7 +458,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         def quote_posix_list(argv):
             return " ".join(shlex.quote(str(x)) for x in argv)
 
-        if cfg.clusters.session_type == "interactive":
+        if cfg.clusters.interactive_session_type:
             ray_args = [
                 "bash", cfg.paths.ray_script,
                 "-c", str(cfg.clusters.cpus_per_worker),
