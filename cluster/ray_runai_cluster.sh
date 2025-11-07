@@ -17,6 +17,7 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$DIR/args_parser.sh"
 
 mkdir -p "$outdir"
+mkdir -p "$TMPDIR"
 
 if [ -z "${RANK:-}" ] || [ -z "${WORLD_SIZE:-}" ]; then
     echo "RANK and WORLD_SIZE not set in the environment."
@@ -89,7 +90,7 @@ do_cleanup() {
     ray stop --force >/dev/null 2>&1 || true
     ) >/dev/null 2>&1 || true
 
-    echo "[RANK ${RANK}]: Exiting job."
+    echo "[RANK ${RANK}]: Exiting job." 
     exit 0
 
     # only rank 0 tears the job down (assumes AI CLI is available)
@@ -121,7 +122,7 @@ if [ "$RANK" -eq 0 ]; then
     echo "[rank=$RANK] Starting Ray head at $cluster_address (dashboard $dashboard_port)"
     bash -lc "bash /work/cell_observatory_platform/cluster/ray_start_cluster_runai.sh \
         -i \"$head_node_ip\" -p \"$port\" -d \"$dashboard_port\" \
-        -c \"${head_cpus}\" -g \"${head_gpus}\" -t \"$outdir\" -q \"${object_store_memory}\"" &
+        -c \"${head_cpus}\" -g \"${head_gpus}\" -t \"$TMPDIR\" -q \"${object_store_memory}\"" &
 
     sleep 10
 

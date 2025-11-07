@@ -493,6 +493,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             "--evar",    f"JOB_NAME={cfg.clusters.job_name}",
             "--evar",    f"PROJECT_NAME={cfg.clusters.runai_project}",
             "--evar",    f"CFG_SAVEDIR={posixify(OmegaConf.select(cfg,'paths.outdir'))}",
+            "--evar",    f"TMPDIR={posixify(OmegaConf.select(cfg,'paths.tmpdir'))}",
             "--evar",    f"EXP_NAME={OmegaConf.select(cfg,'experiment_name')}.yaml",
             "--init",    cfg.clusters.init_script,
             "--main",    main_value,
