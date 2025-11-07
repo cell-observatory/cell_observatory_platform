@@ -42,6 +42,7 @@ event_writers:
       # otherwise if force=False, W&B will log
       # locally and not upload to W&B
       force: true
+      env_path: ${paths.dotenv_path}
 
 event_recorder:
   _target_: training.loggers.EventRecorder

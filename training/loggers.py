@@ -11,6 +11,7 @@ import warnings
 import itertools
 from pathlib import Path
 from abc import abstractmethod
+from dotenv import load_dotenv
 from collections import defaultdict
 from typing import Literal, Tuple, Dict, List
 
@@ -413,11 +414,13 @@ class WandBEventWriter(EventWriter):
         resume_from: str | None = None,
         id: str | None = None,
         notes: str | None = None,
-        force: bool = True
+        force: bool = True,
+        env_path: str | Path | None = None,
     ):
         self.event_recorder = event_recorder
 
         if process_rank() == 0:
+            load_dotenv(env_path)
             wandb.login()
             self.run = wandb.init(project=project,
                                     entity=entity,
