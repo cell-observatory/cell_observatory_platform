@@ -47,6 +47,9 @@ def initialize_session(cfg: DictConfig):
         )
 
     else:
+        logger.info(f"No existing Ray cluster detected in environment variables.")
+        logger.info(f"Port detected: {os.environ.get('port', 'None')}")
+        logger.info(f"head_node_ip detected: {os.environ.get('head_node_ip', 'None')}")
         logger.info(f"Starting a new local ray cluster")
 
         tmpdir = f"/tmp/symlink_{uuid.uuid1()}"

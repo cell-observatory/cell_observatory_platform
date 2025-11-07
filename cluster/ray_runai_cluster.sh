@@ -117,7 +117,7 @@ if [ "$RANK" -eq 0 ]; then
     export RAY_PROMETHEUS_HOST="${head_node_ip}:9090"
 
     cluster_address="${head_node_ip}:${port}"
-    export head_node_ip cluster_address
+    export head_node_ip cluster_address port
 
     echo "[rank=$RANK] Starting Ray head at $cluster_address (dashboard $dashboard_port)"
     bash -lc "bash /work/cell_observatory_platform/cluster/ray_start_cluster_runai.sh \
