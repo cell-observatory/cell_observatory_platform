@@ -17,7 +17,7 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$DIR/args_parser.sh"
 
 mkdir -p "$outdir"
-mkdir -p "$TMPDIR"
+# mkdir -p "$TMPDIR"
 
 if [ -z "${RANK:-}" ] || [ -z "${WORLD_SIZE:-}" ]; then
     echo "RANK and WORLD_SIZE not set in the environment."
@@ -172,15 +172,18 @@ fi
 
 ############################## RUN WORKLOAD
 
-echo "Running user tasks: ${tasks:-}"
-if [ -n "${tasks:-}" ]; then
-    bash -lc "$tasks"
+if [ "${RANK}" -eq 0 ]; then
+    echo "[rank=$RANK] Running user tasks on head: ${tasks:-<none>}"
+    if [[ -n "${tasks:-}" ]]; then
+        bash -lc "$tasks"
+    else
+        echo "[rank=$RANK] No tasks specified; skipping."
+    fi
+    echo "[rank=$RANK] User tasks completed, starting cleanup"
+    do_cleanup
+    exit 0
 else
-    echo "No tasks specified!"
+    echo "[rank=$RANK] Worker rank; not running tasks. Sleeping until terminated..."
+    # block until head triggers cleanup via traps
+    while true; do sleep 60; done
 fi
-
-############################## CLEANUP
-
-echo "User tasks completed, starting cleanup"
-do_cleanup
-exit 0

@@ -35,8 +35,8 @@
 
 # --- CoreWeave 
 
-# CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain.yaml"
-CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain_test_sweep.yaml"
+CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain.yaml"
+# CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain_test_sweep.yaml"
 
 # --- Linux
 

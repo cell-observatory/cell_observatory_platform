@@ -15,6 +15,9 @@ dotenv_path: /workspace/cell_observatory_project/hph/.env
 
 pvc_data_name: project-cell-observatory-pvc-120t
 pvc_outdir_name: project-cell-observatory-pvc
+pvc_data_mount_path: /workspace/CellObservatoryData
+pvc_outdir_mount_path: /workspace/cell_observatory_project
+
 tmpdir: /workspace/CellObservatoryData/tmp
 
 # Keep them null to be set automatically or change in the main config file
