@@ -53,7 +53,7 @@ _cleaned=0
 cleanup() {
     _cleaned=1
     echo "Running head node cleanup..."
-    ray stop --force >/dev/null 2>&1 || true
+    uv run ray stop --force >/dev/null 2>&1 || true
     echo "Successfully stopped ray head node"
     python3 /work/cell_observatory_platform/utils/cleanup.py
     echo "Successfully ran cleanup.py"
@@ -78,7 +78,7 @@ DASHBOARD_AGENT_PORT=$(pick_agent_port)
 python3 /work/cell_observatory_platform/utils/cleanup.py
 
 echo "Starting ray head node @ $(hostname) => $cluster_address with CPUs[$cpus] & GPUs [$gpus]"
-job="ray start --block --head --node-ip-address=$ip --port=$port --dashboard-agent-listen-port=$DASHBOARD_AGENT_PORT --dashboard-host=0.0.0.0 --min-worker-port 18999 --max-worker-port 19999 --temp-dir=$tmpdir --num-cpus=$cpus --num-gpus=$gpus --object-store-memory=$object_store_memory"
+job="uv run ray start --block --head --node-ip-address=$ip --port=$port --dashboard-agent-listen-port=$DASHBOARD_AGENT_PORT --dashboard-host=0.0.0.0 --min-worker-port 18999 --max-worker-port 19999 --temp-dir=$tmpdir --num-cpus=$cpus --num-gpus=$gpus --object-store-memory=$object_store_memory"
 echo $job
 $job &
 head_pid=$!

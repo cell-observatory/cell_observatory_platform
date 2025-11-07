@@ -38,14 +38,28 @@ fi
 set -x
 
 #bias to selection of higher range ports
-function getfreeport()
-{
-    CHECK="do while"
-    while [[ ! -z $CHECK ]]; do
-        port=$(( ( RANDOM % 40000 )  + 20000 ))
-        CHECK=$(netstat -a | grep $port)
+getfreeport() {
+    # pick from 20000–60000
+    while :; do
+        port=$(( (RANDOM % 40000) + 20000 ))
+        # Try to bind with Python; success => free
+        if python3 - <<PY >/dev/null 2>&1
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+s.bind(("0.0.0.0", $port))
+except OSError:
+sys.exit(1)  # in use
+finally:
+try: s.close()
+except Exception: pass
+PY
+        then
+            echo "$port"
+            return 0
+        fi
     done
-    echo $port
 }
 
 ############################## HELPERS
@@ -71,14 +85,17 @@ do_cleanup() {
         done
     fi
     python3 /work/cell_observatory_platform/utils/cleanup.py || true
-    ray stop --force >/dev/null 2>&1 || true
+    uv run ray stop --force >/dev/null 2>&1 || true
     ) >/dev/null 2>&1 || true
 
-    # only rank 0 tears the job down
-    if [ "${RANK}" -eq 0 ]; then
-        echo "Rank 0 deleting job ${JOB_NAME} in project ${PROJECT_NAME}"
-        ai job delete --name "$JOB_NAME" --project "${PROJECT_NAME}"
-    fi
+    echo "[RANK ${RANK}]: Exiting job."
+    exit 0
+
+    # only rank 0 tears the job down (assumes AI CLI is available)
+    # if [ "${RANK}" -eq 0 ]; then
+    #     echo "Rank 0 deleting job ${JOB_NAME} in project ${PROJECT_NAME}"
+    #     ai job delete --name "$JOB_NAME" --project "${PROJECT_NAME}"
+    # fi
 }
 
 trap 'do_cleanup; exit 130' INT    # SIGINT
@@ -101,13 +118,13 @@ if [ "$RANK" -eq 0 ]; then
     export head_node_ip cluster_address
 
     echo "[rank=$RANK] Starting Ray head at $cluster_address (dashboard $dashboard_port)"
-    bash -lc "/work/cell_observatory_platform/cluster/ray_start_cluster_runai.sh \
+    bash -lc "bash /work/cell_observatory_platform/cluster/ray_start_cluster_runai.sh \
         -i \"$head_node_ip\" -p \"$port\" -d \"$dashboard_port\" \
         -c \"${head_cpus}\" -g \"${head_gpus}\" -t \"$outdir\" -q \"${object_store_memory}\"" &
 
     sleep 10
 
-    bash -lc "/work/cell_observatory_platform/cluster/ray_check_status.sh -a \"$cluster_address\" -r 1"
+    bash -lc "/work/cell_observatory_platform/cluster/ray_check_status_runai.sh -a \"$cluster_address\" -r 1"
     rc=$?
     if [ $rc -ne 0 ]; then
         echo "[rank=$RANK] Head failed to start; rc=$rc"
@@ -143,7 +160,7 @@ fi
 
 ############################## CLUSTER HEALTH
 
-bash -lc "/work/cell_observatory_platform/cluster/ray_check_status.sh -a \"$cluster_address\" -r \"$WORLD_SIZE\""
+bash -lc "/work/cell_observatory_platform/cluster/ray_check_status_runai.sh -a \"$cluster_address\" -r \"$WORLD_SIZE\""
 rc=$?
 if [ $rc -ne 0 ]; then
     echo "Cluster failed to start correctly, exiting"
