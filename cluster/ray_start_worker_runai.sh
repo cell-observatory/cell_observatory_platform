@@ -50,7 +50,7 @@ cleanup() {
     (( _cleaned )) && return
     _cleaned=1
     echo "Running worker node cleanup..."
-    uv run ray stop --force >/dev/null 2>&1 || true
+    ray stop --force >/dev/null 2>&1 || true
     echo "Successfully stopped ray worker"
     python3 /work/cell_observatory_platform/utils/cleanup.py 
     echo "Successfully ran cleanup.py"
@@ -62,7 +62,7 @@ trap 'cleanup; exit 143' TERM INT
 python3 /work/cell_observatory_platform/utils/cleanup.py
 
 echo "Starting ray worker @ $(hostname) with CPUs[$cpus] & GPUs [$gpus] => $cluster_address"
-job="run ray start --block --address=$cluster_address --num-cpus=$cpus --num-gpus=$gpus --temp-dir=$tmpdir --object-store-memory=$object_store_memory"
+job="ray start --block --address=$cluster_address --num-cpus=$cpus --num-gpus=$gpus --temp-dir=$tmpdir --object-store-memory=$object_store_memory"
 $job &
 ray_pid=$!
 

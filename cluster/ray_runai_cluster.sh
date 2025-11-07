@@ -86,7 +86,7 @@ do_cleanup() {
         done
     fi
     python3 /work/cell_observatory_platform/utils/cleanup.py || true
-    uv run ray stop --force >/dev/null 2>&1 || true
+    ray stop --force >/dev/null 2>&1 || true
     ) >/dev/null 2>&1 || true
 
     echo "[RANK ${RANK}]: Exiting job."
