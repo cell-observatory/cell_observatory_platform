@@ -62,7 +62,7 @@ trap 'cleanup; exit 143' TERM INT
 python3 /work/cell_observatory_platform/utils/cleanup.py
 
 echo "Starting ray worker @ $(hostname) with CPUs[$cpus] & GPUs [$gpus] => $cluster_address"
-job="uv run ray start --block --address=$cluster_address --num-cpus=$cpus --num-gpus=$gpus --temp-dir=$tmpdir --object-store-memory=$object_store_memory"
+job="run ray start --block --address=$cluster_address --num-cpus=$cpus --num-gpus=$gpus --temp-dir=$tmpdir --object-store-memory=$object_store_memory"
 $job &
 ray_pid=$!
 

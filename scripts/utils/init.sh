@@ -1,8 +1,8 @@
 #!/bin/bash
 
-uv venv
+# uv venv
 
-source .venv/bin/activate
+# source .venv/bin/activate
 
 # uv pip install --upgrade \
 #   'astropy==7.1' 'connectorx==0.4.4' 'deepspeed==0.17.6' 'fvcore==0.1.5.post20221221' \

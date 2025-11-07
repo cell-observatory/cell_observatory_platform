@@ -125,7 +125,7 @@ if [ "$RANK" -eq 0 ]; then
 
     sleep 10
 
-    bash -lc "/work/cell_observatory_platform/cluster/ray_check_status_runai.sh -a \"$cluster_address\" -r 1"
+    bash -lc "bash /work/cell_observatory_platform/cluster/ray_check_status_runai.sh -a \"$cluster_address\" -r 1"
     rc=$?
     if [ $rc -ne 0 ]; then
         echo "[rank=$RANK] Head failed to start; rc=$rc"
@@ -150,7 +150,7 @@ else
     mkdir -p "$outdir/ray_worker_${worker_index}"
 
     echo "[rank=$RANK] Starting Ray worker idx=$worker_index -> head at $cluster_address"
-    bash -lc "exec /work/cell_observatory_platform/cluster/ray_start_worker_runai.sh \
+    bash -lc "bash /work/cell_observatory_platform/cluster/ray_start_worker_runai.sh \
         -a \"$cluster_address\" \
         -c \"${cpus}\" \
         -g \"${gpus}\" \
@@ -161,7 +161,7 @@ fi
 
 ############################## CLUSTER HEALTH
 
-bash -lc "/work/cell_observatory_platform/cluster/ray_check_status_runai.sh -a \"$cluster_address\" -r \"$WORLD_SIZE\""
+bash -lc "bash /work/cell_observatory_platform/cluster/ray_check_status_runai.sh -a \"$cluster_address\" -r \"$WORLD_SIZE\""
 rc=$?
 if [ $rc -ne 0 ]; then
     echo "Cluster failed to start correctly, exiting"

@@ -17,7 +17,7 @@ while getopts ":a:r:" option;do
 done
 
 TIMEOUT=60 # seconds
-check="uv run ray status --address $cluster_address"
+check="run ray status --address $cluster_address"
 echo "Checking status for $cluster_address"
 st="$(date -u +%s)"
 
