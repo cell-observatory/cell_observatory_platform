@@ -455,53 +455,86 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             at once with RUNAI scheduler. We assume identical configurations
             for all worker nodes.
         '''
-
         def quote_posix_list(argv):
             return " ".join(shlex.quote(str(x)) for x in argv)
 
-        ray_args = [
-            "bash", cfg.paths.ray_script,
-            "-c", str(cfg.clusters.cpus_per_worker),
-            "-g", str(cfg.clusters.gpus_per_worker),
-            "-m", str(cfg.clusters.mem_per_worker),
-            "-n", str(cfg.clusters.worker_nodes),
-            "-o", str(outdir),
-            "-q", str(cfg.clusters.object_store_memory),
-            "-t", f"{task}",
-        ]
+        if cfg.clusters.session_type == "interactive":
+            ray_args = [
+                "bash", cfg.paths.ray_script,
+                "-c", str(cfg.clusters.cpus_per_worker),
+                "-g", str(cfg.clusters.gpus_per_worker),
+                "-m", str(cfg.clusters.mem_per_worker),
+                "-n", str(cfg.clusters.worker_nodes),
+                "-o", str(outdir),
+                "-q", str(cfg.clusters.object_store_memory),
+                "-t", f"{task}",
+            ]
 
-        if cfg.clusters.head_node_gpus not in (None, "", "None"):
-            ray_args += ["-y", str(cfg.clusters.head_node_gpus)]
-        if cfg.clusters.head_node_cpus not in (None, "", "None"):
-            ray_args += ["-z", str(cfg.clusters.head_node_cpus)]
+            if cfg.clusters.head_node_gpus not in (None, "", "None"):
+                ray_args += ["-y", str(cfg.clusters.head_node_gpus)]
+            if cfg.clusters.head_node_cpus not in (None, "", "None"):
+                ray_args += ["-z", str(cfg.clusters.head_node_cpus)]
 
-        ray_wrap_posix = " ".join(shlex.quote(str(x)) for x in ray_args)
-        main_value = f'bash -lc "{ray_wrap_posix}"'
+            ray_wrap_posix = " ".join(shlex.quote(str(x)) for x in ray_args)
+            cmd = ["bash", "-lc", ray_wrap_posix]
 
-        runai_jobname = f"{str(cfg.job_type).lower().replace('_','-')}-{uuid.uuid4().hex[:8]}"
+            os.environ["JOB_NAME"] = cfg.clusters.job_name
+            os.environ["PROJECT_NAME"] = cfg.clusters.runai_project
+            os.environ["CFG_SAVEDIR"] = posixify(OmegaConf.select(cfg, "paths.outdir"))
+            os.environ["TMPDIR"] = posixify(OmegaConf.select(cfg, "paths.tmpdir"))
+            os.environ["EXP_NAME"] = f"{OmegaConf.select(cfg,'experiment_name')}.yaml"
+            os.environ["PYTHONPATH"] = (
+                f"{cfg.paths.python_path}"
+            )
 
-        args = [
-            "ai","job","submit",
-            "--project", cfg.clusters.runai_project,
-            "--name",    runai_jobname,
-            "--gpus",    str(cfg.clusters.gpus_per_worker),
-            "--pods",    str(cfg.clusters.worker_nodes),
-            "--data",    f"{cfg.paths.pvc_data_name}={cfg.paths.pvc_data_mount_path}",
-            "--data",    f"{cfg.paths.pvc_outdir_name}={cfg.paths.pvc_outdir_mount_path}",
-            "--base",    image,
-            "--repo",    cfg.clusters.repo_url,
-            "--evar",    f"JOB_NAME={cfg.clusters.job_name}",
-            "--evar",    f"PROJECT_NAME={cfg.clusters.runai_project}",
-            "--evar",    f"CFG_SAVEDIR={posixify(OmegaConf.select(cfg,'paths.outdir'))}",
-            "--evar",    f"TMPDIR={posixify(OmegaConf.select(cfg,'paths.tmpdir'))}",
-            "--evar",    f"EXP_NAME={OmegaConf.select(cfg,'experiment_name')}.yaml",
-            "--evar",    f"PYTHONPATH={cfg.paths.python_path}",
-            "--init",    cfg.clusters.init_script,
-            "--main",    main_value,
-        ]
-        print("Submitting Run:AI job with configuration:")
-        print(quote_posix_list(args))
-        subprocess.run(args, check=True)
+            print("Launching interactive job with command:")
+            print("bash -lc", shlex.quote(ray_wrap_posix))
+            subprocess.run(cmd, check=True)
+
+        else:
+            ray_args = [
+                "bash", cfg.paths.ray_script,
+                "-c", str(cfg.clusters.cpus_per_worker),
+                "-g", str(cfg.clusters.gpus_per_worker),
+                "-m", str(cfg.clusters.mem_per_worker),
+                "-n", str(cfg.clusters.worker_nodes),
+                "-o", str(outdir),
+                "-q", str(cfg.clusters.object_store_memory),
+                "-t", f"{task}",
+            ]
+
+            if cfg.clusters.head_node_gpus not in (None, "", "None"):
+                ray_args += ["-y", str(cfg.clusters.head_node_gpus)]
+            if cfg.clusters.head_node_cpus not in (None, "", "None"):
+                ray_args += ["-z", str(cfg.clusters.head_node_cpus)]
+
+            ray_wrap_posix = " ".join(shlex.quote(str(x)) for x in ray_args)
+            main_value = f'bash -lc "{ray_wrap_posix}"'
+
+            runai_jobname = f"{str(cfg.job_type).lower().replace('_','-')}-{uuid.uuid4().hex[:8]}"
+
+            args = [
+                "ai","job","submit",
+                "--project", cfg.clusters.runai_project,
+                "--name",    runai_jobname,
+                "--gpus",    str(cfg.clusters.gpus_per_worker),
+                "--pods",    str(cfg.clusters.worker_nodes),
+                "--data",    f"{cfg.paths.pvc_data_name}={cfg.paths.pvc_data_mount_path}",
+                "--data",    f"{cfg.paths.pvc_outdir_name}={cfg.paths.pvc_outdir_mount_path}",
+                "--base",    image,
+                "--repo",    cfg.clusters.repo_url,
+                "--evar",    f"JOB_NAME={cfg.clusters.job_name}",
+                "--evar",    f"PROJECT_NAME={cfg.clusters.runai_project}",
+                "--evar",    f"CFG_SAVEDIR={posixify(OmegaConf.select(cfg,'paths.outdir'))}",
+                "--evar",    f"TMPDIR={posixify(OmegaConf.select(cfg,'paths.tmpdir'))}",
+                "--evar",    f"EXP_NAME={OmegaConf.select(cfg,'experiment_name')}.yaml",
+                "--evar",    f"PYTHONPATH={cfg.paths.python_path}",
+                "--init",    cfg.clusters.init_script,
+                "--main",    main_value,
+            ]
+            print("Submitting Run:AI job with configuration:")
+            print(quote_posix_list(args))
+            subprocess.run(args, check=True)
 
     else:
         raise ValueError(
