@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# remove when i figure out what env vars are called
-echo "=== All environment variables ==="
-printenv
-echo "==============================="
-
 # NCCL settings optimized for Ethernet without InfiniBand
 export NCCL_DEBUG=INFO
 export NCCL_IB_DISABLE=1
@@ -23,23 +18,19 @@ source "$DIR/args_parser.sh"
 
 mkdir -p "$outdir"
 
-# only rank 0 writes the submitted config
-if [ "${RANK:-0}" -eq 0 ] && [ -n "${CFG_B64:-}" ]; then
-  python3 - <<'PY'
-import os, base64, zlib, pathlib
-outdir = os.environ.get("CFG_SAVEDIR")
-exp_name = os.environ.get("EXP_NAME")
-p = pathlib.Path(outdir).expanduser().resolve()
-p.mkdir(parents=True, exist_ok=True)
-b64 = os.environ["CFG_B64"]
-data = zlib.decompress(base64.b64decode(b64.encode("ascii")))
-dest = p / exp_name
-dest.write_bytes(data)
-print(f"[cfg] wrote {dest}")
-PY
+if [ -z "${RANK:-}" ] || [ -z "${WORLD_SIZE:-}" ]; then
+    echo "RANK and WORLD_SIZE not set in the environment."
+    echo "Assuming single-node run with RANK=0 and WORLD_SIZE=${gpus}"
+    RANK=0
+    WORLD_SIZE=${gpus}
 fi
 
-sleep 10
+if [ -n "${JOB_NAME:-}" ] && [ -n "${PROJECT_NAME:-}" ]; then
+    echo "Running in Run:AI job ${JOB_NAME} in project ${PROJECT_NAME}"
+else
+    echo "JOB_NAME or PROJECT_NAME not set; stopping job."
+    exit 1
+fi
 
 ############################## SETUP PORTS
 
@@ -57,24 +48,7 @@ function getfreeport()
     echo $port
 }
 
-wait_for_head() {
-    local addr="$1"; local timeout="${2:-180}"; local interval="${3:-2}"
-    local host="${addr%:*}"; local port="${addr##*:}"
-    local deadline=$((SECONDS + timeout))
-    echo "[wait] Waiting for head at ${host}:${port} (timeout=${timeout}s, interval=${interval}s)"
-    while (( SECONDS < deadline )); do
-        if exec 3<>"/dev/tcp/${host}/${port}" 2>/dev/null; then
-            exec 3>&- 3<&-
-            echo "[wait] Head is reachable at ${host}:${port}"
-            return 0
-        fi
-        sleep "${interval}"
-    done
-    echo "[wait] Timed out waiting for head at ${host}:${port} after ${timeout}s"
-    return 1
-}
-
-############################## CLEANUP
+############################## HELPERS
 
 do_cleanup() {
     echo "Running cleanup (rank=$RANK)"
@@ -101,7 +75,7 @@ do_cleanup() {
     ) >/dev/null 2>&1 || true
 
     # only rank 0 tears the job down
-    if [ "${RANK}" -eq 0 ] && [ -n "${JOB_NAME}" ] && [ -n "${PROJECT_NAME}" ]; then
+    if [ "${RANK}" -eq 0 ]; then
         echo "Rank 0 deleting job ${JOB_NAME} in project ${PROJECT_NAME}"
         ai job delete --name "$JOB_NAME" --project "${PROJECT_NAME}"
     fi
@@ -140,25 +114,25 @@ if [ "$RANK" -eq 0 ]; then
         exit $rc
     fi
     echo "[rank=$RANK] Head healthy at $cluster_address"
+    echo "$cluster_address" > "$outdir/cluster_address"
 else
-    if [ -n "${CLUSTER_ADDRESS}" ]; then
-        cluster_address="$CLUSTER_ADDRESS"
-    elif [ -n "${MASTER_ADDR}" ] && [ -n "${MASTER_PORT}" ]; then
-        cluster_address="${MASTER_ADDR}:${MASTER_PORT}"
-    else
-        echo "[rank=$RANK] ERROR: CLUSTER_ADDRESS or MASTER_ADDR/MASTER_PORT must be set."
+    deadline=$((SECONDS + 300))
+    while [ ! -s "$outdir/cluster_address" ]; do
+        (( SECONDS >= deadline )) && { echo "[rank=$RANK] Timeout waiting for cluster_address"; exit 1; }
+        sleep 2
+    done
+    cluster_address="$(cat "$outdir/cluster_address")"
+
+    if [[ -z "${cluster_address:-}" ]]; then
+        echo "[rank=$RANK] cluster_address is empty; refusing to start worker."
         exit 1
     fi
-
-    export cluster_address
-
-    wait_for_head "$cluster_address" 180 2 || { echo "[rank=$RANK] Head not ready; exiting"; exit 1; }
 
     worker_index=$((RANK - 1))
     mkdir -p "$outdir/ray_worker_${worker_index}"
 
     echo "[rank=$RANK] Starting Ray worker idx=$worker_index -> head at $cluster_address"
-    bash -lc "exec /work/cell_observatory_platform/cluster/ray_start_worker.sh \
+    bash -lc "exec /work/cell_observatory_platform/cluster/ray_start_worker_runai.sh \
         -a \"$cluster_address\" \
         -c \"${cpus}\" \
         -g \"${gpus}\" \
@@ -179,7 +153,7 @@ fi
 
 ############################## RUN WORKLOAD
 
-echo "Running user tasks: $tasks"
+echo "Running user tasks: ${tasks:-}"
 if [ -n "${tasks:-}" ]; then
     bash -lc "$tasks"
 else

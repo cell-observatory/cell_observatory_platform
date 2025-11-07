@@ -55,7 +55,7 @@ cleanup() {
     echo "Running head node cleanup..."
     ray stop --force >/dev/null 2>&1 || true
     echo "Successfully stopped ray head node"
-    python3 /work/cell_observatory_platform//utils/cleanup.py
+    python3 /work/cell_observatory_platform/utils/cleanup.py
     echo "Successfully ran cleanup.py"
 }
 trap 'cleanup' EXIT

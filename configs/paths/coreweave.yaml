@@ -1,4 +1,4 @@
-docker_image: ghcr.io/chanzuckerberg/gc-base:25.08-py3-1c31ca4
+docker_image: ghcr.io/chanzuckerberg/gc-base:25.08-py3-2fad7d6
 apptainer_image: null
 
 # No need to change anything below
