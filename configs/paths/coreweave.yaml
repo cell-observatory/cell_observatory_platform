@@ -4,7 +4,7 @@ apptainer_image: null
 # No need to change anything below
 # --------------------------------------------------------------------------------
 repo_path: ${oc.env:REPO_DIR}
-data_path: /workspace/cell_observatory_project/hph
+data_path: /workspace/cell_observatory_project/tmp
 server_folder_path: /workspace/CellObservatoryData/data/gokul-lab
 workdir: /work/${oc.env:REPO_NAME} # mapping your repo path to this path inside the container
 
@@ -15,7 +15,7 @@ dotenv_path: /workspace/cell_observatory_project/hph/.env
 
 pvc_data_name: project-cell-observatory-pvc-120t
 pvc_outdir_name: project-cell-observatory-pvc
-tmpdir: /workspace/CellObservatoryData/hph/tmp
+tmpdir: /workspace/CellObservatoryData/tmp
 
 # Keep them null to be set automatically or change in the main config file
 # --------------------------------------------------------------------------------
