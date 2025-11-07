@@ -495,6 +495,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             "--evar",    f"CFG_SAVEDIR={posixify(OmegaConf.select(cfg,'paths.outdir'))}",
             "--evar",    f"TMPDIR={posixify(OmegaConf.select(cfg,'paths.tmpdir'))}",
             "--evar",    f"EXP_NAME={OmegaConf.select(cfg,'experiment_name')}.yaml",
+            "--evar",    f"PYTHONPATH={cfg.paths.python_path}",
             "--init",    cfg.clusters.init_script,
             "--main",    main_value,
         ]

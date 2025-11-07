@@ -19,6 +19,7 @@ pvc_data_mount_path: /workspace/CellObservatoryData
 pvc_outdir_mount_path: /workspace/cell_observatory_project
 
 tmpdir: /workspace/CellObservatoryData/tmp
+python_path: /work:/work/cell_observatory_platform
 
 # Keep them null to be set automatically or change in the main config file
 # --------------------------------------------------------------------------------
