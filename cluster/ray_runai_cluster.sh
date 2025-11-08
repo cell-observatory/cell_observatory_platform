@@ -18,11 +18,10 @@ source "$DIR/args_parser.sh"
 mkdir -p "$outdir"
 # mkdir -p "$TMPDIR"
 
-if [ -z "${RANK:-}" ] || [ -z "${WORLD_SIZE:-}" ]; then
-    echo "RANK and WORLD_SIZE not set in the environment."
-    echo "Assuming single-node run with RANK=0 and WORLD_SIZE=${gpus}"
+if [ -z "${RANK:-}" ]; then
+    echo "RANK not set in the environment."
+    echo "Assuming single-node run with RANK=0."
     RANK=0
-    WORLD_SIZE=${gpus}
 fi
 
 if [ -n "${JOB_NAME:-}" ]; then
@@ -154,7 +153,7 @@ fi
 
 ############################## CLUSTER HEALTH
 
-bash -lc "bash /work/cell_observatory_platform/cluster/ray_check_status_runai.sh -a \"$cluster_address\" -r \"$WORLD_SIZE\""
+bash -lc "bash /work/cell_observatory_platform/cluster/ray_check_status_runai.sh -a \"$cluster_address\" -r \"$NUM_NODES\""
 rc=$?
 if [ $rc -ne 0 ]; then
     echo "Cluster failed to start correctly, exiting"
@@ -176,8 +175,8 @@ if [ "${RANK}" -eq 0 ]; then
     sentinel="${outdir}/cleanup_${JOB_NAME}.txt"
     echo "SHUTDOWN" > "$sentinel"
 
-    # wait for worker ACKs (WORLD_SIZE includes head)
-    want=$(( WORLD_SIZE - 1 ))
+    # wait for worker ACKs (NUM_NODES includes head)
+    want=$(( NUM_NODES - 1 ))
     deadline=$(( SECONDS + 180 ))
     while :; do
         have=$(ls -1 "${outdir}"/cleanup_${JOB_NAME}_ack_*.ok 2>/dev/null | wc -l | tr -d ' ')

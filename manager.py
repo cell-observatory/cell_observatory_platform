@@ -521,6 +521,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
                 "--data",    f"{cfg.paths.pvc_data_name}={cfg.paths.pvc_data_mount_path}",
                 "--base",    image,
                 "--repo",    cfg.clusters.repo_url,
+                "--evar",    f"NUM_NODES={cfg.clusters.worker_nodes}",
                 "--evar",    f"JOB_NAME={runai_jobname}",
                 "--evar",    f"CFG_SAVEDIR={posixify(OmegaConf.select(cfg,'paths.outdir'))}",
                 "--evar",    f"TMPDIR={posixify(OmegaConf.select(cfg,'paths.tmpdir'))}",
