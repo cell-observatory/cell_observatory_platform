@@ -90,9 +90,9 @@ do_cleanup() {
     echo "[RANK ${RANK}]: Exiting job." 
 }
 
-trap 'do_cleanup; exit 0' EXIT   # normal exit
-trap 'do_cleanup; exit 130' INT    # SIGINT
-trap 'do_cleanup; exit 143' TERM   # SIGTERM
+trap 'do_cleanup' EXIT   # normal exit
+trap 'do_cleanup' INT    # SIGINT
+trap 'do_cleanup' TERM   # SIGTERM
 
 ############################## HEAD / WORKERS
 
@@ -113,7 +113,7 @@ if [ "$RANK" -eq 0 ]; then
     echo "[rank=$RANK] Starting Ray head at $cluster_address (dashboard $dashboard_port)"
     bash -lc "bash /work/cell_observatory_platform/cluster/ray_start_cluster_runai.sh \
         -i \"$head_node_ip\" -p \"$port\" -d \"$dashboard_port\" \
-        -c \"${head_cpus}\" -g \"${head_gpus}\" -t \"$TMPDIR\" -q \"${object_store_memory}\"" &
+        -c \"${head_cpus}\" -g \"${head_gpus}\" -t \"$TMPDIR\" -o \"$outdir\"  -q \"${object_store_memory}\"" &
 
     sleep 10
 
@@ -146,7 +146,8 @@ else
         -a \"$cluster_address\" \
         -c \"${cpus}\" \
         -g \"${gpus}\" \
-        -t \"$outdir\" \
+        -o \"$outdir\" \
+        -t \"$TMPDIR\" \
         -q \"${object_store_memory}\" \
         -w \"${worker_index}\""
 fi

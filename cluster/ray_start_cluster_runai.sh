@@ -14,7 +14,7 @@ export NCCL_DEBUG_SUBSYS=GRAPH
 export RAY_DEDUP_LOGS=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-while getopts ":i:p:d:c:g:t:q:" option;do
+while getopts ":i:p:d:c:g:t:q:o:" option;do
     case "${option}" in
     i)  i=${OPTARG}
         ip=$i
@@ -43,6 +43,10 @@ while getopts ":i:p:d:c:g:t:q:" option;do
     q)  q=${OPTARG}
         object_store_memory=$(printf "%.0f" "$q")
         echo object_store_memory=$object_store_memory
+    ;;
+    o)  o=${OPTARG}
+        outdir=$o
+        echo outdir=$outdir
     ;;
     *)  echo "Did not supply the correct arguments"
     ;;
@@ -83,7 +87,7 @@ echo $job
 $job &
 head_pid=$!
 
-echo "$$" > "$tmpdir/cleanup_head.pid"
+echo "$$" > "$outdir/cleanup_head.pid"
 
 echo "[HEAD NODE]: PID for cleanup is $$"
 

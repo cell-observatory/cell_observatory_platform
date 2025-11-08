@@ -14,7 +14,7 @@ export NCCL_DEBUG_SUBSYS=GRAPH
 export RAY_DEDUP_LOGS=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-while getopts ":a:c:g:t:q:w:" option;do
+while getopts ":a:c:g:t:q:w:o:" option;do
     case "${option}" in
     a)  a=${OPTARG}
         cluster_address=$a
@@ -39,6 +39,10 @@ while getopts ":a:c:g:t:q:w:" option;do
     w)  w=${OPTARG}
         worker_id=$w
         echo worker_id=$worker_id
+    ;;
+    o)  o=${OPTARG}
+        outdir=$o
+        echo outdir=$outdir
     ;;
     *)  echo "Did not supply the correct arguments"
     ;;
@@ -67,7 +71,7 @@ $job &
 ray_pid=$!
 
 if [[ -n "${worker_id:-}" ]]; then
-  echo "$$" > "$tmpdir/cleanup_${worker_id}.pid"
+  echo "$$" > "$outdir/cleanup_${worker_id}.pid"
 fi
 
 echo "[WORKER NODE]: PID for cleanup is $$"
