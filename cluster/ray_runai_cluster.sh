@@ -25,10 +25,10 @@ if [ -z "${RANK:-}" ] || [ -z "${WORLD_SIZE:-}" ]; then
     WORLD_SIZE=${gpus}
 fi
 
-if [ -n "${JOB_NAME:-}" ] && [ -n "${PROJECT_NAME:-}" ]; then
-    echo "Running in Run:AI job ${JOB_NAME} in project ${PROJECT_NAME}"
+if [ -n "${JOB_NAME:-}" ]; then
+    echo "Running in Run:AI job ${JOB_NAME}."
 else
-    echo "JOB_NAME or PROJECT_NAME not set; stopping job."
+    echo "JOB_NAME not set; stopping job."
     exit 1
 fi
 
@@ -75,7 +75,6 @@ do_cleanup() {
         PF="$outdir/cleanup_${worker_index}.pid"
     fi
 
-    (
     GRACE_SECONDS=60
     if [ -f "$PF" ]; then
         pid=$(cat "$PF")
@@ -87,18 +86,11 @@ do_cleanup() {
     fi
     python3 /work/cell_observatory_platform/utils/cleanup.py || true
     ray stop --force >/dev/null 2>&1 || true
-    ) >/dev/null 2>&1 || true
 
     echo "[RANK ${RANK}]: Exiting job." 
-    exit 0
-
-    # only rank 0 tears the job down (assumes AI CLI is available)
-    # if [ "${RANK}" -eq 0 ]; then
-    #     echo "Rank 0 deleting job ${JOB_NAME} in project ${PROJECT_NAME}"
-    #     ai job delete --name "$JOB_NAME" --project "${PROJECT_NAME}"
-    # fi
 }
 
+trap 'do_cleanup; exit 0' EXIT   # normal exit
 trap 'do_cleanup; exit 130' INT    # SIGINT
 trap 'do_cleanup; exit 143' TERM   # SIGTERM
 
@@ -179,10 +171,43 @@ if [ "${RANK}" -eq 0 ]; then
         echo "[rank=$RANK] No tasks specified; skipping."
     fi
     echo "[rank=$RANK] User tasks completed, starting cleanup"
+
+    sentinel="${outdir}/cleanup_${JOB_NAME}.txt"
+    echo "SHUTDOWN" > "$sentinel"
+
+    # wait for worker ACKs (WORLD_SIZE includes head)
+    want=$(( WORLD_SIZE - 1 ))
+    deadline=$(( SECONDS + 180 ))
+    while :; do
+        have=$(ls -1 "${outdir}"/cleanup_${JOB_NAME}_ack_*.ok 2>/dev/null | wc -l | tr -d ' ')
+        [ "$have" -ge "$want" ] && break
+        [ $SECONDS -ge $deadline ] && { echo "[head] cleanup ack timeout ($have/$want)"; break; }
+        sleep 2
+    done
+
+    # head cleanup
     do_cleanup
+
+    # allow workers to exit now
+    echo "FINALIZE" > "${outdir}/finalize_${JOB_NAME}.txt"
+
+    # head exits (0) — OK if controller ends job now
     exit 0
 else
-    echo "[rank=$RANK] Worker rank; not running tasks. Sleeping until terminated..."
-    # block until head triggers cleanup via traps
-    while true; do sleep 60; done
+    echo "[rank=$RANK] Worker rank; waiting for shutdown signal..."
+    shutdown="${outdir}/cleanup_${JOB_NAME}.txt"
+    finalize="${outdir}/finalize_${JOB_NAME}.txt"
+
+    # wait for head’s shutdown signal
+    while [ ! -f "$shutdown" ]; do sleep 5; done
+
+    echo "[RANK ${RANK}]: Received shutdown signal."
+
+    # ACK and run worker cleanup (don’t exit yet)
+    do_cleanup
+    : > "${outdir}/cleanup_${JOB_NAME}_ack_${RANK}.ok" 2>/dev/null || true
+
+    # wait until head says it's safe to exit
+    while [ ! -f "$finalize" ]; do sleep 3; done
+    exit 0
 fi
