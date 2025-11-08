@@ -59,9 +59,9 @@ dataset_layout_order: ZYXC
 
 # clusters
 clusters:
-  batch_size: 20 #704 # total batch size
+  batch_size: 160 #704 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
+  gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
   mem_per_cpu: 40000 # ram per cpu core
   ray_queue_memory: 0.1
@@ -84,7 +84,7 @@ datasets:
   return_dataloader: true
   distributed_sampler: true
 
-  buffer_capacity: 16
+  buffer_capacity: 18
   # buffer_capacity: 24
   num_actors_min: 4
   num_actors_max: 12
@@ -92,7 +92,7 @@ datasets:
   # max_hypercubes: null
   # max_hypercubes: 2000000
   # max_hypercubes: 50000
-  max_hypercubes: 1000
+  max_hypercubes: 50000
 
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
