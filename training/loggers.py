@@ -421,7 +421,7 @@ class WandBEventWriter(EventWriter):
 
         if process_rank() == 0:
             load_dotenv(env_path)
-            wandb.login()
+            wandb.login(key=os.getenv("WANDB_API_KEY"))
             self.run = wandb.init(project=project,
                                     entity=entity,
                                     dir=dir,

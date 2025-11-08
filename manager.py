@@ -483,9 +483,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             os.environ["CFG_SAVEDIR"] = posixify(OmegaConf.select(cfg, "paths.outdir"))
             os.environ["TMPDIR"] = posixify(OmegaConf.select(cfg, "paths.tmpdir"))
             os.environ["EXP_NAME"] = f"{OmegaConf.select(cfg,'experiment_name')}.yaml"
-            os.environ["PYTHONPATH"] = (
-                f"{cfg.paths.python_path}"
-            )
+            os.environ["PYTHONPATH"] = f"{cfg.paths.python_path}"
 
             print("Launching interactive job with command:")
             print("bash -lc", shlex.quote(ray_wrap_posix))
