@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
 # NCCL settings optimized for Ethernet without InfiniBand
 export NCCL_DEBUG=INFO
