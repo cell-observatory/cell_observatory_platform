@@ -519,7 +519,6 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
                 "--gpus",    str(cfg.clusters.gpus_per_worker),
                 "--pods",    str(cfg.clusters.worker_nodes),
                 "--data",    f"{cfg.paths.pvc_data_name}={cfg.paths.pvc_data_mount_path}",
-                "--data",    f"{cfg.paths.pvc_outdir_name}={cfg.paths.pvc_outdir_mount_path}",
                 "--base",    image,
                 "--repo",    cfg.clusters.repo_url,
                 "--evar",    f"JOB_NAME={cfg.clusters.job_name}",

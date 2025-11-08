@@ -4,7 +4,7 @@ apptainer_image: null
 # No need to change anything below
 # --------------------------------------------------------------------------------
 repo_path: ${oc.env:REPO_DIR}
-data_path: /workspace/cell_observatory_project/tmp
+data_path: /workspace/CellObservatoryData/hph
 server_folder_path: /workspace/CellObservatoryData/data/gokul-lab
 workdir: /work/${oc.env:REPO_NAME} # mapping your repo path to this path inside the container
 
@@ -14,9 +14,7 @@ runner_script: /work/${oc.env:REPO_NAME}/training/runner.py
 dotenv_path: /workspace/CellObservatoryData/hph/.env
 
 pvc_data_name: project-cell-observatory-pvc-120t
-pvc_outdir_name: project-cell-observatory-pvc
 pvc_data_mount_path: /workspace/CellObservatoryData
-pvc_outdir_mount_path: /workspace/cell_observatory_project
 
 tmpdir: /workspace/CellObservatoryData/tmp
 python_path: /work:/work/cell_observatory_platform
