@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -euo pipefail
-
 echo "=== argv passed ==="
 i=1; for a in "$@"; do printf '%2d: [%s]\n' "$i" "$a"; i=$((i+1)); done
 echo "========================================="
