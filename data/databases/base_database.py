@@ -375,7 +375,7 @@ class ParentDatabase():
             filters = f"WHERE {table_name_shortcut}.exists = TRUE"
         elif str(self.server_folder_path).startswith('/groups'):
             filters = f"WHERE {table_name_shortcut}.exists_prfs = TRUE"
-        elif str(self.server_folder_path).startswith('/aws'):
+        elif str(self.server_folder_path).startswith('/aws') or str(self.server_folder_path).startswith('/workspace/CellObservatoryData'):
             filters = f"WHERE {table_name_shortcut}.exists_aws = TRUE"
         elif str(self.server_folder_path).startswith('/lustre'):
             filters = f"WHERE {table_name_shortcut}.exists_oak = TRUE"

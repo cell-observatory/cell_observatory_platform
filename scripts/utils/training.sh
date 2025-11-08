@@ -40,9 +40,9 @@ CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain.yaml"
 
 # --- Linux
 
-# USAGE: bash /work/scripts/utils/training.sh
+# USAGE: bash /work/cell_observatory_platform/scripts/utils/training.sh
 
-python3 /work/manager.py --config-name=${CFG}
+python3 /work/cell_observatory_platform/manager.py --config-name=${CFG}
 
 # --- Windows
 

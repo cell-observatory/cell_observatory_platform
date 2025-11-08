@@ -242,8 +242,9 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
     )
 
     if container_info['container_type'] == 'native':
-        for k in ['runner_script']:
-            cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
+        if cfg.clusters.launcher_type != "runai":
+            for k in ['runner_script']:
+                cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
 
     else:  # running in a docker/apptainer
         [print(f"\t{k}: {v}") for k, v in container_info['container_details'].items()]

@@ -301,7 +301,7 @@ def filter_hypercubes_dataframe_storage_server(
 
     if str(server_folder_path).startswith("/groups"):
         flag = "exists_prfs"
-    elif str(server_folder_path).startswith("/aws"):
+    elif str(server_folder_path).startswith("/aws") or str(server_folder_path).startswith("/workspace/CellObservatoryData"):
         flag = "exists_aws"
     elif str(server_folder_path).startswith("/lustre"):
         flag = "exists_oak"
