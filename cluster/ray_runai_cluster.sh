@@ -16,7 +16,7 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$DIR/args_parser.sh"
 
 mkdir -p "$outdir"
-# mkdir -p "$TMPDIR"
+mkdir -p "$TMPDIR"
 
 if [ -z "${RANK:-}" ]; then
     echo "RANK not set in the environment."
@@ -150,7 +150,7 @@ else
         -o \"$outdir\" \
         -t \"$TMPDIR\" \
         -q \"${object_store_memory}\" \
-        -w \"${worker_index}\""
+        -w \"${worker_index}\"" &
 fi
 
 ############################## CLUSTER HEALTH
