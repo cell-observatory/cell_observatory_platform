@@ -123,19 +123,21 @@ if [ "$RANK" -eq 0 ]; then
         exit $rc
     fi
     echo "[rank=$RANK] Head healthy at $cluster_address"
-    echo "$cluster_address" > "$outdir/cluster_address"
+    echo "$cluster_address" > "$outdir/cluster_address_${JOB_NAME}"
 else
     deadline=$((SECONDS + 300))
-    while [ ! -s "$outdir/cluster_address" ]; do
+    while [ ! -s "$outdir/cluster_address_${JOB_NAME}" ]; do
         (( SECONDS >= deadline )) && { echo "[rank=$RANK] Timeout waiting for cluster_address"; exit 1; }
         sleep 2
     done
-    cluster_address="$(cat "$outdir/cluster_address")"
+    cluster_address="$(cat "$outdir/cluster_address_${JOB_NAME}")"
 
     if [[ -z "${cluster_address:-}" ]]; then
         echo "[rank=$RANK] cluster_address is empty; refusing to start worker."
         exit 1
     fi
+
+    sleep 20
 
     worker_index=$((RANK - 1))
     mkdir -p "$outdir/ray_worker_${worker_index}"
