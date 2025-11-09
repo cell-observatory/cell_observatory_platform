@@ -16,7 +16,7 @@ while getopts ":a:r:" option;do
     esac
 done
 
-TIMEOUT=60 # seconds
+TIMEOUT=1800 # seconds
 check="ray status --address $cluster_address"
 echo "Checking status for $cluster_address"
 st="$(date -u +%s)"
