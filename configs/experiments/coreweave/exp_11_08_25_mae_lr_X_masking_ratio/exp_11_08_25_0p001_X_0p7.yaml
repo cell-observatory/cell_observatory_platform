@@ -118,9 +118,6 @@ schedulers:
   warmup: 5
   cooldown: 5
 
-optimizers:
-  lr: 1e-3
-
 # schedulers:
 #   epochs: 2
 
@@ -135,6 +132,7 @@ models:
 
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-3
 
 checkpoint_manager:
   save_period: 10

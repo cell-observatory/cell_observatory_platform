@@ -131,10 +131,8 @@ models:
     rope_theta: 100.0
 
 optimizers:
-  lr: 5e-2
-
-optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
+  lr: 5e-2
 
 checkpoint_manager:
   save_period: 10
