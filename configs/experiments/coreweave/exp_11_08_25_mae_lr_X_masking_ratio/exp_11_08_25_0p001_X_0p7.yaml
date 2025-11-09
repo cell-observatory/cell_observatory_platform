@@ -59,7 +59,7 @@ dataset_layout_order: ZYXC
 
 # clusters
 clusters:
-  batch_size: 1600 #704 # total batch size
+  batch_size: 2048 #704 # total batch size
   worker_nodes: 4 # number of worker nodes
   gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
@@ -135,6 +135,9 @@ models:
 
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
+
+checkpoint_manager:
+  save_period: 10
 
 # hooks
 hooks:
