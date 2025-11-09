@@ -17,7 +17,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: mae_large_128x256x256_150_epoch_lr_0p001_mask_0p7
+experiment_name: mae_large_128x256x256_150_epoch_lr_0p05_mask_0p9
 wandb_project: pretraining_3d
 
 # task
@@ -111,7 +111,7 @@ datasets:
           _target_: data.masking.mask_generator.MaskModes
           value: "random"
 
-        random_masking_ratio: 0.7
+        random_masking_ratio: 0.9
 
 schedulers:
   epochs: 150
@@ -132,7 +132,7 @@ models:
 
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
-  lr: 1e-3
+  lr: 5e-2
 
 checkpoint_manager:
   save_period: 10

@@ -17,7 +17,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: mae_large_128x256x256_150_epoch_lr_0p05_mask_0p7
+experiment_name: mae_large_128x256x256_150_epoch_lr_0p05_mask_0p7_v2
 wandb_project: pretraining_3d
 
 # task
@@ -115,7 +115,7 @@ datasets:
 
 schedulers:
   epochs: 150
-  warmup: 5
+  warmup: 20
   cooldown: 5
 
 # schedulers:
