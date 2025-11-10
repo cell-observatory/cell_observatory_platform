@@ -165,8 +165,13 @@ fi
 
 ############################## RUN WORKLOAD
 
+if [ -f "$outdir/restart" ] && grep -qx "${JOB_NAME}" "$outdir/restart"; then
+    export RESTART="TRUE"
+fi
+
 if [ "${RANK}" -eq 0 ]; then
     echo "[rank=$RANK] Running user tasks on head: ${tasks:-<none>}"
+    printf '%s\n' "${JOB_NAME}" > "${outdir}/restart"
     if [[ -n "${tasks:-}" ]]; then
         bash -lc "$tasks"
     else

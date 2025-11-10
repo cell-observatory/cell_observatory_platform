@@ -4,9 +4,11 @@ https://github.com/facebookresearch/detectron2/blob/main/detectron2/engine/train
 https://github.com/open-mmlab/mmengine/blob/main/mmengine/runner/loops.py
 """
 
+import os
 import logging
 import time
 import weakref
+from pathlib import Path
 from typing import List, Optional, Sequence
 
 from hydra.utils import get_class, instantiate
@@ -273,6 +275,12 @@ class EpochBasedTrainer(BaseTrainer):
         model = build_dependency_graph_and_instantiate(cfg.models)
 
         # initialize checkpoint manager
+        if os.environ.get("RESTART", "FALSE").upper() == "TRUE":
+            logger.info("RESTART flag detected. Resuming from latest checkpoint.")
+            with open_dict(cfg):
+                cfg.paths.resume_checkpointdir = Path(cfg.paths.outdir) / "checkpoints"
+                cfg.checkpoint.checkpoint_manager.resume_checkpointdir = cfg.paths.resume_checkpointdir
+
         self.checkpoint_manager = instantiate(
             cfg.checkpoint.checkpoint_manager,
             model=model
