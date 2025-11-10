@@ -72,11 +72,11 @@ def parse_args(args):
     )
 
     parser.add_argument(
-        "--ishape", default='16-128-128-128-3', help='input shape', type=str,
+        "--ishape", default='16-128-128-128-2', help='input shape', type=str,
     )
 
     parser.add_argument(
-        "--ipatch", default='2-16-16-16-3', help='patch size', type=str,
+        "--ipatch", default='2-16-16-16-2', help='patch size', type=str,
     )
 
     parser.add_argument("--rgb", action="store_true")
