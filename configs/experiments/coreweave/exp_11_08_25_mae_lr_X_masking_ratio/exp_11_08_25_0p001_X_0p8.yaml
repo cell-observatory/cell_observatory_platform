@@ -84,7 +84,7 @@ datasets:
   return_dataloader: true
   distributed_sampler: true
 
-  buffer_capacity: 20
+  buffer_capacity: 16
   num_actors_min: 4
   num_actors_max: 12
 
