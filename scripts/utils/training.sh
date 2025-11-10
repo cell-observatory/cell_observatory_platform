@@ -43,10 +43,10 @@
 # CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p001_X_0p7.yaml"
 
 # CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p05_X_0p6.yaml"
-# CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p001_X_0p6.yaml"
+CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p001_X_0p6.yaml"
 
 # CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p05_X_0p8.yaml"
-CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p001_X_0p8.yaml"
+# CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p001_X_0p8.yaml"
 
 # --- Linux
 
