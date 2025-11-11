@@ -344,13 +344,11 @@ class EpochBasedTrainer(BaseTrainer):
         self.start_epoch, self.start_iter, self.best_metric = epoch, step, best_metric
         self._epoch, self._iter, self._val_iter, self._curr_val_metric = self.start_epoch, self.start_iter, 0, 0.0
 
-        if self.start_iter > 0 and not self.checkpoint_manager.load_optimizer:
+        if self.start_iter > 0:
             logger.info("[Trainer] Resuming training without loading previous optimizer state.")
             logger.info(f"[Trainer] Fast forwarding lr and wd schedulers to iter {self.start_iter} and epoch {self.start_epoch}.")
             # fast forward lr and wd schedulers to the correct step
-            # ideally we load with DeepSpeed but this is not always possible
-            # hence we manually step the schedulers here and accept that 
-            # moments are fresh etc.
+            # TODO: consider making more flexible
             for _ in range(self.start_iter):
                 self.wd_scheduler.step()
             
