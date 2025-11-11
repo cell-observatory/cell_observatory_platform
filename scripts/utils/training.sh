@@ -39,12 +39,15 @@
 # CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain_test_sweep.yaml"
 # CFG="experiments/coreweave/tests/exp_11_08_25_test_interactive.yaml"
 
+# CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p01_X_0p6.yaml"
+# CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p05_X_0p6.yaml"
+# CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p001_X_0p6.yaml"
+
+CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p01_X_0p7.yaml"
 # CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p05_X_0p7.yaml"
 # CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p001_X_0p7.yaml"
 
-# CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p05_X_0p6.yaml"
-CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p001_X_0p6.yaml"
-
+# CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p01_X_0p8.yaml"
 # CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p05_X_0p8.yaml"
 # CFG="experiments/coreweave/exp_11_08_25_mae_lr_X_masking_ratio/exp_11_08_25_0p001_X_0p8.yaml"
 
