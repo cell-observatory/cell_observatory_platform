@@ -529,7 +529,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
                 "--evar",    f"EXP_NAME={OmegaConf.select(cfg,'experiment_name')}.yaml",
                 "--evar",    f"PYTHONPATH={cfg.paths.python_path}",
                 "--init",    cfg.clusters.init_script,
-                # "--pool", cfg.clusters.node_pool,
+                "--node-pools", cfg.clusters.node_pool,
                 "--main",    main_value,
             ]
             print("Submitting Run:AI job with configuration:")
