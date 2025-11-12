@@ -17,7 +17,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: mae_large_128x256x256_150_epoch_lr_0p001_mask_0p7_fourier_loss
+experiment_name: mae_large_128x256x256_150_epoch_lr_0p001_mask_0p7_fourier_loss_no_ld
 wandb_project: testing
 
 # task
