@@ -157,6 +157,7 @@ class MaskedAutoEncoder(nn.Module):
         weight_init_type: str = 'mae',
         mlp_wide_silu: bool = False,
         loss_fn: str = 'l2_masked',
+        with_auxiliary_loss: bool = False,
         dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
@@ -266,8 +267,9 @@ class MaskedAutoEncoder(nn.Module):
 
         self.weight_init_type = weight_init_type
         init_weights(self, weight_init_type=weight_init_type)
-
+        
         self.loss_fn = get_loss_fn(loss_fn)
+        self.with_auxiliary_loss = with_auxiliary_loss
 
     @torch.jit.ignore
     def get_encoder(self):
@@ -307,7 +309,17 @@ class MaskedAutoEncoder(nn.Module):
             target_idx_in_patches_used = target_masks
         targets = apply_masks(patches, masks=target_masks)
         predictions = apply_masks(x, masks=target_idx_in_patches_used)
-        loss = self.loss_fn(predictions, targets, masks)
+
+        if self.with_auxiliary_loss:
+            aux_loss_meta = {"targets": patches, 
+                             "predictions": x,
+                             "patches_used": patches_used,
+                             "target_masks": target_masks,
+                             "prediction_masks": target_idx_in_patches_used
+                            }
+        else:
+            aux_loss_meta = None
+        loss = self.loss_fn(targets, predictions, masks, aux_loss_meta)
         
         loss_dict = {
             "step_loss": loss,
