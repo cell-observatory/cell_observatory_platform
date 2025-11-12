@@ -1,41 +1,46 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+
+from omegaconf import DictConfig, OmegaConf
 
 from models.patch_embeddings import PatchEmbedding
 from data.masking.mask_generator import apply_masks
 
 
-def get_loss_fn(loss_type: str ):
-    if isinstance(loss_type, str) and loss_type == "l2_masked":
-        return L2_masked_loss
-    
-    elif isinstance(loss_type, str) and loss_type == "l1_masked":
-        return L1_masked_loss
+def get_loss_fn(loss):
+    if isinstance(loss, str):
+        mapping = {
+            "l2_masked": L2_masked_loss,
+            "l1_masked": L1_masked_loss,
+            "smooth_l1_masked": smooth_L1_masked_loss,
+        }
+        if loss in mapping:
+            return mapping[loss]
+        raise ValueError(f"Unknown loss type: {loss}")
 
-    elif isinstance(loss_type, str) and loss_type == "smooth_l1_masked":
-        return smooth_L1_masked_loss
-    
-    elif loss_type.get("loss_type", "None") == "fourier_loss":
+    if isinstance(loss, DictConfig):
+        loss = OmegaConf.to_container(loss, resolve=True)
+
+    if isinstance(loss, dict) and loss.get("loss_type") == "fourier_loss":
         return FourierLoss(
-            alpha=loss_type.get("alpha", 0.01),
-            fft_loss=loss_type.get("fft_loss", "l1_masked"),
-            spatial_loss=loss_type.get("spatial_loss", "l2_masked"),
-            input_fmt=loss_type["input_fmt"],
-            input_shape=loss_type["input_shape"],
-            patch_shape=loss_type["patch_shape"],
-            embed_dim=loss_type["embed_dim"],
-            in_chans=loss_type["in_chans"],
+            alpha=loss.get("alpha", 0.001),
+            fft_loss=loss.get("fft_loss", "l1_masked"),
+            spatial_loss=loss.get("spatial_loss", "l2_masked"),
+            input_fmt=loss["input_fmt"],
+            input_shape=loss["input_shape"],
+            patch_shape=loss["patch_shape"],
+            embed_dim=loss["embed_dim"],
         )
 
-    else:
-        raise ValueError(f"Unknown loss type: {loss_type}")
+    raise ValueError(f"Unknown loss type.")
     
 
 def L2_masked_loss(targets, predictions, masks, aux_loss_meta=None):
     loss = (targets - predictions) ** 2
     loss = loss.mean(dim=-1)  # mean loss per patch
     loss = loss.sum() / masks.sum()
-    return loss
+    return loss, None
 
 
 def L1_masked_loss(targets, predictions, masks, aux_loss_meta=None):
@@ -43,12 +48,12 @@ def L1_masked_loss(targets, predictions, masks, aux_loss_meta=None):
     loss = torch.abs(targets - predictions)
     loss = loss.mean(dim=-1)  # mean loss per patch
     loss = loss.sum() / masks.sum()
-    return loss
+    return loss, None
 
 
 # see: https://github.com/facebookresearch/ijepa/main/src/train.py
 def smooth_L1_masked_loss(targets, predictions, masks, aux_loss_meta=None):
-    return F.smooth_l1_loss(targets, predictions)
+    return F.smooth_l1_loss(targets, predictions), None
 
 
 class FourierLoss(torch.nn.Module):
@@ -58,17 +63,22 @@ class FourierLoss(torch.nn.Module):
                  spatial_loss,
                  input_fmt, 
                  input_shape, 
-                 patch_shape, 
-                 embed_dim, 
-                 in_chans=1,
-                 loss_type="fourier_loss"
+                 patch_shape,
+                 embed_dim
     ):
         super(FourierLoss, self).__init__()
+        self.loss_type = "fourier_loss"
+
         self.input_fmt = input_fmt
         self.input_shape = input_shape
         self.patch_shape = patch_shape
+        
         self.embed_dim = embed_dim
-        self.in_chans = in_chans
+        
+        axis_to_value = dict(zip(input_fmt, input_shape))
+        self.in_chans = axis_to_value['C']
+        self.num_frames = axis_to_value.get("T", None)
+
         self.patch_embedding = PatchEmbedding(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
@@ -76,6 +86,9 @@ class FourierLoss(torch.nn.Module):
             embed_dim=self.embed_dim,
             channels=self.in_chans,
         )
+        for p in self.patch_embedding.parameters():
+            p.requires_grad_(False)
+        self.patch_embedding.eval()
         
         self.alpha = alpha
         if fft_loss == "l1_masked":
@@ -101,8 +114,8 @@ class FourierLoss(torch.nn.Module):
         full_predictions = self.patch_embedding.unpatchify(full_predictions, out_channels=None)
         
         # NOTE: works for ZYXC and TZYXC formats
-        full_targets_fft = torch.fft.fftn(full_targets, dim=(-4, -3, -2))
-        full_predictions_fft = torch.fft.fftn(full_predictions, dim=(-4, -3, -2))
+        full_targets_fft = torch.fft.fftn(full_targets.to(torch.float32), dim=(-4, -3, -2))
+        full_predictions_fft = torch.fft.fftn(full_predictions.to(torch.float32), dim=(-4, -3, -2))
 
         full_targets_fft = torch.abs(full_targets_fft)
         full_predictions_fft = torch.abs(full_predictions_fft)
@@ -118,8 +131,16 @@ class FourierLoss(torch.nn.Module):
         targets_fft = apply_masks(full_targets_fft_patches, masks=target_masks)
         predictions_fft = apply_masks(full_predictions_fft_patches, masks=target_idx_in_patches_used)
 
-        fft_loss = self.fft_loss(targets_fft, predictions_fft, masks, aux_loss_meta=None)
-        spatial_loss = self.spatial_loss(targets, predictions, masks, aux_loss_meta=None)
+        fft_loss, _ = self.fft_loss(targets_fft, predictions_fft, masks, aux_loss_meta=None)
+        spatial_loss, _ = self.spatial_loss(targets, predictions, masks, aux_loss_meta=None)
 
-        loss = self.alpha * fft_loss + (1 - self.alpha) * spatial_loss
-        return loss
+        fft_loss = self.alpha * fft_loss
+        spatial_loss = (1 - self.alpha) * spatial_loss
+
+        aux_losses = {
+            "fft_loss": fft_loss, 
+            "spatial_loss": spatial_loss
+        }
+
+        loss = fft_loss + spatial_loss
+        return loss, aux_losses
