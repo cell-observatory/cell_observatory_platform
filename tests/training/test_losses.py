@@ -20,7 +20,7 @@ def test_fourier_loss_forward_backward(input_fmt, input_shape, patch_shape, in_c
 
     loss_mod = FourierLoss(
         alpha=0.01,
-        fft_loss="L1",
+        fft_loss="l1_masked",
         spatial_loss="l2_masked",
         input_fmt=input_fmt,
         input_shape=input_shape,
@@ -52,6 +52,13 @@ def test_fourier_loss_forward_backward(input_fmt, input_shape, patch_shape, in_c
         "predictions": full_predictions_patches,
         "target_masks": masked_idx,
     }
+
+    print(f"targets_masked.shape: {targets_masked.shape}")
+    print(f"predictions_masked.shape: {predictions_masked.shape}")
+    print(f"masks_grid.shape: {masks_grid.shape}")
+    print(f"full_targets_patches.shape: {full_targets_patches.shape}")
+    print(f"full_predictions_patches.shape: {full_predictions_patches.shape}")
+    print(f"target_masks.shape: {aux['target_masks'].shape}")
 
     out = loss_mod(
         targets=targets_masked,

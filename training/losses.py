@@ -65,15 +65,15 @@ class FourierLoss(torch.nn.Module):
         )
         
         self.alpha = alpha
-        if fft_loss == "L1":
+        if fft_loss == "l1_masked":
             self.fft_loss = get_loss_fn("l1_masked")
-        elif fft_loss == "L2":
+        elif fft_loss == "l2_masked":
             self.fft_loss = get_loss_fn("l2_masked")
         else:
             raise ValueError(f"Unknown Fourier loss type: {fft_loss}")
-        if spatial_loss == "L1":
+        if spatial_loss == "l1_masked":
             self.spatial_loss = get_loss_fn("l1_masked")
-        elif spatial_loss == "L2":
+        elif spatial_loss == "l2_masked":
             self.spatial_loss = get_loss_fn("l2_masked")
         else:
             raise ValueError(f"Unknown spatial loss type: {spatial_loss}")
