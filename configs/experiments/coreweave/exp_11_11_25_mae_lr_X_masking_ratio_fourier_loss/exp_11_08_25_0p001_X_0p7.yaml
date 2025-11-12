@@ -18,7 +18,7 @@ defaults:
 
 # experiment name (used for logging)
 experiment_name: mae_large_128x256x256_150_epoch_lr_0p001_mask_0p7_fourier_loss_no_ld
-wandb_project: testing
+wandb_project: pretraining_3d
 
 # task
 task: pretrain_mae
@@ -59,7 +59,7 @@ dataset_layout_order: ZYXC
 
 # clusters
 clusters:
-  batch_size: 1024 # total batch size
+  batch_size: 1280 # total batch size
   worker_nodes: 4 # number of worker nodes
   gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
@@ -90,8 +90,8 @@ datasets:
 
   # max_hypercubes: null
   # max_hypercubes: 2000000
-  max_hypercubes: 50000
-  # max_hypercubes: 1000
+  # max_hypercubes: 50000
+  max_hypercubes: 1000000
 
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
@@ -113,13 +113,13 @@ datasets:
 
         random_masking_ratio: 0.7
 
-# schedulers:
-#   epochs: 150
-#   warmup: 20
-#   cooldown: 5
-
 schedulers:
-  epochs: 2
+  epochs: 150
+  warmup: 20
+  cooldown: 5
+
+# schedulers:
+#   epochs: 2
 
 # ROPE axial
 models:
@@ -143,9 +143,6 @@ models:
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
   lr: 1e-3
-
-checkpoint_manager:
-  save_period: 10
 
 # hooks
 hooks:
