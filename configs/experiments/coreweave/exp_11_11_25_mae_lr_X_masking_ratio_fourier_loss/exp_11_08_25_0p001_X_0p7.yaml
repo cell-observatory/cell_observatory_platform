@@ -113,13 +113,13 @@ datasets:
 
         random_masking_ratio: 0.7
 
-schedulers:
-  epochs: 150
-  warmup: 20
-  cooldown: 5
-
 # schedulers:
-#   epochs: 2
+#   epochs: 150
+#   warmup: 20
+#   cooldown: 5
+
+schedulers:
+  epochs: 2
 
 # ROPE axial
 models:
