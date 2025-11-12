@@ -6,14 +6,26 @@ from data.masking.mask_generator import apply_masks
 
 
 def get_loss_fn(loss_type: str ):
-    if loss_type == "l2_masked":
+    if isinstance(loss_type, str) and loss_type == "l2_masked":
         return L2_masked_loss
     
-    elif loss_type == "l1_masked":
+    elif isinstance(loss_type, str) and loss_type == "l1_masked":
         return L1_masked_loss
 
-    elif loss_type == "smooth_l1_masked":
+    elif isinstance(loss_type, str) and loss_type == "smooth_l1_masked":
         return smooth_L1_masked_loss
+    
+    elif loss_type.get("loss_type", "None") == "fourier_loss":
+        return FourierLoss(
+            alpha=loss_type.get("alpha", 0.01),
+            fft_loss=loss_type.get("fft_loss", "l1_masked"),
+            spatial_loss=loss_type.get("spatial_loss", "l2_masked"),
+            input_fmt=loss_type["input_fmt"],
+            input_shape=loss_type["input_shape"],
+            patch_shape=loss_type["patch_shape"],
+            embed_dim=loss_type["embed_dim"],
+            in_chans=loss_type["in_chans"],
+        )
 
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
@@ -48,7 +60,8 @@ class FourierLoss(torch.nn.Module):
                  input_shape, 
                  patch_shape, 
                  embed_dim, 
-                 in_chans=1
+                 in_chans=1,
+                 loss_type="fourier_loss"
     ):
         super(FourierLoss, self).__init__()
         self.input_fmt = input_fmt

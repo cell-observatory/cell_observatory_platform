@@ -32,3 +32,4 @@ rope_theta: 100.0
 weight_init_type: mae
 mlp_wide_silu: false
 loss_fn: l2_masked
+with_auxiliary_loss: false
