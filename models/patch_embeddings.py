@@ -206,7 +206,7 @@ class PatchEmbedding(nn.Module):
         patches = patches.contiguous().view(b, self.num_patches, self.pixels_per_patch)
         return patches
     
-    @torch.no_grad()
+    # @torch.no_grad()
     def unpatchify(self, patches: torch.Tensor, out_channels: Optional[int]) -> torch.Tensor:
         b = patches.shape[0]
 
