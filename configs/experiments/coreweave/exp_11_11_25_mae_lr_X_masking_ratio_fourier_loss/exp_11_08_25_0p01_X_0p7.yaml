@@ -17,7 +17,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: mae_large_128x256x256_150_epoch_lr_0p001_mask_0p7_fourier_loss_no_ld
+experiment_name: mae_large_128x256x256_150_epoch_lr_0p01_mask_0p7_fourier_loss_no_ld
 wandb_project: pretraining_3d
 
 # task
@@ -142,7 +142,7 @@ models:
 
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
-  lr: 1e-3
+  lr: 1e-2
 
 # hooks
 hooks:
