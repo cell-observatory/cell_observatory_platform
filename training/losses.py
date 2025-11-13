@@ -91,12 +91,7 @@ class FourierLoss(torch.nn.Module):
         self.patch_embedding.eval()
         
         self.alpha = alpha
-        if fft_loss == "l1_masked":
-            self.fft_loss = get_loss_fn("l1_masked")
-        elif fft_loss == "l2_masked":
-            self.fft_loss = get_loss_fn("l2_masked")
-        else:
-            raise ValueError(f"Unknown Fourier loss type: {fft_loss}")
+        self.fft_loss = fft_loss
         if spatial_loss == "l1_masked":
             self.spatial_loss = get_loss_fn("l1_masked")
         elif spatial_loss == "l2_masked":
@@ -120,18 +115,13 @@ class FourierLoss(torch.nn.Module):
         full_targets_fft = torch.abs(full_targets_fft)
         full_predictions_fft = torch.abs(full_predictions_fft)
 
-        full_targets_fft_patches = self.patch_embedding.patchify(full_targets_fft)
-        full_predictions_fft_patches = self.patch_embedding.patchify(full_predictions_fft)
-
-        # compute loss over masked patches (re-index if blocked masking removed some patches)
-        if patches_used is not None:
-            target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
+        if self.fft_loss == "L1":
+            fft_loss = (full_targets_fft - full_predictions_fft).abs().mean()
+        elif self.fft_loss == "L2":
+            fft_loss = ((full_targets_fft - full_predictions_fft) ** 2).mean()
         else:
-            target_idx_in_patches_used = target_masks
-        targets_fft = apply_masks(full_targets_fft_patches, masks=target_masks)
-        predictions_fft = apply_masks(full_predictions_fft_patches, masks=target_idx_in_patches_used)
-
-        fft_loss, _ = self.fft_loss(targets_fft, predictions_fft, masks, aux_loss_meta=None)
+            raise ValueError(f"Unknown fft loss type: {self.fft_loss}")
+        
         spatial_loss, _ = self.spatial_loss(targets, predictions, masks, aux_loss_meta=None)
 
         fft_loss = self.alpha * fft_loss
