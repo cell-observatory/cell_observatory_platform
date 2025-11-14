@@ -13,8 +13,8 @@ import torch
 
 from deepspeed.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
 
-from data.data_types import TORCH_DTYPES
-from utils.context import is_main_process, barrier
+from cell_observatory_platform.data.data_types import TORCH_DTYPES
+from cell_observatory_platform.utils.context import is_main_process, barrier
 
 logging.basicConfig(
     stream=sys.stdout,
