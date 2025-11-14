@@ -1,13 +1,18 @@
-import pytest
+import sys
 from pathlib import Path
-from omegaconf import open_dict
-from hydra.utils import instantiate, get_class
 
+_parent_dir = Path(__file__).resolve().parent.parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+import pytest
 import torch
+from hydra.utils import get_class, instantiate
+from omegaconf import open_dict
 from ray.train import report
 
-from utils.cleanup import unlink_shared_memory
-from tests.conftest import distributed_test, config
+from cell_observatory_platform.tests.conftest import config, distributed_test
+from cell_observatory_platform.utils.cleanup import unlink_shared_memory
 
 
 def test_access_to_storage_server(config):
