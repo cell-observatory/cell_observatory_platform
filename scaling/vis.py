@@ -12,7 +12,7 @@ import seaborn as sns
 import logging
 import sys
 
-from utils.common import savesvg
+from cell_observatory_platform.utils.common import savesvg
 
 logging.basicConfig(
     stream=sys.stdout,
