@@ -1,3 +1,10 @@
+import sys
+from pathlib import Path
+
+_parent_dir = Path(__file__).resolve().parent.parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
 import os
 
 import pytest
@@ -5,7 +12,7 @@ import torch
 from hydra.utils import get_class
 from omegaconf import open_dict
 
-from tests.conftest import distributed_test
+from cell_observatory_platform.tests.conftest import distributed_test
 
 
 def _test_hooks_dist(cfg):
@@ -16,7 +23,7 @@ def _test_hooks_dist(cfg):
     import torch
     from ray.train import report
 
-    from training.hooks import (
+    from cell_observatory_platform.training.hooks import (
         AnomalyDetector,
         BestMetricSaver,
         EarlyStopHook,
@@ -29,8 +36,8 @@ def _test_hooks_dist(cfg):
         TorchProfiler,
         WeightDecayScheduleHook,
     )
-    from training.loggers import LocalEventWriter
-    from utils.context import barrier, process_rank
+    from cell_observatory_platform.training.loggers import LocalEventWriter
+    from cell_observatory_platform.utils.context import barrier, process_rank
 
     success = True
 
