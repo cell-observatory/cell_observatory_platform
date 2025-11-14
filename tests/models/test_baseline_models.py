@@ -8,9 +8,9 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-from training.helpers import summarize_model, get_input_data
-from models.baseline import Baseline
-from tests.conftest import models_kargs
+from cell_observatory_platform.training.helpers import summarize_model, get_input_data
+from cell_observatory_platform.models.baseline import Baseline
+from cell_observatory_platform.tests.conftest import models_kargs
 
 
 def test_baseline_custom(models_kargs):
