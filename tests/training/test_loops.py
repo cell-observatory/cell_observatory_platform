@@ -1,15 +1,19 @@
-import os
-import pytest
+import sys
 from pathlib import Path
 
+_parent_dir = Path(__file__).resolve().parent.parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+import os
+
+import pytest
 import torch
-
-from omegaconf import open_dict
 from hydra.utils import get_class
-
+from omegaconf import open_dict
 from ray.train import report
 
-from tests.conftest import distributed_test, config
+from cell_observatory_platform.tests.conftest import config, distributed_test
 
 
 def _test_train_loop_dist(config):
