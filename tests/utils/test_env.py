@@ -1,8 +1,8 @@
 import os
 from pathlib import Path
 
-from tests.conftest import config
-from utils.container import get_container_info
+from cell_observatory_platform.tests.conftest import config
+from cell_observatory_platform.utils.container import get_container_info
 
 import warnings
 warnings.filterwarnings("ignore")
