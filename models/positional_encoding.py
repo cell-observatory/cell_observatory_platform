@@ -9,8 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models import patch_embeddings
-from training.helpers import get_patch_sizes
+from cell_observatory_platform.models import patch_embeddings
+from cell_observatory_platform.training.helpers import get_patch_sizes
 
 logging.basicConfig(
 	stream=sys.stdout,
