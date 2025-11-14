@@ -8,15 +8,15 @@ import torch.nn as nn
 from deepspeed.runtime.zero import GatheredParameters
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 
-from models.mlp import get_mlp
-from models.norm import get_norm
-from training.losses import get_loss_fn
-from training.helpers import init_weights
-from models.activation import get_activation
-from models.maskedencoder import MaskedEncoder
-from models.maskedpredictor import MaskedPredictor
-from models.patch_embeddings import calc_num_patches
-from data.masking.mask_generator import apply_masks
+from cell_observatory_platform.models.mlp import get_mlp
+from cell_observatory_platform.models.norm import get_norm
+from cell_observatory_platform.training.losses import get_loss_fn
+from cell_observatory_platform.training.helpers import init_weights
+from cell_observatory_platform.models.activation import get_activation
+from cell_observatory_platform.models.maskedencoder import MaskedEncoder
+from cell_observatory_platform.models.maskedpredictor import MaskedPredictor
+from cell_observatory_platform.models.patch_embeddings import calc_num_patches
+from cell_observatory_platform.data.masking.mask_generator import apply_masks
 
 logging.basicConfig(
 	stream=sys.stdout,
