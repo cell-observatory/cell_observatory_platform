@@ -5,8 +5,8 @@ import pytest
 
 import torch
 
-from data.masking.mask_generator import MaskGenerator, MaskModes
-from data.data_shapes import MULTICHANNEL_HYPERCUBE
+from cell_observatory_platform.data.masking.mask_generator import MaskGenerator, MaskModes
+from cell_observatory_platform.data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 
 @pytest.fixture
