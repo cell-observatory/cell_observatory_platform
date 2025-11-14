@@ -5,7 +5,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from training.helpers import get_patch_sizes
+from cell_observatory_platform.training.helpers import get_patch_sizes
 
 logging.basicConfig(
 	stream=sys.stdout,
