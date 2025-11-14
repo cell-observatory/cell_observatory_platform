@@ -1,21 +1,25 @@
+import sys
+from pathlib import Path
+
+_parent_dir = Path(__file__).resolve().parent.parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
 import os
+
 import pytest
-
 import torch
-
+from hydra.utils import get_class
+from omegaconf import DictConfig, open_dict
 from ray.train import report
 
-from omegaconf import open_dict
-from omegaconf import DictConfig
-from hydra.utils import get_class
-
-from tests.conftest import distributed_test, config
+from cell_observatory_platform.tests.conftest import config, distributed_test
 
 
 # train function to use, this should stay inside
 # the setup_ray_cluster function to prevent serialization issues
 def _test_ckpt_dist(config: DictConfig):
-    from training.helpers import get_masked_input_data
+    from cell_observatory_platform.training.helpers import get_masked_input_data
     trainer_cls = get_class(config.trainer)
     trainer_per_worker = trainer_cls(config)
 
