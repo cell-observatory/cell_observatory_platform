@@ -606,7 +606,7 @@ class InferencerWorker:
             cnt_view = cnt_t[t0:t1, z0:z1, y0:y1, x0:x1, 0]
 
             T2, Z2, Y2, X2, C2 = pred_view.shape
-            T,  Z,  Y,  X,  C = pred_hypercube.shape
+            T, Z, Y, X, C = pred_hypercube.shape
 
             # if patch is larger (because of padding), crop it
             if (T != T2) or (Z != Z2) or (Y != Y2) or (X != X2):
@@ -681,7 +681,11 @@ class InferencerWorker:
 
         row = self._row_by_key[key]
         name = self._name_by_key[key]
-        sample_name = str(row["output_folder"]).replace("/", "_") + "_" + name
+        try:
+            base = str(row["output_folder"])
+        except KeyError:
+            # fallback if output_folder column doesn't exist
+            base = f"inference_roi{row.get('id', 'unknown')}"
         sample_name = sample_name.replace(".zarr","").replace(".tiff","")
 
         if sample_name.endswith(".zarr"):
