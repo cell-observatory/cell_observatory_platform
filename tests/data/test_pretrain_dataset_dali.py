@@ -1,19 +1,22 @@
-import pytest
+import sys
 from pathlib import Path
-from omegaconf import open_dict
-from hydra.utils import get_class
 
-from hydra.utils import instantiate, get_method
+_parent_dir = Path(__file__).resolve().parent.parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
 
+import pytest
 import torch
-
+from hydra.utils import get_class, get_method, instantiate
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
-
+from omegaconf import open_dict
 from ray.train import report
 
-from tests.conftest import distributed_test, config
-from data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
-from utils.context import process_rank
+from cell_observatory_platform.data.datasets.pretrain_dataset_dali import (
+    pretrain_dataset_pipeline,
+)
+from cell_observatory_platform.tests.conftest import config, distributed_test
+from cell_observatory_platform.utils.context import process_rank
 
 
 @pytest.mark.skip("Skipping distributed test for DALI dataloader, DALI dataloader will be deprecated soon.")
