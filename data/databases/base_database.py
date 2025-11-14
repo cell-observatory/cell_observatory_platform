@@ -15,7 +15,7 @@ import polars as pl
 import connectorx as cx
 
 
-from data.io import load_hypercubes_dataframe
+from cell_observatory_platform.data.io import load_hypercubes_dataframe
 
 logging.basicConfig(
     stream=sys.stdout,
