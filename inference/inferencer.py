@@ -15,9 +15,9 @@ from dotenv import load_dotenv
 
 from torch import distributed as dist
 
-from data.io import save_file
-from utils.context import get_world_size, process_rank, barrier
-from inference.utils import stable_key_owner, tile_hash, preds_to_pdf
+from cell_observatory_platform.data.io import save_file
+from cell_observatory_platform.utils.context import get_world_size, process_rank, barrier
+from cell_observatory_platform.inference.utils import stable_key_owner, tile_hash
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
