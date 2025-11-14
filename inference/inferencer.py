@@ -686,6 +686,8 @@ class InferencerWorker:
         except KeyError:
             # fallback if output_folder column doesn't exist
             base = f"inference_roi{row.get('id', 'unknown')}"
+
+        sample_name = base.replace("/", "_") + "_" + name
         sample_name = sample_name.replace(".zarr","").replace(".tiff","")
 
         if sample_name.endswith(".zarr"):
