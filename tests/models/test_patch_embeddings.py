@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from models.patch_embeddings import PatchEmbedding, calc_num_patches
+from cell_observatory_platform.models.patch_embeddings import PatchEmbedding, calc_num_patches
 
 
 CASES = [
