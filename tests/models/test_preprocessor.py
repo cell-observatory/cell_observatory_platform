@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from models.preprocessor import TorchPreprocessor, DaliPreprocessor, RayPreprocessor
+from cell_observatory_platform.models.preprocessor import TorchPreprocessor, DaliPreprocessor, RayPreprocessor
 
 
 def _dummy_mask_generator(batch_size: int):
