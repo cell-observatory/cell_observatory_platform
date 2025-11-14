@@ -23,9 +23,9 @@ from fvcore.common.timer import Timer
 from ray.train import Checkpoint, report
 from torch.profiler import ProfilerActivity
 
-from training.helpers import log_data_timings
-from training.loggers import EventWriter
-from utils.context import gather_and_reduce, is_main_process, process_rank
+from cell_observatory_platform.training.helpers import log_data_timings
+from cell_observatory_platform.training.loggers import EventWriter
+from cell_observatory_platform.utils.context import gather_and_reduce, is_main_process, process_rank
 
 logging.basicConfig(
     stream=sys.stdout,
