@@ -1,16 +1,18 @@
+import sys
+from pathlib import Path
+
+_parent_dir = Path(__file__).resolve().parent.parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
 
 import pytest
-from pathlib import Path
-from hydra.utils import instantiate, get_method
-from omegaconf import open_dict, DictConfig
-from hydra.utils import get_class
-
 import torch
+from hydra.utils import get_class, get_method, instantiate
+from omegaconf import DictConfig, open_dict
+from ray.train import report
 from torch.utils.data import DataLoader
 
-from ray.train import report
-
-from tests.conftest import distributed_test, config
+from cell_observatory_platform.tests.conftest import config, distributed_test
 
 
 @pytest.mark.skip("Skipping tests for Torch dataloader, Torch dataloader will be deprecated soon.")
