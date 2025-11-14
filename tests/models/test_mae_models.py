@@ -7,9 +7,9 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
-from tests.conftest import models_kargs
-from training.helpers import summarize_model, get_masked_input_data
-from models.maskedautoencoder import MaskedAutoEncoder
+from cell_observatory_platform.tests.conftest import models_kargs
+from cell_observatory_platform.training.helpers import summarize_model, get_masked_input_data
+from cell_observatory_platform.models.maskedautoencoder import MaskedAutoEncoder
 
 
 def test_mae_custom(models_kargs):
