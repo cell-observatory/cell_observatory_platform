@@ -31,7 +31,7 @@ class CheckpointManager:
                  load_universal_checkpoint: bool,
                  save_checkpointdir: Union[str, Path],
                  save_period: int = 1,
-                 load_optimizer: bool = False,
+                 load_optimizer: bool = True,
                  load_dtype: Optional[str] = None,
                  resume_checkpointdir: Optional[Union[str, Path]] = None,
                  pretrained_checkpointdir: Optional[Union[str, Path]] = None,
