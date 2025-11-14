@@ -12,8 +12,8 @@ import torch
 import queue
 from multiprocessing import shared_memory
 
-from data.data_types import NUMPY_DTYPES, TORCH_DTYPES
-from utils.context import (local_rank, 
+from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TORCH_DTYPES
+from cell_observatory_platform.utils.context import (local_rank, 
                            node_id,
                            bind_current_process_to_node)
 
