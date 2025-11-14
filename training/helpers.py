@@ -22,7 +22,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 
 from omegaconf import DictConfig, open_dict
 
-from data.io import save_file
+from cell_observatory_platform.data.io import save_file
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
