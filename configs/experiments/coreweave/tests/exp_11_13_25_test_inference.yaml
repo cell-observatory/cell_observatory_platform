@@ -69,13 +69,12 @@ inference:
 
 # clusters
 clusters:
-  batch_size: 8 # total batch size
+  batch_size: 1 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
+  gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
-  mem_per_cpu: 20000 # ram per cpu core
-  ray_queue_memory: 0.1
-  interactive_session_type: true
+  mem_per_cpu: 40000 # ram per cpu core
+  ray_queue_memory: 0.2
 
 #paths:
 paths:
