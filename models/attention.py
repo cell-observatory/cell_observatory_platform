@@ -8,15 +8,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from data.masking.mask_generator import apply_masks_rope
-from models.rope import (
+from cell_observatory_platform.data.masking.mask_generator import apply_masks_rope
+from cell_observatory_platform.models.rope import (
     generate_frequency_spectrum,
     generate_grid_indices,
     compute_axial_cis,
     compute_mixed_cis,
     apply_rotary_emb,
 )
-from training.helpers import get_patch_sizes
+from cell_observatory_platform.training.helpers import get_patch_sizes
 
 logging.basicConfig(
 	stream=sys.stdout,
