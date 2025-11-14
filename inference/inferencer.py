@@ -664,7 +664,7 @@ class InferencerWorker:
                 # Z,Y,X,C -> C,Z,Y,X
                 perm = (3, 0, 1, 2) if save_format == 'tiff' else (0, 4, 1, 2, 3)
                 arr = np.transpose(arr, perm).copy(order="C")
-                axes = "CZYX"
+                axes = "CZYX" if save_format == 'tiff' else "TCZYX"
 
         if save_format == 'tiff':
             # OME does not support data type 'float16' or 'bfloat16'
