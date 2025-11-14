@@ -1,25 +1,29 @@
+import logging
 import os
 import sys
-import pytest
-import logging
 from pathlib import Path
 
+import pytest
+
+_parent_dir = Path(__file__).resolve().parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
 from dotenv import load_dotenv
-from hydra.utils import get_method
 from hydra import compose, initialize
 from hydra.utils import get_method, instantiate
-from omegaconf import OmegaConf, DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 try:
     OmegaConf.register_new_resolver("eval", eval)
 except ValueError:
     pass
 
-from ray import init, cluster_resources
-from ray.train.torch import TorchTrainer, TorchConfig
-from ray.train import ScalingConfig, RunConfig, FailureConfig, CheckpointConfig
+from ray import cluster_resources, init
+from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
+from ray.train.torch import TorchConfig, TorchTrainer
 
-from utils.container import get_container_info
+from cell_observatory_platform.utils.container import get_container_info
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -132,8 +136,19 @@ def distributed_test(cfg: DictConfig, test: str):
     # be resolved to a callable to prevent
     # serialization issues
     test = get_method(test)
+    
+    # Ensure PYTHONPATH includes parent directory for Ray workers
+    parent_dir = str(Path(__file__).resolve().parent.parent.parent)
+    runtime_env = {k: v for k, v in os.environ.items()}
+    current_pythonpath = runtime_env.get("PYTHONPATH", "")
+    if parent_dir not in current_pythonpath:
+        if current_pythonpath:
+            runtime_env["PYTHONPATH"] = f"{parent_dir}:{current_pythonpath}"
+        else:
+            runtime_env["PYTHONPATH"] = parent_dir
+    
     init(log_to_driver=True,
-         runtime_env={k: v for k, v in os.environ.items()},
+         runtime_env=runtime_env,
          num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
          num_gpus=cfg.clusters.total_gpus,
          ignore_reinit_error=True
