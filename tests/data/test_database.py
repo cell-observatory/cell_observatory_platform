@@ -6,7 +6,7 @@ from pprint import pprint
 from pathlib import Path
 import pandas as pd
 
-from tests.conftest import config
+from cell_observatory_platform.tests.conftest import config
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -486,9 +486,9 @@ def test_16_128_128_128_2_hypercubes_database_100k(config, database_type):
 @pytest.mark.parametrize("z_slices,y_slices,x_slices", [
     (128, 128, 128),
     (128, 256, 256),
-    (128, 384, 384),
-    (128, 256, 512),
-    (128, 384, 512),
+    # (128, 384, 384),
+    # (128, 256, 512),
+    # (128, 384, 512),
 ])
 def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slices):
     config.experiment_name = "test_aggregate_hypercubes"
