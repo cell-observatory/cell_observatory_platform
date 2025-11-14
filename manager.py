@@ -1,26 +1,30 @@
+import base64
+import itertools
+import logging
 import os
+import shlex
+import subprocess
 import sys
 import uuid
-import shlex
-import logging
-import subprocess
 import warnings
-import itertools
+import zlib
 from pathlib import Path
 from subprocess import call, run
 
-import base64
-import zlib
+_parent_dir = Path(__file__).resolve().parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
 
 import hydra
-from hydra import compose
 from dotenv import load_dotenv
+from hydra import compose
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf, open_dict
+
 OmegaConf.register_new_resolver("eval", eval)
 
-from utils.profiling import enable_profiling
-from utils.container import get_container_info
+from cell_observatory_platform.utils.container import get_container_info
+from cell_observatory_platform.utils.profiling import enable_profiling
 
 # Update environment variables
 os.environ["HYDRA_FULL_ERROR"] = "1"
