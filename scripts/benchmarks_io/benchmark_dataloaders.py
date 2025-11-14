@@ -14,8 +14,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from data.dataloaders import get_dataloader
-from utils.context import process_rank, barrier
+from cell_observatory_platform.data.dataloaders import get_dataloader
+from cell_observatory_platform.utils.context import process_rank, barrier
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
