@@ -1,19 +1,30 @@
+import sys
+from pathlib import Path
+
+_parent_dir = Path(__file__).resolve().parent.parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
 import pytest
-
 import torch
-
 from omegaconf import open_dict
 
-from tests.conftest import distributed_test, config
+from cell_observatory_platform.tests.conftest import config, distributed_test
 
 
 def _test_context(config):
-    import torch
     import math
+
+    import torch
     from ray.train import report
-    from utils.context import (
-        OpMap, process_rank, get_world_size, barrier,
-        gather_and_reduce, inference_context
+
+    from cell_observatory_platform.utils.context import (
+        OpMap,
+        barrier,
+        gather_and_reduce,
+        get_world_size,
+        inference_context,
+        process_rank,
     )
 
     # basic sanity — OpMap values equal torch.distributed enums
