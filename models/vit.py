@@ -7,13 +7,13 @@ import torch.nn as nn
 from timm.layers import AttentionPoolLatent
 from timm.models.vision_transformer import global_pool_nlc
 
-from models.mlp import get_mlp
-from models.norm import get_norm
-from models.encoder import Encoder
-from models.activation import get_activation
-from models.patch_embeddings import calc_num_patches
-from models.patch_embeddings import PatchEmbedding
-from models.positional_encoding import PosEmbedding
+from cell_observatory_platform.models.mlp import get_mlp
+from cell_observatory_platform.models.norm import get_norm
+from cell_observatory_platform.models.encoder import Encoder
+from cell_observatory_platform.models.activation import get_activation
+from cell_observatory_platform.models.patch_embeddings import calc_num_patches
+from cell_observatory_platform.models.patch_embeddings import PatchEmbedding
+from cell_observatory_platform.models.positional_encoding import PosEmbedding
 
 logging.basicConfig(
 	stream=sys.stdout,
