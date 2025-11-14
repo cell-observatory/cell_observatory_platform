@@ -605,6 +605,20 @@ class InferencerWorker:
             pred_view = pred_t[t0:t1, z0:z1, y0:y1, x0:x1, :]
             cnt_view = cnt_t[t0:t1, z0:z1, y0:y1, x0:x1, 0]
 
+            T2, Z2, Y2, X2, C2 = pred_view.shape
+            T,  Z,  Y,  X,  C = pred_hypercube.shape
+
+            # if patch is larger (because of padding), crop it
+            if (T != T2) or (Z != Z2) or (Y != Y2) or (X != X2):
+                # we expect the patch to be >= view in each spatial dim
+                if T < T2 or Z < Z2 or Y < Y2 or X < X2:
+                    raise RuntimeError(
+                        f"pred_hypercube smaller than pred_view: "
+                        f"patch {pred_hypercube.shape}, view {pred_view.shape}"
+                    )
+
+                pred_hypercube = pred_hypercube[:T2, :Z2, :Y2, :X2, :]
+
             zeros_before = (cnt_view == 0).sum()
 
             pred_view.add_(pred_hypercube)
