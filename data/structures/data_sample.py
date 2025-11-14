@@ -2,8 +2,8 @@ import sys
 import logging
 from typing import Optional, Dict, Any
 
-from data.structures.image_list import ImageList
-from data.structures.base_data_element import BaseDataElement
+from cell_observatory_platform.data.structures.image_list import ImageList
+from cell_observatory_platform.data.structures.base_data_element import BaseDataElement
 
 
 logging.basicConfig(
