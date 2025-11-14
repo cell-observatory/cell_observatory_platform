@@ -1,22 +1,26 @@
-import os
-import pytest
+import sys
 from pathlib import Path
 
-import torch
+_parent_dir = Path(__file__).resolve().parent.parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
 
+import os
+
+import pytest
+import torch
+from hydra.utils import get_class
+from omegaconf import DictConfig, open_dict
 from ray.train import report
 
-from omegaconf import open_dict
-from omegaconf import DictConfig
-from hydra.utils import get_class
-
-from tests.conftest import distributed_test, config
+from cell_observatory_platform.tests.conftest import config, distributed_test
 
 
 def _test_loggers_dist(cfg: DictConfig):
     import pandas as pd
-    from training.loggers import LocalEventWriter
-    from utils.context import process_rank, get_world_size
+
+    from cell_observatory_platform.training.loggers import LocalEventWriter
+    from cell_observatory_platform.utils.context import get_world_size, process_rank
     
     rank = process_rank()
     world = get_world_size()
