@@ -1,20 +1,23 @@
 import sys
-import pytest
+from pathlib import Path
+
+_parent_dir = Path(__file__).resolve().parent.parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
 import logging
 
+import pytest
 import torch
-
+from hydra.utils import get_class
+from omegaconf import DictConfig, open_dict
 from ray.train import report
 
-from omegaconf import open_dict
-from omegaconf import DictConfig
-from hydra.utils import get_class
-
-from tests.conftest import distributed_test, config
+from cell_observatory_platform.tests.conftest import config, distributed_test
 
 
 def _test_base_evaluation(cfg: DictConfig):
-    from utils.context import process_rank
+    from cell_observatory_platform.utils.context import process_rank
     rank = process_rank()
     trainer_cls = get_class(cfg.trainer)
     trainer = trainer_cls(cfg)
