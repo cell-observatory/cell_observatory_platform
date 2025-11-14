@@ -7,8 +7,8 @@ from hydra.utils import get_method
 import torch
 
 from multiprocessing import Value
-from data.data_shapes import MULTICHANNEL_HYPERCUBE
-from training.helpers import get_patch_sizes
+from cell_observatory_platform.data.data_shapes import MULTICHANNEL_HYPERCUBE
+from cell_observatory_platform.training.helpers import get_patch_sizes
 
 
 # DEPRECATED
