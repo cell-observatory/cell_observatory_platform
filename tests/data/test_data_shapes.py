@@ -2,7 +2,7 @@ import pytest
 
 import torch
 
-from data.data_shapes import MULTICHANNEL_HYPERCUBE
+from cell_observatory_platform.data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 # -----------------------------------------------------------------------------
 # helpers
