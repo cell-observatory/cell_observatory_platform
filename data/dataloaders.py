@@ -19,16 +19,16 @@ import ray.train.torch as raytorch
 
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 
-from utils.context import (process_rank, 
+from cell_observatory_platform.utils.context import (process_rank, 
                            barrier,
                            get_local_numa_nodes, 
                            local_rank, 
                            node_id,
                            torch_gpu_to_numa)
-from data.datasets.buffers import set_buffers
-from data.datasets.schedulers import NumaNodeAffinityScheduler
-from data.datasets.pretrain_dataset_ray import get_dataloader_ray
-from data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
+from cell_observatory_platform.data.datasets.buffers import set_buffers
+from cell_observatory_platform.data.datasets.schedulers import NumaNodeAffinityScheduler
+from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
+from cell_observatory_platform.data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
 
 logging.basicConfig(
     stream=sys.stdout,
