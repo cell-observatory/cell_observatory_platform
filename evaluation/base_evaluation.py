@@ -1,7 +1,7 @@
 from typing import Dict, List
 
-from evaluation.evaluator import DatasetEvaluator 
-from evaluation.metrics import TrainLosses
+from cell_observatory_platform.evaluation.evaluator import DatasetEvaluator 
+from cell_observatory_platform.evaluation.metrics import TrainLosses
 
 
 class BaseEvaluator(DatasetEvaluator):
