@@ -8,8 +8,8 @@ import torch
 
 from nvidia.dali import fn
 
-from data.data_types import DALI_DTYPES
-from data.structures.image_list import ImageList
+from cell_observatory_platform.data.data_types import DALI_DTYPES
+from cell_observatory_platform.data.structures.image_list import ImageList
 
 logging.basicConfig(
 	stream=sys.stdout,
