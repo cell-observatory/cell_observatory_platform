@@ -21,7 +21,7 @@ from skimage.io import imread, imsave
 import pandas as pd
 import polars as pl
 
-from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES
+from cell_observatory_platform.data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES
 
 logging.basicConfig(
     stream=sys.stdout,
