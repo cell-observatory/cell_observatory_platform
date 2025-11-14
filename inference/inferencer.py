@@ -17,7 +17,7 @@ from torch import distributed as dist
 
 from data.io import save_file
 from utils.context import get_world_size, process_rank, barrier
-from inference.utils import stable_key_owner, tile_hash
+from inference.utils import stable_key_owner, tile_hash, preds_to_pdf
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +31,9 @@ class InferencerWorker:
                  use_cached_hypercubes_dataframe: bool,
                  hypercubes_dataframe_path: Path,
                  timepoint_list: Optional[List[int]],
+                 save_as_pdf: bool,
+                 save_as_volume: bool,
+                 z_step_pdf: int,
                  num_output_channels: int,
                  input_format: str, 
                  inference_mode: str,
@@ -74,6 +77,10 @@ class InferencerWorker:
         self.inference_mode = inference_mode
 
         self.convert_to_ome_format = convert_to_ome_format
+        
+        self.z_step_pdf = z_step_pdf
+        self.save_as_pdf = save_as_pdf
+        self.save_as_volume = save_as_volume
 
         self.inference_activation = activation
         self.decoder_head_type = decoder_head_type
@@ -690,11 +697,6 @@ class InferencerWorker:
         sample_name = base.replace("/", "_") + "_" + name
         sample_name = sample_name.replace(".zarr","").replace(".tiff","")
 
-        if sample_name.endswith(".zarr"):
-            sample_name = sample_name.replace(".zarr", "")
-        elif sample_name.endswith(".tiff"):
-            sample_name = sample_name.replace(".tiff", "")
-
         if self.convert_to_ome_format:
             keep_time = (preds.shape[0] > 1)
             np_arr, axes = self._to_ome_compatible_array(preds, 
@@ -710,17 +712,29 @@ class InferencerWorker:
                                                         save_format=self.inference_save_format)
             with_fiji=False
 
-        if self.inference_save_format == "tiff":
-            save_path = Path(self.inference_save_dir) / f"pred_{sample_name}.tiff"
-            save_file(save_path, np_arr, with_fiji=with_fiji, axes=axes)
-        elif self.inference_save_format == "zarr":
-            save_path = Path(self.inference_save_dir) / f"pred_{sample_name}.zarr"
-            save_file(save_path, np_arr, chunk_shape=self.inference_zarr_chunk_shape,
-                    shard_cube_shape=self.inference_zarr_shard_shape, input_format=self.input_format, dtype="float16")
-        else:
-            raise ValueError(f"Unsupported save format: {self.inference_save_format}")
+        if self.save_as_pdf:
+            pdf_path = Path(self.inference_save_dir) / f"pred_{sample_name}_zslices.pdf"
+            preds_to_pdf(
+                np_arr,
+                axes=axes,
+                out_path=pdf_path,
+                z_step=self.z_step_pdf,
+            )
+            ray.logger.info(f"Saved Z-slice PDF for {sample_name} to {pdf_path}")
 
-        ray.logger.info(f"Saved prediction {sample_name} to {save_path}")
+        if self.save_as_volume:
+            if self.inference_save_format == "tiff":
+                save_path = Path(self.inference_save_dir) / f"pred_{sample_name}.tiff"
+                save_file(save_path, np_arr, with_fiji=with_fiji, axes=axes)
+            elif self.inference_save_format == "zarr":
+                save_path = Path(self.inference_save_dir) / f"pred_{sample_name}.zarr"
+                save_file(save_path, np_arr, chunk_shape=self.inference_zarr_chunk_shape,
+                        shard_cube_shape=self.inference_zarr_shard_shape, input_format=self.input_format, dtype="float16")
+            else:
+                raise ValueError(f"Unsupported save format: {self.inference_save_format}")
+
+            ray.logger.info(f"Saved prediction {sample_name} to {save_path}")
+        
         st["done"] = True
         return True
 

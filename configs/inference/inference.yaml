@@ -25,6 +25,9 @@ max_partitions: 10
 save_dir: ${paths.outdir}/inference
 
 convert_to_ome_format: true
+save_as_pdf: true
+save_as_volume: false
+z_step_pdf: 10
 
 # TIFF OPTION:
 # save_format: "tiff"
