@@ -2,8 +2,8 @@ import pytest
 
 import torch
 
-from data.structures.image_list import ImageList, cat_image_lists
-from data.data_shapes import MULTICHANNEL_HYPERCUBE
+from cell_observatory_platform.data.structures.image_list import ImageList, cat_image_lists
+from cell_observatory_platform.data.data_shapes import MULTICHANNEL_HYPERCUBE
 
 
 torch.manual_seed(0)
