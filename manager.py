@@ -389,7 +389,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             sjob_worker_nodes.append(f"--time={cfg.clusters.timelimit}")
 
         sjob_worker_nodes.append(f"--job-name={cfg.clusters.job_name}")
-        sjob_worker_nodes.append(f"--output={outdir / cfg.clusters.job_name}.log")
+        sjob_worker_nodes.append(f"--output={outdir}/{cfg.clusters.job_name}.log")
         sjob_worker_nodes.append(f"--export=ALL")
         sjob_worker_nodes.append(f"--wrap={q(ray_wrap)}")
 
