@@ -7,7 +7,7 @@ import trino
 from pathlib import Path
 from dotenv import load_dotenv
 
-from data.databases.base_database import ParentDatabase
+from cell_observatory_platform.data.databases.base_database import ParentDatabase
 
 logging.basicConfig(
     stream=sys.stdout,
