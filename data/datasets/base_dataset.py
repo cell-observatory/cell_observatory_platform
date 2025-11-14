@@ -10,11 +10,11 @@ import pandas as pd
 from torch.utils.data import Dataset
 from torch.utils.data._utils.collate import default_collate as torch_default_collate
 
-from data.structures.data_sample import DataSample
-from data.structures.image_list import cat_image_lists
-from data.data_shapes import MULTICHANNEL_HYPERCUBE
-from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES
-from data.io import load_hypercubes_dataframe
+from cell_observatory_platform.data.structures.data_sample import DataSample
+from cell_observatory_platform.data.structures.image_list import cat_image_lists
+from cell_observatory_platform.data.data_shapes import MULTICHANNEL_HYPERCUBE
+from cell_observatory_platform.data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES
+from cell_observatory_platform.data.io import load_hypercubes_dataframe
 
 logging.basicConfig(
     stream=sys.stdout,
