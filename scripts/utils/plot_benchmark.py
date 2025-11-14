@@ -1,25 +1,29 @@
+import logging
 import os
 import sys
-import logging
 from pathlib import Path
 from typing import Optional
 
+_parent_dir = Path(__file__).resolve().parent.parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-import matplotlib.pyplot as plt
-import matplotlib
 matplotlib.use("Agg")
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
+
 if not OmegaConf.has_resolver("eval"):
     OmegaConf.register_new_resolver("eval", eval)
 
 from dotenv import load_dotenv
+
 load_dotenv(Path(__file__).parent.parent / ".env", verbose=True)
-if os.environ["PYTHONPATH"] not in sys.path:
-    sys.path.insert(0, os.environ["PYTHONPATH"])
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -29,7 +33,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from cell_observatory_platform.scripts.utils.summarize_run import summarize_run
-
 
 # -------------------------------------- For Plotting Dataloader Benchmark Statistics ---------------------------------------
 
