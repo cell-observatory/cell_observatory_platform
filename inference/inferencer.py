@@ -28,6 +28,8 @@ class InferencerWorker:
                  task: str,
                  model: torch.nn.Module,
                  database: pd.DataFrame,
+                 use_cached_hypercubes_dataframe: bool,
+                 hypercubes_dataframe_path: Path,
                  timepoint_list: Optional[List[int]],
                  num_output_channels: int,
                  input_format: str, 
@@ -50,6 +52,8 @@ class InferencerWorker:
                  zarr_shard_shape: Optional[Tuple[int, ...]] = None,
     ):
         self.database = database
+        self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
+        self.use_cached_hypercubes_dataframe = use_cached_hypercubes_dataframe
         # TODO: consider alternative methods for only performing inference
         #       on a subset of timepoints without storing a prediction for all timepoints
         self.timepoint_list = timepoint_list
@@ -95,10 +99,40 @@ class InferencerWorker:
         ray.logger.info(f"Inference Database: {self.prediction_df}")
 
     def _get_data_tiles_metadata(self) -> pd.DataFrame:
-        query = self._get_query(
-            roi_list=self.roi_list
+        roi_csv = self.hypercubes_dataframe_path.with_name(
+            f"{self.hypercubes_dataframe_path.stem}_rois.csv"
         )
-        table = self.execute_query(query)
+        if (not self.use_cached_hypercubes_dataframe) or (not roi_csv.exists()):
+            query = self._get_query(
+                roi_list=self.roi_list
+            )
+            table = self.execute_query(query)
+        else:
+            if self.verbose:
+                print(f"Loading hypercubes dataframe from cached file: {roi_csv}")
+            table = pd.read_csv(roi_csv)
+
+            cols_rename = [
+                "tile_z_start", "tile_y_start", "tile_x_start",
+                "tile_z_end", "tile_y_end", "tile_x_end",
+                "tile_channel_size", "tile_time_size",
+            ]
+            if set(cols_rename).issubset(table.columns):
+                table = table.rename(columns={
+                    "prepared_id": "id",
+                    "tile_z_end": "z_end",
+                    "tile_y_end": "y_end",
+                    "tile_x_end": "x_end",
+                    "tile_z_start": "z_start",
+                    "tile_y_start": "y_start",
+                    "tile_x_start": "x_start",
+                    "tile_time_size": "time_size",
+                    "tile_channel_size": "channel_size",
+                })
+
+            table = table[table["id"].isin(self.roi_list)]
+
+            print(f"Loaded Table: {table}")
 
         roi_ids = table["id"].tolist()
         tiles = self._get_tiles_from_rois(roi_ids)
@@ -109,7 +143,8 @@ class InferencerWorker:
             .drop_duplicates()
         )
         table = table.merge(allowed, on=["id", "tile_name"], how="inner")
-        table = table.drop_duplicates(subset=["tile_name", "output_folder"], keep="first")
+        
+        # table = table.drop_duplicates(subset=["tile_name", "output_folder"], keep="first")
 
         table["prediction"] = [None] * len(table)
         table["count"] = [None] * len(table)
@@ -234,7 +269,7 @@ class InferencerWorker:
             filters = f"WHERE {table_name_shortcut}.exists IS TRUE"
         elif str(self.server_folder_path).startswith('/groups'):
             filters = f"WHERE {table_name_shortcut}.exists_prfs IS TRUE"
-        elif str(self.server_folder_path).startswith('/aws'):
+        elif str(self.server_folder_path).startswith('/aws') or str(self.server_folder_path).startswith('/workspace/CellObservatoryData'):
             filters = f"WHERE {table_name_shortcut}.exists_aws IS TRUE"
         elif str(self.server_folder_path).startswith('/lustre'):
             filters = f"WHERE {table_name_shortcut}.exists_oak IS TRUE"

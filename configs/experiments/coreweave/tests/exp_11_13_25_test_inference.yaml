@@ -1,0 +1,136 @@
+# @package _global_
+defaults:
+  - /paths/coreweave                         # configs/paths/coreweave.yaml
+  - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
+  - /clusters/coreweave_h100                 # configs/clusters/local.yaml
+  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/mae/large                        # configs/models/jepa/large.yaml
+  - /hooks/hooks_with_weight_decay           # configs/hooks/hooks_with_weight_decay.yaml
+  - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
+  - /loggers/loggers                         # configs/loggers/loggers.yaml
+  - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
+  - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
+  - /optimizers/lamb_mae                     # configs/optimizers/lamb.yaml
+  - /schedulers/warmup_cosine_decay_with_weight_decay # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /profiling/profiling
+  - /inference/inference                      # configs/inference/inference.yaml
+  - _self_
+
+# experiment name (used for logging)
+experiment_name: test_inference
+wandb_project: testing
+
+# task
+task: pretrain_mae
+
+# Model type
+network: mae
+
+# engine type
+engine: deepspeed
+
+# distributed framework
+distributed_framework: ray
+
+# run type
+run_type: single_run # single_run, multi_run, or tune
+
+# job type
+job_type: predict # train or test
+
+# trainer type
+trainer: training.loops.Inferencer
+
+# loop per worker script
+loop_per_worker_script: training.loops.train_loop_per_worker
+
+# training quantization
+quantization: bfloat16 # data type for training, options: float32, float16
+
+# NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model
+dataset_dtype: float16 # data type for loading data, options: float32, float16
+storage_dtype: uint16
+
+# dataset layout in the zarr files
+dataset_layout_order: ZYXC
+
+# seed
+seed: 42
+
+num_output_channels: 2
+
+# overrides
+# --------------------------------------------------------------------------------
+
+inference:
+  roi_tile_list:
+  - [17, "000x_000y_000z.zarr"]
+
+# clusters
+clusters:
+  batch_size: 8 # total batch size
+  worker_nodes: 1 # number of worker nodes
+  gpus_per_worker: 1 # number of gpus per worker node
+  cpus_per_gpu: 12 # number of cpu cores per gpu
+  mem_per_cpu: 20000 # ram per cpu core
+  ray_queue_memory: 0.1
+  interactive_session_type: true
+
+#paths:
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/results/inference/${experiment_name}
+  resume_checkpointdir: null 
+  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/mae_large_128x256x256_150_epoch_lr_0p001_mask_0p8/TorchTrainer_2025-11-09_18-38-00/TorchTrainer_45e0e_00000_0_2025-11-09_18-38-00/checkpoint_000149
+
+# data
+datasets:
+  # mainly used by other configs but determined here for ease of access
+  batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  input_shape: [128, 256, 256, 2]
+  patch_shape: [16, 16, 16, null]
+  occupancy_threshold: 0.0
+  split: 0.0
+
+  return_dataloader: true
+  distributed_sampler: true
+
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+
+  databases:
+    max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+    max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+
+    roi_list: [17]
+    tile_list: ["000x_000y_000z.zarr"]
+    timepoint_list: [0]
+
+    use_cached_hypercubes_dataframe: true
+    hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+
+# schedulers
+schedulers:
+  epochs: 1
+
+# ROPE axial
+models:
+  mae:
+    abs_sincos_enc: false
+    rope_pos_enc: true
+    rope_random_rotation_per_head: true
+    rope_mixed: false
+    rope_theta: 100.0
+
+# hooks
+hooks:
+  hooks_list:
+  - _target_: training.hooks.FreeDeviceBufferHook
+  - _target_: training.hooks.IterationTimer
+  - _target_: training.hooks.PeriodicWriter
+  - _target_: training.hooks.TorchMemoryStats
+    step_period: 1
+    epoch_period: 1
+    logdir: ${loggers.logdir}
