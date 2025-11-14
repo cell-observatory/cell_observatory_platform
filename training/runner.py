@@ -1,21 +1,26 @@
+import logging
 import os
 import sys
 import time
-import logging
 import uuid
 from pathlib import Path
 
-import warnings
-warnings.filterwarnings("ignore")
+_parent_dir = Path(__file__).resolve().parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
 
-from ray.tune import Tuner
-from ray import init, cluster_resources
-from ray.train.torch import TorchTrainer, TorchConfig
-from ray.train import ScalingConfig, CheckpointConfig, RunConfig, FailureConfig
+import warnings
+
+warnings.filterwarnings("ignore")
 
 import hydra
 from hydra.utils import get_method, instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
+from ray import cluster_resources, init
+from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
+from ray.train.torch import TorchConfig, TorchTrainer
+from ray.tune import Tuner
+
 if not OmegaConf.has_resolver("eval"):
     OmegaConf.register_new_resolver("eval", eval)
 if not OmegaConf.has_resolver("now"):
@@ -34,6 +39,15 @@ def initialize_session(cfg: DictConfig):
         runtime_env = { **os.environ, **nsys_env }
     else:
         runtime_env = {**os.environ}
+    
+    # Ensure PYTHONPATH includes parent directory for Ray workers
+    parent_dir = str(Path(__file__).resolve().parent.parent)
+    current_pythonpath = runtime_env.get("PYTHONPATH", "")
+    if parent_dir not in current_pythonpath:
+        if current_pythonpath:
+            runtime_env["PYTHONPATH"] = f"{parent_dir}:{current_pythonpath}"
+        else:
+            runtime_env["PYTHONPATH"] = parent_dir
 
     if 'head_node_ip' in os.environ and 'port' in os.environ:
         address = os.environ["head_node_ip"]

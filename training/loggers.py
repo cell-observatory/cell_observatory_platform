@@ -20,7 +20,7 @@ import pandas as pd
 
 import torch
 
-from utils.context import (
+from cell_observatory_platform.utils.context import (
     is_torch_dist_initialized, 
     process_rank, 
     get_world_size,

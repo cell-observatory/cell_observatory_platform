@@ -21,7 +21,7 @@ import torch
 from deepspeed import initialize
 from ray.train import get_context
 
-from training.helpers import (
+from cell_observatory_platform.training.helpers import (
     enable_optimizations,
     get_masked_input_data,
     get_steps_per_epoch,
@@ -29,13 +29,13 @@ from training.helpers import (
     summarize_model,
     append_kwargs_to_model
 )
-from training.hooks import HookBase
-from training.loggers import EventRecorder
-from data.dataloaders import get_dataloader
-from training.optimizers import get_optimizer
-from training.registry import build_dependency_graph_and_instantiate
-from training.schedulers import get_param_groups, get_schedulers
-from utils.context import inference_context, process_rank
+from cell_observatory_platform.training.hooks import HookBase
+from cell_observatory_platform.training.loggers import EventRecorder
+from cell_observatory_platform.data.dataloaders import get_dataloader
+from cell_observatory_platform.training.optimizers import get_optimizer
+from cell_observatory_platform.training.registry import build_dependency_graph_and_instantiate
+from cell_observatory_platform.training.schedulers import get_param_groups, get_schedulers
+from cell_observatory_platform.utils.context import inference_context, process_rank
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
@@ -116,9 +116,11 @@ class BaseTrainer:
         Args:
             hooks (list[Optional[HookBase]]): list of hooks
         """
+        allowed_subclasses = [h.__name__ for h in HookBase.__subclasses__()]
         hooks = [h for h in hooks if h is not None]
+        
         for h in hooks:
-            assert isinstance(h, HookBase)
+            assert type(h).__name__ in allowed_subclasses
             # to avoid circular reference, hooks and trainer
             # cannot own each other this normally does not
             # matter, but will cause memory leak if the 
