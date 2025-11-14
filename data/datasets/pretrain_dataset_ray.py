@@ -23,18 +23,18 @@ from multiprocessing import shared_memory
 import torch
 from torch.utils.data import random_split
 
-from data.io import read_zarr
-from utils.context import (process_rank,
+from cell_observatory_platform.data.io import read_zarr
+from cell_observatory_platform.utils.context import (process_rank,
                            torch_gpu_to_numa,
                            local_rank,
                            get_world_size,
                            bind_current_process_to_node,
                            node_id)
-from utils.profiling import pprof_func, pprof_class
-from data.datasets.buffers import get_buffers, DeviceMemoryBuffer
-from data.data_types import (NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES)
-from training.helpers import record_dataset_len, get_data_dim
-from inference.utils import tile_owner
+from cell_observatory_platform.utils.profiling import pprof_func, pprof_class
+from cell_observatory_platform.data.datasets.buffers import get_buffers, DeviceMemoryBuffer
+from cell_observatory_platform.data.data_types import (NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES)
+from cell_observatory_platform.training.helpers import record_dataset_len, get_data_dim
+from cell_observatory_platform.inference.utils import tile_owner
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
