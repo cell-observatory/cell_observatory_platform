@@ -5,7 +5,7 @@ from typing import Dict, Tuple
 from omegaconf import DictConfig
 from hydra.utils import instantiate, get_method
 
-from data.data_types import TORCH_DTYPES
+from cell_observatory_platform.data.data_types import TORCH_DTYPES
 
 
 class TorchPreprocessor(torch.nn.Module):
