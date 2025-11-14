@@ -7,8 +7,8 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import Checkpoi
 
 from omegaconf import open_dict
 
-from tests.conftest import config
-from training.helpers import apply_activation_checkpointing, _apply_ac_to_module
+from cell_observatory_platform.tests.conftest import config
+from cell_observatory_platform.training.helpers import apply_activation_checkpointing, _apply_ac_to_module
 
 
 # TODO: add tests to test with all the models we currently support
