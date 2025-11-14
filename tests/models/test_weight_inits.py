@@ -2,8 +2,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from training.helpers import init_weights
-import training.helpers as M
+from cell_observatory_platform.training.helpers import init_weights
+import cell_observatory_platform.training.helpers as M
 
 
 # ---- Tiny scaffold model that satisfies attribute expectations ----
