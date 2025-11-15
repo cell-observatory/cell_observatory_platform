@@ -90,6 +90,7 @@ def preds_to_pdf(
     z_step: int = 1,
     pmin: float = 1.0,
     pmax: float = 99.0,
+    mip_depth: int = 20,
 ):
     """
     PDF helper that works on TCZYX or CZYX.
@@ -116,22 +117,30 @@ def preds_to_pdf(
 
     with PdfPages(out_path) as pdf:
         for t in range(T):
-            for z in range(0, Z, z_step):
-                slice_z = vol_tzyxc[t, z]  # (Y,X,C)
-                _, _, C = slice_z.shape
+            for z0 in range(0, Z, z_step):
+                z1 = min(z0 + mip_depth, Z)
+                # block: (z_block, Y, X, C)
+                block = vol_tzyxc[t, z0:z1]  # (z_block, Y, X, C)
+                if block.shape[0] == 0:
+                    continue
 
-                fig, axes_row = plt.subplots(
-                    1, C, figsize=(4 * C, 4), squeeze=False
+                # Max-intensity projection over z-axis
+                mip = block.max(axis=0)  # (Y, X, C)
+                _, _, C = mip.shape
+
+                # Channels stacked vertically: C rows x 1 column
+                fig, axes_col = plt.subplots(
+                    C, 1, figsize=(18, 7 * C), squeeze=False
                 )
-                axes_row = axes_row[0]
+                axes_col = axes_col[:, 0]
 
                 for c in range(C):
-                    img = slice_z[..., c]
+                    img = mip[..., c]
                     img_norm = _normalize_slice(img, pmin=pmin, pmax=pmax)
 
-                    ax = axes_row[c]
+                    ax = axes_col[c]
                     ax.imshow(img_norm, cmap="gray", interpolation="nearest")
-                    ax.set_title(f"T={t}  Z={z}  C={c}")
+                    ax.set_title(f"T={t}  Z∈[{z0},{z1})  C={c}")
                     ax.axis("off")
 
                 fig.tight_layout()
