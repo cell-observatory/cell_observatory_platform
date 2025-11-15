@@ -82,7 +82,7 @@ paths:
   outdir: ${paths.data_path}/results/inference/${experiment_name}
   resume_checkpointdir: null 
   # pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/mae_large_128x256x256_150_epoch_lr_0p001_mask_0p8/TorchTrainer_2025-11-09_18-38-00/TorchTrainer_45e0e_00000_0_2025-11-09_18-38-00/checkpoint_000149
-  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/
+  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/mae_large_128x256x256_150_epoch_lr_0p001_mask_0p7_fourier_loss_no_ld/TorchTrainer_2025-11-13_17-39-19/TorchTrainer_bd05c_00000_0_2025-11-13_17-39-19/checkpoint_000113
 
 # data
 datasets:

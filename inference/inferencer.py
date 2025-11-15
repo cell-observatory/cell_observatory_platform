@@ -642,35 +642,6 @@ class InferencerWorker:
 
         return done_keys
 
-    # FIXME: hacky, we should generalize, standardize, and cleanup
-    def _to_ome_compatible_array(self,
-                                preds_tzyxc: torch.Tensor, 
-                                keep_time: bool, 
-                                with_ome: bool,
-                                save_format: Literal['tiff','zarr']='tiff'
-    ) -> tuple[np.ndarray, str]:
-        arr = preds_tzyxc.cpu().numpy()
-
-        if keep_time and arr.shape[0] > 1:
-            if with_ome:
-                # T,Z,Y,X,C -> T,C,Z,Y,X
-                arr = np.transpose(arr, (0, 4, 1, 2, 3)).copy(order="C")
-                axes = "TCZYX"
-        else:
-            if arr.ndim == 5 and arr.shape[0] == 1 and save_format == 'tiff':
-                arr = arr[0]
-            if with_ome:
-                # Z,Y,X,C -> C,Z,Y,X
-                perm = (3, 0, 1, 2) if save_format == 'tiff' else (0, 4, 1, 2, 3)
-                arr = np.transpose(arr, perm).copy(order="C")
-                axes = "CZYX" if save_format == 'tiff' else "TCZYX"
-
-        if save_format == 'tiff':
-            # OME does not support data type 'float16' or 'bfloat16'
-            arr = arr.astype(np.float32)
-
-        return arr, axes
-
     def _finish_if_done(self, key, force: bool = False):
         st = self._tile_state[key]
         if st["done"] or st["pred"] is None:
