@@ -65,7 +65,7 @@ num_output_channels: 2
 inference:
   roi_tile_list:
   - [17, "000x_002y_001z.zarr"]
-  - [19, "000x_002y_001z.zarr"]
+  # - [19, "000x_002y_001z.zarr"]
 
 # clusters
 clusters:
@@ -103,7 +103,7 @@ datasets:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
-    roi_list: [17, 19]
+    roi_list: [17]
     tile_list: ["000x_002y_001z.zarr"]
     timepoint_list: [0]
 
