@@ -42,16 +42,30 @@ dashboard_port=$(getfreeport)
 echo "Dashboard will use port: $dashboard_port"
 export dashboard_port
 
-head_ip="$(hostname -I | awk '{print $1}')"
-export RAY_GRAFANA_HOST="${head_ip}:3000"
-export RAY_PROMETHEUS_HOST="${head_ip}:9090"
+# Get allocated hosts from LSF
+hosts=()
+for host in $(cat $LSB_DJOB_HOSTFILE | uniq); do
+    echo "Adding host: $host"
+    hosts+=($host)
+done
+echo "The host list is: ${hosts[@]}"
+
+head_node=${hosts[0]}
+head_node_ip=$(getent hosts $head_node | awk '{ print $1 }')
+cluster_address="$head_node_ip:$port"
+
+export head_node
+export head_node_ip
+export cluster_address
+export RAY_GRAFANA_HOST="${head_node_ip}:3000"
+export RAY_PROMETHEUS_HOST="${head_node_ip}:9090"
 
 ########################### HELPER
 
 do_cleanup() {
     cleanup_jobs=()
 
-    blaunch -z "$head_node" bash -lc "
+    blaunch -z $head_node bash -lc "
         apptainer exec --userns --nv \
             --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
             $env bash -lc '
@@ -76,7 +90,7 @@ do_cleanup() {
     if (( num_workers > 0 )); then
         i=0
         for host in "${workers[@]}"; do
-            blaunch -z "$host" bash -lc "
+            blaunch -z $host bash -lc "
                 apptainer exec --userns --nv \
                 --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
                 $env bash -lc '
@@ -112,27 +126,11 @@ do_cleanup() {
 
 ############################## START HEAD NODE
 
-# Get allocated hosts from LSF
-hosts=()
-for host in $(cat $LSB_DJOB_HOSTFILE | uniq); do
-    echo "Adding host: $host"
-    hosts+=($host)
-done
-echo "The host list is: ${hosts[@]}"
-
-head_node=${hosts[0]}
-head_node_ip=$(getent hosts $head_node | awk '{ print $1 }')
-cluster_address="$head_node_ip:$port"
-
-export head_node
-export head_node_ip
-export cluster_address
-
-blaunch -z "$head_node" "
+blaunch -z $head_node "
     apptainer exec --userns --nv \
         --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
-        $env bash -lc 'exec /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
-            -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory'
+        $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
+        -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory
 " &
 head_bg_pid=$!
 
@@ -158,11 +156,11 @@ if [ ${nodes} -gt 1 ]; then
     for host in "${workers[@]}"; do
         echo "Starting worker on: $host"
         mkdir -p $outdir/ray_worker_$i
-        blaunch -z "$host" "
-        apptainer exec --userns --nv \
-            --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
-            $env bash -lc 'exec /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-            -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i'
+        blaunch -z $host "
+            apptainer exec --userns --nv \
+                --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
+                $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i
         " &
         worker_pids+=($!)
         i+=1
