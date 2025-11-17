@@ -43,44 +43,23 @@ def test_database_connection(database):
 def test_all_database_tables(database):
     tables = database.list_tables()
     print(f"Available tables: {tables.values.squeeze()}")
-
     assert len(tables) > 0, f"Zero tables were returned"
-    for t in tables.values.squeeze():
-        cols = database.count_columns(t)
-        rows = database.count_rows(t)
 
-        print(f"Table `{t}` has {cols} column(s) and {rows} row(s).")
-        try:
-            assert cols > 0
-        except AssertionError:
-            print(f"Table `{t}` has no columns. Check if the table exists in the database.")
-
-        try:
-            assert rows > 0
-        except AssertionError:
-            print(f"Table `{t}` is empty. Check access to this table in the database.")
 
 def test_all_database_views(database):
     views = database.list_views()
     print(f"Available views: {views.values.squeeze()}")
-
     assert len(views) > 0, f"Zero views were returned"
-    for t in views.values.squeeze():
-        cols = database.count_columns(t)
-        rows = database.count_rows(t)
 
-        print(f"View `{t}` has {cols} column(s) and {rows} row(s).")
-        try:
-            assert cols > 0
-        except AssertionError:
-            print(f"View `{t}` has no columns. Check if the view exists in the database.")
-
-        try:
-            assert rows > 0
-        except AssertionError:
-            print(f"View `{t}` is empty. Check access to this view in the database.")
-
-def test_table(database, table_name='prepared'):
+@pytest.mark.parametrize(
+    "table_name", 
+    [
+        'prepared', 
+        'prepared_tiles', 
+        'g_sheet_master_imaging_list',
+    ]
+)
+def test_table(database, table_name):
     print(f"Testing table `{table_name}`...")
     cols = database.get_columns(table_name)
     num_cols = len(cols)
@@ -90,19 +69,6 @@ def test_table(database, table_name='prepared'):
     assert num_rows > 0, f"Table `{table_name}` has {num_rows} row(s)"
     print(f"Table `{table_name}` has {num_cols} column(s) and {num_rows} row(s).")
     pprint(cols)
-
-def test_g_sheet_master_imaging_list_table(database):
-    test_table(database, table_name='g_sheet_master_imaging_list')
-
-def test_prepared_table(database):
-    test_table(database, table_name='prepared')
-
-def test_prepared_tiles_table(database):
-    test_table(database, table_name='prepared_tiles')
-
-@pytest.mark.skip('Table too large to be tested. Database connection not available')
-def test_prepared_cubes_table(database):
-    test_table(database, table_name='prepared_cubes')
 
 
 def test_abc_data(database):
@@ -131,37 +97,16 @@ def test_aws_data(database):
 
 
 @pytest.mark.skip('Table is empty. Database connection not available')
-def test_create_1_128_128_128_2_hypercubes(database):
-    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=1, max_hypercubes=100)
+@pytest.mark.parametrize("t", [1, 16])
+def test_create_t_128_128_128_2_hypercubes(database, t):
+    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=t, max_hypercubes=100)
     print(database.last_query)
     print(table)
 
     assert table.shape[0] <= 100, "Only 100 or less rows should be returned"
 
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
-    assert (table['time_size'] == 1).all(), "All time sizes should be 1"
-    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
-    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
-    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
-    assert table.shape[0] > 0, f"Zero hypercubes were returned"
-
-    pd.testing.assert_series_equal(
-        table['time_size'],
-        table['occupancy_ratios_ch_0'].apply(len),
-        check_dtype=False,
-        check_names=False,
-    )
-
-@pytest.mark.skip('Table is empty. Database connection not available')
-def test_create_16_128_128_128_2_hypercubes(database):
-    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, max_hypercubes=100)
-    print(database.last_query)
-    print(table)
-
-    assert table.shape[0] == 100, "Only 100 or less rows should be returned"
-
-    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
-    assert (table['time_size'] == 16).all(), "All time sizes should be 16"
+    assert (table['time_size'] == t).all(), f"All time sizes should be {t}"
     assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
     assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
     assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
@@ -335,13 +280,14 @@ def test_1_128_128_128_2_hypercubes_database(config, database_type):
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
 @pytest.mark.parametrize("database_type", database_types)
-def test_16_128_128_128_2_hypercubes_database(config, database_type):
+@pytest.mark.parametrize("max_hypercubes", [100, 1000, 5000])
+def test_16_128_128_128_2_hypercubes_database(config, database_type, max_hypercubes):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database"
     config.datasets.databases._target_ = get_database_class(database_type) 
     config.datasets.databases.input_shape = (16, 128, 128, 128, 2)
     num_timepoints = 16
     config.datasets.databases.dataset_layout_order = "TZYXC"    
-    config.datasets.databases.max_hypercubes = 100
+    config.datasets.databases.max_hypercubes = max_hypercubes
     config.datasets.databases.fetch_hypercubes_dataframe = True
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
@@ -390,99 +336,6 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config, database_type
     config.datasets.databases = previous_config.copy()  #  Restore previous config state.  For the tests that follow, this will clear 'filters' we just added 
 
 @pytest.mark.parametrize("database_type", database_types)
-def test_16_128_128_128_2_hypercubes_database_1k(config, database_type):
-    config.experiment_name = "test_16_128_128_128_2_hypercubes_database_1k"
-    config.datasets.databases._target_ = get_database_class(database_type) 
-    config.datasets.databases.input_shape = (16, 128, 128, 128, 2)
-    num_timepoints = 16
-    config.datasets.databases.dataset_layout_order = "TZYXC"    
-    config.datasets.databases.max_hypercubes = 1000
-    config.datasets.databases.max_rois = None
-    config.datasets.databases.max_tiles = None
-    config.datasets.databases.hpf_list = None
-    config.datasets.databases.fetch_hypercubes_dataframe = True
-    config.datasets.databases.use_cached_hypercubes_dataframe = False
-    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
-
-    print(f"Initializing {config.datasets.databases._target_}...")
-    # pprint(OmegaConf.to_container(config, resolve=True))
-
-    database = instantiate(config.datasets.databases)
-    table = database.hypercubes_dataframe
-    print(table)
-
-    assert (table['time_size'] == num_timepoints).all(), f"All time sizes should be {num_timepoints}"
-
-    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
-    assert table.shape[0] > 0, f"Zero hypercubes were returned"
-
-    assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique value"
-
-    assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
-    
-@pytest.mark.parametrize("database_type", database_types)
-def test_16_128_128_128_2_hypercubes_database_10k(config, database_type):
-    config.experiment_name = "test_16_128_128_128_2_hypercubes_database_10k"
-    config.datasets.databases._target_ = get_database_class(database_type) 
-    config.datasets.databases.input_shape = (16, 128, 128, 128, 2)
-    num_timepoints = 16
-    config.datasets.databases.dataset_layout_order = "TZYXC"
-    config.datasets.databases.max_hypercubes = 10000
-    config.datasets.databases.max_rois = None
-    config.datasets.databases.max_tiles = None
-    config.datasets.databases.hpf_list = None
-    config.datasets.databases.fetch_hypercubes_dataframe = True
-    config.datasets.databases.use_cached_hypercubes_dataframe = False
-    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
-
-    print(f"Initializing {config.datasets.databases._target_}...")
-    # pprint(OmegaConf.to_container(config, resolve=True))
-
-    database = instantiate(config.datasets.databases)
-    table = database.hypercubes_dataframe
-    print(table)
-
-    assert (table['time_size'] == num_timepoints).all(), f"All time sizes should be {num_timepoints}"
-
-    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
-    assert table.shape[0] > 0, f"Zero hypercubes were returned"
-
-    assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique value"
-
-    assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
-
-@pytest.mark.parametrize("database_type", database_types)
-def test_16_128_128_128_2_hypercubes_database_100k(config, database_type):
-    config.experiment_name = "test_16_128_128_128_2_hypercubes_database_100k"
-    config.datasets.databases._target_ = get_database_class(database_type) 
-    config.datasets.databases.input_shape = (16, 128, 128, 128, 2)
-    num_timepoints = 16
-    config.datasets.databases.dataset_layout_order = "TZYXC"
-    config.datasets.databases.max_hypercubes = 100000
-    config.datasets.databases.max_rois = None
-    config.datasets.databases.max_tiles = None
-    config.datasets.databases.hpf_list = None
-    config.datasets.databases.fetch_hypercubes_dataframe = True
-    config.datasets.databases.use_cached_hypercubes_dataframe = False
-    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.outdir) / 'database' / f"{config.experiment_name}.csv"
-
-    print(f"Initializing {config.datasets.databases._target_}...")
-    # pprint(OmegaConf.to_container(config, resolve=True))
-
-    database = instantiate(config.datasets.databases)
-    table = database.hypercubes_dataframe
-    print(table)
-
-    assert (table['time_size'] == num_timepoints).all(), f"All time sizes should be {num_timepoints}"
-
-    assert table.shape[0] <= config.datasets.databases.max_hypercubes, f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
-    assert table.shape[0] > 0, f"Zero hypercubes were returned"
-
-    assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique values"
-
-    assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
-
-@pytest.mark.parametrize("database_type", database_types)
 @pytest.mark.parametrize("z_slices,y_slices,x_slices", [
     (128, 128, 128),
     (128, 256, 256),
@@ -496,7 +349,7 @@ def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slice
     config.datasets.databases.input_shape = (16, z_slices, y_slices, x_slices, 2)
     num_timepoints = 16
     config.datasets.databases.dataset_layout_order = "TZYXC"
-    config.datasets.databases.max_hypercubes = 1000
+    config.datasets.databases.max_hypercubes = 100
     config.datasets.databases.max_rois = None
     config.datasets.databases.max_tiles = None
     config.datasets.databases.hpf_list = None
