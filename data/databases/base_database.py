@@ -435,53 +435,53 @@ class ParentDatabase():
             tile_list=tile_list,
             timepoint_list=timepoint_list,
         )
-        if self.max_partitions is None or self.max_partitions <= 1 :
-            # Single partition
-            partition_num = 1
-            limit = f"LIMIT {max_hypercubes}" if max_hypercubes else ""
-            
-            return  [f"""
-                        SELECT
-                            {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
-                        FROM {table_name} {table_name_shortcut}
-                        {filters} 
-                        ORDER BY first_pc_id DESC
-                        {limit}
-                    """]
-
-        else:
-           # Multiple partitions, with limit and offset
-            max_rows = self.count_rows(table_name=table_name)
-
-            if max_hypercubes is None:
-                max_hypercubes = max_rows
-
-            if max_hypercubes > max_rows:
-                max_hypercubes = max_rows
-
-            assert max_hypercubes != 0, f"{table_name} is empty"
-            
-            if max_hypercubes > 1000:
-                # select max number of partitions that divides the number of rows in each partition evenly
-                partition_num = max([i for i in range(1, self.max_partitions + 1) if
-                                    max_hypercubes % i == 0]) if max_hypercubes is not None else 1
-                print(f"Using {partition_num} partitions to query. Max hypercubes: {max_hypercubes}.")
-            else:
-                partition_num = 1
+        # if self.max_partitions is None or self.max_partitions <= 1 :
+        # Single partition
+        partition_num = 1
+        limit = f"LIMIT {max_hypercubes}" if max_hypercubes else ""
         
-            rows_per_partition = max_hypercubes // partition_num
-            return  [
-                    f"""
-                        SELECT
-                            {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
-                        FROM {table_name} {table_name_shortcut}
-                        {filters} 
-                        ORDER BY first_pc_id DESC
-                        LIMIT {rows_per_partition}
-                        OFFSET {rows_per_partition * i}
-                    """
-                    for i in range(partition_num)
-                ]
+        return  [f"""
+                    SELECT
+                        {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
+                    FROM {table_name} {table_name_shortcut}
+                    {filters} 
+                    ORDER BY first_pc_id DESC
+                    {limit}
+                """]
+
+        # else:
+        #    # Multiple partitions, with limit and offset
+        #     max_rows = self.count_rows(table_name=table_name)
+
+        #     if max_hypercubes is None:
+        #         max_hypercubes = max_rows
+
+        #     if max_hypercubes > max_rows:
+        #         max_hypercubes = max_rows
+
+        #     assert max_hypercubes != 0, f"{table_name} is empty"
+            
+        #     if max_hypercubes > 1000:
+        #         # select max number of partitions that divides the number of rows in each partition evenly
+        #         partition_num = max([i for i in range(1, self.max_partitions + 1) if
+        #                             max_hypercubes % i == 0]) if max_hypercubes is not None else 1
+        #         print(f"Using {partition_num} partitions to query. Max hypercubes: {max_hypercubes}.")
+        #     else:
+        #         partition_num = 1
+        
+        #     rows_per_partition = max_hypercubes // partition_num
+        #     return  [
+        #             f"""
+        #                 SELECT
+        #                     {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
+        #                 FROM {table_name} {table_name_shortcut}
+        #                 {filters} 
+        #                 ORDER BY first_pc_id DESC
+        #                 LIMIT {rows_per_partition}
+        #                 OFFSET {rows_per_partition * i}
+        #             """
+        #             for i in range(partition_num)
+        #         ]
 
     def _create_t_128_128_128_2_hypercube_view(
             self,
