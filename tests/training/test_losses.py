@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from training.losses import FourierLoss
+from cell_observatory_platform.training.losses import FourierLoss
 
 @pytest.mark.parametrize(
     "input_fmt,input_shape,patch_shape,in_chans",

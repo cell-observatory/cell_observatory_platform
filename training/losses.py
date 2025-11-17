@@ -4,8 +4,8 @@ import torch.nn.functional as F
 
 from omegaconf import DictConfig, OmegaConf
 
-from models.patch_embeddings import PatchEmbedding
-from data.masking.mask_generator import apply_masks
+from cell_observatory_platform.models.patch_embeddings import PatchEmbedding
+from cell_observatory_platform.data.masking.mask_generator import apply_masks
 
 
 def get_loss_fn(loss):
