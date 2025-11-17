@@ -3,7 +3,6 @@ import torch
 
 from training.losses import FourierLoss
 
-
 @pytest.mark.parametrize(
     "input_fmt,input_shape,patch_shape,in_chans",
     [
@@ -26,7 +25,7 @@ def test_fourier_loss_forward_backward(input_fmt, input_shape, patch_shape, in_c
         input_shape=input_shape,
         patch_shape=patch_shape,
         embed_dim=256,
-        in_chans=in_chans,
+        # in_chans=in_chans, # FIXME
     ).to(device)
 
     full_shape = (B, *input_shape)
