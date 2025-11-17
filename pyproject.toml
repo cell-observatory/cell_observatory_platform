@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "Training backend for the Cell Observatory models"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "Apache License 2.0"
 authors = [
     {name = "Cell Observatory Team"}
 ]
@@ -19,8 +18,8 @@ Homepage = "https://github.com/cell-observatory/cell_observatory_platform"
 Repository = "https://github.com/cell-observatory/cell_observatory_platform"
 "Bug Tracker" = "https://github.com/cell-observatory/cell_observatory_platform/issues"
 
-[tool.setuptools]
-packages = ["cluster", "configs", "data", "evaluation", "inference", "models", "scaling", "scripts", "training", "utils"]
+[tool.setuptools.packages.find]
+where = ["."]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
