@@ -134,6 +134,28 @@
             "justMyCode": false
         },
         {
+            "name": "🪏 tests/training/test_losses",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/training/test_losses.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
+        },
+        {
             "name": "🪏 tests/training/test_checkpoint",
             "type": "debugpy",
             "request": "launch",
