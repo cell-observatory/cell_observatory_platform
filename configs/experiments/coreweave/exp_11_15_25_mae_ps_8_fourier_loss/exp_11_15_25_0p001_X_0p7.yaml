@@ -14,12 +14,11 @@ defaults:
   - /schedulers/warmup_cosine_decay_with_weight_decay # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling
-  - /inference/inference                      # configs/inference/inference.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: test_inference
-wandb_project: testing
+experiment_name: mae_large_128x256x256_150_epoch_lr_0p001_mask_0p7_fourier_loss_no_ld_ps_8
+wandb_project: pretraining_3d #testing
 
 # task
 task: pretrain_mae
@@ -37,62 +36,51 @@ distributed_framework: ray
 run_type: single_run # single_run, multi_run, or tune
 
 # job type
-job_type: predict # train or test
+job_type: train # train or test
 
 # trainer type
-trainer: training.loops.Inferencer
+trainer: training.loops.EpochBasedTrainer
 
 # loop per worker script
 loop_per_worker_script: training.loops.train_loop_per_worker
 
 # training quantization
-quantization: bfloat16 # data type for training, options: float32, float16
+quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
 
-dataset_dtype: bfloat16 # data type for loading data, options: float32, float16
-storage_dtype: uint16
+# dtype for training data
+dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
+storage_dtype: uint16 # data type for storage
 
 # dataset layout in the zarr files
 dataset_layout_order: ZYXC
 
-# seed
-seed: 42
-
-num_output_channels: 2
-
 # overrides
 # --------------------------------------------------------------------------------
 
-inference:
-  roi_tile_list:
-  - [17, "000x_002y_001z.zarr"]
-  # - [19, "000x_002y_001z.zarr"]
-
 # clusters
 clusters:
-  batch_size: 1 # total batch size
-  worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
+  batch_size: 576 # total batch size
+  worker_nodes: 8 # number of worker nodes
+  gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
   mem_per_cpu: 40000 # ram per cpu core
-  ray_queue_memory: 0.1
+  ray_queue_memory: 0.2
 
 #paths:
 paths:
   # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.data_path}/results/inference/${experiment_name}
-  resume_checkpointdir: null 
-  # pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/mae_large_128x256x256_150_epoch_lr_0p001_mask_0p8/TorchTrainer_2025-11-09_18-38-00/TorchTrainer_45e0e_00000_0_2025-11-09_18-38-00/checkpoint_000149
-  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/mae_large_128x256x256_150_epoch_lr_0p001_mask_0p7_fourier_loss_no_ld/TorchTrainer_2025-11-13_17-39-19/TorchTrainer_bd05c_00000_0_2025-11-13_17-39-19/checkpoint_000113
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
 
-# data
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   input_shape: [128, 256, 256, 2]
-  patch_shape: [16, 16, 16, null]
-  occupancy_threshold: 0.0
-  split: 0.0
+  patch_shape: [8, 8, 8, null]
+  occupancy_threshold: 0.9
 
+  split: 0.1
   return_dataloader: true
   distributed_sampler: true
 
@@ -100,20 +88,38 @@ datasets:
   num_actors_min: 4
   num_actors_max: 12
 
+  # max_hypercubes: null
+  # max_hypercubes: 2000000
+  # max_hypercubes: 4000
+  max_hypercubes: 1000000
+
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+
   databases:
-    max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-    max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+    occupancy_threshold_filter_type: 'min_ch0'
 
-    roi_list: [17]
-    tile_list: ["000x_002y_001z.zarr"]
-    timepoint_list: [0]
+  masking:
+    mask_generators:
+      - _target_: data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
 
-    use_cached_hypercubes_dataframe: true
-    hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+        mask_mode: 
+          _target_: data.masking.mask_generator.MaskModes
+          value: "random"
 
-# schedulers
+        random_masking_ratio: 0.7
+
 schedulers:
-  epochs: 1
+  epochs: 150
+  warmup: 20
+  cooldown: 5
+
+# schedulers:
+#   epochs: 2
 
 # ROPE axial
 models:
@@ -123,14 +129,39 @@ models:
     rope_random_rotation_per_head: true
     rope_mixed: false
     rope_theta: 100.0
+    with_auxiliary_loss: true
+    loss_fn:
+      loss_type: "fourier_loss"
+      alpha: 0.001
+      fft_loss: "L1"
+      spatial_loss: "l2_masked"
+      input_fmt: ${dataset_layout_order}
+      input_shape: ${datasets.input_shape}
+      patch_shape: ${datasets.patch_shape}
+      embed_dim: ${models.embed_dim}
+
+optimizers:
+  wd:  ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-3
 
 # hooks
 hooks:
   hooks_list:
+  - _target_: training.hooks.WeightDecayScheduleHook
   - _target_: training.hooks.FreeDeviceBufferHook
+  - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.LRScheduler
   - _target_: training.hooks.IterationTimer
   - _target_: training.hooks.PeriodicWriter
+  - _target_: training.hooks.PeriodicCheckpointer
+    file_prefix: latest_model
+  - _target_: training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - _target_: training.hooks.TorchMemoryStats
     step_period: 1
     epoch_period: 1
     logdir: ${loggers.logdir}
+  - _target_: training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true

@@ -344,7 +344,7 @@ class EpochBasedTrainer(BaseTrainer):
         # and training/run.py
         best_metric, step, epoch = resume_run(self, cfg)
         self.start_epoch, self.start_iter, self.best_metric = epoch, step, best_metric
-        self._epoch, self._iter, self._val_iter, self._curr_val_metric = self.start_epoch, self.start_iter, 0, 0.0
+        self._epoch, self._iter, self._val_iter, self._curr_val_metric = self.start_epoch, self.start_iter, 0, float('inf')
 
         if self.start_iter > 0:
             logger.info("[Trainer] Resuming training without loading previous optimizer state.")
