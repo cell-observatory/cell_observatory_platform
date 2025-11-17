@@ -17,6 +17,7 @@ import hydra
 from hydra.utils import get_method, instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
 from ray import cluster_resources, init
+from ray.runtime_env import RuntimeEnv
 from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
 from ray.tune import Tuner
@@ -34,20 +35,20 @@ logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INF
 def initialize_session(cfg: DictConfig):
     nsys_env = cfg.hooks.get("nsys_env", None)
     
-    if nsys_env is not None:
-        nsys_env = OmegaConf.to_container(nsys_env, resolve=True, enum_to_str=True)
-        runtime_env = { **os.environ, **nsys_env }
-    else:
-        runtime_env = {**os.environ}
+    env_vars = {}
+    env_vars.update(os.environ)
     
-    # Ensure PYTHONPATH includes parent directory for Ray workers
-    parent_dir = str(Path(__file__).resolve().parent.parent)
-    current_pythonpath = runtime_env.get("PYTHONPATH", "")
-    if parent_dir not in current_pythonpath:
-        if current_pythonpath:
-            runtime_env["PYTHONPATH"] = f"{parent_dir}:{current_pythonpath}"
-        else:
-            runtime_env["PYTHONPATH"] = parent_dir
+    if nsys_env is not None:
+        env_vars.update(
+            *OmegaConf.to_container(nsys_env, resolve=True, enum_to_str=True)
+        )
+    
+    workspace_root = str(Path(__file__).resolve().parent.parent.parent)
+    
+    runtime_env = RuntimeEnv(
+        working_dir=workspace_root,
+        env_vars=env_vars
+    )
 
     if 'head_node_ip' in os.environ and 'port' in os.environ:
         address = os.environ["head_node_ip"]
