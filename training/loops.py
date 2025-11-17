@@ -45,6 +45,12 @@ logger.setLevel(logging.INFO)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
 
 
+def _ensure_full_path(config: DictConfig) -> DictConfig:
+    """ Fix any relative imports in _target_ fields by prefixing with `cell_observatory_platform.` """
+    if "_target_" in config and config._target_ and not config._target_.startswith('cell_observatory_platform.'):
+        config._target_ = f"cell_observatory_platform.{config._target_}"
+    return config
+
 # Ray train wrapper entry point
 def train_loop_per_worker(config):
     trainer_cls = get_class(config.trainer)
@@ -71,7 +77,7 @@ class BaseTrainer:
 
     def __init__(self, config: DictConfig) -> None:
         # initialize event recorder
-        self.event_recorder: EventRecorder = instantiate(config.loggers.event_recorder)
+        self.event_recorder: EventRecorder = instantiate(_ensure_full_path(config.loggers.event_recorder))
 
         # initialize event_writers
         event_writers = self._build_event_writers(
@@ -79,7 +85,7 @@ class BaseTrainer:
             recorder=self.event_recorder
         )
         self.event_writers_list = instantiate(
-            config.loggers.event_writers_list,
+            _ensure_full_path(config.loggers.event_writers_list),
             writers = event_writers
         )
         
@@ -92,7 +98,7 @@ class BaseTrainer:
     def _build_event_writers(w_cfgs, recorder):
         writers = []
         for writer_cfg in w_cfgs:
-            writer = instantiate(writer_cfg, event_recorder=recorder)
+            writer = instantiate(_ensure_full_path(writer_cfg), event_recorder=recorder)
             writers.append(writer)
         return writers
 
@@ -100,6 +106,9 @@ class BaseTrainer:
     def _build_hooks(h_cfgs, event_writers):
         hooks = []
         for hc in h_cfgs:
+            if hc._target_ and not hc._target_.startswith('cell_observatory_platform.'):
+                hc._target_ = f"cell_observatory_platform.{hc._target_}"
+            
             # inject writers into PeriodicWriter hook
             if hc._target_.endswith(".PeriodicWriter"):
                 hook = instantiate(hc, writers=event_writers)
@@ -268,7 +277,7 @@ class EpochBasedTrainer(BaseTrainer):
             config=cfg
         )
 
-        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+        self.preprocessor = instantiate(_ensure_full_path(cfg.datasets.preprocessor))
 
         # initialize model
         # TODO: consider migrating to BUILD() based initialization
@@ -284,7 +293,7 @@ class EpochBasedTrainer(BaseTrainer):
                 cfg.checkpoint.checkpoint_manager.resume_checkpointdir = cfg.paths.resume_checkpointdir
 
         self.checkpoint_manager = instantiate(
-            cfg.checkpoint.checkpoint_manager,
+            _ensure_full_path(cfg.checkpoint.checkpoint_manager),
             model=model
         )
 
@@ -364,7 +373,7 @@ class EpochBasedTrainer(BaseTrainer):
                 raise NotImplementedError(f'{self.scheduler.update_type=} is not supported')
 
         # initialize evaluator
-        self.evaluator = instantiate(cfg.evaluation.evaluator)
+        self.evaluator = instantiate(_ensure_full_path(cfg.evaluation.evaluator))
 
     def run(self):
         """
@@ -486,7 +495,7 @@ class TestTrainer(BaseTrainer):
             config=cfg
         )
 
-        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+        self.preprocessor = instantiate(_ensure_full_path(cfg.datasets.preprocessor))
 
         # initialize model
         cfg, decoder_args = append_kwargs_to_model(cfg)  
@@ -496,7 +505,7 @@ class TestTrainer(BaseTrainer):
         # initialize checkpoint manager and
         # load model state from checkpoint
         self.checkpoint_manager = instantiate(
-            cfg.checkpoint.checkpoint_manager,
+            _ensure_full_path(cfg.checkpoint.checkpoint_manager),
             model=model
         )
         self.checkpoint_manager.load()
@@ -523,7 +532,7 @@ class TestTrainer(BaseTrainer):
         )
 
         # initialize evaluator
-        self.evaluator = instantiate(cfg.evaluation.evaluator)
+        self.evaluator = instantiate(_ensure_full_path(cfg.evaluation.evaluator))
 
     def test(self):
         """
@@ -592,7 +601,7 @@ class Inferencer(BaseTrainer):
             config=cfg
         )
 
-        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+        self.preprocessor = instantiate(_ensure_full_path(cfg.datasets.preprocessor))
 
         # initialize model
         cfg, decoder_args = append_kwargs_to_model(cfg)  
@@ -602,7 +611,7 @@ class Inferencer(BaseTrainer):
         # initialize checkpoint manager and
         # load model state from checkpoint
         self.checkpoint_manager = instantiate(
-            cfg.checkpoint.checkpoint_manager,
+            _ensure_full_path(cfg.checkpoint.checkpoint_manager),
             model=model
         )
         self.checkpoint_manager.load()
@@ -629,7 +638,7 @@ class Inferencer(BaseTrainer):
         )
 
         # initialize inferencer_worker
-        self.inferencer_worker = instantiate(cfg.inference, 
+        self.inferencer_worker = instantiate(_ensure_full_path(cfg.inference), 
                                              model=self.model, 
                                              decoder_head_type=decoder_args["name"] \
                                                 if decoder_args else str(cfg.inference.decoder_head_type),

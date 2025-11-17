@@ -65,6 +65,9 @@ def build_dependency_graph_and_instantiate(cfg: DictConfig) -> dict:
         # if node has _target_, instantiate it
         if "_target_" in node:
             target = node["_target_"]
+            if not target.startswith('cell_observatory_platform.'):
+                node["_target_"] = f"cell_observatory_platform.{target}"
+                target = node["_target_"]
             print(f"Instantiating: {target} with params {instantiated_children}")
             # instantiate using the already-instantiated children as overrides
             # set _recursive_ to False to prevent further recursive instantiation
