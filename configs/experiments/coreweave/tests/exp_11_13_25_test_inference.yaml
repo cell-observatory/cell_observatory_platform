@@ -65,7 +65,6 @@ num_output_channels: 2
 inference:
   roi_tile_list:
   - [17, "000x_002y_001z.zarr"]
-  # - [19, "000x_002y_001z.zarr"]
 
 # clusters
 clusters:
