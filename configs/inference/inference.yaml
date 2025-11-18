@@ -8,7 +8,6 @@ timepoint_list: ${datasets.databases.timepoint_list}
 
 task: null
 inference_mode: "sliding_window"
-activation: null
 decoder_head_type: "pretrain"
 
 roi_tile_list: null
