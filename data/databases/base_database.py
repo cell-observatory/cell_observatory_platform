@@ -16,7 +16,7 @@ import polars as pl
 import connectorx as cx
 
 
-from cell_observatory_platform.data.io import load_hypercubes_dataframe, add_has_annotations_column
+from cell_observatory_platform.data.io import load_hypercubes_dataframe
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -358,9 +358,10 @@ class ParentDatabase():
         filters = f"WHERE {table_name_shortcut}.is_synthetic = TRUE"
         return filters
        
-    def has_annotations_filter(self, table_name_shortcut) -> str:
-        filters = f"WHERE ({table_name_shortcut}.pc_metadata_json ? 'mask_bbox_dict' " \
-                  f"AND ({table_name_shortcut}.pc_metadata_json->'mask_bbox_dict') <> '{{}}'::jsonb;"
+    def _has_annotations_filter(self, table_name_shortcut) -> str:      
+        filters = " AND EXISTS ( SELECT 1 " \
+                  f"FROM jsonb_each({table_name_shortcut}.pc_metadata_json::jsonb) AS e(k, v) " \
+                  "WHERE (v -> 'mask_bbox_dict') IS NOT NULL AND (v -> 'mask_bbox_dict')::jsonb <> '{}'::jsonb)"
         return filters
     
     def _filters_to_string(
@@ -381,9 +382,9 @@ class ParentDatabase():
         
         if synthetic_only:
             filters += self._synthetic_filter(table_name_shortcut).replace('WHERE', ' AND ')
-
+            
         if has_annotations:
-            filters += self.has_annotations_filter(table_name_shortcut).replace('WHERE', ' AND ')
+            filters += self._has_annotations_filter(table_name_shortcut)
 
         if roi_list is not None \
         or tile_list is not None \
@@ -465,7 +466,8 @@ class ParentDatabase():
             roi_list=roi_list,
             tile_list=tile_list,
             timepoint_list=timepoint_list,
-            synthetic_only=synthetic_only
+            synthetic_only=synthetic_only,
+            has_annotations=has_annotations,
         )
 
         limit = f"LIMIT {max_hypercubes}" if max_hypercubes else ""

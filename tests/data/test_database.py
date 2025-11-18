@@ -5,6 +5,7 @@ from omegaconf import OmegaConf
 from pprint import pprint
 from pathlib import Path
 import pandas as pd
+import json
 
 from cell_observatory_platform.tests.conftest import config
 
@@ -234,6 +235,30 @@ def test_hypercubes_annotations_filter(database):
     print(table)
 
     assert table['has_annotations'].all(), "All hypercubes should have annotations"
+
+    def _find_mask_bbox_dict(d):
+        if not isinstance(d, dict):
+            return {}
+        if 'mask_bbox_dict' in d and isinstance(d['mask_bbox_dict'], dict) and bool(d['mask_bbox_dict']):
+            return d['mask_bbox_dict']
+        for v in d.values():
+            if isinstance(v, dict):
+                found = _find_mask_bbox_dict(v)
+                if found:
+                    return found
+        return {}
+
+    for i, pc_meta in enumerate(table['pc_metadata_json']):
+        if isinstance(pc_meta, str):
+            try:
+                pc_meta = json.loads(pc_meta)
+            except Exception as e:
+                raise AssertionError(f"Failed to parse pc_metadata_json at row {i}: {e}")
+
+        assert isinstance(pc_meta, dict), f"pc_metadata_json at row {i} must be a dict"
+        mask = _find_mask_bbox_dict(pc_meta)
+        assert mask, f"mask_bbox_dict should not be empty at row {i}"
+
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
     assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
