@@ -11,6 +11,10 @@ import zlib
 from pathlib import Path
 from subprocess import call, run
 
+_workspace_root = str(Path(__file__).resolve().parent.parent)
+if _workspace_root not in sys.path:
+    sys.path.insert(0, _workspace_root)
+
 import hydra
 from dotenv import load_dotenv
 from hydra import compose
