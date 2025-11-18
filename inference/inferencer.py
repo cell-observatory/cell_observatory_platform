@@ -97,13 +97,10 @@ class InferencerWorker:
         assert outputs_metadata is not None, "outputs_metadata must be provided"
         self.outputs_metadata = outputs_metadata
 
-        if auxiliary_outputs is None:
-            self.auxiliary_outputs = {}
-        elif isinstance(auxiliary_outputs, dict):
+        if auxiliary_outputs is not None:
             self.auxiliary_outputs = auxiliary_outputs
         else:
-            # allow List[Tuple[str, dict]] as well
-            self.auxiliary_outputs = {name: meta for name, meta in auxiliary_outputs}
+            self.auxiliary_outputs = {}
 
         self.save_auxiliary_outputs = bool(self.auxiliary_outputs)
 
