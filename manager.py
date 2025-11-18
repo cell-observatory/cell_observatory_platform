@@ -11,10 +11,6 @@ import zlib
 from pathlib import Path
 from subprocess import call, run
 
-_parent_dir = Path(__file__).resolve().parent.parent
-if str(_parent_dir) not in sys.path:
-    sys.path.insert(0, str(_parent_dir))
-
 import hydra
 from dotenv import load_dotenv
 from hydra import compose

@@ -114,11 +114,12 @@ loggers:
 
 hooks:
   hooks_list:
-  - _target_: training.hooks.WeightDecayScheduleHook
-  - _target_: training.hooks.FreeDeviceBufferHook
   - _target_: training.hooks.AnomalyDetector
+  - _target_: training.hooks.FreeDeviceBufferHook
   - _target_: training.hooks.LRScheduler
+  - _target_: training.hooks.WeightDecayScheduleHook
   - _target_: training.hooks.IterationTimer
+    warmup_iter: 2
   - _target_: training.hooks.PeriodicWriter
   - _target_: training.hooks.PeriodicCheckpointer
     file_prefix: latest_model

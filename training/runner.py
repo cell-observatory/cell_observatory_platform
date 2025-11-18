@@ -5,12 +5,7 @@ import time
 import uuid
 from pathlib import Path
 
-_parent_dir = Path(__file__).resolve().parent.parent.parent
-if str(_parent_dir) not in sys.path:
-    sys.path.insert(0, str(_parent_dir))
-
 import warnings
-
 warnings.filterwarnings("ignore")
 
 import hydra
@@ -43,11 +38,12 @@ def initialize_session(cfg: DictConfig):
             *OmegaConf.to_container(nsys_env, resolve=True, enum_to_str=True)
         )
     
-    workspace_root = str(Path(__file__).resolve().parent.parent.parent)
+    workspace_root = str(Path(__file__).resolve().parent.parent)
     
     runtime_env = RuntimeEnv(
         working_dir=workspace_root,
-        env_vars=env_vars
+        env_vars=env_vars,
+        py_modules=[workspace_root]
     )
 
     if 'head_node_ip' in os.environ and 'port' in os.environ:
