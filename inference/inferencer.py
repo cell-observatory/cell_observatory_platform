@@ -127,6 +127,9 @@ class InferencerWorker:
         self._build_state()
 
         ray.logger.info(f"Inference Database: {self.prediction_df}")
+        ray.logger.info(f"Data types to save: {self.data_types}")
+        ray.logger.info(f"Auxiliary outputs: {self.auxiliary_outputs}")
+        ray.logger.info(f"Main output metadata: {self.outputs_metadata}")
 
     def _get_data_tiles_metadata(self) -> pd.DataFrame:
         roi_csv = self.hypercubes_dataframe_path.with_name(
@@ -669,6 +672,8 @@ class InferencerWorker:
             zeros_after = (cnt_view == 0).sum()
             filled = int((zeros_before - zeros_after).item())
             self._tile_state[key][f"remaining_{data_type}"] -= filled
+
+            print(f"Tile state: {self._tile_state[key]["remaining_" + data_type]} remaining voxels for data type {data_type}")
             
             if all(self._tile_state[key][f"remaining_{dt}"] <= 0 for dt in self.data_types):
                 # TODO: this should most likely happen on a separate Actor
@@ -680,8 +685,8 @@ class InferencerWorker:
 
     def _finish_if_done(self, key, force: bool = False):
         st = self._tile_state[key]
-        if any(st[f"done_{dt}"] or st[f"pred_{dt}"] is None for dt in self.data_types):
-            return False
+        # if any(st[f"done_{dt}"] or st[f"pred_{dt}"] is None for dt in self.data_types):
+        #     return False
         if not force and any(st[f"remaining_{dt}"] != 0 for dt in self.data_types):
             return False
 
@@ -764,4 +769,4 @@ class InferencerWorker:
         for key in list(self._tile_state.keys()):
             self._finish_if_done(key, force=True)
         barrier()
-        print(f"[RANK: {process_rank()}] Tile State after finalize: {self._tile_state}")
+        ray.logger.info(f"[RANK {process_rank()}] Tile State: {self._tile_state}")
