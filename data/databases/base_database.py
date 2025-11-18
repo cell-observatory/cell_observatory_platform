@@ -6,6 +6,7 @@ import sys
 import logging
 from pathlib import Path
 from typing import Optional, Any, Literal, Sequence, Iterable, Dict
+from warnings import filters
 
 import numpy as np
 
@@ -15,7 +16,7 @@ import polars as pl
 import connectorx as cx
 
 
-from cell_observatory_platform.data.io import load_hypercubes_dataframe
+from cell_observatory_platform.data.io import load_hypercubes_dataframe, add_has_annotations_column
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -52,6 +53,8 @@ class ParentDatabase():
         valid_z_sizes: Optional[Sequence[int]] = [128],
         valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384],
         valid_x_sizes: Optional[Sequence[int]] = [128, 256, 384, 512, 640, 896, 1024],
+        synthetic_only: bool = False,
+        has_annotations: bool = False,
     ):
         """
         A class for accessing database and retrieving hypercubes.
@@ -79,6 +82,8 @@ class ParentDatabase():
             server_folder_path: path to override default server folder found in the supabase database
                 update this path based on where the data is stored on your local machine
             occupancy_threshold: to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
+            synthetic_only: a toggle to only query synthetic hypercubes
+            has_annotations: a toggle to only query hypercubes with annotations
         """
 
         if hypercubes_dataframe_path is None:
@@ -106,6 +111,8 @@ class ParentDatabase():
         self.occupancy_threshold = occupancy_threshold
         self.occupancy_threshold_filter_type = occupancy_threshold_filter_type
         self.dataset_layout_order = dataset_layout_order
+        self.synthetic_only = synthetic_only
+        self.has_annotations = has_annotations
 
         self.num_timepoints, z_slices, y_slices, x_slices = self._get_slices_from_layout_order(
             input_format=self.dataset_layout_order,
@@ -154,7 +161,9 @@ class ParentDatabase():
                     tile_list=self.tile_list,
                     timepoint_list=self.timepoint_list,
                     occupancy_threshold=self.occupancy_threshold,
-                    occupancy_threshold_filter_type=self.occupancy_threshold_filter_type
+                    occupancy_threshold_filter_type=self.occupancy_threshold_filter_type,
+                    synthetic_only=self.synthetic_only,
+                    has_annotations=self.has_annotations
                 )
 
             else:
@@ -167,7 +176,9 @@ class ParentDatabase():
                     roi_list=self.roi_list,
                     tile_list=self.tile_list,
                     timepoint_list=self.timepoint_list,
-                    occupancy_threshold=self.occupancy_threshold
+                    occupancy_threshold=self.occupancy_threshold,
+                    synthetic_only=self.synthetic_only,
+                    has_annotations=self.has_annotations,
                 )
                 self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
 
@@ -329,20 +340,50 @@ class ParentDatabase():
 
         hpfs = tuple(hpfs) if len(hpfs) > 1 else f"({hpfs[0]})"
         return f"WHERE {table_name}.hpf IN {hpfs}"
-
+ 
+    def _exists_filter(self, table_name_shortcut) -> str:
+        if self.server_folder_path is None or str(self.server_folder_path).startswith('/clusterfs'):
+            filters = f"WHERE {table_name_shortcut}.exists = TRUE"
+        elif str(self.server_folder_path).startswith('/groups'):
+            filters = f"WHERE {table_name_shortcut}.exists_prfs = TRUE"
+        elif str(self.server_folder_path).startswith('/aws') or str(self.server_folder_path).startswith('/workspace/CellObservatoryData'):
+            filters = f"WHERE {table_name_shortcut}.exists_aws = TRUE"
+        elif str(self.server_folder_path).startswith('/lustre'):
+            filters = f"WHERE {table_name_shortcut}.exists_oak = TRUE"
+        else:
+            raise ValueError(f"Unknown server_folder_path: {self.server_folder_path}")
+        return filters
+    
+    def _synthetic_filter(self, table_name_shortcut) -> str:
+        filters = f"WHERE {table_name_shortcut}.is_synthetic = TRUE"
+        return filters
+       
+    def has_annotations_filter(self, table_name_shortcut) -> str:
+        filters = f"WHERE ({table_name_shortcut}.pc_metadata_json ? 'mask_bbox_dict' " \
+                  f"AND ({table_name_shortcut}.pc_metadata_json->'mask_bbox_dict') <> '{{}}'::jsonb;"
+        return filters
+    
     def _filters_to_string(
-            self,
-            table_name: str,
-            table_name_shortcut: str = 'hc',
-            max_rois: Optional[int] = None,
-            max_tiles: Optional[int] = None,
-            hpf_list: Optional[Sequence[int]] = None,
-            roi_list: Optional[Sequence[int]] = None,
-            tile_list: Optional[Sequence[str]] = None,
-            timepoint_list: Optional[Iterable[int]] = None
+        self,
+        table_name: str,
+        table_name_shortcut: str = 'hc',
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        hpf_list: Optional[Sequence[int]] = None,
+        roi_list: Optional[Sequence[int]] = None,
+        tile_list: Optional[Sequence[str]] = None,
+        timepoint_list: Optional[Iterable[int]] = None,
+        synthetic_only: bool = False,
+        has_annotations: bool = False,
     ) -> str:
 
         filters = self._exists_filter(table_name_shortcut)
+        
+        if synthetic_only:
+            filters += self._synthetic_filter(table_name_shortcut).replace('WHERE', ' AND ')
+
+        if has_annotations:
+            filters += self.has_annotations_filter(table_name_shortcut).replace('WHERE', ' AND ')
 
         if roi_list is not None \
         or tile_list is not None \
@@ -370,19 +411,6 @@ class ParentDatabase():
             print(f"Using filters: {filters}")
         return filters
 
-    def _exists_filter(self, table_name_shortcut) -> str:
-        if self.server_folder_path is None or str(self.server_folder_path).startswith('/clusterfs'):
-            filters = f"WHERE {table_name_shortcut}.exists = TRUE"
-        elif str(self.server_folder_path).startswith('/groups'):
-            filters = f"WHERE {table_name_shortcut}.exists_prfs = TRUE"
-        elif str(self.server_folder_path).startswith('/aws') or str(self.server_folder_path).startswith('/workspace/CellObservatoryData'):
-            filters = f"WHERE {table_name_shortcut}.exists_aws = TRUE"
-        elif str(self.server_folder_path).startswith('/lustre'):
-            filters = f"WHERE {table_name_shortcut}.exists_oak = TRUE"
-        else:
-            raise ValueError(f"Unknown server_folder_path: {self.server_folder_path}")
-        return filters
-
     def _query_t_128_128_128_2_hypercube_view(
         self,
         table_name: str,
@@ -395,7 +423,9 @@ class ParentDatabase():
         roi_list: Optional[Sequence[int]] = None,
         tile_list: Optional[Sequence[str]] = None,
         timepoint_list: Optional[Iterable[int]] = None,
-        occupancy_threshold: Optional[float] = None
+        occupancy_threshold: Optional[float] = None,
+        synthetic_only: bool = False,
+        has_annotations: bool = False,
     ) -> list[str]:
         column_names = [
             'first_pc_id',
@@ -423,6 +453,7 @@ class ParentDatabase():
             'exists',
             'exists_prfs',
             'exists_aws',
+            'is_synthetic'
         ]
 
         filters = self._filters_to_string(
@@ -434,10 +465,9 @@ class ParentDatabase():
             roi_list=roi_list,
             tile_list=tile_list,
             timepoint_list=timepoint_list,
+            synthetic_only=synthetic_only
         )
-        # if self.max_partitions is None or self.max_partitions <= 1 :
-        # Single partition
-        partition_num = 1
+
         limit = f"LIMIT {max_hypercubes}" if max_hypercubes else ""
         
         return  [f"""
@@ -449,39 +479,38 @@ class ParentDatabase():
                     {limit}
                 """]
 
-        # else:
-        #    # Multiple partitions, with limit and offset
-        #     max_rows = self.count_rows(table_name=table_name)
+        # # Multiple partitions, with limit and offset
+        # max_rows = self.count_rows(table_name=table_name)
 
-        #     if max_hypercubes is None:
-        #         max_hypercubes = max_rows
+        # if max_hypercubes is None:
+        #     max_hypercubes = max_rows
 
-        #     if max_hypercubes > max_rows:
-        #         max_hypercubes = max_rows
+        # if max_hypercubes > max_rows:
+        #     max_hypercubes = max_rows
 
-        #     assert max_hypercubes != 0, f"{table_name} is empty"
-            
-        #     if max_hypercubes > 1000:
-        #         # select max number of partitions that divides the number of rows in each partition evenly
-        #         partition_num = max([i for i in range(1, self.max_partitions + 1) if
-        #                             max_hypercubes % i == 0]) if max_hypercubes is not None else 1
-        #         print(f"Using {partition_num} partitions to query. Max hypercubes: {max_hypercubes}.")
-        #     else:
-        #         partition_num = 1
+        # assert max_hypercubes != 0, f"{table_name} is empty"
         
-        #     rows_per_partition = max_hypercubes // partition_num
-        #     return  [
-        #             f"""
-        #                 SELECT
-        #                     {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
-        #                 FROM {table_name} {table_name_shortcut}
-        #                 {filters} 
-        #                 ORDER BY first_pc_id DESC
-        #                 LIMIT {rows_per_partition}
-        #                 OFFSET {rows_per_partition * i}
-        #             """
-        #             for i in range(partition_num)
-        #         ]
+        # if max_hypercubes > 1000:
+        #     # select max number of partitions that divides the number of rows in each partition evenly
+        #     partition_num = max([i for i in range(1, self.max_partitions + 1) if
+        #                         max_hypercubes % i == 0]) if max_hypercubes is not None else 1
+        #     print(f"Using {partition_num} partitions to query. Max hypercubes: {max_hypercubes}.")
+        # else:
+        #     partition_num = 1
+    
+        # rows_per_partition = max_hypercubes // partition_num
+        # return  [
+        #         f"""
+        #             SELECT
+        #                 {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
+        #             FROM {table_name} {table_name_shortcut}
+        #             {filters} 
+        #             ORDER BY first_pc_id DESC
+        #             LIMIT {rows_per_partition}
+        #             OFFSET {rows_per_partition * i}
+        #         """
+        #         for i in range(partition_num)
+        #     ]
 
     def _create_t_128_128_128_2_hypercube_view(
             self,
@@ -682,7 +711,9 @@ class ParentDatabase():
         tile_list: Optional[Sequence[str]] = None,
         timepoint_list: Optional[Iterable[int]] = None,
         hypercubes_dataframe_path: Optional[Path] = None,
-        occupancy_threshold: Optional[float] = None
+        occupancy_threshold: Optional[float] = None,
+        synthetic_only: bool = False,
+        has_annotations: bool = False
     ) -> pd.DataFrame:
 
         table_name = f'prepared_{num_timepoints}_128_128_128_2_hypercube_view'
@@ -701,7 +732,9 @@ class ParentDatabase():
                 roi_list=roi_list,
                 tile_list=tile_list,
                 timepoint_list=timepoint_list,
-                occupancy_threshold=occupancy_threshold
+                occupancy_threshold=occupancy_threshold,
+                synthetic_only=synthetic_only,
+                has_annotations=has_annotations
             )
         else:
 
@@ -723,7 +756,9 @@ class ParentDatabase():
                 roi_list=roi_list,
                 tile_list=tile_list,
                 timepoint_list=timepoint_list,
-                occupancy_threshold=occupancy_threshold
+                occupancy_threshold=occupancy_threshold,
+                synthetic_only=synthetic_only,
+                has_annotations=has_annotations
             )
 
         if self.verbose:
@@ -739,6 +774,9 @@ class ParentDatabase():
         
         if any(table['time_size'] != self.num_timepoints):
             table['time_size'] = self.num_timepoints
+            
+        if "has_annotations" not in table.columns:
+            table["has_annotations"] = True if has_annotations else False
 
         num_rows, num_cols = table.shape
         print(f"\nRetrieved {num_rows} rows. \t Retrieved {num_cols} columns.")

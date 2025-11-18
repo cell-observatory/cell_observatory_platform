@@ -95,30 +95,6 @@ def test_aws_data(database):
     print(f"Found {num_rows} rows.")
     assert table.shape[0] > 0, "Zero hypercubes were returned"
 
-
-@pytest.mark.skip('Table is empty. Database connection not available')
-@pytest.mark.parametrize("t", [1, 16])
-def test_create_t_128_128_128_2_hypercubes(database, t):
-    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=t, max_hypercubes=100)
-    print(database.last_query)
-    print(table)
-
-    assert table.shape[0] <= 100, "Only 100 or less rows should be returned"
-
-    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
-    assert (table['time_size'] == t).all(), f"All time sizes should be {t}"
-    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
-    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
-    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
-    assert table.shape[0] > 0, f"Zero hypercubes were returned"
-
-    pd.testing.assert_series_equal(
-        table['time_size'],
-        table['occupancy_ratios_ch_0'].apply(len),
-        check_dtype=False,
-        check_names=False,
-    )
-
 def test_hypercubes_max_roi_filter(database):
     table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, max_rois=1)
     print(database.last_query)
@@ -231,30 +207,24 @@ def test_hypercubes_hpf_filter(database):
     assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
-@pytest.mark.skip('Table is empty. Database connection not available')
-def test_get_t_128_128_128_2_hypercubes(database):
+def test_hypercubes_synthetic_filter(database):
     table = database.get_t_128_128_128_2_hypercubes(
-        num_timepoints=1,
-        max_rois=1,
-        max_tiles=2,
-        hpf_list=[72],
-        max_hypercubes=10
+        synthetic_only=True,
+        num_timepoints=16,
+        max_hypercubes=100
     )
     print(database.last_query)
     print(table)
 
-    assert table.shape[0] <= 10, "Only ten or less rows should be returned"
-    assert len(table['prepared_id'].unique()) <= 1, "Only one ROI should be returned"
-    assert len(table['tile_name'].unique()) <= 2, "More than one tile should be returned"
-    assert table['hpf'].isin([72]).all(), f"Only hpf in {[72]} should be returned"
-
-    pd.testing.assert_series_equal(
-        table['time_size'],
-        table['occupancy_ratios_ch_0'].apply(len),
-        check_dtype=False,
-        check_names=False,
-    )
-
+    assert table['is_synthetic'].all(), "All hypercubes should be synthetic"
+    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
+    assert (table['time_size'] == 16).all(), "All time sizes should be 16"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
+    assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+    
 @pytest.mark.parametrize("database_type", database_types)
 def test_1_128_128_128_2_hypercubes_database(config, database_type):
     config.experiment_name = "test_1_128_128_128_2_hypercubes_database"

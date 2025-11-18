@@ -143,7 +143,9 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
         hpf_list: Optional[Iterable[int]] = None,
         roi_list: Optional[Iterable[int]] = None,
         tile_list: Optional[Iterable[str]] = None,
-        occupancy_threshold: Optional[float] = None
+        occupancy_threshold: Optional[float] = None,
+        synthetic_only: bool = False,
+        has_annotations: bool = False,
     ):
         """
         Args:
@@ -160,6 +162,8 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
             hpf_list: list of specific HPFs (hours-post-fertilization in hours) to filter
             roi_list: list of specific ROIs to filter
             tile_list: list of specific tiles to filter
+            synthetic_only: a toggle to only query synthetic hypercubes
+            has_annotations: a toggle to only query hypercubes with annotations
         """
         super().__init__()
 
@@ -174,7 +178,9 @@ class BaseDataset(Dataset, metaclass=abc.ABCMeta):
             hpf_list=hpf_list,
             roi_list=roi_list,
             tile_list=tile_list,
-            occupancy_threshold=occupancy_threshold
+            occupancy_threshold=occupancy_threshold,
+            synthetic_only=synthetic_only,
+            has_annotations=has_annotations,
         )
         self.dtype = dtype
 

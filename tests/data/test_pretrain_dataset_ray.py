@@ -73,6 +73,8 @@ def test_data_pipeline_ray_distributed(config):
             "hpf_list": "${datasets.hpf_list}",
             "roi_list": "${datasets.roi_list}",
             "tile_list": "${datasets.tile_list}",
+            "synthetic_only": "${datasets.synthetic_only}",
+            "has_annotations": "${datasets.has_annotations}",
             "input_layout": {
                 "_target_": "data.data_shapes.MULTICHANNEL_HYPERCUBE",
                 "value": "${dataset_layout_order}",

@@ -17,6 +17,9 @@ hpf_list: ${datasets.hpf_list} # list of specific HPFs (hours-post-fertilization
 roi_list: ${datasets.roi_list} # list of specific ROIs to filter
 tile_list: ${datasets.tile_list} # list of specific tiles to filter
 
+synthetic_only: ${datasets.synthetic_only} # whether to use only synthetic data
+has_annotations: ${datasets.has_annotations} # whether the data has annotations
+
 occupancy_threshold: ${datasets.occupancy_threshold} # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
 occupancy_threshold_filter_type: 'min_ch0'
 

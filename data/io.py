@@ -270,30 +270,31 @@ def record_init(fn):
         return fn(self, *args, **kwargs)
     return wrapper
 
+def _coerce_bool_in(df: pl.DataFrame, col: str) -> pl.DataFrame:
+    _INT_TYPES = {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}
+    dt = df.schema.get(col)
+
+    if dt == pl.Boolean:
+        expr = pl.col(col).fill_null(False)
+
+    elif dt in _INT_TYPES:
+        expr = (pl.col(col) != 0).fill_null(False)
+
+    else:
+        expr = (
+            pl.col(col).cast(pl.Utf8)
+            .str.strip_chars()
+            .str.to_lowercase()
+            .is_in(["t", "true", "1"])
+            .fill_null(False)
+        )
+
+    return df.with_columns(expr.alias(col))
+
 def filter_hypercubes_dataframe_storage_server(
     df: pl.DataFrame, server_folder_path: str | None = None
 ) -> pl.DataFrame:
-    _INT_TYPES = {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}
-    def _coerce_bool_in(df: pl.DataFrame, col: str) -> pl.DataFrame:
-        dt = df.schema.get(col)
-
-        if dt == pl.Boolean:
-            expr = pl.col(col).fill_null(False)
-
-        elif dt in _INT_TYPES:
-            expr = (pl.col(col) != 0).fill_null(False)
-
-        else:
-            expr = (
-                pl.col(col).cast(pl.Utf8)
-                .str.strip_chars()
-                .str.to_lowercase()
-                .is_in(["t", "true", "1"])
-                .fill_null(False)
-            )
-
-        return df.with_columns(expr.alias(col))
-
+    
     if server_folder_path is None or str(server_folder_path).startswith("/clusterfs"):
         flag = "exists"
         df = _coerce_bool_in(df, flag).filter(pl.col(flag))
@@ -468,6 +469,44 @@ def apply_hypercubes_dataframe_filters(
     logger.info(f"Min-occupancy summary: {stats}")
     return df
 
+def add_has_annotations_column(df: pl.DataFrame) -> pl.DataFrame:
+    if "has_annotations" in df.columns:
+        return df
+
+    def _has_annotations_from_json(s: str) -> bool:
+        if s is None:
+            return False
+        try:
+            j = ujson.loads(s)
+        except Exception:
+            return False
+
+        if isinstance(j, dict):
+            for v in j.values():
+                if not isinstance(v, dict):
+                    continue
+                m = v.get("mask_bbox_dict")
+                if m and isinstance(m, dict) and len(m) > 0:
+                    return True
+        return False
+
+    if "pc_metadata_json" not in df.columns:
+        df = df.with_columns(pl.lit(False).alias("has_annotations"))
+    else:
+        try:
+            values = df.select(pl.col("pc_metadata_json")).to_series().to_list()
+        except Exception:
+            values = []
+
+        bools = [_has_annotations_from_json(v) for v in values]
+        if len(bools) != df.height:
+            bools = [False] * df.height
+
+        df = df.with_columns(pl.Series("has_annotations", bools))
+
+    return df
+
+
 def load_hypercubes_dataframe(
     hypercubes_dataframe_path: str | Path,
     max_rois: int | None = None,
@@ -480,6 +519,8 @@ def load_hypercubes_dataframe(
     server_folder_path: str | None = None,
     occupancy_threshold: float | None = None,
     occupancy_threshold_filter_type: str = "min_ch0",
+    synthetic_only: bool = False,
+    has_annotations: bool = False,
 ) -> tuple[pl.DataFrame, dict]:
     p = Path(hypercubes_dataframe_path)
     if not p.exists():
@@ -491,7 +532,14 @@ def load_hypercubes_dataframe(
     logger.info(f"Loaded hypercubes dataframe in {t1 - t0:.2f} s; shape={df.shape}")
 
     df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
+    df = add_has_annotations_column(df)
+    
+    if synthetic_only:
+        df = _coerce_bool_in(df, "is_synthetic").filter(pl.col("is_synthetic"))
 
+    if has_annotations:
+        df = _coerce_bool_in(df, "has_annotations").filter(pl.col("has_annotations"))
+        
     t0 = time.perf_counter()
     df = apply_hypercubes_dataframe_selections(
         df,
