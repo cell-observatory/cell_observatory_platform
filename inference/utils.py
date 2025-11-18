@@ -320,6 +320,9 @@ def save_predictions(
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    print(f"[save_predictions] Saving predictions for tile {name}...")
+    print(f"[save_predictions] Writing PDF to: {pdf_path}")
+
     # Dict case: multi-output
     if isinstance(predictions, dict):
         arr_map: dict[str, np.ndarray] = {}
