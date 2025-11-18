@@ -83,6 +83,105 @@ def _tzyxc_to_tczyx_or_czyx(
     return arr, axes
 
 
+def _to_tzyxc(arr: np.ndarray, axes: str) -> np.ndarray:
+    """Convert TCZYX or CZYX -> TZYXC."""
+    if axes == "TCZYX":
+        T, C, Z, Y, X = arr.shape
+        return np.transpose(arr, (0, 2, 3, 4, 1))
+    elif axes == "CZYX":
+        C, Z, Y, X = arr.shape
+        return np.transpose(arr, (1, 2, 3, 0))[None, ...]
+    else:
+        raise ValueError(f"Unsupported axes for _to_tzyxc: {axes}")
+
+
+def preds_dict_to_pdf(
+    preds_tc_or_czyx: dict[str, np.ndarray],
+    axes_map: dict[str, Literal["TCZYX", "CZYX"]],
+    out_path: Path | str,
+    z_step: int = 1,
+    pmin: float = 1.0,
+    pmax: float = 99.0,
+    mip_depth: int = 20,
+):
+    """
+    Multi-output PDF:
+      - preds_tc_or_czyx: {data_type_name: array in TCZYX or CZYX}
+      - Same T,Z,Y,X for all entries.
+      - Layout: rows = channels, cols = data types.
+    """
+    vols_tzyxc = {}
+    T_ref = Z_ref = Y_ref = X_ref = None
+    max_C = 0
+
+    for name, arr in preds_tc_or_czyx.items():
+        arr = np.asarray(arr)
+        axes = axes_map[name]
+        vol = _to_tzyxc(arr, axes)
+        T, Z, Y, X, C = vol.shape
+
+        if T_ref is None:
+            T_ref, Z_ref, Y_ref, X_ref = T, Z, Y, X
+        else:
+            if (T, Z, Y, X) != (T_ref, Z_ref, Y_ref, X_ref):
+                raise ValueError(
+                    f"All predictions must share T,Z,Y,X. "
+                    f"Got {(T,Z,Y,X)} vs {(T_ref,Z_ref,Y_ref,X_ref)} for {name}."
+                )
+
+        vols_tzyxc[name] = vol
+        max_C = max(max_C, C)
+
+    if T_ref is None:
+        return
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    names = list(preds_tc_or_czyx.keys())
+    num_types = len(names)
+
+    with PdfPages(out_path) as pdf:
+        for t in range(T_ref):
+            for z0 in range(0, Z_ref, z_step):
+                z1 = min(z0 + mip_depth, Z_ref)
+                if z1 <= z0:
+                    continue
+
+                fig, axes_grid = plt.subplots(
+                    max_C,
+                    num_types,
+                    figsize=(5 * num_types, 4 * max_C),
+                    squeeze=False,
+                )
+
+                for col, name in enumerate(names):
+                    vol = vols_tzyxc[name]
+                    block = vol[t, z0:z1]
+                    if block.shape[0] == 0:
+                        for row in range(max_C):
+                            axes_grid[row, col].axis("off")
+                        continue
+
+                    mip = block.max(axis=0)  # (Y,X,C)
+                    _, _, C = mip.shape
+
+                    for c in range(max_C):
+                        ax = axes_grid[c, col]
+                        if c < C:
+                            img = mip[..., c]
+                            img_norm = _normalize_slice(img, pmin=pmin, pmax=pmax)
+                            ax.imshow(img_norm, cmap="gray", interpolation="nearest")
+                            ax.set_title(f"{name} | T={t}  Z∈[{z0},{z1})  C={c}")
+                            ax.axis("off")
+                        else:
+                            ax.axis("off")
+
+                fig.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+
+
 def preds_to_pdf(
     preds_tc_or_czyx: np.ndarray,
     axes: Literal["TCZYX", "CZYX"],
@@ -195,7 +294,7 @@ def _save_zarr_volume(
 
 def save_predictions(
     name: str,
-    predictions: ArrayLike,
+    predictions: ArrayLike | dict[str, ArrayLike],
     save_dir: Path | str,
     save_as_volume: bool,
     save_as_pdf: bool,
@@ -206,30 +305,82 @@ def save_predictions(
 ):
     """
     Central helper for saving predictions.
+
     Inputs:
-      - predictions: TZYXC or ZYXC, torch or numpy.
+      - predictions:
+          * single TZYXC or ZYXC array (torch or numpy), OR
+          * dict[name -> TZYXC/ZYXC array].
     Standardization:
-      - We convert to TCZYX (if T>1) or CZYX (if T==1).
+      - Each array is converted to TCZYX (if T>1) or CZYX (if T==1).
       - That same arr+axes is used for TIFF, Zarr, and PDF.
+      - If predictions is a dict:
+          * One PDF with all entries combined (columns = outputs).
+          * Separate volume files per entry, with suffix "_{key}".
     """
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    predictions = _ensure_numpy_tzyxc(predictions)
-    predictions, axes = _tzyxc_to_tczyx_or_czyx(predictions)
+    # Dict case: multi-output
+    if isinstance(predictions, dict):
+        arr_map: dict[str, np.ndarray] = {}
+        axes_map: dict[str, str] = {}
+
+        for key, arr in predictions.items():
+            arr_tzyxc = _ensure_numpy_tzyxc(arr)
+            arr_tc_or_czyx, axes = _tzyxc_to_tczyx_or_czyx(arr_tzyxc)
+            arr_map[key] = arr_tc_or_czyx
+            axes_map[key] = axes
+
+        # Single PDF with all outputs on the same pages
+        if save_as_pdf:
+            pdf_path = save_dir / f"pred_{name}_MIP.pdf"
+            preds_dict_to_pdf(
+                arr_map,
+                axes_map,
+                out_path=pdf_path,
+                z_step=z_step_pdf,
+            )
+
+        # Separate volumes per output type
+        if save_as_volume:
+            for key, arr_tc_or_czyx in arr_map.items():
+                subname = f"{name}_{key}"
+                axes = axes_map[key]
+                if filetype == "tiff":
+                    _save_tiff_volume(arr_tc_or_czyx, 
+                                      axes=axes, 
+                                      save_dir=save_dir, 
+                                      name=subname)
+                elif filetype == "zarr":
+                    _save_zarr_volume(
+                        arr_tc_or_czyx,
+                        axes=axes,
+                        save_dir=save_dir,
+                        name=subname,
+                        zarr_chunk_shape=zarr_chunk_shape,
+                        zarr_shard_shape=zarr_shard_shape,
+                    )
+                else:
+                    raise ValueError(f"Unsupported save format: {filetype!r}")
+
+        return
+
+    # Single-array case
+    arr_tzyxc = _ensure_numpy_tzyxc(predictions)
+    arr_tc_or_czyx, axes = _tzyxc_to_tczyx_or_czyx(arr_tzyxc)
 
     # PDF pages
     if save_as_pdf:
         pdf_path = save_dir / f"pred_{name}_MIP.pdf"
-        preds_to_pdf(predictions, axes=axes, out_path=pdf_path, z_step=z_step_pdf)
+        preds_to_pdf(arr_tc_or_czyx, axes=axes, out_path=pdf_path, z_step=z_step_pdf)
 
     # Volume
     if save_as_volume:
         if filetype == "tiff":
-            _save_tiff_volume(predictions, axes=axes, save_dir=save_dir, name=name)
+            _save_tiff_volume(arr_tc_or_czyx, axes=axes, save_dir=save_dir, name=name)
         elif filetype == "zarr":
             _save_zarr_volume(
-                predictions,
+                arr_tc_or_czyx,
                 axes=axes,
                 save_dir=save_dir,
                 name=name,

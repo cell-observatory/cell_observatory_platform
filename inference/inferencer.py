@@ -25,6 +25,7 @@ logging.basicConfig(level=logging.INFO)
 class InferencerWorker:
     def __init__(self,
                  task: str,
+                 outputs_metadata: dict,
                  model: torch.nn.Module,
                  database: pd.DataFrame,
                  use_cached_hypercubes_dataframe: bool,
@@ -33,10 +34,8 @@ class InferencerWorker:
                  save_as_pdf: bool,
                  save_as_volume: bool,
                  z_step_pdf: int,
-                 num_output_channels: int,
                  input_format: str, 
                  inference_mode: str,
-                 activation: Optional[Callable],
                  decoder_head_type: str,
                  roi_tile_list: List[Tuple[int, str]],
                  save_dir: Path | str,
@@ -48,10 +47,10 @@ class InferencerWorker:
                  verbose: bool = False,
                  max_hypercubes: Optional[int] = None,
                  max_partitions: int = 10,
-                 convert_to_ome_format: bool = True,
                  save_format: Literal['tiff','zarr'] = 'tiff',
                  zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
                  zarr_shard_shape: Optional[Tuple[int, ...]] = None,
+                 auxiliary_outputs: Optional[List[Tuple[str, dict]]] = None,
     ):
         self.database = database
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
@@ -59,7 +58,6 @@ class InferencerWorker:
         # TODO: consider alternative methods for only performing inference
         #       on a subset of timepoints without storing a prediction for all timepoints
         self.timepoint_list = timepoint_list
-        self.num_output_channels = num_output_channels
         
         self.dtype = dtype
         self.input_format = input_format
@@ -74,14 +72,11 @@ class InferencerWorker:
 
         self.task = task
         self.inference_mode = inference_mode
-
-        self.convert_to_ome_format = convert_to_ome_format
         
         self.z_step_pdf = z_step_pdf
         self.save_as_pdf = save_as_pdf
         self.save_as_volume = save_as_volume
 
-        self.inference_activation = activation
         self.decoder_head_type = decoder_head_type
 
         self.inference_save_dir = save_dir
@@ -98,6 +93,27 @@ class InferencerWorker:
 
         self.max_hypercubes = max_hypercubes
         self.max_partitions = max_partitions
+
+        assert outputs_metadata is not None, "outputs_metadata must be provided"
+        self.outputs_metadata = outputs_metadata
+
+        if auxiliary_outputs is None:
+            self.auxiliary_outputs = {}
+        elif isinstance(auxiliary_outputs, dict):
+            self.auxiliary_outputs = auxiliary_outputs
+        else:
+            # allow List[Tuple[str, dict]] as well
+            self.auxiliary_outputs = {name: meta for name, meta in auxiliary_outputs}
+
+        self.save_auxiliary_outputs = bool(self.auxiliary_outputs)
+
+        # main prediction output name; assume first key in outputs_metadata
+        self.main_output_name = next(iter(self.outputs_metadata.keys()))
+        self.num_output_channels = self.outputs_metadata[self.main_output_name].get("num_output_channels")
+        assert self.num_output_channels is not None, f"num_output_channels must be specified for main output"
+
+        # all data types we will aggregate/save
+        self.data_types = list({self.main_output_name, *self.auxiliary_outputs.keys()})
 
         self.prediction_df = self._get_data_tiles_metadata()
         self._build_state()
@@ -118,6 +134,8 @@ class InferencerWorker:
                 print(f"Loading hypercubes dataframe from cached file: {roi_csv}")
             table = pd.read_csv(roi_csv)
 
+            # FIXME: maintain uniform naming accross databases
+            #        to avoid this
             cols_rename = [
                 "tile_z_start", "tile_y_start", "tile_x_start",
                 "tile_z_end", "tile_y_end", "tile_x_end",
@@ -449,15 +467,22 @@ class InferencerWorker:
             tile_volume = n_cubes * voxels_per_cube
 
             key = (roi, tile_hash(name))
-            self._tile_state[key] = {
-                "row": row,
-                # FIXME: at some point we should generalize this to support different 
-                #        output modalities (e.g., bounding boxes, ... etc.)
-                "shape": (*out_spatial_shape, self.num_output_channels),
-                "pred": None, "cnt": None,
-                "remaining": tile_volume,
-                "done": False,
-            }
+            st = {"row": row,}
+            for dt in self.data_types:
+                if dt == self.main_output_name:
+                    C = self.num_output_channels
+                else:
+                    meta = self.auxiliary_outputs.get(dt)
+                    C = meta.get("num_output_channels")
+                    assert C is not None, f"num_output_channels must be specified for auxiliary output {dt}"
+
+                st[f"shape_{dt}"] = (*out_spatial_shape, C)
+                st[f"pred_{dt}"] = None
+                st[f"cnt_{dt}"] = None
+                st[f"remaining_{dt}"] = tile_volume
+                st[f"done_{dt}"] = False
+
+            self._tile_state[key] = st
             self._row_by_key[key] = row
             self._name_by_key[key] = name
 
@@ -508,7 +533,8 @@ class InferencerWorker:
         send = torch.cat(outs, dim=0) if outs else torch.empty((0,) + tail_shape, device=device, dtype=dtype)
         return send, splits
 
-    def _alltoall(self, buckets, metadata: dict):
+    # TODO: this could be generalized to handle more types of payloads 
+    def _alltoall(self, buckets, metadata: dict, out_channels: int):
         ws, rk = get_world_size(), process_rank()
         device = torch.device('cuda', torch.cuda.current_device())
 
@@ -550,8 +576,7 @@ class InferencerWorker:
             Sz = int(metadata["z_size"][0])
             Sy = int(metadata["y_size"][0])
             Sx = int(metadata["x_size"][0])
-            C = self.num_output_channels
-            tail = (T, Sz, Sy, Sx, C)
+            tail = (T, Sz, Sy, Sx, out_channels)
 
         pred_hypercubes_send, pred_hypercubes_splits = self._pack_for_alltoall(pred_hypercubes_bucket, 
                                                                world_size=ws,
@@ -591,10 +616,13 @@ class InferencerWorker:
 
         return keys_recv, coords_recv, pred_hypercubes_recv
     
-    def _apply_recv(self, keys, coords, pred_hypercubes):
+    def _apply_recv(self, keys, coords, pred_hypercubes, data_type: Optional[str] = None):
         N = keys.size(0)
         if N == 0:
             return set()
+
+        if data_type is None:
+            data_type = self.main_output_name
 
         done_keys = set()
         pred_hypercubes, keys, coords = pred_hypercubes.to("cpu"), keys.to("cpu"), coords.to("cpu")
@@ -606,7 +634,7 @@ class InferencerWorker:
             t0,t1,z0,z1,y0,y1,x0,x1 = coords[i].tolist()
             pred_hypercube = pred_hypercubes[i]
 
-            pred_t, cnt_t = self._get_or_init_buffers(key)
+            pred_t, cnt_t = self._get_or_init_buffers(key, data_type=data_type)
 
             pred_view = pred_t[t0:t1, z0:z1, y0:y1, x0:x1, :]
             cnt_view = cnt_t[t0:t1, z0:z1, y0:y1, x0:x1, 0]
@@ -632,9 +660,9 @@ class InferencerWorker:
 
             zeros_after = (cnt_view == 0).sum()
             filled = int((zeros_before - zeros_after).item())
-            self._tile_state[key]["remaining"] -= filled
-
-            if self._tile_state[key]["remaining"] <= 0:
+            self._tile_state[key][f"remaining_{data_type}"] -= filled
+            
+            if all(self._tile_state[key][f"remaining_{dt}"] <= 0 for dt in self.data_types):
                 # TODO: this should most likely happen on a separate Actor
                 #       to avoid blocking the main inference loop for saving files
                 if self._finish_if_done(key):
@@ -644,32 +672,39 @@ class InferencerWorker:
 
     def _finish_if_done(self, key, force: bool = False):
         st = self._tile_state[key]
-        if st["done"] or st["pred"] is None:
+        if any(st[f"done_{dt}"] or st[f"pred_{dt}"] is None for dt in self.data_types):
             return False
-        if st["remaining"] != 0 and not force:
+        if not force and any(st[f"remaining_{dt}"] != 0 for dt in self.data_types):
             return False
-
-        preds = st["pred"] / st["cnt"].clamp_min(1)
-        if self.inference_activation is not None:
-            preds = self.inference_activation(preds)
-
-        if self.timepoint_list is not None:
-            preds = preds[self.timepoint_list, ...]
 
         row = self._row_by_key[key]
         name = self._name_by_key[key]
         try:
             base = str(row["output_folder"])
         except KeyError:
-            # fallback if output_folder column doesn't exist
             base = f"inference_roi{row.get('id', 'unknown')}"
 
-        sample_name = base.replace("/", "_") + "_" + name
-        sample_name = sample_name.replace(".zarr","").replace(".tiff","")
+        base_sample_name = base.replace("/", "_") + "_" + name
+        base_sample_name = base_sample_name.replace(".zarr", "").replace(".tiff", "")
+
+        preds_dict = {}
+        for dt in self.data_types:
+            preds = st[f"pred_{dt}"] / st[f"cnt_{dt}"].clamp_min(1)
+
+            # Optional per-output activation from outputs_metadata
+            meta = self.outputs_metadata.get(dt, {})
+            activation = meta.get("activation", None)
+            if activation is not None:
+                preds = activation(preds)
+
+            if self.timepoint_list is not None:
+                preds = preds[self.timepoint_list, ...]
+
+            preds_dict[dt] = preds
 
         save_predictions(
-            name=sample_name,
-            predictions=preds,
+            name=base_sample_name,
+            predictions=preds_dict,
             save_dir=self.inference_save_dir,
             save_as_volume=self.save_as_volume,
             save_as_pdf=self.save_as_pdf,
@@ -679,15 +714,17 @@ class InferencerWorker:
             zarr_shard_shape=self.inference_zarr_shard_shape,
         )
 
-        st["done"] = True
+        for dt in self.data_types:
+            st[f"done_{dt}"] = True
+
         return True
 
-    def _get_or_init_buffers(self, key):
+    def _get_or_init_buffers(self, key, data_type: str):
         st = self._tile_state[key]
-        if st["pred"] is None:
-            st["pred"] = torch.zeros(st["shape"], dtype=self.dtype, device='cpu')
-            st["cnt"] = torch.zeros((*st["shape"][:-1], 1), dtype=torch.int32, device='cpu')
-        return st["pred"], st["cnt"]
+        if st[f"pred_{data_type}"] is None:
+            st[f"pred_{data_type}"] = torch.zeros(st[f"shape_{data_type}"], dtype=self.dtype, device='cpu')
+            st[f"cnt_{data_type}"] = torch.zeros((*st[f"shape_{data_type}"][:-1], 1), dtype=torch.int32, device='cpu')
+        return st[f"pred_{data_type}"], st[f"cnt_{data_type}"]
     
     def predict(self, data_sample):
         X = data_sample["data_tensor"]
@@ -698,8 +735,20 @@ class InferencerWorker:
         pred_hypercubes = self._predict(X, data_sample)
 
         buckets = self._build_pred_buckets(pred_hypercubes, metadata)
-        keys_recv, coords_recv, pred_hypercubes_recv = self._alltoall(buckets, metadata)
-        done_keys = self._apply_recv(keys_recv, coords_recv, pred_hypercubes_recv)
+        keys_recv, coords_recv, pred_hypercubes_recv = self._alltoall(buckets, metadata, out_channels=self.num_output_channels)
+        done_keys = self._apply_recv(keys_recv, coords_recv, pred_hypercubes_recv, data_type=self.main_output_name)
+
+        if self.save_auxiliary_outputs:
+            for aux_output, aux_metadata in self.auxiliary_outputs.items():
+                aux_pred_hypercubes = data_sample[aux_output]
+                # NOTE: might need to generalize _build_pred_buckets
+                aux_buckets = self._build_pred_buckets(aux_pred_hypercubes, metadata) 
+                aux_keys_recv, aux_coords_recv, aux_pred_hypercubes_recv \
+                    = self._alltoall(aux_buckets, metadata, out_channels=aux_metadata["num_output_channels"])
+                self._apply_recv(aux_keys_recv, 
+                                 aux_coords_recv, 
+                                 aux_pred_hypercubes_recv,
+                                 data_type=aux_output)
 
     def finalize(self):
         for key in list(self._tile_state.keys()):
