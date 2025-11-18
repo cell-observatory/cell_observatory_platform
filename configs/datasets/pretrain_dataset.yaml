@@ -17,6 +17,8 @@ max_hypercubes: null # maximum number of hypercubes to return
 hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
 roi_list: null # list of specific ROIs to filter
 tile_list: null # list of specific tiles to filter
+synthetic_only: False
+has_annotations: False
 
 occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
 
@@ -44,6 +46,8 @@ dataset:
   hpf_list: ${datasets.hpf_list}
   roi_list: ${datasets.roi_list}
   tile_list: ${datasets.tile_list}
+  synthetic_only: ${datasets.synthetic_only}
+  has_annotations: ${datasets.has_annotations}
   time: true
 
   input_layout: 

@@ -616,6 +616,28 @@
                 "PYTHONUNBUFFERED": "1"
             },
             "justMyCode": false
+        },        
+        {
+            "name": "🧪 tests/data/test_database.py::test_hypercubes_annotations_filter",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "-s",
+                "-vvv",
+                "--cache-clear",
+                "--disable-warnings",
+                "--disable-pytest-warnings",
+                "--color=yes",
+                "-r fEX",
+                "tests/data/test_database.py::test_hypercubes_annotations_filter"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            },
+            "justMyCode": false
         },
         {
             "name": "🧪 tests/data/test_database.py::test_hypercubes_max_hypercubes_filter",

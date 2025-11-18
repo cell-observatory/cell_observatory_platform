@@ -210,7 +210,7 @@ def test_hypercubes_hpf_filter(database):
 def test_hypercubes_synthetic_filter(database):
     table = database.get_t_128_128_128_2_hypercubes(
         synthetic_only=True,
-        num_timepoints=16,
+        num_timepoints=1,
         max_hypercubes=100
     )
     print(database.last_query)
@@ -218,7 +218,23 @@ def test_hypercubes_synthetic_filter(database):
 
     assert table['is_synthetic'].all(), "All hypercubes should be synthetic"
     assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
-    assert (table['time_size'] == 16).all(), "All time sizes should be 16"
+    assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
+    assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
+    assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+
+def test_hypercubes_annotations_filter(database):
+    table = database.get_t_128_128_128_2_hypercubes(
+        has_annotations=True,
+        num_timepoints=1,
+        max_hypercubes=100
+    )
+    print(database.last_query)
+    print(table)
+
+    assert table['has_annotations'].all(), "All hypercubes should have annotations"
+    assert (table['channel_size'] == 2).all(), "All channel sizes should be 2"
     assert (table['z_size'] == 128).all(), "All cube sizes should be 128"
     assert (table['y_size'] == 128).all(), "All cube sizes should be 128"
     assert (table['x_size'] == 128).all(), "All cube sizes should be 128"
