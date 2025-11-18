@@ -11,9 +11,13 @@ import zlib
 from pathlib import Path
 from subprocess import call, run
 
+# This ensures both relative imports (training.loops) and absolute imports
+# (cell_observatory_platform.training.helpers) work correctly
+_pkg_dir = str(Path(__file__).resolve().parent)
 _workspace_root = str(Path(__file__).resolve().parent.parent)
-if _workspace_root not in sys.path:
-    sys.path.insert(0, _workspace_root)
+for _path in [_pkg_dir, _workspace_root]:
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 import hydra
 from dotenv import load_dotenv

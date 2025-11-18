@@ -5,6 +5,14 @@ import time
 import uuid
 from pathlib import Path
 
+# This ensures both relative imports (training.loops) and absolute imports
+# (cell_observatory_platform.training.helpers) work correctly
+_pkg_dir = str(Path(__file__).resolve().parent.parent)
+_workspace_root = str(Path(__file__).resolve().parent.parent.parent)
+for _path in [_pkg_dir, _workspace_root]:
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
 import warnings
 warnings.filterwarnings("ignore")
 
