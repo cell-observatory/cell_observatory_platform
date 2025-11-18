@@ -417,3 +417,67 @@ def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
     assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
     assert (table['time_size'] == num_timepoints).all(), f"All time sizes should be {num_timepoints} found {table['time_size'].unique()}"
     assert table['occupancy_ratios_ch_0'].apply(len).unique()[0] == num_timepoints, "Should only have a single ratio for each timepoint"
+    
+@pytest.mark.skip("Skipping test_synthetic_annotations_csv_dataframe.")
+@pytest.mark.parametrize("database_type", database_types)
+@pytest.mark.parametrize("z_slices,y_slices,x_slices", [
+    (128, 128, 128),
+    # (128, 256, 256),
+    # (128, 384, 384),
+])
+def test_synthetic_annotations_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
+    config.experiment_name = "test_synthetic_annotations_csv_dataframe"
+    config.datasets.databases._target_ = get_database_class(database_type)
+    config.datasets.databases.input_shape = (1, z_slices, y_slices, x_slices, 2)
+    num_timepoints = 1
+    config.datasets.databases.dataset_layout_order = "TZYXC"    
+    config.datasets.databases.max_hypercubes = 100000
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
+    config.datasets.databases.has_annotations = True
+    config.datasets.databases.synthetic_only = True
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = True
+    config.datasets.databases.hypercubes_dataframe_path = Path(config.paths.server_folder_path) / 'databases' / "prepared_1_128_128_128_2_hypercube_view.csv"
+
+    print(f"Initializing {config.datasets.databases._target_}...")
+    # pprint(OmegaConf.to_container(config, resolve=True))
+
+    database = instantiate(config.datasets.databases)
+    table = database.hypercubes_dataframe
+    print(table)
+    # database.save_hypercubes_dataframe(hypercubes_dataframe_path=Path(config.paths.server_folder_path) / 'databases' / "prepared_1_128_128_128_2_hypercube_view.csv")
+
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+    assert table['is_synthetic'].all(), "All hypercubes should be synthetic"
+    
+    assert table['has_annotations'].all(), "All hypercubes should have annotations"
+
+    def _find_mask_bbox_dict(d):
+        if not isinstance(d, dict):
+            return {}
+        if 'mask_bbox_dict' in d and isinstance(d['mask_bbox_dict'], dict) and bool(d['mask_bbox_dict']):
+            return d['mask_bbox_dict']
+        for v in d.values():
+            if isinstance(v, dict):
+                found = _find_mask_bbox_dict(v)
+                if found:
+                    return found
+        return {}
+
+    for i, pc_meta in enumerate(table['pc_metadata_json']):
+        if isinstance(pc_meta, str):
+            try:
+                pc_meta = json.loads(pc_meta)
+            except Exception as e:
+                raise AssertionError(f"Failed to parse pc_metadata_json at row {i}: {e}")
+
+        assert isinstance(pc_meta, dict), f"pc_metadata_json at row {i} must be a dict"
+        mask = _find_mask_bbox_dict(pc_meta)
+        assert mask, f"mask_bbox_dict should not be empty at row {i}"
+   
+    assert table['first_pc_id'].unique().all(), f"`first_pc_id` should have unique values"
+    assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
+    assert (table['time_size'] == num_timepoints).all(), f"All time sizes should be {num_timepoints} found {table['time_size'].unique()}"
+    assert table['occupancy_ratios_ch_0'].apply(len).unique()[0] == num_timepoints, "Should only have a single ratio for each timepoint"

@@ -469,43 +469,12 @@ def apply_hypercubes_dataframe_filters(
     logger.info(f"Min-occupancy summary: {stats}")
     return df
 
-def add_has_annotations_column(df: pl.DataFrame) -> pl.DataFrame:
+def add_has_annotations_column(df: pl.DataFrame | pd.DataFrame) -> pl.DataFrame | pd.DataFrame:
     if "has_annotations" in df.columns:
         return df
 
-    def _has_annotations_from_json(s: str) -> bool:
-        if s is None:
-            return False
-        try:
-            j = ujson.loads(s)
-        except Exception:
-            return False
-
-        if isinstance(j, dict):
-            for v in j.values():
-                if not isinstance(v, dict):
-                    continue
-                m = v.get("mask_bbox_dict")
-                if m and isinstance(m, dict) and len(m) > 0:
-                    return True
-        return False
-
-    if "pc_metadata_json" not in df.columns:
-        df = df.with_columns(pl.lit(False).alias("has_annotations"))
-    else:
-        try:
-            values = df.select(pl.col("pc_metadata_json")).to_series().to_list()
-        except Exception:
-            values = []
-
-        bools = [_has_annotations_from_json(v) for v in values]
-        if len(bools) != df.height:
-            bools = [False] * df.height
-
-        df = df.with_columns(pl.Series("has_annotations", bools))
-
+    # look for nested entries for each channel like {'0': {'histogram': {...}}, '1': {'mask_bbox_dict': {...}}}
     return df
-
 
 def load_hypercubes_dataframe(
     hypercubes_dataframe_path: str | Path,
