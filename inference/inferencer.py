@@ -95,10 +95,15 @@ class InferencerWorker:
         self.max_partitions = max_partitions
 
         assert outputs_metadata is not None, "outputs_metadata must be provided"
-        self.outputs_metadata = outputs_metadata
+        # DictConfig -> plain dict[str, dict]
+        self.outputs_metadata = {
+            str(name): dict(meta) for name, meta in outputs_metadata.items()
+        }
 
         if auxiliary_outputs is not None:
-            self.auxiliary_outputs = auxiliary_outputs
+            self.auxiliary_outputs = {
+                str(name): dict(meta) for name, meta in auxiliary_outputs.items()
+            }
         else:
             self.auxiliary_outputs = {}
 
@@ -106,11 +111,17 @@ class InferencerWorker:
 
         # main prediction output name; assume first key in outputs_metadata
         self.main_output_name = next(iter(self.outputs_metadata.keys()))
-        self.num_output_channels = self.outputs_metadata[self.main_output_name].get("num_output_channels")
-        assert self.num_output_channels is not None, f"num_output_channels must be specified for main output"
+        self.num_output_channels = self.outputs_metadata[self.main_output_name].get(
+            "num_output_channels"
+        )
+        assert (
+            self.num_output_channels is not None
+        ), "num_output_channels must be specified for main output"
 
-        # all data types we will aggregate/save
-        self.data_types = list({self.main_output_name, *self.auxiliary_outputs.keys()})
+        # all data types we will aggregate/save:
+        #   - main output (e.g. 'predictions')
+        #   - plus each auxiliary output (e.g. 'data_tensor')
+        self.data_types = [self.main_output_name, *self.auxiliary_outputs.keys()]
 
         self.prediction_df = self._get_data_tiles_metadata()
         self._build_state()
@@ -711,6 +722,8 @@ class InferencerWorker:
             zarr_shard_shape=self.inference_zarr_shard_shape,
         )
 
+        print(f"Finished saving predictions for tile {name} (ROI {row.get('id', 'unknown')})")
+
         for dt in self.data_types:
             st[f"done_{dt}"] = True
 
@@ -751,3 +764,4 @@ class InferencerWorker:
         for key in list(self._tile_state.keys()):
             self._finish_if_done(key, force=True)
         barrier()
+        print(f"[RANK: {process_rank()}] Tile State after finalize: {self._tile_state}")
