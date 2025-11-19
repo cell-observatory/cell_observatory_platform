@@ -115,5 +115,5 @@ def test_data_pipeline(config):
         config.experiment_name = "test_data_pipeline"
         config.paths.resume_checkpointdir = None
 
-    metrics = distributed_test(cfg=config, test="tests.data.test_pretrain_dataset._test_dataloader_dist")
+    metrics = distributed_test(cfg=config, test="cell_observatory_platform.tests.data.test_pretrain_dataset._test_dataloader_dist")
     assert metrics.get("success", False), "Distributed dataloader test failed"

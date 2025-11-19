@@ -110,5 +110,5 @@ def test_data_pipeline_dali(config):
             "_args_": [1]
         }
 
-    metrics = distributed_test(cfg=config, test="tests.data.test_pretrain_dataset_dali._test_dataloader_dali_dist")
+    metrics = distributed_test(cfg=config, test="cell_observatory_platform.tests.data.test_pretrain_dataset_dali._test_dataloader_dali_dist")
     assert metrics.get("success", False), "Distributed dataloader test failed"

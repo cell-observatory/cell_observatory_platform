@@ -115,7 +115,7 @@ def test_data_pipeline_ray_distributed(config):
 
     metrics = distributed_test(
         cfg=config,
-        test="tests.data.test_pretrain_dataset_ray._test_dataloader_ray_dist",
+        test="cell_observatory_platform.tests.data.test_pretrain_dataset_ray._test_dataloader_ray_dist",
     )
     assert metrics.get("success", False), f"Distributed Ray dataloader test failed"
 
