@@ -309,6 +309,20 @@ def filter_hypercubes_dataframe_storage_server(
     else:
         raise ValueError(f"Unknown server_folder_path: {server_folder_path}")
 
+    """" 
+        TODO: Delete me after you fix the csv file for synthetic hypercubes, 
+        set exists_prfs to True and server_folder to server_folder/synthetic 
+    """
+    df = _coerce_bool_in(df, "is_synthetic")
+    exists_expr = pl.when(pl.col("is_synthetic")).then(pl.lit(True)).otherwise(pl.lit(False))
+    server_expr = (
+        pl.when(pl.col("is_synthetic"))
+        .then(pl.col("server_folder").cast(pl.Utf8) + pl.lit("/synthetic"))
+        .otherwise(pl.col("server_folder"))
+    )
+    df = df.with_columns([exists_expr.alias("exists_prfs"), server_expr.alias("server_folder")])
+    """"""
+    
     df = (
         _coerce_bool_in(df, flag)
         .filter(pl.col(flag))
@@ -413,13 +427,35 @@ def compute_df_stats(df: pl.DataFrame) -> pl.DataFrame:
     ch0 = _parse_occupancy_expr("occupancy_ratios_ch_0", df.schema)
     ch1 = _parse_occupancy_expr("occupancy_ratios_ch_1", df.schema)
 
+    df = df.with_columns(
+        ch0.alias("occupancy_ratios_ch_0_parsed"),
+        ch1.alias("occupancy_ratios_ch_1_parsed"),
+    )
+
+    if "time_size" in df.columns:
+        df = df.with_columns(
+            pl.when(pl.col("time_size").is_not_null())
+            .then(pl.col("occupancy_ratios_ch_0_parsed").list.slice(0, pl.col("time_size").cast(pl.Int64)))
+            .otherwise(pl.col("occupancy_ratios_ch_0_parsed"))
+            .alias("occupancy_ratios_ch_0"),
+            pl.when(pl.col("time_size").is_not_null())
+            .then(pl.col("occupancy_ratios_ch_1_parsed").list.slice(0, pl.col("time_size").cast(pl.Int64)))
+            .otherwise(pl.col("occupancy_ratios_ch_1_parsed"))
+            .alias("occupancy_ratios_ch_1"),
+        )
+    else:
+        df = df.with_columns(
+            pl.col("occupancy_ratios_ch_0_parsed").alias("occupancy_ratios_ch_0"),
+            pl.col("occupancy_ratios_ch_1_parsed").alias("occupancy_ratios_ch_1"),
+        )
+
     return df.with_columns(
-        ch0.list.min().alias("min_occupancy_ratios_ch_0"),
-        ch0.list.mean().alias("mean_occupancy_ratios_ch_0"),
-        ch0.list.median().alias("med_occupancy_ratios_ch_0"),
-        ch1.list.min().alias("min_occupancy_ratios_ch_1"),
-        ch1.list.mean().alias("mean_occupancy_ratios_ch_1"),
-        ch1.list.median().alias("med_occupancy_ratios_ch_1"),
+        pl.col("occupancy_ratios_ch_0").list.min().alias("min_occupancy_ratios_ch_0"),
+        pl.col("occupancy_ratios_ch_0").list.mean().alias("mean_occupancy_ratios_ch_0"),
+        pl.col("occupancy_ratios_ch_0").list.median().alias("med_occupancy_ratios_ch_0"),
+        pl.col("occupancy_ratios_ch_1").list.min().alias("min_occupancy_ratios_ch_1"),
+        pl.col("occupancy_ratios_ch_1").list.mean().alias("mean_occupancy_ratios_ch_1"),
+        pl.col("occupancy_ratios_ch_1").list.median().alias("med_occupancy_ratios_ch_1"),
     )
 
 def apply_occupancy_threshold(
@@ -469,12 +505,24 @@ def apply_hypercubes_dataframe_filters(
     logger.info(f"Min-occupancy summary: {stats}")
     return df
 
-def add_has_annotations_column(df: pl.DataFrame | pd.DataFrame) -> pl.DataFrame | pd.DataFrame:
+def add_has_annotations_column(df: pl.DataFrame) -> pl.DataFrame:
+    """ 
+        look for nested entries for each channel in the 
+        pc_metadata_json col:  {'0': {'histogram': {...}}, '1': {'mask_bbox_dict': {...}}} 
+        each key is a channel id mapping to a dict of metadata
+    """
+    
     if "has_annotations" in df.columns:
         return df
 
-    # look for nested entries for each channel like {'0': {'histogram': {...}}, '1': {'mask_bbox_dict': {...}}}
-    return df
+    if "pc_metadata_json" not in df.columns:
+        return df.with_columns(pl.lit(False).alias("has_annotations"))
+
+    has_key = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"', literal=False)
+    empty_obj = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
+    expr = pl.col("pc_metadata_json").is_not_null() & has_key & (~empty_obj)
+    return df.with_columns(expr.alias("has_annotations"))
+
 
 def load_hypercubes_dataframe(
     hypercubes_dataframe_path: str | Path,
@@ -499,16 +547,16 @@ def load_hypercubes_dataframe(
     df = pl.read_csv(p)
     t1 = time.perf_counter()
     logger.info(f"Loaded hypercubes dataframe in {t1 - t0:.2f} s; shape={df.shape}")
-
+    
     df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
     df = add_has_annotations_column(df)
-    
+
     if synthetic_only:
         df = _coerce_bool_in(df, "is_synthetic").filter(pl.col("is_synthetic"))
-
+    
     if has_annotations:
         df = _coerce_bool_in(df, "has_annotations").filter(pl.col("has_annotations"))
-        
+    
     t0 = time.perf_counter()
     df = apply_hypercubes_dataframe_selections(
         df,

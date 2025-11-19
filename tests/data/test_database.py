@@ -451,7 +451,6 @@ def test_synthetic_annotations_csv_dataframe(config, database_type, z_slices, y_
 
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
     assert table['is_synthetic'].all(), "All hypercubes should be synthetic"
-    
     assert table['has_annotations'].all(), "All hypercubes should have annotations"
 
     def _find_mask_bbox_dict(d):

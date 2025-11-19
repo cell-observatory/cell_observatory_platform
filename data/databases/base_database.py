@@ -848,8 +848,11 @@ class ParentDatabase():
             _parse_occupancy_expr("occupancy_ratios_ch_1", df.schema).alias("occ1"),
         )
 
-        T0 = int(df.select(pl.col("occ0").list.len().max()).item())
-        T1 = int(df.select(pl.col("occ1").list.len().max()).item())
+        T0_raw = int(df.select(pl.col("occ0").list.len().max()).item())
+        T1_raw = int(df.select(pl.col("occ1").list.len().max()).item())
+
+        T0 = min(T0_raw, getattr(self, 'num_timepoints', T0_raw))
+        T1 = min(T1_raw, getattr(self, 'num_timepoints', T1_raw))
 
         occ0_mean_exprs = [pl.col("occ0").list.get(i).mean().alias(f"__occ0_{i}") for i in range(T0)]
         occ1_mean_exprs = [pl.col("occ1").list.get(i).mean().alias(f"__occ1_{i}") for i in range(T1)]
@@ -958,10 +961,13 @@ class ParentDatabase():
         }
 
         def _as_int(s):
-            return pd.to_numeric(s).astype("int64")
+            return pd.to_numeric(s).fillna(0).astype("int64")
 
-        for col in ["time_start","z_start","z_size","y_start","y_size", "x_start","x_size","channel_size",
-                    "tile_z_end","tile_y_end","tile_x_end","tile_time_size","tile_channel_size"]:
+        for col in [
+            "time_start","z_start","z_size","y_start","y_size", "x_start","x_size","channel_size",
+            "tile_z_end","tile_y_end","tile_x_end","tile_x_start","tile_y_start","tile_z_start",
+            "tile_time_size","tile_channel_size"
+        ]:
             work[col] = _as_int(work[col])
 
         axes_end_map = {
@@ -980,7 +986,10 @@ class ParentDatabase():
             req = work[size_col]
 
             end = axes_end_map[ax]
-            effective_size = np.minimum(req, np.clip(end - start, 0, None)).astype("int64")
-            work[size_col] = effective_size
+            available = np.clip(end - start, 0, None)
+            effective_size = np.minimum(req, available)
+            effective_series = pd.Series(effective_size, index=work.index)
+            effective_series = effective_series.where(~((effective_series == 0) & (req > 0)), req)
+            work[size_col] = effective_series.astype("int64")
 
         return work
