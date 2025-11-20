@@ -16,7 +16,7 @@ import polars as pl
 import connectorx as cx
 
 
-from cell_observatory_platform.data.io import load_hypercubes_dataframe
+from cell_observatory_platform.data.io import load_hypercubes_dataframe, create_channel_metadata_columns
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -180,6 +180,7 @@ class ParentDatabase():
                     synthetic_only=self.synthetic_only,
                     has_annotations=self.has_annotations,
                 )
+
                 self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
 
             if self.server_folder_path is not None:
@@ -479,40 +480,8 @@ class ParentDatabase():
                     {filters} 
                     ORDER BY first_pc_id DESC
                     {limit}
+                    SET statement_timeout = 0;
                 """]
-
-        # # Multiple partitions, with limit and offset
-        # max_rows = self.count_rows(table_name=table_name)
-
-        # if max_hypercubes is None:
-        #     max_hypercubes = max_rows
-
-        # if max_hypercubes > max_rows:
-        #     max_hypercubes = max_rows
-
-        # assert max_hypercubes != 0, f"{table_name} is empty"
-        
-        # if max_hypercubes > 1000:
-        #     # select max number of partitions that divides the number of rows in each partition evenly
-        #     partition_num = max([i for i in range(1, self.max_partitions + 1) if
-        #                         max_hypercubes % i == 0]) if max_hypercubes is not None else 1
-        #     print(f"Using {partition_num} partitions to query. Max hypercubes: {max_hypercubes}.")
-        # else:
-        #     partition_num = 1
-    
-        # rows_per_partition = max_hypercubes // partition_num
-        # return  [
-        #         f"""
-        #             SELECT
-        #                 {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
-        #             FROM {table_name} {table_name_shortcut}
-        #             {filters} 
-        #             ORDER BY first_pc_id DESC
-        #             LIMIT {rows_per_partition}
-        #             OFFSET {rows_per_partition * i}
-        #         """
-        #         for i in range(partition_num)
-        #     ]
 
     def _create_t_128_128_128_2_hypercube_view(
             self,
@@ -812,6 +781,7 @@ class ParentDatabase():
         return table
 
     def _aggregate(self, df_pd, group_cols, z_slices=128, y_slices=128, x_slices=128):
+
         df = pl.from_pandas(df_pd)
 
         df = df.with_columns(
@@ -820,6 +790,176 @@ class ParentDatabase():
             (pl.col("x_start") // x_slices * x_slices).alias("x_start"),
         )
 
+        def _merge_metadata_list(values):
+            if values is None:
+                return None
+            
+            if hasattr(values, 'to_list'):
+                values = values.to_list()
+            if not isinstance(values, (list, tuple)):
+                return None
+            if len(values) == 0:
+                return None
+            
+            merged = {}
+            for entry in values:
+                if entry is None:
+                    continue
+                if isinstance(entry, str):
+                    try:
+                        entry = ujson.loads(entry)
+                    except Exception:
+                        continue
+                if not isinstance(entry, dict):
+                    continue
+                for key, val in entry.items():
+                    existing = merged.get(key)
+                    if isinstance(existing, dict) and isinstance(val, dict):
+                        merged[key] = {**existing, **val}
+                    else:
+                        merged[key] = val
+            return merged if merged else None
+        
+        def _merge_dict_list(values):
+            if values is None:
+                return None
+            if hasattr(values, 'to_list'):
+                values = values.to_list()
+            if not isinstance(values, (list, tuple)):
+                return None
+            if len(values) == 0:
+                return None
+            
+            merged = {}
+            for entry in values:
+                if entry is None:
+                    continue
+                if isinstance(entry, str):
+                    try:
+                        entry = ujson.loads(entry)
+                    except Exception:
+                        continue
+                if not isinstance(entry, dict):
+                    continue
+                
+                for cell_id, bbox in entry.items():
+                    if cell_id not in merged:
+                        merged[cell_id] = bbox
+                    else:
+                        existing_bbox = merged[cell_id]
+                        merged[cell_id] = {
+                            'zmin': min(existing_bbox.get('zmin', float('inf')), bbox.get('zmin', float('inf'))),
+                            'ymin': min(existing_bbox.get('ymin', float('inf')), bbox.get('ymin', float('inf'))),
+                            'xmin': min(existing_bbox.get('xmin', float('inf')), bbox.get('xmin', float('inf'))),
+                            'zmax': max(existing_bbox.get('zmax', float('-inf')), bbox.get('zmax', float('-inf'))),
+                            'ymax': max(existing_bbox.get('ymax', float('-inf')), bbox.get('ymax', float('-inf'))),
+                            'xmax': max(existing_bbox.get('xmax', float('-inf')), bbox.get('xmax', float('-inf'))),
+                        }
+            
+            return merged if merged else None
+        
+        def _merge_histogram_list(values):
+            if values is None:
+                return None
+            if hasattr(values, 'to_list'):
+                values = values.to_list()
+            if not isinstance(values, (list, tuple)):
+                return None
+            if len(values) == 0:
+                return None
+            
+            non_none = [v for v in values if v is not None]
+            if len(non_none) == 0:
+                return None
+            
+            if all(isinstance(v, dict) for v in non_none):
+                merged = {}
+                all_keys = set()
+                for entry in non_none:
+                    all_keys.update(entry.keys())
+                
+                for key in all_keys:
+                    values_for_key = [entry.get(key) for entry in non_none if key in entry]
+                    if values_for_key:
+                        merged[key] = min(values_for_key)
+                return merged if merged else None
+            else:
+                return non_none[0]
+
+        if "pc_metadata_json" in df.columns:
+            def _parse_json(s):
+                if s is None:
+                    return None
+                try:
+                    return ujson.loads(s)
+                except Exception:
+                    return None
+
+            df = df.with_columns(
+                pl.col("pc_metadata_json").map_elements(_parse_json, return_dtype=pl.Object).alias("_pc_metadata_parsed")
+            )
+
+            parsed_list = df.select(pl.col("_pc_metadata_parsed")).to_series().to_list()
+            _channel_ids = set()
+            for item in parsed_list:
+                if isinstance(item, dict):
+                    for k in item.keys():
+                        _channel_ids.add(str(k))
+            _channel_ids = sorted(_channel_ids)
+
+            for ch in _channel_ids:
+                def _get_ch(obj, ch_id=ch):
+                    if not isinstance(obj, dict):
+                        return None
+                    return obj.get(ch_id)
+
+                df = df.with_columns(
+                    pl.col("_pc_metadata_parsed")
+                    .map_elements(_get_ch, return_dtype=pl.Object)
+                    .alias(f"pc_metadata_json_ch_{ch}")
+                )
+                
+                def _get_histogram(ch_meta, ch_id=ch):
+                    if not isinstance(ch_meta, dict):
+                        return None
+                    return ch_meta.get("histogram")
+                
+                def _get_mask_bbox_dict(ch_meta, ch_id=ch):
+                    if not isinstance(ch_meta, dict):
+                        return None
+                    mask_bbox = ch_meta.get("mask_bbox_dict")
+                    if mask_bbox is None:
+                        return None
+                    if not isinstance(mask_bbox, dict):
+                        return None
+                    
+                    converted = {}
+                    for cell_id, bbox in mask_bbox.items():
+                        if isinstance(bbox, (list, tuple)) and len(bbox) == 6:
+                            converted[cell_id] = {
+                                'zmin': bbox[0],
+                                'ymin': bbox[1],
+                                'xmin': bbox[2],
+                                'zmax': bbox[3],
+                                'ymax': bbox[4],
+                                'xmax': bbox[5],
+                            }
+                        else:
+                            converted[cell_id] = bbox
+                    return converted if converted else None
+                
+                df = df.with_columns([
+                    pl.col(f"pc_metadata_json_ch_{ch}")
+                    .map_elements(_get_histogram, return_dtype=pl.Object)
+                    .alias(f"histogram_ch_{ch}"),
+                    pl.col(f"pc_metadata_json_ch_{ch}")
+                    .map_elements(_get_mask_bbox_dict, return_dtype=pl.Object)
+                    .alias(f"mask_bbox_dict_ch_{ch}"),
+                ])
+        else:
+            _channel_ids = []
+            df = df.with_columns(pl.lit(None).alias("_pc_metadata_parsed"))
+              
         def _parse_string_col(expr: pl.Expr) -> pl.Expr:
             return (
                 expr.cast(pl.Utf8)
@@ -848,14 +988,65 @@ class ParentDatabase():
             _parse_occupancy_expr("occupancy_ratios_ch_1", df.schema).alias("occ1"),
         )
 
-        T0_raw = int(df.select(pl.col("occ0").list.len().max()).item())
-        T1_raw = int(df.select(pl.col("occ1").list.len().max()).item())
-
-        T0 = min(T0_raw, getattr(self, 'num_timepoints', T0_raw))
-        T1 = min(T1_raw, getattr(self, 'num_timepoints', T1_raw))
-
+        T0 = int(df.select(pl.col("occ0").list.len().max()).item())
+        T1 = int(df.select(pl.col("occ1").list.len().max()).item())
+        
         occ0_mean_exprs = [pl.col("occ0").list.get(i).mean().alias(f"__occ0_{i}") for i in range(T0)]
         occ1_mean_exprs = [pl.col("occ1").list.get(i).mean().alias(f"__occ1_{i}") for i in range(T1)]
+
+        occ0_concat = pl.concat_list([pl.col(f"__occ0_{i}") for i in range(T0)]) if T0 > 0 else pl.lit([]).cast(pl.List(pl.Float64))
+        occ1_concat = pl.concat_list([pl.col(f"__occ1_{i}") for i in range(T1)]) if T1 > 0 else pl.lit([]).cast(pl.List(pl.Float64))
+        
+        pc_meta_list_exprs = []
+        pc_metadata_full_expr = None
+        if "pc_metadata_json" in df.columns:
+            pc_meta_list_exprs.append(
+                pl.col("_pc_metadata_parsed").drop_nulls().implode().alias("__pc_metadata_full")
+            )
+            pc_metadata_full_expr = (
+                pl.col("__pc_metadata_full")
+                .map_elements(_merge_metadata_list, return_dtype=pl.Object)
+                .map_elements(lambda d: ujson.dumps(d) if d is not None else None, return_dtype=pl.Utf8)
+                .alias("pc_metadata_json")
+            )
+        pc_meta_ch_list_exprs = []
+        for ch in _channel_ids:
+            pc_meta_ch_list_exprs.append(
+                pl.col(f"pc_metadata_json_ch_{ch}").drop_nulls().implode().alias(f"__pc_meta_list_ch_{ch}")
+            )
+        pc_meta_ch_concat_exprs = [
+            pl.col(f"__pc_meta_list_ch_{ch}")
+            .map_elements(_merge_metadata_list, return_dtype=pl.Object)
+            .map_elements(lambda d: ujson.dumps(d) if d is not None else None, return_dtype=pl.Utf8)
+            .alias(f"pc_metadata_json_ch_{ch}")
+            for ch in _channel_ids
+        ]
+        
+        histogram_list_exprs = []
+        histogram_concat_exprs = []
+        mask_bbox_dict_list_exprs = []
+        mask_bbox_dict_concat_exprs = []
+        
+        for ch in _channel_ids:
+            histogram_list_exprs.append(
+                pl.col(f"histogram_ch_{ch}").drop_nulls().implode().alias(f"__histogram_list_ch_{ch}")
+            )
+            histogram_concat_exprs.append(
+                pl.col(f"__histogram_list_ch_{ch}")
+                .map_elements(_merge_histogram_list, return_dtype=pl.Object)
+                .map_elements(lambda d: ujson.dumps(d) if d is not None else None, return_dtype=pl.Utf8)
+                .alias(f"histogram_ch_{ch}")
+            )
+            
+            mask_bbox_dict_list_exprs.append(
+                pl.col(f"mask_bbox_dict_ch_{ch}").drop_nulls().implode().alias(f"__mask_bbox_dict_list_ch_{ch}")
+            )
+            mask_bbox_dict_concat_exprs.append(
+                pl.col(f"__mask_bbox_dict_list_ch_{ch}")
+                .map_elements(_merge_dict_list, return_dtype=pl.Object)
+                .map_elements(lambda d: ujson.dumps(d) if d is not None else None, return_dtype=pl.Utf8)
+                .alias(f"mask_bbox_dict_ch_{ch}")
+            )
 
         out = (
             df.group_by(group_cols)
@@ -873,18 +1064,37 @@ class ParentDatabase():
                 pl.col("exists").max(),
                 pl.col("exists_prfs").max(),
                 pl.col("exists_aws").max(),
+                pl.col("p_metadata_json").sum(),
+                pl.col("pc_metadata_json").sum(),
                 pl.col("metadata_tile_json").sum(),
+                pl.col("is_synthetic").first(),
+                pl.col("has_annotations").first(),
                 *occ0_mean_exprs,
                 *occ1_mean_exprs,
+                *pc_meta_list_exprs,
+                *pc_meta_ch_list_exprs,
+                *histogram_list_exprs,
+                *mask_bbox_dict_list_exprs,
             ])
             .with_columns(
-                pl.concat_list([pl.col(f"__occ0_{i}") for i in range(T0)]).alias("occupancy_ratios_ch_0"),
-                pl.concat_list([pl.col(f"__occ1_{i}") for i in range(T1)]).alias("occupancy_ratios_ch_1"),
+                [occ0_concat.alias("occupancy_ratios_ch_0"), occ1_concat.alias("occupancy_ratios_ch_1")]
+                + ([pc_metadata_full_expr] if pc_metadata_full_expr is not None else [])
+                + pc_meta_ch_concat_exprs
+                + histogram_concat_exprs
+                + mask_bbox_dict_concat_exprs
             )
-            .drop([*(f"__occ0_{i}" for i in range(T0)), *(f"__occ1_{i}" for i in range(T1))])
+            .drop([
+                *(f"__occ0_{i}" for i in range(T0)),
+                *(f"__occ1_{i}" for i in range(T1)),
+                *([ "__pc_metadata_full" ] if "pc_metadata_json" in df.columns else []),
+                *(f"__pc_meta_list_ch_{ch}" for ch in _channel_ids),
+                *(f"__histogram_list_ch_{ch}" for ch in _channel_ids),
+                *(f"__mask_bbox_dict_list_ch_{ch}" for ch in _channel_ids),
+            ])
         )
 
-        return out.to_pandas()
+        pdf = out.to_pandas()
+        return pdf
     
     def aggregate_hypercubes(
         self, 
@@ -892,24 +1102,6 @@ class ParentDatabase():
         y_slices: int = 128,
         x_slices: int = 128,
         group_cols: Iterable = ["time_start", "z_start", "y_start", "x_start", "prepared_id", "tile_name"],
-        agg: Dict = {
-            "cube_size": "first",
-            "time_size": "first",
-            "channel_size": "first",
-            "first_pc_id": "first",
-            "hpf": "first",
-            "server_folder": "first",
-            "output_folder": "first",
-            "unique_targets": "first",
-            "imaged_locations": "first",
-            "date_crossed": "first",
-            "exists": "max",
-            "exists_prfs": "max",
-            "exists_aws": "max",
-            "metadata_tile_json": "sum",
-            "occupancy_ratios_ch_0": lambda s: np.mean(np.vstack(s.tolist()), axis=0).tolist(),
-            "occupancy_ratios_ch_1": lambda s: np.mean(np.vstack(s.tolist()), axis=0).tolist(),
-        }
     ):                
         logger.info("Aggregating hypercubes...")
         t0 = time.perf_counter()        
@@ -922,16 +1114,6 @@ class ParentDatabase():
         )
         t1 = time.perf_counter()
         logger.info(f"Aggregated hypercubes in {t1 - t0:.2f} seconds.")
-
-        # print(self.hypercubes_dataframe[[*group_cols, "occupancy_ratios_ch_0"]])
-        # print(self.hypercubes_dataframe.shape)
-        # print(f"prepared_id: {self.hypercubes_dataframe.prepared_id.nunique()}, {sorted(self.hypercubes_dataframe.prepared_id.unique())}")
-        # print(f"tile_name: {self.hypercubes_dataframe.tile_name.nunique()}, {sorted(self.hypercubes_dataframe.tile_name.unique())}")
-        # print(f"time_start: {self.hypercubes_dataframe.time_start.nunique()}, {sorted(self.hypercubes_dataframe.time_start.unique())}")
-        # print(f"z_start: {self.hypercubes_dataframe.z_start.nunique()}, {sorted(self.hypercubes_dataframe.z_start.unique())}")
-        # print(f"y_start: {self.hypercubes_dataframe.y_start.nunique()}, {sorted(self.hypercubes_dataframe.y_start.unique())}")
-        # print(f"x_start: {self.hypercubes_dataframe.x_start.nunique()}, {sorted(self.hypercubes_dataframe.x_start.unique())}")
-        # print(f"occupancy_ratios_ch_0: {sorted(self.hypercubes_dataframe['occupancy_ratios_ch_0'].apply(len).unique())}")
 
     def check_hypercube_sizes(
         self,
@@ -948,16 +1130,11 @@ class ParentDatabase():
         ]], how="left", on=list(join_keys))
 
         coord_map = {
-            "T": {"start": "time_start", "size": "time_size",
-            },
-            "Z": {"start": "z_start", "size": "z_size", 
-            },
-            "Y": {"start": "y_start", "size": "y_size", 
-            },
-            "X": {"start": "x_start", "size": "x_size", 
-            },
-            "C": {"start": None, "size": "channel_size",
-            },
+            "T": {"start": "time_start", "size": "time_size"},
+            "Z": {"start": "z_start", "size": "z_size"},
+            "Y": {"start": "y_start", "size": "y_size"},
+            "X": {"start": "x_start", "size": "x_size"},
+            "C": {"start": None, "size": "channel_size"},
         }
 
         def _as_int(s):

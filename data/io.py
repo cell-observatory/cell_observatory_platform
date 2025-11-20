@@ -524,6 +524,26 @@ def add_has_annotations_column(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(expr.alias("has_annotations"))
 
 
+def create_channel_metadata_columns(df: pl.DataFrame) -> pl.DataFrame:
+    if "channel_size" in df.columns:
+        max_channel_size = int(df.select(pl.col("channel_size").max()).item())
+        expected_channel_ids = [str(i) for i in range(max_channel_size)]
+    else:
+        expected_channel_ids = ["0", "1"]
+    
+    new_columns = []
+    for ch in expected_channel_ids:
+        if f"histogram_ch_{ch}" not in df.columns:
+            new_columns.append(pl.lit(None).alias(f"histogram_ch_{ch}"))
+        if f"mask_bbox_dict_ch_{ch}" not in df.columns:
+            new_columns.append(pl.lit(None).alias(f"mask_bbox_dict_ch_{ch}"))
+    
+    if new_columns:
+        df = df.with_columns(new_columns)
+    
+    return df
+
+
 def load_hypercubes_dataframe(
     hypercubes_dataframe_path: str | Path,
     max_rois: int | None = None,
@@ -557,6 +577,8 @@ def load_hypercubes_dataframe(
     if has_annotations:
         df = _coerce_bool_in(df, "has_annotations").filter(pl.col("has_annotations"))
     
+    df = create_channel_metadata_columns(df)
+        
     t0 = time.perf_counter()
     df = apply_hypercubes_dataframe_selections(
         df,
