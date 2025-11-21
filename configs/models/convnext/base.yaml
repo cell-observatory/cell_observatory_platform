@@ -1,4 +1,4 @@
-_target_: models.convnext.ConvNeXtV2
+_target_: cell_observatory_platform.models.convnext.ConvNeXtV2
 input_fmt: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
 modes: 15

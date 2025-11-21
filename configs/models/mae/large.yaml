@@ -1,4 +1,4 @@
-_target_: models.maskedautoencoder.MaskedAutoEncoder
+_target_: cell_observatory_platform.models.maskedautoencoder.MaskedAutoEncoder
 input_fmt: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
 patch_shape: ${datasets.patch_shape}

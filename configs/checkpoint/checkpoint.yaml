@@ -11,7 +11,7 @@ ray_checkpoint_config:
   checkpoint_score_order: ${evaluation.val_mode} # 'min' or 'max'
 
 checkpoint_manager:
-  _target_: training.checkpoint.CheckpointManager
+  _target_: cell_observatory_platform.training.checkpoint.CheckpointManager
   load_universal_checkpoint: ${deepspeed.checkpoint.load_universal} # whether to load a universal checkpoint, set in conjunction with checkpoint_manager
   resume_checkpointdir: ${paths.resume_checkpointdir}
   pretrained_checkpointdir: ${paths.pretrained_checkpointdir}

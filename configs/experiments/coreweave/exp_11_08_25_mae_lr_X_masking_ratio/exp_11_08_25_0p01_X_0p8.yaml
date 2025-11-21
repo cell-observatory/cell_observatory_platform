@@ -39,10 +39,10 @@ run_type: single_run # single_run, multi_run, or tune
 job_type: train # train or test
 
 # trainer type
-trainer: training.loops.EpochBasedTrainer
+trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
 
 # loop per worker script
-loop_per_worker_script: training.loops.train_loop_per_worker
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
 
 # training quantization
 quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
@@ -101,14 +101,14 @@ datasets:
 
   masking:
     mask_generators:
-      - _target_: data.masking.mask_generator.MaskGenerator
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
         layout: ${datasets.dataset.input_layout}
         input_shape: ${datasets.input_shape}
         patch_shape: ${datasets.patch_shape}
         input_format: ${dataset_layout_order}
 
         mask_mode: 
-          _target_: data.masking.mask_generator.MaskModes
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
           value: "random"
 
         random_masking_ratio: 0.8
@@ -140,21 +140,21 @@ checkpoint_manager:
 # hooks
 hooks:
   hooks_list:
-  - _target_: training.hooks.WeightDecayScheduleHook
-  - _target_: training.hooks.FreeDeviceBufferHook
-  - _target_: training.hooks.AnomalyDetector
-  - _target_: training.hooks.LRScheduler
-  - _target_: training.hooks.IterationTimer
-  - _target_: training.hooks.PeriodicWriter
-  - _target_: training.hooks.PeriodicCheckpointer
+  - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
+  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
+  - _target_: cell_observatory_platform.training.hooks.LRScheduler
+  - _target_: cell_observatory_platform.training.hooks.IterationTimer
+  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
     file_prefix: latest_model
-  - _target_: training.hooks.BestCheckpointer
+  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: training.hooks.TorchMemoryStats
+  - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
     step_period: 1
     epoch_period: 1
     logdir: ${loggers.logdir}
-  - _target_: training.hooks.BestMetricSaver
+  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
     metric_name: ${evaluation.val_metric}
     compare_fn: ${evaluation.val_mode}
     eval_after_validation: true

@@ -40,10 +40,10 @@ run_type: single_run # single_run, multi_run, or tune
 job_type: predict # train or test
 
 # trainer type
-trainer: training.loops.Inferencer
+trainer: cell_observatory_platform.training.loops.Inferencer
 
 # loop per worker script
-loop_per_worker_script: training.loops.train_loop_per_worker
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
 
 # training quantization
 quantization: bfloat16 # data type for training, options: float32, float16
@@ -126,10 +126,10 @@ models:
 # hooks
 hooks:
   hooks_list:
-  - _target_: training.hooks.FreeDeviceBufferHook
-  - _target_: training.hooks.IterationTimer
-  - _target_: training.hooks.PeriodicWriter
-  - _target_: training.hooks.TorchMemoryStats
+  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+  - _target_: cell_observatory_platform.training.hooks.IterationTimer
+  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
     step_period: 1
     epoch_period: 1
     logdir: ${loggers.logdir}

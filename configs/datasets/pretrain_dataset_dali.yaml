@@ -38,7 +38,7 @@ exec_pipelined: true
 
 
 dataset:
-  _target_: data.datasets.pretrain_dataset_dali.PretrainDatasetDali
+  _target_: cell_observatory_platform.data.datasets.pretrain_dataset_dali.PretrainDatasetDali
   dtype: ${dataset_dtype}
   hypercubes_dataframe_path: ${datasets.hypercubes_dataframe_path}
   server_folder_path: ${datasets.server_folder_path}
@@ -53,7 +53,7 @@ dataset:
   time: true
 
   input_layout:
-    _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
+    _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}
 
 dali_last_batch_policy:

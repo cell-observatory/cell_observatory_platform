@@ -30,24 +30,24 @@ defaults:
 nsys_env: null
 
 hooks_list:
-  - _target_: training.hooks.AnomalyDetector
-  - _target_: training.hooks.SamplerSetter
-  - _target_: training.hooks.LRScheduler
-  - _target_: training.hooks.IterationTimer
-  - _target_: training.hooks.PeriodicWriter
-  - _target_: training.hooks.PeriodicCheckpointer
+  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
+  - _target_: cell_observatory_platform.training.hooks.SamplerSetter
+  - _target_: cell_observatory_platform.training.hooks.LRScheduler
+  - _target_: cell_observatory_platform.training.hooks.IterationTimer
+  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
     file_prefix: latest_model
-  - _target_: training.hooks.BestCheckpointer
+  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: training.hooks.BestMetricSaver
+  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
     metric_name: ${evaluation.val_metric}
     compare_fn: ${evaluation.val_mode}
     eval_after_validation: true
-  - _target_: training.hooks.WeightDecayScheduleHook
-  # - _target_: training.hooks.NsysProfilerHook
+  - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
+  # - _target_: cell_observatory_platform.training.hooks.NsysProfilerHook
   #   start_iter: 40
   #   end_iter: 90
-  # - _target_: training.hooks.TorchProfiler
+  # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
   #   output_dir: ${loggers.logdir}/profiler
   #   schedule:
   #     skip_first: 1
@@ -59,11 +59,11 @@ hooks_list:
   #     - CUDA
   #     - CPU
   #   save_tensorboard: true
-  # - _target_: training.hooks.TorchMemoryStats
+  # - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
   #   step_period: 20
   #   epoch_period: 1
   #   logdir: ${loggers.logdir}
-  # - _target_: training.hooks.EarlyStopHook
+  # - _target_: cell_observatory_platform.training.hooks.EarlyStopHook
   #   patience: 10
   #   stopping_threshold: 0.01
   #   mode: ${evaluation.val_mode}

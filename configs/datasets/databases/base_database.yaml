@@ -1,5 +1,5 @@
 # This gets overridden in tests/data/test_database.py to test both classes.
-_target_: data.databases.supabase_database.SupabaseDatabase # e.g. data.databases.trino_database.TrinoDatabase  
+_target_: cell_observatory_platform.data.databases.supabase_database.SupabaseDatabase # e.g. cell_observatory_platform.data.databases.trino_database.TrinoDatabase  
 dbname: 'prod'
 
 dotenv_path: ${paths.dotenv_path}

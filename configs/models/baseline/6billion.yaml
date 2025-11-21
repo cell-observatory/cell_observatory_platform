@@ -1,4 +1,4 @@
-_target_: models.baseline.Baseline
+_target_: cell_observatory_platform.models.baseline.Baseline
 input_fmt: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
 patch_shape: ${datasets.patch_shape}

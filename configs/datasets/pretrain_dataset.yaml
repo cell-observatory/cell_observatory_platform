@@ -30,13 +30,13 @@ split: 0.1
 return_dataloader: true
 distributed_sampler: true
 
-collate_fn: data.datasets.pretrain_dataset.simple_collate_pretrain_dataset
+collate_fn: cell_observatory_platform.data.datasets.pretrain_dataset.simple_collate_pretrain_dataset
 prefetch_factor: 2 # prefetch factor for the dataloader
 num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
 
 
 dataset:
-  _target_: data.datasets.pretrain_dataset.PretrainDataset
+  _target_: cell_observatory_platform.data.datasets.pretrain_dataset.PretrainDataset
   dtype: ${dataset_dtype}
   hypercubes_dataframe_path: ${datasets.hypercubes_dataframe_path}
   server_folder_path: ${datasets.server_folder_path}
@@ -51,5 +51,5 @@ dataset:
   time: true
 
   input_layout: 
-    _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
+    _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}

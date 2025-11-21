@@ -32,7 +32,7 @@ runs:
       datasets:
         masking:
           mask_generators:
-            - _target_: data.masking.mask_generator.MaskGenerator
+            - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
               layout: ${datasets.dataset.input_layout}
               input_shape: ${datasets.input_shape}
               temporal_patch_size: ${datasets.patch_shape.0}
@@ -50,7 +50,7 @@ runs:
               channels_to_mask: null
               time_downsample_pattern: null
               mask_mode: 
-                _target_: data.masking.mask_generator.MaskModes
+                _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
                 value: "random"
 
   - cfg: experiments/janelia/exp_10_22_2025_hparam_sweep_mae/input_size_128x128x128.yaml
@@ -68,7 +68,7 @@ runs:
       datasets:
         masking:
           mask_generators:
-            - _target_: data.masking.mask_generator.MaskGenerator
+            - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
               layout: ${datasets.dataset.input_layout}
               input_shape: ${datasets.input_shape}
               temporal_patch_size: ${datasets.patch_shape.0}
@@ -86,7 +86,7 @@ runs:
               channels_to_mask: null
               time_downsample_pattern: null
               mask_mode: 
-                _target_: data.masking.mask_generator.MaskModes
+                _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
                 value: "random"
 
   - cfg: experiments/janelia/exp_10_22_2025_hparam_sweep_mae/input_size_128x128x128.yaml
@@ -104,7 +104,7 @@ runs:
       datasets:
         masking:
           mask_generators:
-            - _target_: data.masking.mask_generator.MaskGenerator
+            - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
               layout: ${datasets.dataset.input_layout}
               input_shape: ${datasets.input_shape}
               temporal_patch_size: ${datasets.patch_shape.0}
@@ -122,7 +122,7 @@ runs:
               channels_to_mask: null
               time_downsample_pattern: null
               mask_mode: 
-                _target_: data.masking.mask_generator.MaskModes
+                _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
                 value: "random"
 
   - cfg: experiments/janelia/exp_10_22_2025_hparam_sweep_mae/input_size_128x128x128.yaml
@@ -140,14 +140,14 @@ runs:
       datasets:
         masking:
           mask_generators:
-            - _target_: data.masking.mask_generator.MaskGenerator
+            - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
               layout: ${datasets.dataset.input_layout}
               input_shape: ${datasets.input_shape}
               temporal_patch_size: ${datasets.patch_shape.0}
               lateral_patch_size: ${datasets.patch_shape.1}
               axial_patch_size: ${datasets.patch_shape.2}
               mask_mode: 
-                _target_: data.masking.mask_generator.MaskModes
+                _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
                 value: "blocked"
               lateral_mask_scale: 0.9
               axial_mask_scale: 0.9
@@ -169,14 +169,14 @@ runs:
       datasets:
         masking:
           mask_generators:
-            - _target_: data.masking.mask_generator.MaskGenerator
+            - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
               layout: ${datasets.dataset.input_layout}
               input_shape: ${datasets.input_shape}
               temporal_patch_size: ${datasets.patch_shape.0}
               lateral_patch_size: ${datasets.patch_shape.1}
               axial_patch_size: ${datasets.patch_shape.2}
               mask_mode: 
-                _target_: data.masking.mask_generator.MaskModes
+                _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
                 value: "blocked"
               lateral_mask_scale: 0.75
               axial_mask_scale: 0.75
@@ -198,14 +198,14 @@ runs:
       datasets:
         masking:
           mask_generators:
-            - _target_: data.masking.mask_generator.MaskGenerator
+            - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
               layout: ${datasets.dataset.input_layout}
               input_shape: ${datasets.input_shape}
               temporal_patch_size: ${datasets.patch_shape.0}
               lateral_patch_size: ${datasets.patch_shape.1}
               axial_patch_size: ${datasets.patch_shape.2}
               mask_mode:
-                _target_: data.masking.mask_generator.MaskModes
+                _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
                 value: "blocked"
               lateral_mask_scale: 0.65
               axial_mask_scale: 0.65
