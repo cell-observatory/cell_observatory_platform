@@ -1,32 +1,25 @@
+import logging
+import sys
 import time
 from abc import abstractmethod
-from sqlite3 import NotSupportedError
-
-import sys
-import logging
 from pathlib import Path
-from typing import Optional, Any, Literal, Sequence, Iterable, Dict
+from sqlite3 import NotSupportedError
+from typing import Any, Dict, Iterable, Literal, Optional, Sequence
 from warnings import filters
 
+import connectorx as cx
 import numpy as np
-
-import ujson
 import pandas as pd
 import polars as pl
-import connectorx as cx
+import ujson
 
+from cell_observatory_platform.data.io import create_channel_metadata_columns, load_hypercubes_dataframe
 
-from cell_observatory_platform.data.io import load_hypercubes_dataframe, create_channel_metadata_columns
-
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
-class ParentDatabase():
+class ParentDatabase:
     def __init__(
         self,
         input_shape: tuple,
@@ -38,17 +31,17 @@ class ParentDatabase():
         roi_list: Optional[Sequence[int]] = None,
         tile_list: Optional[Sequence[str]] = None,
         timepoint_list: Optional[Iterable[int]] = None,
-        dbname: Literal['staging', 'prod'] = 'prod',
+        dbname: Literal["staging", "prod"] = "prod",
         dotenv_path: Optional[Path] = Path(__file__).parent.parent.parent / ".env",
         verbose: bool = False,
         fetch_hypercubes_dataframe: bool = True,
         hypercubes_dataframe_path: Optional[Path] = None,
         use_cached_hypercubes_dataframe: Optional[bool] = False,
-        protocol: cx.Protocol | None = None,   # Literal["csv", "binary", "cursor", "simple", "text"]
+        protocol: cx.Protocol | None = None,  # Literal["csv", "binary", "cursor", "simple", "text"]
         max_partitions: Optional[int] = 10,
-        server_folder_path: Optional[Path|str] = None,
+        server_folder_path: Optional[Path | str] = None,
         occupancy_threshold: Optional[float] = None,
-        occupancy_threshold_filter_type: str = 'min_all',
+        occupancy_threshold_filter_type: str = "min_all",
         base_cube_size: Optional[int] = 128,
         valid_z_sizes: Optional[Sequence[int]] = [128],
         valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384],
@@ -87,8 +80,9 @@ class ParentDatabase():
         """
 
         if hypercubes_dataframe_path is None:
-            self.hypercubes_dataframe_path = Path(
-                __file__).parent.parent.parent / 'databases' / 'default_hypercubes_dataframe.csv'
+            self.hypercubes_dataframe_path = (
+                Path(__file__).parent.parent.parent / "databases" / "default_hypercubes_dataframe.csv"
+            )
         else:
             self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
 
@@ -115,10 +109,9 @@ class ParentDatabase():
         self.has_annotations = has_annotations
 
         self.num_timepoints, z_slices, y_slices, x_slices = self._get_slices_from_layout_order(
-            input_format=self.dataset_layout_order,
-            input_shape=self.input_shape
+            input_format=self.dataset_layout_order, input_shape=self.input_shape
         )
-        
+
         if z_slices not in valid_z_sizes:
             raise NotSupportedError(f"{z_slices=} is not supported yet, please chose from {valid_z_sizes}")
         else:
@@ -139,8 +132,15 @@ class ParentDatabase():
             if max_hypercubes is None:
                 self.max_hypercubes_128 = None
             else:
-                self.max_hypercubes_128 = max_hypercubes * (self.z_slices//base_cube_size) * (self.y_slices//base_cube_size) * (self.x_slices//base_cube_size)
-                print(f"Requesting {self.max_hypercubes_128 - max_hypercubes} extra hypercubes to get {max_hypercubes} hypercubes after aggregation")
+                self.max_hypercubes_128 = (
+                    max_hypercubes
+                    * (self.z_slices // base_cube_size)
+                    * (self.y_slices // base_cube_size)
+                    * (self.x_slices // base_cube_size)
+                )
+                print(
+                    f"Requesting {self.max_hypercubes_128 - max_hypercubes} extra hypercubes to get {max_hypercubes} hypercubes after aggregation"
+                )
         else:
             self.max_hypercubes = max_hypercubes
             self.max_hypercubes_128 = max_hypercubes
@@ -163,7 +163,7 @@ class ParentDatabase():
                     occupancy_threshold=self.occupancy_threshold,
                     occupancy_threshold_filter_type=self.occupancy_threshold_filter_type,
                     synthetic_only=self.synthetic_only,
-                    has_annotations=self.has_annotations
+                    has_annotations=self.has_annotations,
                 )
 
             else:
@@ -184,25 +184,27 @@ class ParentDatabase():
                 self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
 
             if self.server_folder_path is not None:
-                self.hypercubes_dataframe['server_folder'] = self.server_folder_path
+                self.hypercubes_dataframe["server_folder"] = self.server_folder_path
 
             if self.z_slices != base_cube_size or self.y_slices != base_cube_size or self.x_slices != base_cube_size:
                 print(f"Size of volume axes not equal to base cube size of {base_cube_size}, aggregating hypercubes...")
                 self.aggregate_hypercubes(z_slices=self.z_slices, y_slices=self.y_slices, x_slices=self.x_slices)
 
-            if any(self.hypercubes_dataframe['time_size'] != self.num_timepoints):
-                print(f"`time_sizes` for all rows in the dataframe should be {self.num_timepoints} found {self.hypercubes_dataframe['time_size'].unique()}")
-                print('Overriding values in the dataframe')
-                self.hypercubes_dataframe['time_size'] = self.num_timepoints
+            if any(self.hypercubes_dataframe["time_size"] != self.num_timepoints):
+                print(
+                    f"`time_sizes` for all rows in the dataframe should be {self.num_timepoints} found {self.hypercubes_dataframe['time_size'].unique()}"
+                )
+                print("Overriding values in the dataframe")
+                self.hypercubes_dataframe["time_size"] = self.num_timepoints
 
-            # NOTE: may be reset below in check_hypercube_sizes 
+            # NOTE: may be reset below in check_hypercube_sizes
             self.hypercubes_dataframe["z_size"] = self.z_slices
             self.hypercubes_dataframe["y_size"] = self.y_slices
             self.hypercubes_dataframe["x_size"] = self.x_slices
 
             print(f"Loading ROIs dataframe to check hypercube sizes...")
             # FIXME: assumes that all tiles per ROI share the same shape
-            #        which is true currently but unsafe, we should adjust logic 
+            #        which is true currently but unsafe, we should adjust logic
             #        to get tile shapes per tile
             self.rois_dataframe = self.get_rois_dataframe()
             print(f"Checking hypercube sizes against ROIs dataframe for {len(self.hypercubes_dataframe)} hypercubes...")
@@ -233,9 +235,7 @@ class ParentDatabase():
         return num_timepoints, z_slices, y_slices, x_slices
 
     def get_rois_dataframe(self) -> pd.DataFrame:
-        roi_csv = self.hypercubes_dataframe_path.with_name(
-            f"{self.hypercubes_dataframe_path.stem}_rois.csv"
-        )
+        roi_csv = self.hypercubes_dataframe_path.with_name(f"{self.hypercubes_dataframe_path.stem}_rois.csv")
         if (not self.use_cached_hypercubes_dataframe) or (not roi_csv.exists()):
             query = f"""
                 SELECT id,
@@ -245,15 +245,19 @@ class ParentDatabase():
                 FROM prepared
             """
             rois_df = self.execute_query(query)
-            rois_df = rois_df.rename(columns={"id": "prepared_id", 
-                                                "z_end": "tile_z_end",
-                                                "y_end": "tile_y_end",
-                                                "x_end": "tile_x_end",
-                                                "z_start": "tile_z_start",
-                                                "y_start": "tile_y_start",
-                                                "x_start": "tile_x_start",
-                                                "time_size": "tile_time_size",
-                                                "channel_size": "tile_channel_size"})
+            rois_df = rois_df.rename(
+                columns={
+                    "id": "prepared_id",
+                    "z_end": "tile_z_end",
+                    "y_end": "tile_y_end",
+                    "x_end": "tile_x_end",
+                    "z_start": "tile_z_start",
+                    "y_start": "tile_y_start",
+                    "x_start": "tile_x_start",
+                    "time_size": "tile_time_size",
+                    "channel_size": "tile_channel_size",
+                }
+            )
             rois_df.to_csv(roi_csv, index=True, header=True)
             print(f"Saved roi dataframe to {roi_csv}")
 
@@ -264,7 +268,7 @@ class ParentDatabase():
 
     @abstractmethod
     def _load_uri(self) -> str:
-        ''' To override '''
+        """To override"""
         pass
 
     def _choose_filter(
@@ -272,8 +276,8 @@ class ParentDatabase():
         rois: Optional[Sequence[int | str]] = None,
         tiles: Optional[Sequence[str]] = None,
         timepoints: Optional[Iterable[int]] = None,
-        table_name: str = 'ptv',
-        idx_col: str = 'prepared_id'
+        table_name: str = "ptv",
+        idx_col: str = "prepared_id",
     ) -> str:
 
         def _sql_in_list(values):
@@ -303,10 +307,7 @@ class ParentDatabase():
         return "WHERE " + " AND ".join(clauses)
 
     def _limit_filter(
-        self,
-        max_rois: Optional[int] = None,
-        max_tiles: Optional[int] = None,
-        table_name: str = 'ptv'
+        self, max_rois: Optional[int] = None, max_tiles: Optional[int] = None, table_name: str = "ptv"
     ) -> str:
         assert max_rois is not None or max_tiles is not None, "At least one of max_rois or max_tiles must be provided"
 
@@ -325,50 +326,54 @@ class ParentDatabase():
                 unique_rois, unique_tiles = self.get_random_tiles(max_tiles)
 
             if isinstance(unique_tiles, Sequence) and isinstance(unique_rois, Sequence):
-                filters = f"WHERE {table_name}.prepared_id IN {tuple(unique_rois)} " \
-                          f"AND {table_name}.tile_name IN {tuple(unique_tiles)}"
+                filters = (
+                    f"WHERE {table_name}.prepared_id IN {tuple(unique_rois)} "
+                    f"AND {table_name}.tile_name IN {tuple(unique_tiles)}"
+                )
             else:
-                filters = f"WHERE {table_name}.prepared_id IN ({unique_rois}) " \
-                          f"AND {table_name}.tile_name IN ({unique_tiles})"
+                filters = (
+                    f"WHERE {table_name}.prepared_id IN ({unique_rois}) "
+                    f"AND {table_name}.tile_name IN ({unique_tiles})"
+                )
         return filters
 
-    def _age_filter(
-            self,
-            hpfs: Sequence[int],
-            table_name: str = 'ptv'
-    ) -> str:
+    def _age_filter(self, hpfs: Sequence[int], table_name: str = "ptv") -> str:
         assert hpfs is not None, "hpfs must be provided"
 
         hpfs = tuple(hpfs) if len(hpfs) > 1 else f"({hpfs[0]})"
         return f"WHERE {table_name}.hpf IN {hpfs}"
- 
+
     def _exists_filter(self, table_name_shortcut) -> str:
-        if self.server_folder_path is None or str(self.server_folder_path).startswith('/clusterfs'):
+        if self.server_folder_path is None or str(self.server_folder_path).startswith("/clusterfs"):
             filters = f"WHERE {table_name_shortcut}.exists = TRUE"
-        elif str(self.server_folder_path).startswith('/groups'):
+        elif str(self.server_folder_path).startswith("/groups"):
             filters = f"WHERE {table_name_shortcut}.exists_prfs = TRUE"
-        elif str(self.server_folder_path).startswith('/aws') or str(self.server_folder_path).startswith('/workspace/CellObservatoryData'):
+        elif str(self.server_folder_path).startswith("/aws") or str(self.server_folder_path).startswith(
+            "/workspace/CellObservatoryData"
+        ):
             filters = f"WHERE {table_name_shortcut}.exists_aws = TRUE"
-        elif str(self.server_folder_path).startswith('/lustre'):
+        elif str(self.server_folder_path).startswith("/lustre"):
             filters = f"WHERE {table_name_shortcut}.exists_oak = TRUE"
         else:
             raise ValueError(f"Unknown server_folder_path: {self.server_folder_path}")
         return filters
-    
+
     def _synthetic_filter(self, table_name_shortcut) -> str:
         filters = f"WHERE {table_name_shortcut}.is_synthetic = TRUE"
         return filters
-       
-    def _has_annotations_filter(self, table_name_shortcut) -> str:      
-        filters = " AND EXISTS ( SELECT 1 " \
-                  f"FROM jsonb_each({table_name_shortcut}.pc_metadata_json::jsonb) AS e(k, v) " \
-                  "WHERE (v -> 'mask_bbox_dict') IS NOT NULL AND (v -> 'mask_bbox_dict')::jsonb <> '{}'::jsonb)"
+
+    def _has_annotations_filter(self, table_name_shortcut) -> str:
+        filters = (
+            " AND EXISTS ( SELECT 1 "
+            f"FROM jsonb_each({table_name_shortcut}.pc_metadata_json::jsonb) AS e(k, v) "
+            "WHERE (v -> 'mask_bbox_dict') IS NOT NULL AND (v -> 'mask_bbox_dict')::jsonb <> '{}'::jsonb)"
+        )
         return filters
-    
+
     def _filters_to_string(
         self,
         table_name: str,
-        table_name_shortcut: str = 'hc',
+        table_name_shortcut: str = "hc",
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
         hpf_list: Optional[Sequence[int]] = None,
@@ -380,34 +385,24 @@ class ParentDatabase():
     ) -> str:
 
         filters = self._exists_filter(table_name_shortcut)
-        
+
         if synthetic_only:
-            filters += self._synthetic_filter(table_name_shortcut).replace('WHERE', ' AND ')
-            
+            filters += self._synthetic_filter(table_name_shortcut).replace("WHERE", " AND ")
+
         if has_annotations:
             filters += self._has_annotations_filter(table_name_shortcut)
 
-        if roi_list is not None \
-        or tile_list is not None \
-        or timepoint_list is not None:
+        if roi_list is not None or tile_list is not None or timepoint_list is not None:
             filters += self._choose_filter(
-                rois=roi_list,
-                tiles=tile_list,
-                timepoints=timepoint_list,
-                table_name=table_name_shortcut
-            ).replace('WHERE', ' AND ')
-        elif max_rois is not None \
-        or max_tiles is not None:
+                rois=roi_list, tiles=tile_list, timepoints=timepoint_list, table_name=table_name_shortcut
+            ).replace("WHERE", " AND ")
+        elif max_rois is not None or max_tiles is not None:
             filters += self._limit_filter(
-                max_rois=max_rois,
-                max_tiles=max_tiles,
-                table_name=table_name_shortcut
-            ).replace('WHERE', ' AND ')
+                max_rois=max_rois, max_tiles=max_tiles, table_name=table_name_shortcut
+            ).replace("WHERE", " AND ")
 
         if hpf_list is not None:
-            filters += self._age_filter(
-                hpfs=hpf_list, table_name=table_name_shortcut
-            ).replace('WHERE', ' AND ')
+            filters += self._age_filter(hpfs=hpf_list, table_name=table_name_shortcut).replace("WHERE", " AND ")
 
         if self.verbose:
             print(f"Using filters: {filters}")
@@ -416,7 +411,7 @@ class ParentDatabase():
     def _query_t_128_128_128_2_hypercube_view(
         self,
         table_name: str,
-        table_name_shortcut: str = 'hc',
+        table_name_shortcut: str = "hc",
         num_timepoints: Optional[int] = 32,
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
@@ -430,32 +425,32 @@ class ParentDatabase():
         has_annotations: bool = False,
     ) -> list[str]:
         column_names = [
-            'first_pc_id',
-            'prepared_id',
-            'tile_name',
-            'x_start',
-            'y_start',
-            'z_start',
-            'time_start',
-            'channel_size',
-            'cube_size',
-            'time_size',
-            'hpf',
-            'server_folder',
-            'output_folder',
-            'pc_metadata_json',
-            'p_metadata_json',
-            'metadata_tile_json',
-            'json_excite_map_total',
-            'unique_targets',
-            'imaged_locations',
-            'date_crossed',
-            'occupancy_ratios_ch_0',
-            'occupancy_ratios_ch_1',
-            'exists',
-            'exists_prfs',
-            'exists_aws',
-            'is_synthetic'
+            "first_pc_id",
+            "prepared_id",
+            "tile_name",
+            "x_start",
+            "y_start",
+            "z_start",
+            "time_start",
+            "channel_size",
+            "cube_size",
+            "time_size",
+            "hpf",
+            "server_folder",
+            "output_folder",
+            "pc_metadata_json",
+            "p_metadata_json",
+            "metadata_tile_json",
+            "json_excite_map_total",
+            "unique_targets",
+            "imaged_locations",
+            "date_crossed",
+            "occupancy_ratios_ch_0",
+            "occupancy_ratios_ch_1",
+            "exists",
+            "exists_prfs",
+            "exists_aws",
+            "is_synthetic",
         ]
 
         filters = self._filters_to_string(
@@ -472,40 +467,41 @@ class ParentDatabase():
         )
 
         limit = f"LIMIT {max_hypercubes}" if max_hypercubes else ""
-        
-        return  [f"""
-                    SELECT
-                        {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
-                    FROM {table_name} {table_name_shortcut}
-                    {filters} 
-                    ORDER BY first_pc_id DESC
-                    {limit}
-                    SET statement_timeout = 0;
-                """]
+
+        return [
+            f"""
+                SELECT
+                    {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
+                FROM {table_name} {table_name_shortcut}
+                {filters} 
+                ORDER BY first_pc_id DESC
+                {limit}
+            """
+        ]
 
     def _create_t_128_128_128_2_hypercube_view(
-            self,
-            num_timepoints: Optional[int] = 1,
-            max_hypercubes: Optional[int] = None,
+        self,
+        num_timepoints: Optional[int] = 1,
+        max_hypercubes: Optional[int] = None,
     ) -> str:
         prepared_cubes_column_names = [
-            'prepared_id',
-            'tile_name',
-            'x_start',
-            'y_start',
-            'z_start',
+            "prepared_id",
+            "tile_name",
+            "x_start",
+            "y_start",
+            "z_start",
         ]
         prepared_tiles_view_column_names = [
-            'hpf',
-            'channel_size',
-            'cube_size',
-            'server_folder',
-            'output_folder',
-            'metadata_tile_json',
-            'json_excite_map_total',
-            'unique_targets',
-            'imaged_locations',
-            'date_crossed',
+            "hpf",
+            "channel_size",
+            "cube_size",
+            "server_folder",
+            "output_folder",
+            "metadata_tile_json",
+            "json_excite_map_total",
+            "unique_targets",
+            "imaged_locations",
+            "date_crossed",
         ]
 
         return f"""
@@ -550,14 +546,14 @@ class ParentDatabase():
             self.hypercubes_dataframe.to_csv(hypercubes_dataframe_path, index=True, header=True)
             print(f"Saved hypercubes dataframe to {hypercubes_dataframe_path}")
         else:
-            raise ValueError('Cannot save hypercubes dataframe `self.hypercubes_dataframe` is empty.')
+            raise ValueError("Cannot save hypercubes dataframe `self.hypercubes_dataframe` is empty.")
 
         configs = {}
         for key, value in self.__dict__.items():
-            if not key.startswith('_') and key != 'hypercubes_dataframe':
+            if not key.startswith("_") and key != "hypercubes_dataframe":
                 if isinstance(value, Path):
                     configs[key] = str(value)
-                elif hasattr(value, '__iter__') and not isinstance(value, (str, bytes)):
+                elif hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
                     try:
                         configs[key] = list(value) if value is not None else None
                     except TypeError:
@@ -569,23 +565,27 @@ class ParentDatabase():
                     except (TypeError, ValueError):
                         configs[key] = str(value)
 
-        with open(self.hypercubes_dataframe_path.with_suffix('.json'), 'w') as f:
+        with open(self.hypercubes_dataframe_path.with_suffix(".json"), "w") as f:
             ujson.dump(configs, f, indent=4, sort_keys=True, escape_forward_slashes=False)
         print(f"Saved hypercubes dataframe configs to {self.hypercubes_dataframe_path.with_suffix('.json')}")
 
-    def execute_query(self, query: str | list[str]) -> pd.DataFrame:   
-        for i in range(3): 
+    def execute_query(self, query: str | list[str]) -> pd.DataFrame:
+        for i in range(3):
             try:
                 # avoid the costly COUNT query for pandas by using arrow as an intermediate step
                 # https://sfu-db.github.io/connector-x/freq_questions.html
+                t0 = time.perf_counter()
                 result = cx.read_sql(
-                    conn=self._database_url,
+                    conn=self._database_url + "?options=-c%20statement_timeout%3D600000",  # set timeout to 10min
                     query=query,
                     protocol=self.protocol,
-                    return_type="arrow"
+                    return_type="arrow",
                 )
                 df = result.to_pandas(split_blocks=False, date_as_object=False)
+                t1 = time.perf_counter()
+                logger.info(f"Took {t1-t0:.2f} seconds to fetch dataframe with shape {df.shape}")
                 return df
+
             except Exception as e:
                 logger.warning(f"Attempt {i+1} failed with error: {e}. Retrying...")
         logger.error(f"Failed to execute query: {query}")
@@ -613,50 +613,46 @@ class ParentDatabase():
 
     def get_random_rois(self, num_rois: int = 1) -> list[int]:
         filter = self._exists_filter("prepared_tiles_view")
-        
+
         if self.hpf_list is not None:
-            filter += self._age_filter(
-                hpfs=self.hpf_list, table_name="prepared_tiles_view"
-            ).replace('WHERE', ' AND ')
+            filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view").replace("WHERE", " AND ")
         if self.tile_list is not None:
-            filter += self._choose_filter(
-                tiles=self.tile_list, table_name="prepared_tiles_view"
-            ).replace('WHERE', ' AND ')
+            filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view").replace(
+                "WHERE", " AND "
+            )
         if self.roi_list is not None:
-            filter += self._choose_filter(
-                rois=self.roi_list, table_name="prepared_tiles_view"
-            ).replace('WHERE', ' AND ')
+            filter += self._choose_filter(rois=self.roi_list, table_name="prepared_tiles_view").replace(
+                "WHERE", " AND "
+            )
 
         query = f"""
             -- Getting random ROIs
             SELECT DISTINCT prepared_id 
             FROM prepared_tiles_view {filter}
             LIMIT {num_rois}            
-        """ # ORDER BY random() could be slow on large tables
+        """  # ORDER BY random() could be slow on large tables
         return self.execute_query(query).values.squeeze().tolist()
 
     def get_random_tiles(self, num_tiles: int = 1) -> list[tuple[int, str]]:
         filter = self._exists_filter("prepared_tiles_view")
-        
+
         if self.hpf_list is not None:
-            filter += self._age_filter(
-                hpfs=self.hpf_list, table_name="prepared_tiles_view"
-            ).replace('WHERE', ' AND ')
+            filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view").replace("WHERE", " AND ")
         if self.tile_list is not None:
-            filter += self._choose_filter(
-                tiles=self.tile_list, table_name="prepared_tiles_view"
-            ).replace('WHERE', ' AND ')
+            filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view").replace(
+                "WHERE", " AND "
+            )
         if self.roi_list is not None:
-            filter += self._choose_filter(
-                rois=self.roi_list, table_name="prepared_tiles_view"
-            ).replace('WHERE', ' AND ')
+            filter += self._choose_filter(rois=self.roi_list, table_name="prepared_tiles_view").replace(
+                "WHERE", " AND "
+            )
 
         query = f"""
             -- Getting random tiles
             SELECT DISTINCT prepared_id, tile_name 
             FROM prepared_tiles_view {filter}
             LIMIT {num_tiles}
-        """ # ORDER BY random() could be slow on large tables
+        """  # ORDER BY random() could be slow on large tables
         return self.execute_query(query).values.squeeze().tolist()
 
     def check_view_exists(self, table_name: str) -> bool:
@@ -684,10 +680,10 @@ class ParentDatabase():
         hypercubes_dataframe_path: Optional[Path] = None,
         occupancy_threshold: Optional[float] = None,
         synthetic_only: bool = False,
-        has_annotations: bool = False
+        has_annotations: bool = False,
     ) -> pd.DataFrame:
 
-        table_name = f'prepared_{num_timepoints}_128_128_128_2_hypercube_view'
+        table_name = f"prepared_{num_timepoints}_128_128_128_2_hypercube_view"
         if self.check_view_exists(table_name):
 
             if self.verbose:
@@ -705,7 +701,7 @@ class ParentDatabase():
                 timepoint_list=timepoint_list,
                 occupancy_threshold=occupancy_threshold,
                 synthetic_only=synthetic_only,
-                has_annotations=has_annotations
+                has_annotations=has_annotations,
             )
         else:
 
@@ -713,8 +709,7 @@ class ParentDatabase():
                 print(f"Table: {table_name} not found in database: {self.dbname}. Creating a new view...")
 
             self.table_query = self._create_t_128_128_128_2_hypercube_view(
-                num_timepoints=num_timepoints,
-                max_hypercubes=max_hypercubes
+                num_timepoints=num_timepoints, max_hypercubes=max_hypercubes
             )
 
             self.last_query = self._query_t_128_128_128_2_hypercube_view(
@@ -729,23 +724,23 @@ class ParentDatabase():
                 timepoint_list=timepoint_list,
                 occupancy_threshold=occupancy_threshold,
                 synthetic_only=synthetic_only,
-                has_annotations=has_annotations
+                has_annotations=has_annotations,
             )
 
         if self.verbose:
             print(f"Executing query with protocol: {self.protocol}")
-            print('\n'.join(self.last_query) if isinstance(self.last_query, list) else self.last_query)
+            print("\n".join(self.last_query) if isinstance(self.last_query, list) else self.last_query)
 
         table = self.execute_query(self.last_query)
-        
+
         if "z_size" not in table.columns or "y_size" not in table.columns or "x_size" not in table.columns:
             table["z_size"] = self.z_slices
             table["y_size"] = self.y_slices
             table["x_size"] = self.x_slices
-        
-        if any(table['time_size'] != self.num_timepoints):
-            table['time_size'] = self.num_timepoints
-            
+
+        if any(table["time_size"] != self.num_timepoints):
+            table["time_size"] = self.num_timepoints
+
         if "has_annotations" not in table.columns:
             table["has_annotations"] = True if has_annotations else False
 
@@ -757,23 +752,22 @@ class ParentDatabase():
 
         return table
 
-
-    def update_data_locations(self, col='exists_aws', rows_filters=['2025/9%', '2025/10%']) -> pd.DataFrame:
+    def update_data_locations(self, col="exists_aws", rows_filters=["2025/9%", "2025/10%"]) -> pd.DataFrame:
         filters = " OR ".join([f"output_folder LIKE '{f}'" for f in rows_filters])
 
         query = f"""
             UPDATE prepared
             SET {col} = True
             WHERE {filters}
-        """ 
+        """
         self.execute_query(query)
-        
+
         query = f"""
             SELECT id, output_folder, {col}
             FROM prepared
             WHERE {filters}
-        """ 
-        
+        """
+
         table = self.execute_query(query)
         num_rows, num_cols = table.shape
         print(table)
@@ -793,14 +787,14 @@ class ParentDatabase():
         def _merge_metadata_list(values):
             if values is None:
                 return None
-            
-            if hasattr(values, 'to_list'):
+
+            if hasattr(values, "to_list"):
                 values = values.to_list()
             if not isinstance(values, (list, tuple)):
                 return None
             if len(values) == 0:
                 return None
-            
+
             merged = {}
             for entry in values:
                 if entry is None:
@@ -819,17 +813,17 @@ class ParentDatabase():
                     else:
                         merged[key] = val
             return merged if merged else None
-        
+
         def _merge_dict_list(values):
             if values is None:
                 return None
-            if hasattr(values, 'to_list'):
+            if hasattr(values, "to_list"):
                 values = values.to_list()
             if not isinstance(values, (list, tuple)):
                 return None
             if len(values) == 0:
                 return None
-            
+
             merged = {}
             for entry in values:
                 if entry is None:
@@ -841,43 +835,44 @@ class ParentDatabase():
                         continue
                 if not isinstance(entry, dict):
                     continue
-                
+
                 for cell_id, bbox in entry.items():
                     if cell_id not in merged:
                         merged[cell_id] = bbox
                     else:
                         existing_bbox = merged[cell_id]
+                        # TODO: need to fix offset for bboxes when aggregating hypercubes
                         merged[cell_id] = {
-                            'zmin': min(existing_bbox.get('zmin', float('inf')), bbox.get('zmin', float('inf'))),
-                            'ymin': min(existing_bbox.get('ymin', float('inf')), bbox.get('ymin', float('inf'))),
-                            'xmin': min(existing_bbox.get('xmin', float('inf')), bbox.get('xmin', float('inf'))),
-                            'zmax': max(existing_bbox.get('zmax', float('-inf')), bbox.get('zmax', float('-inf'))),
-                            'ymax': max(existing_bbox.get('ymax', float('-inf')), bbox.get('ymax', float('-inf'))),
-                            'xmax': max(existing_bbox.get('xmax', float('-inf')), bbox.get('xmax', float('-inf'))),
+                            "zmin": min(existing_bbox.get("zmin", float("inf")), bbox.get("zmin", float("inf"))),
+                            "ymin": min(existing_bbox.get("ymin", float("inf")), bbox.get("ymin", float("inf"))),
+                            "xmin": min(existing_bbox.get("xmin", float("inf")), bbox.get("xmin", float("inf"))),
+                            "zmax": max(existing_bbox.get("zmax", float("-inf")), bbox.get("zmax", float("-inf"))),
+                            "ymax": max(existing_bbox.get("ymax", float("-inf")), bbox.get("ymax", float("-inf"))),
+                            "xmax": max(existing_bbox.get("xmax", float("-inf")), bbox.get("xmax", float("-inf"))),
                         }
-            
+
             return merged if merged else None
-        
+
         def _merge_histogram_list(values):
             if values is None:
                 return None
-            if hasattr(values, 'to_list'):
+            if hasattr(values, "to_list"):
                 values = values.to_list()
             if not isinstance(values, (list, tuple)):
                 return None
             if len(values) == 0:
                 return None
-            
+
             non_none = [v for v in values if v is not None]
             if len(non_none) == 0:
                 return None
-            
+
             if all(isinstance(v, dict) for v in non_none):
                 merged = {}
                 all_keys = set()
                 for entry in non_none:
                     all_keys.update(entry.keys())
-                
+
                 for key in all_keys:
                     values_for_key = [entry.get(key) for entry in non_none if key in entry]
                     if values_for_key:
@@ -887,6 +882,7 @@ class ParentDatabase():
                 return non_none[0]
 
         if "pc_metadata_json" in df.columns:
+
             def _parse_json(s):
                 if s is None:
                     return None
@@ -896,7 +892,9 @@ class ParentDatabase():
                     return None
 
             df = df.with_columns(
-                pl.col("pc_metadata_json").map_elements(_parse_json, return_dtype=pl.Object).alias("_pc_metadata_parsed")
+                pl.col("pc_metadata_json")
+                .map_elements(_parse_json, return_dtype=pl.Object)
+                .alias("_pc_metadata_parsed")
             )
 
             parsed_list = df.select(pl.col("_pc_metadata_parsed")).to_series().to_list()
@@ -908,6 +906,7 @@ class ParentDatabase():
             _channel_ids = sorted(_channel_ids)
 
             for ch in _channel_ids:
+
                 def _get_ch(obj, ch_id=ch):
                     if not isinstance(obj, dict):
                         return None
@@ -918,12 +917,12 @@ class ParentDatabase():
                     .map_elements(_get_ch, return_dtype=pl.Object)
                     .alias(f"pc_metadata_json_ch_{ch}")
                 )
-                
+
                 def _get_histogram(ch_meta, ch_id=ch):
                     if not isinstance(ch_meta, dict):
                         return None
                     return ch_meta.get("histogram")
-                
+
                 def _get_mask_bbox_dict(ch_meta, ch_id=ch):
                     if not isinstance(ch_meta, dict):
                         return None
@@ -932,46 +931,48 @@ class ParentDatabase():
                         return None
                     if not isinstance(mask_bbox, dict):
                         return None
-                    
+
                     converted = {}
                     for cell_id, bbox in mask_bbox.items():
                         if isinstance(bbox, (list, tuple)) and len(bbox) == 6:
                             converted[cell_id] = {
-                                'zmin': bbox[0],
-                                'ymin': bbox[1],
-                                'xmin': bbox[2],
-                                'zmax': bbox[3],
-                                'ymax': bbox[4],
-                                'xmax': bbox[5],
+                                "zmin": bbox[0],
+                                "ymin": bbox[1],
+                                "xmin": bbox[2],
+                                "zmax": bbox[3],
+                                "ymax": bbox[4],
+                                "xmax": bbox[5],
                             }
                         else:
                             converted[cell_id] = bbox
                     return converted if converted else None
-                
-                df = df.with_columns([
-                    pl.col(f"pc_metadata_json_ch_{ch}")
-                    .map_elements(_get_histogram, return_dtype=pl.Object)
-                    .alias(f"histogram_ch_{ch}"),
-                    pl.col(f"pc_metadata_json_ch_{ch}")
-                    .map_elements(_get_mask_bbox_dict, return_dtype=pl.Object)
-                    .alias(f"mask_bbox_dict_ch_{ch}"),
-                ])
+
+                df = df.with_columns(
+                    [
+                        pl.col(f"pc_metadata_json_ch_{ch}")
+                        .map_elements(_get_histogram, return_dtype=pl.Object)
+                        .alias(f"histogram_ch_{ch}"),
+                        pl.col(f"pc_metadata_json_ch_{ch}")
+                        .map_elements(_get_mask_bbox_dict, return_dtype=pl.Object)
+                        .alias(f"mask_bbox_dict_ch_{ch}"),
+                    ]
+                )
         else:
             _channel_ids = []
             df = df.with_columns(pl.lit(None).alias("_pc_metadata_parsed"))
-              
+
         def _parse_string_col(expr: pl.Expr) -> pl.Expr:
             return (
                 expr.cast(pl.Utf8)
                 .str.strip_chars()
-                .str.replace_all(r'^[\[\{\(]\s*', '', literal=False)
-                .str.replace_all(r'\s*[\]\}\)]$', '', literal=False)
+                .str.replace_all(r"^[\[\{\(]\s*", "", literal=False)
+                .str.replace_all(r"\s*[\]\}\)]$", "", literal=False)
                 .str.replace_all("\n", " ", literal=True)
                 .str.replace_all('"', "", literal=True)
                 .str.replace_all("'", "", literal=True)
                 .str.replace_all(r"[,\s]+", " ", literal=False)
                 .str.strip_chars()
-                .str.extract_all(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?')
+                .str.extract_all(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
                 .list.eval(pl.element().cast(pl.Float64))
             )
 
@@ -990,19 +991,25 @@ class ParentDatabase():
 
         T0 = int(df.select(pl.col("occ0").list.len().max()).item())
         T1 = int(df.select(pl.col("occ1").list.len().max()).item())
-        
+
         occ0_mean_exprs = [pl.col("occ0").list.get(i).mean().alias(f"__occ0_{i}") for i in range(T0)]
         occ1_mean_exprs = [pl.col("occ1").list.get(i).mean().alias(f"__occ1_{i}") for i in range(T1)]
 
-        occ0_concat = pl.concat_list([pl.col(f"__occ0_{i}") for i in range(T0)]) if T0 > 0 else pl.lit([]).cast(pl.List(pl.Float64))
-        occ1_concat = pl.concat_list([pl.col(f"__occ1_{i}") for i in range(T1)]) if T1 > 0 else pl.lit([]).cast(pl.List(pl.Float64))
-        
+        occ0_concat = (
+            pl.concat_list([pl.col(f"__occ0_{i}") for i in range(T0)])
+            if T0 > 0
+            else pl.lit([]).cast(pl.List(pl.Float64))
+        )
+        occ1_concat = (
+            pl.concat_list([pl.col(f"__occ1_{i}") for i in range(T1)])
+            if T1 > 0
+            else pl.lit([]).cast(pl.List(pl.Float64))
+        )
+
         pc_meta_list_exprs = []
         pc_metadata_full_expr = None
         if "pc_metadata_json" in df.columns:
-            pc_meta_list_exprs.append(
-                pl.col("_pc_metadata_parsed").drop_nulls().implode().alias("__pc_metadata_full")
-            )
+            pc_meta_list_exprs.append(pl.col("_pc_metadata_parsed").drop_nulls().implode().alias("__pc_metadata_full"))
             pc_metadata_full_expr = (
                 pl.col("__pc_metadata_full")
                 .map_elements(_merge_metadata_list, return_dtype=pl.Object)
@@ -1021,12 +1028,12 @@ class ParentDatabase():
             .alias(f"pc_metadata_json_ch_{ch}")
             for ch in _channel_ids
         ]
-        
+
         histogram_list_exprs = []
         histogram_concat_exprs = []
         mask_bbox_dict_list_exprs = []
         mask_bbox_dict_concat_exprs = []
-        
+
         for ch in _channel_ids:
             histogram_list_exprs.append(
                 pl.col(f"histogram_ch_{ch}").drop_nulls().implode().alias(f"__histogram_list_ch_{ch}")
@@ -1037,7 +1044,7 @@ class ParentDatabase():
                 .map_elements(lambda d: ujson.dumps(d) if d is not None else None, return_dtype=pl.Utf8)
                 .alias(f"histogram_ch_{ch}")
             )
-            
+
             mask_bbox_dict_list_exprs.append(
                 pl.col(f"mask_bbox_dict_ch_{ch}").drop_nulls().implode().alias(f"__mask_bbox_dict_list_ch_{ch}")
             )
@@ -1050,32 +1057,34 @@ class ParentDatabase():
 
         out = (
             df.group_by(group_cols)
-            .agg([
-                pl.col("cube_size").first(),
-                pl.col("time_size").first(),
-                pl.col("channel_size").first(),
-                pl.col("first_pc_id").first(),
-                pl.col("hpf").first(),
-                pl.col("server_folder").first(),
-                pl.col("output_folder").first(),
-                pl.col("unique_targets").first(),
-                pl.col("imaged_locations").first(),
-                pl.col("date_crossed").first(),
-                pl.col("exists").max(),
-                pl.col("exists_prfs").max(),
-                pl.col("exists_aws").max(),
-                pl.col("p_metadata_json").sum(),
-                pl.col("pc_metadata_json").sum(),
-                pl.col("metadata_tile_json").sum(),
-                pl.col("is_synthetic").first(),
-                pl.col("has_annotations").first(),
-                *occ0_mean_exprs,
-                *occ1_mean_exprs,
-                *pc_meta_list_exprs,
-                *pc_meta_ch_list_exprs,
-                *histogram_list_exprs,
-                *mask_bbox_dict_list_exprs,
-            ])
+            .agg(
+                [
+                    pl.col("cube_size").first(),
+                    pl.col("time_size").first(),
+                    pl.col("channel_size").first(),
+                    pl.col("first_pc_id").first(),
+                    pl.col("hpf").first(),
+                    pl.col("server_folder").first(),
+                    pl.col("output_folder").first(),
+                    pl.col("unique_targets").first(),
+                    pl.col("imaged_locations").first(),
+                    pl.col("date_crossed").first(),
+                    pl.col("exists").max(),
+                    pl.col("exists_prfs").max(),
+                    pl.col("exists_aws").max(),
+                    pl.col("p_metadata_json").sum(),
+                    pl.col("pc_metadata_json").sum(),
+                    pl.col("metadata_tile_json").sum(),
+                    pl.col("is_synthetic").first(),
+                    pl.col("has_annotations").first(),
+                    *occ0_mean_exprs,
+                    *occ1_mean_exprs,
+                    *pc_meta_list_exprs,
+                    *pc_meta_ch_list_exprs,
+                    *histogram_list_exprs,
+                    *mask_bbox_dict_list_exprs,
+                ]
+            )
             .with_columns(
                 [occ0_concat.alias("occupancy_ratios_ch_0"), occ1_concat.alias("occupancy_ratios_ch_1")]
                 + ([pc_metadata_full_expr] if pc_metadata_full_expr is not None else [])
@@ -1083,34 +1092,32 @@ class ParentDatabase():
                 + histogram_concat_exprs
                 + mask_bbox_dict_concat_exprs
             )
-            .drop([
-                *(f"__occ0_{i}" for i in range(T0)),
-                *(f"__occ1_{i}" for i in range(T1)),
-                *([ "__pc_metadata_full" ] if "pc_metadata_json" in df.columns else []),
-                *(f"__pc_meta_list_ch_{ch}" for ch in _channel_ids),
-                *(f"__histogram_list_ch_{ch}" for ch in _channel_ids),
-                *(f"__mask_bbox_dict_list_ch_{ch}" for ch in _channel_ids),
-            ])
+            .drop(
+                [
+                    *(f"__occ0_{i}" for i in range(T0)),
+                    *(f"__occ1_{i}" for i in range(T1)),
+                    *(["__pc_metadata_full"] if "pc_metadata_json" in df.columns else []),
+                    *(f"__pc_meta_list_ch_{ch}" for ch in _channel_ids),
+                    *(f"__histogram_list_ch_{ch}" for ch in _channel_ids),
+                    *(f"__mask_bbox_dict_list_ch_{ch}" for ch in _channel_ids),
+                ]
+            )
         )
 
         pdf = out.to_pandas()
         return pdf
-    
+
     def aggregate_hypercubes(
-        self, 
+        self,
         z_slices: int = 128,
         y_slices: int = 128,
         x_slices: int = 128,
         group_cols: Iterable = ["time_start", "z_start", "y_start", "x_start", "prepared_id", "tile_name"],
-    ):                
+    ):
         logger.info("Aggregating hypercubes...")
-        t0 = time.perf_counter()        
+        t0 = time.perf_counter()
         self.hypercubes_dataframe = self._aggregate(
-            self.hypercubes_dataframe,
-            group_cols=group_cols,
-            z_slices=z_slices,
-            y_slices=y_slices,
-            x_slices=x_slices
+            self.hypercubes_dataframe, group_cols=group_cols, z_slices=z_slices, y_slices=y_slices, x_slices=x_slices
         )
         t1 = time.perf_counter()
         logger.info(f"Aggregated hypercubes in {t1 - t0:.2f} seconds.")
@@ -1123,11 +1130,23 @@ class ParentDatabase():
         join_keys: tuple[str, ...] = ("prepared_id",),
     ) -> pd.DataFrame:
         L = layout.upper()
-        work = df.merge(shape_df[list(join_keys) + [
-            "tile_z_end",   "tile_y_end",   "tile_x_end",
-            "tile_x_start", "tile_y_start", "tile_z_start",
-            "tile_time_size", "tile_channel_size"
-        ]], how="left", on=list(join_keys))
+        work = df.merge(
+            shape_df[
+                list(join_keys)
+                + [
+                    "tile_z_end",
+                    "tile_y_end",
+                    "tile_x_end",
+                    "tile_x_start",
+                    "tile_y_start",
+                    "tile_z_start",
+                    "tile_time_size",
+                    "tile_channel_size",
+                ]
+            ],
+            how="left",
+            on=list(join_keys),
+        )
 
         coord_map = {
             "T": {"start": "time_start", "size": "time_size"},
@@ -1141,9 +1160,22 @@ class ParentDatabase():
             return pd.to_numeric(s).fillna(0).astype("int64")
 
         for col in [
-            "time_start","z_start","z_size","y_start","y_size", "x_start","x_size","channel_size",
-            "tile_z_end","tile_y_end","tile_x_end","tile_x_start","tile_y_start","tile_z_start",
-            "tile_time_size","tile_channel_size"
+            "time_start",
+            "z_start",
+            "z_size",
+            "y_start",
+            "y_size",
+            "x_start",
+            "x_size",
+            "channel_size",
+            "tile_z_end",
+            "tile_y_end",
+            "tile_x_end",
+            "tile_x_start",
+            "tile_y_start",
+            "tile_z_start",
+            "tile_time_size",
+            "tile_channel_size",
         ]:
             work[col] = _as_int(work[col])
 
