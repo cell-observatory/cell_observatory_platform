@@ -836,19 +836,47 @@ class ParentDatabase:
                 if not isinstance(entry, dict):
                     continue
 
-                for cell_id, bbox in entry.items():
+                for i, (cell_id, bbox) in enumerate(entry.items()):
+
+                    """
+                    HOTFIX to aggregate into 128x256x256 (Z, Y, X)
+                    There are 4 hypercubes of 128x128x128 to be merged into one of 128x256x256
+                    arranged as:
+                        +-------+-------+
+                        |   0   |   1   |
+                        +-------+-------+
+                        |   2   |   3   |
+                        +-------+-------+
+                    TODO: generalize for arbitrary sizes
+                    """
+
                     if cell_id not in merged:
                         merged[cell_id] = bbox
+                        x_offset, y_offset = 0, 0  # no need to shift the first hypercube
                     else:
                         existing_bbox = merged[cell_id]
-                        # TODO: need to fix offset for bboxes when aggregating hypercubes
+
+                        if i == 1:  # second hypercube
+                            y_offset = 0
+                            x_offset = x_slices
+                        elif i == 2:  # third hypercube
+                            y_offset = y_slices
+                            x_offset = 0
+                        else:  # fourth hypercube
+                            y_offset = y_slices
+                            x_offset = x_slices
+
                         merged[cell_id] = {
                             "zmin": min(existing_bbox.get("zmin", float("inf")), bbox.get("zmin", float("inf"))),
-                            "ymin": min(existing_bbox.get("ymin", float("inf")), bbox.get("ymin", float("inf"))),
-                            "xmin": min(existing_bbox.get("xmin", float("inf")), bbox.get("xmin", float("inf"))),
+                            "ymin": min(existing_bbox.get("ymin", float("inf")), bbox.get("ymin", float("inf")))
+                            + y_offset,
+                            "xmin": min(existing_bbox.get("xmin", float("inf")), bbox.get("xmin", float("inf")))
+                            + x_offset,
                             "zmax": max(existing_bbox.get("zmax", float("-inf")), bbox.get("zmax", float("-inf"))),
-                            "ymax": max(existing_bbox.get("ymax", float("-inf")), bbox.get("ymax", float("-inf"))),
-                            "xmax": max(existing_bbox.get("xmax", float("-inf")), bbox.get("xmax", float("-inf"))),
+                            "ymax": max(existing_bbox.get("ymax", float("-inf")), bbox.get("ymax", float("-inf")))
+                            + y_offset,
+                            "xmax": max(existing_bbox.get("xmax", float("-inf")), bbox.get("xmax", float("-inf")))
+                            + x_offset,
                         }
 
             return merged if merged else None
