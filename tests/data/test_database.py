@@ -20,9 +20,9 @@ database_types = ["SupabaseDatabase"]  # List of database types to add to test m
 
 def get_database_class(database_type):
     if database_type == "TrinoDatabase":
-        return f"data.databases.trino_database.{database_type}"
+        return f"cell_observatory_platform.data.databases.trino_database.{database_type}"
     elif database_type == "SupabaseDatabase":
-        return f"data.databases.supabase_database.{database_type}"
+        return f"cell_observatory_platform.data.databases.supabase_database.{database_type}"
     else:
         raise ValueError(f"Invalid database type: {database_type}")
 

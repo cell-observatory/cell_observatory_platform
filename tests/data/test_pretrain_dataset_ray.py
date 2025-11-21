@@ -26,12 +26,12 @@ def _test_dataloader_ray_dist(config):
         data_tensor = data_sample["data_tensor"]
 
         assert isinstance(data_tensor, torch.Tensor), "data_tensor should be a Torch tensor"
-        assert data_tensor.ndim == expected_dims, (
-            f"Expected {expected_dims} dims (including batch), got {data_tensor.ndim}"
-        )
-        assert data_tensor.shape[1:] == tuple(config.datasets.input_shape), (
-            f"Expected input shape {config.datasets.input_shape}, got {data_tensor.shape[1:]}"
-        )
+        assert (
+            data_tensor.ndim == expected_dims
+        ), f"Expected {expected_dims} dims (including batch), got {data_tensor.ndim}"
+        assert data_tensor.shape[1:] == tuple(
+            config.datasets.input_shape
+        ), f"Expected input shape {config.datasets.input_shape}, got {data_tensor.shape[1:]}"
 
         if idx >= 2:
             break
@@ -53,7 +53,7 @@ def test_data_pipeline_ray_distributed(config):
         config.datasets.drop_last_policy = True
 
         config.datasets.collate_fn = {
-            "_target_": "data.datasets.pretrain_dataset_ray.CollatorActor",
+            "_target_": "cell_observatory_platform.data.datasets.pretrain_dataset_ray.CollatorActor",
             "dtype": "${dataset_dtype}",
             "buffer_dtype": "${storage_dtype}",
             "batch_size": "${clusters.batch_size_per_gpu}",
@@ -64,7 +64,7 @@ def test_data_pipeline_ray_distributed(config):
         }
 
         config.datasets.dataset = {
-            "_target_": "data.datasets.pretrain_dataset_ray.PretrainDatasourceRay",
+            "_target_": "cell_observatory_platform.data.datasets.pretrain_dataset_ray.PretrainDatasourceRay",
             "hypercubes_dataframe_path": "${datasets.hypercubes_dataframe_path}",
             "server_folder_path": "${datasets.server_folder_path}",
             "max_rois": "${datasets.max_rois}",
@@ -76,7 +76,7 @@ def test_data_pipeline_ray_distributed(config):
             "synthetic_only": "${datasets.synthetic_only}",
             "has_annotations": "${datasets.has_annotations}",
             "input_layout": {
-                "_target_": "data.data_shapes.MULTICHANNEL_HYPERCUBE",
+                "_target_": "cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE",
                 "value": "${dataset_layout_order}",
             },
         }

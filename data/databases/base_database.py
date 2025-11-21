@@ -857,14 +857,11 @@ class ParentDatabase:
                         existing_bbox = merged[cell_id]
 
                         if i == 1:  # second hypercube
-                            y_offset = 0
-                            x_offset = x_slices
+                            y_offset, x_offset = 0, x_slices
                         elif i == 2:  # third hypercube
-                            y_offset = y_slices
-                            x_offset = 0
+                            y_offset, x_offset = y_slices, 0
                         else:  # fourth hypercube
-                            y_offset = y_slices
-                            x_offset = x_slices
+                            y_offset, x_offset = y_slices, x_slices
 
                         merged[cell_id] = {
                             "zmin": min(existing_bbox.get("zmin", float("inf")), bbox.get("zmin", float("inf"))),
