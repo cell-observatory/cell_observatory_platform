@@ -954,17 +954,25 @@ def append_kwargs_to_model(cfg):
             cfg.models = cfg.models.get(cfg.network, None)
 
         if cfg.get("tasks", None) is not None:
-            cfg.models.task = cfg.tasks.task
 
-            input_shape= tuple(cfg.datasets.input_shape)
-            input_format = str(cfg.dataset_layout_order)
-            output_channels = {axis: shape for axis, shape in zip(input_format, input_shape)}
-            cfg.models.output_channels = output_channels["C"]
-            
-            if cfg.tasks.task == "channel_split":
-                input_shape = cfg.models.input_shape
+            if cfg.tasks.task in ["channel_split", "upsampling"]:
+                cfg.models.task = cfg.tasks.task
+
+                input_shape= tuple(cfg.datasets.input_shape)
+                input_format = str(cfg.dataset_layout_order)
+                output_channels = {axis: shape for axis, shape in zip(input_format, input_shape)}
+                cfg.models.output_channels = output_channels["C"]
+                
+                if cfg.tasks.task == "channel_split":
+                    input_shape = cfg.models.input_shape
+                    input_shape[-1] = cfg.tasks.input_channels
+                    cfg.models.input_shape = input_shape
+
+            if cfg.tasks.task == "instance_segmentation":
+                input_shape = cfg.models.backbone.input_shape
                 input_shape[-1] = cfg.tasks.input_channels
                 cfg.models.input_shape = input_shape
+                cfg.models.backbone.input_shape = input_shape
 
         if decoder is not None or decoder_args is not None:
             cfg.models.decoder = decoder
