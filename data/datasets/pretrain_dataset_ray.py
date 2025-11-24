@@ -480,7 +480,7 @@ def get_dataset_ray(
         'x_start', 'y_start', 'z_start', 'time_start',
         'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
         'server_folder', 'output_folder',
-        'tile_name', 'prepared_id'
+        'tile_name', 'prepared_id', 'pc_metadata_json'
     ]
 ):
     if cfg.datasets.channels_subset is not None:
