@@ -620,8 +620,14 @@ class ParentDatabase:
     def get_random_rois(self, num_rois: int = 1) -> list[int]:
         filter = self._exists_filter("prepared_tiles_view")
 
+        if self.synthetic_only:
+            filter += self._synthetic_filter("prepared_tiles_view").replace("WHERE", " AND ")
+        else:
+            filter += self._real_filter("prepared_tiles_view").replace("WHERE", " AND ")
+
         if self.hpf_list is not None:
             filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view").replace("WHERE", " AND ")
+
         if self.tile_list is not None:
             filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view").replace(
                 "WHERE", " AND "
@@ -642,8 +648,14 @@ class ParentDatabase:
     def get_random_tiles(self, num_tiles: int = 1) -> list[tuple[int, str]]:
         filter = self._exists_filter("prepared_tiles_view")
 
+        if self.synthetic_only:
+            filter += self._synthetic_filter("prepared_tiles_view").replace("WHERE", " AND ")
+        else:
+            filter += self._real_filter("prepared_tiles_view").replace("WHERE", " AND ")
+
         if self.hpf_list is not None:
             filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view").replace("WHERE", " AND ")
+
         if self.tile_list is not None:
             filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view").replace(
                 "WHERE", " AND "
