@@ -362,6 +362,10 @@ class ParentDatabase:
         filters = f"WHERE {table_name_shortcut}.is_synthetic = TRUE"
         return filters
 
+    def _real_filter(self, table_name_shortcut) -> str:
+        filters = f"WHERE {table_name_shortcut}.is_synthetic = FALSE"
+        return filters
+
     def _has_annotations_filter(self, table_name_shortcut) -> str:
         filters = (
             " AND EXISTS ( SELECT 1 "
@@ -388,6 +392,8 @@ class ParentDatabase:
 
         if synthetic_only:
             filters += self._synthetic_filter(table_name_shortcut).replace("WHERE", " AND ")
+        else:
+            filters += self._real_filter(table_name_shortcut).replace("WHERE", " AND ")
 
         if has_annotations:
             filters += self._has_annotations_filter(table_name_shortcut)

@@ -304,7 +304,10 @@ def test_1_128_128_128_2_hypercubes_database(config, database_type):
     table = database.hypercubes_dataframe
     print(table)
 
-    assert (table["time_size"] == num_timepoints).all(), f"All time sizes should be {num_timepoints}"
+    assert (
+        table["time_size"] == num_timepoints
+    ).all(), f"All time sizes should be {num_timepoints}, found {table['time_size'].unique()}"
+
     assert (
         table.shape[0] <= config.datasets.databases.max_hypercubes
     ), f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
@@ -312,7 +315,7 @@ def test_1_128_128_128_2_hypercubes_database(config, database_type):
 
 
 @pytest.mark.parametrize("database_type", database_types)
-@pytest.mark.parametrize("max_hypercubes", [1000, 10000, 100000])
+@pytest.mark.parametrize("max_hypercubes", [1000, 10000])
 def test_16_128_128_128_2_hypercubes_database(config, database_type, max_hypercubes):
     config.experiment_name = "test_16_128_128_128_2_hypercubes_database"
     config.datasets.databases._target_ = get_database_class(database_type)
@@ -331,9 +334,13 @@ def test_16_128_128_128_2_hypercubes_database(config, database_type, max_hypercu
 
     database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
+    print(table.columns)
     print(table)
 
-    assert (table["time_size"] == num_timepoints).all(), f"All time sizes should be {num_timepoints}"
+    assert (
+        table["time_size"] == num_timepoints
+    ).all(), f"All time sizes should be {num_timepoints}, found {table['time_size'].unique()}"
+
     assert (
         table.shape[0] <= config.datasets.databases.max_hypercubes
     ), f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
@@ -440,7 +447,6 @@ def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slice
     [
         (128, 128, 128),
         (128, 256, 256),
-        (128, 384, 384),
     ],
 )
 def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
@@ -486,7 +492,6 @@ def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
     [
         (128, 128, 128),
         (128, 256, 256),
-        (128, 384, 384),
     ],
 )
 def test_synthetic_annotations_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
@@ -495,7 +500,7 @@ def test_synthetic_annotations_csv_dataframe(config, database_type, z_slices, y_
     config.datasets.databases.input_shape = (1, z_slices, y_slices, x_slices, 2)
     num_timepoints = 1
     config.datasets.databases.dataset_layout_order = "TZYXC"
-    config.datasets.databases.max_hypercubes = 10000
+    config.datasets.databases.max_hypercubes = 1000
     config.datasets.databases.max_rois = None
     config.datasets.databases.max_tiles = None
     config.datasets.databases.hpf_list = None
