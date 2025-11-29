@@ -1,10 +1,14 @@
-from pyarrow import Table
 import pytest
-from hydra.utils import instantiate
-from omegaconf import OmegaConf
-from pprint import pprint
+import ujson
 from pathlib import Path
+from pprint import pprint
+
+import numpy as np
 import pandas as pd
+from pyarrow import Table
+
+from omegaconf import OmegaConf
+from hydra.utils import instantiate
 
 from tests.conftest import config
 
@@ -553,3 +557,183 @@ def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
     assert table['first_pc_id'].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
     assert (table['time_size'] == num_timepoints).all(), f"All time sizes should be {num_timepoints} found {table['time_size'].unique()}"
     assert table['occupancy_ratios_ch_0'].apply(len).unique()[0] == num_timepoints, "Should only have a single ratio for each timepoint"
+
+
+@pytest.mark.skip("Skipping test_aggregate_hypercubes_metadata.")
+@pytest.mark.parametrize("database_type", database_types)
+def test_aggregate_hypercubes_metadata(config, database_type):
+    config.experiment_name = "test_aggregate_hypercubes_metadata"
+    config.datasets.databases._target_ = get_database_class(database_type)
+
+    config.datasets.databases.input_shape = [128, 384, 1024, 2]
+    config.datasets.databases.dataset_layout_order = "ZYXC"
+
+    config.datasets.databases.max_hypercubes = None
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
+
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = True
+    config.datasets.databases.with_hypercubes_dataframe = True
+    config.datasets.databases.has_annotations = True
+    config.datasets.databases.synthetic_only = True
+
+    db = instantiate(config.datasets.databases)
+    df = db.hypercubes_dataframe
+    assert not df.empty, "No hypercubes returned from DB."
+
+    important_cols = [
+        "prepared_id", "tile_name",
+        "z_start", "y_start", "x_start",
+        "z_size", "y_size", "x_size",
+        "tile_z_end", "tile_y_end", "tile_x_end",
+        "tile_x_start", "tile_y_start", "tile_z_start",
+        "tile_time_size", "tile_channel_size",
+    ]
+    important_cols = [c for c in important_cols if c in df.columns]
+    example_row = df[important_cols].head(1)
+
+    print(f"Aggregated Dataframe: {df}")
+    print(f"Columns: {df.columns.tolist()}")
+    print("\n=== Example Aggregated Row (first row) ===")
+    print(example_row.to_string(index=False))
+
+    bbox_cols = [c for c in df.columns if c.startswith("mask_bbox_dict_ch_")]
+    if not bbox_cols:
+        pytest.skip("No mask_bbox_dict_ch_* columns present in aggregated dataframe.")
+
+    col = None
+    for candidate in bbox_cols:
+        if df[candidate].notna().any():
+            col = candidate
+            break
+
+    if col is None:
+        pytest.skip("All mask_bbox_dict_ch_* columns are entirely null.")
+
+    df_nonnull = df[df[col].notna()]
+
+    volumes = []
+    frac_volumes = []
+    for _, row in df_nonnull.iterrows():
+        val = row[col]
+        if isinstance(val, str):
+            try:
+                boxes_dict = ujson.loads(val)
+            except Exception:
+                continue
+        elif isinstance(val, dict):
+            boxes_dict = val
+        else:
+            continue
+
+        if not boxes_dict:
+            continue
+
+        z_size = int(row["z_size"])
+        y_size = int(row["y_size"])
+        x_size = int(row["x_size"])
+        full_volume = z_size * y_size * x_size if (z_size and y_size and x_size) else None
+
+        for cell_id, box in boxes_dict.items():
+            if isinstance(box, dict):
+                zmin = box.get("zmin")
+                ymin = box.get("ymin")
+                xmin = box.get("xmin")
+                zmax = box.get("zmax")
+                ymax = box.get("ymax")
+                xmax = box.get("xmax")
+            elif isinstance(box, (list, tuple)) and len(box) == 6:
+                zmin, ymin, xmin, zmax, ymax, xmax = box
+            else:
+                continue
+
+            if None in (zmin, ymin, xmin, zmax, ymax, xmax):
+                continue
+
+            dz = zmax - zmin
+            dy = ymax - ymin
+            dx = xmax - xmin
+            volume = dz * dy * dx
+
+            if volume <= 0:
+                continue
+
+            volumes.append(volume)
+            if full_volume and full_volume > 0:
+                frac_volumes.append(volume / full_volume)
+
+    assert len(volumes) > 0, (
+        f"Column {col} was non-null but no valid bbox entries were found after parsing."
+    )
+
+    volumes_arr = np.asarray(volumes, dtype=np.float64)
+    percentiles = [0, 25, 50, 75, 90, 95, 99, 100]
+    vol_pct = np.percentile(volumes_arr, percentiles)
+
+    print("\n=== BBox volume distribution (voxels) ===")
+    print(f"num boxes: {len(volumes)}")
+    for p, v in zip(percentiles, vol_pct):
+        print(f"{p:3d}th percentile: {v:.2f}")
+
+    side_lengths = np.cbrt(volumes_arr)
+    side_pct = np.percentile(side_lengths, percentiles)
+
+    print("\n=== Approx. side-length distribution (cubic root of volume) ===")
+    for p, v in zip(percentiles, side_pct):
+        print(f"{p:3d}th percentile: {v:.2f} voxels")
+
+    if frac_volumes:
+        frac_arr = np.asarray(frac_volumes, dtype=np.float64)
+        frac_pct = np.percentile(frac_arr, percentiles)
+        print("\n=== BBox volume distribution (fraction of cube) ===")
+        for p, v in zip(percentiles, frac_pct):
+            print(f"{p:3d}th percentile: {v:.4f}")
+
+
+@pytest.mark.skip("Skipping test_tiles_dataframe.")
+@pytest.mark.parametrize("database_type", database_types)
+def test_tiles_dataframe(config, database_type):
+    config.experiment_name = "test_tiles_dataframe"
+    config.datasets.databases._target_ = get_database_class(database_type)
+
+    config.datasets.databases.input_shape = [128, 384, 1024, 2]
+    config.datasets.databases.dataset_layout_order = "ZYXC"
+
+    config.datasets.databases.max_hypercubes = None
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
+
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = True
+    config.datasets.databases.with_hypercubes_dataframe = True
+    config.datasets.databases.has_annotations = False
+    config.datasets.databases.synthetic_only = True
+
+    db = instantiate(config.datasets.databases)
+    df = db.hypercubes_dataframe
+
+    assert not df.empty, "No tiles returned from DB on tile path."
+
+    # assert (df["time_size"] == 1).all(), "Tile dataframe should have time_size == 1 after expansion."
+    assert (df["z_start"] == 0).all()
+    assert (df["y_start"] == 0).all()
+    assert (df["x_start"] == 0).all()
+
+    important_cols = [
+        "prepared_id", "tile_name",
+        "z_start", "y_start", "x_start",
+        "z_size", "y_size", "x_size",
+        "tile_z_end", "tile_y_end", "tile_x_end",
+        "tile_x_start", "tile_y_start", "tile_z_start",
+        "tile_time_size", "tile_channel_size",
+    ]
+    important_cols = [c for c in important_cols if c in df.columns]
+    example_row = df[important_cols].head(1)
+
+    print(f"Aggregated Dataframe: {df}")
+    print(f"Columns: {df.columns.tolist()}")
+    print("\n=== Example Aggregated Row (first row) ===")
+    print(example_row.to_string(index=False))
