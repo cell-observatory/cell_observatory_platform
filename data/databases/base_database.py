@@ -1,19 +1,23 @@
-import logging
 import sys
 import time
-from abc import abstractmethod
+import logging
 from pathlib import Path
-from sqlite3 import NotSupportedError
-from typing import Any, Dict, Iterable, Literal, Optional, Sequence
 from warnings import filters
+from abc import abstractmethod
+from typing import Any, Dict, Iterable, Literal, Optional, Sequence
 
+import ujson
 import connectorx as cx
+from sqlite3 import NotSupportedError
+
 import numpy as np
 import pandas as pd
 import polars as pl
-import ujson
 
-from cell_observatory_platform.data.io import create_channel_metadata_columns, load_hypercubes_dataframe
+from cell_observatory_platform.data.io import (
+    load_hypercubes_dataframe,
+    load_tiles_dataframe,
+)
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -48,6 +52,8 @@ class ParentDatabase:
         valid_x_sizes: Optional[Sequence[int]] = [128, 256, 384, 512, 640, 896, 1024],
         synthetic_only: bool = False,
         has_annotations: bool = False,
+        with_hypercubes_dataframe: bool = True,
+        mask_channel: Optional[int] = None,
     ):
         """
         A class for accessing database and retrieving hypercubes.
@@ -77,7 +83,10 @@ class ParentDatabase:
             occupancy_threshold: to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
             synthetic_only: a toggle to only query synthetic hypercubes
             has_annotations: a toggle to only query hypercubes with annotations
+            with_hypercubes_dataframe: whether to use hypercubes dataframe or tiles dataframe
+            mask_channel: index of the mask channel in the data (if any)
         """
+        self.verbose = verbose
 
         if hypercubes_dataframe_path is None:
             self.hypercubes_dataframe_path = (
@@ -90,57 +99,75 @@ class ParentDatabase:
 
         self.dbname = dbname
         self.dotenv_path = dotenv_path
+
         self.max_rois = max_rois
         self.max_tiles = max_tiles
+        
         self.hpf_list = hpf_list
         self.roi_list = roi_list
         self.tile_list = tile_list
+        
         self.timepoint_list = timepoint_list
-        self.verbose = verbose
+        
         self.fetch_hypercubes_dataframe = fetch_hypercubes_dataframe
         self.use_cached_hypercubes_dataframe = use_cached_hypercubes_dataframe
+        
         self.protocol = protocol
         self.max_partitions = max_partitions
+        
         self.server_folder_path = server_folder_path
+        
         self.occupancy_threshold = occupancy_threshold
         self.occupancy_threshold_filter_type = occupancy_threshold_filter_type
-        self.dataset_layout_order = dataset_layout_order
+        
+        self.mask_channel = mask_channel
         self.synthetic_only = synthetic_only
         self.has_annotations = has_annotations
+        self.dataset_layout_order = dataset_layout_order
 
+        self.with_hypercubes_dataframe = with_hypercubes_dataframe
+    
+        self.base_cube_size = base_cube_size
         self.num_timepoints, z_slices, y_slices, x_slices = self._get_slices_from_layout_order(
             input_format=self.dataset_layout_order, input_shape=self.input_shape
         )
 
-        if z_slices not in valid_z_sizes:
-            raise NotSupportedError(f"{z_slices=} is not supported yet, please chose from {valid_z_sizes}")
-        else:
-            self.z_slices = z_slices
-
-        if y_slices not in valid_y_sizes:
-            raise NotSupportedError(f"{y_slices=} is not supported yet, please chose from {valid_y_sizes}")
-        else:
-            self.y_slices = y_slices
-
-        if x_slices not in valid_x_sizes:
-            raise NotSupportedError(f"{x_slices=} is not supported yet, please chose from {valid_x_sizes}")
-        else:
-            self.x_slices = x_slices
-
-        if self.z_slices != base_cube_size or self.y_slices != base_cube_size or self.x_slices != base_cube_size:
-            self.max_hypercubes = max_hypercubes
-            if max_hypercubes is None:
-                self.max_hypercubes_128 = None
+        if self.with_hypercubes_dataframe:
+            if z_slices not in valid_z_sizes:
+                raise NotSupportedError(f"{z_slices=} is not supported yet, please chose from {valid_z_sizes}")
             else:
-                self.max_hypercubes_128 = (
-                    max_hypercubes
-                    * (self.z_slices // base_cube_size)
-                    * (self.y_slices // base_cube_size)
-                    * (self.x_slices // base_cube_size)
-                )
-                print(
-                    f"Requesting {self.max_hypercubes_128 - max_hypercubes} extra hypercubes to get {max_hypercubes} hypercubes after aggregation"
-                )
+                self.z_slices = z_slices
+
+            if y_slices not in valid_y_sizes:
+                raise NotSupportedError(f"{y_slices=} is not supported yet, please chose from {valid_y_sizes}")
+            else:
+                self.y_slices = y_slices
+
+            if x_slices not in valid_x_sizes:
+                raise NotSupportedError(f"{x_slices=} is not supported yet, please chose from {valid_x_sizes}")
+            else:
+                self.x_slices = x_slices
+
+            if self.z_slices != self.base_cube_size or self.y_slices != self.base_cube_size \
+                or self.x_slices != self.base_cube_size:
+                self.max_hypercubes = max_hypercubes
+                if max_hypercubes is None:
+                    self.max_hypercubes_128 = None
+                else:
+                    self.max_hypercubes_128 = (
+                        max_hypercubes
+                        * (self.z_slices // self.base_cube_size)
+                        * (self.y_slices // self.base_cube_size)
+                        * (self.x_slices // self.base_cube_size)
+                    )
+                    print(
+                        f"Requesting {self.max_hypercubes_128 - max_hypercubes} extra hypercubes \
+                            to get {max_hypercubes} hypercubes after aggregation"
+                    )
+            else:
+                self.max_hypercubes = max_hypercubes
+                self.max_hypercubes_128 = max_hypercubes
+        
         else:
             self.max_hypercubes = max_hypercubes
             self.max_hypercubes_128 = max_hypercubes
@@ -148,76 +175,251 @@ class ParentDatabase:
         self._database_url = self._load_uri()
 
         if self.fetch_hypercubes_dataframe:
-            if self.use_cached_hypercubes_dataframe:
-                # we assume that hypercubes_dataframe_path has a valid csv
-                self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
-                    hypercubes_dataframe_path=self.hypercubes_dataframe_path,
-                    server_folder_path=server_folder_path,
-                    max_rois=self.max_rois,
-                    max_tiles=self.max_tiles,
-                    max_hypercubes=self.max_hypercubes_128,
-                    hpf_list=self.hpf_list,
-                    roi_list=self.roi_list,
-                    tile_list=self.tile_list,
-                    timepoint_list=self.timepoint_list,
-                    occupancy_threshold=self.occupancy_threshold,
-                    occupancy_threshold_filter_type=self.occupancy_threshold_filter_type,
-                    synthetic_only=self.synthetic_only,
-                    has_annotations=self.has_annotations,
-                )
-
-            else:
-                self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
-                    num_timepoints=self.num_timepoints,
-                    max_rois=self.max_rois,
-                    max_tiles=self.max_tiles,
-                    max_hypercubes=self.max_hypercubes_128,
-                    hpf_list=self.hpf_list,
-                    roi_list=self.roi_list,
-                    tile_list=self.tile_list,
-                    timepoint_list=self.timepoint_list,
-                    occupancy_threshold=self.occupancy_threshold,
-                    synthetic_only=self.synthetic_only,
-                    has_annotations=self.has_annotations,
-                )
-
-                self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
-
-            if self.server_folder_path is not None:
-                self.hypercubes_dataframe["server_folder"] = self.server_folder_path
-
-            if self.z_slices != base_cube_size or self.y_slices != base_cube_size or self.x_slices != base_cube_size:
-                print(f"Size of volume axes not equal to base cube size of {base_cube_size}, aggregating hypercubes...")
-                self.aggregate_hypercubes(z_slices=self.z_slices, y_slices=self.y_slices, x_slices=self.x_slices)
-
-            if any(self.hypercubes_dataframe["time_size"] != self.num_timepoints):
-                print(
-                    f"`time_sizes` for all rows in the dataframe should be {self.num_timepoints} found {self.hypercubes_dataframe['time_size'].unique()}"
-                )
-                print("Overriding values in the dataframe")
-                self.hypercubes_dataframe["time_size"] = self.num_timepoints
-
-            # NOTE: may be reset below in check_hypercube_sizes
-            self.hypercubes_dataframe["z_size"] = self.z_slices
-            self.hypercubes_dataframe["y_size"] = self.y_slices
-            self.hypercubes_dataframe["x_size"] = self.x_slices
-
-            print(f"Loading ROIs dataframe to check hypercube sizes...")
-            # FIXME: assumes that all tiles per ROI share the same shape
-            #        which is true currently but unsafe, we should adjust logic
-            #        to get tile shapes per tile
-            self.rois_dataframe = self.get_rois_dataframe()
-            print(f"Checking hypercube sizes against ROIs dataframe for {len(self.hypercubes_dataframe)} hypercubes...")
-            self.hypercubes_dataframe = self.check_hypercube_sizes(
-                df=self.hypercubes_dataframe,
-                shape_df=self.rois_dataframe,
-                layout=self.dataset_layout_order,
-            )
-            self.hypercubes_dataframe = self.hypercubes_dataframe.head(self.max_hypercubes)
-            print(f"Final length of hypercubes dataframe: {len(self.hypercubes_dataframe)}")
-
+            self.hypercubes_dataframe = self._fetch_samples_dataframe()
         else:
             self.hypercubes_dataframe = None
+
+    def _fetch_samples_dataframe(self) -> pd.DataFrame:
+        if self.with_hypercubes_dataframe:
+            self.hypercubes_dataframe = self._fetch_hypercubes_dataframe()
+        else:
+            self.hypercubes_dataframe = self._fetch_tiles_dataframe()
+        return self.hypercubes_dataframe
+    
+    def _fetch_hypercubes_dataframe(self) -> pd.DataFrame:
+        if self.use_cached_hypercubes_dataframe:
+            # we assume that hypercubes_dataframe_path has a valid csv
+            self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
+                hypercubes_dataframe_path=self.hypercubes_dataframe_path,
+                server_folder_path=self.server_folder_path,
+                max_rois=self.max_rois,
+                max_tiles=self.max_tiles,
+                max_hypercubes=self.max_hypercubes_128,
+                hpf_list=self.hpf_list,
+                roi_list=self.roi_list,
+                tile_list=self.tile_list,
+                timepoint_list=self.timepoint_list,
+                occupancy_threshold=self.occupancy_threshold,
+                occupancy_threshold_filter_type=self.occupancy_threshold_filter_type,
+                synthetic_only=self.synthetic_only,
+                has_annotations=self.has_annotations,
+            )
+
+        else:
+            self.hypercubes_dataframe = self.get_t_128_128_128_2_hypercubes(
+                num_timepoints=self.num_timepoints,
+                max_rois=self.max_rois,
+                max_tiles=self.max_tiles,
+                max_hypercubes=self.max_hypercubes_128,
+                hpf_list=self.hpf_list,
+                roi_list=self.roi_list,
+                tile_list=self.tile_list,
+                timepoint_list=self.timepoint_list,
+                occupancy_threshold=self.occupancy_threshold,
+                synthetic_only=self.synthetic_only,
+                has_annotations=self.has_annotations,
+            )
+
+            self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
+
+        if self.server_folder_path is not None:
+            self.hypercubes_dataframe["server_folder"] = self.server_folder_path
+
+        if self.z_slices != self.base_cube_size or self.y_slices != self.base_cube_size \
+            or self.x_slices != self.base_cube_size:
+            print(f"Size of volume axes not equal to base cube size of {self.base_cube_size}, aggregating hypercubes...")
+            self.aggregate_hypercubes(z_slices=self.z_slices, y_slices=self.y_slices, x_slices=self.x_slices)
+
+        if any(self.hypercubes_dataframe["time_size"] != self.num_timepoints):
+            print(
+                f"`time_sizes` for all rows in the dataframe should be {self.num_timepoints} \
+                    found {self.hypercubes_dataframe['time_size'].unique()}"
+            )
+            print("Overriding values in the dataframe")
+            self.hypercubes_dataframe["time_size"] = self.num_timepoints
+
+        # NOTE: may be reset below in check_hypercube_sizes
+        self.hypercubes_dataframe["z_size"] = self.z_slices
+        self.hypercubes_dataframe["y_size"] = self.y_slices
+        self.hypercubes_dataframe["x_size"] = self.x_slices
+
+        print(f"Loading ROIs dataframe to check hypercube sizes...")
+        # FIXME: assumes that all tiles per ROI share the same shape
+        #        which is true currently but unsafe, we should adjust logic
+        #        to get tile shapes per tile
+        self.rois_dataframe = self.get_rois_dataframe()
+        print(f"Checking hypercube sizes against ROIs dataframe for {len(self.hypercubes_dataframe)} hypercubes...")
+        self.hypercubes_dataframe = self.check_hypercube_sizes(
+            df=self.hypercubes_dataframe,
+            shape_df=self.rois_dataframe,
+            layout=self.dataset_layout_order,
+        )
+        self.hypercubes_dataframe = self.hypercubes_dataframe.head(self.max_hypercubes)
+        print(f"Final length of hypercubes dataframe: {len(self.hypercubes_dataframe)}")
+
+        return self.hypercubes_dataframe
+
+    def _fetch_tiles_dataframe(self) -> pd.DataFrame:
+        """
+        Fetch a dataframe where each row is a full tile (not a hypercube), either
+        from a cached CSV or directly from the database.
+        """
+        if self.use_cached_hypercubes_dataframe:
+            (
+                self.hypercubes_dataframe,
+                self.hypercubes_dataframe_config,
+            ) = load_tiles_dataframe(
+                hypercubes_dataframe_path=self.hypercubes_dataframe_path,
+                server_folder_path=self.server_folder_path,
+                max_rois=self.max_rois,
+                max_tiles=self.max_tiles,
+                hpf_list=self.hpf_list,
+                roi_list=self.roi_list,
+                tile_list=self.tile_list,
+                timepoint_list=self.timepoint_list,
+                synthetic_only=self.synthetic_only,
+                has_annotations=self.has_annotations,
+            )
+        else:
+            self.hypercubes_dataframe = self.get_tiles(
+                max_rois=self.max_rois,
+                max_tiles=self.max_tiles,
+                hpf_list=self.hpf_list,
+                roi_list=self.roi_list,
+                tile_list=self.tile_list,
+                timepoint_list=self.timepoint_list,
+                synthetic_only=self.synthetic_only,
+                has_annotations=self.has_annotations,
+            )
+            self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
+
+        if self.server_folder_path is not None:
+            self.hypercubes_dataframe["server_folder"] = self.server_folder_path
+
+        # handle time granularity: expand time_size into per-timepoint rows
+        self.hypercubes_dataframe = self._expand_tiles_timepoints_df(self.hypercubes_dataframe)
+
+        if self.timepoint_list is not None and "time_start" in self.hypercubes_dataframe.columns:
+            self.hypercubes_dataframe = self.hypercubes_dataframe[
+                self.hypercubes_dataframe["time_start"].isin(self.timepoint_list)
+            ].reset_index(drop=True)
+
+        print(f"Final length of tiles dataframe: {len(self.hypercubes_dataframe)}")
+        return self.hypercubes_dataframe
+
+    def get_tiles(
+        self,
+        max_rois: Optional[int] = None,
+        max_tiles: Optional[int] = None,
+        hpf_list: Optional[Sequence[int]] = None,
+        roi_list: Optional[Sequence[int]] = None,
+        tile_list: Optional[Sequence[str]] = None,
+        timepoint_list: Optional[Iterable[int]] = None,
+        synthetic_only: bool = False,
+        has_annotations: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Fetch one row per (prepared_id, tile_name) from the DB and add
+        with ROI-level metadata.
+        """
+        filters = self._filters_to_string(
+            table_name="prepared_tiles_view",
+            table_name_shortcut="ptv",
+            max_rois=max_rois,
+            max_tiles=max_tiles,
+            hpf_list=hpf_list,
+            roi_list=roi_list,
+            tile_list=tile_list,
+            timepoint_list=None,  # timepoints handled after expansion
+            synthetic_only=synthetic_only,
+            has_annotations=has_annotations,
+        )
+
+        base_cols = [
+            "prepared_id",
+            "tile_name",
+            "server_folder",
+            "output_folder",
+            "hpf",
+            # NOTE: not yet supported in database
+            # "pc_metadata_json",
+            "exists",
+            "exists_prfs",
+            "exists_aws",
+            "is_synthetic",
+        ]
+
+        query = f"""
+            SELECT
+                {', '.join(f'ptv.{c}' for c in base_cols)}
+            FROM prepared_tiles_view ptv
+            {filters}
+        """
+
+        table = self.execute_query(query)
+
+        # pull ROI-level metadata
+        rois_df = self.get_rois_dataframe()
+        table = table.merge(
+            rois_df[
+                [
+                    "prepared_id",
+                    "tile_z_start",
+                    "tile_y_start",
+                    "tile_x_start",
+                    "tile_z_end",
+                    "tile_y_end",
+                    "tile_x_end",
+                    "tile_time_size",
+                    "tile_channel_size",
+                ]
+            ],
+            on="prepared_id",
+            how="left",
+        )
+
+        table["z_start"], table["y_start"], table["x_start"], table["time_start"] = 0, 0, 0, 0
+
+        table["z_size"] = table["tile_z_end"] - table["tile_z_start"]
+        table["y_size"] = table["tile_y_end"] - table["tile_y_start"]
+        table["x_size"] = table["tile_x_end"] - table["tile_x_start"]
+
+        # HOTFIX: synthetic tiles have incorrect tile_*_end bounds in the DB.
+        # For synthetic data, the true tile size should be
+        #   tile_*_end - tile_*_start + base_cube_size (e.g. +128).
+        # --- --- --- ---
+        # if synthetic_only or self.synthetic_only:
+        #     table["z_size"] = table["z_size"] + self.base_cube_size
+        #     table["y_size"] = table["y_size"] + self.base_cube_size
+        #     table["x_size"] = table["x_size"] + self.base_cube_size
+        # --- --- --- ---
+
+        table["time_size"] = table["tile_time_size"]
+        table["channel_size"] = table["tile_channel_size"]
+
+        num_rows, num_cols = table.shape
+        print(f"\nRetrieved {num_rows} tiles. \t Retrieved {num_cols} columns.")
+        
+        return table
+
+    def _expand_tiles_timepoints_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        For tile-based training, if num_timepoints == 1 but the tiles in the
+        dataframe have time_size > 1, duplicate each tile row once per
+        timepoint and:
+          - set time_start = base_time_start + t
+          - set time_size = 1
+        TODO: support num_timepoints > 1 case
+        """
+        if "time_size" not in df.columns:
+            raise ValueError("Dataframe must have a time_size column to expand timepoints.")
+        if self.num_timepoints != 1:
+            raise ValueError("Currently tile based training only supports num_timepoints=1.")
+
+        if all(df["time_size"] == 1):
+            return df
+        else:
+            raise NotImplementedError("Expanding tiles for time_size > 1 is not implemented yet.")
 
     def _get_slices_from_layout_order(self, input_format: str, input_shape: tuple):
         if input_format == "TZYXC":
@@ -241,7 +443,7 @@ class ParentDatabase:
                 SELECT id,
                     x_start, y_start, z_start,
                     z_end, y_end, x_end,
-                    time_size, channel_size
+                    time_size, channel_size, is_synthetic
                 FROM prepared
             """
             rois_df = self.execute_query(query)
@@ -258,6 +460,18 @@ class ParentDatabase:
                     "channel_size": "tile_channel_size",
                 }
             )
+
+            # HOTFIX: synthetic ROIs have incorrect tile_*_end bounds in the DB.
+            # For synthetic data, the true tile size should be
+            #   tile_*_end - tile_*_start + base_cube_size (e.g. +128).
+            # --- --- --- ---
+            if "is_synthetic" in rois_df.columns:
+                mask = rois_df["is_synthetic"] == True
+                rois_df.loc[mask, "tile_z_end"] = rois_df.loc[mask, "tile_z_end"] + self.base_cube_size
+                rois_df.loc[mask, "tile_y_end"] = rois_df.loc[mask, "tile_y_end"] + self.base_cube_size
+                rois_df.loc[mask, "tile_x_end"] = rois_df.loc[mask, "tile_x_end"] + self.base_cube_size
+            # --- --- --- ---
+
             rois_df.to_csv(roi_csv, index=True, header=True)
             print(f"Saved roi dataframe to {roi_csv}")
 
@@ -310,6 +524,7 @@ class ParentDatabase:
         self, max_rois: Optional[int] = None, max_tiles: Optional[int] = None, table_name: str = "ptv"
     ) -> str:
         assert max_rois is not None or max_tiles is not None, "At least one of max_rois or max_tiles must be provided"
+        assert not (max_rois is not None and max_tiles is not None), "Only one of max_rois or max_tiles can be provided"
 
         if max_rois is not None:
             unique_rois = self.get_random_rois(max_rois)
@@ -339,7 +554,6 @@ class ParentDatabase:
 
     def _age_filter(self, hpfs: Sequence[int], table_name: str = "ptv") -> str:
         assert hpfs is not None, "hpfs must be provided"
-
         hpfs = tuple(hpfs) if len(hpfs) > 1 else f"({hpfs[0]})"
         return f"WHERE {table_name}.hpf IN {hpfs}"
 
@@ -614,6 +828,9 @@ class ParentDatabase:
     def get_random_rois(self, num_rois: int = 1) -> list[int]:
         filter = self._exists_filter("prepared_tiles_view")
 
+        if self.synthetic_only:
+            filter += self._synthetic_filter("prepared_tiles_view").replace("WHERE", " AND ")
+
         if self.hpf_list is not None:
             filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view").replace("WHERE", " AND ")
         if self.tile_list is not None:
@@ -635,6 +852,9 @@ class ParentDatabase:
 
     def get_random_tiles(self, num_tiles: int = 1) -> list[tuple[int, str]]:
         filter = self._exists_filter("prepared_tiles_view")
+
+        if self.synthetic_only:
+            filter += self._synthetic_filter("prepared_tiles_view").replace("WHERE", " AND ")
 
         if self.hpf_list is not None:
             filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view").replace("WHERE", " AND ")
@@ -703,6 +923,7 @@ class ParentDatabase:
                 synthetic_only=synthetic_only,
                 has_annotations=has_annotations,
             )
+        
         else:
 
             if self.verbose:
@@ -739,8 +960,10 @@ class ParentDatabase:
             table["x_size"] = self.x_slices
 
         if any(table["time_size"] != self.num_timepoints):
+            print(f"`time_sizes` for all rows in the dataframe should be {self.num_timepoints}. Found: {table['time_size'].unique()}")
             table["time_size"] = self.num_timepoints
 
+        # FIXME: is this the best default for has_annotations?
         if "has_annotations" not in table.columns:
             table["has_annotations"] = True if has_annotations else False
 
@@ -748,7 +971,7 @@ class ParentDatabase:
         print(f"\nRetrieved {num_rows} rows. \t Retrieved {num_cols} columns.")
 
         if hypercubes_dataframe_path is not None:
-            self.save_hypercubes_dataframe(table, hypercubes_dataframe_path=hypercubes_dataframe_path)
+            self.save_hypercubes_dataframe(hypercubes_dataframe_path=hypercubes_dataframe_path)
 
         return table
 
@@ -775,8 +998,14 @@ class ParentDatabase:
         return table
 
     def _aggregate(self, df_pd, group_cols, z_slices=128, y_slices=128, x_slices=128):
-
+                        
         df = pl.from_pandas(df_pd)
+
+        df = df.with_columns(
+            pl.col("z_start").alias("cube_z_start"),
+            pl.col("y_start").alias("cube_y_start"),
+            pl.col("x_start").alias("cube_x_start"),
+        )
 
         df = df.with_columns(
             (pl.col("z_start") // z_slices * z_slices).alias("z_start"),
@@ -787,7 +1016,6 @@ class ParentDatabase:
         def _merge_metadata_list(values):
             if values is None:
                 return None
-
             if hasattr(values, "to_list"):
                 values = values.to_list()
             if not isinstance(values, (list, tuple)):
@@ -814,14 +1042,19 @@ class ParentDatabase:
                         merged[key] = val
             return merged if merged else None
 
-        def _merge_dict_list(values):
+        def _merge_bbox_dict_list(values):
+            """
+            Merge a list of {cell_id -> bbox} dicts into a single dict,
+            assuming all bboxes are in the same global coordinate system.
+            Each bbox can be either:
+            - [zmin, ymin, xmin, zmax, ymax, xmax], or
+            - {"zmin": ..., "ymin": ..., ...}
+            """
             if values is None:
                 return None
             if hasattr(values, "to_list"):
                 values = values.to_list()
-            if not isinstance(values, (list, tuple)):
-                return None
-            if len(values) == 0:
+            if not isinstance(values, (list, tuple)) or len(values) == 0:
                 return None
 
             merged = {}
@@ -836,44 +1069,41 @@ class ParentDatabase:
                 if not isinstance(entry, dict):
                     continue
 
-                for i, (cell_id, bbox) in enumerate(entry.items()):
+                for cell_id, bbox in entry.items():
+                    if bbox is None:
+                        continue
 
-                    """
-                    HOTFIX to aggregate into 128x256x256 (Z, Y, X)
-                    There are 4 hypercubes of 128x128x128 to be merged into one of 128x256x256
-                    arranged as:
-                        +-------+-------+
-                        |   0   |   1   |
-                        +-------+-------+
-                        |   2   |   3   |
-                        +-------+-------+
-                    TODO: generalize for arbitrary sizes
-                    """
-
-                    if cell_id not in merged:
-                        merged[cell_id] = bbox
-                        x_offset, y_offset = 0, 0  # no need to shift the first hypercube
+                    if isinstance(bbox, (list, tuple)) and len(bbox) == 6:
+                        # TODO: add support for different bbox formats
+                        zmin, ymin, xmin, zmax, ymax, xmax = bbox
+                    elif isinstance(bbox, dict):
+                        zmin = bbox.get("zmin", float("inf"))
+                        ymin = bbox.get("ymin", float("inf"))
+                        xmin = bbox.get("xmin", float("inf"))
+                        zmax = bbox.get("zmax", float("-inf"))
+                        ymax = bbox.get("ymax", float("-inf"))
+                        xmax = bbox.get("xmax", float("-inf"))
                     else:
-                        existing_bbox = merged[cell_id]
+                        continue
 
-                        if i == 1:  # second hypercube
-                            y_offset, x_offset = 0, x_slices
-                        elif i == 2:  # third hypercube
-                            y_offset, x_offset = y_slices, 0
-                        else:  # fourth hypercube
-                            y_offset, x_offset = y_slices, x_slices
-
+                    existing = merged.get(cell_id)
+                    if existing is None:
                         merged[cell_id] = {
-                            "zmin": min(existing_bbox.get("zmin", float("inf")), bbox.get("zmin", float("inf"))),
-                            "ymin": min(existing_bbox.get("ymin", float("inf")), bbox.get("ymin", float("inf")))
-                            + y_offset,
-                            "xmin": min(existing_bbox.get("xmin", float("inf")), bbox.get("xmin", float("inf")))
-                            + x_offset,
-                            "zmax": max(existing_bbox.get("zmax", float("-inf")), bbox.get("zmax", float("-inf"))),
-                            "ymax": max(existing_bbox.get("ymax", float("-inf")), bbox.get("ymax", float("-inf")))
-                            + y_offset,
-                            "xmax": max(existing_bbox.get("xmax", float("-inf")), bbox.get("xmax", float("-inf")))
-                            + x_offset,
+                            "zmin": zmin,
+                            "ymin": ymin,
+                            "xmin": xmin,
+                            "zmax": zmax,
+                            "ymax": ymax,
+                            "xmax": xmax,
+                        }
+                    else:
+                        merged[cell_id] = {
+                            "zmin": min(existing.get("zmin", float("inf")), zmin),
+                            "ymin": min(existing.get("ymin", float("inf")), ymin),
+                            "xmin": min(existing.get("xmin", float("inf")), xmin),
+                            "zmax": max(existing.get("zmax", float("-inf")), zmax),
+                            "ymax": max(existing.get("ymax", float("-inf")), ymax),
+                            "xmax": max(existing.get("xmax", float("-inf")), xmax),
                         }
 
             return merged if merged else None
@@ -929,62 +1159,111 @@ class ParentDatabase:
                     for k in item.keys():
                         _channel_ids.add(str(k))
             _channel_ids = sorted(_channel_ids)
+        else:
+            _channel_ids = []
+            df = df.with_columns(pl.lit(None).alias("_pc_metadata_parsed"))
+
+        if "pc_metadata_json" in df.columns:
 
             for ch in _channel_ids:
 
                 def _get_ch(obj, ch_id=ch):
                     if not isinstance(obj, dict):
                         return None
-                    return obj.get(ch_id)
+                    ch_meta = obj.get(ch_id)
+                    if ch_meta is None:
+                        return None
+                    return ujson.dumps(ch_meta)
 
                 df = df.with_columns(
                     pl.col("_pc_metadata_parsed")
-                    .map_elements(_get_ch, return_dtype=pl.Object)
+                    .map_elements(_get_ch, return_dtype=pl.Utf8)
                     .alias(f"pc_metadata_json_ch_{ch}")
                 )
 
-                def _get_histogram(ch_meta, ch_id=ch):
-                    if not isinstance(ch_meta, dict):
+                def _get_histogram(ch_meta_str, ch_id=ch):
+                    if ch_meta_str is None:
                         return None
-                    return ch_meta.get("histogram")
+                    if isinstance(ch_meta_str, str):
+                        try:
+                            ch_meta = ujson.loads(ch_meta_str)
+                        except Exception:
+                            return None
+                    elif isinstance(ch_meta_str, dict):
+                        ch_meta = ch_meta_str
+                    else:
+                        return None
 
-                def _get_mask_bbox_dict(ch_meta, ch_id=ch):
-                    if not isinstance(ch_meta, dict):
+                    hist = ch_meta.get("histogram")
+                    if hist is None:
                         return None
+                    return ujson.dumps(hist)
+
+                def _get_mask_bbox_dict(row, ch_id=ch):
+                    ch_meta_val = row[f"pc_metadata_json_ch_{ch}"]
+                    if ch_meta_val is None:
+                        return None
+                    if isinstance(ch_meta_val, str):
+                        try:
+                            ch_meta = ujson.loads(ch_meta_val)
+                        except Exception:
+                            return None
+                    elif isinstance(ch_meta_val, dict):
+                        ch_meta = ch_meta_val
+                    else:
+                        return None
+
                     mask_bbox = ch_meta.get("mask_bbox_dict")
-                    if mask_bbox is None:
-                        return None
                     if not isinstance(mask_bbox, dict):
                         return None
+
+                    z0 = row["cube_z_start"]
+                    y0 = row["cube_y_start"]
+                    x0 = row["cube_x_start"]
 
                     converted = {}
                     for cell_id, bbox in mask_bbox.items():
                         if isinstance(bbox, (list, tuple)) and len(bbox) == 6:
-                            converted[cell_id] = {
-                                "zmin": bbox[0],
-                                "ymin": bbox[1],
-                                "xmin": bbox[2],
-                                "zmax": bbox[3],
-                                "ymax": bbox[4],
-                                "xmax": bbox[5],
-                            }
+                            zmin, ymin, xmin, zmax, ymax, xmax = bbox
+                        elif isinstance(bbox, dict):
+                            zmin = bbox.get("zmin")
+                            ymin = bbox.get("ymin")
+                            xmin = bbox.get("xmin")
+                            zmax = bbox.get("zmax")
+                            ymax = bbox.get("ymax")
+                            xmax = bbox.get("xmax")
                         else:
-                            converted[cell_id] = bbox
-                    return converted if converted else None
+                            continue
+
+                        if None in (zmin, ymin, xmin, zmax, ymax, xmax):
+                            continue
+
+                        # shift into *global* coords for this cube
+                        converted[cell_id] = {
+                            "zmin": zmin + z0,
+                            "ymin": ymin + y0,
+                            "xmin": xmin + x0,
+                            "zmax": zmax + z0,
+                            "ymax": ymax + y0,
+                            "xmax": xmax + x0,
+                        }
+
+                    return ujson.dumps(converted) if converted else None
 
                 df = df.with_columns(
                     [
                         pl.col(f"pc_metadata_json_ch_{ch}")
-                        .map_elements(_get_histogram, return_dtype=pl.Object)
+                        .map_elements(_get_histogram, return_dtype=pl.Utf8)
                         .alias(f"histogram_ch_{ch}"),
-                        pl.col(f"pc_metadata_json_ch_{ch}")
-                        .map_elements(_get_mask_bbox_dict, return_dtype=pl.Object)
+                        pl.struct([f"pc_metadata_json_ch_{ch}", "cube_z_start", "cube_y_start", "cube_x_start"])
+                        .map_elements(_get_mask_bbox_dict, return_dtype=pl.Utf8)
                         .alias(f"mask_bbox_dict_ch_{ch}"),
                     ]
                 )
         else:
             _channel_ids = []
             df = df.with_columns(pl.lit(None).alias("_pc_metadata_parsed"))
+
 
         def _parse_string_col(expr: pl.Expr) -> pl.Expr:
             return (
@@ -1034,13 +1313,16 @@ class ParentDatabase:
         pc_meta_list_exprs = []
         pc_metadata_full_expr = None
         if "pc_metadata_json" in df.columns:
-            pc_meta_list_exprs.append(pl.col("_pc_metadata_parsed").drop_nulls().implode().alias("__pc_metadata_full"))
+            pc_meta_list_exprs.append(
+                pl.col("pc_metadata_json").drop_nulls().implode().alias("__pc_metadata_full")
+            )
             pc_metadata_full_expr = (
                 pl.col("__pc_metadata_full")
                 .map_elements(_merge_metadata_list, return_dtype=pl.Object)
                 .map_elements(lambda d: ujson.dumps(d) if d is not None else None, return_dtype=pl.Utf8)
                 .alias("pc_metadata_json")
             )
+
         pc_meta_ch_list_exprs = []
         for ch in _channel_ids:
             pc_meta_ch_list_exprs.append(
@@ -1075,7 +1357,7 @@ class ParentDatabase:
             )
             mask_bbox_dict_concat_exprs.append(
                 pl.col(f"__mask_bbox_dict_list_ch_{ch}")
-                .map_elements(_merge_dict_list, return_dtype=pl.Object)
+                .map_elements(_merge_bbox_dict_list, return_dtype=pl.Object)
                 .map_elements(lambda d: ujson.dumps(d) if d is not None else None, return_dtype=pl.Utf8)
                 .alias(f"mask_bbox_dict_ch_{ch}")
             )
@@ -1129,7 +1411,54 @@ class ParentDatabase:
             )
         )
 
+        # shift bbox back to local coordinates
+        for ch in _channel_ids:
+            colname = f"mask_bbox_dict_ch_{ch}"
+            out = out.with_columns(
+                pl.struct([colname, "z_start", "y_start", "x_start"])
+                .map_elements(
+                    lambda row, cname=colname: (
+                        None
+                        if row[cname] is None
+                        else ujson.dumps(
+                            {
+                                cid: {
+                                    "zmin": box["zmin"] - row["z_start"],
+                                    "ymin": box["ymin"] - row["y_start"],
+                                    "xmin": box["xmin"] - row["x_start"],
+                                    "zmax": box["zmax"] - row["z_start"],
+                                    "ymax": box["ymax"] - row["y_start"],
+                                    "xmax": box["xmax"] - row["x_start"],
+                                }
+                                for cid, box in (
+                                    ujson.loads(row[cname])
+                                    if isinstance(row[cname], str)
+                                    else {}
+                                ).items()
+                            }
+                        )
+                    ),
+                    return_dtype=pl.Utf8,
+                )
+                .alias(colname)
+            )
+
         pdf = out.to_pandas()
+        
+        # FIXME: we should consider renaming these to generic names 
+        #        for downstream processing
+        def _get_col(pdf, base, channel):
+            if channel is not None:
+                name = f"{base}_ch_{channel}"
+                if name in pdf.columns:
+                    return pdf[name]
+            return None
+
+        if "mask_bbox_dict" not in pdf.columns:
+            col = _get_col(pdf, "mask_bbox_dict", self.mask_channel)
+            if col is not None:
+                pdf["mask_bbox_dict"] = col
+
         return pdf
 
     def aggregate_hypercubes(

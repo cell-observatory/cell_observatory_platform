@@ -1,8 +1,5 @@
 import sys
 import logging
-from typing import Dict, Any, List
-
-import numpy as np
 
 import torch
 
@@ -57,9 +54,27 @@ class NormalizeRayWrapper:
         self.input_layout = input_layout
         self.eps = eps
 
-    def __call__(self, data_tensor: torch.Tensor) -> torch.Tensor:
-        image_list = ImageList(data_tensor, layout=self.input_layout, image_sizes=[data_tensor.shape])
-        mean, std = image_list.get_image_stats()     
-        std = std.clamp_min(self.eps)   
+    def _normalize_tensor(self, data_tensor: torch.Tensor) -> torch.Tensor:
+        image_list = ImageList(
+            data_tensor, layout=self.input_layout, image_sizes=[data_tensor.shape]
+        )
+        mean, std = image_list.get_image_stats()
+        std = std.clamp_min(self.eps)
         image = (image_list.tensor - mean) / std
         return image
+
+    def __call__(self, data):
+        if isinstance(data, torch.Tensor):
+            return self._normalize_tensor(data)
+        if isinstance(data, dict):
+            if "data_tensor" not in data:
+                raise KeyError("NormalizeRayWrapper expects 'data_tensor' in dict.")
+            data_tensor = data["data_tensor"]
+            norm_tensor = self._normalize_tensor(data_tensor)
+
+            out = dict(data)
+            out["data_tensor"] = norm_tensor
+            return out
+        raise TypeError(
+            f"NormalizeRayWrapper expects torch.Tensor or dict, got {type(data)}"
+        )

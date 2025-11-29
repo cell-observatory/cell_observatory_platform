@@ -3,12 +3,13 @@ import sys
 import logging
 from typing import List, Optional, Dict, Any, Callable, Literal
 
+import ujson
 import ctypes
 import cupy as cp
 import numpy as np
 from cupy.cuda import runtime as cudart
 
-from hydra.utils import instantiate
+from hydra.utils import instantiate, get_method
 from omegaconf import OmegaConf, DictConfig
 
 import pandas as pd
@@ -36,6 +37,12 @@ from data.data_types import (NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES)
 from training.helpers import record_dataset_len, get_data_dim
 from inference.utils import tile_owner
 
+from cell_observatory_finetune.data.structures import convert_bbox_format
+from cell_observatory_finetune.training.helpers import (
+    mask_ids_to_masks,
+    get_image_sizes,
+)
+
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -43,6 +50,425 @@ logger = logging.getLogger(__name__)
 
 # -------- -------- Collators -------- --------
 
+@pprof_class
+class FinetuneCollatorActor:
+    """    
+    Collator Actor for finetune training:
+      - Read hypercubes from shared host buffer.
+      - On CPU:
+          * split off mask channel,
+          * build per-instance binary masks and boxes from mask_bbox_dict,
+          * compute image_sizes / orig_image_sizes / padding_mask,
+          * optionally apply Resize() (image + masks + boxes + padding_mask).
+      - Copy resized image tensor into DeviceMemoryBuffer on GPU.
+      - Move targets to GPU.
+
+    Output:
+      {
+        "data_tensor": dst_device,
+        "metainfo": {
+           "host_buffer_idx": ...,
+           "device_buffer_idx": ...,
+           <all metadata columns>,
+           "image_sizes": (B, 3) tensor on GPU,
+           "orig_image_sizes": (B, 3) tensor on GPU,
+           "padding_mask": (B, Z, Y, X) tensor on GPU,
+           "targets": List[Dict[str, Tensor]]  # on GPU
+        }
+      }
+    """
+
+    def __init__(
+        self,
+        batch_size: int,
+        input_shape: tuple,
+        device_buffer_capacity: int,
+        dtype: str,
+        buffer_dtype: str,
+        pin_numa_node: bool,
+        pin_pages: bool,
+        node_id: int,
+        columns: List[str] = [
+            "x_start", "y_start", "z_start", "time_start",
+            "channel_size", "z_size", "y_size", "x_size", "time_size",
+            "server_folder", "output_folder", "tile_name", "prepared_id",
+            "mask_bbox_dict",
+        ],
+        input_format: Literal["ZYXC", "TZYXC"] = "ZYXC",
+        mask_idx: int = -1,
+        bbox_data_format: str = "zyxzyx",
+        bbox_output_format: str = "zyxzyx",
+        transforms_list: Optional[List[DictConfig]] = None,
+        use_masks: bool = False,
+        with_resize: bool = False,
+        debug: bool = False,
+    ):
+        self.columns = columns
+
+        self.node_id = node_id
+        self.local_rank = local_rank()
+        self.global_rank = process_rank()
+
+        self.batch_size = batch_size
+        # shape for the device buffer (after resize, without mask channel)
+        self.input_shape = self._get_input_shape(input_shape, input_format)
+        self.device_buffer_capacity = device_buffer_capacity
+
+        self.input_format = input_format.upper()
+        if self.input_format != "ZYXC":
+            raise NotImplementedError(
+                f"FinetuneCollatorActor currently assumes ZYXC, got {self.input_format}"
+            )
+
+        self.mask_idx = mask_idx
+        self.bbox_data_format = bbox_data_format
+        self.bbox_output_format = bbox_output_format
+
+        self.numa_node = torch_gpu_to_numa(self.local_rank)["numa_node"]
+        if pin_numa_node:
+            bind_current_process_to_node(self.numa_node)
+
+        self.out_dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+        self.buffer_dtype = NUMPY_DTYPES[buffer_dtype].value if isinstance(buffer_dtype, str) else buffer_dtype
+
+        self.host_buffer_actor = get_buffers(
+            type="host_memory",
+            numa_node=self.numa_node,
+            local_rank=self.local_rank,
+            global_rank=self.global_rank,
+            node_id=self.node_id,
+        )
+        cfg = ray.get(self.host_buffer_actor.get_config.remote())
+        self.slot_bytes = int(cfg["slot_bytes"])
+        self.batch_shape = tuple(cfg["batch_shape"])
+        self.capacity = int(cfg["capacity"])
+        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+
+        # original input shape (without batch) from host buffer
+        # e.g. (Z_raw, Y_raw, X_raw, C_full)
+        self.raw_input_shape = self.batch_shape[1:]
+
+        self.pin_pages = pin_pages
+        if pin_pages:
+            base_ptr = ctypes.addressof(ctypes.c_char.from_buffer(self._shm.buf))
+            self.host_buffer_ptr = base_ptr
+            cp.cuda.runtime.hostRegister(base_ptr, self.slot_bytes * self.capacity, 0)
+            self._pinned = True
+        else:
+            self._pinned = False
+
+        idx = self._get_device_index()
+        torch.cuda.set_device(idx)
+        self.device = torch.device(f"cuda:{idx}")
+        with cp.cuda.Device(self.device.index):
+            self.cp_stream = cp.cuda.Stream(non_blocking=True)
+        # torch stream wrapping the same underlying CUDA stream
+        self.copy_stream = torch.cuda.ExternalStream(int(self.cp_stream.ptr), device=self.device)
+
+        # Device buffer for resized images (no mask channel)
+        self.device_buffer = DeviceMemoryBuffer(
+            name=f"device_buffer_rank_{self.global_rank}",
+            capacity=self.device_buffer_capacity,
+            input_shape=self.input_shape,
+            batch_size=self.batch_size,
+            dtype=buffer_dtype,
+            device_idx=idx,
+        )
+
+        self.transforms = []
+        for t in transforms_list or []:
+            if isinstance(t, DictConfig):
+                # not yet instantiated
+                self.transforms.append(instantiate(t))
+            elif isinstance(t, str):
+                # a dotted‑path string
+                self.transforms.append(get_method(t))
+            else:
+                # already an instantiated callable object
+                self.transforms.append(t)
+
+        self.with_resize = with_resize
+        if self.with_resize:
+            ray.logger.info(
+                f"FinetuneCollatorActor on rank {self.global_rank} using Resize transform"
+            )
+            # CPU-side pinned resize buffer: shape matches final GPU input
+            # input_shape is (Z_new, Y_new, X_new, C_no_mask)
+            self.resize_buffer = torch.empty(
+                (self.batch_size, *self.input_shape),
+                dtype=self.out_dtype,
+                pin_memory=True,
+            )
+
+        self.use_masks = use_masks
+
+        ray.logger.info(
+            f"FinetuneCollatorActor on rank {self.global_rank} and Numa Node {self.numa_node} "
+            f"using host shared memory buffer with pin_numa_node={pin_numa_node} "
+            f"with local rank {self.local_rank} and node id {self.node_id} "
+            f"with name {cfg['name']} and capacity {cfg['capacity']} and HostMemoryBuffer "
+            f"with pin_pages={self._pinned} and ray.get_gpu_ids()={ray.get_gpu_ids()} "
+            f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')} "
+            f"torch_dev={torch.cuda.current_device()} "
+            f"cupy_dev={cp.cuda.runtime.getDevice()} "
+            f"torch_count={torch.cuda.device_count()}"
+        )
+
+    def _get_input_shape(self, input_shape: tuple, input_format: str) -> tuple:
+        input_format = input_format.upper()
+        if input_format == "ZYXC":
+            # remove mask channel: (Z, Y, X, C_full) -> (Z, Y, X, C_full-1)
+            *spatial, channels = input_shape
+            return tuple([*spatial, channels - 1])
+        else:
+            raise NotImplementedError(f"Unsupported input_format: {input_format}")
+
+    def _get_device_index(self) -> int:
+        gpu_ids = ray.get_gpu_ids()
+        assert gpu_ids, "No GPUs assigned to this worker by Ray"
+        return int(gpu_ids[0])
+
+    def __del__(self):
+        try:
+            if getattr(self, "_pinned", False) and getattr(self, "host_buffer_ptr", None) is not None:
+                cp.cuda.runtime.hostUnregister(self.host_buffer_ptr)
+            if hasattr(self, "_shm"):
+                self._shm.close()
+        except Exception:
+            pass
+
+    def _split_inputs_and_masks(self, inputs: torch.Tensor):
+        """
+        inputs: (B, Z, Y, X, C_full)
+        returns:
+          inputs_wo_mask: (B, Z, Y, X, C_full-1)
+          masks_labelmap: (B, Z, Y, X)
+        """
+        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
+        B, Z, Y, X, C = inputs.shape
+
+        if C < 2:
+            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
+
+        mask_pos = self.mask_idx if self.mask_idx >= 0 else C + self.mask_idx
+        if not (0 <= mask_pos < C):
+            raise ValueError(f"mask_idx={self.mask_idx} out of range for C={C}")
+
+        device = inputs.device
+        masks = inputs[..., mask_pos]
+
+        all_idx = torch.arange(C, device=device)
+        keep_idx = torch.cat([all_idx[:mask_pos], all_idx[mask_pos + 1 :]])
+
+        inputs_wo_mask = inputs.index_select(dim=-1, index=keep_idx)  # (B, Z, Y, X, C-1)
+
+        return inputs_wo_mask, masks
+
+    def _build_targets(
+        self,
+        masks_labelmap: torch.Tensor,   # (B, Z, Y, X) on CPU
+        mask_bbox_dict_batch: List[str],
+    ):
+        """
+        Build per-sample targets from labelmap + mask_bbox_dict.
+        If self.use_masks is False, no binary masks are constructed and
+        the "masks" key is omitted entirely from the targets.
+        """
+        # TODO: add check for different input formats
+        B, Zm, Ym, Xm = masks_labelmap.shape
+        spatial_shape = (Zm, Ym, Xm)
+        device = masks_labelmap.device
+
+        mask_ids_batch: List[List[int]] = []
+        bboxes_batch: List[torch.Tensor] = []
+
+        for raw in mask_bbox_dict_batch:
+            instances = ujson.loads(raw)
+
+            ids: List[int] = []
+            boxes: List[List[float]] = []
+
+            for cell_id_str, bbox in instances.items():
+                ids.append(int(cell_id_str))
+                if isinstance(bbox, (list, tuple)) and len(bbox) == 6:
+                    if self.bbox_data_format == "zyxzyx":
+                        zmin, ymin, xmin, zmax, ymax, xmax = bbox
+                    elif self.bbox_data_format == "xyzxyz":
+                        xmin, ymin, zmin, xmax, ymax, zmax = bbox
+                    else:
+                        raise ValueError(f"Unsupported bbox_data_format={self.bbox_data_format}")
+                elif isinstance(bbox, dict):
+                    zmin = bbox.get("zmin")
+                    ymin = bbox.get("ymin")
+                    xmin = bbox.get("xmin")
+                    zmax = bbox.get("zmax")
+                    ymax = bbox.get("ymax")
+                    xmax = bbox.get("xmax")
+                else:
+                    continue
+
+                if None in (zmin, ymin, xmin, zmax, ymax, xmax):
+                    continue
+
+                boxes.append([zmin, ymin, xmin, zmax, ymax, xmax])
+
+            mask_ids_batch.append(ids)
+
+            if boxes:
+                bboxes_batch.append(
+                    torch.as_tensor(boxes, device=device, dtype=torch.float32)
+                )
+            else:
+                bboxes_batch.append(
+                    torch.zeros((0, 6), device=device, dtype=torch.float32)
+                )
+
+        if self.use_masks:
+            binary_masks_batch = mask_ids_to_masks(
+                batch_size=B,
+                spatial_shape=spatial_shape,
+                mask_ids_batch=mask_ids_batch,
+                masks=masks_labelmap,
+                device=device,
+            )
+        else:
+            binary_masks_batch = [None] * B
+
+        if self.bbox_data_format != self.bbox_output_format:
+            bboxes_batch = [
+                convert_bbox_format(b, self.bbox_data_format, self.bbox_output_format)
+                for b in bboxes_batch
+            ]
+
+        targets: List[Dict[str, Any]] = []
+        for ids, bm, boxes in zip(mask_ids_batch, binary_masks_batch, bboxes_batch):
+            mask_ids_tensor = torch.as_tensor(ids, device=device, dtype=torch.long)
+            labels = torch.zeros(len(ids), device=device, dtype=torch.long)
+
+            t: Dict[str, Any] = {
+                "boxes": boxes,
+                "mask_ids": mask_ids_tensor,
+                "labels": labels,
+            }
+            if self.use_masks and bm is not None:
+                t["masks"] = bm
+
+            targets.append(t)
+
+        return targets
+
+    def __call__(self, batch: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        batch: Ray batch containing at least:
+          - "buffer_idx"
+          - "mask_bbox_dict"
+          - columns listed in self.columns (z_size, y_size, x_size, etc.)
+        """
+        with torch.cuda.device(self.device.index), cp.cuda.Device(self.device.index):
+            host_buffer_idx = int(batch["buffer_idx"][0])
+            h_view = np.ndarray(
+                self.batch_shape,
+                dtype=self.buffer_dtype,
+                buffer=self._shm.buf,
+                offset=host_buffer_idx * self.slot_bytes,
+            )
+
+            inputs_full = torch.from_numpy(h_view)
+            inputs_no_mask, masks_labelmap = self._split_inputs_and_masks(inputs_full)
+
+            meta_cpu: Dict[str, Any] = {}
+            for k in self.columns:
+                if k in batch:
+                    meta_cpu[k] = batch[k]
+
+            if "mask_bbox_dict" not in meta_cpu:
+                raise KeyError("FinetuneCollatorActor expects 'mask_bbox_dict' in columns.")
+
+            mask_bbox_dict_batch = list(meta_cpu["mask_bbox_dict"])
+
+            targets_cpu = self._build_targets(
+                masks_labelmap=masks_labelmap,
+                mask_bbox_dict_batch=mask_bbox_dict_batch,
+            )
+
+            image_sizes, orig_image_sizes, padding_mask = get_image_sizes(
+                input_format=self.input_format,
+                input_shape=self.raw_input_shape,
+                batch_size=self.batch_size,
+                metadata=meta_cpu,
+                device=torch.device("cpu"),
+            )
+            meta_cpu["image_sizes"] = torch.as_tensor(image_sizes)
+            meta_cpu["orig_image_sizes"] = torch.as_tensor(orig_image_sizes)
+            meta_cpu["padding_mask"] = torch.as_tensor(padding_mask)
+
+            sample_cpu = {
+                "data_tensor": inputs_no_mask,
+                "metainfo": {
+                    **meta_cpu,
+                    "targets": targets_cpu,
+                    "resize_buffer": self.resize_buffer if self.with_resize else None,
+                },
+            }
+
+            if self.transforms:
+                for t in self.transforms:
+                    sample_cpu = t(sample_cpu)
+                inputs_resized = sample_cpu["data_tensor"]
+                metainfo_resized = sample_cpu["metainfo"]
+            else:
+                inputs_resized = inputs_no_mask
+                metainfo_resized = {
+                    **meta_cpu,
+                    "targets": targets_cpu,
+                }
+
+            device_buffer_idx = self.device_buffer.get_free()
+            dst_device = self.device_buffer.device_buffers[device_buffer_idx]
+
+            with torch.cuda.stream(self.copy_stream):
+                dst_device.copy_(inputs_resized, non_blocking=True)
+
+                def _release_buffer_on_done(stream, error_status, user_data):
+                    actor_reference = user_data["actor"]
+                    hb_idx = user_data["host_buffer_idx"]
+                    try:
+                        actor_reference.put_free.remote(hb_idx)
+                    except Exception as e:
+                        logger.exception(f"put_free failed for {hb_idx}: {e}")
+
+                # callback after all ops on this CUDA stream complete
+                with self.cp_stream:
+                    self.cp_stream.add_callback(
+                        _release_buffer_on_done,
+                        {"actor": self.host_buffer_actor, "host_buffer_idx": host_buffer_idx},
+                    )
+
+            torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
+            dst_device.record_stream(self.copy_stream)
+
+            metainfo: Dict[str, Any] = {
+                "host_buffer_idx": host_buffer_idx,
+                "device_buffer_idx": device_buffer_idx,
+            }
+            for k, v in metainfo_resized.items():
+                if k in ("targets",):
+                    continue
+                metainfo[k] = v
+
+            targets_gpu: List[Dict[str, Any]] = []
+            for tgt in metainfo_resized["targets"]:
+                t_out: Dict[str, Any] = {}
+                for tk, tv in tgt.items():
+                    if torch.is_tensor(tv):
+                        t_out[tk] = tv.to(self.device, non_blocking=True)
+                    else:
+                        t_out[tk] = tv
+                targets_gpu.append(t_out)
+            metainfo["targets"] = targets_gpu
+
+            return {"data_tensor": dst_device, "metainfo": metainfo}
+    
 
 @pprof_class
 class CollatorActor:
@@ -480,7 +906,7 @@ def get_dataset_ray(
         'x_start', 'y_start', 'z_start', 'time_start',
         'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
         'server_folder', 'output_folder',
-        'tile_name', 'prepared_id', 'pc_metadata_json'
+        'tile_name', 'prepared_id', 'mask_bbox_dict'
     ]
 ):
     if cfg.datasets.channels_subset is not None:
@@ -571,13 +997,18 @@ def get_dataset_ray(
 def get_dataloader_ray(cfg: DictConfig,
                        batch_size: int,
                        collate_fn: Optional[Callable],
-                       drop_last: bool = True
+                       drop_last: bool = True,
+                       database: Optional[Any] = None
 ):
-    db = instantiate(cfg.datasets.databases)
+    if database is None:
+        db = instantiate(cfg.datasets.databases)
+    else:
+        db = database
+    
     database_df = db.hypercubes_dataframe
     dataset_len = len(db.hypercubes_dataframe)
 
-    if cfg.datasets.split is not None:
+    if cfg.datasets.split is not None and 0.0 < float(cfg.datasets.split) < 1.0:
         val_size = round(dataset_len * cfg.datasets.split)
         train_subset, val_subset = random_split(
             range(dataset_len),

@@ -26,3 +26,8 @@ use_cached_hypercubes_dataframe: ${datasets.use_cached_hypercubes_dataframe} # i
 fetch_hypercubes_dataframe: true
 protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 server_folder_path: ${paths.server_folder_path}
+
+with_hypercubes_dataframe: true
+
+has_annotations: true
+synthetic_only: false

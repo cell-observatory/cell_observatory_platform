@@ -968,11 +968,11 @@ def append_kwargs_to_model(cfg):
                     input_shape[-1] = cfg.tasks.input_channels
                     cfg.models.input_shape = input_shape
 
-            if cfg.tasks.task == "instance_segmentation":
-                input_shape = cfg.models.backbone.input_shape
-                input_shape[-1] = cfg.tasks.input_channels
-                cfg.models.input_shape = input_shape
-                cfg.models.backbone.input_shape = input_shape
+            # if cfg.tasks.task == "instance_segmentation":
+            #     input_shape = cfg.models.backbone.input_shape
+            #     input_shape[-1] = cfg.tasks.input_channels
+            #     cfg.models.input_shape = input_shape
+            #     cfg.models.backbone.input_shape = input_shape
 
         if decoder is not None or decoder_args is not None:
             cfg.models.decoder = decoder
