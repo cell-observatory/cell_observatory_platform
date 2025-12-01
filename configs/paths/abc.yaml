@@ -6,7 +6,6 @@ apptainer_image: /clusterfs/nvme/thayer/apptainer_images/develop_torch_25_08.sif
 repo_path: ${oc.env:REPO_DIR}
 data_path: /clusterfs/nvme/segment_4d
 server_folder_path: /clusterfs/vast/Data/cell_observatory_training_datasets
-synthetic_server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
 workdir: /workspace/${oc.env:REPO_NAME} # mapping your repo path to this path inside the container
 
 # Relative paths will be updated in manager.py based on the running environment

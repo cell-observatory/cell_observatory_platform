@@ -533,7 +533,6 @@ def load_hypercubes_dataframe(
     tile_list: list[str] | None = None,
     timepoint_list: list[int] | None = None,
     server_folder_path: str | None = None,
-    synthetic_server_folder_path: str | None = None,
     occupancy_threshold: float | None = None,
     occupancy_threshold_filter_type: str = "min_ch0",
     synthetic_only: bool = False,
@@ -547,9 +546,6 @@ def load_hypercubes_dataframe(
     df = pl.read_csv(p)
     t1 = time.perf_counter()
     logger.info(f"Loaded hypercubes dataframe in {t1 - t0:.2f} s; shape={df.shape}")
-
-    if synthetic_only and synthetic_server_folder_path is not None:
-        server_folder_path = synthetic_server_folder_path
 
     df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
     df = add_has_annotations_column(df)
@@ -605,7 +601,6 @@ def load_tiles_dataframe(
     tile_list: list[str] | None = None,
     timepoint_list: list[int] | None = None,
     server_folder_path: str | None = None,
-    synthetic_server_folder_path: str | None = None,
     synthetic_only: bool = False,
     has_annotations: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
@@ -617,9 +612,6 @@ def load_tiles_dataframe(
     df = pl.read_csv(p)
     t1 = time.perf_counter()
     logger.info(f"Loaded tiles dataframe in {t1 - t0:.2f} s; shape={df.shape}")
-
-    if synthetic_only and synthetic_server_folder_path is not None:
-        server_folder_path = synthetic_server_folder_path
 
     df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
     df = add_has_annotations_column(df)

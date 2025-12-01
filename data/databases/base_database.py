@@ -44,7 +44,6 @@ class ParentDatabase:
         protocol: cx.Protocol | None = None,  # Literal["csv", "binary", "cursor", "simple", "text"]
         max_partitions: Optional[int] = 10,
         server_folder_path: Optional[Path | str] = None,
-        synthetic_server_folder_path: Optional[Path | str] = None,
         occupancy_threshold: Optional[float] = None,
         occupancy_threshold_filter_type: str = "min_all",
         base_cube_size: Optional[int] = 128,
@@ -117,7 +116,6 @@ class ParentDatabase:
         self.max_partitions = max_partitions
         
         self.server_folder_path = server_folder_path
-        self.synthetic_server_folder_path = synthetic_server_folder_path
         
         self.occupancy_threshold = occupancy_threshold
         self.occupancy_threshold_filter_type = occupancy_threshold_filter_type
@@ -194,7 +192,6 @@ class ParentDatabase:
             self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
                 hypercubes_dataframe_path=self.hypercubes_dataframe_path,
                 server_folder_path=self.server_folder_path,
-                synthetic_server_folder_path=self.synthetic_server_folder_path,
                 max_rois=self.max_rois,
                 max_tiles=self.max_tiles,
                 max_hypercubes=self.max_hypercubes_128,
@@ -226,9 +223,6 @@ class ParentDatabase:
             self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
 
         if self.server_folder_path is not None:
-            if self.synthetic_only and self.synthetic_server_folder_path is not None:
-                self.hypercubes_dataframe["server_folder"] = self.synthetic_server_folder_path
-            else:
                 self.hypercubes_dataframe["server_folder"] = self.server_folder_path
 
         if self.z_slices != self.base_cube_size or self.y_slices != self.base_cube_size or self.x_slices != self.base_cube_size:
@@ -283,7 +277,6 @@ class ParentDatabase:
             ) = load_tiles_dataframe(
                 hypercubes_dataframe_path=self.hypercubes_dataframe_path,
                 server_folder_path=self.server_folder_path,
-                synthetic_server_folder_path=self.synthetic_server_folder_path,
                 max_rois=self.max_rois,
                 max_tiles=self.max_tiles,
                 hpf_list=self.hpf_list,
@@ -307,9 +300,6 @@ class ParentDatabase:
             self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
 
         if self.server_folder_path is not None:
-            if self.synthetic_only and self.synthetic_server_folder_path is not None:
-                self.hypercubes_dataframe["server_folder"] = self.synthetic_server_folder_path
-            else:
                 self.hypercubes_dataframe["server_folder"] = self.server_folder_path
 
         # handle time granularity: expand time_size into per-timepoint rows
