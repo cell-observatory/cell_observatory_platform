@@ -11,7 +11,7 @@ import weakref
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from hydra.utils import get_class, instantiate
+from hydra.utils import get_class, instantiate, get_method
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 if not OmegaConf.has_resolver("now"):
@@ -26,14 +26,12 @@ from training.helpers import (
     get_masked_input_data,
     get_steps_per_epoch,
     resume_run,
-    summarize_model,
-    append_kwargs_to_model
+    summarize_model
 )
 from training.hooks import HookBase
 from training.loggers import EventRecorder
 from data.dataloaders import get_dataloader
 from training.optimizers import get_optimizer
-from training.registry import build_dependency_graph_and_instantiate
 from training.schedulers import get_param_groups, get_schedulers
 from utils.context import inference_context, process_rank
 
@@ -269,10 +267,8 @@ class EpochBasedTrainer(BaseTrainer):
         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
         # initialize model
-        # TODO: consider migrating to BUILD() based initialization
-        #       instead of recursive instantiation
-        cfg, decoder_args = append_kwargs_to_model(cfg)
-        model = build_dependency_graph_and_instantiate(cfg.models)
+        BUILD = get_method(cfg.models.BUILD)
+        model = BUILD(cfg)
 
         # initialize checkpoint manager
         if os.environ.get("RESTART", "FALSE").upper() == "TRUE":
@@ -336,10 +332,8 @@ class EpochBasedTrainer(BaseTrainer):
 
         # if resume job, gather the state from the checkpoint
         # else intialize outdir, logdir, and checkpointdir
-        # these directories must be empty if not resuming a job
+        # these directories should be empty if not resuming a job
         # to avoid overwriting existing checkpoints
-        # see training/utils.py:resume_run()
-        # and training/run.py
         best_metric, step, epoch = resume_run(self, cfg)
         self.start_epoch, self.start_iter, self.best_metric = epoch, step, best_metric
         self._epoch, self._iter, self._val_iter, self._curr_val_metric = self.start_epoch, self.start_iter, 0, float('inf')
@@ -487,9 +481,8 @@ class TestTrainer(BaseTrainer):
         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
         # initialize model
-        cfg, decoder_args = append_kwargs_to_model(cfg)  
-        model = build_dependency_graph_and_instantiate(cfg.models)
-        logger.info(f"Model instantiated: {model}")
+        BUILD = get_method(cfg.models.BUILD)
+        model = BUILD(cfg)
 
         # initialize checkpoint manager and
         # load model state from checkpoint
@@ -593,9 +586,8 @@ class Inferencer(BaseTrainer):
         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
         # initialize model
-        cfg, decoder_args = append_kwargs_to_model(cfg)  
-        model = build_dependency_graph_and_instantiate(cfg.models)
-        logger.info(f"Model instantiated: {model}")
+        BUILD = get_method(cfg.models.BUILD)
+        model = BUILD(cfg)
 
         # initialize checkpoint manager and
         # load model state from checkpoint
@@ -629,8 +621,6 @@ class Inferencer(BaseTrainer):
         # initialize inferencer_worker
         self.inferencer_worker = instantiate(cfg.inference, 
                                              model=self.model, 
-                                             decoder_head_type=decoder_args["name"] \
-                                                if decoder_args else str(cfg.inference.decoder_head_type),
                                              database=database_df)
 
     def predict(self):

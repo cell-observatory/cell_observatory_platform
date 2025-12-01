@@ -1,6 +1,7 @@
-import logging
 import sys
-from typing import Literal, Union, List
+import logging
+import inspect
+from typing import Literal, Union, List, Mapping, Any
 
 import torch
 import torch.nn as nn
@@ -254,3 +255,41 @@ class MaskedEncoder(nn.Module):
 
         x = self.norm(x)
         return x, patches
+    
+    def forward_features(self, inputs, masks=None, concat_masks=True):
+        x, _ = self.forward(inputs, masks=masks, concat_masks=concat_masks)
+        return x
+
+
+def _extract_model_encoder_kwargs(cfg: Mapping[str, Any]) -> dict:
+    sig = inspect.signature(MaskedEncoder.__init__)
+    allowed = set(sig.parameters.keys()) - {"self"}
+    ignore = {"_target_", "BUILD"}
+
+    kwargs = {}
+    for k, v in cfg.items():
+        if k in ignore or k not in allowed:
+            continue
+        kwargs[k] = v
+    return kwargs
+
+
+def BUILD(cfg: Mapping[str, Any]) -> MaskedEncoder:
+    """
+    Hydra entrypoint for MaskedEncoder.
+
+    Expects something like:
+
+      backbone_args:
+        _target_: <maskedencoder_module>.BUILD
+        model_template: me-base
+        input_fmt: TZYXC
+        input_shape: [16, 128, 128, 128, 2]
+        patch_shape: [4, 16, 16, 16]
+        abs_sincos_enc: true
+        rope_pos_enc: true
+        # etc.
+
+    Unknown keys are dropped; CONFIGS logic stays inside MaskedEncoder.__init__.
+    """
+    return MaskedEncoder(**_extract_model_encoder_kwargs(cfg))

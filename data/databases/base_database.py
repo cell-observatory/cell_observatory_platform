@@ -44,6 +44,7 @@ class ParentDatabase:
         protocol: cx.Protocol | None = None,  # Literal["csv", "binary", "cursor", "simple", "text"]
         max_partitions: Optional[int] = 10,
         server_folder_path: Optional[Path | str] = None,
+        synthetic_server_folder_path: Optional[Path | str] = None,
         occupancy_threshold: Optional[float] = None,
         occupancy_threshold_filter_type: str = "min_all",
         base_cube_size: Optional[int] = 128,
@@ -116,6 +117,7 @@ class ParentDatabase:
         self.max_partitions = max_partitions
         
         self.server_folder_path = server_folder_path
+        self.synthetic_server_folder_path = synthetic_server_folder_path
         
         self.occupancy_threshold = occupancy_threshold
         self.occupancy_threshold_filter_type = occupancy_threshold_filter_type
@@ -192,6 +194,7 @@ class ParentDatabase:
             self.hypercubes_dataframe, self.hypercubes_dataframe_config = load_hypercubes_dataframe(
                 hypercubes_dataframe_path=self.hypercubes_dataframe_path,
                 server_folder_path=self.server_folder_path,
+                synthetic_server_folder_path=self.synthetic_server_folder_path,
                 max_rois=self.max_rois,
                 max_tiles=self.max_tiles,
                 max_hypercubes=self.max_hypercubes_128,
@@ -223,12 +226,21 @@ class ParentDatabase:
             self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
 
         if self.server_folder_path is not None:
-            self.hypercubes_dataframe["server_folder"] = self.server_folder_path
+            if self.synthetic_only and self.synthetic_server_folder_path is not None:
+                self.hypercubes_dataframe["server_folder"] = self.synthetic_server_folder_path
+            else:
+                self.hypercubes_dataframe["server_folder"] = self.server_folder_path
 
-        if self.z_slices != self.base_cube_size or self.y_slices != self.base_cube_size \
-            or self.x_slices != self.base_cube_size:
+        if self.z_slices != self.base_cube_size or self.y_slices != self.base_cube_size or self.x_slices != self.base_cube_size:
             print(f"Size of volume axes not equal to base cube size of {self.base_cube_size}, aggregating hypercubes...")
-            self.aggregate_hypercubes(z_slices=self.z_slices, y_slices=self.y_slices, x_slices=self.x_slices)
+        else:
+            print(f"Volume axes equal base cube size {self.base_cube_size}, running metadata aggregation only...")
+
+        self.aggregate_hypercubes(
+            z_slices=self.z_slices,
+            y_slices=self.y_slices,
+            x_slices=self.x_slices,
+        )
 
         if any(self.hypercubes_dataframe["time_size"] != self.num_timepoints):
             print(
@@ -271,6 +283,7 @@ class ParentDatabase:
             ) = load_tiles_dataframe(
                 hypercubes_dataframe_path=self.hypercubes_dataframe_path,
                 server_folder_path=self.server_folder_path,
+                synthetic_server_folder_path=self.synthetic_server_folder_path,
                 max_rois=self.max_rois,
                 max_tiles=self.max_tiles,
                 hpf_list=self.hpf_list,
@@ -294,7 +307,10 @@ class ParentDatabase:
             self.save_hypercubes_dataframe(hypercubes_dataframe_path=self.hypercubes_dataframe_path)
 
         if self.server_folder_path is not None:
-            self.hypercubes_dataframe["server_folder"] = self.server_folder_path
+            if self.synthetic_only and self.synthetic_server_folder_path is not None:
+                self.hypercubes_dataframe["server_folder"] = self.synthetic_server_folder_path
+            else:
+                self.hypercubes_dataframe["server_folder"] = self.server_folder_path
 
         # handle time granularity: expand time_size into per-timepoint rows
         self.hypercubes_dataframe = self._expand_tiles_timepoints_df(self.hypercubes_dataframe)
@@ -842,12 +858,23 @@ class ParentDatabase:
                 "WHERE", " AND "
             )
 
+        # FIXME: we need to ensure that each rank pulls the same random rois
+        #        since otherwise different ranks may get different rois and
+        #        then when we shard the dataset we actually don't shard the same
+        #        dataframe leadning to possibly duplicated rois across ranks.
+        # query = f"""
+        #     -- Getting random ROIs
+        #     SELECT DISTINCT prepared_id 
+        #     FROM prepared_tiles_view {filter}
+        #     LIMIT {num_rois}            
+        # """  # ORDER BY random() could be slow on large tables
         query = f"""
-            -- Getting random ROIs
+            -- Getting deterministic subset of ROIs (ordered by prepared_id)
             SELECT DISTINCT prepared_id 
             FROM prepared_tiles_view {filter}
-            LIMIT {num_rois}            
-        """  # ORDER BY random() could be slow on large tables
+            ORDER BY prepared_id
+            LIMIT {num_rois}
+        """
         return self.execute_query(query).values.squeeze().tolist()
 
     def get_random_tiles(self, num_tiles: int = 1) -> list[tuple[int, str]]:
@@ -867,12 +894,23 @@ class ParentDatabase:
                 "WHERE", " AND "
             )
 
+        # FIXME: we need to ensure that each rank pulls the same random tiles
+        #        since otherwise different ranks may get different tiles and
+        #        then when we shard the dataset we actually don't shard the same
+        #        dataframe leadning to possibly duplicated tiles across ranks.
+        # query = f"""
+        #     -- Getting random tiles
+        #     SELECT DISTINCT prepared_id, tile_name 
+        #     FROM prepared_tiles_view {filter}
+        #     LIMIT {num_tiles}
+        # """  # ORDER BY random() could be slow on large tables
         query = f"""
-            -- Getting random tiles
+            -- Getting deterministic subset of tiles (ordered by prepared_id, tile_name)
             SELECT DISTINCT prepared_id, tile_name 
             FROM prepared_tiles_view {filter}
+            ORDER BY prepared_id, tile_name
             LIMIT {num_tiles}
-        """  # ORDER BY random() could be slow on large tables
+        """
         return self.execute_query(query).values.squeeze().tolist()
 
     def check_view_exists(self, table_name: str) -> bool:
@@ -1362,36 +1400,44 @@ class ParentDatabase:
                 .alias(f"mask_bbox_dict_ch_{ch}")
             )
 
+        agg_exprs = [
+            pl.col("cube_size").first(),
+            pl.col("time_size").first(),
+            pl.col("channel_size").first(),
+            pl.col("first_pc_id").first(),
+            pl.col("hpf").first(),
+            pl.col("server_folder").first(),
+            pl.col("output_folder").first(),
+            pl.col("unique_targets").first(),
+            pl.col("imaged_locations").first(),
+            pl.col("date_crossed").first(),
+            pl.col("exists").max(),
+            pl.col("exists_prfs").max(),
+            pl.col("exists_aws").max(),
+        ]
+
+        # Only aggregate JSON columns if they actually exist
+        if "p_metadata_json" in df.columns:
+            agg_exprs.append(pl.col("p_metadata_json").sum())
+        if "pc_metadata_json" in df.columns:
+            agg_exprs.append(pl.col("pc_metadata_json").sum())
+        if "metadata_tile_json" in df.columns:
+            agg_exprs.append(pl.col("metadata_tile_json").sum())
+
+        agg_exprs.extend(
+            [
+                *occ0_mean_exprs,
+                *occ1_mean_exprs,
+                *pc_meta_list_exprs,
+                *pc_meta_ch_list_exprs,
+                *histogram_list_exprs,
+                *mask_bbox_dict_list_exprs,
+            ]
+        )
+
         out = (
             df.group_by(group_cols)
-            .agg(
-                [
-                    pl.col("cube_size").first(),
-                    pl.col("time_size").first(),
-                    pl.col("channel_size").first(),
-                    pl.col("first_pc_id").first(),
-                    pl.col("hpf").first(),
-                    pl.col("server_folder").first(),
-                    pl.col("output_folder").first(),
-                    pl.col("unique_targets").first(),
-                    pl.col("imaged_locations").first(),
-                    pl.col("date_crossed").first(),
-                    pl.col("exists").max(),
-                    pl.col("exists_prfs").max(),
-                    pl.col("exists_aws").max(),
-                    pl.col("p_metadata_json").sum(),
-                    pl.col("pc_metadata_json").sum(),
-                    pl.col("metadata_tile_json").sum(),
-                    pl.col("is_synthetic").first(),
-                    pl.col("has_annotations").first(),
-                    *occ0_mean_exprs,
-                    *occ1_mean_exprs,
-                    *pc_meta_list_exprs,
-                    *pc_meta_ch_list_exprs,
-                    *histogram_list_exprs,
-                    *mask_bbox_dict_list_exprs,
-                ]
-            )
+            .agg(agg_exprs)
             .with_columns(
                 [occ0_concat.alias("occupancy_ratios_ch_0"), occ1_concat.alias("occupancy_ratios_ch_1")]
                 + ([pc_metadata_full_expr] if pc_metadata_full_expr is not None else [])
@@ -1541,6 +1587,9 @@ class ParentDatabase:
             "C": work["tile_channel_size"],
         }
 
+        # rows where any requested axis has no available extent (pure padding)
+        valid_mask = pd.Series(True, index=work.index)
+
         for ax in L:
             meta = coord_map.get(ax)
             start_col, size_col = meta["start"], meta["size"]
@@ -1552,7 +1601,11 @@ class ParentDatabase:
             available = np.clip(end - start, 0, None)
             effective_size = np.minimum(req, available)
             effective_series = pd.Series(effective_size, index=work.index)
-            effective_series = effective_series.where(~((effective_series == 0) & (req > 0)), req)
+            # mark rows with req>0 but effective_size==0 as invalid (pure padding)
+            zero_and_positive_req = (effective_series == 0) & (req > 0)
+            valid_mask &= ~zero_and_positive_req
             work[size_col] = effective_series.astype("int64")
 
+
+        work = work[valid_mask].reset_index(drop=True)
         return work

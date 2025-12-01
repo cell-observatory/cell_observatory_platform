@@ -1,6 +1,7 @@
-import logging
 import sys
-from typing import Literal, Union, Dict, Tuple
+import logging
+import inspect
+from typing import Literal, Union, Dict, Tuple, Any, Mapping
 
 import torch
 import torch.nn as nn
@@ -340,3 +341,20 @@ class MaskedAutoEncoder(nn.Module):
 
         predictions = self.masked_encoder.patch_embedding.unpatchify(x, out_channels=None)
         return predictions
+
+
+def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
+    sig = inspect.signature(MaskedAutoEncoder.__init__)
+    allowed = set(sig.parameters.keys()) - {"self"}
+    ignore = {"_target_", "BUILD"}
+    kwargs = {}
+    for k in cfg.keys():
+        if k in ignore or k not in allowed:
+            continue
+        kwargs[k] = cfg[k]
+    return kwargs
+
+
+def BUILD(cfg: Mapping[str, Any]) -> MaskedAutoEncoder:
+    model_cfg = cfg.models.mae
+    return MaskedAutoEncoder(**_extract_model_kwargs(model_cfg))

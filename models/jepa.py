@@ -1,7 +1,8 @@
 import sys
 import logging
+import inspect
 from copy import deepcopy
-from typing import Literal, Union
+from typing import Literal, Union, Mapping, Any
 
 import torch
 import torch.nn as nn
@@ -343,3 +344,20 @@ class JEPA(nn.Module):
             "step_loss": loss,
         }
         return loss_dict, predictions
+
+
+def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
+    sig = inspect.signature(JEPA.__init__)
+    allowed = set(sig.parameters.keys()) - {"self"}
+    ignore = {"_target_", "BUILD"}
+    kwargs = {}
+    for k in cfg.keys():
+        if k in ignore or k not in allowed:
+            continue
+        kwargs[k] = cfg[k]
+    return kwargs
+
+
+def BUILD(cfg: Mapping[str, Any]) -> JEPA:
+    model_cfg = cfg.models.jepa
+    return JEPA(**_extract_model_kwargs(model_cfg))

@@ -346,8 +346,8 @@ def get_dataloader(config: DictConfig):
             buffer_input_shape = tuple(buffer_input_shape_list)
 
             logger.info(
-                f"[tiles] Using buffer_input_shape={buffer_input_shape} "
-                f"(max tile sizes: z={max_z}, y={max_y}, x={max_x})"
+                f"[DATALOADERS] Using buffer_input_shape={buffer_input_shape} "
+                f"[DATALOADERS] (max tile sizes: z={max_z}, y={max_y}, x={max_x})"
             )
 
             if config.datasets.collate_fn.with_resize:

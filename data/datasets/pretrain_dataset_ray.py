@@ -34,7 +34,7 @@ from utils.context import (process_rank,
 from utils.profiling import pprof_func, pprof_class
 from data.datasets.buffers import get_buffers, DeviceMemoryBuffer
 from data.data_types import (NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES)
-from training.helpers import record_dataset_len, get_data_dim
+from training.helpers import record_dataset_len, get_data_dim, set_global_seed
 from inference.utils import tile_owner
 
 from cell_observatory_finetune.data.structures import convert_bbox_format
@@ -214,6 +214,8 @@ class FinetuneCollatorActor:
             f"torch_count={torch.cuda.device_count()}"
         )
 
+        self.debug = debug
+
     def _get_input_shape(self, input_shape: tuple, input_format: str) -> tuple:
         input_format = input_format.upper()
         if input_format == "ZYXC":
@@ -250,17 +252,15 @@ class FinetuneCollatorActor:
         if C < 2:
             raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
 
-        mask_pos = self.mask_idx if self.mask_idx >= 0 else C + self.mask_idx
-        if not (0 <= mask_pos < C):
-            raise ValueError(f"mask_idx={self.mask_idx} out of range for C={C}")
+        # For zero-copy we *require* the mask to be the last channel
+        if self.mask_idx not in (-1, C - 1):
+            raise ValueError(
+                f"For zero-copy split, mask_idx must be -1 or C-1; "
+                f"got mask_idx={self.mask_idx}, C={C}."
+            )
 
-        device = inputs.device
-        masks = inputs[..., mask_pos]
-
-        all_idx = torch.arange(C, device=device)
-        keep_idx = torch.cat([all_idx[:mask_pos], all_idx[mask_pos + 1 :]])
-
-        inputs_wo_mask = inputs.index_select(dim=-1, index=keep_idx)  # (B, Z, Y, X, C-1)
+        masks = inputs[..., -1]      # (B, Z, Y, X), view
+        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
 
         return inputs_wo_mask, masks
 
@@ -356,6 +356,18 @@ class FinetuneCollatorActor:
             targets.append(t)
 
         return targets
+    
+    def _copy_h2d(self, dst: torch.Tensor, src: torch.Tensor):
+        src_ptr = ctypes.c_void_p(src.data_ptr())
+        dst_ptr = ctypes.c_void_p(dst.data_ptr())
+
+        cudart.memcpyAsync(
+            dst_ptr.value,
+            src_ptr.value,
+            src.numel() * src.element_size(),
+            cudart.memcpyHostToDevice,
+            int(self.cp_stream.ptr),
+        )
 
     def __call__(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -427,7 +439,7 @@ class FinetuneCollatorActor:
             dst_device = self.device_buffer.device_buffers[device_buffer_idx]
 
             with torch.cuda.stream(self.copy_stream):
-                dst_device.copy_(inputs_resized, non_blocking=True)
+                self._copy_h2d(dst=dst_device, src=inputs_resized)
 
                 def _release_buffer_on_done(stream, error_status, user_data):
                     actor_reference = user_data["actor"]
@@ -437,11 +449,13 @@ class FinetuneCollatorActor:
                     except Exception as e:
                         logger.exception(f"put_free failed for {hb_idx}: {e}")
 
-                # callback after all ops on this CUDA stream complete
                 with self.cp_stream:
                     self.cp_stream.add_callback(
                         _release_buffer_on_done,
-                        {"actor": self.host_buffer_actor, "host_buffer_idx": host_buffer_idx},
+                        {
+                            "actor": self.host_buffer_actor,
+                            "host_buffer_idx": host_buffer_idx,
+                        },
                     )
 
             torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
@@ -452,9 +466,12 @@ class FinetuneCollatorActor:
                 "device_buffer_idx": device_buffer_idx,
             }
             for k, v in metainfo_resized.items():
-                if k in ("targets",):
+                if k in ("targets", "resize_buffer"):
                     continue
-                metainfo[k] = v
+                if torch.is_tensor(v):
+                    metainfo[k] = v.to(self.device, non_blocking=True)
+                else:
+                    metainfo[k] = v
 
             targets_gpu: List[Dict[str, Any]] = []
             for tgt in metainfo_resized["targets"]:
@@ -466,6 +483,10 @@ class FinetuneCollatorActor:
                         t_out[tk] = tv
                 targets_gpu.append(t_out)
             metainfo["targets"] = targets_gpu
+
+            if self.debug:
+                ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+                self.device_buffer.put_free(device_buffer_idx)
 
             return {"data_tensor": dst_device, "metainfo": metainfo}
     
@@ -1009,6 +1030,7 @@ def get_dataloader_ray(cfg: DictConfig,
     dataset_len = len(db.hypercubes_dataframe)
 
     if cfg.datasets.split is not None and 0.0 < float(cfg.datasets.split) < 1.0:
+        set_global_seed(cfg.get("seed", 42))
         val_size = round(dataset_len * cfg.datasets.split)
         train_subset, val_subset = random_split(
             range(dataset_len),
@@ -1016,8 +1038,14 @@ def get_dataloader_ray(cfg: DictConfig,
         )
         train_indices, val_indices = train_subset.indices, val_subset.indices
 
-        train_dataset, train_dataset_len = get_dataset_ray(cfg, indices=train_indices, database=db)
-        val_dataset, val_dataset_len = get_dataset_ray(cfg, indices=val_indices, database=db)
+        train_dataset, train_dataset_len = get_dataset_ray(cfg, 
+                                                           indices=train_indices, 
+                                                           database=db, 
+                                                           columns=list(cfg.datasets.columns))
+        val_dataset, val_dataset_len = get_dataset_ray(cfg, 
+                                                       indices=val_indices, 
+                                                       database=db, 
+                                                       columns=list(cfg.datasets.columns))
 
         record_dataset_len(cfg, train_dataset_len, val_dataset_len)
 
@@ -1034,7 +1062,10 @@ def get_dataloader_ray(cfg: DictConfig,
         return train_dataloader, val_dataloader, database_df
 
     else:
-        train_dataset, train_dataset_len = get_dataset_ray(cfg, indices=None, database=db)
+        train_dataset, train_dataset_len = get_dataset_ray(cfg, 
+                                                           indices=None, 
+                                                           database=db, 
+                                                           columns=list(cfg.datasets.columns))
         record_dataset_len(cfg, train_dataset_len, 0)
 
         train_dataloader = train_dataset.iterator()._iter_batches(

@@ -455,7 +455,6 @@ def apply_occupancy_threshold(
 ) -> pl.DataFrame:
     t = 0.0 if occupancy_threshold is None else float(occupancy_threshold)
     df = compute_df_stats(df)
-
     if occupancy_threshold_filter_type == "min_all":
         mask = (pl.col("min_occupancy_ratios_ch_0") >= t) & (pl.col("min_occupancy_ratios_ch_1") >= t)
     elif occupancy_threshold_filter_type == "min_ch0":
@@ -464,7 +463,6 @@ def apply_occupancy_threshold(
         mask = pl.col("min_occupancy_ratios_ch_1") >= t
     else:
         raise ValueError(occupancy_threshold_filter_type)
-
     return df.filter(mask)
 
 
@@ -476,7 +474,6 @@ def apply_hypercubes_dataframe_filters(
         occupancy_threshold=occupancy_threshold,
         occupancy_threshold_filter_type=occupancy_threshold_filter_type,
     )
-
     stats = df.select(
         pl.col("min_occupancy_ratios_ch_0").min().alias("ch0_min"),
         pl.col("min_occupancy_ratios_ch_0").quantile(0.5).alias("ch0_med"),
@@ -495,13 +492,10 @@ def add_has_annotations_column(df: pl.DataFrame) -> pl.DataFrame:
     pc_metadata_json col:  {'0': {'histogram': {...}}, '1': {'mask_bbox_dict': {...}}}
     each key is a channel id mapping to a dict of metadata
     """
-
     if "has_annotations" in df.columns:
         return df
-
     if "pc_metadata_json" not in df.columns:
         return df.with_columns(pl.lit(False).alias("has_annotations"))
-
     has_key = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"', literal=False)
     empty_obj = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
     expr = pl.col("pc_metadata_json").is_not_null() & has_key & (~empty_obj)
@@ -516,10 +510,8 @@ def create_channel_metadata_columns(df: pl.DataFrame, expected_channel_ids=["0",
             new_columns.append(pl.lit(None).alias(f"histogram_ch_{ch}"))
         if f"mask_bbox_dict_ch_{ch}" not in df.columns:
             new_columns.append(pl.lit(None).alias(f"mask_bbox_dict_ch_{ch}"))
-
     if new_columns:
         df = df.with_columns(new_columns)
-
     if "mask_bbox_dict" not in df.columns:
         for ch in expected_channel_ids:
             if f"mask_bbox_dict_ch_{ch}" in df.columns:
@@ -528,7 +520,6 @@ def create_channel_metadata_columns(df: pl.DataFrame, expected_channel_ids=["0",
         for ch in expected_channel_ids:
             if f"histogram_ch_{ch}" in df.columns:
                 df = df.with_columns(pl.col(f"histogram_ch_{ch}").alias("histograms"))
-
     return df
 
 
@@ -542,6 +533,7 @@ def load_hypercubes_dataframe(
     tile_list: list[str] | None = None,
     timepoint_list: list[int] | None = None,
     server_folder_path: str | None = None,
+    synthetic_server_folder_path: str | None = None,
     occupancy_threshold: float | None = None,
     occupancy_threshold_filter_type: str = "min_ch0",
     synthetic_only: bool = False,
@@ -555,6 +547,9 @@ def load_hypercubes_dataframe(
     df = pl.read_csv(p)
     t1 = time.perf_counter()
     logger.info(f"Loaded hypercubes dataframe in {t1 - t0:.2f} s; shape={df.shape}")
+
+    if synthetic_only and synthetic_server_folder_path is not None:
+        server_folder_path = synthetic_server_folder_path
 
     df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
     df = add_has_annotations_column(df)
@@ -610,6 +605,7 @@ def load_tiles_dataframe(
     tile_list: list[str] | None = None,
     timepoint_list: list[int] | None = None,
     server_folder_path: str | None = None,
+    synthetic_server_folder_path: str | None = None,
     synthetic_only: bool = False,
     has_annotations: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
@@ -621,6 +617,9 @@ def load_tiles_dataframe(
     df = pl.read_csv(p)
     t1 = time.perf_counter()
     logger.info(f"Loaded tiles dataframe in {t1 - t0:.2f} s; shape={df.shape}")
+
+    if synthetic_only and synthetic_server_folder_path is not None:
+        server_folder_path = synthetic_server_folder_path
 
     df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
     df = add_has_annotations_column(df)
