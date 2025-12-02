@@ -75,6 +75,7 @@ def test_data_pipeline_ray_distributed(config):
             "tile_list": "${datasets.tile_list}",
             "synthetic_only": "${datasets.synthetic_only}",
             "has_annotations": "${datasets.has_annotations}",
+            "columns": "${datasets.columns}",
             "input_layout": {
                 "_target_": "cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE",
                 "value": "${dataset_layout_order}",

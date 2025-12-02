@@ -13,8 +13,6 @@ import ray
 import tensorstore as ts
 import torch
 import ujson
-from cell_observatory_finetune.data.structures import convert_bbox_format
-from cell_observatory_finetune.training.helpers import get_image_sizes, mask_ids_to_masks
 from cupy.cuda import runtime as cudart
 from hydra.utils import get_method, instantiate
 from omegaconf import DictConfig, OmegaConf
@@ -34,6 +32,10 @@ from cell_observatory_platform.utils.context import (
     torch_gpu_to_numa,
 )
 from cell_observatory_platform.utils.profiling import pprof_class, pprof_func
+
+# TODO: fix circular imports
+# from cell_observatory_finetune.data.structures import convert_bbox_format
+# from cell_observatory_finetune.training.helpers import get_image_sizes, mask_ids_to_masks
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -970,6 +972,8 @@ def get_dataset_ray(
     set_data_context(cfg)
     ctx_spec = get_context_spec(cfg)
 
+    print(database.hypercubes_dataframe)
+    print(f"Trying to get dataset with \ncolumns: {columns} from \n{database.hypercubes_dataframe.columns}")
     base_df = database.hypercubes_dataframe[columns]
     if indices is not None:
         base_df = base_df.iloc[indices]

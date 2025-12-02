@@ -1493,8 +1493,7 @@ class ParentDatabase:
 
         pdf = out.to_pandas()
 
-        # FIXME: we should consider renaming these to generic names
-        #        for downstream processing
+        # FIXME: we should generalize this to multiple channels
         def _get_col(pdf, base, channel):
             if channel is not None:
                 name = f"{base}_ch_{channel}"
