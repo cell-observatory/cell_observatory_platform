@@ -1,6 +1,6 @@
+import logging
 import sys
 from pathlib import Path
-import logging
 
 import pytest
 import torch
@@ -13,6 +13,7 @@ from cell_observatory_platform.tests.conftest import config, distributed_test
 
 def _test_base_evaluation(cfg: DictConfig):
     from cell_observatory_platform.utils.context import process_rank
+
     rank = process_rank()
     trainer_cls = get_class(cfg.trainer)
     trainer = trainer_cls(cfg)
@@ -21,9 +22,7 @@ def _test_base_evaluation(cfg: DictConfig):
     # test process method
     num_steps = 4
     for step in range(num_steps):
-        loss_dict = {
-            "step_loss": torch.tensor(float(rank + step + 1))
-        }
+        loss_dict = {"step_loss": torch.tensor(float(rank + step + 1))}
 
         before = len(evaluator.metrics["step_loss"].loss_values)
         evaluator.process(None, None, loss_dict)
@@ -49,9 +48,11 @@ def test_evaluation(config):
     with open_dict(config):
         config.experiment_name = "test_evaluation"
         config.paths.resume_checkpointdir = None
-        
-        config.evaluation.evaluator._target_ = "evaluation.base_evaluation.BaseEvaluator" 
+
+        config.evaluation.evaluator._target_ = "cell_observatory_platform.evaluation.base_evaluation.BaseEvaluator"
         config.evaluation.evaluator.training_metrics = [{"step_loss": "mean"}]
 
-    metrics = distributed_test(cfg=config, test="tests.evaluation.test_base_evaluation._test_base_evaluation")
+    metrics = distributed_test(
+        cfg=config, test="cell_observatory_platform.tests.evaluation.test_base_evaluation._test_base_evaluation"
+    )
     assert metrics.get("success", False), "Distributed base_evaluation test failed"

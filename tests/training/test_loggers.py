@@ -108,5 +108,7 @@ def test_loggers(config):
             w for w in config.loggers.event_writers if w._target_.endswith(".LocalEventWriter")
         ]
 
-    metrics = distributed_test(cfg=config, test="tests.training.test_loggers._test_loggers_dist")
+    metrics = distributed_test(
+        cfg=config, test="cell_observatory_platform.tests.training.test_loggers._test_loggers_dist"
+    )
     assert metrics.get("success", False), "Distributed event-logging test failed"

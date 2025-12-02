@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+
 import pytest
 import torch
 from omegaconf import open_dict
@@ -29,7 +30,7 @@ def _test_context(config):
     assert OpMap.MEAN.value == torch.distributed.ReduceOp.SUM
 
     # ranks and world size under Ray
-    rank  = process_rank()
+    rank = process_rank()
     world = get_world_size()
     assert 0 <= rank < world
     assert world > 1
@@ -41,7 +42,7 @@ def _test_context(config):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     t = torch.tensor(float(rank + 1), device=device)
 
-    # SUM 
+    # SUM
     tsum = gather_and_reduce(t.clone(), "sum")
     expected_sum = sum(float(i + 1) for i in range(world))
     assert math.isclose(tsum.item(), expected_sum, rel_tol=1e-6)
@@ -71,14 +72,13 @@ def test_context(config):
         if n_gpus < 2:
             pytest.skip("At least 2 GPUs are required for this test")
 
-
     with open_dict(config):
         config.experiment_name = "test_context"
         config.paths.resume_checkpointdir = None
-        
+
         config.clusters.worker_nodes = 1
         config.clusters.gpus_per_worker = 2
         config.clusters.cpus_per_gpu = 4
 
-    metrics = distributed_test(cfg=config, test="tests.utils.test_context._test_context")
+    metrics = distributed_test(cfg=config, test="cell_observatory_platform.tests.utils.test_context._test_context")
     assert metrics.get("success", True), "Distributed context test failed"
