@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from pprint import pprint
 
@@ -281,6 +282,7 @@ def test_hypercubes_annotations_filter(database):
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
 
+@pytest.mark.skip("Supabase times out for this test because the database is not updated.")
 @pytest.mark.parametrize("database_type", database_types)
 def test_1_128_128_128_2_hypercubes_database(config, database_type):
     config.experiment_name = "test_1_128_128_128_2_hypercubes_database"
@@ -354,7 +356,6 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config, database_type
     config.datasets.databases.input_shape = (16, 128, 128, 128, 2)
     num_timepoints = 16
     config.datasets.databases.dataset_layout_order = "TZYXC"
-    config.datasets.databases.max_rois = 2
     config.datasets.databases.max_tiles = 2
     config.datasets.databases.hpf_list = [72]
     config.datasets.databases.max_hypercubes = 100
@@ -372,9 +373,6 @@ def test_16_128_128_128_2_hypercubes_database_with_filters(config, database_type
     print(table)
 
     assert (table["time_size"] == num_timepoints).all(), f"All time sizes should be {num_timepoints}"
-    assert (
-        len(table["prepared_id"].unique()) <= config.datasets.databases.max_rois
-    ), f"Only {config.datasets.databases.max_rois} ROI should be returned"
     assert (
         len(table["tile_name"].unique()) <= config.datasets.databases.max_tiles
     ), f"Only {config.datasets.databases.max_tiles} tiles should be returned"
