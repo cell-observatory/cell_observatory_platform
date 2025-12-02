@@ -21,6 +21,13 @@ tile_list: null # list of specific tiles to filter
 synthetic_only: False
 has_annotations: False
 
+columns: [ 
+  'x_start', 'y_start', 'z_start', 'time_start',
+  'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
+  'server_folder', 'output_folder',
+  'tile_name', 'prepared_id', 'mask_bbox_dict_ch_0', 'mask_bbox_dict_ch_1' 
+]
+
 occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
 
 use_cached_hypercubes_dataframe: false # whether to use the cached hypercubes dataframe
@@ -57,6 +64,7 @@ dataset:
   tile_list: ${datasets.tile_list}
   synthetic_only: ${datasets.synthetic_only}
   has_annotations: ${datasets.has_annotations}
+  columns: ${datasets.columns}
   input_layout:
     _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}
@@ -83,8 +91,3 @@ context:
     total_bytes_limit: 0
 
 debug: false
-
-columns: [ 'x_start', 'y_start', 'z_start', 'time_start',
-          'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
-          'server_folder', 'output_folder',
-          'tile_name', 'prepared_id', 'mask_bbox_dict' ]

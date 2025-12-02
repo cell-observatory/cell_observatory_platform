@@ -34,6 +34,12 @@ collate_fn: cell_observatory_platform.data.datasets.pretrain_dataset.simple_coll
 prefetch_factor: 2 # prefetch factor for the dataloader
 num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
 
+columns: [ 
+  'x_start', 'y_start', 'z_start', 'time_start',
+  'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
+  'server_folder', 'output_folder',
+  'tile_name', 'prepared_id', 'mask_bbox_dict_ch_0', 'mask_bbox_dict_ch_1' 
+]
 
 dataset:
   _target_: cell_observatory_platform.data.datasets.pretrain_dataset.PretrainDataset
@@ -48,6 +54,7 @@ dataset:
   tile_list: ${datasets.tile_list}
   synthetic_only: ${datasets.synthetic_only}
   has_annotations: ${datasets.has_annotations}
+  columns: ${datasets.columns}
   time: true
 
   input_layout: 

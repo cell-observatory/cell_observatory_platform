@@ -1,8 +1,0 @@
-_target_: cell_observatory_platform.models.convnext.ConvNeXtV2
-input_fmt: ${dataset_layout_order}
-input_shape: ${datasets.input_shape}
-modes: 15
-depths: [3, 3, 27, 3]
-dims: [96, 192, 384, 768]
-drop_path_rate: 0.1
-head_init_scale: 1.
