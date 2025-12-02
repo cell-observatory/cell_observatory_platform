@@ -38,7 +38,7 @@ columns: [
   'x_start', 'y_start', 'z_start', 'time_start',
   'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
   'server_folder', 'output_folder',
-  'tile_name', 'prepared_id', 'mask_bbox_dict_ch_0', 'mask_bbox_dict_ch_1' 
+  'tile_name', 'prepared_id', 'mask_bbox_dict'
 ]
 
 dataset:
