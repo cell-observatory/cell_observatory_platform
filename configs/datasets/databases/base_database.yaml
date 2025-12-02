@@ -31,6 +31,3 @@ protocol: cursor # protocol used to fetch data from source (default is 'binary',
 server_folder_path: ${paths.server_folder_path}
 
 with_hypercubes_dataframe: true
-
-has_annotations: true
-synthetic_only: false
