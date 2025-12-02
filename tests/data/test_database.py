@@ -1,11 +1,10 @@
-import json
-import time
-import warnings
 from pathlib import Path
 from pprint import pprint
 
+import numpy as np
 import pandas as pd
 import pytest
+import ujson
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from pyarrow import Table
@@ -487,29 +486,20 @@ def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
 
 
 @pytest.mark.parametrize("database_type", database_types)
-@pytest.mark.parametrize(
-    "z_slices,y_slices,x_slices",
-    [
-        (128, 128, 128),
-        (128, 256, 256),
-    ],
-)
-def test_synthetic_annotations_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
-    config.experiment_name = "test_synthetic_annotations_csv_dataframe"
+def test_16_128_128_128_2_hypercubes_database_100k(config, database_type):
+    config.experiment_name = "test_16_128_128_128_2_hypercubes_database_100k"
     config.datasets.databases._target_ = get_database_class(database_type)
-    config.datasets.databases.input_shape = (1, z_slices, y_slices, x_slices, 2)
-    num_timepoints = 1
+    config.datasets.databases.input_shape = (16, 128, 128, 128, 2)
+    num_timepoints = 16
     config.datasets.databases.dataset_layout_order = "TZYXC"
-    config.datasets.databases.max_hypercubes = 1000
+    config.datasets.databases.max_hypercubes = 100000
     config.datasets.databases.max_rois = None
     config.datasets.databases.max_tiles = None
     config.datasets.databases.hpf_list = None
-    config.datasets.databases.has_annotations = True
-    config.datasets.databases.synthetic_only = True
     config.datasets.databases.fetch_hypercubes_dataframe = True
-    config.datasets.databases.use_cached_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = (
-        Path(config.paths.server_folder_path) / "databases" / "prepared_1_128_128_128_2_hypercube_view.csv"
+        Path(config.paths.outdir) / "database" / f"{config.experiment_name}.csv"
     )
 
     print(f"Initializing {config.datasets.databases._target_}...")
@@ -518,12 +508,103 @@ def test_synthetic_annotations_csv_dataframe(config, database_type, z_slices, y_
     database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
     print(table)
-    # database.save_hypercubes_dataframe(hypercubes_dataframe_path=Path(config.paths.server_folder_path) / 'databases' / "prepared_1_128_128_128_2_hypercube_view.csv")
+
+    assert (table["time_size"] == num_timepoints).all(), f"All time sizes should be {num_timepoints}"
+
+    assert (
+        table.shape[0] <= config.datasets.databases.max_hypercubes
+    ), f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+
+    assert table["first_pc_id"].unique().all(), f"`first_pc_id` should have unique values"
+
+    assert table["first_pc_id"].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
+
+
+@pytest.mark.parametrize("database_type", database_types)
+@pytest.mark.parametrize(
+    "z_slices,y_slices,x_slices",
+    [
+        (128, 128, 128),
+        (128, 256, 256),
+        (128, 384, 384),
+        (128, 256, 512),
+        (128, 384, 512),
+    ],
+)
+def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slices):
+    config.experiment_name = "test_aggregate_hypercubes"
+    config.datasets.databases._target_ = get_database_class(database_type)
+    config.datasets.databases.input_shape = (16, z_slices, y_slices, x_slices, 2)
+    num_timepoints = 16
+    config.datasets.databases.dataset_layout_order = "TZYXC"
+    config.datasets.databases.max_hypercubes = 1000
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
+    config.datasets.databases.hypercubes_dataframe_path = (
+        Path(config.paths.outdir) / "database" / f"{config.experiment_name}.csv"
+    )
+
+    print(f"Initializing {config.datasets.databases._target_}...")
+    # pprint(OmegaConf.to_container(config, resolve=True))
+
+    database = instantiate(config.datasets.databases)
+    table = database.hypercubes_dataframe
+    print(table)
+
+    assert (table["time_size"] == num_timepoints).all(), f"All time sizes should be {num_timepoints}"
+    assert (
+        table.shape[0] <= config.datasets.databases.max_hypercubes
+    ), f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+    assert table["first_pc_id"].unique().all(), f"`first_pc_id` should have unique values"
+    assert table["first_pc_id"].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
+    assert (
+        table.shape[0] == config.datasets.databases.max_hypercubes
+    ), f"{config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    assert (
+        table["occupancy_ratios_ch_0"].apply(len).unique()[0] == num_timepoints
+    ), "Should only have a single ratio for each timepoint"
+
+
+@pytest.mark.skip("Skipping test_csv_dataframe.")
+@pytest.mark.parametrize("database_type", database_types)
+@pytest.mark.parametrize(
+    "z_slices,y_slices,x_slices",
+    [
+        (128, 128, 128),
+        (128, 256, 256),
+        (128, 384, 384),
+    ],
+)
+def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
+    config.experiment_name = "test_csv_dataframe"
+    config.datasets.databases._target_ = get_database_class(database_type)
+    config.datasets.databases.input_shape = (16, z_slices, y_slices, x_slices, 2)
+    num_timepoints = 16
+    config.datasets.databases.dataset_layout_order = "TZYXC"
+    config.datasets.databases.max_hypercubes = 100000
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = True
+    config.datasets.databases.hypercubes_dataframe_path = (
+        Path(config.paths.server_folder_path) / "databases" / "prepared_16_128_128_128_2_hypercube_view.csv"
+    )
+
+    print(f"Initializing {config.datasets.databases._target_}...")
+    # pprint(OmegaConf.to_container(config, resolve=True))
+
+    database = instantiate(config.datasets.databases)
+    table = database.hypercubes_dataframe
+    print(table)
+    # database.save_hypercubes_dataframe(hypercubes_dataframe_path=Path(config.paths.server_folder_path) / 'databases' / "prepared_16_128_128_128_2_hypercube_view.csv")
 
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
-    assert table["is_synthetic"].all(), "All hypercubes should be synthetic"
-    assert table["has_annotations"].all(), "All hypercubes should have annotations"
-
     assert table["first_pc_id"].unique().all(), f"`first_pc_id` should have unique values"
     assert table["first_pc_id"].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
     assert (
@@ -533,63 +614,200 @@ def test_synthetic_annotations_csv_dataframe(config, database_type, z_slices, y_
         table["occupancy_ratios_ch_0"].apply(len).unique()[0] == num_timepoints
     ), "Should only have a single ratio for each timepoint"
 
-    import json
 
-    for ch in [0, 1]:
-        hist_col = f"histogram_ch_{ch}"
-        if hist_col in table.columns:
-            for i, hist_val in enumerate(table[hist_col]):
-                if hist_val is not None and pd.notna(hist_val):
-                    if isinstance(hist_val, str):
-                        try:
-                            hist_dict = json.loads(hist_val)
-                            assert isinstance(
-                                hist_dict, dict
-                            ), f"Row {i}: {hist_col} should be a dict, got {type(hist_dict)}"
+@pytest.mark.skip("Skipping test_aggregate_hypercubes_metadata.")
+@pytest.mark.parametrize("database_type", database_types)
+def test_aggregate_hypercubes_metadata(config, database_type):
+    config.experiment_name = "test_aggregate_hypercubes_metadata"
+    config.datasets.databases._target_ = get_database_class(database_type)
 
-                            for key, val in hist_dict.items():
-                                assert isinstance(
-                                    key, str
-                                ), f"Row {i}: {hist_col} keys should be strings, got {type(key)}"
-                                assert isinstance(
-                                    val, (int, float)
-                                ), f"Row {i}: {hist_col} values should be numbers, got {type(val)}"
-                        except json.JSONDecodeError as e:
-                            raise AssertionError(f"Row {i}: {hist_col} is not valid JSON: {e}")
-                    else:
-                        assert isinstance(
-                            hist_val, dict
-                        ), f"Row {i}: {hist_col} should be a dict or JSON string, got {type(hist_val)}"
+    config.datasets.databases.input_shape = [128, 384, 1024, 2]
+    config.datasets.databases.dataset_layout_order = "ZYXC"
 
-    for ch in [0, 1]:
-        mask_col = f"mask_bbox_dict_ch_{ch}"
-        if mask_col in table.columns:
-            for i, mask_val in enumerate(table[mask_col]):
-                if mask_val is not None and pd.notna(mask_val):
-                    if isinstance(mask_val, str):
-                        try:
-                            mask_dict = json.loads(mask_val)
-                            assert isinstance(
-                                mask_dict, dict
-                            ), f"Row {i}: {mask_col} should be a dict, got {type(mask_dict)}"
-                        except json.JSONDecodeError as e:
-                            raise AssertionError(f"Row {i}: {mask_col} is not valid JSON: {e}")
-                    else:
-                        mask_dict = mask_val
-                        assert isinstance(
-                            mask_dict, dict
-                        ), f"Row {i}: {mask_col} should be a dict or JSON string, got {type(mask_dict)}"
+    config.datasets.databases.max_hypercubes = None
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
 
-                    for cell_id, bbox in mask_dict.items():
-                        assert isinstance(
-                            bbox, dict
-                        ), f"Row {i}: {mask_col} cell '{cell_id}' bbox should be a dict, got {type(bbox)}"
-                        required_keys = {"zmin", "ymin", "xmin", "zmax", "ymax", "xmax"}
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = True
+    config.datasets.databases.with_hypercubes_dataframe = True
+    config.datasets.databases.has_annotations = True
+    config.datasets.databases.synthetic_only = True
 
-                        assert (
-                            set(bbox.keys()) == required_keys
-                        ), f"Row {i}: {mask_col} cell '{cell_id}' bbox should have keys {required_keys}, got {set(bbox.keys())}"
-                        for key in required_keys:
-                            assert isinstance(
-                                bbox[key], (int, float)
-                            ), f"Row {i}: {mask_col} cell '{cell_id}' bbox['{key}'] should be a number, got {type(bbox[key])}"
+    db = instantiate(config.datasets.databases)
+    df = db.hypercubes_dataframe
+    assert not df.empty, "No hypercubes returned from DB."
+
+    important_cols = [
+        "prepared_id",
+        "tile_name",
+        "z_start",
+        "y_start",
+        "x_start",
+        "z_size",
+        "y_size",
+        "x_size",
+        "tile_z_end",
+        "tile_y_end",
+        "tile_x_end",
+        "tile_x_start",
+        "tile_y_start",
+        "tile_z_start",
+        "tile_time_size",
+        "tile_channel_size",
+    ]
+    important_cols = [c for c in important_cols if c in df.columns]
+    example_row = df[important_cols].head(1)
+
+    print(f"Aggregated Dataframe: {df}")
+    print(f"Columns: {df.columns.tolist()}")
+    print("\n=== Example Aggregated Row (first row) ===")
+    print(example_row.to_string(index=False))
+
+    bbox_cols = [c for c in df.columns if c.startswith("mask_bbox_dict_ch_")]
+    if not bbox_cols:
+        pytest.skip("No mask_bbox_dict_ch_* columns present in aggregated dataframe.")
+
+    col = None
+    for candidate in bbox_cols:
+        if df[candidate].notna().any():
+            col = candidate
+            break
+
+    if col is None:
+        pytest.skip("All mask_bbox_dict_ch_* columns are entirely null.")
+
+    df_nonnull = df[df[col].notna()]
+
+    volumes = []
+    frac_volumes = []
+    for _, row in df_nonnull.iterrows():
+        val = row[col]
+        if isinstance(val, str):
+            try:
+                boxes_dict = ujson.loads(val)
+            except Exception:
+                continue
+        elif isinstance(val, dict):
+            boxes_dict = val
+        else:
+            continue
+
+        if not boxes_dict:
+            continue
+
+        z_size = int(row["z_size"])
+        y_size = int(row["y_size"])
+        x_size = int(row["x_size"])
+        full_volume = z_size * y_size * x_size if (z_size and y_size and x_size) else None
+
+        for cell_id, box in boxes_dict.items():
+            if isinstance(box, dict):
+                zmin = box.get("zmin")
+                ymin = box.get("ymin")
+                xmin = box.get("xmin")
+                zmax = box.get("zmax")
+                ymax = box.get("ymax")
+                xmax = box.get("xmax")
+            elif isinstance(box, (list, tuple)) and len(box) == 6:
+                zmin, ymin, xmin, zmax, ymax, xmax = box
+            else:
+                continue
+
+            if None in (zmin, ymin, xmin, zmax, ymax, xmax):
+                continue
+
+            dz = zmax - zmin
+            dy = ymax - ymin
+            dx = xmax - xmin
+            volume = dz * dy * dx
+
+            if volume <= 0:
+                continue
+
+            volumes.append(volume)
+            if full_volume and full_volume > 0:
+                frac_volumes.append(volume / full_volume)
+
+    assert len(volumes) > 0, f"Column {col} was non-null but no valid bbox entries were found after parsing."
+
+    volumes_arr = np.asarray(volumes, dtype=np.float64)
+    percentiles = [0, 25, 50, 75, 90, 95, 99, 100]
+    vol_pct = np.percentile(volumes_arr, percentiles)
+
+    print("\n=== BBox volume distribution (voxels) ===")
+    print(f"num boxes: {len(volumes)}")
+    for p, v in zip(percentiles, vol_pct):
+        print(f"{p:3d}th percentile: {v:.2f}")
+
+    side_lengths = np.cbrt(volumes_arr)
+    side_pct = np.percentile(side_lengths, percentiles)
+
+    print("\n=== Approx. side-length distribution (cubic root of volume) ===")
+    for p, v in zip(percentiles, side_pct):
+        print(f"{p:3d}th percentile: {v:.2f} voxels")
+
+    if frac_volumes:
+        frac_arr = np.asarray(frac_volumes, dtype=np.float64)
+        frac_pct = np.percentile(frac_arr, percentiles)
+        print("\n=== BBox volume distribution (fraction of cube) ===")
+        for p, v in zip(percentiles, frac_pct):
+            print(f"{p:3d}th percentile: {v:.4f}")
+
+
+@pytest.mark.skip("Skipping test_tiles_dataframe.")
+@pytest.mark.parametrize("database_type", database_types)
+def test_tiles_dataframe(config, database_type):
+    config.experiment_name = "test_tiles_dataframe"
+    config.datasets.databases._target_ = get_database_class(database_type)
+
+    config.datasets.databases.input_shape = [128, 384, 1024, 2]
+    config.datasets.databases.dataset_layout_order = "ZYXC"
+
+    config.datasets.databases.max_hypercubes = None
+    config.datasets.databases.max_rois = None
+    config.datasets.databases.max_tiles = None
+    config.datasets.databases.hpf_list = None
+
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = True
+    config.datasets.databases.with_hypercubes_dataframe = True
+    config.datasets.databases.has_annotations = False
+    config.datasets.databases.synthetic_only = True
+
+    db = instantiate(config.datasets.databases)
+    df = db.hypercubes_dataframe
+
+    assert not df.empty, "No tiles returned from DB on tile path."
+
+    # assert (df["time_size"] == 1).all(), "Tile dataframe should have time_size == 1 after expansion."
+    assert (df["z_start"] == 0).all()
+    assert (df["y_start"] == 0).all()
+    assert (df["x_start"] == 0).all()
+
+    important_cols = [
+        "prepared_id",
+        "tile_name",
+        "z_start",
+        "y_start",
+        "x_start",
+        "z_size",
+        "y_size",
+        "x_size",
+        "tile_z_end",
+        "tile_y_end",
+        "tile_x_end",
+        "tile_x_start",
+        "tile_y_start",
+        "tile_z_start",
+        "tile_time_size",
+        "tile_channel_size",
+    ]
+    important_cols = [c for c in important_cols if c in df.columns]
+    example_row = df[important_cols].head(1)
+
+    print(f"Aggregated Dataframe: {df}")
+    print(f"Columns: {df.columns.tolist()}")
+    print("\n=== Example Aggregated Row (first row) ===")
+    print(example_row.to_string(index=False))

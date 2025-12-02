@@ -1,12 +1,13 @@
 import os
 import math
 import ujson
+import random
 import logging
 import itertools
 from pathlib import Path
 from operator import attrgetter
 from collections import defaultdict
-from typing import Optional, List, Union, Callable, Tuple, Sequence, Literal
+from typing import Optional, List, Union, Callable, Tuple, Mapping, Any
 
 import numpy as np
 
@@ -801,6 +802,63 @@ def named_apply(
 
 
 def init_weights(model: nn.Module, weight_init_type: str):
+    logger = logging.getLogger(__name__)
+    
+    # ------------------------------------------------------------------
+    # Common alias resolution helpers
+    # ------------------------------------------------------------------
+    def _resolve_alias(root: nn.Module, paths):
+        """
+        paths: list[tuple[str, ...]]
+
+        Returns (obj, path) where obj is the resolved attribute chain,
+        or (None, None) if none match.
+        """
+        for chain in paths:
+            obj = root
+            ok = True
+            for name in chain:
+                if not hasattr(obj, name):
+                    ok = False
+                    break
+                obj = getattr(obj, name)
+            if ok:
+                return obj, chain
+        return None, None
+
+    # Alias tables
+    PATCH_EMBED_WEIGHT_ALIASES = [
+        ("masked_encoder", "patch_embedding", "proj", "weight"),
+        ("masked_encoder", "patch_embed", "proj", "weight"),
+        ("backbone", "patch_embedding", "proj", "weight"),
+        ("backbone", "patch_embed", "proj", "weight"),
+        ("encoder", "patch_embedding", "proj", "weight"),
+        ("encoder", "patch_embed", "proj", "weight"),
+    ]
+
+    TOKEN_PARAM_ALIASES = [
+        ("masked_decoder", "token_param"),
+        ("decoder", "token_param"),
+        ("backbone", "token_param"),
+        ("encoder", "token_param"),
+    ]
+
+    INPUT_ENCODER_ALIASES = [
+        ("input_encoder",),
+        ("masked_encoder",),
+        ("backbone",),
+        ("encoder",),
+    ]
+
+    TARGET_PREDICTOR_ALIASES = [
+        ("target_predictor",),
+        ("decoder",),
+    ]
+
+    # ------------------------------------------------------------------
+    # MAE
+    # ------------------------------------------------------------------
+    
     if weight_init_type == "mae":
         # MAE model init utility function adapted from:
         # https://github.com/facebookresearch/mae/main/models_mae.py
@@ -808,7 +866,7 @@ def init_weights(model: nn.Module, weight_init_type: str):
             if isinstance(m, nn.Linear):
                 # use xavier_uniform following official JAX ViT
                 torch.nn.init.xavier_uniform_(m.weight)
-                if isinstance(m, nn.Linear) and m.bias is not None:
+                if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.bias, 0)
@@ -822,34 +880,53 @@ def init_weights(model: nn.Module, weight_init_type: str):
             # elif hasattr(m, 'init_weights'):
             #     m.init_weights()
 
-         # initialize patch_embed like nn.Linear (instead of nn.Conv2d)
-        w = model.masked_encoder.patch_embedding.proj.weight.data
-        torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+        patch_w, patch_path = _resolve_alias(model, PATCH_EMBED_WEIGHT_ALIASES)
+        if patch_w is None:
+            raise ValueError(
+                "MAE init: could not locate patch embedding weight. "
+                f"Tried aliases: {PATCH_EMBED_WEIGHT_ALIASES}"
+            )
+        torch.nn.init.xavier_uniform_(patch_w.view(patch_w.shape[0], -1))
 
-        # timm's trunc_normal_(std=.02) is effectively
-        # normal_(std=0.02) as cutoff is too big (2.)
-        if hasattr(model.masked_decoder, "token_param"):
-            torch.nn.init.normal_(model.masked_decoder.token_param, std=.02)
+        token_param, token_path = _resolve_alias(model, TOKEN_PARAM_ALIASES)
+        if token_param is not None:
+            torch.nn.init.normal_(token_param, std=0.02)
+        else:
+            logger.debug(
+                "MAE init: token_param not found (aliases: %s); skipping token init.",
+                TOKEN_PARAM_ALIASES,
+            )
 
         # initialize nn.Linear and nn.LayerNorm
         model.apply(_mae_init_weights)
 
+    # ------------------------------------------------------------------
+    # VJEPA
+    # ------------------------------------------------------------------
+
     elif weight_init_type == "vjepa":
         # helpers from:
         # https://github.com/facebookresearch/ijepa/blob/main/src/models/vision_transformer.py
-        def _vjepa_fix_init_weight(model):
+        def _vjepa_fix_init_weight(enc_model: nn.Module):
             def rescale(param, layer_id):
                 param.div_(math.sqrt(2.0 * layer_id))
 
-            for layer_id, layer in enumerate(model.encoder.transformer_blocks):
-                # important to match names with timm MLP and our Attention module
+            if not hasattr(enc_model, "encoder") or not hasattr(
+                enc_model.encoder, "transformer_blocks"
+            ):
+                raise ValueError(
+                    "VJEPA init: expected an encoder with `encoder.transformer_blocks` "
+                    f"on {enc_model.__class__.__name__}"
+                )
+
+            for layer_id, layer in enumerate(enc_model.encoder.transformer_blocks):
                 rescale(layer.att.proj.weight.data, layer_id + 1)
                 rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
         def _vjepa_init_weights(m):
             if isinstance(m, nn.Linear):
                 trunc_normal_(m.weight, std=model.init_std)
-                if isinstance(m, nn.Linear) and m.bias is not None:
+                if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.bias, 0)
@@ -863,22 +940,46 @@ def init_weights(model: nn.Module, weight_init_type: str):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-        # NOTE: IJEPA does initlization of encoder and decoder separately
-        #       however they are intialized the same way hence we
-        #       just do a single named_apply over the whole model
-        trunc_normal_(model.masked_decoder.token_param, std=model.init_std)
-        model.apply(_vjepa_init_weights)
-        # rescale blocks for input encoder and target predictor
-        _vjepa_fix_init_weight(model.input_encoder)
-        _vjepa_fix_init_weight(model.target_predictor)
+        decoder_token, dec_path = _resolve_alias(model, [("masked_decoder", "token_param")] + TOKEN_PARAM_ALIASES)
+        if decoder_token is None:
+            raise ValueError(
+                "VJEPA init: could not locate decoder token_param. "
+                f"Tried aliases: {[('masked_decoder', 'token_param')] + TOKEN_PARAM_ALIASES}"
+            )
+        trunc_normal_(decoder_token, std=model.init_std)
 
+        # Initialize all Linear/Norm/Conv
+        model.apply(_vjepa_init_weights)
+
+        # Required: input encoder
+        input_encoder, input_path = _resolve_alias(model, INPUT_ENCODER_ALIASES)
+        if input_encoder is None:
+            raise ValueError(
+                "VJEPA init: could not locate input encoder. "
+                f"Tried aliases: {INPUT_ENCODER_ALIASES}"
+            )
+        _vjepa_fix_init_weight(input_encoder)
+
+        # Required: target predictor
+        target_predictor, tp_path = _resolve_alias(model, TARGET_PREDICTOR_ALIASES)
+        if target_predictor is None:
+            raise ValueError(
+                "VJEPA init: could not locate target predictor. "
+                f"Tried aliases: {TARGET_PREDICTOR_ALIASES}"
+            )
+        _vjepa_fix_init_weight(target_predictor)
+
+    # ------------------------------------------------------------------
+    # VJEPA2
+    # ------------------------------------------------------------------
+    
     elif weight_init_type == "vjepa2":
         # helpers from:
         # https://github.com/facebookresearch/vjepa2/main/src/models/vision_transformer.py
         def _vjepa2_init_weights(m):
             if isinstance(m, nn.Linear):
                 trunc_normal_(m.weight, std=model.init_std)
-                if isinstance(m, nn.Linear) and m.bias is not None:
+                if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.bias, 0)
@@ -894,42 +995,72 @@ def init_weights(model: nn.Module, weight_init_type: str):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-        def _vjepa2_rescale_blocks(model):
+        def _vjepa2_rescale_blocks(enc_model: nn.Module):
             def rescale(param, layer_id):
                 param.div_(math.sqrt(2.0 * layer_id))
 
-            for layer_id, layer in enumerate(model.encoder.transformer_blocks):
+            if not hasattr(enc_model, "encoder") or not hasattr(
+                enc_model.encoder, "transformer_blocks"
+            ):
+                raise ValueError(
+                    "VJEPA2 init: expected an encoder with `encoder.transformer_blocks` "
+                    f"on {enc_model.__class__.__name__}"
+                )
+
+            for layer_id, layer in enumerate(enc_model.encoder.transformer_blocks):
                 rescale(layer.att.proj.weight.data, layer_id + 1)
                 rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
         model.apply(_vjepa2_init_weights)
-        _vjepa2_rescale_blocks(model.input_encoder)
-        
-        if hasattr(model.target_predictor, "encoder"):
-            _vjepa2_rescale_blocks(model.target_predictor)
+
+        input_encoder, input_path = _resolve_alias(model, INPUT_ENCODER_ALIASES)
+        if input_encoder is None:
+            raise ValueError(
+                "VJEPA2 init: could not locate input encoder. "
+                f"Tried aliases: {INPUT_ENCODER_ALIASES}"
+            )
+        _vjepa2_rescale_blocks(input_encoder)
+
+        target_predictor, tp_path = _resolve_alias(model, TARGET_PREDICTOR_ALIASES)
+        if target_predictor is not None and hasattr(target_predictor, "encoder"):
+            _vjepa2_rescale_blocks(target_predictor)
+
+    # ------------------------------------------------------------------
+    # ViT-Adapter style init
+    # ------------------------------------------------------------------
 
     elif weight_init_type == "vit_adapter":
         def _vit_adapter_init_weights(m):
             if isinstance(m, nn.Linear):
                 torch.nn.init.trunc_normal_(m.weight, std=0.02)
-                if isinstance(m, nn.Linear) and m.bias is not None:
+                if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm) \
-                or isinstance(m, nn.BatchNorm3d)\
-                or isinstance(m, nn.BatchNorm1d):
+            elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d, nn.BatchNorm1d)):
                 nn.init.constant_(m.bias, 0)
                 nn.init.constant_(m.weight, 1.0)
-            elif isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d):
-                fan_out = m.kernel_size[0] * m.kernel_size[1] * m.kernel_size[2] * m.out_channels
+            elif isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
+                fan_out = (
+                    m.kernel_size[0]
+                    * m.kernel_size[1]
+                    * m.kernel_size[2]
+                    * m.out_channels
+                )
                 fan_out //= m.groups
                 m.weight.data.normal_(0, math.sqrt(2.0 / fan_out))
                 if m.bias is not None:
                     m.bias.data.zero_()
-            elif isinstance(m, nn.Conv1d) or isinstance(m, nn.ConvTranspose1d):
+            elif isinstance(m, (nn.Conv1d, nn.ConvTranspose1d)):
                 fan_out = m.kernel_size[0] * m.out_channels
                 fan_out //= m.groups
                 m.weight.data.normal_(0, math.sqrt(2.0 / fan_out))
+                if m.bias is not None:
+                    m.bias.data.zero_()
 
+        if not (hasattr(model, "up") and hasattr(model, "spatial_prior_module") and hasattr(model, "interactions")):
+            raise ValueError(
+                "vit_adapter init: expected model to have attributes "
+                "`up`, `spatial_prior_module`, and `interactions`."
+            )
         model.up.apply(_vit_adapter_init_weights)
         model.spatial_prior_module.apply(_vit_adapter_init_weights)
         model.interactions.apply(_vit_adapter_init_weights)
@@ -937,48 +1068,6 @@ def init_weights(model: nn.Module, weight_init_type: str):
 
     else:
         raise ValueError(f"Unknown weight initialization type: {weight_init_type}")
-    
-
-# FIXME: perhaps not the cleanest solution, but helps prevent
-#       making configs more complicated to configure
-def append_kwargs_to_model(cfg):
-    with open_dict(cfg):
-        if cfg.models.get("decoders", None):
-            decoder = cfg.models.decoders.name
-            decoder_args = cfg.models.decoders
-        else:
-            decoder = None
-            decoder_args = None
-
-        if cfg.get("network", None) is  not None and cfg.models.get(cfg.network, None) is not None:
-            cfg.models = cfg.models.get(cfg.network, None)
-
-        if cfg.get("tasks", None) is not None:
-
-            if cfg.tasks.task in ["channel_split", "upsampling"]:
-                cfg.models.task = cfg.tasks.task
-
-                input_shape= tuple(cfg.datasets.input_shape)
-                input_format = str(cfg.dataset_layout_order)
-                output_channels = {axis: shape for axis, shape in zip(input_format, input_shape)}
-                cfg.models.output_channels = output_channels["C"]
-                
-                if cfg.tasks.task == "channel_split":
-                    input_shape = cfg.models.input_shape
-                    input_shape[-1] = cfg.tasks.input_channels
-                    cfg.models.input_shape = input_shape
-
-            if cfg.tasks.task == "instance_segmentation":
-                input_shape = cfg.models.backbone.input_shape
-                input_shape[-1] = cfg.tasks.input_channels
-                cfg.models.input_shape = input_shape
-                cfg.models.backbone.input_shape = input_shape
-
-        if decoder is not None or decoder_args is not None:
-            cfg.models.decoder = decoder
-            cfg.models.decoder_args = decoder_args
-
-    return cfg, decoder_args
 
 
 def get_data_dim(layout_order: str) -> int:
@@ -1017,3 +1106,16 @@ def get_patch_sizes(input_format: str, patch_shape: List[int]):
 
     else:
         raise ValueError(f"Unknown dataset layout order: {input_format}")
+
+
+def set_global_seed(seed: int):
+    # Python built-in RNG
+    random.seed(seed)
+    # Numpy RNG
+    np.random.seed(seed)
+    # Torch CPU RNG
+    torch.manual_seed(seed)
+    # Torch CUDA RNG (all devices)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)

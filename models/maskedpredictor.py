@@ -1,6 +1,7 @@
 import sys
+import inspect
 import logging
-from typing import Literal, Union
+from typing import Literal, Union, Mapping, Any
 
 import torch
 import torch.nn as nn
@@ -260,3 +261,39 @@ class MaskedPredictor(nn.Module):
         x = self.norm(x)
         x = self.output_projection(x)
         return x
+    
+
+def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
+    cfg = dict(cfg)
+
+    # Mandatory: AutoBench must set input_dim
+    in_dim = cfg.get("input_dim", None)
+    out_dim = cfg.get("output_dim", None)
+    if in_dim is None or out_dim is None:
+        raise ValueError("input_dim must be specified in the config for MaskedPredictor")
+
+    # Map generic `input_dim` to the actual args
+    cfg["input_embed_dim"] = in_dim
+    cfg["output_embed_dim"] = out_dim
+
+    sig = inspect.signature(MaskedPredictor.__init__)
+    allowed = set(sig.parameters.keys()) - {"self"}
+    ignore = {"_target_", "BUILD"}
+
+    kwargs = {}
+    for k, v in cfg.items():
+        if k in ignore or k not in allowed:
+            continue
+        kwargs[k] = v
+    return kwargs
+
+
+def BUILD(cfg: Mapping[str, Any]) -> MaskedPredictor:
+    """
+    Hydra entrypoint for MaskedPredictor.
+
+    Contract:
+      - `input_dim` (from AutoBench) → `input_embed_dim` (and `output_embed_dim` if not set)
+      - `embed_dim`, `depth`, `num_heads`, etc. can be set directly in cfg.
+    """
+    return MaskedPredictor(**_extract_model_kwargs(cfg))

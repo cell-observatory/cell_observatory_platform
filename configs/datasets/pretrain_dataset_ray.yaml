@@ -7,7 +7,8 @@ defaults:
 
 # mainly used by other configs but determined here for ease of access
 batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-input_shape: [16, 128, 128, 128, 2] 
+input_shape: [16, 128, 128, 128, 2]
+train_shape: [16, 128, 128, 128, 2]
 patch_shape: [4, 16, 16, 16]
 
 max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
@@ -82,3 +83,8 @@ context:
     total_bytes_limit: 0
 
 debug: false
+
+columns: [ 'x_start', 'y_start', 'z_start', 'time_start',
+          'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
+          'server_folder', 'output_folder',
+          'tile_name', 'prepared_id', 'mask_bbox_dict' ]
