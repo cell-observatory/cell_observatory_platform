@@ -3,13 +3,14 @@ import torch
 
 from cell_observatory_platform.training.losses import FourierLoss
 
+
 @pytest.mark.parametrize(
     "input_fmt,input_shape,patch_shape,in_chans",
     [
-        # 4D case: TZYXC 
-        ("TZYXC", (16, 128, 256, 256, 2), (16, 16, 16, 16), 2),
-        # 3D case: ZYXC 
-        ("ZYXC",  (128, 256, 256, 2),     (16, 16, 16),   2),
+        # 4D case: TZYXC
+        ("TZYXC", (2, 128, 128, 128, 2), (2, 16, 16, 16), 2),
+        # 3D case: ZYXC
+        ("ZYXC", (128, 128, 128, 2), (16, 16, 16), 2),
     ],
 )
 def test_fourier_loss_forward_backward(input_fmt, input_shape, patch_shape, in_chans):
@@ -35,7 +36,9 @@ def test_fourier_loss_forward_backward(input_fmt, input_shape, patch_shape, in_c
     B_, P, D = full_targets_patches.shape
     assert B_ == B and P > 4, "Test expects more than 4 patches to mask a few."
 
-    full_predictions_patches = (full_targets_patches + 0.01 * torch.randn_like(full_targets_patches)).detach().requires_grad_(True)
+    full_predictions_patches = (
+        (full_targets_patches + 0.01 * torch.randn_like(full_targets_patches)).detach().requires_grad_(True)
+    )
 
     M = 4
     masked_idx = torch.arange(M, device=device).unsqueeze(0).repeat(B, 1)
@@ -59,18 +62,18 @@ def test_fourier_loss_forward_backward(input_fmt, input_shape, patch_shape, in_c
     print(f"full_predictions_patches.shape: {full_predictions_patches.shape}")
     print(f"target_masks.shape: {aux['target_masks'].shape}")
 
-    out = loss_mod(
+    loss, out = loss_mod(
         targets=targets_masked,
         predictions=predictions_masked,
         masks=masks_grid,
         aux_loss_meta=aux,
     )
+    print(f"Loss output: {loss.item()}")
 
-    assert isinstance(out, torch.Tensor)
-    assert out.ndim == 0
-    assert torch.isfinite(out), "Loss produced inf/NaN"
+    assert loss.ndim == 0
+    assert torch.isfinite(loss), "Loss produced inf/NaN"
 
-    out.backward()
+    loss.backward()
     assert full_predictions_patches.grad is not None
     assert torch.isfinite(full_predictions_patches.grad).all()
     assert full_predictions_patches.grad.abs().sum() > 0
