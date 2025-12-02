@@ -1,22 +1,22 @@
+import os
 import sys
 from pathlib import Path
-import os
 
+import pandas as pd
 import pytest
+import ray
 import torch
 from hydra.utils import get_class
 from omegaconf import DictConfig, open_dict
 from ray.train import report
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
+from cell_observatory_platform.training.loggers import LocalEventWriter
+from cell_observatory_platform.utils.context import get_world_size, process_rank
 
 
 def _test_loggers_dist(cfg: DictConfig):
-    import pandas as pd
 
-    from cell_observatory_platform.training.loggers import LocalEventWriter
-    from cell_observatory_platform.utils.context import get_world_size, process_rank
-    
     rank = process_rank()
     world = get_world_size()
 
@@ -26,16 +26,13 @@ def _test_loggers_dist(cfg: DictConfig):
     recorder = trainer.event_recorder
     writers_list = trainer.event_writers_list
     writer = writers_list.writers[0]
-    assert isinstance(writer, LocalEventWriter), \
-        "Expected LocalEventWriter for testing writers"
+    assert isinstance(writer, LocalEventWriter), "Expected LocalEventWriter for testing writers"
 
     step_csv = writer.step_scalars_savepath
     epoch_csv = writer.epoch_scalars_savepath
-    
-    assert Path(step_csv).parent.exists(), \
-        f"Step scalars directory does not exist: {Path(step_csv).parent}"
-    assert Path(epoch_csv).parent.exists(), \
-        f"Epoch scalars directory does not exist: {Path(epoch_csv).parent}"
+
+    assert Path(step_csv).parent.exists(), f"Step scalars directory does not exist: {Path(step_csv).parent}"
+    assert Path(epoch_csv).parent.exists(), f"Epoch scalars directory does not exist: {Path(epoch_csv).parent}"
 
     if Path(step_csv).exists() and Path(step_csv).is_file() and Path(step_csv).match("*.csv"):
         # remove old step scalars CSV if it exists
@@ -75,17 +72,14 @@ def _test_loggers_dist(cfg: DictConfig):
     # no-op for LocalEventWriter
     writers_list.close()
 
-    # test that the scalars were written 
+    # test that the scalars were written
     # and reduced correctly
-    # TODO: remove old CSVs to prevent counting 
+    # TODO: remove old CSVs to prevent counting
     #       old rows
     if rank == 0:
         assert step_csv.exists(), "step CSV missing"
         step_df = pd.read_csv(step_csv)
-        expected_means = {
-            it: sum(float(k + it + 1) for k in range(world)) / world
-            for it in range(n_steps)
-        }
+        expected_means = {it: sum(float(k + it + 1) for k in range(world)) / world for it in range(n_steps)}
         for _, row in step_df.iterrows():
             assert pytest.approx(row["loss_median"]) == expected_means[row["iter"]]
 
@@ -104,13 +98,14 @@ def test_loggers(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
 
+    ray.shutdown()
+
     with open_dict(config):
         config.experiment_name = "test_event_logging"
         config.paths.resume_checkpointdir = None
 
         config.loggers.event_writers = [
-            w for w in config.loggers.event_writers
-            if w._target_.endswith(".LocalEventWriter")
+            w for w in config.loggers.event_writers if w._target_.endswith(".LocalEventWriter")
         ]
 
     metrics = distributed_test(cfg=config, test="tests.training.test_loggers._test_loggers_dist")
