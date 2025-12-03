@@ -4,16 +4,14 @@ https://github.com/facebookresearch/detectron2/blob/main/detectron2/engine/hooks
 https://github.com/open-mmlab/mmengine/tree/main/mmengine/hooks
 """
 
-
+import datetime
+import logging
+import math
+import operator
 import os
 import sys
-import math
 import time
-import logging
-import datetime
-import operator
 from collections import Counter
-
 from enum import Enum
 from pathlib import Path
 from typing import Literal, Optional, Sequence, Union
@@ -27,11 +25,7 @@ from cell_observatory_platform.training.helpers import log_data_timings
 from cell_observatory_platform.training.loggers import EventWriter
 from cell_observatory_platform.utils.context import gather_and_reduce, is_main_process, process_rank
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -48,12 +42,12 @@ class HookBase:
     Base class for hooks that can be registered with :class:`BaseTrainer`.
     """
 
-    # a weak reference to the trainer object 
+    # a weak reference to the trainer object
     # set by the trainer when the hook is registered
     trainer = None
-    
+
     # the priority of the hook
-    # hooks with higher priority will 
+    # hooks with higher priority will
     # be executed earlier
     PRIORITY = HOOK_PRIORITY.MEDIUM
 
@@ -157,6 +151,7 @@ class HookBase:
 
 class AnomalyDetector(HookBase):
     """Wrap each epoch in torch.autograd.detect_anomaly."""
+
     def __init__(self):
         super().__init__()
         self._anom_ctx = torch.autograd.set_detect_anomaly(True, check_nan=False)
@@ -171,17 +166,22 @@ class AnomalyDetector(HookBase):
     def after_step(self, data_sample, outputs, loss_dict):
         if torch.isnan(loss_dict["step_loss"]):
             self.loss_nans += 1
-            logger.warning(f"Step loss is {loss_dict['step_loss']} \
-                           for step {self.trainer._iter} in epoch {self.trainer._epoch}")
+            logger.warning(
+                f"Step loss is {loss_dict['step_loss']} \
+                           for step {self.trainer._iter} in epoch {self.trainer._epoch}"
+            )
             if self.loss_nans > 10:
-                raise Exception(f"Step loss is {loss_dict['step_loss']} \
-                                for step {self.trainer._iter} in epoch {self.trainer._epoch}.")
+                raise Exception(
+                    f"Step loss is {loss_dict['step_loss']} \
+                                for step {self.trainer._iter} in epoch {self.trainer._epoch}."
+                )
 
 
 class SamplerSetter(HookBase):
     """
     A hook that sets the sampler for the trainer.
     """
+
     def before_epoch(self):
         if self.trainer.ray_context.get_world_size() > 1:
             self.trainer.train_dataloader.sampler.set_epoch(self.trainer._epoch)
@@ -192,14 +192,13 @@ class LRScheduler(HookBase):
     A hook which executes a scheduler step and summarizes the LR
     for each parameter group in the optimizer.
     """
+
     def before_train(self):
         self.optimizer = self.trainer.opt
         self.scheduler = self.trainer.scheduler
         self.update_type = self.trainer.scheduler.update_type
 
-        self._group_labels = [
-            g.get("name", f"group{i}") for i, g in enumerate(self.optimizer.param_groups)
-        ]
+        self._group_labels = [g.get("name", f"group{i}") for i, g in enumerate(self.optimizer.param_groups)]
         self._best_param_group_id = self.get_best_param_group_id(self.optimizer)
 
     @staticmethod
@@ -234,7 +233,7 @@ class LRScheduler(HookBase):
         elif self.update_type == "step":
             self.scheduler.step(self.trainer._iter)
         else:
-            raise NotImplementedError(f'{self.update_type=} is not supported')
+            raise NotImplementedError(f"{self.update_type=} is not supported")
 
 
 class IterationTimer(HookBase):
@@ -247,7 +246,7 @@ class IterationTimer(HookBase):
     placed at the beginning of the list of hooks to obtain accurate timing.
     """
 
-    # setting priority to high to ensure that 
+    # setting priority to high to ensure that
     # this hook runs early in the hook chain
     PRIORITY = HOOK_PRIORITY.HIGH
 
@@ -266,18 +265,18 @@ class IterationTimer(HookBase):
         # train epoch timer
         self._step_timer = Timer()
         self._epoch_timer = Timer()
-        
+
         # validation step timer and
         # validation epoch timer
         self._val_step_timer = Timer()
         self._val_timer = Timer()
-        
+
         # test step timer
         # total time spent in test
         # given by the difference
         # between _start_time and current time
         self._test_timer = Timer()
-        
+
         # for the total time spent not in hooks
         # different from time between
         # _start_time and current time
@@ -328,11 +327,7 @@ class IterationTimer(HookBase):
         if iter_done > self._warmup_iter:
             sec = self._step_timer.seconds()
             self.trainer.event_recorder.put_scalars(step_time=sec)
-            log_data_timings(self.trainer, 
-                             self.trainer._iter+1, 
-                             data_sample, 
-                             loss_dict, 
-                             type="train")
+            log_data_timings(self.trainer, self.trainer._iter + 1, data_sample, loss_dict, type="train")
         else:
             # reset _total_timer and _start_time
             # to avoid counting the warmup iterations
@@ -387,12 +382,8 @@ class IterationTimer(HookBase):
         # Reset the timer for the next validation step
         self._val_step_timer.reset()
 
-        log_data_timings(self.trainer, 
-                         self.trainer._iter+1, 
-                         data_sample, 
-                         loss_dict, 
-                         type="val")
-    
+        log_data_timings(self.trainer, self.trainer._iter + 1, data_sample, loss_dict, type="val")
+
     def before_test(self):
         """
         Reset the timer at the beginning of each test step.
@@ -437,11 +428,7 @@ class IterationTimer(HookBase):
         if iter_done > self._warmup_iter:
             sec = self._test_timer.seconds()
             self.trainer.event_recorder.put_scalars(test_step_time=sec)
-            log_data_timings(self.trainer, 
-                         self.trainer._iter+1, 
-                         data_sample, 
-                         loss_dict, 
-                         type="test")
+            log_data_timings(self.trainer, self.trainer._iter + 1, data_sample, loss_dict, type="test")
         else:
             # reset _total_timer and _start_time
             # to avoid counting the warmup iterations
@@ -466,9 +453,9 @@ class PeriodicWriter(HookBase):
         """
         super().__init__()
         # TODO: do we want to have an option to only write every
-        #       `period` epochs? 
+        #       `period` epochs?
         self._writers = writers
-        
+
         # FIXME: errors related to use in cell_observatory_finetune
         # for w in self._writers.writers:
         #     assert isinstance(w, EventWriter), "All writers must be \
@@ -493,6 +480,7 @@ class PeriodicCheckpointer(HookBase):
     """
     Checkpointing, executed every ``period`` epoch and after the last epoch.
     """
+
     def __init__(self, file_prefix="latest_model"):
         super().__init__()
         self.file_prefix = file_prefix
@@ -509,9 +497,9 @@ class PeriodicCheckpointer(HookBase):
                 prefix=self.file_prefix,
                 save_epoch=self.trainer._epoch + 1,
                 save_best_loss=self.trainer._curr_val_metric,
-                save_step=self.trainer._iter
+                save_step=self.trainer._iter,
             )
-        
+
     def after_train(self):
         """
         Checkpointing is done after the last epoch.
@@ -521,23 +509,22 @@ class PeriodicCheckpointer(HookBase):
                 prefix=self.file_prefix,
                 save_epoch=self.trainer._epoch + 1,
                 save_best_loss=self.trainer._curr_val_metric,
-                save_step=self.trainer._iter
+                save_step=self.trainer._iter,
             )
 
 
 class BestCheckpointer(HookBase):
     def __init__(self, checkpointdir: Union[str, Path]):
         super().__init__()
-        # NOTE: period is same as in PeriodicCheckpointer 
+        # NOTE: period is same as in PeriodicCheckpointer
         self.checkpoint_dir = Path(checkpointdir)
 
     def before_train(self):
         self.period = self.trainer.checkpoint_manager.save_period
-    
+
     def after_validation(self):
         if (self.trainer._epoch + 1) % self.period == 0:
-            checkpoint = Checkpoint.from_directory(self.checkpoint_dir)  \
-                if is_main_process() else None
+            checkpoint = Checkpoint.from_directory(self.checkpoint_dir) if is_main_process() else None
         else:
             checkpoint = None
 
@@ -545,9 +532,9 @@ class BestCheckpointer(HookBase):
             metrics={
                 "best_loss": self.trainer._curr_val_metric,
                 "save_step": self.trainer._iter,
-                "save_epoch": self.trainer._epoch + 1
+                "save_epoch": self.trainer._epoch + 1,
             },
-            checkpoint=checkpoint
+            checkpoint=checkpoint,
         )
 
 
@@ -556,12 +543,7 @@ class TorchMemoryStats(HookBase):
     Writes pytorch's cuda memory statistics periodically.
     """
 
-    def __init__(
-        self,
-        step_period=50,
-        epoch_period=1,
-        logdir=None
-    ):
+    def __init__(self, step_period=50, epoch_period=1, logdir=None):
         """
         Args:
             period (int): Output stats each 'period' iterations
@@ -571,21 +553,21 @@ class TorchMemoryStats(HookBase):
         self._step_period = step_period
         self._epoch_period = epoch_period
 
-        self._logdir = Path(logdir) / 'memory' 
+        self._logdir = Path(logdir) / "memory"
         self._logdir.mkdir(parents=True, exist_ok=True)
 
     def before_train(self):
-        assert self._step_period < self.trainer.steps_per_epoch, \
-            f"Step period {self._step_period} must be less than " \
-            f"steps per epoch {self.trainer.steps_per_epoch}."
-    
+        assert self._step_period < self.trainer.steps_per_epoch, (
+            f"Step period {self._step_period} must be less than " f"steps per epoch {self.trainer.steps_per_epoch}."
+        )
+
     def after_step(self, data_sample, outputs, loss_dict):
         if (self.trainer._iter + 1) % self._step_period == 0:
             if torch.cuda.is_available():
-                max_reserved_gb = torch.cuda.max_memory_reserved() / (1024 ** 3)
-                reserved_gb = torch.cuda.memory_reserved() / (1024 ** 3)
-                max_allocated_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
-                allocated_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+                max_reserved_gb = torch.cuda.max_memory_reserved() / (1024**3)
+                reserved_gb = torch.cuda.memory_reserved() / (1024**3)
+                max_allocated_gb = torch.cuda.max_memory_allocated() / (1024**3)
+                allocated_gb = torch.cuda.memory_allocated() / (1024**3)
 
                 self.trainer.event_recorder.put_scalars(
                     max_reserved_mem=max_reserved_gb,
@@ -603,7 +585,7 @@ class TorchMemoryStats(HookBase):
             # TODO: support for saving table to
             #       wandb/tensorboard
             if is_main_process():
-                with (self._logdir / f'{self.trainer._epoch}.log').open('w') as f:
+                with (self._logdir / f"{self.trainer._epoch}.log").open("w") as f:
                     f.write(str(mem_log))
 
     def after_test_step(self, data_sample, outputs, loss_dict):
@@ -612,10 +594,10 @@ class TorchMemoryStats(HookBase):
         """
         if (self.trainer._iter + 1) % self._step_period == 0:
             if torch.cuda.is_available():
-                max_reserved_gb = torch.cuda.max_memory_reserved() / (1024 ** 3)
-                reserved_gb = torch.cuda.memory_reserved() / (1024 ** 3)
-                max_allocated_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
-                allocated_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+                max_reserved_gb = torch.cuda.max_memory_reserved() / (1024**3)
+                reserved_gb = torch.cuda.memory_reserved() / (1024**3)
+                max_allocated_gb = torch.cuda.max_memory_allocated() / (1024**3)
+                allocated_gb = torch.cuda.memory_allocated() / (1024**3)
 
                 self.trainer.event_recorder.put_scalars(
                     max_reserved_mem=max_reserved_gb,
@@ -632,8 +614,8 @@ class TorchMemoryStats(HookBase):
         """
         mem_log = torch.cuda.memory_summary()
         if is_main_process():
-            os.makedirs(self._logdir / 'test', exist_ok=True)
-            with (self._logdir / 'test' / 'memory_test.log').open('w') as f:
+            os.makedirs(self._logdir / "test", exist_ok=True)
+            with (self._logdir / "test" / "memory_test.log").open("w") as f:
                 f.write(str(mem_log))
 
 
@@ -643,12 +625,12 @@ class BestMetricSaver(HookBase):
         metric_name: str,
         compare_fn: Literal["max", "min"] = "min",
         eval_after_validation: bool = True,
-        period: int = 1
+        period: int = 1,
     ):
         super().__init__()
         self.metric_name = metric_name
         self.compare_fn = operator.gt if compare_fn == "max" else operator.lt
-        
+
         self.eval_after_validation = eval_after_validation
         self.period = period
 
@@ -671,11 +653,10 @@ class BestMetricSaver(HookBase):
                     "Make sure to set `val_metric` in the trainer config."
                 )
             latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
-            latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, \
-                                                                device="cuda")).item()
+            latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, device="cuda")).item()
             self.trainer._curr_val_metric = latest_metric_val
             self.update_best_metrics(latest_metric_val)
-    
+
     def after_epoch(self):
         """
         Check if the latest metric is the best so far.
@@ -690,20 +671,16 @@ class BestMetricSaver(HookBase):
                         "Make sure to set `val_metric` in the trainer config."
                     )
                 latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
-                latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, \
-                                                                    device="cuda")).item()
+                latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, device="cuda")).item()
                 self.trainer._curr_val_metric = latest_metric_val
                 self.update_best_metrics(latest_metric_val)
 
     def after_test(self):
         test_scalars = self.trainer.event_recorder.get_epoch_scalars()
         if self.metric_name not in test_scalars:
-            raise ValueError(
-                f"Metric {self.metric_name} not found in test logs. "
-            )
+            raise ValueError(f"Metric {self.metric_name} not found in test logs. ")
         test_metric_val_per_rank, *_ = test_scalars[self.metric_name][-1]
-        test_metric_val = gather_and_reduce(torch.tensor(test_metric_val_per_rank, \
-                                                            device="cuda")).item()
+        test_metric_val = gather_and_reduce(torch.tensor(test_metric_val_per_rank, device="cuda")).item()
         self._update_best_metrics(test_metric_val)
 
 
@@ -711,6 +688,7 @@ class NsysProfilerHook(HookBase):
     """
     Starts Nsight Systems on step `start_iter` and stops it at `end_iter`.
     """
+
     def __init__(self, start_iter=50, end_iter=55, shutdown_after_profile=True):
         self.start_iter = start_iter
         self.end_iter = end_iter
@@ -744,16 +722,13 @@ class TorchProfiler(HookBase):
     The above example will run the profiler for iteration 10~20 and dump
     results to ``OUTPUT_DIR``. We do not profile the first few iterations
     because they are typically slower than the rest.
-    
+
     The result files can be loaded in the ``chrome://tracing`` page in
     chrome browser, and the tensorboard visualizations can be visualized using
     ``tensorboard --logdir OUTPUT_DIR/log``
     """
 
-    TorchProfilerActivities = {
-        "CPU": torch.profiler.ProfilerActivity.CPU, 
-        "CUDA": torch.profiler.ProfilerActivity.CUDA
-    }
+    TorchProfilerActivities = {"CPU": torch.profiler.ProfilerActivity.CPU, "CUDA": torch.profiler.ProfilerActivity.CUDA}
 
     def __init__(
         self,
@@ -763,7 +738,7 @@ class TorchProfiler(HookBase):
         save_tensorboard=True,
         save_memory_trace: bool = True,
         max_events_per_snapshot: int = 1000000,
-        shutdown_after_profile: bool = True
+        shutdown_after_profile: bool = True,
     ):
         """
         Args:
@@ -773,8 +748,7 @@ class TorchProfiler(HookBase):
         """
         super().__init__()
         self._activities = tuple(
-            a if isinstance(a, ProfilerActivity)
-            else self.TorchProfilerActivities[a.upper()]
+            a if isinstance(a, ProfilerActivity) else self.TorchProfilerActivities[a.upper()]
             for a in (activities or (ProfilerActivity.CPU, ProfilerActivity.CUDA))
         )
 
@@ -787,9 +761,11 @@ class TorchProfiler(HookBase):
 
         os.makedirs(os.path.join(output_dir, "log"), exist_ok=True)
         self._on_trace_ready = (
-            torch.profiler.tensorboard_trace_handler(dir_name=os.path.join(output_dir, "log"),
-                                                     worker_name=f"worker_{process_rank()}")
-            if save_tensorboard else None
+            torch.profiler.tensorboard_trace_handler(
+                dir_name=os.path.join(output_dir, "log"), worker_name=f"worker_{process_rank()}"
+            )
+            if save_tensorboard
+            else None
         )
 
         self._save_memory_trace = save_memory_trace
@@ -811,21 +787,21 @@ class TorchProfiler(HookBase):
                 torch.cuda.memory._dump_snapshot(f"{path}.pickle")
             except Exception as e:
                 logger.error(f"Failed to capture memory snapshot {e}")
-        
+
             torch.cuda.memory._record_memory_history(enabled=None)
 
     def before_train(self):
-        torch.cuda.memory._record_memory_history(
-            max_entries=self.max_mem_events_per_snapshot
-        )
+        torch.cuda.memory._record_memory_history(max_entries=self.max_mem_events_per_snapshot)
         self._profiler = torch.profiler.profile(
             activities=self._activities,
             schedule=torch.profiler.schedule(
-                wait=self._wait, warmup=self._warmup,
-                active=self._active, repeat=self._repeat),
+                wait=self._wait, warmup=self._warmup, active=self._active, repeat=self._repeat
+            ),
             on_trace_ready=self._on_trace_ready,
-            record_shapes=True, profile_memory=True,
-            with_stack=True, with_flops=True, 
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True,
+            with_flops=True,
             with_modules=True,
         )
         self._profiler.__enter__()
@@ -892,17 +868,15 @@ class EarlyStopHook(HookBase):
                 f"Metric {self.metric_name} not found in epoch logs. "
                 "Make sure to set `val_metric` in the trainer config."
             )
-        
+
         latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
         latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, device="cuda")).item()
 
         if math.isnan(latest_metric_val) or math.isinf(latest_metric_val):
-            raise ValueError(
-                f"Validation metric {self.metric_name} is NaN or Inf. "
-            )
-        
+            raise ValueError(f"Validation metric {self.metric_name} is NaN or Inf. ")
+
         metric_diff = abs(latest_metric_val - self.latest_metric_val)
-        
+
         if self.compare_fn(metric_diff, self.stopping_threshold):
             self.wait_count += 1
             logger.info(
@@ -913,14 +887,16 @@ class EarlyStopHook(HookBase):
                 logger.info("Early stopping triggered.")
                 # setting stop_training to True
                 # will stop the training loop
-                # before the next epoch starts 
+                # before the next epoch starts
                 # see run in EpochBasedTrainer
                 self.trainer.stop_training = True
         else:
-            logger.info(f"Validation metric {self.metric_name} improved \
-                            to {latest_metric_val}.")
+            logger.info(
+                f"Validation metric {self.metric_name} improved \
+                            to {latest_metric_val}."
+            )
             self.wait_count = 0
-        
+
         self.latest_metric_val = latest_metric_val
 
 
@@ -928,9 +904,8 @@ class EMASchedulerHook(HookBase):
     """
     A hook that runs EMA beta update after each step.
     """
-    def __init__(self, 
-                 ema_start: float,
-                 ema_end: float):
+
+    def __init__(self, ema_start: float, ema_end: float):
         super().__init__()
 
         self.ema_start = ema_start
@@ -940,8 +915,7 @@ class EMASchedulerHook(HookBase):
         self.model = self.trainer.model
         total_steps = self.trainer._max_epochs * self.trainer.steps_per_epoch
         self.ema_scheduler = (
-            self.ema_start + i * (self.ema_end - self.ema_start) / total_steps
-            for i in range(total_steps+1)
+            self.ema_start + i * (self.ema_end - self.ema_start) / total_steps for i in range(total_steps + 1)
         )
 
     def after_step(self, data_sample, outputs, loss_dict):
@@ -954,12 +928,13 @@ class EMASchedulerHook(HookBase):
 class WeightDecayScheduleHook(HookBase):
     def before_train(self):
         self.wd_scheduler = self.trainer.wd_scheduler
-        assert self.wd_scheduler is not None, \
-            "WeightDecayScheduleHook requires wd_scheduler to be set in the trainer."
+        assert self.wd_scheduler is not None, "WeightDecayScheduleHook requires wd_scheduler to be set in the trainer."
         self.event_recorder = self.trainer.event_recorder
         if self.event_recorder is None:
-            logger.warning("WeightDecayScheduleHook requires event_recorder to be set in the trainer. \
-                            Weight decay values will not be logged.")
+            logger.warning(
+                "WeightDecayScheduleHook requires event_recorder to be set in the trainer. \
+                            Weight decay values will not be logged."
+            )
 
     def after_step(self, **kwargs):
         # DeepSpeed performs the optimizer step at boundary
@@ -976,9 +951,10 @@ class WeightDecayScheduleHook(HookBase):
 
 class FreeDeviceBufferHook(HookBase):
     """
-    A hook that frees memory buffers after each step. 
+    A hook that frees memory buffers after each step.
     Important to use to prevent deadlocks.
     """
+
     def before_train(self):
         self.device_buffer = self.trainer.device_buffer
 
@@ -986,13 +962,13 @@ class FreeDeviceBufferHook(HookBase):
         self.device_buffer = self.trainer.device_buffer
 
     def after_step(self, **kwargs):
-        device_buffer_idx = kwargs['data_sample']['metainfo']['device_buffer_idx']
+        device_buffer_idx = kwargs["data_sample"]["metainfo"]["device_buffer_idx"]
         self.device_buffer.put_free(device_buffer_idx)
 
     def after_test_step(self, data_sample, outputs, loss_dict):
-        device_buffer_idx = data_sample['metainfo']['device_buffer_idx']
+        device_buffer_idx = data_sample["metainfo"]["device_buffer_idx"]
         self.device_buffer.put_free(device_buffer_idx)
-        
+
     def after_val_step(self, data_sample, outputs, loss_dict):
-        device_buffer_idx = data_sample['metainfo']['device_buffer_idx']
+        device_buffer_idx = data_sample["metainfo"]["device_buffer_idx"]
         self.device_buffer.put_free(device_buffer_idx)
