@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import pytest
 
-from training.schedulers import get_param_groups  
+from cell_observatory_platform.training.schedulers import get_param_groups  
 
 
 # ------------------------- dummy models -------------------------

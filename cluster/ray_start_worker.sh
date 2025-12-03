@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -euo pipefail
 
 # NCCL settings optimized for Ethernet without InfiniBand
 export LC_ALL=C.UTF-8
@@ -54,8 +55,15 @@ cleanup() {
     echo "Successfully stopped ray worker"
     python3 /workspace/cell_observatory_platform/utils/cleanup.py 
     echo "Successfully ran cleanup.py"
+    echo "Successfully stopped ray worker"
+    python3 /workspace/cell_observatory_platform/utils/cleanup.py 
+    echo "Successfully ran cleanup.py"
 }
 trap 'cleanup' EXIT
+trap 'cleanup; exit 143' TERM INT
+
+# remove any leftover shared memory segments
+python3 /workspace/cell_observatory_platform/utils/cleanup.py
 trap 'cleanup; exit 143' TERM INT
 
 # remove any leftover shared memory segments
@@ -71,18 +79,5 @@ if [[ -n "${worker_id:-}" ]]; then
 fi
 
 echo "[WORKER NODE]: PID for cleanup is $$"
-
-if [[ -n "${SLURM_JOB_ID:-}" ]]; then
-    echo "SLURM detected (job ${SLURM_JOB_ID})"
-    scheduler="slurm"
-elif command -v bsub >/dev/null 2>&1; then
-    echo "LSF is available on this cluster"
-    lsid || true
-    scheduler="lsf"
-    # echo "Ray worker LSF ID: ${LSB_JOBID:-N/A}"
-else
-    echo "Neither SLURM nor LSF is available on this cluster"
-    scheduler="none"
-fi
 
 wait "$ray_pid"

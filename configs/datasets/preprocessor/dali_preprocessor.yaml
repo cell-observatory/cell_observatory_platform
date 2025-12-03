@@ -1,4 +1,4 @@
-_target_: models.preprocessor.DaliPreprocessor
+_target_: cell_observatory_platform.models.preprocessor.DaliPreprocessor
 
 dtype: ${quantization}
 with_masking: true

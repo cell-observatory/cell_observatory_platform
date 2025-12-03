@@ -3,7 +3,7 @@ import pytest
 import torch
 import numpy as np
 
-from models.positional_encoding import (
+from cell_observatory_platform.models.positional_encoding import (
     sincos,
     positional_encoding_1d,
     positional_encoding_2d,
@@ -12,7 +12,7 @@ from models.positional_encoding import (
     PosEmbedding,
 )
 
-from models.rope import (
+from cell_observatory_platform.models.rope import (
     generate_frequency_spectrum,
     generate_grid_indices,
     compute_mixed_cis,

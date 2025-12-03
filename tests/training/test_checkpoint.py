@@ -1,21 +1,21 @@
 import os
+import sys
+from pathlib import Path
+
 import pytest
-
 import torch
-
+from hydra.utils import get_class
+from omegaconf import DictConfig, open_dict
 from ray.train import report
 
-from omegaconf import open_dict
-from omegaconf import DictConfig
-from hydra.utils import get_class
-
-from tests.conftest import distributed_test, config
+from cell_observatory_platform.tests.conftest import config, distributed_test
 
 
 # train function to use, this should stay inside
 # the setup_ray_cluster function to prevent serialization issues
 def _test_ckpt_dist(config: DictConfig):
-    from training.helpers import get_masked_input_data
+    from cell_observatory_platform.training.helpers import get_masked_input_data
+
     trainer_cls = get_class(config.trainer)
     trainer_per_worker = trainer_cls(config)
 
@@ -38,8 +38,8 @@ def _test_ckpt_dist(config: DictConfig):
         else:
             return batch
 
-    # we need to do a few steps for 
-    # some state dict fields to be populated 
+    # we need to do a few steps for
+    # some state dict fields to be populated
     # such as exp_avg etc.
     model = trainer_per_worker.model
     for batch in dummy_loader(model):
@@ -47,20 +47,17 @@ def _test_ckpt_dist(config: DictConfig):
         loss_dict, outputs = model(*batch)
         model.backward(loss_dict["step_loss"])
         model.step()
-    
-    # in the save test we save a checkpoint and 
+
+    # in the save test we save a checkpoint and
     # record start_epoch, start_iter, and best_metric
     # with dummy value of 42 and in load checkpoint test
     # we load the same checkpoints for all combinations of zero stages
-    # and check if the client state is restored correctly, i.e. if 
+    # and check if the client state is restored correctly, i.e. if
     # start_epoch, start_iter, and best_metric are all 42
     # TODO: add check to ensure weights are identical
     if config.save_checkpoint:
         trainer_per_worker.checkpoint_manager.save(
-            prefix=config.checkpoint.checkpoint_manager.checkpoint_tag, 
-            save_epoch=42,
-            save_best_loss=42,
-            save_step=42
+            prefix=config.checkpoint.checkpoint_manager.checkpoint_tag, save_epoch=42, save_best_loss=42, save_step=42
         )
         metrics = {"success": True}
     else:
@@ -72,10 +69,11 @@ def _test_ckpt_dist(config: DictConfig):
         }
     report(metrics)
 
+
 # @pytest.mark.order(1)
 # @pytest.mark.parametrize("zero_stage", [1]) # 2, 3
 @pytest.mark.skip(reason="This test is temporarily disabled.")
-def test_checkpoint_save(config, zero_stage: int):    
+def test_checkpoint_save(config, zero_stage: int):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
     else:
@@ -85,21 +83,23 @@ def test_checkpoint_save(config, zero_stage: int):
 
     with open_dict(config):
         # no resume checkpoint for saving test
-        config.paths.resume_checkpointdir = None 
+        config.paths.resume_checkpointdir = None
         config.deepspeed.zero_optimization.stage = zero_stage
         config.experiment_name = "test_checkpoint"
         config.checkpoint.checkpoint_manager.checkpoint_tag = f"stage{zero_stage}"
-        
+
         config.clusters.worker_nodes = 1
         # need >=2 for testing zero stages > 0
         config.clusters.gpus_per_worker = 2
         config.clusters.cpus_per_gpu = 4
 
-
         config.save_checkpoint = True
-    
-    result_dict = distributed_test(cfg=config, test="tests.training.test_checkpoint._test_ckpt_dist")
+
+    result_dict = distributed_test(
+        cfg=config, test="cell_observatory_platform.tests.training.test_checkpoint._test_ckpt_dist"
+    )
     assert result_dict["success"], "Test did not complete successfully"
+
 
 # @pytest.mark.order(2)
 # @pytest.mark.parametrize("zero_stage_dst", [1]) # , 2, 3
@@ -118,18 +118,19 @@ def test_checkpoint_load(config, zero_stage_src: int, zero_stage_dst: int):
         config.deepspeed.zero_optimization.stage = zero_stage_dst
         config.paths.resume_checkpointdir = os.path.join(config.paths.outdir, "checkpoints")
         config.checkpoint.checkpoint_manager.checkpoint_tag = f"stage{zero_stage_src}"
-        
+
         config.clusters.worker_nodes = 1
         # need >=2 for testing zero stages > 0
         config.clusters.gpus_per_worker = 2
         config.clusters.cpus_per_gpu = 4
 
-        
         config.deepspeed.checkpoint.load_universal = True
 
         config.save_checkpoint = False
-    
-    result_dict = distributed_test(cfg=config,test="tests.training.test_checkpoint._test_ckpt_dist")
+
+    result_dict = distributed_test(
+        cfg=config, test="cell_observatory_platform.tests.training.test_checkpoint._test_ckpt_dist"
+    )
 
     assert result_dict["start_epoch"] == 42, f"Expected start_epoch to be 42, got {result_dict['start_epoch']}"
     assert result_dict["start_iter"] == 42, f"Expected start_iter to be 42, got {result_dict['start_iter']}"

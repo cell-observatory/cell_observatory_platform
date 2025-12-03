@@ -1,17 +1,13 @@
-import sys
 import logging
+import sys
 from typing import Optional
 
 import torch
 import torch.nn as nn
 
-from training.helpers import get_patch_sizes
+from cell_observatory_platform.training.helpers import get_patch_sizes
 
-logging.basicConfig(
-	stream=sys.stdout,
-	level=logging.INFO,
-	format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -21,8 +17,7 @@ def calc_num_patches(
     patch_shape: tuple = (4, 16, 16, 16),
 ):
     temporal_patch_size, axial_patch_size, lateral_patch_size = get_patch_sizes(
-        input_format=input_fmt,
-        patch_shape=patch_shape
+        input_format=input_fmt, patch_shape=patch_shape
     )
 
     if input_fmt == "TZYXC":
@@ -75,7 +70,7 @@ def calc_num_patches(
         x = input_shape[0] // lateral_patch_size
         c = input_shape[-1]
         num_patches = x
-    
+
     else:
         raise NotImplementedError("input_fmt not supported: {}".format(input_fmt))
 
@@ -97,10 +92,9 @@ class PatchEmbedding(nn.Module):
         self.input_fmt = input_fmt
 
         self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
-            input_format=input_fmt,
-            patch_shape=patch_shape
+            input_format=input_fmt, patch_shape=patch_shape
         )
-        
+
         self.embed_dim = embed_dim
         self.channels = channels
 
@@ -122,7 +116,7 @@ class PatchEmbedding(nn.Module):
         pixels_per_patch = self.channels
         pixels_per_patch *= self.temporal_patch_size if self.temporal_patch_size is not None else 1
         pixels_per_patch *= self.axial_patch_size if self.axial_patch_size is not None else 1
-        pixels_per_patch *= self.lateral_patch_size ** 2 if self.input_fmt is not "XC" else self.lateral_patch_size
+        pixels_per_patch *= self.lateral_patch_size**2 if self.input_fmt is not "XC" else self.lateral_patch_size
         return pixels_per_patch
 
     def patchify(self, inputs, reshape=True):
@@ -131,82 +125,110 @@ class PatchEmbedding(nn.Module):
 
         if self.input_fmt == "TZYXC":
             if reshape:
-                patches = inputs.reshape(shape=(
-                    b,
-                    t, self.temporal_patch_size,
-                    z, self.axial_patch_size,
-                    y, self.lateral_patch_size,
-                    x, self.lateral_patch_size,
-                    self.channels,
-                ))
+                patches = inputs.reshape(
+                    shape=(
+                        b,
+                        t,
+                        self.temporal_patch_size,
+                        z,
+                        self.axial_patch_size,
+                        y,
+                        self.lateral_patch_size,
+                        x,
+                        self.lateral_patch_size,
+                        self.channels,
+                    )
+                )
                 patches = torch.einsum("btizjykxvc->btzyxijkvc", patches)
             else:
-                patches = inputs.unfold(1, self.temporal_patch_size, self.temporal_patch_size) \
-                    .unfold(2, self.axial_patch_size, self.axial_patch_size) \
-                    .unfold(3, self.lateral_patch_size, self.lateral_patch_size) \
-                    .unfold(4, self.lateral_patch_size, self.lateral_patch_size) \
-
+                patches = (
+                    inputs.unfold(1, self.temporal_patch_size, self.temporal_patch_size)
+                    .unfold(2, self.axial_patch_size, self.axial_patch_size)
+                    .unfold(3, self.lateral_patch_size, self.lateral_patch_size)
+                    .unfold(4, self.lateral_patch_size, self.lateral_patch_size)
+                )
         elif self.input_fmt == "ZYXC":
             if reshape:
-                patches = inputs.reshape(shape=(
-                    b,
-                    z, self.axial_patch_size,
-                    y, self.lateral_patch_size,
-                    x, self.lateral_patch_size,
-                    self.channels,
-                ))
+                patches = inputs.reshape(
+                    shape=(
+                        b,
+                        z,
+                        self.axial_patch_size,
+                        y,
+                        self.lateral_patch_size,
+                        x,
+                        self.lateral_patch_size,
+                        self.channels,
+                    )
+                )
                 patches = torch.einsum("bzjykxvc->bzyxjkvc", patches)
             else:
-                patches = inputs.unfold(1, self.axial_patch_size, self.axial_patch_size) \
-                    .unfold(2, self.lateral_patch_size, self.lateral_patch_size) \
+                patches = (
+                    inputs.unfold(1, self.axial_patch_size, self.axial_patch_size)
+                    .unfold(2, self.lateral_patch_size, self.lateral_patch_size)
                     .unfold(3, self.lateral_patch_size, self.lateral_patch_size)
+                )
 
         elif self.input_fmt == "TYXC":
             if reshape:
-                patches = inputs.reshape(shape=(
-                    b,
-                    t, self.temporal_patch_size,
-                    y, self.lateral_patch_size,
-                    x, self.lateral_patch_size,
-                    self.channels,
-                ))
+                patches = inputs.reshape(
+                    shape=(
+                        b,
+                        t,
+                        self.temporal_patch_size,
+                        y,
+                        self.lateral_patch_size,
+                        x,
+                        self.lateral_patch_size,
+                        self.channels,
+                    )
+                )
                 patches = torch.einsum("btiykxvc->btyxikvc", patches)
             else:
-                patches = inputs.unfold(1, self.temporal_patch_size, self.temporal_patch_size) \
-                    .unfold(2, self.lateral_patch_size, self.lateral_patch_size) \
+                patches = (
+                    inputs.unfold(1, self.temporal_patch_size, self.temporal_patch_size)
+                    .unfold(2, self.lateral_patch_size, self.lateral_patch_size)
                     .unfold(3, self.lateral_patch_size, self.lateral_patch_size)
+                )
 
         elif self.input_fmt == "YXC":
             if reshape:
-                patches = inputs.reshape(shape=(
-                    b,
-                    y, self.lateral_patch_size,
-                    x, self.lateral_patch_size,
-                    self.channels,
-                ))
+                patches = inputs.reshape(
+                    shape=(
+                        b,
+                        y,
+                        self.lateral_patch_size,
+                        x,
+                        self.lateral_patch_size,
+                        self.channels,
+                    )
+                )
                 patches = torch.einsum("bykxvc->byxkvc", patches)
             else:
-                patches = inputs.unfold(1, self.lateral_patch_size, self.lateral_patch_size) \
-                    .unfold(2, self.lateral_patch_size, self.lateral_patch_size) \
-
+                patches = inputs.unfold(1, self.lateral_patch_size, self.lateral_patch_size).unfold(
+                    2, self.lateral_patch_size, self.lateral_patch_size
+                )
         elif self.input_fmt == "XC":
             if reshape:
-                patches = inputs.reshape(shape=(
-                    b,
-                    x, self.lateral_patch_size,
-                    self.channels,
-                ))
+                patches = inputs.reshape(
+                    shape=(
+                        b,
+                        x,
+                        self.lateral_patch_size,
+                        self.channels,
+                    )
+                )
             else:
                 patches = inputs.unfold(1, self.lateral_patch_size, self.lateral_patch_size)
         else:
             raise NotImplementedError
 
-        # NOTE: if tensor is already in the specified memory format, 
+        # NOTE: if tensor is already in the specified memory format,
         #       contiguous returns the tensor
         patches = patches.contiguous().view(b, self.num_patches, self.pixels_per_patch)
         return patches
-    
-    @torch.no_grad()
+
+    # @torch.no_grad()
     def unpatchify(self, patches: torch.Tensor, out_channels: Optional[int]) -> torch.Tensor:
         b = patches.shape[0]
 

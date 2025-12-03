@@ -27,7 +27,7 @@
 		"all"
 	],
 	"mounts": [
-		"source=${localWorkspaceFolder},target=/workspace/cell_observatory_platform,type=bind,consistency=cached",
+		"source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached",
 		"source=${localEnv:HOME}/.ssh,target=/home/ubuntu/.ssh,type=bind,consistency=cached",
 		"source=/groups/betzig/betziglab,target=/groups/betzig/betziglab,type=bind,consistency=cached"
 	],
@@ -58,5 +58,5 @@
 		}
 	},
 	"postCreateCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && pip install bpytop  --no-dependencies && cp ~/.bashrc /tmp/host_bashrc && echo 'source /tmp/host_bashrc' >> ~/.bashrc && python3 --version",
-	"postStartCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && export PYTHONPATH=/workspace/cell_observatory_platform && source ~/.bashrc"
+	"postStartCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && export PYTHONPATH=/workspace:/workspace/cell_observatory_platform:/workspace:/workspace/cell_observatory_finetune:/workspace/ops3d && pip install -e . --force-reinstall --no-deps && source ~/.bashrc"
 }

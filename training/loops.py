@@ -5,11 +5,13 @@ https://github.com/open-mmlab/mmengine/blob/main/mmengine/runner/loops.py
 """
 
 import logging
+import os
 import time
 import weakref
+from pathlib import Path
 from typing import List, Optional, Sequence
 
-from hydra.utils import get_class, instantiate
+from hydra.utils import get_class, get_method, instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 if not OmegaConf.has_resolver("now"):
@@ -19,21 +21,20 @@ import torch
 from deepspeed import initialize
 from ray.train import get_context
 
-from training.helpers import (
+from cell_observatory_platform.data.dataloaders import get_dataloader
+from cell_observatory_platform.training.helpers import (
     enable_optimizations,
     get_masked_input_data,
     get_steps_per_epoch,
     resume_run,
     summarize_model,
-    append_kwargs_to_model
 )
-from training.hooks import HookBase
-from training.loggers import EventRecorder
-from data.dataloaders import get_dataloader
-from training.optimizers import get_optimizer
-from training.registry import build_dependency_graph_and_instantiate
-from training.schedulers import get_param_groups, get_schedulers
-from utils.context import inference_context, process_rank
+from cell_observatory_platform.training.hooks import HookBase
+from cell_observatory_platform.training.loggers import EventRecorder
+from cell_observatory_platform.training.optimizers import get_optimizer
+from cell_observatory_platform.training.registry import build_dependency_graph_and_instantiate
+from cell_observatory_platform.training.schedulers import get_param_groups, get_schedulers
+from cell_observatory_platform.utils.context import inference_context, process_rank
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
@@ -41,6 +42,13 @@ logger.setLevel(logging.INFO)
 # silence broken logging call in Ray internals to prevent
 # checkpoint saving from failing
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
+
+
+def _ensure_full_path(config: DictConfig) -> DictConfig:
+    """Fix any relative imports in _target_ fields by prefixing with `cell_observatory_platform.`"""
+    if "_target_" in config and config._target_ and not config._target_.startswith("cell_observatory_platform."):
+        config._target_ = f"cell_observatory_platform.{config._target_}"
+    return config
 
 
 # Ray train wrapper entry point
@@ -55,11 +63,11 @@ def train_loop_per_worker(config):
     elif config.job_type == "predict":
         trainer_per_worker.predict()
     else:
-        raise ValueError(f"Unknown job type: {config.job_type}. "
-                         f"Expected 'train' or 'test', got '{config.job_type}'.")
-    
-    return {"best_metric": trainer_per_worker.best_metric 
-            if hasattr(trainer_per_worker, 'best_metric') else None}
+        raise ValueError(
+            f"Unknown job type: {config.job_type}. " f"Expected 'train' or 'test', got '{config.job_type}'."
+        )
+
+    return {"best_metric": trainer_per_worker.best_metric if hasattr(trainer_per_worker, "best_metric") else None}
 
 
 class BaseTrainer:
@@ -69,18 +77,14 @@ class BaseTrainer:
 
     def __init__(self, config: DictConfig) -> None:
         # initialize event recorder
-        self.event_recorder: EventRecorder = instantiate(config.loggers.event_recorder)
+        self.event_recorder: EventRecorder = instantiate(_ensure_full_path(config.loggers.event_recorder))
 
         # initialize event_writers
-        event_writers = self._build_event_writers(
-            w_cfgs=config.loggers.event_writers, 
-            recorder=self.event_recorder
-        )
+        event_writers = self._build_event_writers(w_cfgs=config.loggers.event_writers, recorder=self.event_recorder)
         self.event_writers_list = instantiate(
-            config.loggers.event_writers_list,
-            writers = event_writers
+            _ensure_full_path(config.loggers.event_writers_list), writers=event_writers
         )
-        
+
         # intialize hooks
         hooks = self._build_hooks(config.hooks.hooks_list, self.event_writers_list)
         self._hooks: List[HookBase] = []
@@ -90,7 +94,7 @@ class BaseTrainer:
     def _build_event_writers(w_cfgs, recorder):
         writers = []
         for writer_cfg in w_cfgs:
-            writer = instantiate(writer_cfg, event_recorder=recorder)
+            writer = instantiate(_ensure_full_path(writer_cfg), event_recorder=recorder)
             writers.append(writer)
         return writers
 
@@ -98,6 +102,9 @@ class BaseTrainer:
     def _build_hooks(h_cfgs, event_writers):
         hooks = []
         for hc in h_cfgs:
+            if hc._target_ and not hc._target_.startswith("cell_observatory_platform."):
+                hc._target_ = f"cell_observatory_platform.{hc._target_}"
+
             # inject writers into PeriodicWriter hook
             if hc._target_.endswith(".PeriodicWriter"):
                 hook = instantiate(hc, writers=event_writers)
@@ -114,16 +121,18 @@ class BaseTrainer:
         Args:
             hooks (list[Optional[HookBase]]): list of hooks
         """
+        allowed_subclasses = [h.__name__ for h in HookBase.__subclasses__()]
         hooks = [h for h in hooks if h is not None]
+
         for h in hooks:
-            assert isinstance(h, HookBase)
+            assert type(h).__name__ in allowed_subclasses
             # to avoid circular reference, hooks and trainer
             # cannot own each other this normally does not
-            # matter, but will cause memory leak if the 
+            # matter, but will cause memory leak if the
             # involved objects contain __del__
             # hence we use weakref.proxy
             h.trainer = weakref.proxy(self)
-        
+
         # reorder hooks by priority
         # higher priority hooks are executed first
         hooks.sort(key=lambda h: -h.PRIORITY.value)
@@ -140,7 +149,7 @@ class BaseTrainer:
             h.after_train()
 
     def before_step(self):
-        # maintain the invariant that 
+        # maintain the invariant that
         # event_recorder.iter == trainer.iter
         # for the entire execution of each step
         self.event_recorder._iter = self._iter
@@ -151,18 +160,18 @@ class BaseTrainer:
         for h in self._hooks:
             h.after_backward()
 
-    def after_step(self,*args, **kwargs):
+    def after_step(self, *args, **kwargs):
         for h in self._hooks:
             h.after_step(*args, **kwargs)
 
     def before_epoch(self):
-        # maintain the invariant that 
+        # maintain the invariant that
         # event_recorder.epoch == trainer.epoch
         # for the entire execution of each step
         self.event_recorder._epoch = self._epoch
         for h in self._hooks:
             h.before_epoch()
-    
+
     def after_epoch(self, *args, **kwargs):
         for h in self._hooks:
             h.after_epoch(*args, **kwargs)
@@ -175,9 +184,9 @@ class BaseTrainer:
     def after_validation(self):
         for h in self._hooks:
             h.after_validation()
-    
+
     def before_val_step(self):
-        # maintain the invariant that 
+        # maintain the invariant that
         # event_recorder.val_iter == trainer.val_iter
         # for the entire execution of each validation step
         self.event_recorder._val_iter = self._val_iter
@@ -197,15 +206,15 @@ class BaseTrainer:
         self.event_recorder._iter = self._iter
         for h in self._hooks:
             h.after_test()
-    
+
     def before_test_step(self):
-        # maintain the invariant that 
+        # maintain the invariant that
         # event_recorder.test_iter == trainer.test_iter
         # for the entire execution of each test step
         self.event_recorder._iter = self._iter
         for h in self._hooks:
             h.before_test_step()
-    
+
     def after_test_step(self, *args, **kwargs):
         for h in self._hooks:
             h.after_test_step(*args, **kwargs)
@@ -255,28 +264,28 @@ class EpochBasedTrainer(BaseTrainer):
         # get_dataloader() returns a tuple of dataloaders
         # (train_dataloader, val_dataloader) where
         # val_dataloader is None if no validation set is provided
-        self.train_dataloader, self.val_dataloader, \
-            self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
+        self.train_dataloader, self.val_dataloader, self.host_buffer_actor, self.device_buffer, database_df = (
+            get_dataloader(cfg)
+        )
 
         self.steps_per_epoch, self.val_steps_per_epoch = get_steps_per_epoch(
-            train_dataloader=self.train_dataloader,
-            val_dataloader=self.val_dataloader,
-            config=cfg
+            train_dataloader=self.train_dataloader, val_dataloader=self.val_dataloader, config=cfg
         )
 
-        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+        self.preprocessor = instantiate(_ensure_full_path(cfg.datasets.preprocessor))
 
         # initialize model
-        # TODO: consider migrating to BUILD() based initialization
-        #       instead of recursive instantiation
-        cfg, decoder_args = append_kwargs_to_model(cfg)
-        model = build_dependency_graph_and_instantiate(cfg.models)
+        BUILD = get_method(cfg.models.BUILD)
+        model = BUILD(cfg)
 
         # initialize checkpoint manager
-        self.checkpoint_manager = instantiate(
-            cfg.checkpoint.checkpoint_manager,
-            model=model
-        )
+        if os.environ.get("RESTART", "FALSE").upper() == "TRUE":
+            logger.info("RESTART flag detected. Resuming from latest checkpoint.")
+            with open_dict(cfg):
+                cfg.paths.resume_checkpointdir = Path(cfg.paths.outdir) / "checkpoints"
+                cfg.checkpoint.checkpoint_manager.resume_checkpointdir = cfg.paths.resume_checkpointdir
+
+        self.checkpoint_manager = instantiate(_ensure_full_path(cfg.checkpoint.checkpoint_manager), model=model)
 
         if cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir:
             self.checkpoint_manager.load()
@@ -298,28 +307,19 @@ class EpochBasedTrainer(BaseTrainer):
         # initialize optimizer and learning rate scheduler
         param_groups = get_param_groups(cfg, model)
         opt, _ = get_optimizer(
-            params=param_groups,
-            config=cfg,
-            optimizer=cfg.optimizers.opt,
-            steps_per_epoch=self.steps_per_epoch
+            params=param_groups, config=cfg, optimizer=cfg.optimizers.opt, steps_per_epoch=self.steps_per_epoch
         )
-        self.scheduler, self.wd_scheduler = get_schedulers(
-            opt=opt,
-            config=cfg,
-            steps_per_epoch=self.steps_per_epoch
-        )
+        self.scheduler, self.wd_scheduler = get_schedulers(opt=opt, config=cfg, steps_per_epoch=self.steps_per_epoch)
 
         # enable optimizations if specified
-        # includes setting Torch backend flags, 
-        # activation checkpointing, and torch Compile 
+        # includes setting Torch backend flags,
+        # activation checkpointing, and torch Compile
         if cfg.optimizations is not None:
             model = enable_optimizations(cfg=cfg, model=model)
 
         # initialize deepspeed
         self.model, self.opt, _, _ = initialize(
-            model=model,
-            optimizer=opt,
-            config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
+            model=model, optimizer=opt, config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
         self.checkpoint_manager.model = self.model
 
@@ -328,24 +328,27 @@ class EpochBasedTrainer(BaseTrainer):
 
         # if resume job, gather the state from the checkpoint
         # else intialize outdir, logdir, and checkpointdir
-        # these directories must be empty if not resuming a job
+        # these directories should be empty if not resuming a job
         # to avoid overwriting existing checkpoints
-        # see training/utils.py:resume_run()
-        # and training/run.py
         best_metric, step, epoch = resume_run(self, cfg)
         self.start_epoch, self.start_iter, self.best_metric = epoch, step, best_metric
-        self._epoch, self._iter, self._val_iter, self._curr_val_metric = self.start_epoch, self.start_iter, 0, 0.0
+        self._epoch, self._iter, self._val_iter, self._curr_val_metric = (
+            self.start_epoch,
+            self.start_iter,
+            0,
+            float("inf"),
+        )
 
-        if self.start_iter > 0 and not self.checkpoint_manager.load_optimizer:
+        if self.start_iter > 0:
             logger.info("[Trainer] Resuming training without loading previous optimizer state.")
-            logger.info(f"[Trainer] Fast forwarding lr and wd schedulers to iter {self.start_iter} and epoch {self.start_epoch}.")
+            logger.info(
+                f"[Trainer] Fast forwarding lr and wd schedulers to iter {self.start_iter} and epoch {self.start_epoch}."
+            )
             # fast forward lr and wd schedulers to the correct step
-            # ideally we load with DeepSpeed but this is not always possible
-            # hence we manually step the schedulers here and accept that 
-            # moments are fresh etc.
+            # TODO: consider making more flexible
             for _ in range(self.start_iter):
                 self.wd_scheduler.step()
-            
+
             if self.scheduler.update_type == "epoch":
                 for epoch in range(self.start_epoch):
                     self.scheduler.step(epoch)
@@ -353,10 +356,10 @@ class EpochBasedTrainer(BaseTrainer):
                 for iter in range(self.start_iter):
                     self.scheduler.step(iter)
             else:
-                raise NotImplementedError(f'{self.scheduler.update_type=} is not supported')
+                raise NotImplementedError(f"{self.scheduler.update_type=} is not supported")
 
         # initialize evaluator
-        self.evaluator = instantiate(cfg.evaluation.evaluator)
+        self.evaluator = instantiate(_ensure_full_path(cfg.evaluation.evaluator))
 
     def run(self):
         """
@@ -374,7 +377,7 @@ class EpochBasedTrainer(BaseTrainer):
         Iterate one epoch.
         """
         self.before_epoch()
-        
+
         end = time.perf_counter()
         for idx, data_sample in enumerate(self.train_dataloader):
             data_time = time.perf_counter() - end
@@ -383,9 +386,9 @@ class EpochBasedTrainer(BaseTrainer):
             self.run_step(idx, data_sample)
             end = time.perf_counter()
 
-        if self.val_dataloader and \
-           (self._epoch >= self.val_begin and
-            (self._epoch - self.val_begin) % self.val_interval == 0):
+        if self.val_dataloader and (
+            self._epoch >= self.val_begin and (self._epoch - self.val_begin) % self.val_interval == 0
+        ):
             # run validation
             self.run_validation()
 
@@ -397,7 +400,7 @@ class EpochBasedTrainer(BaseTrainer):
         Iterate one mini-batch.
         """
         self.before_step()
-        
+
         # we enforce that all models compute
         # their losses in the forward pass
         # and return a loss_dict with at least
@@ -436,16 +439,12 @@ class EpochBasedTrainer(BaseTrainer):
 
         metrics = self.evaluator.evaluate()
         self.event_recorder.put_scalars(
-            scope="epoch",
-            prefix="val_",
-            **{k: (v.item() if torch.is_tensor(v) else v)
-                for k, v in metrics.items()
-            }
+            scope="epoch", prefix="val_", **{k: (v.item() if torch.is_tensor(v) else v) for k, v in metrics.items()}
         )
         self.evaluator.reset()
 
         self.after_validation()
-    
+
     def run_validation_step(self, idx: int, data_sample: Sequence[dict]) -> None:
         """
         Iterate one validation step.
@@ -462,60 +461,48 @@ class EpochBasedTrainer(BaseTrainer):
 class TestTrainer(BaseTrainer):
     def __init__(self, cfg: DictConfig) -> None:
         super().__init__(cfg)
-        
+
         self.ray_context = get_context()
         self.event_recorder._iter = 0
         self.event_recorder._epoch = 0
         self._iter, self.start_iter, self.start_epoch = 0, 0, 0
 
         # initialize dataset and dataloader
-        self.test_dataloader, _, \
-            self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
+        self.test_dataloader, _, self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
 
         self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
-            train_dataloader=self.test_dataloader,
-            val_dataloader=None,
-            config=cfg
+            train_dataloader=self.test_dataloader, val_dataloader=None, config=cfg
         )
 
-        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+        self.preprocessor = instantiate(_ensure_full_path(cfg.datasets.preprocessor))
 
         # initialize model
-        cfg, decoder_args = append_kwargs_to_model(cfg)  
-        model = build_dependency_graph_and_instantiate(cfg.models)
-        logger.info(f"Model instantiated: {model}")
+        BUILD = get_method(cfg.models.BUILD)
+        model = BUILD(cfg)
 
         # initialize checkpoint manager and
         # load model state from checkpoint
-        self.checkpoint_manager = instantiate(
-            cfg.checkpoint.checkpoint_manager,
-            model=model
-        )
+        self.checkpoint_manager = instantiate(_ensure_full_path(cfg.checkpoint.checkpoint_manager), model=model)
         self.checkpoint_manager.load()
 
         # initialize optimizer
         opt, _ = get_optimizer(
-            params=model.parameters(),
-            config=cfg,
-            optimizer=cfg.optimizers.opt,
-            steps_per_epoch=self.steps_per_epoch
+            params=model.parameters(), config=cfg, optimizer=cfg.optimizers.opt, steps_per_epoch=self.steps_per_epoch
         )
 
         # enable optimizations if specified
-        # includes setting Torch backend flags, 
-        # activation checkpointing, and torch Compile 
+        # includes setting Torch backend flags,
+        # activation checkpointing, and torch Compile
         if cfg.optimizations is not None:
             model = enable_optimizations(cfg=cfg, model=model)
 
         # initialize deepspeed
         self.model, self.opt, _, _ = initialize(
-            model=model,
-            optimizer=opt,
-            config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
+            model=model, optimizer=opt, config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
 
         # initialize evaluator
-        self.evaluator = instantiate(cfg.evaluation.evaluator)
+        self.evaluator = instantiate(_ensure_full_path(cfg.evaluation.evaluator))
 
     def test(self):
         """
@@ -531,19 +518,17 @@ class TestTrainer(BaseTrainer):
                     data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
                     self.run_test_step(idx, data_sample)
                     end = time.perf_counter()
-        
+
         metrics = self.evaluator.evaluate()
         self.event_recorder.put_scalars(
             prefix="evaluator_",
             scope="epoch",
-            **{k: (v.item() if torch.is_tensor(v) else v)
-                for k, v in metrics.items()
-            }
+            **{k: (v.item() if torch.is_tensor(v) else v) for k, v in metrics.items()},
         )
         self.evaluator.reset()
 
         self.after_test()
-    
+
     def run_test_step(self, idx: int, data_sample: Sequence[dict]) -> None:
         """
         Iterate one test step.
@@ -560,72 +545,55 @@ class TestTrainer(BaseTrainer):
         #     )
         # logger.info(f"step_loss: {loss_dict['step_loss']}")
 
-        self.after_test_step(data_sample=data_sample, 
-                             outputs=outputs, loss_dict=loss_dict)
+        self.after_test_step(data_sample=data_sample, outputs=outputs, loss_dict=loss_dict)
         self._iter += 1
 
 
 class Inferencer(BaseTrainer):
     def __init__(self, cfg: DictConfig) -> None:
         super().__init__(cfg)
-        
+
         self.ray_context = get_context()
         self.event_recorder._iter = 0
         self.event_recorder._epoch = 0
         self._iter, self.start_iter, self.start_epoch = 0, 0, 0
 
         # initialize dataset and dataloader
-        self.test_dataloader, _, \
-            self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
+        self.test_dataloader, _, self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
 
         self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
-            train_dataloader=self.test_dataloader,
-            val_dataloader=None,
-            config=cfg
+            train_dataloader=self.test_dataloader, val_dataloader=None, config=cfg
         )
 
-        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+        self.preprocessor = instantiate(_ensure_full_path(cfg.datasets.preprocessor))
 
         # initialize model
-        cfg, decoder_args = append_kwargs_to_model(cfg)  
-        model = build_dependency_graph_and_instantiate(cfg.models)
-        logger.info(f"Model instantiated: {model}")
+        BUILD = get_method(cfg.models.BUILD)
+        model = BUILD(cfg)
 
         # initialize checkpoint manager and
         # load model state from checkpoint
-        self.checkpoint_manager = instantiate(
-            cfg.checkpoint.checkpoint_manager,
-            model=model
-        )
+        self.checkpoint_manager = instantiate(_ensure_full_path(cfg.checkpoint.checkpoint_manager), model=model)
         self.checkpoint_manager.load()
 
         # initialize optimizer
         opt, _ = get_optimizer(
-            params=model.parameters(),
-            config=cfg,
-            optimizer=cfg.optimizers.opt,
-            steps_per_epoch=self.steps_per_epoch
+            params=model.parameters(), config=cfg, optimizer=cfg.optimizers.opt, steps_per_epoch=self.steps_per_epoch
         )
 
         # enable optimizations if specified
-        # includes setting Torch backend flags, 
-        # activation checkpointing, and torch Compile 
+        # includes setting Torch backend flags,
+        # activation checkpointing, and torch Compile
         if cfg.optimizations is not None:
             model = enable_optimizations(cfg=cfg, model=model)
 
         # initialize deepspeed
         self.model, self.opt, _, _ = initialize(
-            model=model,
-            optimizer=opt,
-            config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
+            model=model, optimizer=opt, config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
 
         # initialize inferencer_worker
-        self.inferencer_worker = instantiate(cfg.inference, 
-                                             model=self.model, 
-                                             decoder_head_type=decoder_args["name"] \
-                                                if decoder_args else str(cfg.inference.decoder_head_type),
-                                             database=database_df)
+        self.inferencer_worker = instantiate(_ensure_full_path(cfg.inference), model=self.model, database=database_df)
 
     def predict(self):
         """
@@ -641,7 +609,7 @@ class Inferencer(BaseTrainer):
                     data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
                     self.run_inference_step(idx, data_sample)
                     end = time.perf_counter()
-        
+
         self.inferencer_worker.finalize()
 
         self.after_test()
@@ -654,6 +622,5 @@ class Inferencer(BaseTrainer):
 
         self.inferencer_worker.predict(data_sample=data_sample)
 
-        self.after_test_step(data_sample=data_sample, 
-                             outputs=None, loss_dict=None)
+        self.after_test_step(data_sample=data_sample, outputs=None, loss_dict=None)
         self._iter += 1

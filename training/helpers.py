@@ -1,28 +1,25 @@
-import os
-import math
-import ujson
-import logging
 import itertools
-from pathlib import Path
-from operator import attrgetter
+import logging
+import math
+import os
+import random
 from collections import defaultdict
-from typing import Optional, List, Union, Callable, Tuple, Sequence, Literal
+from operator import attrgetter
+from pathlib import Path
+from typing import Any, Callable, List, Mapping, Optional, Tuple, Union
 
 import numpy as np
-
 import torch
-import torch.nn as nn
 import torch.functional as F
-from torchinfo import summary
-from timm.layers.weight_init import trunc_normal_
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-    checkpoint_wrapper as ptd_checkpoint_wrapper,
-    CheckpointWrapper,
-)
-
+import torch.nn as nn
+import ujson
 from omegaconf import DictConfig, open_dict
+from timm.layers.weight_init import trunc_normal_
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper as ptd_checkpoint_wrapper
+from torchinfo import summary
 
-from data.io import save_file
+from cell_observatory_platform.data.io import save_file
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
@@ -39,23 +36,26 @@ def record_dataset_len(config, num_train_rows: int, num_val_rows: int):
     val_steps_per_epoch = steps_from_rows(num_val_rows) if num_val_rows > 0 else None
 
     with open_dict(config):
-        config.runtime = {"train_steps_per_epoch": steps_per_epoch, 
-                       "val_steps_per_epoch": val_steps_per_epoch,
-                       "n_train_rows": num_train_rows,
-                       "n_val_rows": num_val_rows}
+        config.runtime = {
+            "train_steps_per_epoch": steps_per_epoch,
+            "val_steps_per_epoch": val_steps_per_epoch,
+            "n_train_rows": num_train_rows,
+            "n_val_rows": num_val_rows,
+        }
 
 
-def _infer_steps_per_epoch(config, loader, batch_size, type: str = "train"):    
-    if config.datasets.dataset._target_.endswith("PretrainDatasetDali") or \
-        config.datasets.dataset._target_.endswith("PretrainDataset"):
+def _infer_steps_per_epoch(config, loader, batch_size, type: str = "train"):
+    if config.datasets.dataset._target_.endswith("PretrainDatasetDali") or config.datasets.dataset._target_.endswith(
+        "PretrainDataset"
+    ):
         return len(loader)
-    
+
     elif config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
         if type == "train":
             return config.runtime.get("train_steps_per_epoch")
         elif type == "val":
             return config.runtime.get("val_steps_per_epoch")
-    
+
     else:
         raise TypeError(
             f"Cannot infer steps/epoch for loader type {type(loader)}. "
@@ -65,47 +65,42 @@ def _infer_steps_per_epoch(config, loader, batch_size, type: str = "train"):
 
 def get_steps_per_epoch(train_dataloader, val_dataloader, config: DictConfig):
     # TODO: double check correctness
-    steps_per_epoch = _infer_steps_per_epoch(config, 
-                                             train_dataloader, 
-                                             config.clusters.batch_size_per_gpu, 
-                                             type="train")
-    val_steps_per_epoch = _infer_steps_per_epoch(config, 
-                                                 val_dataloader, 
-                                                 config.clusters.batch_size_per_gpu, 
-                                                 type="val") if val_dataloader else None
-    logger.info(
-        f"Steps per epoch: {steps_per_epoch}, "
-        f"Validation steps per epoch: {val_steps_per_epoch}"
+    steps_per_epoch = _infer_steps_per_epoch(config, train_dataloader, config.clusters.batch_size_per_gpu, type="train")
+    val_steps_per_epoch = (
+        _infer_steps_per_epoch(config, val_dataloader, config.clusters.batch_size_per_gpu, type="val")
+        if val_dataloader
+        else None
     )
+    logger.info(f"Steps per epoch: {steps_per_epoch}, " f"Validation steps per epoch: {val_steps_per_epoch}")
 
     if steps_per_epoch is None or steps_per_epoch <= 0:
-        raise ValueError(
-            f"Steps per epoch is None or <= 0. Cannot proceed with training."
-        )
-    
+        raise ValueError(f"Steps per epoch is None or <= 0. Cannot proceed with training.")
+
     if (val_steps_per_epoch is None or val_steps_per_epoch <= 0) and val_dataloader is not None:
-        raise ValueError("Validation Dataloader is provided but validation steps per epoch is None or <= 0."
-        )
+        raise ValueError("Validation Dataloader is provided but validation steps per epoch is None or <= 0.")
 
     return steps_per_epoch, val_steps_per_epoch
 
 
 # NOTE: we store best loss, starting epoch and starting step
 #       with checkpoint manager in client state
-#       resume model state is most useful when restarting a 
-#       job from an earlier checkpoint to sidestep training 
+#       resume model state is most useful when restarting a
+#       job from an earlier checkpoint to sidestep training
 #       instabilities.
 #       with resume_model_state only the checkpoint directory
 #       and the checkpoint tag need be specified whereafter
 #       any checkpoint with corresponding iter, epoch, best_loss
 #       will be loaded from the checkpoint directory.
 def resume_model_state(config: DictConfig, checkpoint_manager):
-    assert config.checkpoint.checkpoint_manager.resume_checkpointdir is not None and \
-        Path(config.checkpoint.checkpoint_manager.resume_checkpointdir).is_dir(), \
-        f"Checkpoint directory does not exist: {config.checkpoint.checkpoint_manager.resume_checkpointdir}" \
-        f"Checkpoint directory must be populated " \
+    assert (
+        config.checkpoint.checkpoint_manager.resume_checkpointdir is not None
+        and Path(config.checkpoint.checkpoint_manager.resume_checkpointdir).is_dir()
+    ), (
+        f"Checkpoint directory does not exist: {config.checkpoint.checkpoint_manager.resume_checkpointdir}"
+        f"Checkpoint directory must be populated "
         f"with a valid checkpoint to resume training."
-    
+    )
+
     ckpt_path, client_state = checkpoint_manager.load()
 
     # get metadata from client state
@@ -118,23 +113,25 @@ def resume_model_state(config: DictConfig, checkpoint_manager):
             f"No epochs left to train. Starting epoch {starting_epoch} "
             f"exceeds total epochs {config.schedulers.epochs}."
         )
-    
-    if config.checkpoint.checkpoint_manager.resume_checkpointdir != \
-        config.checkpoint.checkpoint_manager.save_checkpointdir:
+
+    if (
+        config.checkpoint.checkpoint_manager.resume_checkpointdir
+        != config.checkpoint.checkpoint_manager.save_checkpointdir
+    ):
         logger.warning(
             f"Checkpoint resume directory {config.checkpoint.checkpoint_manager.resume_checkpointdir} "
             f"does not match new save checkpoint directory {config.checkpoint.checkpoint_manager.save_checkpointdir}. "
             "New checkpoints will NOT be saved to the previous checkpoint directory!"
         )
         Path(config.checkpoint.checkpoint_manager.save_checkpointdir).mkdir(exist_ok=True, parents=True)
-    
+
     if not Path(config.loggers.logdir).exists():
         logger.warning(
             f"Log directory {config.loggers.logdir} does not exist. "
             f"Creating new log directory. New logs from starting epoch {starting_epoch} "
             f"will not contain any previous training run data!"
         )
-        Path(config.loggers.logdir).mkdir(exist_ok=True, parents=True) 
+        Path(config.loggers.logdir).mkdir(exist_ok=True, parents=True)
 
     return best_loss, starting_iter, starting_epoch
 
@@ -143,10 +140,7 @@ def resume_run(trainer, config: DictConfig):
     Path(config.paths.outdir).mkdir(exist_ok=True, parents=True)
     if config.paths.resume_checkpointdir:
         best_loss, iter, epoch = resume_model_state(config, checkpoint_manager=trainer.checkpoint_manager)
-        trainer.event_recorder.resume(
-            iter=iter, 
-            epoch=epoch
-        )
+        trainer.event_recorder.resume(iter=iter, epoch=epoch)
 
     else:
         epoch, iter, best_loss = 0, 0, np.inf
@@ -157,16 +151,16 @@ def resume_run(trainer, config: DictConfig):
         logger.info(f"Output dir: {config.paths.outdir}")
         logger.info(f"Log dir: {config.loggers.logdir}")
         logger.info(f"Checkpoint save dir: {config.checkpoint.checkpoint_manager.save_checkpointdir}")
-    
+
     return best_loss, iter, epoch
 
 
 def summarize_model(
     model: nn.Module,
     batch_size: int,
-    logdir: Path|str,
+    logdir: Path | str,
     inputs: Optional[tuple] = None,
-    input_data: Optional[dict] = None
+    input_data: Optional[dict] = None,
 ):
     logdir = Path(logdir)
 
@@ -180,7 +174,7 @@ def summarize_model(
         col_names=["kernel_size", "output_size", "num_params"],
         row_settings=["var_names"],
         verbose=0,
-        mode='eval'
+        mode="eval",
     )
     train_stats = summary(
         model=model,
@@ -191,53 +185,44 @@ def summarize_model(
         col_names=["kernel_size", "output_size", "num_params"],
         row_settings=["var_names"],
         verbose=1,
-        mode='train'
+        mode="train",
     )
 
-    with (logdir / 'model.log').open('w') as f:
+    with (logdir / "model.log").open("w") as f:
         f.write(str(model_stats))
 
-    model_logbook['training_batch_size'] = batch_size
-    model_logbook['input_bytes'] = model_stats.total_input
-    model_logbook['total_params'] = model_stats.total_params
-    model_logbook['trainable_params'] = model_stats.trainable_params
-    model_logbook['param_bytes'] = model_stats.total_param_bytes
+    model_logbook["training_batch_size"] = batch_size
+    model_logbook["input_bytes"] = model_stats.total_input
+    model_logbook["total_params"] = model_stats.total_params
+    model_logbook["trainable_params"] = model_stats.trainable_params
+    model_logbook["param_bytes"] = model_stats.total_param_bytes
 
-    model_logbook['eval_macs'] = model_stats.total_mult_adds
-    model_logbook['training_macs'] = train_stats.total_mult_adds
+    model_logbook["eval_macs"] = model_stats.total_mult_adds
+    model_logbook["training_macs"] = train_stats.total_mult_adds
 
-    model_logbook['forward_pass_bytes'] = model_stats.total_output_bytes
-    model_logbook['forward_backward_pass_bytes'] = train_stats.total_output_bytes
+    model_logbook["forward_pass_bytes"] = model_stats.total_output_bytes
+    model_logbook["forward_backward_pass_bytes"] = train_stats.total_output_bytes
 
-    model_logbook['eval_model_bytes'] = model_logbook['param_bytes'] + model_logbook['forward_pass_bytes']
-    model_logbook['training_model_bytes'] = model_logbook['param_bytes'] + model_logbook['forward_backward_pass_bytes']
+    model_logbook["eval_model_bytes"] = model_logbook["param_bytes"] + model_logbook["forward_pass_bytes"]
+    model_logbook["training_model_bytes"] = model_logbook["param_bytes"] + model_logbook["forward_backward_pass_bytes"]
 
-    model_logbook['eval_bytes'] = model_logbook['input_bytes'] + \
-        model_logbook['eval_model_bytes']
-    model_logbook['training_bytes'] = model_logbook['input_bytes'] + \
-        model_logbook['training_model_bytes']
+    model_logbook["eval_bytes"] = model_logbook["input_bytes"] + model_logbook["eval_model_bytes"]
+    model_logbook["training_bytes"] = model_logbook["input_bytes"] + model_logbook["training_model_bytes"]
 
-    model_logbook['layers'] = {}
+    model_logbook["layers"] = {}
     for layer in train_stats.summary_list:
         if layer.is_leaf_layer:
-            model_logbook['layers'][f'{layer.class_name}_{layer.var_name}'] = {
-                'macs': layer.macs,
-                'params': max(layer.num_params, 0),
-                'param_bytes': layer.param_bytes,
-                'forward_pass_bytes': layer.output_bytes,
-                'forward_backward_pass_bytes': layer.output_bytes * 2, # x2 for gradients
-                'output_shape': layer.output_size,
+            model_logbook["layers"][f"{layer.class_name}_{layer.var_name}"] = {
+                "macs": layer.macs,
+                "params": max(layer.num_params, 0),
+                "param_bytes": layer.param_bytes,
+                "forward_pass_bytes": layer.output_bytes,
+                "forward_backward_pass_bytes": layer.output_bytes * 2,  # x2 for gradients
+                "output_shape": layer.output_size,
             }
 
-    with (logdir / 'model_logbook.json').open('w') as f:
-        ujson.dump(
-            model_logbook,
-            f,
-            indent=4,
-            sort_keys=False,
-            ensure_ascii=False,
-            escape_forward_slashes=False
-        )
+    with (logdir / "model_logbook.json").open("w") as f:
+        ujson.dump(model_logbook, f, indent=4, sort_keys=False, ensure_ascii=False, escape_forward_slashes=False)
 
 
 def log_data_timings(
@@ -248,98 +233,94 @@ def log_data_timings(
     type: str = "train",
 ):
     assert data_sample is not None, "data_sample is None"
-    assert data_sample['metainfo'] is not None, "data_sample['metainfo'] is None"
+    assert data_sample["metainfo"] is not None, "data_sample['metainfo'] is None"
 
-    data_time = data_sample['metainfo'].get('data_time', None)
+    data_time = data_sample["metainfo"].get("data_time", None)
     if data_time is not None:
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix="val_" if type == "val" else None,
             data_time=data_time,
-            reduce_method=["median", "max", "min"]
+            reduce_method=["median", "max", "min"],
         )
 
-    get_item_time = data_sample['metainfo'].get('get_item_time', None)
+    get_item_time = data_sample["metainfo"].get("get_item_time", None)
     if get_item_time is not None:
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix="val_" if type == "val" else None,
             get_item_time=get_item_time.mean().item(),
-            reduce_method=["median", "max", "min"]
+            reduce_method=["median", "max", "min"],
         )
-    
-    preprocess_time = data_sample['metainfo'].get('preprocess_time', None)
+
+    preprocess_time = data_sample["metainfo"].get("preprocess_time", None)
     if preprocess_time is not None:
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix="val_" if type == "val" else None,
             preprocess_time=preprocess_time,
-            reduce_method=["median", "max", "min"]
+            reduce_method=["median", "max", "min"],
         )
 
-    masking_time = data_sample['metainfo'].get('masking_time', None)
+    masking_time = data_sample["metainfo"].get("masking_time", None)
     if masking_time is not None:
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix="val_" if type == "val" else None,
             masking_time=masking_time,
-            reduce_method=["median", "max", "min"]
+            reduce_method=["median", "max", "min"],
         )
-    
-    collate_time = data_sample['metainfo'].get('collate_time', None)
+
+    collate_time = data_sample["metainfo"].get("collate_time", None)
     if collate_time is not None:
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix="val_" if type == "val" else None,
             collate_time=collate_time,
-            reduce_method=["median", "max", "min"]
+            reduce_method=["median", "max", "min"],
         )
-    
-    slice_time = data_sample['metainfo'].get('slice_time', None)
+
+    slice_time = data_sample["metainfo"].get("slice_time", None)
     if slice_time is not None:
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix="val_" if type == "val" else None,
-            slice_time=slice_time.mean().item() if \
-                isinstance(slice_time, torch.Tensor) else np.mean(slice_time),
-            reduce_method=["median", "max", "min"]
+            slice_time=slice_time.mean().item() if isinstance(slice_time, torch.Tensor) else np.mean(slice_time),
+            reduce_method=["median", "max", "min"],
         )
 
-    transform_time = data_sample['metainfo'].get('transform_time', None)
+    transform_time = data_sample["metainfo"].get("transform_time", None)
     if transform_time is not None:
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix="val_" if type == "val" else None,
             transform_time=transform_time,
-            reduce_method=["median", "max", "min"]
+            reduce_method=["median", "max", "min"],
         )
 
     if type == "train":
         trainer.event_recorder.put_scalars(
-            scope="step",
-            **{k: (v.item() if torch.is_tensor(v) else v)
-            for k, v in loss_dict.items()
-            }
+            scope="step", **{k: (v.item() if torch.is_tensor(v) else v) for k, v in loss_dict.items()}
         )
 
 
-def get_input_data(model, inputs, device: Optional[torch.device] = 'cuda'):
+def get_input_data(model, inputs, device: Optional[torch.device] = "cuda"):
     input_data = ({"data_tensor": torch.randn(*inputs, device=device), "metainfo": {}},)
     return input_data
 
 
-def get_masked_input_data(model, inputs, device: Optional[torch.device] = 'cuda', mask_ratio: float = 0.75):
+def get_masked_input_data(model, inputs, device: Optional[torch.device] = "cuda", mask_ratio: float = 0.75):
     n_patches = model.get_num_patches()
     context_len = int(n_patches * (1 - mask_ratio))
     context_idx = torch.arange(context_len, dtype=torch.long, device=device).unsqueeze(0)
-    target_idx  = torch.arange(context_len, n_patches, dtype=torch.long, device=device).unsqueeze(0)
+    target_idx = torch.arange(context_len, n_patches, dtype=torch.long, device=device).unsqueeze(0)
 
     meta = {
         "masks": [torch.ones(n_patches, dtype=torch.long, device=device).unsqueeze(0)],
         "context_masks": [context_idx],
         "target_masks": [target_idx],
         "original_patch_indices": [torch.arange(n_patches, dtype=torch.long, device=device)],
-        "patches_used": [torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0).expand(inputs[0],-1)],
+        "patches_used": [torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0).expand(inputs[0], -1)],
     }
 
     # summary() will unpack the input data but the fwd function in
@@ -370,7 +351,7 @@ def enable_optimizations(cfg: DictConfig, model: nn.Module):
     if cfg.optimizations.torch_compile.enabled:
         model = apply_compile(model, cfg)
 
-    print_model_tree_with_opt(model, treat_wrappers_as_leaves=False) # sanity check
+    print_model_tree_with_opt(model, treat_wrappers_as_leaves=False)  # sanity check
     return model
 
 
@@ -408,10 +389,7 @@ _save_list = {
 }
 
 
-def _as_stack(path_str: str,
-              submod,
-              blocks_nomenclature: str = "transformer_blocks"
-) -> Tuple[str, nn.ModuleList]:
+def _as_stack(path_str: str, submod, blocks_nomenclature: str = "transformer_blocks") -> Tuple[str, nn.ModuleList]:
     """
     Normalize a object into a (stack_fqn, stack_container) pair.
     Accept ModuleList/Sequential directly, or parent modules that own a
@@ -422,8 +400,7 @@ def _as_stack(path_str: str,
         return path_str, submod
 
     # parent form: grab its blocks named `blocks_nomenclature`
-    if hasattr(submod, blocks_nomenclature) and \
-        isinstance(getattr(submod, blocks_nomenclature), nn.ModuleList):
+    if hasattr(submod, blocks_nomenclature) and isinstance(getattr(submod, blocks_nomenclature), nn.ModuleList):
         return f"{path_str}.{blocks_nomenclature}", getattr(submod, blocks_nomenclature)
 
     raise TypeError(
@@ -436,6 +413,7 @@ def _as_stack(path_str: str,
 #       `yield_transformer_stacks_for_compile` into one helper function
 #        and two smaller functions that yield the stacks for each case to
 #        avoid code duplication
+
 
 def yield_transformer_stacks_for_act_ckpt(cfg, model: nn.Module):
     # if user provided explicit modules, honor them
@@ -473,17 +451,14 @@ def yield_transformer_stacks_for_act_ckpt(cfg, model: nn.Module):
             yield (f"masked_encoder.encoder.{blocks_name}", getattr(model.masked_encoder.encoder, blocks_name))
     if hasattr(model, "masked_decoder") and hasattr(model.masked_decoder, "encoder"):
         if hasattr(model.masked_decoder.encoder, blocks_name):
-            yield (f"masked_decoder.encoder.{blocks_name}",
-                   getattr(model.masked_decoder.encoder, blocks_name))
+            yield (f"masked_decoder.encoder.{blocks_name}", getattr(model.masked_decoder.encoder, blocks_name))
     # JEPA
     if hasattr(model, "input_encoder") and hasattr(model.input_encoder, "encoder"):
         if hasattr(model.input_encoder.encoder, blocks_name):
-            yield (f"input_encoder.encoder.{blocks_name}",
-                   getattr(model.input_encoder.encoder, blocks_name))
+            yield (f"input_encoder.encoder.{blocks_name}", getattr(model.input_encoder.encoder, blocks_name))
     if hasattr(model, "target_predictor") and hasattr(model.target_predictor, "encoder"):
         if hasattr(model.target_predictor.encoder, blocks_name):
-            yield (f"target_predictor.encoder.{blocks_name}",
-                   getattr(model.target_predictor.encoder, blocks_name))
+            yield (f"target_predictor.encoder.{blocks_name}", getattr(model.target_predictor.encoder, blocks_name))
 
 
 def yield_transformer_stacks_for_compile(cfg: DictConfig, model: nn.Module):
@@ -526,8 +501,7 @@ def apply_ac_over_discovered_stacks(cfg, model: nn.Module):
                 module=block,
                 act_ckpt_mode=cfg.optimizations.activation_checkpoint.mode,
                 selective_ac_option=cfg.optimizations.activation_checkpoint.selective_ac_option,
-                per_op_sac_force_recompute_mm_shapes_by_fqns=\
-                    cfg.optimizations.activation_checkpoint.per_op_sac_force_recompute_mm_shapes_by_fqns,
+                per_op_sac_force_recompute_mm_shapes_by_fqns=cfg.optimizations.activation_checkpoint.per_op_sac_force_recompute_mm_shapes_by_fqns,
                 base_fqn=f"{stack_fqn}.{i}",
                 mm_recompute_frac=cfg.optimizations.activation_checkpoint.mm_recompute_frac,
             )
@@ -564,9 +538,7 @@ def _apply_ac_to_module(
 ):
     valid_ac_modes = ("full", "selective")
     if act_ckpt_mode not in valid_ac_modes:
-        raise ValueError(
-            f"Invalid AC mode: {act_ckpt_mode}. Valid modes: {valid_ac_modes}"
-        )
+        raise ValueError(f"Invalid AC mode: {act_ckpt_mode}. Valid modes: {valid_ac_modes}")
 
     if act_ckpt_mode == "full":
         return ptd_checkpoint_wrapper(module, preserve_rng_state=False)
@@ -574,8 +546,7 @@ def _apply_ac_to_module(
     assert act_ckpt_mode == "selective", f"{act_ckpt_mode}"
 
     use_op_sac = selective_ac_option == "op"
-    use_layer_sac = isinstance(selective_ac_option, (str, int)) \
-        and str(selective_ac_option).isdigit()
+    use_layer_sac = isinstance(selective_ac_option, (str, int)) and str(selective_ac_option).isdigit()
     if not use_op_sac and not use_layer_sac:
         raise ValueError(
             f"Invalid selective AC option: {selective_ac_option}. "
@@ -583,10 +554,7 @@ def _apply_ac_to_module(
         )
 
     if use_op_sac:
-        from torch.utils.checkpoint import (
-            CheckpointPolicy,
-            create_selective_checkpoint_contexts,
-        )
+        from torch.utils.checkpoint import CheckpointPolicy, create_selective_checkpoint_contexts
 
         mm_recompute_shapes, per_op_act_ckpt_fqns = set(), []
         # True if len(per_op_sac_force_recompute_mm_shapes_by_fqns) > 0 or
@@ -597,10 +565,7 @@ def _apply_ac_to_module(
                 if base_fqn is not None:
                     fqn = f"{base_fqn}.{module_fqn}"
 
-                if not any(
-                    filter_fqn in fqn
-                    for filter_fqn in per_op_sac_force_recompute_mm_shapes_by_fqns
-                ):
+                if not any(filter_fqn in fqn for filter_fqn in per_op_sac_force_recompute_mm_shapes_by_fqns):
                     continue
 
                 if not isinstance(submod, nn.Linear):
@@ -613,10 +578,7 @@ def _apply_ac_to_module(
                 out_f, in_f = submod.weight.shape
                 mm_recompute_shapes.add((in_f, out_f))
 
-                logger.info(
-                    f"Selective op AC force recompute mm shape for {fqn}: "
-                    f"{(in_f, out_f)}"
-                )
+                logger.info(f"Selective op AC force recompute mm shape for {fqn}: " f"{(in_f, out_f)}")
 
                 per_op_act_ckpt_fqns.append(fqn)
 
@@ -628,8 +590,9 @@ def _apply_ac_to_module(
                 f"Selective op AC force recomputing mms with rhs shapes {mm_recompute_shapes}"
             )
 
-        assert mm_recompute_frac is not None and mm_recompute_frac > 0, \
-            f"mm_recompute_frac must be a positive integer, got: {mm_recompute_frac}"
+        assert (
+            mm_recompute_frac is not None and mm_recompute_frac > 0
+        ), f"mm_recompute_frac must be a positive integer, got: {mm_recompute_frac}"
 
         def _get_custom_policy(meta, mm_recompute_frac, mm_recompute_shapes):
             def _custom_policy(ctx, func, *args, **kwargs):
@@ -647,22 +610,16 @@ def _apply_ac_to_module(
                     meta[mm_count_key] += 1
 
                 # saves output of all compute ops, except every mm_recompute_frac mm
-                to_save = func in _save_list and not (
-                    is_mm and meta[mm_count_key] % mm_recompute_frac == 0
-                )
-                return (
-                    CheckpointPolicy.MUST_SAVE
-                    if to_save
-                    else CheckpointPolicy.PREFER_RECOMPUTE
-                )
+                to_save = func in _save_list and not (is_mm and meta[mm_count_key] % mm_recompute_frac == 0)
+                return CheckpointPolicy.MUST_SAVE if to_save else CheckpointPolicy.PREFER_RECOMPUTE
 
             return _custom_policy
 
         def selective_checkpointing_context_fn():
             meta = defaultdict(int)
-            return create_selective_checkpoint_contexts(_get_custom_policy(meta,
-                                                                           mm_recompute_frac,
-                                                                           mm_recompute_shapes))
+            return create_selective_checkpoint_contexts(
+                _get_custom_policy(meta, mm_recompute_frac, mm_recompute_shapes)
+            )
 
         # selective checkpointing of mm ops as well every mm_recompute_frac-th
         # mm op in the module
@@ -785,15 +742,16 @@ def print_model_tree_with_opt(model, max_depth=99, treat_wrappers_as_leaves=Fals
 
 # from: https://github.com/rwightman/timm/timm/models/_manipulate.py
 def named_apply(
-        fn: Callable,
-        module: nn.Module, name='',
-        depth_first: bool = True,
-        include_root: bool = False,
+    fn: Callable,
+    module: nn.Module,
+    name="",
+    depth_first: bool = True,
+    include_root: bool = False,
 ) -> nn.Module:
     if not depth_first and include_root:
         fn(module=module, name=name)
     for child_name, child_module in module.named_children():
-        child_name = '.'.join((name, child_name)) if name else child_name
+        child_name = ".".join((name, child_name)) if name else child_name
         named_apply(fn=fn, module=child_module, name=child_name, depth_first=depth_first, include_root=True)
     if depth_first and include_root:
         fn(module=module, name=name)
@@ -801,6 +759,63 @@ def named_apply(
 
 
 def init_weights(model: nn.Module, weight_init_type: str):
+    logger = logging.getLogger(__name__)
+
+    # ------------------------------------------------------------------
+    # Common alias resolution helpers
+    # ------------------------------------------------------------------
+    def _resolve_alias(root: nn.Module, paths):
+        """
+        paths: list[tuple[str, ...]]
+
+        Returns (obj, path) where obj is the resolved attribute chain,
+        or (None, None) if none match.
+        """
+        for chain in paths:
+            obj = root
+            ok = True
+            for name in chain:
+                if not hasattr(obj, name):
+                    ok = False
+                    break
+                obj = getattr(obj, name)
+            if ok:
+                return obj, chain
+        return None, None
+
+    # Alias tables
+    PATCH_EMBED_WEIGHT_ALIASES = [
+        ("masked_encoder", "patch_embedding", "proj", "weight"),
+        ("masked_encoder", "patch_embed", "proj", "weight"),
+        ("backbone", "patch_embedding", "proj", "weight"),
+        ("backbone", "patch_embed", "proj", "weight"),
+        ("encoder", "patch_embedding", "proj", "weight"),
+        ("encoder", "patch_embed", "proj", "weight"),
+    ]
+
+    TOKEN_PARAM_ALIASES = [
+        ("masked_decoder", "token_param"),
+        ("decoder", "token_param"),
+        ("backbone", "token_param"),
+        ("encoder", "token_param"),
+    ]
+
+    INPUT_ENCODER_ALIASES = [
+        ("input_encoder",),
+        ("masked_encoder",),
+        ("backbone",),
+        ("encoder",),
+    ]
+
+    TARGET_PREDICTOR_ALIASES = [
+        ("target_predictor",),
+        ("decoder",),
+    ]
+
+    # ------------------------------------------------------------------
+    # MAE
+    # ------------------------------------------------------------------
+
     if weight_init_type == "mae":
         # MAE model init utility function adapted from:
         # https://github.com/facebookresearch/mae/main/models_mae.py
@@ -808,7 +823,7 @@ def init_weights(model: nn.Module, weight_init_type: str):
             if isinstance(m, nn.Linear):
                 # use xavier_uniform following official JAX ViT
                 torch.nn.init.xavier_uniform_(m.weight)
-                if isinstance(m, nn.Linear) and m.bias is not None:
+                if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.bias, 0)
@@ -822,34 +837,50 @@ def init_weights(model: nn.Module, weight_init_type: str):
             # elif hasattr(m, 'init_weights'):
             #     m.init_weights()
 
-         # initialize patch_embed like nn.Linear (instead of nn.Conv2d)
-        w = model.masked_encoder.patch_embedding.proj.weight.data
-        torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+        patch_w, patch_path = _resolve_alias(model, PATCH_EMBED_WEIGHT_ALIASES)
+        if patch_w is None:
+            raise ValueError(
+                "MAE init: could not locate patch embedding weight. " f"Tried aliases: {PATCH_EMBED_WEIGHT_ALIASES}"
+            )
+        torch.nn.init.xavier_uniform_(patch_w.view(patch_w.shape[0], -1))
 
-        # timm's trunc_normal_(std=.02) is effectively
-        # normal_(std=0.02) as cutoff is too big (2.)
-        if hasattr(model.masked_decoder, "token_param"):
-            torch.nn.init.normal_(model.masked_decoder.token_param, std=.02)
+        token_param, token_path = _resolve_alias(model, TOKEN_PARAM_ALIASES)
+        if token_param is not None:
+            torch.nn.init.normal_(token_param, std=0.02)
+        else:
+            logger.debug(
+                "MAE init: token_param not found (aliases: %s); skipping token init.",
+                TOKEN_PARAM_ALIASES,
+            )
 
         # initialize nn.Linear and nn.LayerNorm
         model.apply(_mae_init_weights)
 
+    # ------------------------------------------------------------------
+    # VJEPA
+    # ------------------------------------------------------------------
+
     elif weight_init_type == "vjepa":
         # helpers from:
         # https://github.com/facebookresearch/ijepa/blob/main/src/models/vision_transformer.py
-        def _vjepa_fix_init_weight(model):
+        def _vjepa_fix_init_weight(enc_model: nn.Module):
             def rescale(param, layer_id):
                 param.div_(math.sqrt(2.0 * layer_id))
 
-            for layer_id, layer in enumerate(model.encoder.transformer_blocks):
-                # important to match names with timm MLP and our Attention module
+            if not hasattr(enc_model, "encoder") or not hasattr(enc_model.encoder, "transformer_blocks"):
+                raise ValueError(
+                    "VJEPA init: expected an encoder with `encoder.transformer_blocks` "
+                    f"on {enc_model.__class__.__name__}"
+                )
+
+            for layer_id, layer in enumerate(enc_model.encoder.transformer_blocks):
                 rescale(layer.att.proj.weight.data, layer_id + 1)
                 rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
         def _vjepa_init_weights(m):
             if isinstance(m, nn.Linear):
                 trunc_normal_(m.weight, std=model.init_std)
-                if isinstance(m, nn.Linear) and m.bias is not None:
+                if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.bias, 0)
@@ -863,14 +894,34 @@ def init_weights(model: nn.Module, weight_init_type: str):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-        # NOTE: IJEPA does initlization of encoder and decoder separately
-        #       however they are intialized the same way hence we
-        #       just do a single named_apply over the whole model
-        trunc_normal_(model.masked_decoder.token_param, std=model.init_std)
+        decoder_token, dec_path = _resolve_alias(model, [("masked_decoder", "token_param")] + TOKEN_PARAM_ALIASES)
+        if decoder_token is None:
+            raise ValueError(
+                "VJEPA init: could not locate decoder token_param. "
+                f"Tried aliases: {[('masked_decoder', 'token_param')] + TOKEN_PARAM_ALIASES}"
+            )
+        trunc_normal_(decoder_token, std=model.init_std)
+
+        # Initialize all Linear/Norm/Conv
         model.apply(_vjepa_init_weights)
-        # rescale blocks for input encoder and target predictor
-        _vjepa_fix_init_weight(model.input_encoder)
-        _vjepa_fix_init_weight(model.target_predictor)
+
+        # Required: input encoder
+        input_encoder, input_path = _resolve_alias(model, INPUT_ENCODER_ALIASES)
+        if input_encoder is None:
+            raise ValueError("VJEPA init: could not locate input encoder. " f"Tried aliases: {INPUT_ENCODER_ALIASES}")
+        _vjepa_fix_init_weight(input_encoder)
+
+        # Required: target predictor
+        target_predictor, tp_path = _resolve_alias(model, TARGET_PREDICTOR_ALIASES)
+        if target_predictor is None:
+            raise ValueError(
+                "VJEPA init: could not locate target predictor. " f"Tried aliases: {TARGET_PREDICTOR_ALIASES}"
+            )
+        _vjepa_fix_init_weight(target_predictor)
+
+    # ------------------------------------------------------------------
+    # VJEPA2
+    # ------------------------------------------------------------------
 
     elif weight_init_type == "vjepa2":
         # helpers from:
@@ -878,7 +929,7 @@ def init_weights(model: nn.Module, weight_init_type: str):
         def _vjepa2_init_weights(m):
             if isinstance(m, nn.Linear):
                 trunc_normal_(m.weight, std=model.init_std)
-                if isinstance(m, nn.Linear) and m.bias is not None:
+                if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.bias, 0)
@@ -894,42 +945,63 @@ def init_weights(model: nn.Module, weight_init_type: str):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-        def _vjepa2_rescale_blocks(model):
+        def _vjepa2_rescale_blocks(enc_model: nn.Module):
             def rescale(param, layer_id):
                 param.div_(math.sqrt(2.0 * layer_id))
 
-            for layer_id, layer in enumerate(model.encoder.transformer_blocks):
+            if not hasattr(enc_model, "encoder") or not hasattr(enc_model.encoder, "transformer_blocks"):
+                raise ValueError(
+                    "VJEPA2 init: expected an encoder with `encoder.transformer_blocks` "
+                    f"on {enc_model.__class__.__name__}"
+                )
+
+            for layer_id, layer in enumerate(enc_model.encoder.transformer_blocks):
                 rescale(layer.att.proj.weight.data, layer_id + 1)
                 rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
         model.apply(_vjepa2_init_weights)
-        _vjepa2_rescale_blocks(model.input_encoder)
-        
-        if hasattr(model.target_predictor, "encoder"):
-            _vjepa2_rescale_blocks(model.target_predictor)
+
+        input_encoder, input_path = _resolve_alias(model, INPUT_ENCODER_ALIASES)
+        if input_encoder is None:
+            raise ValueError("VJEPA2 init: could not locate input encoder. " f"Tried aliases: {INPUT_ENCODER_ALIASES}")
+        _vjepa2_rescale_blocks(input_encoder)
+
+        target_predictor, tp_path = _resolve_alias(model, TARGET_PREDICTOR_ALIASES)
+        if target_predictor is not None and hasattr(target_predictor, "encoder"):
+            _vjepa2_rescale_blocks(target_predictor)
+
+    # ------------------------------------------------------------------
+    # ViT-Adapter style init
+    # ------------------------------------------------------------------
 
     elif weight_init_type == "vit_adapter":
+
         def _vit_adapter_init_weights(m):
             if isinstance(m, nn.Linear):
                 torch.nn.init.trunc_normal_(m.weight, std=0.02)
-                if isinstance(m, nn.Linear) and m.bias is not None:
+                if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm) \
-                or isinstance(m, nn.BatchNorm3d)\
-                or isinstance(m, nn.BatchNorm1d):
+            elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d, nn.BatchNorm1d)):
                 nn.init.constant_(m.bias, 0)
                 nn.init.constant_(m.weight, 1.0)
-            elif isinstance(m, nn.Conv3d) or isinstance(m, nn.ConvTranspose3d):
+            elif isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
                 fan_out = m.kernel_size[0] * m.kernel_size[1] * m.kernel_size[2] * m.out_channels
                 fan_out //= m.groups
                 m.weight.data.normal_(0, math.sqrt(2.0 / fan_out))
                 if m.bias is not None:
                     m.bias.data.zero_()
-            elif isinstance(m, nn.Conv1d) or isinstance(m, nn.ConvTranspose1d):
+            elif isinstance(m, (nn.Conv1d, nn.ConvTranspose1d)):
                 fan_out = m.kernel_size[0] * m.out_channels
                 fan_out //= m.groups
                 m.weight.data.normal_(0, math.sqrt(2.0 / fan_out))
+                if m.bias is not None:
+                    m.bias.data.zero_()
 
+        if not (hasattr(model, "up") and hasattr(model, "spatial_prior_module") and hasattr(model, "interactions")):
+            raise ValueError(
+                "vit_adapter init: expected model to have attributes "
+                "`up`, `spatial_prior_module`, and `interactions`."
+            )
         model.up.apply(_vit_adapter_init_weights)
         model.spatial_prior_module.apply(_vit_adapter_init_weights)
         model.interactions.apply(_vit_adapter_init_weights)
@@ -937,40 +1009,6 @@ def init_weights(model: nn.Module, weight_init_type: str):
 
     else:
         raise ValueError(f"Unknown weight initialization type: {weight_init_type}")
-    
-
-# FIXME: perhaps not the cleanest solution, but helps prevent
-#       making configs more complicated to configure
-def append_kwargs_to_model(cfg):
-    with open_dict(cfg):
-        if cfg.models.get("decoders", None):
-            decoder = cfg.models.decoders.name
-            decoder_args = cfg.models.decoders
-        else:
-            decoder = None
-            decoder_args = None
-
-        if cfg.get("network", None) is  not None and cfg.models.get(cfg.network, None) is not None:
-            cfg.models = cfg.models.get(cfg.network, None)
-
-        if cfg.get("tasks", None) is not None:
-            cfg.models.task = cfg.tasks.task
-
-            input_shape= tuple(cfg.datasets.input_shape)
-            input_format = str(cfg.dataset_layout_order)
-            output_channels = {axis: shape for axis, shape in zip(input_format, input_shape)}
-            cfg.models.output_channels = output_channels["C"]
-            
-            if cfg.tasks.task == "channel_split":
-                input_shape = cfg.models.input_shape
-                input_shape[-1] = cfg.tasks.input_channels
-                cfg.models.input_shape = input_shape
-
-        if decoder is not None or decoder_args is not None:
-            cfg.models.decoder = decoder
-            cfg.models.decoder_args = decoder_args
-
-    return cfg, decoder_args
 
 
 def get_data_dim(layout_order: str) -> int:
@@ -990,11 +1028,11 @@ def get_patch_sizes(input_format: str, patch_shape: List[int]):
     if input_format == "TZYXC":
         # temporal, axial, lateral
         return (patch_shape[0], patch_shape[1], patch_shape[2])
-    
+
     elif input_format == "TYXC":
         # temporal, lateral
         return (patch_shape[0], None, patch_shape[1])
-    
+
     elif input_format == "ZYXC":
         # axial, lateral
         return (None, patch_shape[0], patch_shape[1])
@@ -1009,3 +1047,16 @@ def get_patch_sizes(input_format: str, patch_shape: List[int]):
 
     else:
         raise ValueError(f"Unknown dataset layout order: {input_format}")
+
+
+def set_global_seed(seed: int):
+    # Python built-in RNG
+    random.seed(seed)
+    # Numpy RNG
+    np.random.seed(seed)
+    # Torch CPU RNG
+    torch.manual_seed(seed)
+    # Torch CUDA RNG (all devices)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)

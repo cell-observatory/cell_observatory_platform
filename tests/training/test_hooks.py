@@ -1,11 +1,13 @@
 import os
+import sys
+from pathlib import Path
 
 import pytest
 import torch
 from hydra.utils import get_class
 from omegaconf import open_dict
 
-from tests.conftest import distributed_test
+from cell_observatory_platform.tests.conftest import distributed_test
 
 
 def _test_hooks_dist(cfg):
@@ -16,7 +18,7 @@ def _test_hooks_dist(cfg):
     import torch
     from ray.train import report
 
-    from training.hooks import (
+    from cell_observatory_platform.training.hooks import (
         AnomalyDetector,
         BestMetricSaver,
         EarlyStopHook,
@@ -29,8 +31,8 @@ def _test_hooks_dist(cfg):
         TorchProfiler,
         WeightDecayScheduleHook,
     )
-    from training.loggers import LocalEventWriter
-    from utils.context import barrier, process_rank
+    from cell_observatory_platform.training.loggers import LocalEventWriter
+    from cell_observatory_platform.utils.context import barrier, process_rank
 
     success = True
 
@@ -68,27 +70,29 @@ def _test_hooks_dist(cfg):
 
     # feed 10 NaNs, should just increment loss_nans
     for i in range(10):
-        anomaly_detector_hook.after_step(data_sample=None, 
-                                         outputs=None, 
-                                         loss_dict={"step_loss": torch.tensor(float("nan"))})
+        anomaly_detector_hook.after_step(
+            data_sample=None, outputs=None, loss_dict={"step_loss": torch.tensor(float("nan"))}
+        )
         assert anomaly_detector_hook.loss_nans == i + 1
 
     # on the 11th NaN should get an Exception
     success = False
     try:
-        anomaly_detector_hook.after_step(data_sample=None, 
-                                         outputs=None, 
-                                         loss_dict={"step_loss": torch.tensor(float("nan"))})
+        anomaly_detector_hook.after_step(
+            data_sample=None, outputs=None, loss_dict={"step_loss": torch.tensor(float("nan"))}
+        )
     except Exception:
         success = True
 
     if not success:
-        raise ValueError("AnomalyDetector did not raise \
-                         an exception on the 11th NaN")
+        raise ValueError(
+            "AnomalyDetector did not raise \
+                         an exception on the 11th NaN"
+        )
 
     # exit the anomaly context cleanly
     anomaly_detector_hook.after_epoch()
-    
+
     # ---- ---- ---- SamplerSetter tests ---- ---- ----
 
     if torch.cuda.device_count() > 1:
@@ -99,10 +103,9 @@ def _test_hooks_dist(cfg):
 
         # now the DataLoader's sampler should have recorded that same epoch
         assert trainer.train_dataloader.sampler.epoch == 5, (
-            f"Expected sampler.epoch==5 but got "
-            f"{trainer.train_dataloader.sampler.epoch}"
+            f"Expected sampler.epoch==5 but got " f"{trainer.train_dataloader.sampler.epoch}"
         )
-    
+
     # ---- ---- ---- LRScheduler tests ---- ---- ----
 
     # initialize learning rate scheduler
@@ -123,12 +126,12 @@ def _test_hooks_dist(cfg):
     epochs = [ep for val, it, ep in recorded]
 
     # success only if exactly two entries AND both equal the initial LR
-    lrs = (len(lrs) == 2 and all(lr == initial_lr for lr in lrs))
-    epochs = (len(epochs) == 2 and all(ep == 0 for ep in epochs))
-    assert lrs and epochs, \
-        f"Expected 2 recorded LRs at epoch 0, got {len(lrs)} with values: {lrs} " \
-        f"and epochs: {epochs}"
-    
+    lrs = len(lrs) == 2 and all(lr == initial_lr for lr in lrs)
+    epochs = len(epochs) == 2 and all(ep == 0 for ep in epochs)
+    assert lrs and epochs, (
+        f"Expected 2 recorded LRs at epoch 0, got {len(lrs)} with values: {lrs} " f"and epochs: {epochs}"
+    )
+
     # ---- ---- ---- WeightDecayScheduleHook tests ---- ---- ----
 
     # make GA boundary always true so hook triggers each step
@@ -137,8 +140,11 @@ def _test_hooks_dist(cfg):
 
     # install a no-op WD scheduler to keep wd constant during this test
     class _NoOpWDScheduler:
-        def __init__(self, opt): self.opt = opt
-        def step(self): pass
+        def __init__(self, opt):
+            self.opt = opt
+
+        def step(self):
+            pass
 
     orig_wd_sched = getattr(trainer, "wd_scheduler", None)
     trainer.wd_scheduler = _NoOpWDScheduler(trainer.opt)
@@ -168,15 +174,16 @@ def _test_hooks_dist(cfg):
     # success only if exactly two new entries AND both equal the initial WD at epoch 0
     ok_vals = all(abs(wd - initial_wd) < 1e-12 for wd in wds)
     ok_epochs = all(ep == 0 for ep in epochs)
-    assert ok_vals and ok_epochs, \
-        f"Expected 2 recorded WDs at epoch 0, got values={wds} epochs={epochs}, initial_wd={initial_wd}"
+    assert (
+        ok_vals and ok_epochs
+    ), f"Expected 2 recorded WDs at epoch 0, got values={wds} epochs={epochs}, initial_wd={initial_wd}"
 
     # restore monkeypatches
     trainer.model.is_gradient_accumulation_boundary = orig_boundary
     trainer.wd_scheduler = orig_wd_sched
 
     # ---- ---- ---- IterationTimer tests ---- ---- ----
-    
+
     # ensure predictable counters
     trainer.start_iter, trainer._iter, trainer._epoch = 0, 0, 0
     trainer._max_epochs = 1
@@ -195,9 +202,9 @@ def _test_hooks_dist(cfg):
         # guarantee non-zero duration
         time.sleep(0.02)
         # records step time if not in warmup
-        # if in warmup, it just resets the 
+        # if in warmup, it just resets the
         # step timer and total timer
-        timer.after_step({'metainfo': {}}, None, {})
+        timer.after_step({"metainfo": {}}, None, {})
         trainer._iter = step + 1
     # gets total time including hooks
     # by looking at time - _start_time diff.
@@ -209,23 +216,22 @@ def _test_hooks_dist(cfg):
 
     # step_time should be logged only for steps >= warmup
     step_times = rec.get_step_scalars().get("step_time", [])
-    assert len(step_times) == max(0, 5 - warmup), \
-        f"expected {5 - warmup} step_time records, got {len(step_times)}"
+    assert len(step_times) == max(0, 5 - warmup), f"expected {5 - warmup} step_time records, got {len(step_times)}"
     for v, *_ in step_times:
         assert 0.015 <= v <= 0.04
 
     # ------------------------------------------------------------------ #
     # VALIDATION simulation (3 val steps)
     # ------------------------------------------------------------------ #
-    
+
     timer.before_validation()
     for vstep in range(3):
         timer.before_val_step()
         time.sleep(0.1)
-        timer.after_val_step({'metainfo': {}}, None, {})
+        timer.after_val_step({"metainfo": {}}, None, {})
         trainer._val_iter = vstep + 1
 
-    time.sleep(0.1) # pretend some extra val work
+    time.sleep(0.1)  # pretend some extra val work
     timer.after_validation()
 
     val_step_times = rec.get_step_scalars().get("val_step_time", [])
@@ -235,26 +241,27 @@ def _test_hooks_dist(cfg):
 
     val_time = rec.get_epoch_scalars().get("val_time", [])
     assert len(val_time) == 1 and val_time[0][0] > 0
-    assert (0.05*3 + 0.1) <= val_time[0][0] <= (0.2*3 + 0.1), \
-        f"Expected validation time to be between 0.25 and 0.7, got {val_time[0][0]}"
+    assert (
+        (0.05 * 3 + 0.1) <= val_time[0][0] <= (0.2 * 3 + 0.1)
+    ), f"Expected validation time to be between 0.25 and 0.7, got {val_time[0][0]}"
 
     # ------------------------------------------------------------------ #
     # TEST simulation (4 test steps)
     # ------------------------------------------------------------------ #
-    
+
     # reset counters for clean test section
     trainer._iter = 0
     timer.before_test()
     for tstep in range(4):
         timer.before_test_step()
         time.sleep(0.15)
-        dummy_data_sample = {'metainfo': {"data_time": 0.05}}
+        dummy_data_sample = {"metainfo": {"data_time": 0.05}}
         timer.after_test_step(dummy_data_sample, None, None)
         trainer._iter = tstep + 1
     timer.after_test()
 
     test_step_times = rec.get_step_scalars().get("test_step_time", [])
-    
+
     # warm-up also applies here
     assert len(test_step_times) == max(0, 4 - warmup)
     assert all(0.1 <= val <= 0.2 for val, *_ in test_step_times)
@@ -262,20 +269,18 @@ def _test_hooks_dist(cfg):
     # ------------------------------------------------------------------ #
     # EPOCH timing
     # ------------------------------------------------------------------ #
-    
+
     timer.before_epoch()
     time.sleep(0.15)
     timer.after_epoch()
     epoch_time = rec.get_epoch_scalars().get("epoch_time", [])
     assert len(epoch_time) == 1 and epoch_time[0][0] > 0
-    assert 0.1 <= epoch_time[0][0] <= 0.3, \
-        f"Expected epoch time to be between 0.1 and 0.3, got {epoch_time[0][0]}"
+    assert 0.1 <= epoch_time[0][0] <= 0.3, f"Expected epoch time to be between 0.1 and 0.3, got {epoch_time[0][0]}"
 
     # ---- ---- ---- PeriodicWriter tests ---- ---- ----
 
     local_writer = periodic._writers.writers[0]
-    assert isinstance(local_writer, LocalEventWriter), \
-        "Expected LocalEventWriter for testing PeriodicWriter"
+    assert isinstance(local_writer, LocalEventWriter), "Expected LocalEventWriter for testing PeriodicWriter"
 
     # clearout logs
     if Path(local_writer.step_scalars_savepath).exists():
@@ -285,7 +290,7 @@ def _test_hooks_dist(cfg):
         os.remove(local_writer.epoch_scalars_savepath)
 
     # inject dummy scalars
-    trainer._iter  = 0
+    trainer._iter = 0
     trainer._epoch = 0
     rec = trainer.event_recorder
     rec.put_scalar("loss", 1.23, scope="step")
@@ -298,7 +303,7 @@ def _test_hooks_dist(cfg):
     assert all(len(v) == 0 for v in rec.get_step_scalars().values())
     assert all(len(v) == 0 for v in rec.get_epoch_scalars().values())
 
-    # validate written CSV contents 
+    # validate written CSV contents
     if process_rank() == 0:
         step_csv = local_writer.step_scalars_savepath
         epoch_csv = local_writer.epoch_scalars_savepath
@@ -307,18 +312,17 @@ def _test_hooks_dist(cfg):
 
         if not (step_csv.exists() and epoch_csv.exists()):
             raise FileNotFoundError(
-                f"Expected step CSV at {step_csv} and epoch CSV at {epoch_csv}, "
-                "but one or both are missing."
+                f"Expected step CSV at {step_csv} and epoch CSV at {epoch_csv}, " "but one or both are missing."
             )
         else:
-            step_df  = pd.read_csv(step_csv)
+            step_df = pd.read_csv(step_csv)
             epoch_df = pd.read_csv(epoch_csv)
-            
+
             print(step_df.columns)
             assert abs(step_df.loc[0, "loss_median"] - 1.23) < 1e-6
-            assert step_df.loc[0, "iter"]  == 0
+            assert step_df.loc[0, "iter"] == 0
             assert step_df.loc[0, "epoch"] == 0
-            
+
             assert abs(epoch_df.loc[0, "val_metric_median"] - 0.90) < 1e-6
             assert epoch_df.loc[0, "epoch"] == 0
 
@@ -327,7 +331,7 @@ def _test_hooks_dist(cfg):
     # ---- ---- ---- TorchMemoryStats tests ---- ---- ----
 
     # make it trigger every step/epoch
-    mem_hook._step_period  = 1
+    mem_hook._step_period = 1
     mem_hook._epoch_period = 1
 
     logdir = mem_hook._logdir
@@ -336,27 +340,22 @@ def _test_hooks_dist(cfg):
     # ------------------------------------------------------------------ #
     # TRAIN STEP
     # ------------------------------------------------------------------ #
-    
+
     trainer._iter = 0
     # allocate a bit of GPU mem so numbers are non-zero
     _ = torch.empty((1024, 1024), device="cuda")
     mem_hook.after_step(None, None, {})
     step_scalars = step_recorder.get_step_scalars()
 
-    keys_ok = all(k in step_scalars for k in
-                  ("allocated_mem", "reserved_mem",
-                   "max_allocated_mem", "max_reserved_mem")
-                )
-    
+    keys_ok = all(k in step_scalars for k in ("allocated_mem", "reserved_mem", "max_allocated_mem", "max_reserved_mem"))
+
     if not keys_ok:
-        raise ValueError(
-            "TorchMemoryStats hook did not log expected step data. "
-        )
+        raise ValueError("TorchMemoryStats hook did not log expected step data. ")
 
     # ------------------------------------------------------------------ #
     # EPOCH END  (epoch == 0)
     # ------------------------------------------------------------------ #
-    
+
     trainer._epoch = 0
     mem_hook.after_epoch()
     barrier()
@@ -365,41 +364,34 @@ def _test_hooks_dist(cfg):
     epoch_ok = epoch_log_file.exists() and epoch_log_file.stat().st_size > 0
 
     if not epoch_ok:
-        raise ValueError(
-            "TorchMemoryStats hook did not log expected epoch data. "
-        )
+        raise ValueError("TorchMemoryStats hook did not log expected epoch data. ")
 
     # ------------------------------------------------------------------ #
     # TEST STEP
     # ------------------------------------------------------------------ #
-    
+
     trainer._iter = 0
     _ = torch.empty((512, 512), device="cuda")
     mem_hook.after_test_step(None, None, {})
     test_scalars = step_recorder.get_step_scalars()
-    test_keys_ok = all(k in test_scalars for k in
-                       ("allocated_mem", "reserved_mem", 
-                        "max_allocated_mem", "max_reserved_mem")
-                    )
+    test_keys_ok = all(
+        k in test_scalars for k in ("allocated_mem", "reserved_mem", "max_allocated_mem", "max_reserved_mem")
+    )
 
     if not test_keys_ok:
-        raise ValueError(
-            "TorchMemoryStats hook did not log expected test step data. "
-        )
+        raise ValueError("TorchMemoryStats hook did not log expected test step data. ")
 
     # ------------------------------------------------------------------ #
     # TEST END
     # ------------------------------------------------------------------ #
-    
+
     mem_hook.after_test()
     barrier()
     test_log_file = logdir / "test" / "memory_test.log"
     test_ok = test_log_file.exists() and test_log_file.stat().st_size > 0
 
     if not test_ok:
-        raise ValueError(
-            "TorchMemoryStats hook did not log expected test data. "
-        )
+        raise ValueError("TorchMemoryStats hook did not log expected test data. ")
 
     # ---- ---- ---- BestMetricSaver tests ---- ---- ----
 
@@ -421,7 +413,7 @@ def _test_hooks_dist(cfg):
     # ------------------------------------------------------------------ #
     # After Validation
     # ------------------------------------------------------------------ #
-    
+
     trainer.best_metric = float("inf")
     trainer._iter, trainer._epoch = 0, 0
     _log_epoch_scalar(0.9)
@@ -483,10 +475,7 @@ def _test_hooks_dist(cfg):
     barrier()
 
     if not success:
-        raise ValueError(
-            "TorchProfiler did not log expected data. "
-            "Check the log directory for details."
-        )
+        raise ValueError("TorchProfiler did not log expected data. " "Check the log directory for details.")
 
     # ---- ---- ---- EarlyStopHook tests ---- ---- ----
 
@@ -500,7 +489,6 @@ def _test_hooks_dist(cfg):
 
     if Path(local_writer.epoch_scalars_savepath).exists():
         os.remove(local_writer.epoch_scalars_savepath)
-
 
     def _run_epoch(ep_idx, value):
         trainer._epoch = ep_idx
@@ -525,7 +513,7 @@ def _test_hooks_dist(cfg):
     _run_epoch(2, val_2)
     assert ehook.wait_count == 2
     # NOTE: we are not setting not getattr() here
-    #       so this only passes if stop_training is 
+    #       so this only passes if stop_training is
     #       set to True by the hook
     assert getattr(trainer, "stop_training", False)
 
@@ -540,9 +528,7 @@ def test_hooks(config):
 
     with open_dict(config):
         config.experiment_name = "test_hooks"
-        # config.hooks.hooks_list = list(config.hooks.hooks_list).append({'_target_': 'training.hooks.WeightDecayScheduleHook'})
         config.paths.resume_checkpointdir = None
 
-
-    metrics = distributed_test(cfg=config, test="tests.training.test_hooks._test_hooks_dist")
+    metrics = distributed_test(cfg=config, test="cell_observatory_platform.tests.training.test_hooks._test_hooks_dist")
     assert metrics.get("success", False), "Distributed hooks test failed"

@@ -1,26 +1,24 @@
 import matplotlib
-from matplotlib import pyplot as plt
 import matplotlib.ticker as ticker
-matplotlib.use('Agg')
+from matplotlib import pyplot as plt
+
+matplotlib.use("Agg")
 
 import warnings
+
 warnings.filterwarnings("ignore")
 
+import logging
+import re
+import sys
 from pathlib import Path
 
-import re
 import numpy as np
 import seaborn as sns
-import logging
-import sys
-from typing import Union
-from functools import partial
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+from cell_observatory_platform.utils.common import savesvg
+
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -31,17 +29,16 @@ def days_to_formatter(days, pos):
         return f"{years:.0f}y"
     elif days >= 1:
         return f"{days:.0f}d"
-    elif days >= 1/24: 
+    elif days >= 1 / 24:
         hours = np.ceil(days * 24)
         return f"{hours:.0f}h"
-    elif days >= 1/(24*60):
+    elif days >= 1 / (24 * 60):
         minutes = np.ceil(days * 24 * 60)
         return f"{minutes:.0f}m"
     else:
         seconds = np.ceil(days * 24 * 60 * 60)
         return f"{seconds:.0f}s"
 
-        
 
 def savesvg(
     fig: plt.Figure,
@@ -51,270 +48,275 @@ def savesvg(
     left: float = 0.1,
     right: float = 0.9,
     hspace: float = 0.35,
-    wspace: float = 0.1
+    wspace: float = 0.1,
 ):
 
     plt.subplots_adjust(top=top, bottom=bottom, left=left, right=right, hspace=hspace, wspace=wspace)
-    plt.savefig(savepath, bbox_inches='tight', dpi=300, pad_inches=.25)
+    plt.savefig(savepath, bbox_inches="tight", dpi=300, pad_inches=0.25)
 
-    if Path(savepath).suffix == '.svg':
+    if Path(savepath).suffix == ".svg":
         # Read in the file
-        with open(savepath, 'r', encoding="utf-8") as f:
+        with open(savepath, "r", encoding="utf-8") as f:
             filedata = f.read()
 
         # Replace the target string
-        filedata = re.sub('height="[0-9]+(\.[0-9]+)pt"', '', filedata)
-        filedata = re.sub('width="[0-9]+(\.[0-9]+)pt"', '', filedata)
+        filedata = re.sub('height="[0-9]+(\.[0-9]+)pt"', "", filedata)
+        filedata = re.sub('width="[0-9]+(\.[0-9]+)pt"', "", filedata)
 
         # Write the file out again
-        with open(savepath, 'w', encoding="utf-8") as f:
+        with open(savepath, "w", encoding="utf-8") as f:
             f.write(filedata)
 
 
 def plot_parameter_scaling(
-        df,
-        outdir,
-        x="parameters",
-        y="gflops",
-        xlabel='Trainable parameters (excluding input and head layers)',
-        ylabel='GFLOPS',
-        dataset_size=None,
-        palette='muted',
-        published_models_only=False,
-        xlog=True,
-        ylog=True,
-        rgb='rgb',
-        legend=[
-            'Data (x, y, z, t, c)',
-                '(224, 224, 112, 8, 3)',
-                '(224, 224, 112, 1, 3)',
-                '(224, 224, 1, 1, 3)',
-            'Patch (x, y, z, t, c)',
-                '(16, 16, 16, 2, 3)',
-            'Model FLOPs Utilization',
-                'MFU(0.3)',
-                'MFU(0.6)',
-                'MFU(0.9)',
-        ],
-        published_models_legend=[
-            'Data (x, y, c)',
-                '(224, 224, 3)',
-            'Patch (x, y, c)',
-                '(16, 16, 3)',
-            'Model FLOPs Utilization',
-                'MFU(0.3)',
-                'MFU(0.6)',
-                'MFU(0.9)',
-        ],
+    df,
+    outdir,
+    x="parameters",
+    y="gflops",
+    xlabel="Trainable parameters (excluding input and head layers)",
+    ylabel="GFLOPS",
+    dataset_size=None,
+    palette="muted",
+    published_models_only=False,
+    xlog=True,
+    ylog=True,
+    rgb="rgb",
+    legend=[
+        "Data (x, y, z, t, c)",
+        "(224, 224, 112, 8, 3)",
+        "(224, 224, 112, 1, 3)",
+        "(224, 224, 1, 1, 3)",
+        "Patch (x, y, z, t, c)",
+        "(16, 16, 16, 2, 3)",
+        "Model FLOPs Utilization",
+        "MFU(0.3)",
+        "MFU(0.6)",
+        "MFU(0.9)",
+    ],
+    published_models_legend=[
+        "Data (x, y, c)",
+        "(224, 224, 3)",
+        "Patch (x, y, c)",
+        "(16, 16, 3)",
+        "Model FLOPs Utilization",
+        "MFU(0.3)",
+        "MFU(0.6)",
+        "MFU(0.9)",
+    ],
 ):
     for background in ["default", "dark_background"]:
         plt.style.use(background)
-        plt.rcParams.update({
-            #'font.family': 'Helvetica',
-            'font.size': 12,
-            'axes.titlesize': 14,
-            'axes.labelsize': 14,
-            'xtick.labelsize': 12,
-            'ytick.labelsize': 12,
-            'legend.fontsize': 12,
-            'axes.autolimit_mode': 'round_numbers'
-        })
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12,
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+            }
+        )
 
         fig, ax = plt.subplots(figsize=(8, 8))
 
         if published_models_only:
-            data = df.loc[df['data'].str.match(r'2D\(rgb\)')]
+            data = df.loc[df["data"].str.match(r"2D\(rgb\)")]
         else:
-            data = df.loc[df['data'].str.match(r'.*\(rgb\)')]
+            data = df.loc[df["data"].str.match(r".*\(rgb\)")]
 
-        data = data[data['px'] == 16]
+        data = data[data["px"] == 16]
         data.reset_index(drop=True, inplace=True)
 
         if published_models_only:
-             g = sns.lineplot(
+            g = sns.lineplot(
                 data=data,
                 x=x,
                 y=y,
-                hue='data',
+                hue="data",
                 size="px",
-                style='mfu',
+                style="mfu",
                 ax=ax,
                 legend=True,
                 markers=True,
-                palette='Greys_r',
-                markeredgecolor='dimgrey' if background == 'default' else 'lightgrey',
-                markeredgewidth=.5
+                palette="Greys_r",
+                markeredgecolor="dimgrey" if background == "default" else "lightgrey",
+                markeredgewidth=0.5,
             )
         else:
             g = sns.lineplot(
                 data=data,
                 x=x,
                 y=y,
-                hue='data',
-                hue_order=[f'4D({rgb})', f'3D({rgb})', f'2D({rgb})'],
+                hue="data",
+                hue_order=[f"4D({rgb})", f"3D({rgb})", f"2D({rgb})"],
                 size="px",
-                style='mfu',
+                style="mfu",
                 ax=ax,
                 legend=True,
                 markers=True,
                 palette=palette,
-                markeredgecolor='dimgrey' if background == 'default' else 'lightgrey',
-                markeredgewidth=.5
+                markeredgecolor="dimgrey" if background == "default" else "lightgrey",
+                markeredgewidth=0.5,
             )
-            
-        d = data[(data['data'] == '2D(rgb)') & (data['px'] == 16) & (data['mfu'] == .3)]
+
+        d = data[(data["data"] == "2D(rgb)") & (data["px"] == 16) & (data["mfu"] == 0.3)]
 
         for line in range(0, d.shape[0]):
             xx = d[x][line]
             yy = d[y][line]
 
             if published_models_only:
-                if y == 'dataset_size':
+                if y == "dataset_size":
                     y_text_offset = 100
-                    x_text_offset = xx * .2
-                elif y == 'training_volumes':
-                    y_text_offset = .5
-                    x_text_offset = xx * .1
+                    x_text_offset = xx * 0.2
+                elif y == "training_volumes":
+                    y_text_offset = 0.5
+                    x_text_offset = xx * 0.1
                 else:
-                    y_text_offset = yy * .2
-                    x_text_offset = xx * .2
+                    y_text_offset = yy * 0.2
+                    x_text_offset = xx * 0.2
             else:
                 x_text_offset = 0
                 if yy < 10:
-                    y_text_offset = yy * .35
+                    y_text_offset = yy * 0.35
                 elif yy < 50:
-                    y_text_offset = yy * .25
+                    y_text_offset = yy * 0.25
                 elif yy < 100:
-                    y_text_offset = yy * .15
+                    y_text_offset = yy * 0.15
                 else:
-                    y_text_offset = yy * .25
+                    y_text_offset = yy * 0.25
 
             ax.annotate(
-                d['class'][line].rstrip('/16'),
+                d["class"][line].rstrip("/16"),
                 (xx, yy),
                 xytext=(xx - x_text_offset, yy + y_text_offset),
                 arrowprops=dict(alpha=0),
             )
 
-        if y == 'dataset_size':
+        if y == "dataset_size":
             ax.set_ylim(-500, 5000)
 
-        ax.grid(True, which="major", axis='both', lw=.05, ls='-', zorder=0)
-        ax.grid(True, which="minor", axis='both', lw=.01, ls='-', zorder=0)
+        ax.grid(True, which="major", axis="both", lw=0.05, ls="-", zorder=0)
+        ax.grid(True, which="minor", axis="both", lw=0.01, ls="-", zorder=0)
         ax.set_ylabel(ylabel)
         ax.set_xlabel(xlabel)
 
         if xlog:
-            ax.set_xscale('log')
+            ax.set_xscale("log")
 
         if ylog:
-            ax.set_yscale('log')
+            ax.set_yscale("log")
 
-        ax.spines['right'].set_visible(False)
-        ax.spines['top'].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
         legend_handles, _ = g.get_legend_handles_labels()
-        
-        if y == 'training_time':
+
+        if y == "training_time":
             formatter = ticker.FuncFormatter(days_to_formatter)
             ax.yaxis.set_major_formatter(formatter)
             ax.yaxis.set_minor_formatter(formatter)
             ax.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=[0.25, 0.5]))
 
         if published_models_only:
-            ax.legend(
-                legend_handles, published_models_legend,
-                loc='upper left', ncol=1, title="", frameon=False
-            )
+            ax.legend(legend_handles, published_models_legend, loc="upper left", ncol=1, title="", frameon=False)
         else:
-            ax.legend(
-                legend_handles, legend,
-                loc='upper left', ncol=1, title="", frameon=False
-            )
+            ax.legend(legend_handles, legend, loc="upper left", ncol=1, title="", frameon=False)
 
         if dataset_size is not None:
-            ax.set_title(f'Dataset: {dataset_size:,} volumes')
-            savepath = Path(f'{outdir}/{y}_{dataset_size}_{background}')
+            ax.set_title(f"Dataset: {dataset_size:,} volumes")
+            savepath = Path(f"{outdir}/{y}_{dataset_size}_{background}")
         else:
-            savepath = Path(f'{outdir}/{y}_{background}')
+            savepath = Path(f"{outdir}/{y}_{background}")
 
-        plt.savefig(f'{savepath}.pdf', bbox_inches='tight', pad_inches=.25)
-        plt.savefig(f'{savepath}.png', dpi=300, bbox_inches='tight', pad_inches=.25)
-        savesvg(fig, f'{savepath}.svg')
+        plt.savefig(f"{savepath}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{savepath}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{savepath}.svg")
 
 
 def plot_data_parameter_scaling(
-        df,
-        outdir,
-        x="parameters",
-        xlabel='Trainable parameters (excluding input and head layers)',
-        y="training_gflops_per_volume",
-        ylabel="Training GFLOPs per volume",
-        ytwin1="training_time_per_volume",
-        ytwinlabel1="Training H100 seconds per volume",
-        ytwin2=None,
-        ytwinlabel2=None,
-        ytwin3=None,
-        ytwinlabel3=None,
-        yscalelabel=None,
-        dataset_size=None,
-        palette='muted',
-        published_models_only=False,
-        xlog=True,
-        ylog=True,
-        patch_size=16,
-        cost_h100_per_hr=6,
-        rgb='rgb',
-        legend=[
-            'Data (x, y, z, t, c)',
-                '(224, 224, 112, 8, 3)',
-                '(224, 224, 112, 1, 3)',
-                '(224, 224, 1, 1, 3)',
-            'Patch (x, y, z, t, c)',
-                '(16, 16, 16, 2, 3)',
-            'Model FLOPs Utilization',
-                'MFU(0.3)',
-                'MFU(0.6)',
-                'MFU(0.9)',
-        ],
-        published_models_legend=[
-            'Data (x, y, c)',
-                '(224, 224, 3)',
-            'Patch (x, y, c)',
-                '(16, 16, 3)',
-            'Model FLOPs Utilization',
-                'MFU(0.3)',
-                'MFU(0.6)',
-                'MFU(0.9)',
-        ]
+    df,
+    outdir,
+    x="parameters",
+    xlabel="Trainable parameters (excluding input and head layers)",
+    y="training_gflops_per_volume",
+    ylabel="Training GFLOPs per volume",
+    ytwin1="training_time_per_volume",
+    ytwinlabel1="Training H100 seconds per volume",
+    ytwin2=None,
+    ytwinlabel2=None,
+    ytwin3=None,
+    ytwinlabel3=None,
+    yscalelabel=None,
+    dataset_size=None,
+    palette="muted",
+    published_models_only=False,
+    xlog=True,
+    ylog=True,
+    patch_size=16,
+    cost_h100_per_hr=6,
+    rgb="rgb",
+    legend=[
+        "Data (x, y, z, t, c)",
+        "(224, 224, 112, 8, 3)",
+        "(224, 224, 112, 1, 3)",
+        "(224, 224, 1, 1, 3)",
+        "Patch (x, y, z, t, c)",
+        "(16, 16, 16, 2, 3)",
+        "Model FLOPs Utilization",
+        "MFU(0.3)",
+        "MFU(0.6)",
+        "MFU(0.9)",
+    ],
+    published_models_legend=[
+        "Data (x, y, c)",
+        "(224, 224, 3)",
+        "Patch (x, y, c)",
+        "(16, 16, 3)",
+        "Model FLOPs Utilization",
+        "MFU(0.3)",
+        "MFU(0.6)",
+        "MFU(0.9)",
+    ],
 ):
     for background in ["default", "dark_background"]:
         plt.style.use(background)
-        plt.rcParams.update({
-            #'font.family': 'Helvetica',
-            'font.size': 12,
-            'axes.titlesize': 14,
-            'axes.labelsize': 14,
-            'xtick.labelsize': 12,
-            'ytick.labelsize': 12,
-            'legend.fontsize': 12,
-            'axes.autolimit_mode': 'round_numbers'
-        })
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12,
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+            }
+        )
         fig, ax = plt.subplots(figsize=(8, 8))
 
         if published_models_only:
-            data = df.loc[df['data'].str.match(rf'2D\(rgb\)')]
+            data = df.loc[df["data"].str.match(rf"2D\(rgb\)")]
         else:
-            data = df.loc[df['data'].str.match(rf'.*\({rgb}\)')]
+            data = df.loc[df["data"].str.match(rf".*\({rgb}\)")]
 
-        data = data[data['px'] == patch_size]
+        data = data[data["px"] == patch_size]
 
-        for ii, (yy, ll, cc, offset) in enumerate(zip(
-                [y, ytwin1, ytwin2, ytwin3, ],
+        for ii, (yy, ll, cc, offset) in enumerate(
+            zip(
+                [
+                    y,
+                    ytwin1,
+                    ytwin2,
+                    ytwin3,
+                ],
                 [ylabel, ytwinlabel1, ytwinlabel2, ytwinlabel3],
                 # [None, 'olive', 'magenta', 'r'],
                 [None, None, None, None],
-                [0, 0, .125, .25],
-        )):
+                [0, 0, 0.125, 0.25],
+            )
+        ):
             if yy is not None:
                 if ii == 0:
                     axis = ax
@@ -328,31 +330,31 @@ def plot_data_parameter_scaling(
                         data=data,
                         x=x,
                         y=yy,
-                        hue='data',
+                        hue="data",
                         size="px",
                         style="mfu",
                         ax=axis,
                         legend=True,
                         markers=True,
-                        palette='Greens',
-                        markeredgecolor='dimgrey' if background == 'default' else 'lightgrey',
-                        markeredgewidth=.5
+                        palette="Greens",
+                        markeredgecolor="dimgrey" if background == "default" else "lightgrey",
+                        markeredgewidth=0.5,
                     )
                 else:
                     g = sns.lineplot(
                         data=data,
                         x=x,
                         y=yy,
-                        hue='data',
-                        hue_order=[f'4D({rgb})', f'3D({rgb})', f'2D({rgb})'],
+                        hue="data",
+                        hue_order=[f"4D({rgb})", f"3D({rgb})", f"2D({rgb})"],
                         size="px",
                         # style="mfu",
                         ax=axis,
                         legend=True,
                         markers=True,
                         palette=palette,
-                        markeredgecolor='dimgrey' if background == 'default' else 'lightgrey',
-                        markeredgewidth=.5
+                        markeredgecolor="dimgrey" if background == "default" else "lightgrey",
+                        markeredgewidth=0.5,
                     )
 
                 axis.patch.set_visible(False)
@@ -362,33 +364,29 @@ def plot_data_parameter_scaling(
                 axis.spines["bottom"].set_visible(True)
 
                 if cc is not None:
-                    axis.tick_params(axis='y', colors=cc)
+                    axis.tick_params(axis="y", colors=cc)
                     axis.spines["right"].set_edgecolor(cc)
                     axis.yaxis.label.set_color(cc)
 
-                ll = ll.replace('days', 'time')
-                
+                ll = ll.replace("days", "time")
+
                 axis.set_ylabel(ll)
                 if ytwin2 is not None and ii != 0:
                     axis.yaxis.set_label_coords(1 + offset, 1.07)
 
                 if ylog:
-                    axis.set_yscale('log')
+                    axis.set_yscale("log")
 
                 legend_handles, _ = g.get_legend_handles_labels()
 
                 if published_models_only:
                     axis.legend(
-                        legend_handles, published_models_legend,
-                        loc='upper left', ncol=1, title="", frameon=False
+                        legend_handles, published_models_legend, loc="upper left", ncol=1, title="", frameon=False
                     )
                 else:
-                    axis.legend(
-                        legend_handles, legend,
-                        loc='upper left', ncol=1, title="", frameon=False
-                    )
-                
-                if y == 'training_time' or y.startswith('training_h100_days'):
+                    axis.legend(legend_handles, legend, loc="upper left", ncol=1, title="", frameon=False)
+
+                if y == "training_time" or y.startswith("training_h100_days"):
                     formatter = ticker.FuncFormatter(days_to_formatter)
                     axis.yaxis.set_major_formatter(formatter)
                     axis.yaxis.set_minor_formatter(formatter)
@@ -396,65 +394,60 @@ def plot_data_parameter_scaling(
 
         if yscalelabel is not None:
             ann = ax.annotate(
-                yscalelabel,
-                xy=(0, 1.03),
-                xycoords='axes fraction',
-                clip_on=False,
-                ha='center',
-                rotation=90
+                yscalelabel, xy=(0, 1.03), xycoords="axes fraction", clip_on=False, ha="center", rotation=90
             )
 
-        d = data[(data['data'] == f'2D({rgb})') & (data['px'] == patch_size) & (data['mfu'] == .3)]
+        d = data[(data["data"] == f"2D({rgb})") & (data["px"] == patch_size) & (data["mfu"] == 0.3)]
 
         for line in range(0, d.shape[0]):
             xx = d[x][line]
             yy = d[y][line]
 
             if published_models_only:
-                if y == 'dataset_size':
+                if y == "dataset_size":
                     y_text_offset = 100
-                    x_text_offset = xx * .2
-                elif y == 'training_volumes':
-                    y_text_offset = .5
-                    x_text_offset = xx * .1
+                    x_text_offset = xx * 0.2
+                elif y == "training_volumes":
+                    y_text_offset = 0.5
+                    x_text_offset = xx * 0.1
                 else:
-                    y_text_offset = yy * .2
-                    x_text_offset = xx * .2
+                    y_text_offset = yy * 0.2
+                    x_text_offset = xx * 0.2
             else:
                 x_text_offset = 0
                 if yy < 10:
-                    y_text_offset = yy * .35
+                    y_text_offset = yy * 0.35
                 elif yy < 50:
-                    y_text_offset = yy * .25
+                    y_text_offset = yy * 0.25
                 elif yy < 100:
-                    y_text_offset = yy * .15
+                    y_text_offset = yy * 0.15
                 else:
-                    y_text_offset = yy * .25
+                    y_text_offset = yy * 0.25
 
-            label = d['class'][line].rstrip(f'/{patch_size}')
+            label = d["class"][line].rstrip(f"/{patch_size}")
             ax.annotate(
                 label,
                 (xx, yy),
-                xytext=(xx - x_text_offset, yy + y_text_offset * (-1 if label == 'G' else 1)),
+                xytext=(xx - x_text_offset, yy + y_text_offset * (-1 if label == "G" else 1)),
                 arrowprops=dict(alpha=0),
             )
 
-        ax.grid(True, which="major", axis='both', lw=.05, ls='-', zorder=0)
-        ax.grid(True, which="minor", axis='both', lw=.01, ls='-', zorder=0)
+        ax.grid(True, which="major", axis="both", lw=0.05, ls="-", zorder=0)
+        ax.grid(True, which="minor", axis="both", lw=0.01, ls="-", zorder=0)
         ax.set_xlabel(xlabel)
 
         if xlog:
-            ax.set_xscale('log')
+            ax.set_xscale("log")
 
         if dataset_size is not None:
-            ax.set_title(f'Dataset: {dataset_size:,} volumes')
-            savepath = Path(f'{outdir}/{y}_{dataset_size}_{background}')
+            ax.set_title(f"Dataset: {dataset_size:,} volumes")
+            savepath = Path(f"{outdir}/{y}_{dataset_size}_{background}")
         else:
-            savepath = Path(f'{outdir}/{y}_{background}')
+            savepath = Path(f"{outdir}/{y}_{background}")
 
-        plt.savefig(f'{savepath}.pdf', bbox_inches='tight', pad_inches=.25)
-        plt.savefig(f'{savepath}.png', dpi=300, bbox_inches='tight', pad_inches=.25)
-        savesvg(fig, f'{savepath}.svg')
+        plt.savefig(f"{savepath}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{savepath}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{savepath}.svg")
 
 
 def plot_individual_parameters(
@@ -462,19 +455,19 @@ def plot_individual_parameters(
     batch_size,
     outdir,
     cost_h100_per_hr=6,
-    rgb='rgb',
+    rgb="rgb",
     legend=[
-        'Data (x, y, z, t, c)',
-            '(224, 224, 112, 8, 3)',
-            '(224, 224, 112, 1, 3)',
-            '(224, 224, 1, 1, 3)',
-        'Patch (x, y, z, t, c)',
-            '(16, 16, 16, 2, 3)',
-        'Model FLOPs Utilization',
-            'MFU(0.3)',
-            'MFU(0.6)',
-            'MFU(0.9)',
-    ]
+        "Data (x, y, z, t, c)",
+        "(224, 224, 112, 8, 3)",
+        "(224, 224, 112, 1, 3)",
+        "(224, 224, 1, 1, 3)",
+        "Patch (x, y, z, t, c)",
+        "(16, 16, 16, 2, 3)",
+        "Model FLOPs Utilization",
+        "MFU(0.3)",
+        "MFU(0.6)",
+        "MFU(0.9)",
+    ],
 ):
     df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
     df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
@@ -487,7 +480,6 @@ def plot_individual_parameters(
         f"number_h100_for_batch": f"Minimum number of H100s needed for a batch ({batch_size})",
         f"cost_h100_for_batch": f"Cost of H100s needed for a batch ({batch_size}, $37,500 each)",
         f"training_h100_hours_per_step": f"Training H100 hours per batch ({batch_size})",
-
     }
     for y, ylabel in fois.items():
         plot_parameter_scaling(
@@ -532,14 +524,14 @@ def plot_published_models(
     models,
     cost_h100_per_hr=6,
     published_models_legend=[
-        'Data (x, y, c)',
-            '(224, 224, 3)',
-        'Patch (x, y, c)',
-            '(16, 16, 3)',
-        'Model FLOPs Utilization',
-            'MFU(0.3)',
-            'MFU(0.6)',
-            'MFU(0.9)',
+        "Data (x, y, c)",
+        "(224, 224, 3)",
+        "Patch (x, y, c)",
+        "(16, 16, 3)",
+        "Model FLOPs Utilization",
+        "MFU(0.3)",
+        "MFU(0.6)",
+        "MFU(0.9)",
     ],
 ):
     batch_size = 4096
@@ -548,10 +540,10 @@ def plot_published_models(
     df["training_h100_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
     df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
 
-    cols = list(models['S'].keys())
+    cols = list(models["S"].keys())
     df[cols] = np.nan
     for k in models.keys():
-        idx = df.loc[df['class'].str.match(k)].index
+        idx = df.loc[df["class"].str.match(k)].index
         df.loc[idx, cols] = models[k].values()
 
     df["training_volumes"] = df["steps"] * df["batch_size"] // 1000000000  # convert to billions
@@ -586,21 +578,23 @@ def plot_powerlaw(outdir):
     for background in ["default", "dark_background"]:
         plt.style.use(background)
 
-        plt.rcParams.update({
-            #'font.family': 'Helvetica',
-            'font.size': 12,
-            'axes.titlesize': 14,
-            'axes.labelsize': 14,
-            'xtick.labelsize': 12,
-            'ytick.labelsize': 12,
-            'legend.fontsize': 12,
-            'axes.autolimit_mode': 'round_numbers',
-            'hatch.color': 'k'
-        })
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12,
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
 
         x = np.logspace(0, 12, 10)
-        exponents = np.arange(0, 1.1, .1).tolist()
-        cmap = plt.get_cmap('nipy_spectral_r')
+        exponents = np.arange(0, 1.1, 0.1).tolist()
+        cmap = plt.get_cmap("nipy_spectral_r")
         colors = [cmap(i / (len(exponents) - 1)) for i in range(len(exponents))]
 
         fig, (ax, axe) = plt.subplots(figsize=(14, 6), ncols=2)
@@ -613,45 +607,45 @@ def plot_powerlaw(outdir):
             ex = 100 * x ** (-a)
 
             try:
-                idx = sum(ex <= opt-1)
+                idx = sum(ex <= opt - 1)
                 if idx > 0:
-                    ex[len(x)-idx:] = (opt - 1) + np.random.rand(idx)
+                    ex[len(x) - idx :] = (opt - 1) + np.random.rand(idx)
 
-                    if a == .2:
+                    if a == 0.2:
                         axe.annotate(
-                            f'Diminishing returns for $x \\to \infty$' if a == .2 else f'',
+                            f"Diminishing returns for $x \\to \infty$" if a == 0.2 else f"",
                             xy=(x[idx], opt),
-                            xytext=(0, -45) if a == .2 else (0, -35),
-                            textcoords='offset points',
-                            arrowprops=dict(arrowstyle='->', color=colors[i]),
+                            xytext=(0, -45) if a == 0.2 else (0, -35),
+                            textcoords="offset points",
+                            arrowprops=dict(arrowstyle="->", color=colors[i]),
                             color=colors[i],
-                            ha='center',
-                            va='center',
-                            zorder=15
+                            ha="center",
+                            va="center",
+                            zorder=15,
                         )
             except IndexError:
                 pass
 
-            ax.loglog(x, lx, label=f'α={round(a, 2)}', color=colors[i])
+            ax.loglog(x, lx, label=f"α={round(a, 2)}", color=colors[i])
             axe.loglog(x, ex, color=colors[i])
 
             if a == 0.1:
                 for xx in range(baseline, 14, 1):
-                    bvv = 100 * (10**baseline)**(-a)
-                    vv = 100 * (10**xx)**(-a)
+                    bvv = 100 * (10**baseline) ** (-a)
+                    vv = 100 * (10**xx) ** (-a)
                     ifold = bvv / vv
                     xfold = 10**xx / 10**baseline
 
                     axe.scatter(10**xx, vv, color=colors[i], zorder=30)
                     axe.annotate(
-                        f'$\\times${ifold:.1f}',
+                        f"$\\times${ifold:.1f}",
                         xy=(10**xx, vv),
                         xytext=(5, 15),
-                        textcoords='offset points',
-                        ha='center',
-                        va='center',
+                        textcoords="offset points",
+                        ha="center",
+                        va="center",
                         color=colors[i],
-                        zorder=20
+                        zorder=20,
                     )
                     # axe.annotate(
                     #     f'$\\times10^{{{np.log10(xfold):.0f}}}x$' if xx >= 9 else f'$\\times{xfold:.0f}x$',
@@ -663,33 +657,34 @@ def plot_powerlaw(outdir):
                     #     color='k',
                     #     zorder=20
                     # )
-                    axe.vlines(10**xx, 0, vv, color='gray', linestyle='--', linewidth=0.5, zorder=20)
+                    axe.vlines(10**xx, 0, vv, color="gray", linestyle="--", linewidth=0.5, zorder=20)
 
-        ax.set_xlabel('$x$')
-        axe.set_xlabel('$x$')
-        ax.set_ylabel('Pretraining $L(x)$')
-        axe.set_ylabel('Benchmark $E(x)$')
+        ax.set_xlabel("$x$")
+        axe.set_xlabel("$x$")
+        ax.set_ylabel("Pretraining $L(x)$")
+        axe.set_ylabel("Benchmark $E(x)$")
 
-        ax.spines['right'].set_visible(False)
-        axe.spines['right'].set_visible(False)
-        ax.spines['top'].set_visible(False)
-        axe.spines['top'].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        axe.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
+        axe.spines["top"].set_visible(False)
 
         ax.set_xlim(x.min(), x.max())
         axe.set_xlim(x.min(), x.max())
         ax.set_ylim(None, 1)
         axe.set_ylim(1, 100)
-        axe.set_yticks([1, 2, 3, 4, 5, 6, 7 , 8, 9, 10, 20, 30, 40, 50, 60, 80, 100])
-        axe.set_yticklabels(['0', '$\\epsilon$', '', '', '', '', '', '', '', '10', '20', '30', '40', '50', '60', '80', '100'])
+        axe.set_yticks([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30, 40, 50, 60, 80, 100])
+        axe.set_yticklabels(
+            ["0", "$\\epsilon$", "", "", "", "", "", "", "", "10", "20", "30", "40", "50", "60", "80", "100"]
+        )
 
-        axe.fill_between(x, epsilon, opt, zorder=10, color='whitesmoke', alpha=.5)
-        axe.axhline(opt+.25, color='k', linestyle='--', zorder=10)
-        axe.fill_between(x, 0, epsilon, zorder=10, hatch='/')
-        axe.axhline(epsilon, color='k', linestyle=':', zorder=10)
+        axe.fill_between(x, epsilon, opt, zorder=10, color="whitesmoke", alpha=0.5)
+        axe.axhline(opt + 0.25, color="k", linestyle="--", zorder=10)
+        axe.fill_between(x, 0, epsilon, zorder=10, hatch="/")
+        axe.axhline(epsilon, color="k", linestyle=":", zorder=10)
 
-
-        ax.legend(title='$L(x) = x^{{-\\alpha}}$', loc='lower left', frameon=False)
-        axe.legend(title='$E(x) = 100 \\cdot x^{{-\\alpha}}$', loc='upper right', frameon=False)
+        ax.legend(title="$L(x) = x^{{-\\alpha}}$", loc="lower left", frameon=False)
+        axe.legend(title="$E(x) = 100 \\cdot x^{{-\\alpha}}$", loc="upper right", frameon=False)
         # ax.annotate(
         #     '',
         #     xy=(.26, .01),
@@ -713,75 +708,84 @@ def plot_powerlaw(outdir):
         #     fontsize=10
         # )
         axe.annotate(
-            'Saturation',
-            xy=(-.03, .01),
-            xytext=(-.03, .3),
-            xycoords='axes fraction',
-            textcoords='axes fraction',
-            ha='center',
-            va='center',
+            "Saturation",
+            xy=(-0.03, 0.01),
+            xytext=(-0.03, 0.3),
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            ha="center",
+            va="center",
             rotation=90,
-            fontsize=10
+            fontsize=10,
         )
         axe.annotate(
-            'Irreducible error',
-            xy=(.01, .01),
-            xytext=(.01, .17),
-            xycoords='axes fraction',
-            textcoords='axes fraction',
-            color='k',
-            ha='left',
-            va='center',
+            "Irreducible error",
+            xy=(0.01, 0.01),
+            xytext=(0.01, 0.17),
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            color="k",
+            ha="left",
+            va="center",
             zorder=10,
-            fontsize=12
+            fontsize=12,
         )
-        ax.grid(True, which="both", axis='both', lw=.05, ls='-', zorder=0)
-        axe.grid(True, which="both", axis='both', lw=.05, ls='-', zorder=0)
-        plt.savefig(f'{outdir}/powerlaw_{background}.pdf', bbox_inches='tight', pad_inches=.25)
-        plt.savefig(f'{outdir}/powerlaw_{background}.png', dpi=300, bbox_inches='tight', pad_inches=.25)
-        savesvg(fig, f'{outdir}/powerlaw_{background}.svg')
+        ax.grid(True, which="both", axis="both", lw=0.05, ls="-", zorder=0)
+        axe.grid(True, which="both", axis="both", lw=0.05, ls="-", zorder=0)
+        plt.savefig(f"{outdir}/powerlaw_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/powerlaw_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/powerlaw_{background}.svg")
 
 
 def plot_gpt_vit(outdir):
     for background in ["default", "dark_background"]:
         plt.style.use(background)
 
-        plt.rcParams.update({
-            #'font.family': 'Helvetica',
-            'font.size': 12,
-            'axes.titlesize': 14,
-            'axes.labelsize': 14,
-            'xtick.labelsize': 12,
-            'ytick.labelsize': 12,
-            'legend.fontsize': 12,
-            'axes.autolimit_mode': 'round_numbers',
-            'hatch.color': 'k'
-        })
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12,
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
 
         x = np.logspace(0, 12, 10)
 
         fig, (ax, axg, axe) = plt.subplots(figsize=(18, 6), ncols=3)
 
-        ax.loglog(x, (x/2.3*10**8) ** (-0.048), label='$L = {\dfrac{C}{2.3 \cdot 10^{8}}}^{{-0.048}}$', color='C0')
-        axg.loglog(x, 2.64 + (x / 1.6 * 10 ** -8) ** (-0.16), label='$L = 2.64 + {\dfrac{C}{1.6 \cdot 10^{-8}}}^{{-0.16}}$', color='C1')
-        axe.loglog(x, 100 * (0.09 + 0.26 * (x + 0.01) ** (-0.35)), label='$E = 0.09 + 0.26 (C + 0.01)^{{-0.35}}$', color='C2')
+        ax.loglog(x, (x / 2.3 * 10**8) ** (-0.048), label="$L = {\dfrac{C}{2.3 \cdot 10^{8}}}^{{-0.048}}$", color="C0")
+        axg.loglog(
+            x,
+            2.64 + (x / 1.6 * 10**-8) ** (-0.16),
+            label="$L = 2.64 + {\dfrac{C}{1.6 \cdot 10^{-8}}}^{{-0.16}}$",
+            color="C1",
+        )
+        axe.loglog(
+            x, 100 * (0.09 + 0.26 * (x + 0.01) ** (-0.35)), label="$E = 0.09 + 0.26 (C + 0.01)^{{-0.35}}$", color="C2"
+        )
 
-        axe.set_ylabel('ImageNet finetune error rate (%)')
-        axe.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0f}%'))
+        axe.set_ylabel("ImageNet finetune error rate (%)")
+        axe.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.0f}%"))
 
-        ax.set_xlabel('Compute')
-        axg.set_xlabel('Compute')
-        axe.set_xlabel('Compute')
-        ax.set_ylabel('Loss')
-        axg.set_ylabel('Loss')
-        axe.set_ylabel('ImageNet finetune error rate')
+        ax.set_xlabel("Compute")
+        axg.set_xlabel("Compute")
+        axe.set_xlabel("Compute")
+        ax.set_ylabel("Loss")
+        axg.set_ylabel("Loss")
+        axe.set_ylabel("ImageNet finetune error rate")
 
-        ax.spines['right'].set_visible(False)
-        axg.spines['right'].set_visible(False)
-        axe.spines['right'].set_visible(False)
-        ax.spines['top'].set_visible(False)
-        axg.spines['top'].set_visible(False)
-        axe.spines['top'].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        axg.spines["right"].set_visible(False)
+        axe.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
+        axg.spines["top"].set_visible(False)
+        axe.spines["top"].set_visible(False)
 
         ax.set_xlim(x.min(), x.max())
         axe.set_xlim(x.min(), x.max())
@@ -792,14 +796,14 @@ def plot_gpt_vit(outdir):
         axe.set_yticks([5, 6, 7, 8, 9, 10, 20, 30, 40, 50])
         axe.set_ylim(5, 50)
 
-        ax.legend(title="GPT [Kaplan et al. 2020] (Language)",loc='upper left', frameon=False)
-        axg.legend(title="GPT [Henighan et al. 2020] (Image/16)", loc='upper left', frameon=False)
-        axe.legend(title="ViT [Zhai et al. 2022] (Image/16)", loc='upper left', frameon=False)
+        ax.legend(title="GPT [Kaplan et al. 2020] (Language)", loc="upper left", frameon=False)
+        axg.legend(title="GPT [Henighan et al. 2020] (Image/16)", loc="upper left", frameon=False)
+        axe.legend(title="ViT [Zhai et al. 2022] (Image/16)", loc="upper left", frameon=False)
 
-        ax.grid(True, which="both", axis='both', lw=.05, ls='-', zorder=0)
-        axg.grid(True, which="both", axis='both', lw=.05, ls='-', zorder=0)
-        axe.grid(True, which="both", axis='both', lw=.05, ls='-', zorder=0)
+        ax.grid(True, which="both", axis="both", lw=0.05, ls="-", zorder=0)
+        axg.grid(True, which="both", axis="both", lw=0.05, ls="-", zorder=0)
+        axe.grid(True, which="both", axis="both", lw=0.05, ls="-", zorder=0)
 
-        plt.savefig(f'{outdir}/gpt_vit_{background}.pdf', bbox_inches='tight', pad_inches=.25)
-        plt.savefig(f'{outdir}/gpt_vit_{background}.png', dpi=300, bbox_inches='tight', pad_inches=.25)
-        savesvg(fig, f'{outdir}/gpt_vit_{background}.svg')
+        plt.savefig(f"{outdir}/gpt_vit_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/gpt_vit_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/gpt_vit_{background}.svg")

@@ -6,7 +6,7 @@ from typing import Dict, List
 import ray
 import torch
 
-from utils.context import (list_numa_nodes,
+from cell_observatory_platform.utils.context import (list_numa_nodes,
                             cpus_for_node,
                             node_id,
                             read_numa_distance_row,

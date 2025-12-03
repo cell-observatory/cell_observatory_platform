@@ -1,22 +1,17 @@
-import sys
 import logging
+import math
+import sys
 from typing import Optional, Tuple
 
-import math
 import numpy as np
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models import patch_embeddings
-from training.helpers import get_patch_sizes
+from cell_observatory_platform.models import patch_embeddings
+from cell_observatory_platform.training.helpers import get_patch_sizes
 
-logging.basicConfig(
-	stream=sys.stdout,
-	level=logging.INFO,
-	format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -25,24 +20,18 @@ logger = logging.getLogger(__name__)
 
 def sincos(embed_dim, pos, temperature=10000, dtype=np.float32):
     # exponent: [embed_dim//2]
-    exponent = np.arange(embed_dim // 2, dtype=dtype) / (embed_dim / 2.)
-    w = 1. / temperature ** exponent
+    exponent = np.arange(embed_dim // 2, dtype=dtype) / (embed_dim / 2.0)
+    w = 1.0 / temperature**exponent
 
     # pos: [sequence_length]
     pos = pos.reshape(-1)
     # outer product: h,c -> hc: [sequence_length, embed_dim//2]
-    hc = np.einsum('n,c->nc', pos, w)
+    hc = np.einsum("n,c->nc", pos, w)
     # returns: [sequence_length, embed_dim]
-    return np.concatenate([np.sin(hc) , np.cos(hc)], axis=1)
+    return np.concatenate([np.sin(hc), np.cos(hc)], axis=1)
 
 
-def positional_encoding_1d(
-    embed_dim,
-    sequence_length,
-    temperature=10000,
-    cls_token=False,
-    dtype=None
-):
+def positional_encoding_1d(embed_dim, sequence_length, temperature=10000, cls_token=False, dtype=None):
     """
     N = sequence_length
     Returns:
@@ -60,12 +49,7 @@ def positional_encoding_1d(
 
 
 def positional_encoding_2d(
-    embed_dim,
-    lateral_y_sequence_length,
-    lateral_x_sequence_length,
-    temperature=10000,
-    cls_token=False,
-    dtype=None
+    embed_dim, lateral_y_sequence_length, lateral_x_sequence_length, temperature=10000, cls_token=False, dtype=None
 ):
     """
     N = sequence_length^2
@@ -75,12 +59,12 @@ def positional_encoding_2d(
     """
     num_dims = 2
     dtype = dtype if dtype is not None else np.float32
-    d = int(np.floor(embed_dim / (2*num_dims)) * 2)
+    d = int(np.floor(embed_dim / (2 * num_dims)) * 2)
     pad = embed_dim - (d * num_dims)
 
     xgrid = np.arange(lateral_x_sequence_length, dtype=dtype)
     ygrid = np.arange(lateral_y_sequence_length, dtype=dtype)
-    ygrid, xgrid = np.meshgrid(ygrid, xgrid, indexing='ij')
+    ygrid, xgrid = np.meshgrid(ygrid, xgrid, indexing="ij")
 
     # outer product of y/x index for each (y,x) in LxL and frequencies
     yemb = sincos(embed_dim=d, pos=ygrid, temperature=temperature, dtype=dtype)  # (N, d)
@@ -88,7 +72,7 @@ def positional_encoding_2d(
     emb = np.concatenate([yemb, xemb], axis=1)  # (N, d*2)
 
     if pad > 0:
-        emb = np.pad(emb, ((0, 0), (0, pad)), mode='constant', constant_values=0)  # (N, embed_dim)
+        emb = np.pad(emb, ((0, 0), (0, pad)), mode="constant", constant_values=0)  # (N, embed_dim)
 
     if cls_token:
         return np.concatenate([np.zeros([1, embed_dim]), emb], axis=0)
@@ -104,7 +88,7 @@ def positional_encoding_3d(
     temporal_sequence_length=None,
     temperature=10000,
     cls_token=False,
-    dtype=None
+    dtype=None,
 ):
     """
     N = lateral_sequence_length^2 * (axial_sequence_length or temporal_sequence_length)
@@ -114,7 +98,7 @@ def positional_encoding_3d(
     """
     num_dims = 3
     dtype = dtype if dtype is not None else np.float32
-    d = int(np.floor(embed_dim / (2*num_dims)) * 2)
+    d = int(np.floor(embed_dim / (2 * num_dims)) * 2)
     pad = embed_dim - (d * num_dims)
 
     if axial_sequence_length is not None and temporal_sequence_length is not None:
@@ -128,7 +112,7 @@ def positional_encoding_3d(
     else:
         zgrid = np.arange(temporal_sequence_length, dtype=dtype)
 
-    zgrid, ygrid, xgrid = np.meshgrid(zgrid, ygrid, xgrid, indexing='ij')
+    zgrid, ygrid, xgrid = np.meshgrid(zgrid, ygrid, xgrid, indexing="ij")
 
     zemb = sincos(embed_dim=d, pos=zgrid, temperature=temperature, dtype=dtype)  # (N, d)
     yemb = sincos(embed_dim=d, pos=ygrid, temperature=temperature, dtype=dtype)  # (N, d)
@@ -136,7 +120,7 @@ def positional_encoding_3d(
     emb = np.concatenate([zemb, yemb, xemb], axis=1)  # (N, d*3)
 
     if pad > 0:
-        emb = np.pad(emb, ((0, 0), (0, pad)), mode='constant', constant_values=0)  # (N, embed_dim)
+        emb = np.pad(emb, ((0, 0), (0, pad)), mode="constant", constant_values=0)  # (N, embed_dim)
 
     if cls_token:
         return np.concatenate([np.zeros([1, embed_dim]), emb], axis=0)
@@ -152,7 +136,7 @@ def positional_encoding_4d(
     temporal_sequence_length,
     temperature=10000,
     cls_token=False,
-    dtype=None
+    dtype=None,
 ):
     """
     N = lateral_sequence_length^2 * axial_sequence_length * temporal_sequence_length
@@ -162,14 +146,14 @@ def positional_encoding_4d(
     """
     num_dims = 4
     dtype = dtype if dtype is not None else np.float32
-    d = int(np.floor(embed_dim / (2*num_dims)) * 2)
+    d = int(np.floor(embed_dim / (2 * num_dims)) * 2)
     pad = embed_dim - (d * num_dims)
 
     xgrid = np.arange(lateral_x_sequence_length, dtype=dtype)
     ygrid = np.arange(lateral_y_sequence_length, dtype=dtype)
     zgrid = np.arange(axial_sequence_length, dtype=dtype)
     tgrid = np.arange(temporal_sequence_length, dtype=dtype)
-    tgrid, zgrid, ygrid, xgrid = np.meshgrid(tgrid, zgrid, ygrid, xgrid, indexing='ij')
+    tgrid, zgrid, ygrid, xgrid = np.meshgrid(tgrid, zgrid, ygrid, xgrid, indexing="ij")
 
     temb = sincos(embed_dim=d, pos=tgrid, temperature=temperature, dtype=dtype)  # (N, d)
     zemb = sincos(embed_dim=d, pos=zgrid, temperature=temperature, dtype=dtype)  # (N, d)
@@ -178,7 +162,7 @@ def positional_encoding_4d(
     emb = np.concatenate([temb, zemb, yemb, xemb], axis=1)  # (N, d*4)
 
     if pad > 0:
-        emb = np.pad(emb, ((0, 0), (0, pad)), mode='constant', constant_values=0)  # (N, embed_dim)
+        emb = np.pad(emb, ((0, 0), (0, pad)), mode="constant", constant_values=0)  # (N, embed_dim)
 
     if cls_token:
         return np.concatenate([np.zeros([1, embed_dim]), emb], axis=0)
@@ -203,8 +187,7 @@ class PosEmbedding(nn.Module):
         self.input_shape = input_shape
 
         self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
-            input_format=input_fmt,
-            patch_shape=patch_shape
+            input_format=input_fmt, patch_shape=patch_shape
         )
 
         self.embed_dim = embed_dim
@@ -214,16 +197,11 @@ class PosEmbedding(nn.Module):
         self.interpolate = interpolate
 
         self.num_patches, self.token_shape = patch_embeddings.calc_num_patches(
-            input_fmt=self.input_fmt,
-            input_shape=self.input_shape,
-            patch_shape=patch_shape
+            input_fmt=self.input_fmt, input_shape=self.input_shape, patch_shape=patch_shape
         )
 
         num_patches_pos_embed = self.num_patches + 1 if self.cls_token else self.num_patches
-        self.pos_embed = nn.Parameter(
-            torch.zeros(1, num_patches_pos_embed, self.embed_dim),
-            requires_grad=False
-        )
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches_pos_embed, self.embed_dim), requires_grad=False)
         self._init_pos_embed(self.pos_embed.data)
 
     def _init_pos_embed(self, pos_embed):
@@ -279,7 +257,7 @@ class PosEmbedding(nn.Module):
         logger.info(f"{self.input_shape=}, {self.input_fmt=}")
         logger.info(f"{self.temporal_patch_size=}, {self.axial_patch_size=}, {self.lateral_patch_size=}")
         logger.info(f"({self.num_patches=}, {self.embed_dim=}) -> {sincos.shape=}")
-        
+
         pos_embed.copy_(torch.from_numpy(sincos).float().unsqueeze(0))
 
     def interpolate_positional_encoding(self, x, pos_embed):
@@ -294,56 +272,61 @@ class PosEmbedding(nn.Module):
 
         # resize ND positional grid while keeping channels-first for interpolate
         def resize_1d(pe, L0, L1):
-            if L0 == L1: return pe
+            if L0 == L1:
+                return pe
             # (B,L,C) -> (B,C,L)
             pe = pe.reshape(B, L0, C).permute(0, 2, 1)
-            pe = F.interpolate(pe, size=L1, mode='linear', align_corners=False)
+            pe = F.interpolate(pe, size=L1, mode="linear", align_corners=False)
             return pe.permute(0, 2, 1).reshape(B, L1, C)
 
         def resize_2d(pe, Z0, Y0, Z1, Y1):
-            if (Z0, Y0) == (Z1, Y1): return pe
+            if (Z0, Y0) == (Z1, Y1):
+                return pe
             # (B,H,W,C) -> (B,C,H,W)
-            pe = pe.reshape(B, Z0, Y0, C).permute(0, 3, 1, 2)             
-            pe = F.interpolate(pe, size=(Z1, Y1), mode='bilinear', align_corners=False)
+            pe = pe.reshape(B, Z0, Y0, C).permute(0, 3, 1, 2)
+            pe = F.interpolate(pe, size=(Z1, Y1), mode="bilinear", align_corners=False)
             return pe.permute(0, 2, 3, 1).reshape(B, Z1 * Y1, C)
 
         def resize_3d(pe, Z0, Y0, X0, Z1, Y1, X1):
-            if (Z0, Y0, X0) == (Z1, Y1, X1): return pe
+            if (Z0, Y0, X0) == (Z1, Y1, X1):
+                return pe
             # (B,D,H,W,C) -> (B,C,D,H,W)
             pe = pe.reshape(B, Z0, Y0, X0, C).permute(0, 4, 1, 2, 3)
-            pe = F.interpolate(pe, size=(Z1, Y1, X1), mode='trilinear', align_corners=False)
+            pe = F.interpolate(pe, size=(Z1, Y1, X1), mode="trilinear", align_corners=False)
             return pe.permute(0, 2, 3, 4, 1).reshape(B, Z1 * Y1 * X1, C)
 
         def resize_T_ZYX_separable(pe, T0, Z0, Y0, X0, T1, Z1, Y1, X1):
             # 3D over ZYX per T, then 1D over T
-            if (T0, Z0, Y0, X0) == (T1, Z1, Y1, X1): return pe
+            if (T0, Z0, Y0, X0) == (T1, Z1, Y1, X1):
+                return pe
             # (B, T0, Z0, Y0, X0, C)
             pe = pe.reshape(B, T0, Z0, Y0, X0, C)
             # 3D over ZYX per T -> fold T into batch
             pe = pe.permute(0, 1, 5, 2, 3, 4).reshape(B * T0, C, Z0, Y0, X0)
-            pe = F.interpolate(pe, size=(Z1, Y1, X1), mode='trilinear', align_corners=False)
+            pe = F.interpolate(pe, size=(Z1, Y1, X1), mode="trilinear", align_corners=False)
             pe = pe.reshape(B, T0, C, Z1, Y1, X1)
             # 1D over T -> fold (C, Z1, Y1, X1) into channels and interpolate length T
-            pe = pe.permute(0, 3, 4, 5, 2, 1).reshape(B, C * Z1 * Y1 * X1, T0)     # (B, C*Z*Y*X, T)
-            pe = F.interpolate(pe, size=T1, mode='linear', align_corners=False)
-            pe = pe.reshape(B, Z1, Y1, X1, C, T1).permute(0, 5, 1, 2, 3, 4)        # (B, T1, Z1, Y1, X1, C)
+            pe = pe.permute(0, 3, 4, 5, 2, 1).reshape(B, C * Z1 * Y1 * X1, T0)  # (B, C*Z*Y*X, T)
+            pe = F.interpolate(pe, size=T1, mode="linear", align_corners=False)
+            pe = pe.reshape(B, Z1, Y1, X1, C, T1).permute(0, 5, 1, 2, 3, 4)  # (B, T1, Z1, Y1, X1, C)
             return pe.reshape(B, T1 * Z1 * Y1 * X1, C)
-        
+
         def resize_T_YX_separable(pe, T0, Y0, X0, T1, Y1, X1):
             # 2D over YX per T, then 1D over T
-            if (T0, Y0, X0) == (T1, Y1, X1): return pe
+            if (T0, Y0, X0) == (T1, Y1, X1):
+                return pe
             # (B, T0, Y0, X0, C)
             pe = pe.reshape(B, T0, Y0, X0, C)
             # 2D over YX per T -> fold T into batch
             pe = pe.permute(0, 1, 4, 2, 3).reshape(B * T0, C, Y0, X0)
-            pe = F.interpolate(pe, size=(Y1, X1), mode='bilinear', align_corners=False)
+            pe = F.interpolate(pe, size=(Y1, X1), mode="bilinear", align_corners=False)
             pe = pe.reshape(B, T0, C, Y1, X1)
             # 1D over T -> fold (C, Y1, X1) into channels and interpolate length T
             pe = pe.permute(0, 3, 4, 2, 1).reshape(B, C * Y1 * X1, T0)
-            pe = F.interpolate(pe, size=T1, mode='linear', align_corners=False)
+            pe = F.interpolate(pe, size=T1, mode="linear", align_corners=False)
             pe = pe.reshape(B, Y1, X1, C, T1).permute(0, 4, 1, 2, 3)
             return pe.reshape(B, T1 * Y1 * X1, C)
-        
+
         T0, Z0, Y0, X0, C0 = self.token_shape
 
         # compute original & target grid sizes from x and config
@@ -393,20 +376,15 @@ class PosEmbedding(nn.Module):
         idx = patches_used.to(pos_table.device)
         D = pos_table.size(-1)
         # pos_table_batched: (B, L_full, D) -> (B, L_used, D)
-        out = torch.gather(pos_table, 
-                            dim=1,
-                            index=idx.unsqueeze(-1).expand(-1, -1, D))
+        out = torch.gather(pos_table, dim=1, index=idx.unsqueeze(-1).expand(-1, -1, D))
         return out
 
     @property
     def table(self) -> torch.Tensor:
         # (L_full, D) without cls
-        return (self.pos_embed[:, 1:, :]
-                if self.cls_token else
-                self.pos_embed)
+        return self.pos_embed[:, 1:, :] if self.cls_token else self.pos_embed
 
-    def forward(self, x: Optional[torch.Tensor] = None,
-                patches_used: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: Optional[torch.Tensor] = None, patches_used: Optional[torch.Tensor] = None) -> torch.Tensor:
         if self.interpolate:
             # FIXME: interpolate_positional_encoding assumes x is grid format
             #        but currently we pass in sequence format from modules

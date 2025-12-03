@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from timm.layers import SwiGLU, DropPath
 
-from models.attention import Attention, RopeAttention
+from cell_observatory_platform.models.attention import Attention, RopeAttention
 
 logging.basicConfig(
 	stream=sys.stdout,

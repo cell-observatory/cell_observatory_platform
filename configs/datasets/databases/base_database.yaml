@@ -1,6 +1,8 @@
 # This gets overridden in tests/data/test_database.py to test both classes.
-_target_: data.databases.supabase_database.SupabaseDatabase # e.g. data.databases.trino_database.TrinoDatabase  
+_target_: cell_observatory_platform.data.databases.supabase_database.SupabaseDatabase # e.g. cell_observatory_platform.data.databases.trino_database.TrinoDatabase  
 dbname: 'prod'
+
+dotenv_path: ${paths.dotenv_path}
 
 timepoint_list: null # list of specific timepoints to filter
 
@@ -15,6 +17,9 @@ hpf_list: ${datasets.hpf_list} # list of specific HPFs (hours-post-fertilization
 roi_list: ${datasets.roi_list} # list of specific ROIs to filter
 tile_list: ${datasets.tile_list} # list of specific tiles to filter
 
+synthetic_only: ${datasets.synthetic_only} # whether to use only synthetic data
+has_annotations: ${datasets.has_annotations} # whether the data has annotations
+
 occupancy_threshold: ${datasets.occupancy_threshold} # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
 occupancy_threshold_filter_type: 'min_ch0'
 
@@ -24,3 +29,7 @@ use_cached_hypercubes_dataframe: ${datasets.use_cached_hypercubes_dataframe} # i
 fetch_hypercubes_dataframe: true
 protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
 server_folder_path: ${paths.server_folder_path}
+
+with_hypercubes_dataframe: true
+
+mask_channel: 1

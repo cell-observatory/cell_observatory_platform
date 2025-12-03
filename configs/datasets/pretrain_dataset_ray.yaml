@@ -7,7 +7,8 @@ defaults:
 
 # mainly used by other configs but determined here for ease of access
 batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-input_shape: [16, 128, 128, 128, 2] 
+input_shape: [16, 128, 128, 128, 2]
+train_shape: [16, 128, 128, 128, 2]
 patch_shape: [4, 16, 16, 16]
 
 max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
@@ -17,6 +18,15 @@ max_hypercubes: null # maximum number of hypercubes to return
 hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
 roi_list: null # list of specific ROIs to filter
 tile_list: null # list of specific tiles to filter
+synthetic_only: False
+has_annotations: False
+
+columns: [ 
+  'x_start', 'y_start', 'z_start', 'time_start',
+  'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
+  'server_folder', 'output_folder',
+  'tile_name', 'prepared_id', 'mask_bbox_dict',
+]
 
 occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
 
@@ -33,7 +43,7 @@ num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
 drop_last_policy: true # whether to drop the last batch if it is smaller than the batch size
 
 collate_fn:
-  _target_: data.datasets.pretrain_dataset_ray.CollatorActor
+  _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.CollatorActor
   dtype: ${dataset_dtype}
   buffer_dtype: ${storage_dtype}
   batch_size: ${clusters.batch_size_per_gpu}
@@ -43,7 +53,7 @@ collate_fn:
   pin_pages: ${datasets.pin_memory}
 
 dataset:
-  _target_: data.datasets.pretrain_dataset_ray.PretrainDatasourceRay
+  _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.PretrainDatasourceRay
   hypercubes_dataframe_path: ${datasets.hypercubes_dataframe_path}
   server_folder_path: ${datasets.server_folder_path}
   max_rois: ${datasets.max_rois}
@@ -52,8 +62,11 @@ dataset:
   hpf_list: ${datasets.hpf_list}
   roi_list: ${datasets.roi_list}
   tile_list: ${datasets.tile_list}
+  synthetic_only: ${datasets.synthetic_only}
+  has_annotations: ${datasets.has_annotations}
+  columns: ${datasets.columns}
   input_layout:
-    _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
+    _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}
 
 use_arrow_tensor_v2: true # use Arrow Tensor v2

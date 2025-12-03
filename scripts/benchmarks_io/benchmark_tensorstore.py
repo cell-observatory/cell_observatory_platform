@@ -2,23 +2,24 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import logging
+
+import matplotlib
 import numpy as np
 import pandas as pd
-import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from omegaconf import DictConfig
 import tensorstore as ts
+from omegaconf import DictConfig
 
-from utils import cli
-from utils.common import multiprocess
-from data.data_types import NUMPY_DTYPES
-from data.io import load_hypercubes_dataframe, read_zarr
-
-from utils.profiling import pprof_func, enable_profiling
+from cell_observatory_platform.data.data_types import NUMPY_DTYPES
+from cell_observatory_platform.data.io import load_hypercubes_dataframe, read_zarr
+from cell_observatory_platform.utils import cli
+from cell_observatory_platform.utils.common import multiprocess
+from cell_observatory_platform.utils.profiling import enable_profiling, pprof_func
 
 logging.basicConfig(
     stream=sys.stdout,

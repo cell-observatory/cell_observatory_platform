@@ -1,4 +1,3 @@
-_target_: models.jepa.JEPA
 input_fmt: ${dataset_layout_order}
 input_shape: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
 input_shape: ${datasets.input_shape}

@@ -1,123 +1,119 @@
-import sys
+import inspect
 import logging
+import sys
 from copy import deepcopy
-from typing import Literal, Union
+from typing import Any, Literal, Mapping, Union
 
 import torch
 import torch.nn as nn
 from deepspeed.runtime.zero import GatheredParameters
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 
-from models.mlp import get_mlp
-from models.norm import get_norm
-from training.losses import get_loss_fn
-from training.helpers import init_weights
-from models.activation import get_activation
-from models.maskedencoder import MaskedEncoder
-from models.maskedpredictor import MaskedPredictor
-from models.patch_embeddings import calc_num_patches
-from data.masking.mask_generator import apply_masks
+from cell_observatory_platform.data.masking.mask_generator import apply_masks
+from cell_observatory_platform.models.activation import get_activation
+from cell_observatory_platform.models.maskedencoder import MaskedEncoder
+from cell_observatory_platform.models.maskedpredictor import MaskedPredictor
+from cell_observatory_platform.models.mlp import get_mlp
+from cell_observatory_platform.models.norm import get_norm
+from cell_observatory_platform.models.patch_embeddings import calc_num_patches
+from cell_observatory_platform.training.helpers import init_weights
+from cell_observatory_platform.training.losses import get_loss_fn
 
-logging.basicConfig(
-	stream=sys.stdout,
-	level=logging.INFO,
-	format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
 CONFIGS = {
-    'jepa-tiny': {
-        'embed_dim': 192,
-        'predictor_embed_dim': 96,
-        'depth': 12,
-        'predictor_depth': 3,
-        'num_heads': 3,
-        'predictor_num_heads': 3,
-        'mlp_ratio': 4,
+    "jepa-tiny": {
+        "embed_dim": 192,
+        "predictor_embed_dim": 96,
+        "depth": 12,
+        "predictor_depth": 3,
+        "num_heads": 3,
+        "predictor_num_heads": 3,
+        "mlp_ratio": 4,
     },
-    'jepa-small': {
-        'embed_dim': 384,
-        'predictor_embed_dim': 192,
-        'depth': 12,
-        'predictor_depth': 6,
-        'num_heads': 6,
-        'predictor_num_heads': 6,
-        'mlp_ratio': 4,
+    "jepa-small": {
+        "embed_dim": 384,
+        "predictor_embed_dim": 192,
+        "depth": 12,
+        "predictor_depth": 6,
+        "num_heads": 6,
+        "predictor_num_heads": 6,
+        "mlp_ratio": 4,
     },
-    'jepa-base': {
-        'embed_dim': 768,
-        'predictor_embed_dim': 384,
-        'depth': 12,
-        'predictor_depth': 12,
-        'num_heads': 12,
-        'predictor_num_heads': 12,
-        'mlp_ratio': 4,
+    "jepa-base": {
+        "embed_dim": 768,
+        "predictor_embed_dim": 384,
+        "depth": 12,
+        "predictor_depth": 12,
+        "num_heads": 12,
+        "predictor_num_heads": 12,
+        "mlp_ratio": 4,
     },
-    'jepa-large': {
-        'embed_dim': 1024,
-        'predictor_embed_dim': 384,
-        'depth': 24,
-        'predictor_depth': 12,
-        'num_heads': 16,
-        'predictor_num_heads': 12,
-        'mlp_ratio': 4,
+    "jepa-large": {
+        "embed_dim": 1024,
+        "predictor_embed_dim": 384,
+        "depth": 24,
+        "predictor_depth": 12,
+        "num_heads": 16,
+        "predictor_num_heads": 12,
+        "mlp_ratio": 4,
     },
-    'jepa-huge': {
-        'embed_dim': 1280,
-        'predictor_embed_dim': 384,
-        'depth': 32,
-        'predictor_depth': 12,
-        'num_heads': 16,
-        'predictor_num_heads': 12,
-        'mlp_ratio': 4,
+    "jepa-huge": {
+        "embed_dim": 1280,
+        "predictor_embed_dim": 384,
+        "depth": 32,
+        "predictor_depth": 12,
+        "num_heads": 16,
+        "predictor_num_heads": 12,
+        "mlp_ratio": 4,
     },
-    'jepa-2billion': {
-        'embed_dim': 2560,
-        'predictor_embed_dim': 512,
-        'depth': 24,
-        'predictor_depth': 8,
-        'num_heads': 32,
-        'predictor_num_heads': 8,
-        'mlp_ratio': 4,
+    "jepa-2billion": {
+        "embed_dim": 2560,
+        "predictor_embed_dim": 512,
+        "depth": 24,
+        "predictor_depth": 8,
+        "num_heads": 32,
+        "predictor_num_heads": 8,
+        "mlp_ratio": 4,
     },
-    'jepa-6billion': {
-        'embed_dim': 4096,
-        'predictor_embed_dim': 512,
-        'depth': 32,
-        'predictor_depth': 8,
-        'num_heads': 32,
-        'predictor_num_heads': 8,
-        'mlp_ratio': 4,
+    "jepa-6billion": {
+        "embed_dim": 4096,
+        "predictor_embed_dim": 512,
+        "depth": 32,
+        "predictor_depth": 8,
+        "num_heads": 32,
+        "predictor_num_heads": 8,
+        "mlp_ratio": 4,
     },
-    'jepa-giant': {
-        'embed_dim': 1408,
-        'predictor_embed_dim': 512,
-        'depth': 40,
-        'predictor_depth': 12,
-        'num_heads': 16,
-        'predictor_num_heads': 12,
-        'mlp_ratio': 48/11,
+    "jepa-giant": {
+        "embed_dim": 1408,
+        "predictor_embed_dim": 512,
+        "depth": 40,
+        "predictor_depth": 12,
+        "num_heads": 16,
+        "predictor_num_heads": 12,
+        "mlp_ratio": 48 / 11,
     },
-    'jepa-gigantic': {
-        'embed_dim': 1664,
-        'predictor_embed_dim': 1024,
-        'depth': 48,
-        'predictor_depth': 16,
-        'num_heads': 16,
-        'predictor_num_heads': 16,
-        'mlp_ratio': 64/13,
+    "jepa-gigantic": {
+        "embed_dim": 1664,
+        "predictor_embed_dim": 1024,
+        "depth": 48,
+        "predictor_depth": 16,
+        "num_heads": 16,
+        "predictor_num_heads": 16,
+        "mlp_ratio": 64 / 13,
     },
-    
-    'jepa-enormous': {
-        'embed_dim': 1792,
-        'predictor_embed_dim': 1024,
-        'depth': 56,
-        'predictor_depth': 16,
-        'num_heads': 16,
-        'predictor_num_heads': 16,
-        'mlp_ratio': 8.5714285714,
-    }
+    "jepa-enormous": {
+        "embed_dim": 1792,
+        "predictor_embed_dim": 1024,
+        "depth": 56,
+        "predictor_depth": 16,
+        "num_heads": 16,
+        "predictor_num_heads": 16,
+        "mlp_ratio": 8.5714285714,
+    },
 }
 
 
@@ -125,16 +121,16 @@ class JEPA(nn.Module):
     def __init__(
         self,
         model_template: Literal[
-            'jepa', # custom use `embed_dim`, `predictor_embed_dim`, `depth`, `num_heads` and `mlp_ratio` to config model
-            'jepa-tiny',
-            'jepa-small',
-            'jepa-base',
-            'jepa-large',
-            'jepa-huge',
-            'jepa-giant',
-            'jepa-gigantic'
-        ] = 'jepa',
-        input_fmt='TZYXC',
+            "jepa",  # custom use `embed_dim`, `predictor_embed_dim`, `depth`, `num_heads` and `mlp_ratio` to config model
+            "jepa-tiny",
+            "jepa-small",
+            "jepa-base",
+            "jepa-large",
+            "jepa-huge",
+            "jepa-giant",
+            "jepa-gigantic",
+        ] = "jepa",
+        input_fmt="TZYXC",
         input_shape: tuple = (16, 128, 128, 128, 2),
         patch_shape: tuple = (4, 16, 16, 16),
         embed_dim=768,
@@ -149,17 +145,17 @@ class JEPA(nn.Module):
         drop_path_rate=0.1,
         init_std=0.02,
         fixed_dropout_depth=False,
-        norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
-        act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
-        mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
+        norm_layer: Union[nn.Module, Literal["RmsNorm", "LayerNorm", "SyncBatchNorm", "GroupNorm"]] = "RmsNorm",
+        act_layer: Union[nn.Module, Literal["GELU", "SiLU", "LeakyReLU", "GLU", "Sigmoid", "Tanh"]] = "SiLU",
+        mlp_layer: Union[nn.Module, Literal["Mlp", "SwiGLU"]] = "SwiGLU",
         abs_sincos_enc: bool = False,
         rope_pos_enc: bool = True,
         rope_random_rotation_per_head: bool = True,
         rope_mixed: bool = True,
         rope_theta: float = 10.0,
-        weight_init_type: str = 'vjepa2',
+        weight_init_type: str = "vjepa2",
         mlp_wide_silu: bool = False,
-        loss_fn: str = 'l1_masked',
+        loss_fn: str = "l1_masked",
         dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
@@ -167,13 +163,13 @@ class JEPA(nn.Module):
 
         if model_template in CONFIGS.keys():
             config = CONFIGS[model_template]
-            self.depth = config['depth']
-            self.predictor_depth = config['predictor_depth']
-            self.embed_dim = config['embed_dim']
-            self.predictor_embed_dim = config['predictor_embed_dim']
-            self.num_heads = config['num_heads']
-            self.predictor_num_heads = config['predictor_num_heads']
-            self.mlp_ratio = config['mlp_ratio']
+            self.depth = config["depth"]
+            self.predictor_depth = config["predictor_depth"]
+            self.embed_dim = config["embed_dim"]
+            self.predictor_embed_dim = config["predictor_embed_dim"]
+            self.num_heads = config["num_heads"]
+            self.predictor_num_heads = config["predictor_num_heads"]
+            self.mlp_ratio = config["mlp_ratio"]
         else:
             self.depth = depth
             self.predictor_depth = predictor_depth
@@ -186,7 +182,7 @@ class JEPA(nn.Module):
         self.input_fmt = input_fmt
         self.input_shape = input_shape
         axis_to_value = dict(zip(input_fmt, input_shape))
-        self.in_chans = axis_to_value['C']
+        self.in_chans = axis_to_value["C"]
         self.num_frames = axis_to_value.get("T", None)
 
         self.patch_shape = patch_shape
@@ -195,7 +191,7 @@ class JEPA(nn.Module):
         self.att_drop_rate = att_drop_rate
         self.drop_path_rate = drop_path_rate
         self.fixed_dropout_depth = fixed_dropout_depth
-        
+
         self.init_std = init_std
 
         self.norm_layer = get_norm(norm_layer)
@@ -233,7 +229,7 @@ class JEPA(nn.Module):
             rope_mixed=self.rope_mixed,
             rope_theta=self.rope_theta,
             mlp_wide_silu=mlp_wide_silu,
-            dtype=dtype
+            dtype=dtype,
         )
 
         self.target_predictor = MaskedPredictor(
@@ -261,7 +257,7 @@ class JEPA(nn.Module):
             rope_mixed=self.rope_mixed,
             rope_theta=self.rope_theta,
             mlp_wide_silu=mlp_wide_silu,
-            dtype=dtype
+            dtype=dtype,
         )
 
         self.weight_init_type = weight_init_type
@@ -277,10 +273,7 @@ class JEPA(nn.Module):
     # see training/hooks.py for usage
     def ema_update(self, beta=0.99):
         def collect_params(params):
-            return [
-                p for p in params
-                if hasattr(p, 'ds_id') and p.ds_status == ZeroParamStatus.NOT_AVAILABLE
-            ]
+            return [p for p in params if hasattr(p, "ds_id") and p.ds_status == ZeroParamStatus.NOT_AVAILABLE]
 
         with torch.no_grad():
             for iparam, tparam in zip(self.input_encoder.parameters(), self.target_encoder.parameters()):
@@ -315,16 +308,16 @@ class JEPA(nn.Module):
             return num_patches
 
     def forward(self, data_sample: dict):
-        inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
-        masks, context_masks, patches_used = meta['masks'][0], meta['context_masks'][0], meta['patches_used'][0]
-        target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
+        inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
+        masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
+        target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
 
         embedding, patches = self.input_encoder(inputs, masks=context_masks)
         predictions = self.target_predictor(
             embedding,
             original_patch_indices=original_patch_indices,
             target_masks=target_masks,
-            patches_used=patches_used
+            patches_used=patches_used,
         )
 
         with torch.no_grad():
@@ -343,3 +336,20 @@ class JEPA(nn.Module):
             "step_loss": loss,
         }
         return loss_dict, predictions
+
+
+def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
+    sig = inspect.signature(JEPA.__init__)
+    allowed = set(sig.parameters.keys()) - {"self"}
+    ignore = {"_target_", "BUILD"}
+    kwargs = {}
+    for k in cfg.keys():
+        if k in ignore or k not in allowed:
+            continue
+        kwargs[k] = cfg[k]
+    return kwargs
+
+
+def BUILD(cfg: Mapping[str, Any]) -> JEPA:
+    model_cfg = cfg.models.jepa
+    return JEPA(**_extract_model_kwargs(model_cfg))

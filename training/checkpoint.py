@@ -1,45 +1,39 @@
-import os
-import sys
 import logging
+import os
 import subprocess
-from pathlib import Path 
+import sys
+from collections import OrderedDict
+from pathlib import Path
+from typing import Dict, Iterable, List, Literal, Optional, Union
 
 import ray
-
-from collections import OrderedDict
-from typing import Dict, Optional, Union, Literal, List, Iterable
-
-import torch 
-
+import torch
 from deepspeed.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
 
-from data.data_types import TORCH_DTYPES
-from utils.context import is_main_process, barrier
+from cell_observatory_platform.data.data_types import TORCH_DTYPES
+from cell_observatory_platform.utils.context import barrier, is_main_process
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
 class CheckpointManager:
-    def __init__(self,
-                 model: torch.nn.Module, 
-                 zero_stage: int,
-                 load_universal_checkpoint: bool,
-                 save_checkpointdir: Union[str, Path],
-                 save_period: int = 1,
-                 load_optimizer: bool = False,
-                 load_dtype: Optional[str] = None,
-                 resume_checkpointdir: Optional[Union[str, Path]] = None,
-                 pretrained_checkpointdir: Optional[Union[str, Path]] = None,
-                 engine: Literal["deepspeed"] = "deepspeed", 
-                 checkpoint_tag: str = "best_model",
-                 use_custom_state_dict_filter: Optional[List[str]] = None,
-                 ckpt_include_prefixes: Optional[List[str]] = None,
-                 ckpt_translate_map: Optional[Dict[str, str]] = None,
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        zero_stage: int,
+        load_universal_checkpoint: bool,
+        save_checkpointdir: Union[str, Path],
+        save_period: int = 1,
+        load_optimizer: bool = True,
+        load_dtype: Optional[str] = None,
+        resume_checkpointdir: Optional[Union[str, Path]] = None,
+        pretrained_checkpointdir: Optional[Union[str, Path]] = None,
+        engine: Literal["deepspeed"] = "deepspeed",
+        checkpoint_tag: str = "best_model",
+        use_custom_state_dict_filter: Optional[List[str]] = None,
+        ckpt_include_prefixes: Optional[List[str]] = None,
+        ckpt_translate_map: Optional[Dict[str, str]] = None,
     ):
         self.model = model
         self.engine = engine
@@ -52,11 +46,11 @@ class CheckpointManager:
         self.ckpt_translate_map = ckpt_translate_map
         self.ckpt_include_prefixes = ckpt_include_prefixes
 
-        assert not (resume_checkpointdir is not None and \
-            pretrained_checkpointdir is not None), \
-            "Cannot specify both `resume_checkpointdir` and `pretrained_checkpointdir`. " \
-            "Please choose one of them or neither." 
-        
+        assert not (resume_checkpointdir is not None and pretrained_checkpointdir is not None), (
+            "Cannot specify both `resume_checkpointdir` and `pretrained_checkpointdir`. "
+            "Please choose one of them or neither."
+        )
+
         self.resume_checkpointdir = resume_checkpointdir
         self.pretrained_checkpointdir = pretrained_checkpointdir
 
@@ -77,29 +71,26 @@ class CheckpointManager:
             self.load_checkpointdir = Path(pretrained_checkpointdir)
         else:
             self.load_checkpointdir = None
-        
-        self.save_checkpointdir = Path(save_checkpointdir) \
-            if isinstance(save_checkpointdir, str) else save_checkpointdir
+
+        self.save_checkpointdir = (
+            Path(save_checkpointdir) if isinstance(save_checkpointdir, str) else save_checkpointdir
+        )
 
         self.use_custom_state_dict_filter = use_custom_state_dict_filter
 
-    def save(self, 
-             prefix: str, 
-             save_epoch: int = None,
-             save_step: int = None, 
-             save_best_loss: Optional[float] = None,
+    def save(
+        self,
+        prefix: str,
+        save_epoch: int = None,
+        save_step: int = None,
+        save_best_loss: Optional[float] = None,
     ):
         self.save_checkpointdir.mkdir(parents=True, exist_ok=True)
         if self.engine == "deepspeed":
-            client_state = {
-                "epoch": save_epoch,
-                "iter": save_step,
-                "best_loss": save_best_loss
-            }
+            client_state = {"epoch": save_epoch, "iter": save_step, "best_loss": save_best_loss}
             self.model.save_checkpoint(self.save_checkpointdir, client_state=client_state, tag=prefix)
         else:
-            raise NotImplementedError("Saving checkpoints for " \
-                "other engines not implemented yet.")
+            raise NotImplementedError("Saving checkpoints for " "other engines not implemented yet.")
 
     def load(self):
         if self.resume_checkpointdir is not None:
@@ -107,69 +98,69 @@ class CheckpointManager:
         elif self.pretrained_checkpointdir is not None:
             return self._load_torch()
         else:
-            raise ValueError("No checkpoint directory specified for loading. "
-                             "Please set `resume_checkpointdir` or `pretrained_checkpointdir`.")
-    
-    def _load_deepspeed(self):  
-        assert self.load_checkpointdir is not None, \
-            "No checkpoint directory specified for loading. " \
+            raise ValueError(
+                "No checkpoint directory specified for loading. "
+                "Please set `resume_checkpointdir` or `pretrained_checkpointdir`."
+            )
+
+    def _load_deepspeed(self):
+        assert self.load_checkpointdir is not None, (
+            "No checkpoint directory specified for loading. "
             "Please set `resume_checkpointdir` or `pretrained_checkpointdir`."
-        
-        ckpt_zero_stage = self._get_zero_stage(os.path.join(self.load_checkpointdir, 
-                                                    self.checkpoint_tag))
+        )
+
+        ckpt_zero_stage = self._get_zero_stage(os.path.join(self.load_checkpointdir, self.checkpoint_tag))
 
         if self.use_custom_state_dict_filter is not None and self.engine == "deepspeed":
             custom_load_fn = self.make_state_dict_filter_fn(
-                include_prefixes=self.ckpt_include_prefixes,
-                translate_map=self.ckpt_translate_map
+                include_prefixes=self.ckpt_include_prefixes, translate_map=self.ckpt_translate_map
             )
         else:
             custom_load_fn = None
 
         # we do not currently support loading ZeRO-0 checkpoints
         # into ZeRO-1/2/3 models
-        if (self.zero_stage == 0 and ckpt_zero_stage != 0) or \
-            (self.zero_stage != 0 and ckpt_zero_stage == 0):
+        if (self.zero_stage == 0 and ckpt_zero_stage != 0) or (self.zero_stage != 0 and ckpt_zero_stage == 0):
             raise ValueError(
                 f"Cannot load a ZeRO-0 checkpoint into a \
                     ZeRO-{self.zero_stage} model or vice versa. "
             )
 
-        # if we are resuming from a checkpoint that has an identical zero stage 
-        # and zero configuration, which is specified by setting 
+        # if we are resuming from a checkpoint that has an identical zero stage
+        # and zero configuration, which is specified by setting
         # `load_universal_checkpoint` to False and `resume_checkpointdir` to a valid path
-        # we can load the checkpoint directly with the load_checkpoint API      
+        # we can load the checkpoint directly with the load_checkpoint API
         if self.resume_checkpointdir is not None and not self.load_universal_checkpoint:
-            ckpt_path, client_state = self._load_checkpoint(
-                tag=self.checkpoint_tag,
-                custom_load_fn=custom_load_fn
-            )
+            ckpt_path, client_state = self._load_checkpoint(tag=self.checkpoint_tag, custom_load_fn=custom_load_fn)
 
         # if we are resuming from a checkpoint that has a different zero configuration
         # we first attempt to find an existing universal checkpoint to load.
         # if it does not exist, we convert the ZeRO-1/2/3 checkpoint to a universal
-        # checkpoint and then load it. this is the new prefered way to ensure that 
+        # checkpoint and then load it. this is the new prefered way to ensure that
         # the state of the model is loaded correctly when restarting a job with a different
         # zero stage or configuration. see: https://arxiv.org/pdf/2406.18820
         else:
-            assert self.model.load_universal_checkpoint(), \
-                "Model does not support loading universal checkpoints. " \
-                "Please set `allow_universal_conversion` to True in " \
+            assert self.model.load_universal_checkpoint(), (
+                "Model does not support loading universal checkpoints. "
+                "Please set `allow_universal_conversion` to True in "
                 "DeepSpeed Config."
-            
+            )
+
             universal_checkpointdir = self.load_checkpointdir / f"{self.checkpoint_tag}_universal"
 
             if universal_checkpointdir.exists() and any(universal_checkpointdir.iterdir()):
-                logger.info(f"Loading universal checkpoint from existing directory \
-                        {self.load_checkpointdir / f'{self.checkpoint_tag}_universal'}")
-                ckpt_path, client_state = self._load_checkpoint(
-                    tag=f"{self.checkpoint_tag}_universal",
-                    custom_load_fn=custom_load_fn
+                logger.info(
+                    f"Loading universal checkpoint from existing directory \
+                        {self.load_checkpointdir / f'{self.checkpoint_tag}_universal'}"
                 )
-            
+                ckpt_path, client_state = self._load_checkpoint(
+                    tag=f"{self.checkpoint_tag}_universal", custom_load_fn=custom_load_fn
+                )
+
             else:
 
-                logger.info(f"Converting ZeRO-0 checkpoint to universal format: \
+                logger.info(
+                    f"Converting ZeRO-0 checkpoint to universal format: \
                     {universal_checkpointdir}"
                     "NOTE: this will create a new checkpoint \
                     with the tag `{self.checkpoint_tag}_universal` in the same directory."
@@ -178,14 +169,13 @@ class CheckpointManager:
                 if is_main_process():
                     self._convert_zero_checkpoint_to_universal(
                         src=self.load_checkpointdir / self.checkpoint_tag,
-                        dst=self.load_checkpointdir / f"{self.checkpoint_tag}_universal"
+                        dst=self.load_checkpointdir / f"{self.checkpoint_tag}_universal",
                     )
-                
+
                 barrier()
 
                 ckpt_path, client_state = self._load_checkpoint(
-                    tag=f"{self.checkpoint_tag}_universal",
-                    custom_load_fn=custom_load_fn
+                    tag=f"{self.checkpoint_tag}_universal", custom_load_fn=custom_load_fn
                 )
 
         # get target dtype if specified
@@ -203,7 +193,8 @@ class CheckpointManager:
         src = None
         for k in ("module", "state_dict", "model", "model_state_dict"):
             if isinstance(sd, dict) and k in sd and isinstance(sd[k], dict):
-                src = sd[k]; break
+                src = sd[k]
+                break
         if src is None:
             raise ValueError("Could not find state_dict in checkpoint.")
 
@@ -211,8 +202,7 @@ class CheckpointManager:
         dst_module = getattr(self.model, "module", self.model)
         if self.use_custom_state_dict_filter:
             custom_load_fn = self.make_state_dict_filter_fn(
-                include_prefixes=self.ckpt_include_prefixes,
-                translate_map=self.ckpt_translate_map
+                include_prefixes=self.ckpt_include_prefixes, translate_map=self.ckpt_translate_map
             )
             custom_load_fn(src, dst_module)
         else:
@@ -239,7 +229,7 @@ class CheckpointManager:
             load_module_only=self.load_module_only,
             custom_load_fn=custom_load_fn,
         )
-        
+
     def make_state_dict_filter_fn(
         self,
         include_prefixes: Optional[Iterable[str]] = None,
@@ -261,7 +251,7 @@ class CheckpointManager:
             if k in translate_map:
                 return translate_map[k]
             if k.startswith("module."):
-                core = k[len("module."):]
+                core = k[len("module.") :]
                 if core in translate_map:
                     mapped = translate_map[core]
                     return f"module.{mapped}" if not mapped.startswith("module.") else mapped
@@ -269,7 +259,7 @@ class CheckpointManager:
                 with_mod = f"module.{k}"
                 if with_mod in translate_map:
                     mapped = translate_map[with_mod]
-                    return mapped[len("module."):] if mapped.startswith("module.") else mapped
+                    return mapped[len("module.") :] if mapped.startswith("module.") else mapped
             return k
 
         def custom_load_fn(src: Dict[str, torch.Tensor], dst: torch.nn.Module):
@@ -287,8 +277,10 @@ class CheckpointManager:
                 src_state_dict = translated
 
             if include_prefixes:
+
                 def _in_prefix_list(k: str) -> bool:
                     return any(k.startswith(pref) for pref in include_prefixes)
+
                 src_state_dict = {k: v for k, v in src_state_dict.items() if _in_prefix_list(k)}
 
             keep, dropped = {}, []
@@ -297,11 +289,7 @@ class CheckpointManager:
                 if dst_t is not None and tuple(v.shape) == tuple(dst_t.shape):
                     keep[k] = v
                 else:
-                    dropped.append((
-                        k,
-                        tuple(v.shape),
-                        tuple(dst_t.shape) if dst_t is not None else None
-                    ))
+                    dropped.append((k, tuple(v.shape), tuple(dst_t.shape) if dst_t is not None else None))
 
             missing, unexpected = dst.load_state_dict(keep, strict=False)
 
@@ -309,14 +297,14 @@ class CheckpointManager:
                 ray.logger.warning(
                     "[CheckpointManager] Dropped %d mismatched tensors (shape or missing):\n%s",
                     len(dropped),
-                    "\n".join([f"  - {k}: ckpt{cs} -> model{ms}" for (k, cs, ms) in dropped])
+                    "\n".join([f"  - {k}: ckpt{cs} -> model{ms}" for (k, cs, ms) in dropped]),
                 )
             if missing:
-                ray.logger.info("[CheckpointManager] Model missing keys after load (left at init): %s",
-                            list(missing)[:20])
+                ray.logger.info(
+                    "[CheckpointManager] Model missing keys after load (left at init): %s", list(missing)[:20]
+                )
             if unexpected:
-                ray.logger.info("[CheckpointManager] Unexpected keys ignored: %s",
-                            list(unexpected)[:20])
+                ray.logger.info("[CheckpointManager] Unexpected keys ignored: %s", list(unexpected)[:20])
 
         return custom_load_fn
 
@@ -344,17 +332,12 @@ class CheckpointManager:
         return state_dict
 
     @staticmethod
-    def _add_prefix(state_dict: Dict[str, torch.Tensor],
-                    prefix: str = "module."
-    ) -> Dict[str, torch.Tensor]:
+    def _add_prefix(state_dict: Dict[str, torch.Tensor], prefix: str = "module.") -> Dict[str, torch.Tensor]:
         """
         If none of the keys start with `prefix`, add it to every key.
         Otherwise return the dict unchanged.
         """
-        return OrderedDict(
-            (k if k.startswith(prefix) else f"{prefix}{k}", v)
-            for k, v in state_dict.items()
-        )
+        return OrderedDict((k if k.startswith(prefix) else f"{prefix}{k}", v) for k, v in state_dict.items())
 
     @classmethod
     def _strip_prefix(state_dict: dict, prefix: str = "module.") -> dict:
@@ -366,15 +349,13 @@ class CheckpointManager:
         if all(key.startswith(prefix) for key in state_dict.keys()):
             new_state = OrderedDict()
             for key, value in state_dict.items():
-                new_key = key[len(prefix):]
+                new_key = key[len(prefix) :]
                 new_state[new_key] = value
             return new_state
         else:
             return state_dict
 
-    def _convert_zero_checkpoint_to_universal(self, 
-                                              src: Path, 
-                                              dst: Path):
+    def _convert_zero_checkpoint_to_universal(self, src: Path, dst: Path):
         """
         Convert a DeepSpeed Zero Stage 3 checkpoint to a standard checkpoint
         that may be loaded more flexibly.
@@ -383,18 +364,21 @@ class CheckpointManager:
             os.makedirs(dst)
 
         cmd = [
-            sys.executable, "-m", "deepspeed.checkpoint.ds_to_universal",
-            "--input_folder", str(src),
-            "--output_folder", str(dst),
-            "--inject_missing_state"
+            sys.executable,
+            "-m",
+            "deepspeed.checkpoint.ds_to_universal",
+            "--input_folder",
+            str(src),
+            "--output_folder",
+            str(dst),
+            "--inject_missing_state",
         ]
 
         subprocess.check_call(cmd)
 
-    # useful utility function to convert a deepspeed 
+    # useful utility function to convert a deepspeed
     # zero stage 3 checkpoint to a standard checkpoint
     def convert_zero_checkpoint(checkpoint_dir: str, tag: str = "best_model"):
         checkpoint_path = os.path.join(checkpoint_dir, tag)
         output_path = os.path.join(checkpoint_path, f"{tag}_universal")
-        convert_zero_checkpoint_to_fp32_state_dict(checkpoint_dir=checkpoint_path,
-                                                           output_dir=output_path)
+        convert_zero_checkpoint_to_fp32_state_dict(checkpoint_dir=checkpoint_path, output_dir=output_path)

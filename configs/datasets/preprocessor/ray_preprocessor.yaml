@@ -1,10 +1,10 @@
-_target_: models.preprocessor.RayPreprocessor
+_target_: cell_observatory_platform.models.preprocessor.RayPreprocessor
 
 dtype: ${quantization}
 with_masking: true
 mask_generator: ${datasets.masking.mask_generators.0}
 transforms_list: 
-  - _target_: data.transforms.normalize.NormalizeRayWrapper
+  - _target_: cell_observatory_platform.data.transforms.normalize.NormalizeRayWrapper
     input_layout:
-      _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
+      _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
       value: ${dataset_layout_order}

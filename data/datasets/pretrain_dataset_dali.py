@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Dict, Any, Tuple, Callable, Optional, Literal, Iterable
 from nvidia.dali import pipeline_def, fn, types
 
-from data.io import read_zarr, load_hypercubes_dataframe
-from utils.context import process_rank, get_world_size
-from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES, DALI_DTYPES
+from cell_observatory_platform.data.io import read_zarr, load_hypercubes_dataframe
+from cell_observatory_platform.utils.context import process_rank, get_world_size
+from cell_observatory_platform.data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES, DALI_DTYPES
 
 # based on: 
 # https://docs.nvidia.com/deeplearning/dali/user-guide/docs/

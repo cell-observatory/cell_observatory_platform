@@ -1,8 +1,8 @@
 import torch
 
-from data.structures.image_list import ImageList
-from data.structures.data_sample import DataSample
-from data.data_shapes import MULTICHANNEL_HYPERCUBE
+from cell_observatory_platform.data.data_shapes import MULTICHANNEL_HYPERCUBE
+from cell_observatory_platform.data.structures.data_sample import DataSample
+from cell_observatory_platform.data.structures.image_list import ImageList
 
 
 def test_data_sample():

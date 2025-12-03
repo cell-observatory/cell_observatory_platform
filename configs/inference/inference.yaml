@@ -1,17 +1,16 @@
 _target_: cell_observatory_platform.inference.inferencer.InferencerWorker
 
-num_output_channels: 2
+use_cached_hypercubes_dataframe: ${datasets.databases.use_cached_hypercubes_dataframe}
+hypercubes_dataframe_path: ${datasets.databases.hypercubes_dataframe_path}
+
 input_format: ${dataset_layout_order} 
 timepoint_list: ${datasets.databases.timepoint_list}
 
 task: null
 inference_mode: "sliding_window"
-activation: null
 decoder_head_type: "pretrain"
 
-roi_tile_list: 
-  - [519, "000x_000y_000z.zarr"]
-  - [518, "000x_000y_000z.zarr"]
+roi_tile_list: null
 
 protocol: ${datasets.databases.protocol}
 dotenv_path: null
@@ -23,7 +22,9 @@ max_partitions: 10
 
 save_dir: ${paths.outdir}/inference
 
-convert_to_ome_format: true
+save_as_pdf: true
+save_as_volume: false
+z_step_pdf: 10
 
 # TIFF OPTION:
 # save_format: "tiff"
@@ -34,3 +35,13 @@ convert_to_ome_format: true
 save_format: "zarr"
 zarr_chunk_shape: [32, 32, 32]
 zarr_shard_shape: [128, 128, 128]
+
+outputs_metadata:
+  predictions: 
+    activation: null
+    num_output_channels: 2
+
+auxiliary_outputs:
+  data_tensor:
+    activation: null
+    num_output_channels: 2

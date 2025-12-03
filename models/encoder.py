@@ -6,10 +6,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from models.mlp import get_mlp
-from models.norm import get_norm
-from models.activation import get_activation
-from models.transformer import Transformer
+from cell_observatory_platform.models.mlp import get_mlp
+from cell_observatory_platform.models.norm import get_norm
+from cell_observatory_platform.models.activation import get_activation
+from cell_observatory_platform.models.transformer import Transformer
 
 logging.basicConfig(
 	stream=sys.stdout,

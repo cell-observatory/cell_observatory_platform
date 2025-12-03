@@ -42,16 +42,30 @@ dashboard_port=$(getfreeport)
 echo "Dashboard will use port: $dashboard_port"
 export dashboard_port
 
-head_ip="$(hostname -I | awk '{print $1}')"
-export RAY_GRAFANA_HOST="${head_ip}:3000"
-export RAY_PROMETHEUS_HOST="${head_ip}:9090"
+# Get allocated hosts from LSF
+hosts=()
+for host in $(cat $LSB_DJOB_HOSTFILE | uniq); do
+    echo "Adding host: $host"
+    hosts+=($host)
+done
+echo "The host list is: ${hosts[@]}"
+
+head_node=${hosts[0]}
+head_node_ip=$(getent hosts $head_node | awk '{ print $1 }')
+cluster_address="$head_node_ip:$port"
+
+export head_node
+export head_node_ip
+export cluster_address
+export RAY_GRAFANA_HOST="${head_node_ip}:3000"
+export RAY_PROMETHEUS_HOST="${head_node_ip}:9090"
 
 ########################### HELPER
 
 do_cleanup() {
     cleanup_jobs=()
 
-    blaunch -z "$head_node" bash -lc "
+    blaunch -z $head_node bash -lc "
         apptainer exec --userns --nv \
             --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
             $env bash -lc '
@@ -76,7 +90,7 @@ do_cleanup() {
     if (( num_workers > 0 )); then
         i=0
         for host in "${workers[@]}"; do
-            blaunch -z "$host" bash -lc "
+            blaunch -z $host bash -lc "
                 apptainer exec --userns --nv \
                 --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
                 $env bash -lc '
@@ -112,23 +126,7 @@ do_cleanup() {
 
 ############################## START HEAD NODE
 
-# Get allocated hosts from LSF
-hosts=()
-for host in $(cat $LSB_DJOB_HOSTFILE | uniq); do
-    echo "Adding host: $host"
-    hosts+=($host)
-done
-echo "The host list is: ${hosts[@]}"
-
-head_node=${hosts[0]}
-head_node_ip=$(getent hosts $head_node | awk '{ print $1 }')
-cluster_address="$head_node_ip:$port"
-
-export head_node
-export head_node_ip
-export cluster_address
-
-blaunch -z "$head_node" "
+blaunch -z $head_node "
     apptainer exec --userns --nv \
         --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
         $env bash -lc 'exec /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
@@ -142,6 +140,12 @@ apptainer exec --userns --nv \
     --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
     $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
     -a $cluster_address -r 1
+rc=$?
+if [ $rc -ne 0 ]; then
+    echo "Head node failed to start correctly, exiting"
+    do_cleanup
+    exit $rc
+fi
 rc=$?
 if [ $rc -ne 0 ]; then
     echo "Head node failed to start correctly, exiting"
@@ -176,12 +180,25 @@ trap 'do_cleanup; exit 130' INT # SIGINT
 trap 'do_cleanup; exit 143' TERM # SIGTERM like bkill
 
 # CHECK CLUSTER STATUS
+############################## RUN WORKLOAD
+
+# trap 'do_cleanup' EXIT
+trap 'do_cleanup; exit 130' INT # SIGINT
+trap 'do_cleanup; exit 143' TERM # SIGTERM like bkill
+
+# CHECK CLUSTER STATUS
 blaunch -z $head_node " 
     apptainer exec --userns --nv \
         --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
         $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
         -a $cluster_address -r $nodes 
 "
+rc=$?
+if [ $rc -ne 0 ]; then
+    echo "Cluster failed to start correctly, exiting"
+    do_cleanup
+    exit $rc
+fi
 rc=$?
 if [ $rc -ne 0 ]; then
     echo "Cluster failed to start correctly, exiting"
@@ -195,6 +212,9 @@ apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bi
 
 ############################## CLEANUP
 
+echo "User tasks completed, starting cleanup"
+do_cleanup
+exit 0
 echo "User tasks completed, starting cleanup"
 do_cleanup
 exit 0

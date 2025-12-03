@@ -2,7 +2,7 @@ import pytest
 
 import torch
 
-from models.transformer import Attention, RopeAttention, Transformer
+from cell_observatory_platform.models.transformer import Attention, RopeAttention, Transformer
 
 
 # ----------------------- Attention -----------------------

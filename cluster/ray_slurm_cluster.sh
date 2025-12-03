@@ -42,11 +42,6 @@ dashboard_port=$(getfreeport)
 echo "Dashboard will use port: $dashboard_port"
 export dashboard_port
 
-export RAY_GRAFANA_HOST=${port}:3000
-export RAY_PROMETHEUS_HOST=${port}:9090
-
-############################## START HEAD NODE
-
 hosts=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
 readarray -t hosts <<< "$hosts"
 head_node=${hosts[0]}
@@ -57,7 +52,76 @@ export head_node
 export head_node_ip
 export cluster_address
 
-srun -n1 -N1 -w $head_node bash -lc "
+export RAY_GRAFANA_HOST=${head_node_ip}:3000
+export RAY_PROMETHEUS_HOST=${head_node_ip}:9090
+
+########################### HELPER
+
+do_cleanup() {
+    cleanup_jobs=()
+
+    srun -n1 -N1 -w $head_node bash -lc "
+        apptainer exec --userns --nv \
+            --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+            $env bash -lc '
+            pf=\"$tmpdir/cleanup_head.pid\"
+            GRACE_SECONDS=60
+            if [ -f \"\$pf\" ]; then
+                pid=\$(cat \"\$pf\")
+                kill -TERM \"\$pid\" 2>/dev/null || true
+                for ((i=0;i<GRACE_SECONDS;i++)); do
+                    kill -0 \"\$pid\" 2>/dev/null || break
+                    sleep 1
+                done
+            fi
+            # fallback: run cleanup ourselves
+            python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+            ray stop --force >/dev/null 2>&1 || true
+            '
+    " >/dev/null 2>&1 &
+    cleanup_jobs+=($!)
+
+    num_workers=${#workers[@]}
+    if (( num_workers > 0 )); then
+        i=0
+        for host in "${workers[@]}"; do
+            srun -n1 -N1 -w $host bash -lc "
+                apptainer exec --userns --nv \
+                --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
+                $env bash -lc '
+                    pf=\"$tmpdir/cleanup_${i}.pid\"
+                    GRACE_SECONDS=60
+                    if [ -f \"\$pf\" ]; then
+                        pid=\$(cat \"\$pf\")
+                        kill -TERM \"\$pid\" 2>/dev/null || true
+                        for ((j=0;j<GRACE_SECONDS;j++)); do
+                            kill -0 \"\$pid\" 2>/dev/null || break
+                            sleep 1
+                        done
+                    fi
+                    # fallback: run cleanup ourselves
+                    python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+                    ray stop --force >/dev/null 2>&1 || true
+                '
+            " >/dev/null 2>&1 &
+            cleanup_jobs+=($!)
+            i=$((i+1))
+        done
+    fi
+
+    for pid in "${cleanup_jobs[@]}"; do
+        wait "$pid" || true
+    done
+
+    sleep 90
+
+    echo "Shutting down the job"
+    scancel "$SLURM_JOB_ID"
+}
+
+############################## START HEAD NODE
+
+srun -n1 -N1 -w $head_node "
     apptainer exec --userns --nv \
         --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
         $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
@@ -80,7 +144,7 @@ if [ ${nodes} -gt 1 ]; then
     i=0
     for host in "${workers[@]}"; do
         echo "Starting worker on: $host"
-        srun -n1 -N1 -w $host bash -lc "
+        srun -n1 -N1 -w $host "
             apptainer exec --userns --nv \
                 --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
                 $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
@@ -91,69 +155,33 @@ if [ ${nodes} -gt 1 ]; then
     done
 fi
 
-############################# CHECK CLUSTER STATUS
-
-apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind \
-    --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh -a $cluster_address -r $nodes
-
 ############################## RUN WORKLOAD
 
-# FIXME: (IMPORTANT!) we need to add a trap here to ensure cleanup on exit/signals
+# trap 'do_cleanup' EXIT
+trap 'do_cleanup; exit 130' INT # SIGINT
+trap 'do_cleanup; exit 143' TERM # SIGTERM like bkill
+
+# CHECK CLUSTER STATUS
+srun -n1 -N1 -w $head_node " 
+    apptainer exec --userns --nv \
+        --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+        $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
+        -a $cluster_address -r $nodes 
+"
+rc=$?
+if [ $rc -ne 0 ]; then
+    echo "Cluster failed to start correctly, exiting"
+    do_cleanup
+    exit $rc
+fi
 
 echo "Running user tasks"
 echo $tasks
 apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks
 
+
 ############################## CLEANUP
 
-srun -N1 -n1 -w "$head_node" bash -lc "
-    apptainer exec --userns --nv \
-        --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
-        $env bash -lc '
-        pf=\"$tmpdir/cleanup_head.pid\"
-        GRACE_SECONDS=20
-        if [ -f \"\$pf\" ]; then
-            pid=\$(cat \"\$pf\")
-            kill -TERM \"\$pid\" 2>/dev/null || true
-            for ((i=0;i<GRACE_SECONDS;i++)); do
-                kill -0 \"\$pid\" 2>/dev/null || exit 0
-                sleep 1
-            done
-        kill -KILL \"\$pid\" 2>/dev/null || true
-        fi
-    '
-" >/dev/null 2>&1 &
-
-if (( ${#workers[@]} > 0 )); then
-    i=0
-    for host in "${workers[@]}"; do
-        srun -N1 -n1 -w "$host" bash -lc "
-            apptainer exec --userns --nv \
-                --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
-                $env bash -lc '
-                pf=\"$tmpdir/cleanup_${i}.pid\"
-                GRACE_SECONDS=20
-                if [ -f \"\$pf\" ]; then
-                    pid=\$(cat \"\$pf\")
-                    kill -TERM \"\$pid\" 2>/dev/null || true
-                    for ((j=0;j<GRACE_SECONDS;j++)); do
-                        kill -0 \"\$pid\" 2>/dev/null || exit 0
-                        sleep 1
-                    done
-                kill -KILL \"\$pid\" 2>/dev/null || true
-                fi
-        '
-    " >/dev/null 2>&1 &
-    i=$((i+1))
-  done
-fi
-
-kill -KILL "$head_bg_pid" 2>/dev/null || true
-for pid in "${worker_pids[@]}"; do
-    kill -KILL "$pid" 2>/dev/null || true
-done
-
-wait || true
-
-echo "Shutting down the job"
-scancel "$SLURM_JOB_ID"
+echo "User tasks completed, starting cleanup"
+do_cleanup
+exit 0

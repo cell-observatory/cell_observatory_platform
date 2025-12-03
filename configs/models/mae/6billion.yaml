@@ -1,4 +1,3 @@
-_target_: models.maskedautoencoder.MaskedAutoEncoder
 input_fmt: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
 patch_shape: ${datasets.patch_shape}
@@ -32,3 +31,4 @@ rope_theta: 100.0
 weight_init_type: mae
 mlp_wide_silu: false
 loss_fn: l2_masked
+with_auxiliary_loss: false

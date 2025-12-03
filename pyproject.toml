@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cell-observatory-platform"
+version = "0.1.0"
+description = "Training backend for the Cell Observatory models"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "Cell Observatory Team"}
+]
+dynamic = ["dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/cell-observatory/cell_observatory_platform"
+Repository = "https://github.com/cell-observatory/cell_observatory_platform"
+"Bug Tracker" = "https://github.com/cell-observatory/cell_observatory_platform/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.package-data]
+configs = ["**/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "pytests"]
+python_files = ["test_*.py"]
+addopts = "--strict-markers -v"
+markers = [
+    "cuda: marks tests as requiring CUDA",
+]
+
+[tool.black]
+line-length = 120
+target-version = ["py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 120

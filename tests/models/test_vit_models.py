@@ -6,9 +6,9 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
-from models.vit import ViT
-from tests.conftest import models_kargs
-from training.helpers import summarize_model, get_input_data
+from cell_observatory_platform.models.vit import ViT
+from cell_observatory_platform.tests.conftest import models_kargs
+from cell_observatory_platform.training.helpers import summarize_model, get_input_data
 
 
 def test_vit_custom(models_kargs):

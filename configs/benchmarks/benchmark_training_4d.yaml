@@ -1,0 +1,117 @@
+# @package _global_
+defaults:
+  - /paths/local                             # configs/paths/local.yaml
+  - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
+  - /clusters/local                          # configs/clusters/local.yaml
+  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/mae/small                        # configs/models/mae/small.yaml
+  - /hooks/hooks_with_weight_decay           # configs/hooks/hooks_with_weight_decay.yaml
+  - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
+  - /loggers/loggers                         # configs/loggers/loggers.yaml
+  - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
+  - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
+  - /optimizers/lamb                         # configs/optimizers/lamb.yaml
+  - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /profiling/profiling
+  - _self_
+
+# experiment name (used for logging)
+experiment_name: test_imports
+wandb_project: test_imports
+
+# task
+task: pretrain_mae
+
+# Model type
+network: mae
+
+# engine type
+engine: deepspeed
+
+# distributed framework
+distributed_framework: ray
+
+# run type
+run_type: single_run # single_run, multi_run, or tune
+
+# job type
+job_type: train # train or test
+
+# trainer type
+trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+
+# loop per worker script
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+# training quantization
+quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
+
+# dtype for training data
+dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
+storage_dtype: uint16 # data type for storage
+
+# dataset layout in the zarr files
+dataset_layout_order: TZYXC
+
+# overrides
+# --------------------------------------------------------------------------------
+
+# clusters
+clusters:
+  batch_size: 4 # total batch size
+  worker_nodes: 1 # number of worker nodes
+  gpus_per_worker: 1 # number of gpus per worker node
+  cpus_per_gpu: 12 # number of cpu cores per gpu
+  mem_per_cpu: 40000 # ram per cpu core
+  ray_queue_memory: 0.1
+
+#paths:
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+
+datasets:
+  # mainly used by other configs but determined here for ease of access
+  batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
+  patch_shape: [4, 16, 16, 16]
+  occupancy_threshold: 0.
+
+  split: 0.1
+  return_dataloader: true
+  distributed_sampler: true
+
+  prefetch_factor: 4
+  num_actors_min: 4
+  num_actors_max: 64
+  num_workers: ${clusters.cpus_per_worker}
+
+  max_hypercubes: 1000 # maximum number of hypercubes to return
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_16_128_128_128_2_hypercube_view.csv
+
+
+# hooks
+hooks:
+  hooks_list:
+  - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
+  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
+  - _target_: cell_observatory_platform.training.hooks.LRScheduler
+  - _target_: cell_observatory_platform.training.hooks.IterationTimer
+  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+    file_prefix: latest_model
+  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
+    step_period: 1
+    epoch_period: 1
+    logdir: ${loggers.logdir}
+  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true
