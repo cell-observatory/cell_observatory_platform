@@ -89,7 +89,6 @@ class MaskGenerator(object):
         axial_mask_scale: Tuple[float, float] = 0.5,
         temporal_mask_scale: Tuple[float, float] = 0.5,
         aspect_ratio_scale_hw: Tuple[float, float] = (0.2, 0.4),
-        batch_size: int = 1,
         input_format: str = "TZYXC",
         input_shape: Tuple[int, int, int, int, int] = (128, 128, 128, 2),
         patch_shape: Tuple[int, int, int] = (4, 16, 16, 16),
