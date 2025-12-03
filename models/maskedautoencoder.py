@@ -131,8 +131,6 @@ class MaskedAutoEncoder(nn.Module):
         input_fmt="TZYXC",
         input_shape: tuple = (16, 128, 128, 128, 2),
         patch_shape: tuple = (4, 16, 16, 16),
-        input_shape: tuple = (16, 128, 128, 128, 2),
-        patch_shape: tuple = (4, 16, 16, 16),
         embed_dim=768,
         decoder_embed_dim=256,
         depth=12,
@@ -186,11 +184,9 @@ class MaskedAutoEncoder(nn.Module):
         self.input_shape = input_shape
 
         axis_to_value = dict(zip(input_fmt, input_shape))
-        axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value["C"]
         self.num_frames = axis_to_value.get("T", None)
 
-        self.patch_shape = patch_shape
         self.patch_shape = patch_shape
 
         self.proj_drop_rate = proj_drop_rate
@@ -215,7 +211,6 @@ class MaskedAutoEncoder(nn.Module):
         self.masked_encoder = MaskedEncoder(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
-            patch_shape=self.patch_shape,
             patch_shape=self.patch_shape,
             channels=self.in_chans,
             embed_dim=self.embed_dim,
@@ -242,7 +237,6 @@ class MaskedAutoEncoder(nn.Module):
         self.masked_decoder = MaskedPredictor(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
-            patch_shape=self.patch_shape,
             patch_shape=self.patch_shape,
             channels=self.in_chans,
             input_embed_dim=self.embed_dim,
@@ -291,13 +285,11 @@ class MaskedAutoEncoder(nn.Module):
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
                 patch_shape=self.patch_shape,
-                patch_shape=self.patch_shape,
             )
             return num_patches
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
-        masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
         masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
         target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
 
@@ -305,15 +297,7 @@ class MaskedAutoEncoder(nn.Module):
         x = self.masked_decoder(
             x, original_patch_indices=original_patch_indices, target_masks=target_masks, patches_used=patches_used
         )
-        x = self.masked_decoder(
-            x, original_patch_indices=original_patch_indices, target_masks=target_masks, patches_used=patches_used
-        )
 
-        # compute loss over masked patches (re-index if blocked masking removed some patches)
-        if patches_used is not None:
-            target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
-        else:
-            target_idx_in_patches_used = target_masks
         # compute loss over masked patches (re-index if blocked masking removed some patches)
         if patches_used is not None:
             target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)

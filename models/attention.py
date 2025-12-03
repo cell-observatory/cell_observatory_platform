@@ -102,7 +102,6 @@ class RopeAttention(nn.Module):
         input_fmt: str = "TZXYC",
         input_shape: tuple = (16, 128, 128, 128, 2),
         patch_shape: tuple = (4, 16, 16, 16),
-        patch_shape: tuple = (4, 16, 16, 16),
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
     ) -> None:

@@ -24,8 +24,6 @@ class ParentDatabase:
         self,
         input_shape: tuple,
         dataset_layout_order: str,
-        input_shape: tuple,
-        dataset_layout_order: str,
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
         max_hypercubes: Optional[int] = None,
