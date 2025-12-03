@@ -256,8 +256,6 @@ class EpochBasedTrainer(BaseTrainer):
 
         print(f"Run Config:\n{OmegaConf.to_yaml(cfg)}")
 
-        print(f"Run Config:\n{OmegaConf.to_yaml(cfg)}")
-
         self.ray_context = get_context()
         self.val_begin, self.val_interval = cfg.evaluation.val_begin, cfg.evaluation.val_interval
         self.stop_training, self._max_epochs = False, cfg.schedulers.epochs
@@ -324,9 +322,7 @@ class EpochBasedTrainer(BaseTrainer):
             model=model, optimizer=opt, config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
         self.checkpoint_manager.model = self.model
-        self.checkpoint_manager.model = self.model
 
-        if cfg.checkpoint.checkpoint_manager.resume_checkpointdir:
         if cfg.checkpoint.checkpoint_manager.resume_checkpointdir:
             self.checkpoint_manager.load()
 

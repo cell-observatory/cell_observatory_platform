@@ -14,6 +14,7 @@ for _path in [_pkg_dir, _workspace_root]:
         sys.path.insert(0, _path)
 
 import warnings
+
 warnings.filterwarnings("ignore")
 
 import hydra
@@ -37,24 +38,18 @@ logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INF
 
 def initialize_session(cfg: DictConfig):
     nsys_env = cfg.hooks.get("nsys_env", None)
-    
+
     env_vars = {}
     env_vars.update(os.environ)
-    
-    if nsys_env is not None:
-        env_vars.update(
-            *OmegaConf.to_container(nsys_env, resolve=True, enum_to_str=True)
-        )
-    
-    workspace_root = str(Path(__file__).resolve().parent.parent)
-    
-    runtime_env = RuntimeEnv(
-        working_dir=workspace_root,
-        env_vars=env_vars,
-        py_modules=[workspace_root]
-    )
 
-    if 'head_node_ip' in os.environ and 'port' in os.environ:
+    if nsys_env is not None:
+        env_vars.update(*OmegaConf.to_container(nsys_env, resolve=True, enum_to_str=True))
+
+    workspace_root = str(Path(__file__).resolve().parent.parent)
+
+    runtime_env = RuntimeEnv(working_dir=workspace_root, env_vars=env_vars, py_modules=[workspace_root])
+
+    if "head_node_ip" in os.environ and "port" in os.environ:
         address = os.environ["head_node_ip"]
         port = os.environ["port"]
 
@@ -85,9 +80,9 @@ def initialize_session(cfg: DictConfig):
             _temp_dir=tmpdir,
         )
 
-    logger.info('\nResources available to this Ray cluster:')
+    logger.info("\nResources available to this Ray cluster:")
     for resource, count in cluster_resources().items():
-        logger.info(f'{resource}: {count}')
+        logger.info(f"{resource}: {count}")
 
     return cluster_resources().items()
 
@@ -97,7 +92,7 @@ def run_session(cfg: DictConfig):
         num_workers=cfg.clusters.scaling_config.num_workers,
         resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
         trainer_resources=cfg.clusters.scaling_config.trainer_resources,
-        use_gpu=cfg.clusters.scaling_config.use_gpu
+        use_gpu=cfg.clusters.scaling_config.use_gpu,
     )
 
     checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
@@ -108,7 +103,7 @@ def run_session(cfg: DictConfig):
         failure_config=FailureConfig(max_failures=0),
         storage_path=cfg.clusters.run_config.storage_path,
     )
-    
+
     torch_config = TorchConfig(timeout_s=cfg.clusters.torch_config.timeout_s)
 
     trainer = TorchTrainer(
@@ -117,7 +112,7 @@ def run_session(cfg: DictConfig):
         run_config=run_config,
         scaling_config=scaling_config,
         torch_config=torch_config,
-        datasets=None
+        datasets=None,
     )
 
     try:
@@ -149,7 +144,7 @@ def run_tune(cfg: DictConfig):
         num_workers=cfg.clusters.scaling_config.num_workers,
         resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
         trainer_resources=cfg.clusters.scaling_config.trainer_resources,
-        use_gpu=cfg.clusters.scaling_config.use_gpu
+        use_gpu=cfg.clusters.scaling_config.use_gpu,
     )
     checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
     run_config = RunConfig(
@@ -165,10 +160,10 @@ def run_tune(cfg: DictConfig):
         run_config=run_config,
         scaling_config=scaling_config,
         torch_config=torch_config,
-        datasets=None
+        datasets=None,
     )
 
-    # NOTE: we need to pass the run config to the Tuner instead of 
+    # NOTE: we need to pass the run config to the Tuner instead of
     #       the trainer directly to allow for Tune to inject
     #       the hyperparameter space and sampling logic into
     #       our train config
@@ -191,7 +186,7 @@ def main(cfg: DictConfig):
 
     timeit = time.time()
 
-    # ray cluster already set up in: ray_local_script.sh OR 
+    # ray cluster already set up in: ray_local_script.sh OR
     #                                ray_lsf_cluster.sh  OR
     #                                ray_slurm_cluster.sh
     # depending on the cluster Hydra configuration
@@ -208,6 +203,7 @@ def main(cfg: DictConfig):
 
     logger.info(f"Total time elapsed: {time.time() - timeit:.2f} sec.")
     sys.exit(0)
+
 
 if __name__ == "__main__":
     main()

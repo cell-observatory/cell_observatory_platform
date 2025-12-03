@@ -1,26 +1,21 @@
-import re
-import math
 import json
 import logging
+import math
+import re
 from typing import Dict, List
 
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import LinearLR
-
-from timm.scheduler import create_scheduler_v2
-
 from omegaconf import DictConfig
+from timm.scheduler import create_scheduler_v2
+from torch.optim.lr_scheduler import LinearLR
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
 
 
-def get_param_groups(
-    config,
-    model: nn.Module
-) -> List[Dict]:
+def get_param_groups(config, model: nn.Module) -> List[Dict]:
     if not getattr(config.optimizers, "param_group_split_mode", False):
         return model.parameters()
 
@@ -41,8 +36,7 @@ def get_param_groups(
         dec_scales = [dec_layer_decay ** (dec_L - i) for i in range(dec_L + 1)]
 
         def _layer_id_from_name(suffix: str, L: int) -> int:
-            if suffix.startswith(("patch_embedding", "pos_embedding", "cls_token",
-                                  "token_param", "patch_projection")):
+            if suffix.startswith(("patch_embedding", "pos_embedding", "cls_token", "token_param", "patch_projection")):
                 return 0
             m = re.search(r"transformer_blocks\.(\d+)", suffix)
             if m:
@@ -69,9 +63,9 @@ def get_param_groups(
                 continue
 
             if n.startswith("masked_encoder."):
-                side, suffix, L, scales = "enc", n[len("masked_encoder."):], enc_L, enc_scales
+                side, suffix, L, scales = "enc", n[len("masked_encoder.") :], enc_L, enc_scales
             elif n.startswith("masked_decoder."):
-                side, suffix, L, scales = "dec", n[len("masked_decoder."):], dec_L, dec_scales
+                side, suffix, L, scales = "dec", n[len("masked_decoder.") :], dec_L, dec_scales
             else:
                 raise ValueError(f"Parameter {n} not under masked_encoder/decoder")
 
@@ -97,22 +91,29 @@ def get_param_groups(
     elif config.optimizers.param_group_split_mode == "vjepa":
         param_groups = [
             {
-                'params': (p for n, p in model.input_encoder.named_parameters()
-                        if ('bias' not in n) and (len(p.shape) != 1))
-            }, {
-                'params': (p for n, p in model.target_predictor.named_parameters()
-                        if ('bias' not in n) and (len(p.shape) != 1))
-            }, {
-                'params': (p for n, p in model.input_encoder.named_parameters()
-                        if ('bias' in n) or (len(p.shape) == 1)),
-                'WD_exclude': True,
-                'weight_decay': 0
-            }, {
-                'params': (p for n, p in model.target_predictor.named_parameters()
-                        if ('bias' in n) or (len(p.shape) == 1)),
-                'WD_exclude': True,
-                'weight_decay': 0
-            }
+                "params": (
+                    p for n, p in model.input_encoder.named_parameters() if ("bias" not in n) and (len(p.shape) != 1)
+                )
+            },
+            {
+                "params": (
+                    p for n, p in model.target_predictor.named_parameters() if ("bias" not in n) and (len(p.shape) != 1)
+                )
+            },
+            {
+                "params": (
+                    p for n, p in model.input_encoder.named_parameters() if ("bias" in n) or (len(p.shape) == 1)
+                ),
+                "WD_exclude": True,
+                "weight_decay": 0,
+            },
+            {
+                "params": (
+                    p for n, p in model.target_predictor.named_parameters() if ("bias" in n) or (len(p.shape) == 1)
+                ),
+                "WD_exclude": True,
+                "weight_decay": 0,
+            },
         ]
         return param_groups
 
@@ -121,19 +122,27 @@ def get_param_groups(
         zero_init_bias_wd = config.optimizers.zero_init_bias_wd
 
         param_groups = [
-            {"params": (p for n, p in model.input_encoder.named_parameters() \
-                        if ("bias" not in n) and (len(p.shape) != 1))},
-            {"params": (p for n, p in model.target_predictor.named_parameters() \
-                        if ("bias" not in n) and (len(p.shape) != 1))},
             {
-                "params": (p for n, p in model.input_encoder.named_parameters() \
-                            if ("bias" in n) or (len(p.shape) == 1)),
+                "params": (
+                    p for n, p in model.input_encoder.named_parameters() if ("bias" not in n) and (len(p.shape) != 1)
+                )
+            },
+            {
+                "params": (
+                    p for n, p in model.target_predictor.named_parameters() if ("bias" not in n) and (len(p.shape) != 1)
+                )
+            },
+            {
+                "params": (
+                    p for n, p in model.input_encoder.named_parameters() if ("bias" in n) or (len(p.shape) == 1)
+                ),
                 "WD_exclude": zero_init_bias_wd,
                 "weight_decay": 0,
             },
             {
-                "params": (p for n, p in model.target_predictor.named_parameters() \
-                           if ("bias" in n) or (len(p.shape) == 1)),
+                "params": (
+                    p for n, p in model.target_predictor.named_parameters() if ("bias" in n) or (len(p.shape) == 1)
+                ),
                 "WD_exclude": zero_init_bias_wd,
                 "weight_decay": 0,
             },
@@ -141,16 +150,13 @@ def get_param_groups(
         return param_groups
 
     else:
-        raise NotImplementedError(f"Unknown param_group_split_mode: \
-                                  {config.optimizers.param_group_split_mode}")
+        raise NotImplementedError(
+            f"Unknown param_group_split_mode: \
+                                  {config.optimizers.param_group_split_mode}"
+        )
 
 
-def get_schedulers(
-    opt: torch.optim.Optimizer,
-    steps_per_epoch: int,
-    config: DictConfig,
-    decay: str = 'cosine'
-):
+def get_schedulers(opt: torch.optim.Optimizer, steps_per_epoch: int, config: DictConfig, decay: str = "cosine"):
     if config.schedulers.type == "fixedlr":
         scheduler = LinearLR(
             opt,
@@ -182,7 +188,7 @@ def get_schedulers(
         cos_min_lr = config.schedulers.cos_min_ratio * config.optimizers.lr
         warmup_min_lr = config.schedulers.warmup_min_ratio * config.optimizers.lr
 
-        logger.info('-'*80)
+        logger.info("-" * 80)
         logger.info(
             f"Epochs: {config.schedulers.epochs} = "
             f"[{config.schedulers.warmup} warmup + {decay_epochs} decay + {config.schedulers.cooldown} cooldown]\n"
@@ -190,7 +196,7 @@ def get_schedulers(
             f"[{warmup_steps} warmup + {decay_steps} decay + {cooldown_steps} cooldown]\n"
             f"LR: {config.optimizers.lr} = [{warmup_min_lr=},  {cos_min_lr=}]"
         )
-        logger.info('-'*80)
+        logger.info("-" * 80)
 
         scheduler, num_epochs = create_scheduler_v2(
             optimizer=opt,
@@ -212,7 +218,7 @@ def get_schedulers(
             optimizer=opt,
             ref_wd=config.schedulers.wd_scheduler.ref_wd,
             T_max=config.schedulers.epochs * steps_per_epoch,
-            final_wd=config.schedulers.wd_scheduler.final_wd
+            final_wd=config.schedulers.wd_scheduler.final_wd,
         )
 
         _hook_is_registered = False
@@ -221,8 +227,9 @@ def get_schedulers(
                 _hook_is_registered = True
                 break
         if not _hook_is_registered:
-            raise ValueError("WeightDecayScheduleHook not found in "
-                             "config.hooks.hooks_list but wd_scheduler.enabled is True")
+            raise ValueError(
+                "WeightDecayScheduleHook not found in " "config.hooks.hooks_list but wd_scheduler.enabled is True"
+            )
 
     else:
         wd_scheduler = None
@@ -232,26 +239,19 @@ def get_schedulers(
 
 # from: https://github.com/facebookresearch/vjepa2/blob/main/src/utils/schedulers.py
 class WarmupStableDecaySchedule(object):
-    def __init__(self, 
-                 optimizer, 
-                 warmup_steps, 
-                 anneal_steps, 
-                 T_max, 
-                 start_lr, 
-                 ref_lr, 
-                 final_lr=0.0,
-                 update_type='step'
-):
+    def __init__(
+        self, optimizer, warmup_steps, anneal_steps, T_max, start_lr, ref_lr, final_lr=0.0, update_type="step"
+    ):
         self._step = 0.0
         self.optimizer = optimizer
-        
+
         self.start_lr = start_lr
         self.ref_lr = ref_lr
         self.final_lr = final_lr
-        
+
         self.anneal_steps = anneal_steps
         self.warmup_steps = warmup_steps
-        
+
         self.T_max = T_max - warmup_steps - anneal_steps
         self.update_type = update_type
 
@@ -260,10 +260,10 @@ class WarmupStableDecaySchedule(object):
         if self._step < self.warmup_steps:
             progress = float(self._step) / float(max(1, self.warmup_steps))
             new_lr = self.start_lr + progress * (self.ref_lr - self.start_lr)
-        
+
         elif self._step < self.T_max + self.warmup_steps:
             new_lr = self.ref_lr
-        
+
         else:
             _step = self._step - (self.T_max + self.warmup_steps)
             progress = float(_step) / float(max(1, self.anneal_steps))
@@ -275,16 +275,11 @@ class WarmupStableDecaySchedule(object):
                 group["lr"] *= group["lr_scale"]
 
         return new_lr
-    
+
 
 # from: https://github.com/facebookresearch/vjepa2/blob/main/src/utils/schedulers.py
 class CosineWeightDecaySchedule(object):
-    def __init__(self, 
-                 optimizer, 
-                 ref_wd, 
-                 T_max, 
-                 final_wd=0.0
-):
+    def __init__(self, optimizer, ref_wd, T_max, final_wd=0.0):
         self._step = 0.0
         self.optimizer = optimizer
 
@@ -300,12 +295,12 @@ class CosineWeightDecaySchedule(object):
 
         if self.final_wd <= self.ref_wd:
             new_wd = max(self.final_wd, new_wd)
-        
+
         else:
             new_wd = min(self.final_wd, new_wd)
 
         for group in self.optimizer.param_groups:
             if ("WD_exclude" not in group) or not group["WD_exclude"]:
                 group["weight_decay"] = new_wd
-        
+
         return new_wd

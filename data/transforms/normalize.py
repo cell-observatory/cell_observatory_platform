@@ -1,18 +1,13 @@
-import sys
 import logging
+import sys
 
 import torch
-
 from nvidia.dali import fn
 
 from cell_observatory_platform.data.data_types import DALI_DTYPES
 from cell_observatory_platform.data.structures.image_list import ImageList
 
-logging.basicConfig(
-	stream=sys.stdout,
-	level=logging.INFO,
-	format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -40,11 +35,7 @@ class Normalize:
 
 def NormalizeDaliWrapper(data, dtype):
     vol_f32 = fn.cast(data, dtype=DALI_DTYPES.float32.value)
-    vol_norm = fn.normalize(
-        vol_f32,
-        axes=[1, 2, 3, 4],
-        batch=True
-    )
+    vol_norm = fn.normalize(vol_f32, axes=[1, 2, 3, 4], batch=True)
     vol_out = fn.cast(vol_norm, dtype=dtype)
     return vol_out
 
@@ -55,9 +46,7 @@ class NormalizeRayWrapper:
         self.eps = eps
 
     def _normalize_tensor(self, data_tensor: torch.Tensor) -> torch.Tensor:
-        image_list = ImageList(
-            data_tensor, layout=self.input_layout, image_sizes=[data_tensor.shape]
-        )
+        image_list = ImageList(data_tensor, layout=self.input_layout, image_sizes=[data_tensor.shape])
         mean, std = image_list.get_image_stats()
         std = std.clamp_min(self.eps)
         image = (image_list.tensor - mean) / std
@@ -75,6 +64,4 @@ class NormalizeRayWrapper:
             out = dict(data)
             out["data_tensor"] = norm_tensor
             return out
-        raise TypeError(
-            f"NormalizeRayWrapper expects torch.Tensor or dict, got {type(data)}"
-        )
+        raise TypeError(f"NormalizeRayWrapper expects torch.Tensor or dict, got {type(data)}")

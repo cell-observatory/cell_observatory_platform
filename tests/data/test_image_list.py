@@ -1,12 +1,12 @@
 import pytest
-
 import torch
 
-from cell_observatory_platform.data.structures.image_list import ImageList, cat_image_lists
 from cell_observatory_platform.data.data_shapes import MULTICHANNEL_HYPERCUBE
-
+from cell_observatory_platform.data.structures.image_list import ImageList, cat_image_lists
 
 torch.manual_seed(0)
+
+
 def _rand(shape):
     return torch.randn(*shape)
 
@@ -21,6 +21,7 @@ def _assert_stats_correct(tensor, mean, std, dims):
 # ---------------------------------------------------------------------------
 # 3-D CHANNEL-LAST  (ZYXC)
 # ---------------------------------------------------------------------------
+
 
 def test_image_list_3d_channel_last():
     layout = MULTICHANNEL_HYPERCUBE.ZYXC
@@ -52,9 +53,11 @@ def test_image_list_3d_channel_last():
     # __repr__
     assert "N=2" in repr(ilist)
 
+
 # ---------------------------------------------------------------------------
 # 4-D CHANNEL-LAST (TZYXC)
 # ---------------------------------------------------------------------------
+
 
 def test_image_list_4d_channel_last():
     layout = MULTICHANNEL_HYPERCUBE.TZYXC
@@ -82,6 +85,7 @@ def test_image_list_4d_channel_last():
 # ---------------------------------------------------------------------------
 # cat_image_lists
 # ---------------------------------------------------------------------------
+
 
 def test_cat_image_lists():
     layout = MULTICHANNEL_HYPERCUBE.ZYXC

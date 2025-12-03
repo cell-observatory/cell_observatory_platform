@@ -692,9 +692,6 @@ class LoaderActor:
         self.input_format = input_format.upper()
         self.pad_mode = pad_mode
 
-        self.input_format = input_format.upper()
-        self.pad_mode = pad_mode
-
         self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
         self.driver_process_numa_node = numa_node
         if pin_numa_node:
@@ -759,15 +756,8 @@ class LoaderActor:
         z = slice(meta["z_start"], meta["z_start"] + meta["z_size"])
         y = slice(meta["y_start"], meta["y_start"] + meta["y_size"])
         x = slice(meta["x_start"], meta["x_start"] + meta["x_size"])
-        z = slice(meta["z_start"], meta["z_start"] + meta["z_size"])
-        y = slice(meta["y_start"], meta["y_start"] + meta["y_size"])
-        x = slice(meta["x_start"], meta["x_start"] + meta["x_size"])
 
         if self.channels_subset is not None:
-            if self.input_format == "ZYXC" or self.input_format == "TZYXC":
-                view = data_tensor[t, z, y, x, self.channels_subset]
-            else:
-                raise NotImplementedError(f"Channel subsetting not implemented for input format {self.input_format}")
             if self.input_format == "ZYXC" or self.input_format == "TZYXC":
                 view = data_tensor[t, z, y, x, self.channels_subset]
             else:
@@ -778,17 +768,8 @@ class LoaderActor:
                 view = data_tensor[t, z, y, x, c]
             else:
                 raise NotImplementedError(f"Input format {self.input_format} not implemented")
-            if self.input_format == "ZYXC" or self.input_format == "TZYXC":
-                c = slice(0, meta["channel_size"])
-                view = data_tensor[t, z, y, x, c]
-            else:
-                raise NotImplementedError(f"Input format {self.input_format} not implemented")
 
         if self.dim == 3:
-            if self.input_format == "ZYXC":
-                view = view[meta["time_start"], ...]
-            else:
-                raise NotImplementedError(f"Input format {self.input_format} not implemented for 3D data")
             if self.input_format == "ZYXC":
                 view = view[meta["time_start"], ...]
             else:
@@ -826,9 +807,6 @@ class LoaderActor:
                     "y_start": batch["y_start"][i],
                     # "y_start": 0,
                     "x_start": batch["x_start"][i],
-                    "z_size": batch["z_size"][i],
-                    "y_size": batch["y_size"][i],
-                    "x_size": batch["x_size"][i],
                     "z_size": batch["z_size"][i],
                     "y_size": batch["y_size"][i],
                     "x_size": batch["x_size"][i],
@@ -985,7 +963,6 @@ def get_dataset_ray(
 ):
     if cfg.datasets.channels_subset is not None:
         # NOTE: this always works because dataset_layout_order is 1-1 matched
-        # NOTE: this always works because dataset_layout_order is 1-1 matched
         num_channels = cfg.datasets.input_shape[cfg.dataset_layout_order.index("C")]
         assert len(list(cfg.datasets.channels_subset)) == num_channels, (
             f"channels_subset length {len(cfg.datasets.channels_subset)} "
@@ -1060,8 +1037,6 @@ def get_dataset_ray(
             "global_rank": process_rank(),
             "node_id": node_id(),
             "numa_node": torch_gpu_to_numa(local_rank())["numa_node"],
-            "dim": get_data_dim(cfg.dataset_layout_order),
-            "input_format": cfg.dataset_layout_order,
             "dim": get_data_dim(cfg.dataset_layout_order),
             "input_format": cfg.dataset_layout_order,
         },

@@ -53,7 +53,6 @@ class ParentDatabase:
     ):
         """
         A class for accessing database and retrieving hypercubes.
-        A class for accessing database and retrieving hypercubes.
         It'll check database for existing views or create them if they don't exist based on the given `num_timepoints`.
         The results are stored in a pandas dataframe `self.hypercubes_dataframe`
         unless `fetch_hypercubes_dataframe` is set to False.
@@ -91,8 +90,6 @@ class ParentDatabase:
             )
         else:
             self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
-
-        self.input_shape = input_shape
 
         self.input_shape = input_shape
 

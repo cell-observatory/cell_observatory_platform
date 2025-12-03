@@ -354,15 +354,7 @@ def apply_hypercubes_dataframe_selections(
     tiles = _to_list_or_none(tile_list)
     hpfs = _to_list_or_none(hpf_list)
     tps = _to_list_or_none(timepoint_list)
-    tps = _to_list_or_none(timepoint_list)
 
-    conds = []
-    if rois is not None and "prepared_id" in df.columns:
-        conds.append(pl.col("prepared_id").is_in(rois))
-    if tiles is not None and "tile_name" in df.columns:
-        conds.append(pl.col("tile_name").is_in(tiles))
-    if tps is not None and "time_start" in df.columns:
-        conds.append(pl.col("time_start").is_in(tps))
     conds = []
     if rois is not None and "prepared_id" in df.columns:
         conds.append(pl.col("prepared_id").is_in(rois))
@@ -376,14 +368,7 @@ def apply_hypercubes_dataframe_selections(
         for c in conds[1:]:
             cond = cond & c
         df = df.filter(cond)
-    if conds:
-        cond = conds[0]
-        for c in conds[1:]:
-            cond = cond & c
-        df = df.filter(cond)
 
-    if hpfs is not None and "hpf" in df.columns:
-        df = df.filter(pl.col("hpf").is_in(hpfs))
     if hpfs is not None and "hpf" in df.columns:
         df = df.filter(pl.col("hpf").is_in(hpfs))
 

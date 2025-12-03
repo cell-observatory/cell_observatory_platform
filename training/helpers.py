@@ -79,12 +79,6 @@ def get_steps_per_epoch(train_dataloader, val_dataloader, config: DictConfig):
     if (val_steps_per_epoch is None or val_steps_per_epoch <= 0) and val_dataloader is not None:
         raise ValueError("Validation Dataloader is provided but validation steps per epoch is None or <= 0.")
 
-    if steps_per_epoch is None or steps_per_epoch <= 0:
-        raise ValueError(f"Steps per epoch is None or <= 0. Cannot proceed with training.")
-
-    if (val_steps_per_epoch is None or val_steps_per_epoch <= 0) and val_dataloader is not None:
-        raise ValueError("Validation Dataloader is provided but validation steps per epoch is None or <= 0.")
-
     return steps_per_epoch, val_steps_per_epoch
 
 
@@ -326,7 +320,6 @@ def get_masked_input_data(model, inputs, device: Optional[torch.device] = "cuda"
         "context_masks": [context_idx],
         "target_masks": [target_idx],
         "original_patch_indices": [torch.arange(n_patches, dtype=torch.long, device=device)],
-        "patches_used": [torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0).expand(inputs[0], -1)],
         "patches_used": [torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0).expand(inputs[0], -1)],
     }
 

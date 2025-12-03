@@ -111,14 +111,8 @@ class MaskGenerator(object):
         )
 
         self.axial_mask_scale = axial_mask_scale
-        self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
-            input_format=input_format, patch_shape=patch_shape
-        )
-
-        self.axial_mask_scale = axial_mask_scale
         self.lateral_mask_scale = lateral_mask_scale
         self.temporal_mask_scale = temporal_mask_scale
-        self.aspect_ratio_scale_hw = tuple(aspect_ratio_scale_hw)
         self.aspect_ratio_scale_hw = tuple(aspect_ratio_scale_hw)
 
         self.random_masking_ratio = random_masking_ratio
@@ -175,7 +169,6 @@ class MaskGenerator(object):
         else:
             raise ValueError(
                 f"Invalid input shape {input_shape} and patch shape "
-                f"{(temporal_patch_size, axial_patch_size, lateral_patch_size, lateral_patch_size)} for layout {layout}. "
                 f"{(temporal_patch_size, axial_patch_size, lateral_patch_size, lateral_patch_size)} for layout {layout}. "
                 "Expected at least one of time or depth to be greater than 1."
             )
@@ -466,11 +459,6 @@ class MaskGenerator(object):
         else:
             raise ValueError(f"Unknown mask mode: {self.mask_mode}")
 
-        # perm: [B, patches_used]
-        perm = torch.cat([context_masks, target_masks], dim=1)
-        patches_used, _ = torch.sort(perm, dim=1)
-
-        return masks, context_masks, target_masks, original_patch_indices, self.channels_to_mask, patches_used
         # perm: [B, patches_used]
         perm = torch.cat([context_masks, target_masks], dim=1)
         patches_used, _ = torch.sort(perm, dim=1)

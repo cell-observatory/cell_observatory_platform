@@ -23,16 +23,16 @@ def build_dependency_graph_and_instantiate(cfg: DictConfig) -> dict:
     This function assumes that each instantiable object is defined by a dict
     that contains a '_target_' key. The function recurses into sub-structures,
     instantiates the children first, and then instantiates the parent.
-    
+
     Args:
         cfg (DictConfig): The nested Hydra configuration.
-        
+
     Returns:
         A nested dictionary matching the input structure where each _target_
         dictionary is replaced by the instantiated object.
     """
     cfg_copy = copy.deepcopy(OmegaConf.to_container(cfg, resolve=True))
-    
+
     def recursive_instantiate(node):
         # handle list or tuple nodes
         if isinstance(node, list):
@@ -47,7 +47,7 @@ def build_dependency_graph_and_instantiate(cfg: DictConfig) -> dict:
                 instantiated_item, _ = recursive_instantiate(item)
                 new_tuple.append(instantiated_item)
             return tuple(new_tuple), {}
-        
+
         # else if not a dict, just return node
         if not isinstance(node, dict):
             return node, {}
@@ -65,7 +65,7 @@ def build_dependency_graph_and_instantiate(cfg: DictConfig) -> dict:
         # if node has _target_, instantiate it
         if "_target_" in node:
             target = node["_target_"]
-            if not target.startswith('cell_observatory_platform.'):
+            if not target.startswith("cell_observatory_platform."):
                 node["_target_"] = f"cell_observatory_platform.{target}"
                 target = node["_target_"]
             print(f"Instantiating: {target} with params {instantiated_children}")

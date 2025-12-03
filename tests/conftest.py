@@ -2,8 +2,8 @@ import logging
 import os
 import sys
 from pathlib import Path
-import pytest
 
+import pytest
 from dotenv import load_dotenv
 from hydra import compose, initialize
 from hydra.utils import get_method, instantiate
@@ -15,17 +15,13 @@ except ValueError:
     pass
 
 from ray import cluster_resources, init
+from ray.runtime_env import RuntimeEnv
 from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
-from ray.runtime_env import RuntimeEnv
 
 from cell_observatory_platform.utils.container import get_container_info
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # Update environment variables
@@ -44,33 +40,33 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", verbose=True)
 
 
-# keeping this until we migrate models 
+# keeping this until we migrate models
 # tests to config setup
 @pytest.fixture(scope="session")
 def models_kargs():
     repo = Path(__file__).resolve().parent.parent
     models_kargs = dict(
         repo=repo,
-        outdir=repo/'pretrained_models',
+        outdir=repo / "pretrained_models",
         modes=15,
         batch_size=2,
         hidden_size=768,
         patches=32,
         heads=16,
         repeats=4,
-        opt='lamb',
+        opt="lamb",
         lr=5e-4,
         wd=5e-5,
         ld=None,
-        ema=(.998, 1.),
+        ema=(0.998, 1.0),
         epochs=5,
         warmup=1,
         cooldown=1,
-        clip_grad=.5,
+        clip_grad=0.5,
         fixedlr=False,
         dropout=0.1,
         fixed_dropout_depth=False,
-        amp='fp16',
+        amp="fp16",
         finetune=None,
         profile=False,
         workers=1,
@@ -92,29 +88,29 @@ def config() -> DictConfig:
 
     assert cfg.paths.outdir is not None, f"Missing output directory: {cfg.paths.outdir}"
 
-    assert Path(cfg.paths.data_path) in Path(cfg.paths.outdir).parents, \
-        f"Output directory [{cfg.paths.outdir}] not in data path [{cfg.paths.data_path}]"
+    assert (
+        Path(cfg.paths.data_path) in Path(cfg.paths.outdir).parents
+    ), f"Output directory [{cfg.paths.outdir}] not in data path [{cfg.paths.data_path}]"
 
     assert cfg.clusters.batch_size % cfg.clusters.worker_nodes == 0, (
-        f"batch_size {cfg.clusters.batch_size} must divide evenly among "
-        f"{cfg.clusters.worker_nodes} worker nodes"
+        f"batch_size {cfg.clusters.batch_size} must divide evenly among " f"{cfg.clusters.worker_nodes} worker nodes"
     )
 
-    if container_info['container_type'] == 'native':
-        for k in ['runner_script']:
+    if container_info["container_type"] == "native":
+        for k in ["runner_script"]:
             cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
 
     else:  # running in a docker/apptainer
-        [print(f"\t{k}: {v}") for k, v in container_info['container_details'].items()]
+        [print(f"\t{k}: {v}") for k, v in container_info["container_details"].items()]
 
-        for k in ['outdir', 'ray_script', 'runner_script', 'dotenv_path']:
+        for k in ["outdir", "ray_script", "runner_script", "dotenv_path"]:
             cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
 
     # TODO need to look into why the abc cluster only works with the cursor protocol
-    if Path('/clusterfs').exists():
-        cfg.datasets.databases.protocol = 'cursor'
+    if Path("/clusterfs").exists():
+        cfg.datasets.databases.protocol = "cursor"
     else:
-        cfg.datasets.databases.protocol = 'binary'
+        cfg.datasets.databases.protocol = "binary"
 
     # load extra env variables
     # assert cfg.paths.dotenv_path is not None and Path(cfg.paths.dotenv_path).exists(), \
@@ -128,26 +124,25 @@ def config() -> DictConfig:
 
 
 def distributed_test(cfg: DictConfig, test: str):
-    # test needs to be a string that can 
+    # test needs to be a string that can
     # be resolved to a callable to prevent
     # serialization issues
     test = get_method(test)
-    
+
     project_root = str(Path(__file__).resolve().parent.parent)
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-    
+
     runtime_env = RuntimeEnv(
-        env_vars={k: v for k, v in os.environ.items()},
-        working_dir=project_root,
-        py_modules=[project_root]
+        env_vars={k: v for k, v in os.environ.items()}, working_dir=project_root, py_modules=[project_root]
     )
-    
-    init(log_to_driver=True,
-         runtime_env=runtime_env,
-         num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
-         num_gpus=cfg.clusters.total_gpus,
-         ignore_reinit_error=True
+
+    init(
+        log_to_driver=True,
+        runtime_env=runtime_env,
+        num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
+        num_gpus=cfg.clusters.total_gpus,
+        ignore_reinit_error=True,
     )
 
     for resource, count in cluster_resources().items():
@@ -157,7 +152,7 @@ def distributed_test(cfg: DictConfig, test: str):
         num_workers=cfg.clusters.scaling_config.num_workers,
         resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
         trainer_resources=cfg.clusters.scaling_config.trainer_resources,
-        use_gpu=cfg.clusters.scaling_config.use_gpu
+        use_gpu=cfg.clusters.scaling_config.use_gpu,
     )
 
     checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
@@ -167,7 +162,7 @@ def distributed_test(cfg: DictConfig, test: str):
         failure_config=FailureConfig(max_failures=0),
         storage_path=cfg.clusters.run_config.storage_path,
     )
-    
+
     torch_config = TorchConfig(timeout_s=cfg.clusters.torch_config.timeout_s)
 
     trainer = TorchTrainer(
@@ -176,7 +171,7 @@ def distributed_test(cfg: DictConfig, test: str):
         run_config=run_config,
         scaling_config=scaling_config,
         torch_config=torch_config,
-        datasets=None
+        datasets=None,
     )
 
     result = trainer.fit()
