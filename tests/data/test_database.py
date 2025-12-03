@@ -438,6 +438,7 @@ def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slice
     ), "Should only have a single ratio for each timepoint"
 
 
+@pytest.mark.skip("test_csv_dataframe is only used for debugging.")
 @pytest.mark.parametrize("database_type", database_types)
 @pytest.mark.parametrize(
     "z_slices,y_slices,x_slices",
@@ -483,7 +484,7 @@ def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
     ), "Should only have a single ratio for each timepoint"
 
 
-@pytest.mark.skip("Skipping test_aggregate_hypercubes_metadata.")
+@pytest.mark.skip("test_aggregate_hypercubes_metadata is only used for debugging.")
 @pytest.mark.parametrize("database_type", database_types)
 def test_aggregate_hypercubes_metadata(config, database_type):
     config.experiment_name = "test_aggregate_hypercubes_metadata"
@@ -624,7 +625,7 @@ def test_aggregate_hypercubes_metadata(config, database_type):
             print(f"{p:3d}th percentile: {v:.4f}")
 
 
-@pytest.mark.skip("Skipping test_tiles_dataframe.")
+@pytest.mark.skip("test_tiles_dataframe is only used for debugging.")
 @pytest.mark.parametrize("database_type", database_types)
 def test_tiles_dataframe(config, database_type):
     config.experiment_name = "test_tiles_dataframe"
