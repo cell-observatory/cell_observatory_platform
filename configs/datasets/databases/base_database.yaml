@@ -22,6 +22,7 @@ has_annotations: ${datasets.has_annotations} # whether the data has annotations
 
 occupancy_threshold: ${datasets.occupancy_threshold} # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
 occupancy_threshold_filter_type: 'min_ch0'
+occupancy_threshold_filter_type: 'min_ch0'
 
 verbose: true # to print debug messages
 hypercubes_dataframe_path: ${datasets.hypercubes_dataframe_path}

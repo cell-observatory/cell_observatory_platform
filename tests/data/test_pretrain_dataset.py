@@ -12,11 +12,13 @@ from cell_observatory_platform.tests.conftest import config, distributed_test
 
 
 @pytest.mark.skip("Skipping tests for Torch dataloader, Torch dataloader will be deprecated soon.")
+@pytest.mark.skip("Skipping tests for Torch dataloader, Torch dataloader will be deprecated soon.")
 def test_access_to_storage_server(config):
     if not Path(config.paths.server_folder_path).exists():
         raise FileNotFoundError(f"{config.paths.server_folder_path} does not exist")
 
 
+@pytest.mark.skip("Skipping tests for Torch dataloader, Torch dataloader will be deprecated soon.")
 @pytest.mark.skip("Skipping tests for Torch dataloader, Torch dataloader will be deprecated soon.")
 def test_dataloader(config):
     if not torch.cuda.is_available():
@@ -49,27 +51,28 @@ def test_dataloader(config):
     )
 
     for idx, data_sample in enumerate(dataloader):
-        assert isinstance(data_sample, dict), \
-            f"Data sample {idx} is not a dict, got {type(data_sample)}"
+        assert isinstance(data_sample, dict), f"Data sample {idx} is not a dict, got {type(data_sample)}"
 
-        assert "data_tensor" in data_sample and isinstance(data_sample["data_tensor"][0], torch.Tensor), \
-            f"Data sample {idx} does not contain 'data_tensor' key or it is not a tensor, got {type(data_sample['data_tensor'][0])}"
+        assert "data_tensor" in data_sample and isinstance(
+            data_sample["data_tensor"][0], torch.Tensor
+        ), f"Data sample {idx} does not contain 'data_tensor' key or it is not a tensor, got {type(data_sample['data_tensor'][0])}"
 
-        assert "metainfo" in data_sample and isinstance(data_sample["metainfo"], dict), \
-            f"Data sample {idx} does not contain 'metainfo' key or it is not a dict, got {type(data_sample['metainfo'])}"
- 
+        assert "metainfo" in data_sample and isinstance(
+            data_sample["metainfo"], dict
+        ), f"Data sample {idx} does not contain 'metainfo' key or it is not a dict, got {type(data_sample['metainfo'])}"
+
         expected_shape = (
             1,
-            data_sample['metainfo']["time_size"][0].item(),
-            data_sample['metainfo']["cube_size"][0].item(),
-            data_sample['metainfo']["cube_size"][0].item(),
-            data_sample['metainfo']["cube_size"][0].item(),
-            data_sample['metainfo']["channel_size"][0].item()
+            data_sample["metainfo"]["time_size"][0].item(),
+            data_sample["metainfo"]["cube_size"][0].item(),
+            data_sample["metainfo"]["cube_size"][0].item(),
+            data_sample["metainfo"]["cube_size"][0].item(),
+            data_sample["metainfo"]["channel_size"][0].item(),
         )
-        assert data_sample['data_tensor'][0].shape == expected_shape, \
-            f"Data tensor shape {data_sample['data_tensor'][0].shape} does not match expected shape {expected_shape}"
-        
-        
+        assert (
+            data_sample["data_tensor"][0].shape == expected_shape
+        ), f"Data tensor shape {data_sample['data_tensor'][0].shape} does not match expected shape {expected_shape}"
+
         if idx >= 5:
             break
 
@@ -82,23 +85,26 @@ def _test_dataloader_dist(config):
 
         assert isinstance(data_sample, dict), f"Data sample {idx} is not a dict, got {type(data_sample)}"
 
-        assert "data_tensor" in data_sample and isinstance(data_sample["data_tensor"][0], torch.Tensor), \
-            f"Data sample {idx} does not contain 'data_tensor' key or it is not a tensor, got {type(data_sample['data_tensor'][0])}"
+        assert "data_tensor" in data_sample and isinstance(
+            data_sample["data_tensor"][0], torch.Tensor
+        ), f"Data sample {idx} does not contain 'data_tensor' key or it is not a tensor, got {type(data_sample['data_tensor'][0])}"
 
-        assert "metainfo" in data_sample and isinstance(data_sample["metainfo"], dict), \
-            f"Data sample {idx} does not contain 'metainfo' key or it is not a dict, got {type(data_sample['metainfo'])}"
+        assert "metainfo" in data_sample and isinstance(
+            data_sample["metainfo"], dict
+        ), f"Data sample {idx} does not contain 'metainfo' key or it is not a dict, got {type(data_sample['metainfo'])}"
 
         expected_shape = (
             1,
-            data_sample['metainfo']["time_size"][0].item(),
-            data_sample['metainfo']["cube_size"][0].item(),
-            data_sample['metainfo']["cube_size"][0].item(),
-            data_sample['metainfo']["cube_size"][0].item(),
-            data_sample['metainfo']["channel_size"][0].item()
+            data_sample["metainfo"]["time_size"][0].item(),
+            data_sample["metainfo"]["cube_size"][0].item(),
+            data_sample["metainfo"]["cube_size"][0].item(),
+            data_sample["metainfo"]["cube_size"][0].item(),
+            data_sample["metainfo"]["channel_size"][0].item(),
         )
 
-        assert data_sample['data_tensor'][0].shape == expected_shape, \
-            f"Data tensor shape {data_sample['data_tensor'][0].shape} does not match expected shape {expected_shape}"
+        assert (
+            data_sample["data_tensor"][0].shape == expected_shape
+        ), f"Data tensor shape {data_sample['data_tensor'][0].shape} does not match expected shape {expected_shape}"
 
         if idx >= 5:
             break
@@ -106,6 +112,7 @@ def _test_dataloader_dist(config):
     return report({"success": True})
 
 
+@pytest.mark.skip("Skipping distributed test for Torch dataloader, Torch dataloader will be deprecated soon.")
 @pytest.mark.skip("Skipping distributed test for Torch dataloader, Torch dataloader will be deprecated soon.")
 def test_data_pipeline(config):
     if not torch.cuda.is_available():
@@ -115,5 +122,7 @@ def test_data_pipeline(config):
         config.experiment_name = "test_data_pipeline"
         config.paths.resume_checkpointdir = None
 
-    metrics = distributed_test(cfg=config, test="cell_observatory_platform.tests.data.test_pretrain_dataset._test_dataloader_dist")
+    metrics = distributed_test(
+        cfg=config, test="cell_observatory_platform.tests.data.test_pretrain_dataset._test_dataloader_dist"
+    )
     assert metrics.get("success", False), "Distributed dataloader test failed"

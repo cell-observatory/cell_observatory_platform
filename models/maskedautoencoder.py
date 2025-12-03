@@ -1,121 +1,117 @@
-import sys
-import logging
 import inspect
-from typing import Literal, Union, Dict, Tuple, Any, Mapping
+import logging
+import sys
+from typing import Any, Dict, Literal, Mapping, Tuple, Union
 
 import torch
 import torch.nn as nn
 
-from cell_observatory_platform.models.mlp import get_mlp
-from cell_observatory_platform.models.norm import get_norm
-from cell_observatory_platform.training.losses import get_loss_fn
-from cell_observatory_platform.training.helpers import init_weights
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
+from cell_observatory_platform.data.masking.mask_generator import apply_masks
 from cell_observatory_platform.models.activation import get_activation
 from cell_observatory_platform.models.maskedencoder import MaskedEncoder
 from cell_observatory_platform.models.maskedpredictor import MaskedPredictor
+from cell_observatory_platform.models.mlp import get_mlp
+from cell_observatory_platform.models.norm import get_norm
 from cell_observatory_platform.models.patch_embeddings import calc_num_patches
-from cell_observatory_platform.data.masking.mask_generator import apply_masks
+from cell_observatory_platform.training.helpers import init_weights
+from cell_observatory_platform.training.losses import get_loss_fn
 
-logging.basicConfig(
-	stream=sys.stdout,
-	level=logging.INFO,
-	format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
 CONFIGS = {
-    'mae-tiny': {
-        'embed_dim': 192,
-        'decoder_embed_dim': 96,
-        'depth': 12,
-        'decoder_depth': 3,
-        'num_heads': 3,
-        'decoder_num_heads': 3,
-        'mlp_ratio': 4,
+    "mae-tiny": {
+        "embed_dim": 192,
+        "decoder_embed_dim": 96,
+        "depth": 12,
+        "decoder_depth": 3,
+        "num_heads": 3,
+        "decoder_num_heads": 3,
+        "mlp_ratio": 4,
     },
-    'mae-small': {
-        'embed_dim': 384,
-        'decoder_embed_dim': 192,
-        'depth': 12,
-        'decoder_depth': 6,
-        'num_heads': 6,
-        'decoder_num_heads': 6,
-        'mlp_ratio': 4,
+    "mae-small": {
+        "embed_dim": 384,
+        "decoder_embed_dim": 192,
+        "depth": 12,
+        "decoder_depth": 6,
+        "num_heads": 6,
+        "decoder_num_heads": 6,
+        "mlp_ratio": 4,
     },
-    'mae-base': {
-        'embed_dim': 768,
-        'decoder_embed_dim': 256,
-        'depth': 12,
-        'decoder_depth': 8,
-        'num_heads': 12,
-        'decoder_num_heads': 8,
-        'mlp_ratio': 4,
+    "mae-base": {
+        "embed_dim": 768,
+        "decoder_embed_dim": 256,
+        "depth": 12,
+        "decoder_depth": 8,
+        "num_heads": 12,
+        "decoder_num_heads": 8,
+        "mlp_ratio": 4,
     },
-    'mae-large': {
-        'embed_dim': 1024,
-        'decoder_embed_dim': 512,
-        'depth': 24,
-        'decoder_depth': 8,
-        'num_heads': 16,
-        'decoder_num_heads': 8,
-        'mlp_ratio': 4,
+    "mae-large": {
+        "embed_dim": 1024,
+        "decoder_embed_dim": 512,
+        "depth": 24,
+        "decoder_depth": 8,
+        "num_heads": 16,
+        "decoder_num_heads": 8,
+        "mlp_ratio": 4,
     },
-    'mae-huge': {
-        'embed_dim': 1280,
-        'decoder_embed_dim': 512,
-        'depth': 32,
-        'decoder_depth': 8,
-        'num_heads': 16,
-        'decoder_num_heads': 8,
-        'mlp_ratio': 4,
+    "mae-huge": {
+        "embed_dim": 1280,
+        "decoder_embed_dim": 512,
+        "depth": 32,
+        "decoder_depth": 8,
+        "num_heads": 16,
+        "decoder_num_heads": 8,
+        "mlp_ratio": 4,
     },
-    'mae-2billion': {
-        'embed_dim': 2560,
-        'decoder_embed_dim': 512,
-        'depth': 24,
-        'decoder_depth': 8,
-        'num_heads': 32,
-        'decoder_num_heads': 8,
-        'mlp_ratio': 4,
+    "mae-2billion": {
+        "embed_dim": 2560,
+        "decoder_embed_dim": 512,
+        "depth": 24,
+        "decoder_depth": 8,
+        "num_heads": 32,
+        "decoder_num_heads": 8,
+        "mlp_ratio": 4,
     },
-    'mae-6billion': {
-        'embed_dim': 4096,
-        'decoder_embed_dim': 512,
-        'depth': 32,
-        'decoder_depth': 8,
-        'num_heads': 32,
-        'decoder_num_heads': 8,
-        'mlp_ratio': 4,
+    "mae-6billion": {
+        "embed_dim": 4096,
+        "decoder_embed_dim": 512,
+        "depth": 32,
+        "decoder_depth": 8,
+        "num_heads": 32,
+        "decoder_num_heads": 8,
+        "mlp_ratio": 4,
     },
-    'mae-giant': {
-        'embed_dim': 1408,
-        'decoder_embed_dim': 512,
-        'depth': 40,
-        'decoder_depth': 8,
-        'num_heads': 16,
-        'decoder_num_heads': 8,
-        'mlp_ratio': 48/11,
+    "mae-giant": {
+        "embed_dim": 1408,
+        "decoder_embed_dim": 512,
+        "depth": 40,
+        "decoder_depth": 8,
+        "num_heads": 16,
+        "decoder_num_heads": 8,
+        "mlp_ratio": 48 / 11,
     },
-    'mae-gigantic': {
-        'embed_dim': 1664,
-        'decoder_embed_dim': 1024,
-        'depth': 48,
-        'decoder_depth': 16,
-        'num_heads': 16,
-        'decoder_num_heads': 16,
-        'mlp_ratio': 64/13,
+    "mae-gigantic": {
+        "embed_dim": 1664,
+        "decoder_embed_dim": 1024,
+        "depth": 48,
+        "decoder_depth": 16,
+        "num_heads": 16,
+        "decoder_num_heads": 16,
+        "mlp_ratio": 64 / 13,
     },
-    'mae-enormous': {
-        'embed_dim': 1792,
-        'decoder_embed_dim': 1024,
-        'depth': 56,
-        'decoder_depth': 16,
-        'num_heads': 16,
-        'decoder_num_heads': 16,
-        'mlp_ratio': 8.5714285714,
-    }
+    "mae-enormous": {
+        "embed_dim": 1792,
+        "decoder_embed_dim": 1024,
+        "depth": 56,
+        "decoder_depth": 16,
+        "num_heads": 16,
+        "decoder_num_heads": 16,
+        "mlp_ratio": 8.5714285714,
+    },
 }
 
 
@@ -123,16 +119,18 @@ class MaskedAutoEncoder(nn.Module):
     def __init__(
         self,
         model_template: Literal[
-            'mae', # custom use `embed_dim`, `decoder_embed_dim`, `depth`, `num_heads` and `mlp_ratio` to config model
-            'mae-tiny',
-            'mae-small',
-            'mae-base',
-            'mae-large',
-            'mae-huge',
-            'mae-giant',
-            'mae-gigantic'
-        ] = 'mae',
-        input_fmt='TZYXC',
+            "mae",  # custom use `embed_dim`, `decoder_embed_dim`, `depth`, `num_heads` and `mlp_ratio` to config model
+            "mae-tiny",
+            "mae-small",
+            "mae-base",
+            "mae-large",
+            "mae-huge",
+            "mae-giant",
+            "mae-gigantic",
+        ] = "mae",
+        input_fmt="TZYXC",
+        input_shape: tuple = (16, 128, 128, 128, 2),
+        patch_shape: tuple = (4, 16, 16, 16),
         input_shape: tuple = (16, 128, 128, 128, 2),
         patch_shape: tuple = (4, 16, 16, 16),
         embed_dim=768,
@@ -147,17 +145,17 @@ class MaskedAutoEncoder(nn.Module):
         drop_path_rate=0.1,
         init_std=0.02,
         fixed_dropout_depth=False,
-        norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
-        act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
-        mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
+        norm_layer: Union[nn.Module, Literal["RmsNorm", "LayerNorm", "SyncBatchNorm", "GroupNorm"]] = "RmsNorm",
+        act_layer: Union[nn.Module, Literal["GELU", "SiLU", "LeakyReLU", "GLU", "Sigmoid", "Tanh"]] = "SiLU",
+        mlp_layer: Union[nn.Module, Literal["Mlp", "SwiGLU"]] = "SwiGLU",
         abs_sincos_enc: bool = False,
         rope_pos_enc: bool = True,
         rope_random_rotation_per_head: bool = True,
         rope_mixed: bool = True,
         rope_theta: float = 10.0,
-        weight_init_type: str = 'mae',
+        weight_init_type: str = "mae",
         mlp_wide_silu: bool = False,
-        loss_fn: str = 'l2_masked',
+        loss_fn: str = "l2_masked",
         with_auxiliary_loss: bool = False,
         dtype: torch.dtype = torch.bfloat16,
         **kwargs,
@@ -166,13 +164,13 @@ class MaskedAutoEncoder(nn.Module):
 
         if model_template in CONFIGS.keys():
             config = CONFIGS[model_template]
-            self.depth = config['depth']
-            self.decoder_depth = config['decoder_depth']
-            self.embed_dim = config['embed_dim']
-            self.decoder_embed_dim = config['decoder_embed_dim']
-            self.num_heads = config['num_heads']
-            self.decoder_num_heads = config['decoder_num_heads']
-            self.mlp_ratio = config['mlp_ratio']
+            self.depth = config["depth"]
+            self.decoder_depth = config["decoder_depth"]
+            self.embed_dim = config["embed_dim"]
+            self.decoder_embed_dim = config["decoder_embed_dim"]
+            self.num_heads = config["num_heads"]
+            self.decoder_num_heads = config["decoder_num_heads"]
+            self.mlp_ratio = config["mlp_ratio"]
         else:
             self.depth = depth
             self.decoder_depth = decoder_depth
@@ -186,18 +184,20 @@ class MaskedAutoEncoder(nn.Module):
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
-        
+
         axis_to_value = dict(zip(input_fmt, input_shape))
-        self.in_chans = axis_to_value['C']
+        axis_to_value = dict(zip(input_fmt, input_shape))
+        self.in_chans = axis_to_value["C"]
         self.num_frames = axis_to_value.get("T", None)
 
+        self.patch_shape = patch_shape
         self.patch_shape = patch_shape
 
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
         self.drop_path_rate = drop_path_rate
         self.fixed_dropout_depth = fixed_dropout_depth
-        
+
         self.init_std = init_std
 
         self.norm_layer = get_norm(norm_layer)
@@ -215,6 +215,7 @@ class MaskedAutoEncoder(nn.Module):
         self.masked_encoder = MaskedEncoder(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
+            patch_shape=self.patch_shape,
             patch_shape=self.patch_shape,
             channels=self.in_chans,
             embed_dim=self.embed_dim,
@@ -235,12 +236,13 @@ class MaskedAutoEncoder(nn.Module):
             rope_mixed=self.rope_mixed,
             rope_theta=self.rope_theta,
             mlp_wide_silu=mlp_wide_silu,
-            dtype=self.dtype
+            dtype=self.dtype,
         )
 
         self.masked_decoder = MaskedPredictor(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
+            patch_shape=self.patch_shape,
             patch_shape=self.patch_shape,
             channels=self.in_chans,
             input_embed_dim=self.embed_dim,
@@ -263,12 +265,12 @@ class MaskedAutoEncoder(nn.Module):
             rope_mixed=self.rope_mixed,
             rope_theta=self.rope_theta,
             mlp_wide_silu=mlp_wide_silu,
-            dtype=self.dtype
+            dtype=self.dtype,
         )
 
         self.weight_init_type = weight_init_type
         init_weights(self, weight_init_type=weight_init_type)
-        
+
         self.loss_fn = get_loss_fn(loss_fn)
         self.with_auxiliary_loss = with_auxiliary_loss
 
@@ -289,20 +291,29 @@ class MaskedAutoEncoder(nn.Module):
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
                 patch_shape=self.patch_shape,
+                patch_shape=self.patch_shape,
             )
             return num_patches
-    
+
     def forward(self, data_sample: dict):
-        inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
-        masks, context_masks, patches_used = meta['masks'][0], meta['context_masks'][0], meta['patches_used'][0]
-        target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
+        inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
+        masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
+        masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
+        target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
 
         x, patches = self.masked_encoder(inputs, masks=context_masks)
-        x = self.masked_decoder(x, 
-                                original_patch_indices=original_patch_indices, 
-                                target_masks=target_masks, 
-                                patches_used=patches_used)
+        x = self.masked_decoder(
+            x, original_patch_indices=original_patch_indices, target_masks=target_masks, patches_used=patches_used
+        )
+        x = self.masked_decoder(
+            x, original_patch_indices=original_patch_indices, target_masks=target_masks, patches_used=patches_used
+        )
 
+        # compute loss over masked patches (re-index if blocked masking removed some patches)
+        if patches_used is not None:
+            target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
+        else:
+            target_idx_in_patches_used = target_masks
         # compute loss over masked patches (re-index if blocked masking removed some patches)
         if patches_used is not None:
             target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
@@ -312,32 +323,29 @@ class MaskedAutoEncoder(nn.Module):
         predictions = apply_masks(x, masks=target_idx_in_patches_used)
 
         if self.with_auxiliary_loss:
-            aux_loss_meta = {"targets": patches, 
-                             "predictions": x,
-                             "patches_used": patches_used,
-                             "target_masks": target_masks,
-                             "prediction_masks": target_idx_in_patches_used
-                            }
+            aux_loss_meta = {
+                "targets": patches,
+                "predictions": x,
+                "patches_used": patches_used,
+                "target_masks": target_masks,
+                "prediction_masks": target_idx_in_patches_used,
+            }
         else:
             aux_loss_meta = None
         loss, aux_losses = self.loss_fn(targets, predictions, masks, aux_loss_meta)
-        
-        loss_dict = {
-            "step_loss": loss,
-            **(aux_losses or {})
-        }
+
+        loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):
-        inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
-        masks, context_masks, patches_used = meta['masks'][0], meta['context_masks'][0], meta['patches_used'][0]
-        target_masks, original_patch_indices = meta['target_masks'][0], meta['original_patch_indices'][0]
+        inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
+        masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
+        target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
 
         x, patches = self.masked_encoder(inputs, masks=context_masks)
-        x = self.masked_decoder(x, 
-                                original_patch_indices=original_patch_indices, 
-                                target_masks=target_masks, 
-                                patches_used=patches_used)
+        x = self.masked_decoder(
+            x, original_patch_indices=original_patch_indices, target_masks=target_masks, patches_used=patches_used
+        )
 
         predictions = self.masked_encoder.patch_embedding.unpatchify(x, out_channels=None)
         return predictions

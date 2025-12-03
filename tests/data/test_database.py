@@ -565,6 +565,7 @@ def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
     table = database.hypercubes_dataframe
     print(table)
     # database.save_hypercubes_dataframe(hypercubes_dataframe_path=Path(config.paths.server_folder_path) / 'databases' / "prepared_16_128_128_128_2_hypercube_view.csv")
+    # database.save_hypercubes_dataframe(hypercubes_dataframe_path=Path(config.paths.server_folder_path) / 'databases' / "prepared_16_128_128_128_2_hypercube_view.csv")
 
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
     assert table["first_pc_id"].unique().all(), f"`first_pc_id` should have unique values"

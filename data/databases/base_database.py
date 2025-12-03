@@ -24,6 +24,8 @@ class ParentDatabase:
         self,
         input_shape: tuple,
         dataset_layout_order: str,
+        input_shape: tuple,
+        dataset_layout_order: str,
         max_rois: Optional[int] = None,
         max_tiles: Optional[int] = None,
         max_hypercubes: Optional[int] = None,
@@ -52,6 +54,7 @@ class ParentDatabase:
         mask_channel: Optional[int] = None,
     ):
         """
+        A class for accessing database and retrieving hypercubes.
         A class for accessing database and retrieving hypercubes.
         It'll check database for existing views or create them if they don't exist based on the given `num_timepoints`.
         The results are stored in a pandas dataframe `self.hypercubes_dataframe`
@@ -90,6 +93,8 @@ class ParentDatabase:
             )
         else:
             self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
+
+        self.input_shape = input_shape
 
         self.input_shape = input_shape
 

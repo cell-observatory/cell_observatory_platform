@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -euo pipefail
 
 # NCCL settings optimized for Ethernet without InfiniBand
 export LC_ALL=C.UTF-8
@@ -54,8 +55,15 @@ cleanup() {
     echo "Successfully stopped ray worker"
     python3 /workspace/cell_observatory_platform/utils/cleanup.py 
     echo "Successfully ran cleanup.py"
+    echo "Successfully stopped ray worker"
+    python3 /workspace/cell_observatory_platform/utils/cleanup.py 
+    echo "Successfully ran cleanup.py"
 }
 trap 'cleanup' EXIT
+trap 'cleanup; exit 143' TERM INT
+
+# remove any leftover shared memory segments
+python3 /workspace/cell_observatory_platform/utils/cleanup.py
 trap 'cleanup; exit 143' TERM INT
 
 # remove any leftover shared memory segments

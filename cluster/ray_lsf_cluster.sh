@@ -129,8 +129,8 @@ do_cleanup() {
 blaunch -z $head_node "
     apptainer exec --userns --nv \
         --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
-        $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
-        -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory
+        $env bash -lc 'exec /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
+            -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory'
 " &
 head_bg_pid=$!
 
@@ -140,6 +140,12 @@ apptainer exec --userns --nv \
     --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
     $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
     -a $cluster_address -r 1
+rc=$?
+if [ $rc -ne 0 ]; then
+    echo "Head node failed to start correctly, exiting"
+    do_cleanup
+    exit $rc
+fi
 rc=$?
 if [ $rc -ne 0 ]; then
     echo "Head node failed to start correctly, exiting"
@@ -156,17 +162,24 @@ if [ ${nodes} -gt 1 ]; then
     for host in "${workers[@]}"; do
         echo "Starting worker on: $host"
         mkdir -p $outdir/ray_worker_$i
-        blaunch -z $host "
-            apptainer exec --userns --nv \
-                --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
-                $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i
+        blaunch -z "$host" "
+        apptainer exec --userns --nv \
+            --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
+            $env bash -lc 'exec /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+            -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i'
         " &
         worker_pids+=($!)
         i+=1
     done
 fi
 
+############################## RUN WORKLOAD
+
+# trap 'do_cleanup' EXIT
+trap 'do_cleanup; exit 130' INT # SIGINT
+trap 'do_cleanup; exit 143' TERM # SIGTERM like bkill
+
+# CHECK CLUSTER STATUS
 ############################## RUN WORKLOAD
 
 # trap 'do_cleanup' EXIT
@@ -186,6 +199,12 @@ if [ $rc -ne 0 ]; then
     do_cleanup
     exit $rc
 fi
+rc=$?
+if [ $rc -ne 0 ]; then
+    echo "Cluster failed to start correctly, exiting"
+    do_cleanup
+    exit $rc
+fi
 
 echo "Running user tasks"
 echo $tasks
@@ -193,6 +212,9 @@ apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bi
 
 ############################## CLEANUP
 
+echo "User tasks completed, starting cleanup"
+do_cleanup
+exit 0
 echo "User tasks completed, starting cleanup"
 do_cleanup
 exit 0

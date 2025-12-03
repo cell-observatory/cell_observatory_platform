@@ -48,6 +48,7 @@ class InferencerWorker:
                  verbose: bool = False,
                  max_hypercubes: Optional[int] = None,
                  max_partitions: int = 10,
+                 convert_to_ome_format: bool = True,
                  save_format: Literal['tiff','zarr'] = 'tiff',
                  zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
                  zarr_shard_shape: Optional[Tuple[int, ...]] = None,
@@ -196,6 +197,7 @@ class InferencerWorker:
 
         if self.dbname == 'staging':
             uri = os.environ.get("SUPABASE_STAGING_URI")
+        elif self.dbname == 'prod':
         elif self.dbname == 'prod':
             uri = os.environ.get("SUPABASE_PROD_URI")
         else:
@@ -434,6 +436,9 @@ class InferencerWorker:
         elif self.decoder_head_type == "pretrain":
             pred_hypercubes = self.model.predict(data_sample)
 
+        elif self.decoder_head_type == "pretrain":
+            pred_hypercubes = self.model.predict(data_sample)
+
         else:
             raise NotImplementedError(
                 f"Decoder head type {self.decoder_head_type} not supported for sliding window inference."
@@ -472,9 +477,15 @@ class InferencerWorker:
             y_size = int(tile_rows["y_size"].iloc[0])
             x_size = int(tile_rows["x_size"].iloc[0])
 
+            
+            z_size = int(tile_rows["z_size"].iloc[0])
+            y_size = int(tile_rows["y_size"].iloc[0])
+            x_size = int(tile_rows["x_size"].iloc[0])
+
             t_per_cube = int(tile_rows["time_size"].iloc[0]) \
                 if (self.input_format == "TZYXC" and "time_size" in tile_rows.columns) else 1
 
+            voxels_per_cube = t_per_cube * z_size * y_size * x_size
             voxels_per_cube = t_per_cube * z_size * y_size * x_size
             tile_volume = n_cubes * voxels_per_cube
 
@@ -511,6 +522,9 @@ class InferencerWorker:
             owner_rank = stable_key_owner(roi, tile_nm, ws)
 
             t0 = int(meta["time_start"][b]); T = int(meta["time_size"][b]); t1 = t0 + T
+            z0 = int(meta["z_start"][b]); sz = int(meta["z_size"][b]); z1 = z0 + sz
+            y0 = int(meta["y_start"][b]); sy = int(meta["y_size"][b]); y1 = y0 + sy
+            x0 = int(meta["x_start"][b]); sx = int(meta["x_size"][b]); x1 = x0 + sx
             z0 = int(meta["z_start"][b]); sz = int(meta["z_size"][b]); z1 = z0 + sz
             y0 = int(meta["y_start"][b]); sy = int(meta["y_size"][b]); y1 = y0 + sy
             x0 = int(meta["x_start"][b]); sx = int(meta["x_size"][b]); x1 = x0 + sx

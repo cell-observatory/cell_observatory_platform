@@ -24,6 +24,9 @@
 # micromamba activate
 # export PYTHONPATH="/groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform"
 
+# micromamba activate
+# export PYTHONPATH="/groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform"
+
 # USAGE: bash /groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform/scripts/utils/training.sh
 
 # CFG="benchmarks/janelia/benchmark_training_dataloader.yaml"
