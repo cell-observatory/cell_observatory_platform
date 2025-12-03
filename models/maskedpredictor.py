@@ -1,87 +1,83 @@
-import sys
 import inspect
 import logging
-from typing import Literal, Union, Mapping, Any
+import sys
+from typing import Any, Literal, Mapping, Union
 
 import torch
 import torch.nn as nn
 
+from cell_observatory_platform.models.activation import get_activation
+from cell_observatory_platform.models.encoder import Encoder
 from cell_observatory_platform.models.mlp import get_mlp
 from cell_observatory_platform.models.norm import get_norm
-from cell_observatory_platform.models.encoder import Encoder
-from cell_observatory_platform.models.activation import get_activation
-from cell_observatory_platform.models.positional_encoding import PosEmbedding
 from cell_observatory_platform.models.patch_embeddings import calc_num_patches
+from cell_observatory_platform.models.positional_encoding import PosEmbedding
 
-logging.basicConfig(
-	stream=sys.stdout,
-	level=logging.INFO,
-	format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
 CONFIGS = {
-    'mp-tiny': {
-        'embed_dim': 192,
-        'depth': 12,
-        'num_heads': 3,
-        'mlp_ratio': 4,
+    "mp-tiny": {
+        "embed_dim": 192,
+        "depth": 12,
+        "num_heads": 3,
+        "mlp_ratio": 4,
     },
-    'mp-small': {
-        'embed_dim': 384,
-        'depth': 12,
-        'num_heads': 6,
-        'mlp_ratio': 4,
+    "mp-small": {
+        "embed_dim": 384,
+        "depth": 12,
+        "num_heads": 6,
+        "mlp_ratio": 4,
     },
-    'mp-base': {
-        'embed_dim': 768,
-        'depth': 12,
-        'num_heads': 12,
-        'mlp_ratio': 4,
+    "mp-base": {
+        "embed_dim": 768,
+        "depth": 12,
+        "num_heads": 12,
+        "mlp_ratio": 4,
     },
-    'mp-large': {
-        'embed_dim': 1024,
-        'depth': 24,
-        'num_heads': 16,
-        'mlp_ratio': 4,
+    "mp-large": {
+        "embed_dim": 1024,
+        "depth": 24,
+        "num_heads": 16,
+        "mlp_ratio": 4,
     },
-    'mp-huge': {
-        'embed_dim': 1280,
-        'depth': 32,
-        'num_heads': 16,
-        'mlp_ratio': 4,
+    "mp-huge": {
+        "embed_dim": 1280,
+        "depth": 32,
+        "num_heads": 16,
+        "mlp_ratio": 4,
     },
-    'mp-2billion': {
-        'embed_dim': 2560,
-        'depth': 24,
-        'num_heads': 32,
-        'mlp_ratio': 4,
+    "mp-2billion": {
+        "embed_dim": 2560,
+        "depth": 24,
+        "num_heads": 32,
+        "mlp_ratio": 4,
     },
-    'mp-6billion': {
-        'embed_dim': 4096,
-        'depth': 32,
-        'num_heads': 32,
-        'mlp_ratio': 4,
+    "mp-6billion": {
+        "embed_dim": 4096,
+        "depth": 32,
+        "num_heads": 32,
+        "mlp_ratio": 4,
     },
-    'mp-giant': {
-        'embed_dim': 1408,
-        'depth': 40,
-        'num_heads': 16,
-        'mlp_ratio': 48/11,
+    "mp-giant": {
+        "embed_dim": 1408,
+        "depth": 40,
+        "num_heads": 16,
+        "mlp_ratio": 48 / 11,
     },
-    'mp-gigantic': {
-        'embed_dim': 1664,
-        'depth': 48,
-        'num_heads': 16,
-        'mlp_ratio': 64/13,
+    "mp-gigantic": {
+        "embed_dim": 1664,
+        "depth": 48,
+        "num_heads": 16,
+        "mlp_ratio": 64 / 13,
     },
-    'mp-enormous': {
-        'embed_dim': 1792,
-        'depth': 56,
-        'num_heads': 16,
-        'mlp_ratio': 8.5714285714,
-    }
+    "mp-enormous": {
+        "embed_dim": 1792,
+        "depth": 56,
+        "num_heads": 16,
+        "mlp_ratio": 8.5714285714,
+    },
 }
 
 
@@ -89,16 +85,16 @@ class MaskedPredictor(nn.Module):
     def __init__(
         self,
         model_template: Literal[
-            'mp', # custom use `embed_dim`, `depth`, `num_heads` and `mlp_ratio` to config model
-            'mp-tiny',
-            'mp-small',
-            'mp-base',
-            'mp-large',
-            'mp-huge',
-            'mp-giant',
-            'mp-gigantic'
-        ] = 'mp',
-        input_fmt='TZYXC',
+            "mp",  # custom use `embed_dim`, `depth`, `num_heads` and `mlp_ratio` to config model
+            "mp-tiny",
+            "mp-small",
+            "mp-base",
+            "mp-large",
+            "mp-huge",
+            "mp-giant",
+            "mp-gigantic",
+        ] = "mp",
+        input_fmt="TZYXC",
         input_shape: tuple = (16, 128, 128, 128, 2),
         patch_shape: tuple = (4, 16, 16, 16),
         input_embed_dim=768,
@@ -112,9 +108,9 @@ class MaskedPredictor(nn.Module):
         drop_path_rate=0.1,
         init_std=0.02,
         fixed_dropout_depth=False,
-        norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
-        act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
-        mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
+        norm_layer: Union[nn.Module, Literal["RmsNorm", "LayerNorm", "SyncBatchNorm", "GroupNorm"]] = "RmsNorm",
+        act_layer: Union[nn.Module, Literal["GELU", "SiLU", "LeakyReLU", "GLU", "Sigmoid", "Tanh"]] = "SiLU",
+        mlp_layer: Union[nn.Module, Literal["Mlp", "SwiGLU"]] = "SwiGLU",
         abs_sincos_enc: bool = False,
         rope_pos_enc: bool = True,
         rope_random_rotation_per_head: bool = True,
@@ -128,10 +124,10 @@ class MaskedPredictor(nn.Module):
 
         if model_template in CONFIGS.keys():
             config = CONFIGS[model_template]
-            self.depth = config['depth']
-            self.embed_dim = config['embed_dim']
-            self.num_heads = config['num_heads']
-            self.mlp_ratio = config['mlp_ratio']
+            self.depth = config["depth"]
+            self.embed_dim = config["embed_dim"]
+            self.num_heads = config["num_heads"]
+            self.mlp_ratio = config["mlp_ratio"]
         else:
             self.depth = depth
             self.embed_dim = embed_dim
@@ -145,7 +141,7 @@ class MaskedPredictor(nn.Module):
         self.input_shape = input_shape
 
         axis_to_value = dict(zip(input_fmt, input_shape))
-        self.in_chans = axis_to_value['C']
+        self.in_chans = axis_to_value["C"]
         self.num_frames = axis_to_value.get("T", None)
 
         self.patch_shape = patch_shape
@@ -165,19 +161,11 @@ class MaskedPredictor(nn.Module):
 
         self.token_param = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
 
-        self.patch_projection = nn.Linear(
-            self.input_embed_dim,
-            self.embed_dim,
-            bias=True
-        )
+        self.patch_projection = nn.Linear(self.input_embed_dim, self.embed_dim, bias=True)
 
-        self.output_projection = nn.Linear(
-            self.embed_dim,
-            self.output_embed_dim,
-            bias=True
-        )
+        self.output_projection = nn.Linear(self.embed_dim, self.output_embed_dim, bias=True)
 
-         # positional encoding parameters
+        # positional encoding parameters
         self.abs_sincos_enc = abs_sincos_enc
         self.rope_pos_enc = rope_pos_enc
         self.rope_mixed = rope_mixed
@@ -190,7 +178,7 @@ class MaskedPredictor(nn.Module):
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
                 patch_shape=self.patch_shape,
-                embed_dim=self.embed_dim
+                embed_dim=self.embed_dim,
             )
 
         self.encoder = Encoder(
@@ -214,9 +202,9 @@ class MaskedPredictor(nn.Module):
             input_shape=input_shape,
             patch_shape=self.patch_shape,
             mlp_wide_silu=mlp_wide_silu,
-            dtype=dtype
+            dtype=dtype,
         )
-        
+
     @torch.jit.ignore
     def get_num_layers(self):
         return self.encoder.get_num_layers()
@@ -245,10 +233,8 @@ class MaskedPredictor(nn.Module):
             mask_tokens = self.token_param.repeat(batch_size, target_masks.shape[1], 1)
             patches = torch.cat([tokens, mask_tokens], dim=1)
             patches = torch.gather(
-                patches,
-                dim=1,
-                index=original_patch_indices.unsqueeze(-1).repeat(1, 1, self.embed_dim)
-            ) # reorder patches to original order
+                patches, dim=1, index=original_patch_indices.unsqueeze(-1).repeat(1, 1, self.embed_dim)
+            )  # reorder patches to original order
         else:
             patches = tokens
 
@@ -261,7 +247,7 @@ class MaskedPredictor(nn.Module):
         x = self.norm(x)
         x = self.output_projection(x)
         return x
-    
+
 
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     cfg = dict(cfg)
