@@ -1,0 +1,106 @@
+# @package _global_
+
+# specify multi_run for launching several training jobs
+run_type: multi_run
+
+# NOTE (IMPORTANT): 
+# We have two ways of grouping keeping tabs of training jobs that may later be compared:
+# 1. all jobs will have same rootdir with prefix given by 
+#    `name` field in each run config
+# 2. wandb_tags to group runs together in the wandb dashboard
+#    and use their hparam features to compare runs 
+
+wandb_tags: ["utilization", "dali", "pretrain_mae"] 
+data_base_dir: utilization/training_mae_4d
+
+# NOTE: make sure to include .yaml suffix to naming of config files! These names are appended to configs/experiments/
+#       and written to disk for reproducibility and to be passed to runner.py
+
+# NOTE: defaults_overrides is a list of configs that will be merged into the run config
+#       before applying the run overrides. This is useful for setting defaults to something different
+#      than the global defaults, e.g. for a specific dataloader or model.
+
+runs:
+  - cfg: experiments/abc/pretrain_mae_improve_utilization_base_07_23_2025.yaml
+    name: 1_GPUs_dali_profile_nsight_cuda_graphs.yaml
+    defaults_overrides: null 
+      # - datasets: datasets/pretrain_dataset
+    overrides:
+      optimizations:
+        activation_checkpoint: null
+          # enabled: true
+          # modules: ["masked_encoder"]
+      # clusters
+      clusters:
+        batch_size: 32 # total batch size
+        worker_nodes: 1 # number of worker nodes
+        gpus_per_worker: 1 # number of gpus per worker node
+        cpus_per_gpu: 12 # number of cpu cores per gpu
+        mem_per_cpu: 31000 # ram per cpu core
+      deepspeed:
+        flops_profiler:
+          enabled: false # turn off flops profiler for now
+      models:
+        mae:
+          drop_path_rate: 0.0 # no drop path rate for now
+      datasets:
+        exec_async: true
+        exec_pipelined: true
+        max_hypercubes: 4000 # maximum number of hypercubes to return
+      hooks:
+        nsys_env:
+          nsight: 
+            pytorch: autograd-shapes-nvtx
+            # cuda-memory-usage: "true"
+            # OPTIONS:
+            # "t": "cuda, nvtx, cuda-hw,"
+            #     "cublas-verbose"
+            #     "cusparse-verbose, cudnn, cudla-verbose,"
+            #     "cusolver-verbose, opengl, opengl-annotations, "
+            #     "openacc, openmp, osrt, mpi, nvvideo, vulkan, vulkan-annotations, "
+            #     "dx11, dx11-annotations, dx12, dx12-annotations, openxr, openxr-annotations, "
+            #     "oshmem, ucx, wddm, tegra-accelerators, python-gil",
+            t: cuda,nvtx,cudnn,cublas,osrt
+            s: cpu
+            "gpu-metrics-devices": all
+            capture-range: cudaProfilerApi
+            capture-range-end: stop-shutdown
+            # nvtx-capture: range@domain
+            # cudabacktrace: all:10000
+            # backtrace: dwarf
+        hooks_list:
+          - _target_: training.hooks.NsysProfilerHook
+            start_iter: 40
+            end_iter: 45
+          # - _target_: training.hooks.TorchProfiler
+          #   save_memory_trace: false
+          #   output_dir: ${loggers.logdir}/profiler
+          #   schedule:
+          #     skip_first: 1
+          #     warmup: 1
+          #     active: 3
+          #     repeat: 2
+          #     wait: 1  
+          #   activities: 
+          #     - CUDA
+          #     - CPU
+          #   save_tensorboard: true 
+          - _target_: training.hooks.AnomalyDetector
+          - _target_: training.hooks.SamplerSetter
+          - _target_: training.hooks.LRScheduler
+          - _target_: training.hooks.IterationTimer
+            warmup_iter: 1
+          - _target_: training.hooks.PeriodicWriter
+          - _target_: training.hooks.PeriodicCheckpointer
+            period: 1
+            file_prefix: latest_model
+          - _target_: training.hooks.BestCheckpointer
+            checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+          - _target_: training.hooks.TorchMemoryStats
+            step_period: 2
+            epoch_period: 1
+            logdir: ${loggers.logdir}
+          - _target_: training.hooks.BestMetricSaver
+            metric_name: ${evaluation.val_metric}
+            compare_fn: ${evaluation.val_mode}
+            eval_after_validation: true

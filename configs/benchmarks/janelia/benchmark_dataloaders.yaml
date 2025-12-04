@@ -1,0 +1,119 @@
+# @package _global_
+defaults:
+  - /paths/janelia                           # configs/paths/janelia.yaml
+  - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
+  - /clusters/local                          # configs/clusters/local.yaml
+  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/mae/tiny                         # configs/models/mae/tiny.yaml
+  - /hooks/hooks                             # configs/hooks/hooks.yaml
+  - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
+  - /loggers/loggers                         # configs/loggers/loggers.yaml
+  - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
+  - /deepspeed/zero2                         # configs/deepspeed/zero0.yaml
+  - /optimizers/lamb                         # configs/optimizers/lamb.yaml
+  - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - _self_
+
+experiment_name: benchmark_dataloader_with_obs
+
+# task
+task: pretrain_mae
+
+# Model type
+network: mae
+
+# engine type
+engine: deepspeed
+
+# distributed framework
+distributed_framework: ray
+
+# run type
+run_type: single_run # single_run, multi_run, or tune
+
+# job type
+job_type: train # train or test
+
+# trainer type
+trainer: training.loops.EpochBasedTrainer
+
+# loop per worker script
+loop_per_worker_script: scripts.benchmarks_io.benchmark_dataloaders.benchmark_dataloader
+
+# training quantization
+quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
+
+# dtype for training data
+dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
+
+# dataset layout in the zarr files
+dataset_layout_order: TZYXC
+
+# overrides
+# --------------------------------------------------------------------------------
+
+clusters:
+  batch_size: 256 # total batch size
+  worker_nodes: 1 # number of worker nodes
+  gpus_per_worker: 8 # number of gpus per worker node
+  cpus_per_gpu: 12 # number of cpu cores per gpu
+  mem_per_cpu: 40000 # ram per cpu core
+
+
+paths:
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null 
+  pretrained_checkpointdir: null
+
+
+datasets:
+  split: null
+  batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
+  patch_shape: [4, 16, 16, 16]
+
+  use_cached_hypercubes_dataframe: true # whether to use the cached hypercubes dataframe
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
+
+
+  # max nr of hypercubes to test for benchmark
+  occupancy_threshold: 0.0
+  max_hypercubes: 50000
+  max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+  max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+
+  hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
+  roi_list: null # list of specific ROIs to filter
+  tile_list: null # list of specific tiles to filter
+
+  prefetch_factor: 4
+  use_arrow_tensor_v2: true # use Arrow Tensor v2 for better performance
+  locality_with_output: true # whether to use locality with output for the Ray tasks
+
+  # ray_remote_args:
+  #   num_cpus: 0.25 # number of cpus per gpu for Ray tasks
+
+  impl_type: FixedSizeListArray # implementation type for the data tensor array, options: FixedShapeTensorArray, FixedSizeListArray
+  ray_data_v2: true # whether to use Ray Data v2 (experimental loader)
+  num_actors: 32
+  with_batched_api: true
+  context:
+    file_io_concurrency: null # concurrency for file I/O operations
+    data_copy_concurrency: null # concurrency for data copy operations
+    cache_pool: 
+      total_bytes_limit: 0
+
+  collate_fn:
+    _target_: data.datasets.pretrain_dataset_ray.PinnedTensorCollator
+    dtype: ${dataset_dtype}
+    sample_shape: ${datasets.input_shape}
+    pin_memory: true
+
+# benchmarking
+# --------------------------------------------------------------------------------
+
+csv_out: ${paths.outdir}/benchmark_dataloader.csv # path to save the benchmark results
+
+warmup: 5
+num_batches: ${eval:'(${datasets.max_hypercubes} // ${clusters.batch_size}) - ${warmup}'} # number of batches to run for the benchmark

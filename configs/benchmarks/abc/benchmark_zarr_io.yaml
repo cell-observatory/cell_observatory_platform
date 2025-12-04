@@ -1,0 +1,63 @@
+# @package _global_
+defaults:
+  - /paths/abc                             # configs/paths/abc.yaml
+  - /clusters/local                        # configs/clusters/local.yaml
+  - /datasets/pretrain_dataset             # configs/datasets/pretrain_dataset.yaml
+  - _self_
+
+# experiment name (used for logging)
+experiment_name: benchmark_zarr_io
+
+# run type
+run_type: single_run
+
+# dtype for training data
+dataset_dtype: bfloat16 # data type for training, options: float32, float16
+
+# dataset layout in the zarr files
+dataset_layout_order: TZYXC
+
+# overrides
+# --------------------------------------------------------------------------------
+
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null 
+  pretrained_checkpointdir: null
+  runner_script: ${oc.env:REPO_DIR}/scripts/benchmark_zarr_io.py
+
+clusters:
+  worker_nodes: 1
+  gpus_per_worker: 1
+  cpus_per_gpu: 24
+  batch_size: 32
+
+datasets:
+  # mainly used by other configs but determined here for ease of access
+  batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
+  patch_shape: [4, 16, 16, 16]
+
+  split: null
+  return_dataloader: true
+  distributed_sampler: true
+
+  prefetch_factor: 1 # prefetch factor for the dataloader
+  num_workers: ${clusters.cpus_per_worker}
+  max_hypercubes: 2000 # maximum number of hypercubes to return
+  hypercubes_dataframe_path: ${paths.workdir}/databases/test_small_hypercubes_dataframe.csv
+
+
+
+# benchmark configuration
+# --------------------------------------------------------------------------------
+
+chunk_size: 32
+cube_size: 128
+with_torch: false
+
+csv_out: /clusterfs/nvme/segment_4d/pretrained_models/benchmark_zarr_io/sweep_cores/benchmark_zarr_io.csv
+
+plot: false
+cores: 24
