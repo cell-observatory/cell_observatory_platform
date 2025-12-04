@@ -1,5 +1,5 @@
 # For amd64 support only:
-#     docker buildx build . --tag ghcr.io/cell-observatory/cell_observatory_platform:main_torch_cuda_12_8 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8 --progress=plain --no-cache-filter pip_install
+#     docker buildx build . --tag ghcr.io/cell-observatory/cell_observatory_platform:main_torch_25_08 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_25_08 --progress=plain --no-cache-filter pip_install
 
 # For multi-platform support:
 #     1. Check if containerd-snapshotter is enabled
@@ -11,15 +11,15 @@
 #         docker run --privileged --rm tonistiigi/binfmt --install all
 
 #     3. Build image with --platform flag:
-#         docker buildx build --platform linux/amd64,linux/arm64 . --tag ghcr.io/cell-observatory/cell_observatory_platform:main_torch_cuda_12_8 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8 --progress=plain --no-cache-filter pip_install
+#         docker buildx build --platform linux/amd64,linux/arm64 . --tag ghcr.io/cell-observatory/cell_observatory_platform:main_torch_25_08 --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_25_08 --progress=plain --no-cache-filter pip_install
 
 
 # Running image:
-#     docker run --network host -u 1000 --privileged -v ~/.ssh:/sshkey -v ${PWD}:/workspace/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -t -i --rm -w /workspace/cell_observatory_platform --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8 bash
+#     docker run --network host -u 1000 --privileged -v ~/.ssh:/sshkey -v ${PWD}:/workspace/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -t -i --rm -w /workspace/cell_observatory_platform --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08 bash
 
 
 # to run on a ubuntu system:
-# install nvidia driver (distro=ubuntu2204 && arch=x86_64 && arch_ext=amd64) then follow https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/index.html#ubuntu-installation and Network Repository Installation
+# install nvidia driver (distro=ubuntu2404 && arch=x86_64 && arch_ext=amd64) then follow https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/index.html#ubuntu-installation and Network Repository Installation
 # install docker: https://docs.docker.com/engine/install/ubuntu/
 # set docker permissions for non-root: https://docs.docker.com/engine/install/linux-postinstall/ 
 # install apptainer latest version from https://apptainer.org/docs/admin/main/installation.html#install-debian-packages  older version from here https://apptainer.org/docs/admin/main/installation.html#install-ubuntu-packages  
@@ -31,15 +31,14 @@
 # install apptainer: sudo add-apt-repository -y ppa:apptainer/ppa &&  sudo apt update && sudo apt install -y apptainer
 
 # this works to make an apptainer version
-# docker run --rm kaczmarj/apptainer pull main_torch_cuda_12_8.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:main_torch_cuda_12_8
+# docker run --rm kaczmarj/apptainer pull main_torch_25_08.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:main_torch_25_08
 
-# Pass in a target when building to choose the Image with the version you want: --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_cuda_12_8
+# Pass in a target when building to choose the Image with the version you want: --build-arg BRANCH_NAME=$(git branch --show-current) --target torch_25_08
 # For github actions, this is how we will build multiple docker images.
 # https://docs.nvidia.com/deeplearning/frameworks/support-matrix/index.html
-# https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/rel-25-01.html#rel-25-01
+# https://docs.nvidia.com/deeplearning/frameworks/pytorch-release-notes/rel-25-08.html#rel-25-08
 
 
-# for CUDA 12.x
 FROM nvcr.io/nvidia/pytorch:25.08-py3 AS base
 ENV RUNNING_IN_DOCKER=TRUE
 
@@ -69,6 +68,7 @@ RUN apt-get update \
   libxslt-dev \ 
   xsltproc \ 
   docbook-xsl \
+  libnuma-dev \
   && rm -rf /var/lib/apt/lists/*
 
 
@@ -95,9 +95,9 @@ FROM base AS pip_install
 COPY requirements.txt requirements.txt 
 # ------
 
-FROM pip_install AS torch_cuda_12_8
+FROM pip_install AS torch_25_08
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt --progress-bar off --cache-dir /root/.cache/pip
+    pip install -r requirements.txt --progress-bar off --root-user-action=ignore --cache-dir /root/.cache/pip
 
 # Code to avoid running as root
 ARG USERNAME=user1000

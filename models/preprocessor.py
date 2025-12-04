@@ -5,7 +5,7 @@ from typing import Dict, Tuple
 from omegaconf import DictConfig
 from hydra.utils import instantiate, get_method
 
-from data.data_types import TORCH_DTYPES
+from cell_observatory_platform.data.data_types import TORCH_DTYPES
 
 
 class TorchPreprocessor(torch.nn.Module):
@@ -33,12 +33,16 @@ class TorchPreprocessor(torch.nn.Module):
         # if torch.isnan(inputs).all() or torch.isinf(inputs).all():
         #     raise ValueError(f"Invalid training data")
 
-        # assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
+        if inputs.dtype != self.dtype:
+            # ray.logger.warning(f"Casting inputs to {self.dtype}")
+            inputs = inputs.to(self.dtype)
+
+        assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 
         if self.with_masking:
             masking_time = time.time()
             masks, context_masks, target_masks, \
-            original_patch_indices, channels_to_mask = self.mask_generator(inputs.shape[0])
+            original_patch_indices, channels_to_mask, patches_used = self.mask_generator(inputs.shape[0])
             masking_time = time.time() - masking_time
 
             return {
@@ -49,6 +53,7 @@ class TorchPreprocessor(torch.nn.Module):
                     'target_masks': [target_masks] if self.with_masking else None,
                     'original_patch_indices': [original_patch_indices] if self.with_masking else None,
                     'channels_to_mask': [channels_to_mask] if self.with_masking else None,
+                    'patches_used': [patches_used] if self.with_masking else None,
                     'preprocess_time': time.time() - preprocess_time,
                     'data_time': data_time,
                     'masking_time': masking_time,
@@ -82,12 +87,16 @@ class DaliPreprocessor(torch.nn.Module):
         # if torch.isnan(inputs).all() or torch.isinf(inputs).all():
         #     raise ValueError(f"Invalid training data")
 
-        # assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
+        if inputs.dtype != self.dtype:
+            # ray.logger.warning(f"Casting inputs to {self.dtype}")
+            inputs = inputs.to(self.dtype)
+
+        assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 
         if self.with_masking:
             masking_time = time.time()
             masks, context_masks, target_masks, \
-            original_patch_indices, channels_to_mask = self.mask_generator(inputs.shape[0])
+            original_patch_indices, channels_to_mask, patches_used = self.mask_generator(inputs.shape[0])
             masking_time = time.time() - masking_time
 
             return {
@@ -98,6 +107,7 @@ class DaliPreprocessor(torch.nn.Module):
                     'target_masks': [target_masks] if self.with_masking else None,
                     'original_patch_indices': [original_patch_indices] if self.with_masking else None,
                     'channels_to_mask': [channels_to_mask] if self.with_masking else None,
+                    'patches_used': [patches_used] if self.with_masking else None,
                     'data_time': data_time,
                     'get_item_time': data_sample[0].get('get_item_time', None),
                     'preprocess_time': time.time() - preprocess_time,
@@ -112,13 +122,13 @@ class DaliPreprocessor(torch.nn.Module):
 
 
 class RayPreprocessor(torch.nn.Module):
-    def __init__(self, dtype: torch.dtype, with_masking: bool,  mask_generator, **kwargs):
+    def __init__(self, dtype: torch.dtype, with_masking: bool,  mask_generator, transforms_list=None):
         super().__init__()  
         self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
         self.with_masking = with_masking
         self.mask_generator = mask_generator
         self.transforms = []
-        for t in kwargs.get("transforms_list", []):
+        for t in transforms_list or []:
             if isinstance(t, DictConfig):
                 # not yet instantiated
                 self.transforms.append(instantiate(t))
@@ -136,17 +146,12 @@ class RayPreprocessor(torch.nn.Module):
         """
         preprocess_time = time.time()
 
-        if isinstance(data_sample['data_tensor'], list):
-            inputs = [t.to("cuda", non_blocking=True) for t in data_sample['data_tensor']]
-            inputs = torch.cat(inputs, dim=0)
-        else:
-            inputs = data_sample['data_tensor'].to("cuda", non_blocking=True)
-        
+        inputs = data_sample['data_tensor']
+        meta = data_sample['metainfo']
+
         if inputs.dtype != self.dtype:
             # ray.logger.warning(f"Casting inputs to {self.dtype}")
             inputs = inputs.to(self.dtype)
-            
-        meta = data_sample['metainfo']
         
         # skipping checks for NaN/Inf values
         # if torch.isnan(inputs).all() or torch.isinf(inputs).all():
@@ -158,10 +163,12 @@ class RayPreprocessor(torch.nn.Module):
                 inputs = transform(inputs)
             transform_time = time.time() - transform_t0
 
+        assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
+
         if self.with_masking:
             masking_time = time.time()
             masks, context_masks, target_masks, \
-            original_patch_indices, channels_to_mask = self.mask_generator(inputs.shape[0])
+            original_patch_indices, channels_to_mask, patches_used = self.mask_generator(inputs.shape[0])
             masking_time = time.time() - masking_time
 
             return {
@@ -172,6 +179,7 @@ class RayPreprocessor(torch.nn.Module):
                     'target_masks': [target_masks] if self.with_masking else None,
                     'original_patch_indices': [original_patch_indices] if self.with_masking else None,
                     'channels_to_mask': [channels_to_mask] if self.with_masking else None,
+                    'patches_used': [patches_used] if self.with_masking else None,
                     'preprocess_time': time.time() - preprocess_time,
                     'data_time': data_time,
                     'masking_time': masking_time,

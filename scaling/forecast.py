@@ -7,14 +7,14 @@ matplotlib.use('Agg')
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import argparse
 
 import logging
 import sys
 import time
 
-from scaling import vis
-from scaling import profile
-from utils import cli
+import vis
+import profile
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -24,8 +24,47 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class LoggerWriter:
+    def __init__(self, level):
+        # self.level is really like using log.debug(message)
+        # at least in my case
+        self.level = level
+
+    def write(self, message):
+        # if statement reduces the amount of newlines that are
+        # printed to the logger
+        if message != '\n':
+            self.level(message)
+
+    def flush(self):
+        # create a flush method so things can be flushed when
+        # the system wants to. Not sure if simply 'printing'
+        # sys.stderr is the correct way to do it, but it seemed
+        # to work properly for me.
+        self.level(sys.stderr)
+
+
+class ArgumentParserWithDefaults(argparse.ArgumentParser):
+    def add_argument(self, *args, help=None, default=None, **kwargs):
+        if help is not None:
+            kwargs['help'] = help
+        if default is not None and args[0] != '-h':
+            kwargs['default'] = default
+            if help is not None:
+                kwargs['help'] += f' (Default: `{default}`)'
+        super().add_argument(*args, **kwargs)
+
+
+def argparser():
+    parser = ArgumentParserWithDefaults(
+        formatter_class=argparse.RawTextHelpFormatter,
+        description="Copyright (c) 2025 Cell Observatory.",
+    )
+    return parser
+
+
 def parse_args(args):
-    parser = cli.argparser()
+    parser = argparser()
 
 
     parser.add_argument(
@@ -33,11 +72,11 @@ def parse_args(args):
     )
 
     parser.add_argument(
-        "--ishape", default='16-128-128-128-3', help='input shape', type=str,
+        "--ishape", default='16-128-128-128-2', help='input shape', type=str,
     )
 
     parser.add_argument(
-        "--ipatch", default='2-16-16-16-3', help='patch size', type=str,
+        "--ipatch", default='2-16-16-16-2', help='patch size', type=str,
     )
 
     parser.add_argument("--rgb", action="store_true")
@@ -47,7 +86,7 @@ def parse_args(args):
     )
 
     parser.add_argument(
-        "--arch", type=str, default='vit', choices=["gpt_vit", "powerlaw", "published_models", "vit", "mae_ssl", "mae_ft", "transformer"],
+        "--arch", type=str, default='published_models', choices=["gpt_vit", "powerlaw", "published_models", "vit", "mae_ssl", "mae_ft", "transformer"],
         help='architecture to use'
     )
 
@@ -69,14 +108,15 @@ def parse_args(args):
     parser.add_argument(
         "--batch_size", default=4096, type=int, help="number of volumes per batch"
     )
-
+    
     return parser.parse_known_args(args)[0]
 
 
 def scaling_transformer(
     ishape={'t': 16, 'z': 128, 'y': 128, 'x': 128, 'c': 3},
     dtype='float16',
-    outdir=Path("../scaling/data/transformers")
+    outdir=Path("../scaling/data/transformers"),
+    mfu=0.5,
 ):
     dimensions = {
         "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
@@ -106,11 +146,11 @@ def scaling_transformer(
     for patch in [14, 16]:
         patches = {
             "2D(g)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 1},
-            "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 3},
+            "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": ishape['c']},
             "3D(g)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 1},
-            "3D(rgb)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 3},
+            "3D(rgb)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": ishape['c']},
             "4D(g)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 1},
-            "4D(rgb)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 3}
+            "4D(rgb)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": ishape['c']}
         }
 
         for dims in dimensions.keys():
@@ -208,8 +248,8 @@ def scaling_transformer(
                         dtype=dtype
                     )
 
-                    inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds")
-                    training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds")
+                    inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds", mfu=mfu)
+                    training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds", mfu=mfu)
 
                     patches_per_volume = np.product([s // p for s, p in zip(volume_size, patch_size)])
                     pixels_per_patch = np.product(patch_size)
@@ -245,28 +285,38 @@ def scaling_transformer(
                         "model_training_memory": model_training_memory,
                         "inference_time_per_volume": inference_time_per_volume,
                         "training_time_per_volume": training_time_per_volume,
+                        "mfu": mfu,
                     }
 
     transformer_scaling = pd.DataFrame.from_dict(transformer_configs, orient='index')
     transformer_scaling = transformer_scaling.sort_values(['px', 'parameters', 'layers', 'heads'],
                                                           ascending=[True, True, True, True])
-    transformer_scaling.to_csv(outdir / "transformers.csv")
+    transformer_scaling.to_csv(outdir / f"transformers_{str(mfu).replace('.', 'p')}_mfu.csv")
     return transformer_scaling
 
 
 def scaling_vit(
     ishape={'t': 16, 'z': 128, 'y': 128, 'x': 128, 'c': 3},
     dtype='float16',  # per channel
-    outdir=Path("../scaling/data/vits")
+    outdir=Path("../scaling/data/vits"),
+    only_2d=False,
+    mfu=0.5,
 ):
-    vit_dimensions = {
-        "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
-        "2D(rgb)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
-        "3D(g)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
-        "3D(rgb)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
-        "4D(g)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
-        "4D(rgb)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']}
-    }
+    if only_2d:
+        vit_dimensions = {
+            "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "2D(rgb)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
+        }
+    else:
+        vit_dimensions = {
+            "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "2D(rgb)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
+            "3D(g)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "3D(rgb)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
+            "4D(g)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "4D(rgb)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']}
+        }
+
     vits = {
         "S": {"layers": 12, "heads": 6, "embedding": 384, "mlp": 1536},
         "B": {"layers": 12, "heads": 12, "embedding": 768, "mlp": 3072},
@@ -280,13 +330,19 @@ def scaling_vit(
 
     vit_configs = {}
     for patch in [14, 16]:
-        patches = {
-            "2D(g)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 1},
-            "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 3},
-            "3D(g)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 1},
-            "3D(rgb)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 3},
-            "4D(g)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 1},
-            "4D(rgb)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 3}
+        if only_2d:
+            patches = {
+                "2D(g)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 1},
+                "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": ishape['c']},
+            }
+        else:
+            patches = {
+                "2D(g)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 1},
+                "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": ishape['c']},
+                "3D(g)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 1},
+                "3D(rgb)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": ishape['c']},
+                "4D(g)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 1},
+                "4D(rgb)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": ishape['c']}
         }
 
         for dims in vit_dimensions.keys():
@@ -302,7 +358,8 @@ def scaling_vit(
             )
 
             for v in vits:
-                print(f"{dims} ViT {v}/{patch}")
+                logger.info(f"{dims} ViT {v}/{patch}")
+                logger.info(f"patchify: {volume_size=}, {patch_size=} -> {num_tokens:,d} tokens")
 
                 layers = vits[v]["layers"]
                 heads = vits[v]["heads"]
@@ -333,8 +390,8 @@ def scaling_vit(
                     dtype=dtype
                 )
 
-                inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds")
-                training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds")
+                inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds", mfu=mfu)
+                training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds", mfu=mfu)
                 gflops = np.round(flops / 1e9, 3)
                 gflops_per_patch = np.round(flops_per_patch / 1e9, 3)
 
@@ -382,11 +439,12 @@ def scaling_vit(
                     "model_training_memory": model_training_memory,
                     "inference_time_per_volume": inference_time_per_volume,
                     "training_time_per_volume": training_time_per_volume,
+                    "mfu": mfu,
                 }
 
     vit_scaling = pd.DataFrame.from_dict(vit_configs, orient='index')
     vit_scaling = vit_scaling.sort_values(['px', 'parameters', 'layers', 'heads'], ascending=[True, True, True, True])
-    vit_scaling.to_csv(outdir / "vits.csv")
+    vit_scaling.to_csv(outdir / f"vits_{str(mfu).replace('.', 'p')}_mfu.csv")
     return vit_scaling
 
 
@@ -394,16 +452,25 @@ def scaling_mae_ssl(
     ishape={'t': 16, 'z': 128, 'y': 128, 'x': 128, 'c': 3},
     dtype='float16',  # per channel
     outdir=Path("../scaling/data/maes/ssl"),
-    mask_ratio=0.75
+    mask_ratio=0.75,
+    only_2d=False,
+    mfu=0.5,
 ):
-    maes_dimensions = {
-        "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
-        "2D(rgb)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
-        "3D(g)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
-        "3D(rgb)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
-        "4D(g)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
-        "4D(rgb)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']}
-    }
+    if only_2d:
+        maes_dimensions = {
+            "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "2D(rgb)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
+        }
+    else:
+        maes_dimensions = {
+            "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "2D(rgb)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
+            "3D(g)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "3D(rgb)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
+            "4D(g)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "4D(rgb)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']}
+        }
+
     maes_encoders = {
         "S": {"layers": 12, "heads": 6, "embedding": 384, "mlp": 1536},
         "B": {"layers": 12, "heads": 12, "embedding": 768, "mlp": 3072},
@@ -422,14 +489,20 @@ def scaling_mae_ssl(
 
     mae_configs = {}
     for patch in [14, 16]:
-        patches = {
-            "2D(g)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 1},
-            "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 3},
-            "3D(g)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 1},
-            "3D(rgb)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 3},
-            "4D(g)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 1},
-            "4D(rgb)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 3}
-        }
+        if only_2d:
+            patches = {
+                "2D(g)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 1},
+                "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": ishape['c']},
+            }
+        else:
+            patches = {
+                "2D(g)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 1},
+                "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": ishape['c']},
+                "3D(g)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 1},
+                "3D(rgb)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": ishape['c']},
+                "4D(g)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 1},
+                "4D(rgb)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": ishape['c']}
+            }
 
         for dims in maes_dimensions.keys():
 
@@ -437,7 +510,7 @@ def scaling_mae_ssl(
             patch_size = list(patches[dims].values())
             num_encoder_tokens = profile.patchify(volume_size=volume_size, patch_size=patch_size, mask_ratio=mask_ratio)
             num_decoder_tokens = profile.patchify(volume_size=volume_size, patch_size=patch_size, mask_ratio=0.0)
-
+            
             memory_per_volume = profile.data_memory_footprint(
                 volume_size=volume_size,
                 batch_size=1,
@@ -445,7 +518,9 @@ def scaling_mae_ssl(
             )
 
             for v in maes_encoders:
-                print(f"{dims} MAE {v}/{patch}")
+                logger.info(f"{dims} MAE {v}/{patch}")
+                logger.info(f"patchify: {volume_size=}, {patch_size=} -> {num_encoder_tokens:,d} encoder tokens, {num_decoder_tokens:,d} decoder tokens")
+
 
                 e_layers = maes_encoders[v]["layers"]
                 e_heads = maes_encoders[v]["heads"]
@@ -500,8 +575,8 @@ def scaling_mae_ssl(
                     dtype=dtype
                 )
 
-                inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds")
-                training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds")
+                inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds", mfu=mfu)
+                training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds", mfu=mfu)
                 gflops = np.round(flops / 1e9, 3)
                 gflops_per_patch = np.round(flops_per_patch / 1e9, 3)
 
@@ -543,11 +618,12 @@ def scaling_mae_ssl(
                     "model_training_memory": model_training_memory,
                     "inference_time_per_volume": inference_time_per_volume,
                     "training_time_per_volume": training_time_per_volume,
+                    "mfu": mfu,
                 }
 
     mae_scaling = pd.DataFrame.from_dict(mae_configs, orient='index')
     mae_scaling = mae_scaling.sort_values(['px', 'parameters', 'encoder_layers', 'encoder_heads'], ascending=[True, True, True, True])
-    mae_scaling.to_csv(outdir / "maes_ssl.csv")
+    mae_scaling.to_csv(outdir / f"maes_ssl_{str(mfu).replace('.', 'p')}_mfu.csv")
     return mae_scaling
 
 
@@ -555,16 +631,25 @@ def scaling_mae_ft(
     ishape={'t': 16, 'z': 128, 'y': 128, 'x': 128, 'c': 3},
     dtype='float16',  # per channel
     outdir=Path("../scaling/data/maes/ft"),
-    mask_ratio=0.75
+    mask_ratio=0.75,
+    only_2d=False,
+    mfu=0.5,
 ):
-    maes_dimensions = {
-        "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
-        "2D(rgb)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
-        "3D(g)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
-        "3D(rgb)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
-        "4D(g)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
-        "4D(rgb)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']}
-    }
+    if only_2d:
+        maes_dimensions = {
+            "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "2D(rgb)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
+        }
+    else:
+        maes_dimensions = {
+            "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "2D(rgb)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
+            "3D(g)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "3D(rgb)": {"t": 1, "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']},
+            "4D(g)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": 1},
+            "4D(rgb)": {"t": ishape['t'], "z": ishape['z'], "y": ishape['y'], "x": ishape['x'], "c": ishape['c']}
+        }
+        
     maes_encoders = {
         "S": {"layers": 12, "heads": 6, "embedding": 384, "mlp": 1536},
         "B": {"layers": 12, "heads": 12, "embedding": 768, "mlp": 3072},
@@ -583,14 +668,20 @@ def scaling_mae_ft(
 
     mae_configs = {}
     for patch in [14, 16]:
-        patches = {
-            "2D(g)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 1},
-            "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 3},
-            "3D(g)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 1},
-            "3D(rgb)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 3},
-            "4D(g)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 1},
-            "4D(rgb)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 3}
-        }
+        if only_2d:
+            patches = {
+                "2D(g)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 1},
+                "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": ishape['c']},
+            }
+        else:
+            patches = {
+                "2D(g)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": 1},
+                "2D(rgb)": {"t": 1, "z": 1, "y": patch, "x": patch, "c": ishape['c']},
+                "3D(g)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": 1},
+                "3D(rgb)": {"t": 1, "z": patch, "y": patch, "x": patch, "c": ishape['c']},
+                "4D(g)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": 1},
+                "4D(rgb)": {"t": 2, "z": patch, "y": patch, "x": patch, "c": ishape['c']}
+            }
 
         for dims in maes_dimensions.keys():
 
@@ -606,7 +697,9 @@ def scaling_mae_ft(
             )
 
             for v in maes_encoders:
-                print(f"{dims} MAE {v}/{patch}")
+                logger.info(f"{dims} MAE {v}/{patch}")
+                logger.info(f"patchify: {volume_size=}, {patch_size=} -> {num_encoder_tokens:,d} encoder tokens, {num_decoder_tokens:,d} decoder tokens")
+            
 
                 e_layers = maes_encoders[v]["layers"]
                 e_heads = maes_encoders[v]["heads"]
@@ -672,13 +765,15 @@ def scaling_mae_ft(
                 encoder_inference_time_per_volume = profile.compute_time(
                     flops=eflops,
                     gpu="H100",
-                    unit="seconds"
+                    unit="seconds",
+                    mfu=mfu
                 )
 
                 decoder_inference_time_per_volume = profile.compute_time(
                     flops=dflops,
                     gpu="H100",
-                    unit="seconds"
+                    unit="seconds",
+                    mfu=mfu
                 )
 
                 inference_time_per_volume = encoder_inference_time_per_volume + decoder_inference_time_per_volume
@@ -686,7 +781,8 @@ def scaling_mae_ft(
                 decoder_training_time_per_volume = profile.compute_time(
                     flops=3 * dflops,
                     gpu="H100",
-                    unit="seconds"
+                    unit="seconds",
+                    mfu=mfu
                 )
 
                 # encoder weights are frozen during training
@@ -739,11 +835,12 @@ def scaling_mae_ft(
                     "model_training_memory": model_training_memory,
                     "inference_time_per_volume": inference_time_per_volume,
                     "training_time_per_volume": training_time_per_volume,
+                    "mfu": mfu,
                 }
 
     mae_scaling = pd.DataFrame.from_dict(mae_configs, orient='index')
     mae_scaling = mae_scaling.sort_values(['px', 'parameters', 'encoder_layers', 'encoder_heads'], ascending=[True, True, True, True])
-    mae_scaling.to_csv(outdir / "maes_ft.csv")
+    mae_scaling.to_csv(outdir / f"maes_ft_{str(mfu).replace('.', 'p')}_mfu.csv")
     return mae_scaling
 
 
@@ -754,6 +851,10 @@ def main(args=None):
     args = parse_args(args)
     logger.info(args)
 
+    args.outdir = args.outdir / args.arch / f"size-{args.ishape}" / f"patch-{args.ipatch}"
+    args.outdir.mkdir(parents=True, exist_ok=True)
+
+
     args.ishape = {
         o: int(i) for o, i in zip(args.order.split('-'), args.ishape.split('-'))
     } if isinstance(args.ishape, str) else args.ishape
@@ -762,7 +863,6 @@ def main(args=None):
         o: int(i) for o, i in zip(args.order.split('-'), args.ipatch.split('-'))
     } if isinstance(args.ipatch, str) else args.ipatch
 
-    args.outdir.mkdir(parents=True, exist_ok=True)
 
     if args.arch == "powerlaw":
         vis.plot_powerlaw(args.outdir)
@@ -948,29 +1048,39 @@ def main(args=None):
             out = args.outdir / m
             out.mkdir(parents=True, exist_ok=True)
 
-            if m == "ViT":
-                df = scaling_vit(
-                    ishape=models[m]['S']['ishape'],
-                    dtype=args.dtype,
-                    outdir=out
-                )
-            elif m == "MAE-SSL":
-                df = scaling_mae_ssl(
-                    ishape=models[m]['S']['ishape'],
-                    dtype=args.dtype,
-                    outdir=out,
-                    mask_ratio=models[m]['S']['mask_ratio']
-                )
+            dataframes = []
+            for mfu in [.3, .6, .9]:
+                if m == "ViT":
+                    df = scaling_vit(
+                        ishape=models[m]['S']['ishape'],
+                        dtype=args.dtype,
+                        outdir=out,
+                        only_2d=True,
+                        mfu=mfu
+                    )
+                elif m == "MAE-SSL":
+                    df = scaling_mae_ssl(
+                        ishape=models[m]['S']['ishape'],
+                        dtype=args.dtype,
+                        outdir=out,
+                        mask_ratio=models[m]['S']['mask_ratio'],
+                        only_2d=True,
+                        mfu=mfu
+                    )
 
-            elif m == "MAE-FT":
-                df = scaling_mae_ft(
-                    ishape=models[m]['S']['ishape'],
-                    dtype=args.dtype,
-                    outdir=out,
-                )
+                elif m == "MAE-FT":
+                    df = scaling_mae_ft(
+                        ishape=models[m]['S']['ishape'],
+                        dtype=args.dtype,
+                        outdir=out,
+                        only_2d=True,
+                        mfu=mfu
+                    )
+                dataframes.append(df)
 
+            df = pd.concat(dataframes)
             df = df.loc[df['data'].str.match(r'2D\(rgb\)')]
-
+            
             for p in [14, 16]:
                 for v, d in models[m].items():
                     idx = df.loc[df['class'].str.match(f"{v}/{p}")].index
@@ -982,36 +1092,42 @@ def main(args=None):
                                 df[col] = np.nan
                             df.loc[idx, col] = val
 
-            df.to_csv(out / f"published_models.csv")
+            df.to_csv(out / f"published_models_{str(mfu).replace('.', 'p')}_mfu.csv")
 
             vis.plot_published_models(
                 df,
                 outdir=out,
                 models=models[m],
-                cost_h100_per_hr=args.cost_h100_per_hr
+                cost_h100_per_hr=args.cost_h100_per_hr,
             )
 
     else:
         summary = args.outdir / "summary"
         summary.mkdir(parents=True, exist_ok=True)
 
-        if args.arch == "vit":
-            df = scaling_vit(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir)
-        elif args.arch == "mae_ssl":
-            df = scaling_mae_ssl(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mask_ratio=args.mask_ratio)
-        elif args.arch == "mae_ft":
-            df = scaling_mae_ft(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mask_ratio=args.mask_ratio)
-        elif args.arch == "transformer":
-            df = scaling_transformer(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir)
+        dataframes = []
+        for mfu in [.3, .6, .9]:
+            
+            if args.arch == "vit":
+                df = scaling_vit(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mfu=mfu)
+            elif args.arch == "mae_ssl":
+                df = scaling_mae_ssl(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mask_ratio=args.mask_ratio, mfu=mfu)
+            elif args.arch == "mae_ft":
+                df = scaling_mae_ft(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mask_ratio=args.mask_ratio, mfu=mfu)
+            elif args.arch == "transformer":
+                df = scaling_transformer(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mfu=mfu)
 
+            dataframes.append(df)
 
+        df = pd.concat(dataframes)
+            
         df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * args.batch_size) / 80)
         df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
         df["training_h100_hours_per_step"] = args.batch_size * df["training_time_per_volume"] / 3600
         df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
 
-        for epoch in [1, 50, 100, 300, 500, 800, 1000]:
-            for dataset_size in [1000000, 1281167, 14197122, 10000000, 100000000, 303000000, 1000000000]:
+        for epoch in [1, 100]:
+            for dataset_size in [100000, 1000000, 1281167, 14197122, 10000000, 100000000, 303000000, 1000000000]:
                 e = "" if epoch == 1 else f"{epoch}_"
                 df[f"training_h100_days_per_{e}epoch_{dataset_size}"] = dataset_size * df["training_time_per_volume"] / 3600 / 24 * epoch
                 df[f"multigpu_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] / df["number_h100_for_batch"] * epoch
@@ -1046,60 +1162,72 @@ def main(args=None):
                 rgb='rgb' if args.rgb else 'g',
                 legend=[
                     'Data (x, y, z, t, c)',
-                        f'4D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
-                        f'3D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
-                        f'2D ({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {3 if args.rgb else 1})',
+                        f'({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
+                        f'({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
+                        f'({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {args.ishape["c"] if args.rgb else 1})',
                     'Patch (x, y, z, t, c)',
                         f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
-                ]
+                    'Model FLOPs Utilization',
+                        'MFU(0.3)',
+                        'MFU(0.6)',
+                        'MFU(0.9)',
+                ],
             )
 
             for var in ['days', 'cost']:
-                for epoch in [1, 100, 300, 500]:
+                for epoch in [1, 100]:
                     e = "" if epoch == 1 else f"{epoch}_"
                     vis.plot_data_parameter_scaling(
                         data,
                         outdir=outdir_summary,
                         x="parameters",
                         xlabel="Trainable parameters (excluding input and head layers)",
-                        y=f"training_h100_{var}_per_{e}epoch_1000000",
+                        y=f"training_h100_{var}_per_{e}epoch_100000",
                         ylabel=f"Training H100 {var} per epoch" if epoch == 1 else f"Training H100 {var} for ({epoch}) epoch(s)",
-                        yscalelabel="1M",
-                        ytwin1=f"training_h100_{var}_per_{e}epoch_10000000",
-                        ytwinlabel1=f"10M",
-                        ytwin2=f"training_h100_{var}_per_{e}epoch_100000000",
-                        ytwinlabel2=f"100M",
+                        yscalelabel="100K",
+                        ytwin1=f"training_h100_{var}_per_{e}epoch_1000000",
+                        ytwinlabel1=f"1M",
+                        ytwin2=f"training_h100_{var}_per_{e}epoch_10000000",
+                        ytwinlabel2=f"10M",
                         ytwin3=f"training_h100_{var}_per_{e}epoch_100000000",
-                        ytwinlabel3=f"1B",
+                        ytwinlabel3=f"100M",
                         published_models_only=False,
                         ylog=True,
                         patch_size=args.ipatch["x"],
                         rgb='rgb' if args.rgb else 'g',
                         legend=[
                             'Data (x, y, z, t, c)',
-                                f'4D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
-                                f'3D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
-                                f'2D ({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {3 if args.rgb else 1})',
+                                f'({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
+                                f'({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
+                                f'({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {args.ishape["c"] if args.rgb else 1})',
                             'Patch (x, y, z, t, c)',
                                 f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
+                            'Model FLOPs Utilization',
+                                'MFU(0.3)',
+                                'MFU(0.6)',
+                                'MFU(0.9)',
                         ]
                     )
 
-            vis.plot_individual_parameters(
-                data,
-                batch_size=args.batch_size,
-                outdir=outdir,
-                cost_h100_per_hr=args.cost_h100_per_hr,
-                rgb='rgb' if args.rgb else 'g',
-                legend=[
-                    'Data (x, y, z, t, c)',
-                    f'4D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
-                    f'3D ({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
-                    f'2D ({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {3 if args.rgb else 1})',
-                    'Patch (x, y, z, t, c)',
-                    f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
-                ]
-            )
+            # vis.plot_individual_parameters(
+            #     data,
+            #     batch_size=args.batch_size,
+            #     outdir=outdir,
+            #     cost_h100_per_hr=args.cost_h100_per_hr,
+            #     rgb='rgb' if args.rgb else 'g',
+            #     legend=[
+            #         'Data (x, y, z, t, c)',
+            #             f'({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, {args.ishape["t"]}, {args.ishape["c"] if args.rgb else 1})',
+            #             f'({args.ishape["x"]}, {args.ishape["y"]}, {args.ishape["z"]}, 1, {args.ishape["c"] if args.rgb else 1})',
+            #             f'({args.ishape["x"]}, {args.ishape["y"]}, 1, 1, {3 if args.rgb else 1})',
+            #         'Patch (x, y, z, t, c)',
+            #             f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
+            #         'Model FLOPs Utilization',
+            #             'MFU(0.3)',
+            #             'MFU(0.6)',
+            #             'MFU(0.9)',
+            #     ]
+            # )
 
     logger.info(f"Total time elapsed: {time.time() - timeit:.2f} sec.")
 

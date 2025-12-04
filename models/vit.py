@@ -7,11 +7,13 @@ import torch.nn as nn
 from timm.layers import AttentionPoolLatent
 from timm.models.vision_transformer import global_pool_nlc
 
-from models.norm import get_norm
-from models.activation import get_activation
-from models.mlp import get_mlp
-from models.encoder import Encoder
-from models.patch_embeddings import ConvPatchEmbedding, PatchEmbedding, PosEmbedding
+from cell_observatory_platform.models.mlp import get_mlp
+from cell_observatory_platform.models.norm import get_norm
+from cell_observatory_platform.models.encoder import Encoder
+from cell_observatory_platform.models.activation import get_activation
+from cell_observatory_platform.models.patch_embeddings import calc_num_patches
+from cell_observatory_platform.models.patch_embeddings import PatchEmbedding
+from cell_observatory_platform.models.positional_encoding import PosEmbedding
 
 logging.basicConfig(
 	stream=sys.stdout,
@@ -99,11 +101,9 @@ class ViT(nn.Module):
             'vit-gigantic'
         ] = 'vit',
         input_fmt='TZYXC',
-        input_shape=(1, 6, 64, 64, 1),
+        input_shape: tuple = (16, 128, 128, 128, 2),
+        patch_shape: tuple = (4, 16, 16, 16),
         modes=15,
-        lateral_patch_size=16,
-        axial_patch_size=1,
-        temporal_patch_size=1,
         embed_dim=768,
         depth=12,
         num_heads=12,
@@ -117,7 +117,13 @@ class ViT(nn.Module):
         norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'LayerNorm',
         act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'GELU',
         mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'Mlp',
-        use_conv_proj=False,
+        abs_sincos_enc: bool = False,
+        rope_pos_enc: bool = True,
+        rope_random_rotation_per_head: bool = True,
+        rope_mixed: bool = True,
+        rope_theta: float = 10.0,
+        mlp_wide_silu: bool = False,
+        dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
@@ -136,13 +142,12 @@ class ViT(nn.Module):
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
-        self.img_size = input_shape[-2]
-        self.in_chans = input_shape[-1]
-        self.num_frames = input_shape[1]
+        
+        axis_to_value = dict(zip(input_fmt, input_shape))
+        self.in_chans = axis_to_value['C']
+        self.num_frames = axis_to_value['T']
 
-        self.axial_patch_size = axial_patch_size
-        self.lateral_patch_size = lateral_patch_size
-        self.temporal_patch_size = temporal_patch_size
+        self.patch_shape = patch_shape
 
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
@@ -158,34 +163,31 @@ class ViT(nn.Module):
 
         self.norm = self.norm_layer(self.embed_dim) if norm_layer is not None else nn.Identity()
 
-        if use_conv_proj:
-            self.patch_embedding = ConvPatchEmbedding(
-                input_shape=self.input_shape,
-                lateral_patch_size=self.lateral_patch_size,
-                axial_patch_size=self.axial_patch_size,
-                temporal_patch_size=self.temporal_patch_size,
-                embed_dim=self.embed_dim,
-            )
-        else:
-            self.patch_embedding = PatchEmbedding(
-                input_fmt=self.input_fmt ,
-                input_shape=self.input_shape,
-                lateral_patch_size=self.lateral_patch_size,
-                axial_patch_size=self.axial_patch_size,
-                temporal_patch_size=self.temporal_patch_size,
-                embed_dim=self.embed_dim,
-                channels=self.in_chans
-            )
-
-        self.pos_embedding = PosEmbedding(
-            input_fmt=self.input_fmt,
+        self.patch_embedding = PatchEmbedding(
+            input_fmt=self.input_fmt ,
             input_shape=self.input_shape,
-            lateral_patch_size=self.lateral_patch_size,
-            axial_patch_size=self.axial_patch_size,
+            patch_shape=self.patch_shape,
             embed_dim=self.embed_dim,
-            channels=self.in_chans,
-            cls_token=False
+            channels=self.in_chans
         )
+
+        # positional encoding parameters
+        self.abs_sincos_enc = abs_sincos_enc
+        self.rope_pos_enc = rope_pos_enc
+        self.rope_mixed = rope_mixed
+        self.rope_theta = rope_theta
+        self.wide_silu = mlp_wide_silu
+        self.rope_random_rotation_per_head = rope_random_rotation_per_head
+
+        if self.abs_sincos_enc:
+            self.pos_embedding = PosEmbedding(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                embed_dim=self.embed_dim,
+                channels=self.in_chans,
+                cls_token=False
+            )
 
         self.encoder = Encoder(
             embed_dim=self.embed_dim,
@@ -200,6 +202,15 @@ class ViT(nn.Module):
             act_layer=self.act_layer,
             mlp_layer=self.mlp_layer,
             init_std=self.init_std,
+            rope_pos_enc=rope_pos_enc,
+            rope_random_rotation_per_head=rope_random_rotation_per_head,
+            rope_mixed=rope_mixed,
+            rope_theta=rope_theta,
+            input_fmt=input_fmt,
+            input_shape=input_shape,
+            patch_shape=self.patch_shape,
+            mlp_wide_silu=mlp_wide_silu,
+            dtype=dtype
         )
 
         self.global_pool = global_pool
@@ -231,7 +242,15 @@ class ViT(nn.Module):
 
     @torch.jit.ignore
     def get_num_patches(self):
-        return self.pos_embedding.num_patches
+        if self.abs_sincos_enc:
+            return self.pos_embedding.num_patches
+        else:
+            num_patches, _ = calc_num_patches(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+            )
+            return num_patches
 
     def pool(self, x, pool_type = None, num_prefix_tokens = 1):
         if self.att_pool is not None:
@@ -252,7 +271,8 @@ class ViT(nn.Module):
         inputs, meta = data_sample['data_tensor'], data_sample['metainfo']
 
         x = self.patch_embedding(inputs)
-        x += self.pos_embedding(inputs)
+        if self.abs_sincos_enc:
+            x += self.pos_embedding(inputs)
 
         x = self.encoder(x)
         x = self.forward_head(x)

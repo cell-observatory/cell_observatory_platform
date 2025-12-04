@@ -4,15 +4,15 @@ defaults:
 logdir: ${paths.outdir}/logs
 
 event_writers_list:
-  _target_: training.loggers.EventWriterList
+  _target_: cell_observatory_platform.training.loggers.EventWriterList
   
 event_writers:
-    - _target_: training.loggers.LocalEventWriter
+    - _target_: cell_observatory_platform.training.loggers.LocalEventWriter
       save_dir: ${loggers.logdir}
       step_scalars_prefix: step_logbook
       epoch_scalars_prefix: epoch_logbook
       scalars_save_format: csv
-    - _target_: training.loggers.WandBEventWriter
+    - _target_: cell_observatory_platform.training.loggers.WandBEventWriter
       project: ${wandb_project}
       # entity: cell-observatory
       # save directory for W&B logs
@@ -42,6 +42,7 @@ event_writers:
       # otherwise if force=False, W&B will log
       # locally and not upload to W&B
       force: true
+      env_path: ${paths.dotenv_path}
 
 event_recorder:
-  _target_: training.loggers.EventRecorder
+  _target_: cell_observatory_platform.training.loggers.EventRecorder

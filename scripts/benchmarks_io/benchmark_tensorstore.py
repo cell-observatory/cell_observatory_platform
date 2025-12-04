@@ -2,21 +2,24 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import logging
+
+import matplotlib
 import numpy as np
 import pandas as pd
-import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from omegaconf import DictConfig
 import tensorstore as ts
+from omegaconf import DictConfig
 
-from utils import cli
-from utils.common import multiprocess
-from data.data_types import NUMPY_DTYPES
-from data.io import load_hypercubes_dataframe, read_zarr
+from cell_observatory_platform.data.data_types import NUMPY_DTYPES
+from cell_observatory_platform.data.io import load_hypercubes_dataframe, read_zarr
+from cell_observatory_platform.utils import cli
+from cell_observatory_platform.utils.common import multiprocess
+from cell_observatory_platform.utils.profiling import enable_profiling, pprof_func
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -70,7 +73,6 @@ class DataLoadingBenchmark:
         self.output_path = outdir / f"{'_'.join(map(str, self.hypercube_shape))}_{self.dtype}"
 
         os.makedirs(self.output_path.parent, exist_ok=True)
-
         
         # self.paths = {
         #     os.path.join(sf, of, tn)
@@ -104,6 +106,7 @@ class DataLoadingBenchmark:
             "cache_pool": {"total_bytes_limit": 0}
         })
     
+    @pprof_func(label="read_hypercube_ts_benchmark")
     def read_hypercube_from_zarr(self, rec) -> float:
         context = self._get_ts_context()
         
@@ -113,7 +116,7 @@ class DataLoadingBenchmark:
         for f in rec:
             # zarr_handle = self._zarr_handles_data[os.path.join(f["server_folder"], f["output_folder"], f["tile_name"])]
             zarr_handle = read_zarr(
-                path=os.path.join(f["server_folder"], f["output_folder"], f["tile_name"]),
+                image_path=os.path.join(f["server_folder"], f["output_folder"], f["tile_name"]),
                 dtype=self.dtype,
                 context=context
             )
@@ -312,6 +315,7 @@ class DataLoadingBenchmark:
             self.plot_scaling()
 
 def benchmark_tensorstore(cfg: DictConfig):
+    enable_profiling(cfg)
     benchmarker = DataLoadingBenchmark(
         hypercubes_dataframe_path=cfg.datasets.hypercubes_dataframe_path,
         max_rois=cfg.datasets.max_rois,

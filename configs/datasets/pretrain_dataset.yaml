@@ -1,5 +1,5 @@
 defaults:
-  - databases: supabase_database  # Loads configs/datasets/databases/supabase_database.yaml
+  - databases: base_database  # Loads configs/datasets/databases/base_database.yaml
   - masking: mask_generator       # Loads configs/datasets/masking/mask_generator.yaml
   - transforms: transforms        # Loads configs/datasets/transforms/transforms.yaml
   - preprocessor: torch_preprocessor    # Loads configs/datasets/preprocessor/torch_preprocessor.yaml
@@ -17,8 +17,10 @@ max_hypercubes: null # maximum number of hypercubes to return
 hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
 roi_list: null # list of specific ROIs to filter
 tile_list: null # list of specific tiles to filter
+synthetic_only: False
+has_annotations: False
 
-occupancy_threshold: 0.9 # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
+occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
 
 use_cached_hypercubes_dataframe: false # whether to use the cached hypercubes dataframe
 hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv # path to the hypercubes dataframe (path/to/repo/databases/default_hypercubes_dataframe.csv)
@@ -28,13 +30,19 @@ split: 0.1
 return_dataloader: true
 distributed_sampler: true
 
-collate_fn: data.datasets.pretrain_dataset.simple_collate_pretrain_dataset
+collate_fn: cell_observatory_platform.data.datasets.pretrain_dataset.simple_collate_pretrain_dataset
 prefetch_factor: 2 # prefetch factor for the dataloader
 num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
 
+columns: [ 
+  'x_start', 'y_start', 'z_start', 'time_start',
+  'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
+  'server_folder', 'output_folder',
+  'tile_name', 'prepared_id', 'mask_bbox_dict'
+]
 
 dataset:
-  _target_: data.datasets.pretrain_dataset.PretrainDataset
+  _target_: cell_observatory_platform.data.datasets.pretrain_dataset.PretrainDataset
   dtype: ${dataset_dtype}
   hypercubes_dataframe_path: ${datasets.hypercubes_dataframe_path}
   server_folder_path: ${datasets.server_folder_path}
@@ -44,8 +52,11 @@ dataset:
   hpf_list: ${datasets.hpf_list}
   roi_list: ${datasets.roi_list}
   tile_list: ${datasets.tile_list}
+  synthetic_only: ${datasets.synthetic_only}
+  has_annotations: ${datasets.has_annotations}
+  columns: ${datasets.columns}
   time: true
 
   input_layout: 
-    _target_: data.data_shapes.MULTICHANNEL_HYPERCUBE
+    _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}

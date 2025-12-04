@@ -1,10 +1,11 @@
-import sys, time, logging
+import os
+import sys
+import time
+import logging
+from typing import List
+from tqdm import tqdm
 from pathlib import Path
-from typing import Any, Dict, List
 
-import ray
-
-import pandas as pd
 import torch
 
 import pandas as pd
@@ -13,8 +14,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from utils.context import process_rank
-from data.dataloaders import get_dataloader
+from cell_observatory_platform.data.dataloaders import get_dataloader
+from cell_observatory_platform.utils.context import process_rank, barrier
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -143,7 +144,9 @@ def _measure_loader(loader, num_batches: int, warmup: int, batch_size: int, byte
     total_bytes = 0
     measured = 0
 
-    for _ in range(num_batches):
+    # read_times, collate_times = [], []
+
+    for _ in tqdm(range(num_batches)):
         t0 = time.perf_counter()
         try:
             batch = next(it)
@@ -151,10 +154,22 @@ def _measure_loader(loader, num_batches: int, warmup: int, batch_size: int, byte
             break
         t1 = time.perf_counter()
 
+        # collate_time = batch['metainfo'].get('collate_time', -1)
+        # read_time = batch['metainfo'].get('read_time', -1)
+
+        # collate_times.append(collate_time)
+        # read_times.append(read_time)
+
         wait_time += (t1 - t0)
         total_items += batch_size
         total_bytes += bytes_per_sample * batch_size
         measured += 1
+
+    barrier(device_ids=int(os.environ.get("LOCAL_RANK")))
+
+    # for manual inspection
+    # logger.info(f"Collate times: {collate_times}")
+    # logger.info(f"Read times: {read_times}")
 
     stats = {
         "num_batches_requested": num_batches,
@@ -170,7 +185,7 @@ def _measure_loader(loader, num_batches: int, warmup: int, batch_size: int, byte
 
 
 def benchmark_dataloader(cfg):
-    loader, _ = get_dataloader(cfg)
+    loader, _, _, _ = get_dataloader(cfg)
 
     time_size, cube_size, channel_size = _get_hypercube_shape(cfg)
 

@@ -8,9 +8,9 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-from training.helpers import summarize_model, get_input_data
-from models.baseline import Baseline
-from tests.conftest import models_kargs
+from cell_observatory_platform.training.helpers import summarize_model, get_input_data
+from cell_observatory_platform.models.baseline import Baseline
+from cell_observatory_platform.tests.conftest import models_kargs
 
 
 def test_baseline_custom(models_kargs):
@@ -32,17 +32,17 @@ def test_baseline_custom(models_kargs):
     model = Baseline(
         model_template='baseline',
         input_fmt='TZYXC',
-        input_shape=inputs,
+        input_shape=inputs[1:],
         embed_dim=models_kargs['hidden_size'],
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
         num_heads=models_kargs['heads'],
         depth=models_kargs['repeats'],
         modes=models_kargs['modes'],
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -75,13 +75,13 @@ def test_baseline_tiny(models_kargs):
     model = Baseline(
         model_template='baseline-tiny',
         input_fmt='TZYXC',
-        input_shape=inputs,
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=inputs[1:],
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -114,13 +114,13 @@ def test_baseline_small(models_kargs):
     model = Baseline(
         model_template='baseline-small',
         input_fmt='TZYXC',
-        input_shape=inputs,
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=inputs[1:],
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -153,13 +153,13 @@ def test_baseline_base(models_kargs):
     model = Baseline(
         model_template='baseline-base',
         input_fmt='TZYXC',
-        input_shape=inputs,
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=inputs[1:],
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -192,13 +192,13 @@ def test_baseline_large(models_kargs):
     model = Baseline(
         model_template='baseline-large',
         input_fmt='TZYXC',
-        input_shape=inputs,
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=inputs[1:],
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -231,13 +231,13 @@ def test_baseline_huge(models_kargs):
     model = Baseline(
         model_template='baseline-huge',
         input_fmt='TZYXC',
-        input_shape=inputs,
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=inputs[1:],
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 

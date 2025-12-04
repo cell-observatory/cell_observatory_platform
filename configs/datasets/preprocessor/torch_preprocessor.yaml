@@ -1,5 +1,5 @@
-_target_: models.preprocessor.TorchPreprocessor
+_target_: cell_observatory_platform.models.preprocessor.TorchPreprocessor
 
-dtype: ${dataset_dtype}
+dtype: ${quantization}
 with_masking: true
 mask_generator: ${datasets.masking.mask_generators.0}

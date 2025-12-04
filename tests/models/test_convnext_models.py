@@ -8,9 +8,9 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-from training.helpers import summarize_model, get_input_data
-from models.convnext import ConvNeXtV2
-from tests.conftest import models_kargs
+from cell_observatory_platform.training.helpers import summarize_model, get_input_data
+from cell_observatory_platform.models.convnext import ConvNeXtV2
+from cell_observatory_platform.tests.conftest import models_kargs
 
 
 def test_convnext_custom(models_kargs):
@@ -32,11 +32,11 @@ def test_convnext_custom(models_kargs):
     model = ConvNeXtV2(
         model_template='convnext',
         input_fmt='ZYXC',
-        input_shape=inputs,
+        input_shape=inputs[1:],
         modes=models_kargs['modes'],
         depths=(3, 3, 9, 3),
         dims=(96, 192, 384, 768),
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -69,9 +69,9 @@ def test_convnext_tiny(models_kargs):
     model = ConvNeXtV2(
         model_template='convnext-tiny',
         input_fmt='ZYXC',
-        input_shape=inputs,
+        input_shape=inputs[1:],
         modes=models_kargs['modes'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -104,9 +104,9 @@ def test_convnext_small(models_kargs):
     model = ConvNeXtV2(
         model_template='convnext-small',
         input_fmt='ZYXC',
-        input_shape=inputs,
+        input_shape=inputs[1:],
         modes=models_kargs['modes'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -139,9 +139,9 @@ def test_convnext_base(models_kargs):
     model = ConvNeXtV2(
         model_template='convnext-base',
         input_fmt='ZYXC',
-        input_shape=inputs,
+        input_shape=inputs[1:],
         modes=models_kargs['modes'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 
@@ -173,9 +173,9 @@ def test_convnext_large(models_kargs):
     model = ConvNeXtV2(
         model_template='convnext-large',
         input_fmt='ZYXC',
-        input_shape=inputs,
+        input_shape=inputs[1:],
         modes=models_kargs['modes'],
-    )
+    ).to('cuda')
 
     input_data = get_input_data(model, inputs)
 

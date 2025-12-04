@@ -1,15 +1,15 @@
-import logging
 import sys
-from typing import Literal, Union
+import logging
+from typing import Literal, Union, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from models.norm import get_norm
-from models.activation import get_activation
-from models.mlp import get_mlp
-from models.transformer import Transformer
+from cell_observatory_platform.models.mlp import get_mlp
+from cell_observatory_platform.models.norm import get_norm
+from cell_observatory_platform.models.activation import get_activation
+from cell_observatory_platform.models.transformer import Transformer
 
 logging.basicConfig(
 	stream=sys.stdout,
@@ -34,10 +34,21 @@ class Encoder(nn.Module):
         norm_layer: Union[nn.Module, Literal['RmsNorm', 'LayerNorm', 'SyncBatchNorm', 'GroupNorm']] = 'RmsNorm',
         act_layer: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'SiLU',
         mlp_layer: Union[nn.Module, Literal['Mlp', 'SwiGLU']] = 'SwiGLU',
-        activation_checkpointing: bool = False,
+        rope_pos_enc: bool = True,
+        rope_random_rotation_per_head: bool = True,
+        rope_mixed: bool = True,
+        rope_theta: float = 10.0,
+        input_fmt: str = "TZYXC",
+        input_shape: tuple = (16, 128, 128, 128, 2),
+        patch_shape: tuple = (4, 16, 16, 16),
+        wide_silu: bool = False,
+        out_layers: list = None,
+        dtype: torch.dtype = torch.bfloat16,
         **kwargs,
     ):
         super().__init__()
+        
+        self.patch_shape = patch_shape
 
         self.depth = depth
         self.embed_dim = embed_dim
@@ -47,10 +58,9 @@ class Encoder(nn.Module):
         self.proj_drop_rate = proj_drop_rate
         self.att_drop_rate = att_drop_rate
         self.drop_path_rate = drop_path_rate
-        self.activation_checkpointing = activation_checkpointing
 
         # stochastic depth decay rule
-        if not fixed_dropout_depth: # and self.drop_path_rate > 0.0:
+        if not fixed_dropout_depth:
             dpr = np.linspace(0, self.drop_path_rate, self.depth)
 
         self.norm_layer = get_norm(norm_layer)
@@ -64,22 +74,40 @@ class Encoder(nn.Module):
                 mlp_ratio=mlp_ratio,
                 proj_drop=self.proj_drop_rate,
                 att_drop=self.att_drop_rate,
-                drop_path=self.drop_path_rate if fixed_dropout_depth and self.drop_path_rate > 0.0 else dpr[i],
+                drop_path=self.drop_path_rate if fixed_dropout_depth else dpr[i],
                 norm_layer=self.norm_layer,
                 act_layer=self.act_layer,
                 mlp_layer=self.mlp_layer,
-                activation_checkpointing=activation_checkpointing
+                rope_pos_enc=rope_pos_enc,
+                rope_random_rotation_per_head=rope_random_rotation_per_head,
+                rope_mixed=rope_mixed,
+                rope_theta=rope_theta,
+                input_fmt=input_fmt,
+                input_shape=input_shape,
+                patch_shape=self.patch_shape,
+                wide_silu=wide_silu,
+                dtype=dtype
             )
             for i in range(self.depth)
         ])
-        self.feature_info = [dict(module=f'transformer_blocks.{i}', num_chs=self.embed_dim) for i in range(self.depth)]
+        self.feature_info = [dict(module=f'transformer_blocks.{i}', \
+                                  num_chs=self.embed_dim) for i in range(self.depth)]
         self.init_std = init_std
+
+        self.out_layers = out_layers
 
     @torch.jit.ignore
     def get_num_layers(self):
         return len(self.transformer_blocks)
 
-    def forward(self, x):
+    def forward(self, x, masks=None):
+        outs = []
         for i, t in enumerate(self.transformer_blocks):
-            x = t(x, return_attention=False)
+            x = t(x, masks=masks, return_attention=False)
+            if self.out_layers is not None and i in self.out_layers:
+                outs.append(x)
+        
+        if self.out_layers is not None:
+            return outs
+
         return x

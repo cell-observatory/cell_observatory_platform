@@ -11,7 +11,7 @@ ray_checkpoint_config:
   checkpoint_score_order: ${evaluation.val_mode} # 'min' or 'max'
 
 checkpoint_manager:
-  _target_: training.checkpoint.CheckpointManager
+  _target_: cell_observatory_platform.training.checkpoint.CheckpointManager
   load_universal_checkpoint: ${deepspeed.checkpoint.load_universal} # whether to load a universal checkpoint, set in conjunction with checkpoint_manager
   resume_checkpointdir: ${paths.resume_checkpointdir}
   pretrained_checkpointdir: ${paths.pretrained_checkpointdir}
@@ -20,8 +20,6 @@ checkpoint_manager:
   load_dtype: ${quantization}
   checkpoint_tag: latest_model
   engine: ${engine} # engine to use for training
-  # provide list of dotted module paths
-  # to freeze/activation checkpoint/load selectively
-  freeze_modules: null
-  state_dict_filter: null
-  activation_checkpoint_modules: null
+  use_custom_state_dict_filter: true
+  load_optimizer: true
+  save_period: 1 # save every n epochs

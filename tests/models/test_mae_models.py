@@ -7,9 +7,9 @@ import shutil
 import warnings
 warnings.filterwarnings("ignore")
 
-from tests.conftest import models_kargs
-from training.helpers import summarize_model, get_masked_input_data
-from models.maskedautoencoder import MaskedAutoEncoder
+from cell_observatory_platform.tests.conftest import models_kargs
+from cell_observatory_platform.training.helpers import summarize_model, get_masked_input_data
+from cell_observatory_platform.models.maskedautoencoder import MaskedAutoEncoder
 
 
 def test_mae_custom(models_kargs):
@@ -31,17 +31,17 @@ def test_mae_custom(models_kargs):
     model = MaskedAutoEncoder(
         model_template='mae',
         input_fmt='TZYXC',
-        input_shape=inputs,
         embed_dim=models_kargs['hidden_size'],
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=inputs[1:],
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
         num_heads=models_kargs['heads'],
         depth=models_kargs['repeats'],
         modes=models_kargs['modes'],
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -74,13 +74,13 @@ def test_mae_tiny(models_kargs):
     model = MaskedAutoEncoder(
         model_template='mae-tiny',
         input_fmt='TZYXC',
-        input_shape=inputs,
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=inputs[1:],
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -113,13 +113,13 @@ def test_mae_small(models_kargs):
     model = MaskedAutoEncoder(
         model_template='mae-small',
         input_fmt='TZYXC',
-        input_shape=inputs,
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=inputs[1:],
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -152,13 +152,13 @@ def test_mae_base(models_kargs):
     model = MaskedAutoEncoder(
         model_template='mae-base',
         input_fmt='TZYXC',
-        input_shape=inputs,
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=inputs[1:],
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
         proj_drop_rate=models_kargs['dropout'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -191,13 +191,13 @@ def test_mae_large(models_kargs):
     model = MaskedAutoEncoder(
         model_template='mae-large',
         input_fmt='TZYXC',
-        input_shape=inputs,
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=inputs[1:],
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
         proj_drop_rate=models_kargs['dropout'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 
@@ -230,13 +230,13 @@ def test_mae_huge(models_kargs):
     model = MaskedAutoEncoder(
         model_template='mae-huge',
         input_fmt='TZYXC',
-        input_shape=inputs,
-        lateral_patch_size=models_kargs['patches'],
-        axial_patch_size=1,
-        temporal_patch_size=1,
+        input_shape=inputs[1:],
+        patch_shape=(1, 1, models_kargs['patches'], models_kargs['patches']),
         proj_drop_rate=models_kargs['dropout'],
+        abs_sincos_enc=models_kargs['abs_sincos_enc'],
+        rope_pos_enc=models_kargs['rope_pos_enc'],
         fixed_dropout_depth=models_kargs['fixed_dropout_depth'],
-    )
+    ).to('cuda')
 
     input_data = get_masked_input_data(model, inputs)
 

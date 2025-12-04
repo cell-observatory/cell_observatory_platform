@@ -12,24 +12,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def get_activation(act: Union[nn.Module, Literal['GELU', 'SiLU', 'LeakyReLU', 'GLU', 'Sigmoid', 'Tanh']] = 'GELU'):
-    if act == "GELU" or type(act) == type(nn.GELU):
-        return nn.GELU
+def get_activation(act='GELU'):
+    # already an instance, return its class
+    if isinstance(act, nn.Module):
+        return act.__class__
 
-    elif act == "SiLU" or type(act) == type(nn.SiLU):
-        return nn.SiLU
+    # a class and a subclass of nn.Module, return as-is
+    if isinstance(act, type) and issubclass(act, nn.Module):
+        return act
 
-    elif act == "LeakyReLU" or type(act) == type(nn.LeakyReLU):
-        return nn.LeakyReLU
+    # a string, map case-insensitively
+    if isinstance(act, str):
+        key = act.strip().lower()
+        table = {
+            'gelu': nn.GELU,
+            'silu': nn.SiLU,
+            'swish': nn.SiLU,
+            'leakyrelu': nn.LeakyReLU,
+            'lrelu': nn.LeakyReLU,
+            'glu': nn.GLU,
+            'sigmoid': nn.Sigmoid,
+            'tanh': nn.Tanh,
+            'relu': nn.ReLU,
+        }
+        if key in table:
+            return table[key]
 
-    elif act == "GLU" or type(act) == type(nn.GLU):
-        return nn.GLU
-
-    elif act == "Sigmoid" or type(act) == type(nn.Sigmoid):
-        return nn.Sigmoid
-
-    elif act == "Tanh" or type(act) == type(nn.Tanh):
-        return nn.Tanh
-
-    else:
-        raise ValueError(f"Unknown activation layer: {act}")
+    raise ValueError(f"Unknown activation layer: {act!r}")

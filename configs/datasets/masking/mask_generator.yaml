@@ -4,25 +4,26 @@ defaults:
 # TODO: we refrain from placing the mask_generator as a collate funciton 
 #       for performance reasons
 # collate_fn:
-#   _target_: data.masking.mask_generator.MaskCollator
-#   base_collator: data.datasets.pretrain_dataset.collate_pretrain_dataset
+#   _target_: cell_observatory_platform.data.masking.mask_generator.MaskCollator
+#   base_collator: cell_observatory_platform.data.datasets.pretrain_dataset.collate_pretrain_dataset
 
 mask_generators:
-  - _target_: data.masking.mask_generator.MaskGenerator
+  - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
     layout: ${datasets.dataset.input_layout}
     input_shape: ${datasets.input_shape}
     patch_shape: ${datasets.patch_shape}
+    input_format: ${dataset_layout_order}
 
     lateral_mask_scale: 0.5
     axial_mask_scale: 0.5
     temporal_mask_scale: 0.5
-
-    aspect_ratio_scale_hw: 0.5
-    random_masking_ratio: 0.75
+    aspect_ratio_scale_hw: [0.75, 1.5]
     num_blocks: 2
+
+    random_masking_ratio: 0.75
 
     channels_to_mask: null
     time_downsample_pattern: null
     mask_mode: 
-      _target_: data.masking.mask_generator.MaskModes
+      _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
       value: "random"

@@ -1,68 +1,72 @@
-import sys
-import logging
-from pathlib import Path
-from typing import Tuple, Literal, Optional, Iterable, Dict
-import inspect
 import functools
-import ujson
-import torch
+import inspect
+import logging
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, Iterable, Literal, Optional, Tuple
+
 import numpy as np
-import tensorstore as ts
-from tifffile import TiffFile
-from skimage.io import imread, imsave
 import pandas as pd
+import polars as pl
+import tensorstore as ts
+import torch
+import ujson
+from skimage.io import imread, imsave
+from tifffile import TiffFile, imwrite
 
-from data.data_types import TENSORSTORE_DTYPES, NUMPY_DTYPES, TORCH_DTYPES
+from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
-def read_npy(image_path: str, dtype: NUMPY_DTYPES | str = NUMPY_DTYPES.fp16) -> np.ndarray:
+def read_npy(image_path: str, dtype: NUMPY_DTYPES | str = None) -> np.ndarray:
     if isinstance(image_path, torch.Tensor):
         path = Path(str(image_path.numpy(), "utf-8"))
     else:
         path = Path(str(image_path))
 
-    if path.suffix == '.npy':
+    if path.suffix == ".npy":
         with np.load(path) as arr:
             img = arr
-    elif path.suffix == '.npz':
+    elif path.suffix == ".npz":
         with np.load(path) as data:
-            img = data['arr_0']
+            img = data["arr_0"]
     else:
         raise NotImplementedError
 
     if np.isnan(np.sum(img)):
         logger.error("NaN!")
 
-    dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-    return img.astype(dtype)
+    if dtype is not None:
+        dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+        img = img.astype(dtype)
+    return img
 
 
-def read_tiff(image_path: str, dtype: NUMPY_DTYPES | str = NUMPY_DTYPES.fp16) -> np.ndarray:
-    """ Read a TIFF file and return the data as a NumPy array """
+def read_tiff(image_path: str, dtype: NUMPY_DTYPES | str = None) -> np.ndarray:
+    """Read a TIFF file and return the data as a NumPy array"""
     img = imread(image_path)
 
     if np.isnan(np.sum(img)):
         logger.error("NaN!")
 
-    dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-    return img.astype(dtype)
+    if dtype is not None:
+        dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+        img = img.astype(dtype)
+    return img
 
 
 def read_zarr(
     image_path: str,
     zarr_driver: str = "zarr3",
-    dtype: TENSORSTORE_DTYPES | str = TENSORSTORE_DTYPES.fp16,
+    dtype: Optional[TENSORSTORE_DTYPES | str] = None,
     context: ts.Context | None = None,
-    cast: bool = True,
+    cast: bool = False,
 ) -> np.ndarray:
-    """ Read a Zarr file and return the data as a NumPy array """
+    """Read a Zarr file and return the data as a NumPy array"""
     spec = {
         "driver": zarr_driver,
         "kvstore": {"driver": "file", "path": image_path},
@@ -78,9 +82,9 @@ def read_zarr(
 
 def read_file(
     image_path: str | Path,
-    dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | str = NUMPY_DTYPES.fp16,
+    dtype: NUMPY_DTYPES | TENSORSTORE_DTYPES | TORCH_DTYPES | str = None,
 ) -> np.ndarray:
-    """ Infer the file format of the image based on its extension """
+    """Infer the file format of the image based on its extension"""
     image_path = str(image_path)
 
     if image_path.endswith(".zarr"):
@@ -97,75 +101,123 @@ def read_file(
 
 
 def save_file(image_path: str, data: np.ndarray, **kwargs) -> None:
-    """ Save a NumPy array to a file based on its extension """
+    """Save a NumPy array to a file based on its extension"""
     Path(image_path).parent.mkdir(parents=True, exist_ok=True)
+    image_path = str(image_path)
 
     if image_path.endswith(".zarr"):
         save_zarr(image_path, data, **kwargs)
-
     elif image_path.endswith(".tiff") or image_path.endswith(".tif"):
-        save_tiff(image_path, data)
-
+        save_tiff(image_path, data, **kwargs)
     else:
         raise ValueError(f"Unsupported file format for {image_path}")
 
 
 # NOTE: taken from ml-data-cell_observatory_platform
-def create_zarr_spec(zarr_version, path, data_shape, shard_cube_shape, chunk_shape, num_timepoints_per_image):
+def create_zarr_spec(
+    data_shape, zarr_version, path, input_format, shard_cube_shape, chunk_shape, dtype: str = "uint16"
+):
+    # NOTE: currently zarr saving format assumes time dimension is present
+    #       always, we should consider changing this in the future
+    if zarr_version == "zarr3":
+        if input_format == "TZYXC":
+            num_timepoints_per_image, num_channels = data_shape[0], data_shape[-1]
+            shard_shape = [
+                num_timepoints_per_image,
+                shard_cube_shape[0],
+                shard_cube_shape[1],
+                shard_cube_shape[2],
+                num_channels,
+            ]
+            chunk_shape = [1, chunk_shape[0], chunk_shape[1], chunk_shape[2], num_channels]
 
-    if zarr_version == 'zarr3':
-        if len(data_shape) == 5:
-            shard_shape = [num_timepoints_per_image, shard_cube_shape[0], shard_cube_shape[1], shard_cube_shape[2], 2]
-            chunk_shape = [1, chunk_shape[0], chunk_shape[1], chunk_shape[2], 2]
-        elif len(data_shape) == 4:
-            shard_shape = [num_timepoints_per_image, shard_cube_shape[0], shard_cube_shape[1], shard_cube_shape[2]]
-            chunk_shape = [1, chunk_shape[0], chunk_shape[1], chunk_shape[2]]
+        elif input_format == "TCZYX":
+            num_timepoints_per_image, num_channels = data_shape[0], data_shape[1]
+            shard_shape = [
+                num_timepoints_per_image,
+                num_channels,
+                shard_cube_shape[0],
+                shard_cube_shape[1],
+                shard_cube_shape[2],
+            ]
+            chunk_shape = [1, num_channels, chunk_shape[0], chunk_shape[1], chunk_shape[2]]
+
+        elif input_format == "ZYXC":
+            num_timepoints_per_image, num_channels = data_shape[0], data_shape[-1]
+            shard_shape = [
+                num_timepoints_per_image,
+                shard_cube_shape[0],
+                shard_cube_shape[1],
+                shard_cube_shape[2],
+                num_channels,
+            ]
+            chunk_shape = [1, chunk_shape[0], chunk_shape[1], chunk_shape[2], num_channels]
+
+        elif input_format == "CZYX":
+            num_timepoints_per_image, num_channels = data_shape[0], data_shape[1]
+            shard_shape = [
+                num_timepoints_per_image,
+                num_channels,
+                shard_cube_shape[0],
+                shard_cube_shape[1],
+                shard_cube_shape[2],
+            ]
+            chunk_shape = [1, num_channels, chunk_shape[0], chunk_shape[1], chunk_shape[2]]
+
         else:
             raise ValueError(f"Unsupported data shape length: {len(data_shape)}")
 
         zarr_spec = {
-            'driver': zarr_version,
-            'kvstore': {
-                'driver': 'file',
-                'path': path
-            },
-            'metadata': {
-                'data_type': 'uint16',
-                'shape': data_shape,
-                'chunk_grid': {'name': 'regular', 'configuration': {'chunk_shape': shard_shape}},
-                'codecs': [{
-                    "name": "sharding_indexed",
-                    "configuration": {
-                        "chunk_shape": chunk_shape,
-                        "codecs": [{"name": "bytes", "configuration": {"endian": "little"}},
-                                   {"name": "blosc", "configuration": {
-                                       "cname": "zstd", "clevel": 1, "blocksize": 0, "shuffle": "shuffle"}}],
-                        "index_codecs": [{"name": "bytes", "configuration": {"endian": "little"}}, {"name": "crc32c"}],
-                        "index_location": "end"
+            "driver": zarr_version,
+            "kvstore": {"driver": "file", "path": path},
+            "metadata": {
+                "data_type": str(dtype),
+                "shape": data_shape,
+                "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": shard_shape}},
+                "codecs": [
+                    {
+                        "name": "sharding_indexed",
+                        "configuration": {
+                            "chunk_shape": chunk_shape,
+                            "codecs": [
+                                {"name": "bytes", "configuration": {"endian": "little"}},
+                                {
+                                    "name": "blosc",
+                                    "configuration": {
+                                        "cname": "zstd",
+                                        "clevel": 1,
+                                        "blocksize": 0,
+                                        "shuffle": "shuffle",
+                                    },
+                                },
+                            ],
+                            "index_codecs": [
+                                {"name": "bytes", "configuration": {"endian": "little"}},
+                                {"name": "crc32c"},
+                            ],
+                            "index_location": "end",
+                        },
                     }
-                }],
-                'fill_value': 0,
+                ],
+                "fill_value": 0,
             },
-            'create': True,
-            'delete_existing': True
+            "create": True,
+            "delete_existing": True,
         }
     else:
         zarr_spec = {
-            'driver': zarr_version,
-            'kvstore': {
-                'driver': 'file',
-                'path': path
+            "driver": zarr_version,
+            "kvstore": {"driver": "file", "path": path},
+            "metadata": {
+                "dtype": "<u2",
+                "shape": data_shape,
+                "chunks": chunk_shape,
+                "compressor": {"blocksize": 0, "clevel": 1, "cname": "zstd", "id": "blosc", "shuffle": 1},
+                "fill_value": 0,
+                "order": "C",
             },
-            'metadata': {
-                'dtype': '<u2',
-                'shape': data_shape,
-                'chunks': chunk_shape,
-                'compressor': {'blocksize': 0, 'clevel': 1, 'cname': 'zstd', 'id': 'blosc', 'shuffle': 1},
-                'fill_value': 0,
-                'order': 'C'
-            },
-            'create': True,
-            'delete_existing': True
+            "create": True,
+            "delete_existing": True,
         }
     return zarr_spec
 
@@ -175,23 +227,31 @@ def save_zarr(
     data: np.ndarray,
     shard_cube_shape: Tuple[int, int, int],
     chunk_shape: Tuple[int, int, int],
-    zarr_driver: str = "zarr3"
+    input_format: str,
+    zarr_driver: str = "zarr3",
+    dtype: str = "uint16",
 ) -> None:
-    data_shape, num_timepoints_per_image = data.shape, data.shape[0]
     zarr_spec = create_zarr_spec(
-        zarr_driver,
-        image_path,
-        data_shape,
-        shard_cube_shape, chunk_shape,
-        num_timepoints_per_image
+        data_shape=data.shape,
+        zarr_version=zarr_driver,
+        path=image_path,
+        input_format=input_format,
+        shard_cube_shape=shard_cube_shape,
+        chunk_shape=chunk_shape,
+        dtype=dtype,
     )
 
     ds = ts.open(zarr_spec).result()
     ds[:] = data
 
 
-def save_tiff(image_path: str, data: np.ndarray) -> None:
-    imsave(image_path, data)
+def save_tiff(image_path: str, data: np.ndarray, axes: str, with_fiji: bool = False) -> None:
+    if with_fiji:
+        data = np.ascontiguousarray(data)
+        image_path = str(image_path).replace(".tif", ".ome.tif")
+        imwrite(image_path, data, ome=True, metadata={"axes": axes}, bigtiff=True, photometric="minisblack")
+    else:
+        imsave(image_path, data)
 
 
 def get_shape_from_file_tiff(image_path: str) -> tuple:
@@ -208,202 +268,381 @@ def record_init(fn):
     (with defaults) into _init_args.
     """
     sig = inspect.signature(fn)
+
     @functools.wraps(fn)
     def wrapper(self, *args, **kwargs):
         bound = sig.bind(self, *args, **kwargs)
         bound.apply_defaults()
-        init_args = {
-            name: value
-            for name, value in bound.arguments.items()
-            if name != "self"
-        }
+        init_args = {name: value for name, value in bound.arguments.items() if name != "self"}
         self._init_args = init_args
         return fn(self, *args, **kwargs)
+
     return wrapper
 
 
-def filter_hypercubes_dataframe_storage_server(
-    hypercubes_dataframe: pd.DataFrame,
-    server_folder_path: Optional[Path | str] = None
-):
-    if server_folder_path is None or str(server_folder_path).startswith('/clusterfs'):
-        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists']]
-        logger.info(f"Using ABC {server_folder_path=}, {hypercubes_dataframe.shape}")
+def _coerce_bool_in(df: pl.DataFrame, col: str) -> pl.DataFrame:
+    _INT_TYPES = {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}
+    dt = df.schema.get(col)
 
-    elif str(server_folder_path).startswith('/groups'):
-        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_prfs']]
-        hypercubes_dataframe['server_folder'] = server_folder_path
-        logger.info(f"Using Janelia {server_folder_path=}, {hypercubes_dataframe.shape}")
+    if dt == pl.Boolean:
+        expr = pl.col(col).fill_null(False)
 
-    elif str(server_folder_path).startswith('/aws'):
-        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_aws']]
-        hypercubes_dataframe['server_folder'] = server_folder_path
-        logger.info(f"Using AWS {server_folder_path=}, {hypercubes_dataframe.shape}")
+    elif dt in _INT_TYPES:
+        expr = (pl.col(col) != 0).fill_null(False)
 
-    elif str(server_folder_path).startswith('/lustre'):
-        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['exists_oak']]
-        hypercubes_dataframe['server_folder'] = server_folder_path
-        logger.info(f"Using OakRidge {server_folder_path=}, {hypercubes_dataframe.shape}")
-        
+    else:
+        expr = pl.col(col).cast(pl.Utf8).str.strip_chars().str.to_lowercase().is_in(["t", "true", "1"]).fill_null(False)
+
+    return df.with_columns(expr.alias(col))
+
+
+def filter_hypercubes_dataframe_storage_server(df: pl.DataFrame, server_folder_path: str | None = None) -> pl.DataFrame:
+    if server_folder_path is None or str(server_folder_path).startswith("/clusterfs"):
+        flag = "exists"
+        df = _coerce_bool_in(df, flag).filter(pl.col(flag))
+        return df
+
+    if str(server_folder_path).startswith("/groups"):
+        flag = "exists_prfs"
+    elif str(server_folder_path).startswith("/aws") or str(server_folder_path).startswith(
+        "/workspace/CellObservatoryData"
+    ):
+        flag = "exists_aws"
+    elif str(server_folder_path).startswith("/lustre"):
+        flag = "exists_oak"
     else:
         raise ValueError(f"Unknown server_folder_path: {server_folder_path}")
 
-    return hypercubes_dataframe
+    df = (
+        _coerce_bool_in(df, flag)
+        .filter(pl.col(flag))
+        .with_columns(pl.lit(str(server_folder_path)).alias("server_folder"))
+    )
+
+    logger.info(f"Loaded hypercubes on server: {server_folder_path}; shape={df.shape}")
+    return df
 
 
 def apply_hypercubes_dataframe_selections(
-    hypercubes_dataframe: pd.DataFrame,
-    max_rois: Optional[int] = None,
-    max_tiles: Optional[int] = None,
-    max_hypercubes: Optional[int] = None,
-    hpf_list: Optional[Iterable[int]] = None,
-    roi_list: Optional[Iterable[int]] = None,
-    tile_list: Optional[Iterable[str]] = None,
-):
+    df: pl.DataFrame,
+    max_rois: int | None = None,
+    max_tiles: int | None = None,
+    max_hypercubes: int | None = None,
+    hpf_list: list[int] | None = None,
+    roi_list: list[int] | None = None,
+    tile_list: list[str] | None = None,
+    timepoint_list: list[int] | None = None,
+) -> pl.DataFrame:
     logger.info(
         f"\nApplied selections:\n"
-        f"{hpf_list=}\n"
-        f"{roi_list=}\n"
-        f"{tile_list=}\n"
-        f"{max_rois=}\n"
-        f"{max_tiles=}\n"
-        f"{max_hypercubes=}"
+        f"hpf_list={hpf_list}\n"
+        f"roi_list={roi_list}\n"
+        f"tile_list={tile_list}\n"
+        f"timepoint_list={timepoint_list}\n"
+        f"max_rois={max_rois}\n"
+        f"max_tiles={max_tiles}\n"
+        f"max_hypercubes={max_hypercubes}"
     )
 
-    if roi_list is not None or tile_list is not None:
-        rois = list(roi_list)
-        tiles = list(tile_list)
+    def _to_list_or_none(x):
+        if x is None or len(list(x)) == 0:
+            return None
+        else:
+            return list(x)
 
-        if rois is not None and tiles is not None:
-            hypercubes_dataframe = hypercubes_dataframe[
-                (hypercubes_dataframe['prepared_id'].isin(rois)) & (hypercubes_dataframe['tile_name'].isin(tiles))
-                ]
-        elif rois is not None:
-            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['prepared_id'].isin(rois)]
-        elif tiles is not None:
-            hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['tile_name'].isin(tiles)]
+    rois = _to_list_or_none(roi_list)
+    tiles = _to_list_or_none(tile_list)
+    hpfs = _to_list_or_none(hpf_list)
+    tps = _to_list_or_none(timepoint_list)
 
-    if hpf_list is not None:
-        hpfs = list(hpf_list)
-        hypercubes_dataframe = hypercubes_dataframe[hypercubes_dataframe['hpf'].isin(hpfs)]
+    conds = []
+    if rois is not None and "prepared_id" in df.columns:
+        conds.append(pl.col("prepared_id").is_in(rois))
+    if tiles is not None and "tile_name" in df.columns:
+        conds.append(pl.col("tile_name").is_in(tiles))
+    if tps is not None and "time_start" in df.columns:
+        conds.append(pl.col("time_start").is_in(tps))
 
-    if max_rois is not None:
-        unique_rois = hypercubes_dataframe['prepared_id'].unique().tolist()
-        hypercubes_dataframe = hypercubes_dataframe[
-            hypercubes_dataframe['prepared_id'].isin(unique_rois[:max_rois])
-        ]
+    if conds:
+        cond = conds[0]
+        for c in conds[1:]:
+            cond = cond & c
+        df = df.filter(cond)
 
-    if max_tiles is not None:
-        unique_tiles = hypercubes_dataframe['tile_name'].unique().tolist()
-        hypercubes_dataframe = hypercubes_dataframe[
-            hypercubes_dataframe['tile_name'].isin(unique_tiles[:max_tiles])
-        ]
+    if hpfs is not None and "hpf" in df.columns:
+        df = df.filter(pl.col("hpf").is_in(hpfs))
+
+    if max_rois is not None and "prepared_id" in df.columns:
+        keep_rois = (
+            df.select(pl.col("prepared_id").unique()).select(pl.col("prepared_id").head(max_rois)).to_series().to_list()
+        )
+        df = df.filter(pl.col("prepared_id").is_in(keep_rois))
+
+    if max_tiles is not None and "tile_name" in df.columns:
+        keep_tiles = (
+            df.select(pl.col("tile_name").unique()).select(pl.col("tile_name").head(max_tiles)).to_series().to_list()
+        )
+        df = df.filter(pl.col("tile_name").is_in(keep_tiles))
 
     if max_hypercubes is not None:
-        hypercubes_dataframe = hypercubes_dataframe.head(max_hypercubes)
+        df = df.head(max_hypercubes)
 
-    return hypercubes_dataframe
+    return df
+
+
+def compute_df_stats(df: pl.DataFrame) -> pl.DataFrame:
+    def _parse_string_col(expr: pl.Expr) -> pl.Expr:
+        return (
+            expr.cast(pl.Utf8)
+            .str.strip_chars()
+            .str.replace_all(r"^[\[\{\(]\s*", "", literal=False)
+            .str.replace_all(r"\s*[\]\}\)]$", "", literal=False)
+            .str.replace_all("\n", " ", literal=True)
+            .str.replace_all('"', "", literal=True)
+            .str.replace_all("'", "", literal=True)
+            .str.replace_all(r"[,\s]+", " ", literal=False)
+            .str.strip_chars()
+            .str.extract_all(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
+            .list.eval(pl.element().cast(pl.Float64))
+        )
+
+    def _parse_occupancy_expr(colname: str, dtypes: Dict[str, pl.DataType]) -> pl.Expr:
+        dt = dtypes[colname]
+        if isinstance(dt, pl.List) and dt.inner in (pl.Float32, pl.Float64):
+            return pl.col(colname).cast(pl.List(pl.Float64))
+        if dt == pl.Utf8:
+            return _parse_string_col(pl.col(colname))
+        raise TypeError(f"Unsupported dtype for {colname}: {dt!r}")
+
+    ch0 = _parse_occupancy_expr("occupancy_ratios_ch_0", df.schema)
+    ch1 = _parse_occupancy_expr("occupancy_ratios_ch_1", df.schema)
+
+    df = df.with_columns(
+        ch0.alias("occupancy_ratios_ch_0_parsed"),
+        ch1.alias("occupancy_ratios_ch_1_parsed"),
+    )
+
+    if "time_size" in df.columns:
+        df = df.with_columns(
+            pl.when(pl.col("time_size").is_not_null())
+            .then(pl.col("occupancy_ratios_ch_0_parsed").list.slice(0, pl.col("time_size").cast(pl.Int64)))
+            .otherwise(pl.col("occupancy_ratios_ch_0_parsed"))
+            .alias("occupancy_ratios_ch_0"),
+            pl.when(pl.col("time_size").is_not_null())
+            .then(pl.col("occupancy_ratios_ch_1_parsed").list.slice(0, pl.col("time_size").cast(pl.Int64)))
+            .otherwise(pl.col("occupancy_ratios_ch_1_parsed"))
+            .alias("occupancy_ratios_ch_1"),
+        )
+    else:
+        df = df.with_columns(
+            pl.col("occupancy_ratios_ch_0_parsed").alias("occupancy_ratios_ch_0"),
+            pl.col("occupancy_ratios_ch_1_parsed").alias("occupancy_ratios_ch_1"),
+        )
+
+    return df.with_columns(
+        pl.col("occupancy_ratios_ch_0").list.min().alias("min_occupancy_ratios_ch_0"),
+        pl.col("occupancy_ratios_ch_0").list.mean().alias("mean_occupancy_ratios_ch_0"),
+        pl.col("occupancy_ratios_ch_0").list.median().alias("med_occupancy_ratios_ch_0"),
+        pl.col("occupancy_ratios_ch_1").list.min().alias("min_occupancy_ratios_ch_1"),
+        pl.col("occupancy_ratios_ch_1").list.mean().alias("mean_occupancy_ratios_ch_1"),
+        pl.col("occupancy_ratios_ch_1").list.median().alias("med_occupancy_ratios_ch_1"),
+    )
 
 
 def apply_occupancy_threshold(
-    hypercubes_dataframe: pd.DataFrame,
-    occupancy_threshold: Optional[float] = 0.
-):
-    def _string_set_to_list(value):
-        if isinstance(value, str):
-            clean_str = value.strip('{}')
-            if clean_str.startswith('[') and clean_str.endswith(']'):
-                clean_str = clean_str.strip('[]')
-            if clean_str:
-                return [float(x.strip()) for x in clean_str.split(' ') if x.strip()]
-            else:
-                return []
-        elif isinstance(value, list):
-            return [float(x) for x in value]
-        else:
-            return [float(value)] if value is not None else []
-
-    t = 0. if occupancy_threshold is None else occupancy_threshold
-
-    logger.info(f"\nApplied filters:\n{occupancy_threshold=}")
-
-    hypercubes_dataframe['occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(_string_set_to_list)
-    hypercubes_dataframe['mean_occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(np.mean)
-    hypercubes_dataframe['min_occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(np.min)
-    hypercubes_dataframe['med_occupancy_ratios_ch_0'] = hypercubes_dataframe['occupancy_ratios_ch_0'].apply(np.median)
-
-    hypercubes_dataframe['occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(_string_set_to_list)
-    hypercubes_dataframe['mean_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.mean)
-    hypercubes_dataframe['min_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.min)
-    hypercubes_dataframe['med_occupancy_ratios_ch_1'] = hypercubes_dataframe['occupancy_ratios_ch_1'].apply(np.median)
-
-    return hypercubes_dataframe[
-        (hypercubes_dataframe['min_occupancy_ratios_ch_0'] >= t) &
-        (hypercubes_dataframe['min_occupancy_ratios_ch_1'] >= t)
-    ]
+    df: pl.DataFrame,
+    occupancy_threshold: float | None = 0.0,
+    occupancy_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
+) -> pl.DataFrame:
+    t = 0.0 if occupancy_threshold is None else float(occupancy_threshold)
+    df = compute_df_stats(df)
+    if occupancy_threshold_filter_type == "min_all":
+        mask = (pl.col("min_occupancy_ratios_ch_0") >= t) & (pl.col("min_occupancy_ratios_ch_1") >= t)
+    elif occupancy_threshold_filter_type == "min_ch0":
+        mask = pl.col("min_occupancy_ratios_ch_0") >= t
+    elif occupancy_threshold_filter_type == "min_ch1":
+        mask = pl.col("min_occupancy_ratios_ch_1") >= t
+    else:
+        raise ValueError(occupancy_threshold_filter_type)
+    return df.filter(mask)
 
 
 def apply_hypercubes_dataframe_filters(
-    hypercubes_dataframe: pd.DataFrame,
-    occupancy_threshold: Optional[float] = 0.
-):
-    hypercubes_dataframe = apply_occupancy_threshold(
-        hypercubes_dataframe=hypercubes_dataframe,
+    df: pl.DataFrame, occupancy_threshold: float | None = 0.0, occupancy_threshold_filter_type: str = "min_ch0"
+) -> pl.DataFrame:
+    df = apply_occupancy_threshold(
+        df,
         occupancy_threshold=occupancy_threshold,
+        occupancy_threshold_filter_type=occupancy_threshold_filter_type,
     )
+    stats = df.select(
+        pl.col("min_occupancy_ratios_ch_0").min().alias("ch0_min"),
+        pl.col("min_occupancy_ratios_ch_0").quantile(0.5).alias("ch0_med"),
+        pl.col("min_occupancy_ratios_ch_0").max().alias("ch0_max"),
+        pl.col("min_occupancy_ratios_ch_1").min().alias("ch1_min"),
+        pl.col("min_occupancy_ratios_ch_1").quantile(0.5).alias("ch1_med"),
+        pl.col("min_occupancy_ratios_ch_1").max().alias("ch1_max"),
+    ).to_dicts()
+    logger.info(f"Min-occupancy summary: {stats}")
+    return df
 
-    logger.info(hypercubes_dataframe[['min_occupancy_ratios_ch_0', 'min_occupancy_ratios_ch_1']].describe(
-        percentiles=[0, .25, .5, .75, .8, .9, .95, .99, 1])
-    )
 
-    return hypercubes_dataframe
+def add_has_annotations_column(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    look for nested entries for each channel in the
+    pc_metadata_json col:  {'0': {'histogram': {...}}, '1': {'mask_bbox_dict': {...}}}
+    each key is a channel id mapping to a dict of metadata
+    """
+    if "has_annotations" in df.columns:
+        return df
+    if "pc_metadata_json" not in df.columns:
+        return df.with_columns(pl.lit(False).alias("has_annotations"))
+    has_key = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"', literal=False)
+    empty_obj = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
+    expr = pl.col("pc_metadata_json").is_not_null() & has_key & (~empty_obj)
+    return df.with_columns(expr.alias("has_annotations"))
+
+
+# FIXME: current nomenclature for metadata may be improved
+def create_channel_metadata_columns(df: pl.DataFrame, expected_channel_ids=["0", "1"]) -> pl.DataFrame:
+    new_columns = []
+    for ch in expected_channel_ids:
+        if f"histogram_ch_{ch}" not in df.columns:
+            new_columns.append(pl.lit(None).alias(f"histogram_ch_{ch}"))
+        if f"mask_bbox_dict_ch_{ch}" not in df.columns:
+            new_columns.append(pl.lit(None).alias(f"mask_bbox_dict_ch_{ch}"))
+    if new_columns:
+        df = df.with_columns(new_columns)
+    if "mask_bbox_dict" not in df.columns:
+        for ch in expected_channel_ids:
+            if f"mask_bbox_dict_ch_{ch}" in df.columns:
+                df = df.with_columns(pl.col(f"mask_bbox_dict_ch_{ch}").alias("mask_bbox_dict"))
+    if "histograms" not in df.columns:
+        for ch in expected_channel_ids:
+            if f"histogram_ch_{ch}" in df.columns:
+                df = df.with_columns(pl.col(f"histogram_ch_{ch}").alias("histograms"))
+    return df
 
 
 def load_hypercubes_dataframe(
     hypercubes_dataframe_path: str | Path,
-    max_rois: Optional[int] = None,
-    max_tiles: Optional[int] = None,
-    max_hypercubes: Optional[int] = None,
-    hpf_list: Optional[Iterable[int]] = None,
-    roi_list: Optional[Iterable[int]] = None,
-    tile_list: Optional[Iterable[str]] = None,
-    server_folder_path: Optional[Path | str] = None,
-    occupancy_threshold: Optional[float] = None
-) -> Tuple[pd.DataFrame, Dict]:
+    max_rois: int | None = None,
+    max_tiles: int | None = None,
+    max_hypercubes: int | None = None,
+    hpf_list: list[int] | None = None,
+    roi_list: list[int] | None = None,
+    tile_list: list[str] | None = None,
+    timepoint_list: list[int] | None = None,
+    server_folder_path: str | None = None,
+    occupancy_threshold: float | None = None,
+    occupancy_threshold_filter_type: str = "min_ch0",
+    synthetic_only: bool = False,
+    has_annotations: bool = False,
+) -> tuple[pl.DataFrame, dict]:
+    p = Path(hypercubes_dataframe_path)
+    if not p.exists():
+        raise FileNotFoundError(p)
 
-    if not Path(hypercubes_dataframe_path).exists():
-        raise FileNotFoundError(f"{hypercubes_dataframe_path} does not exist")
+    t0 = time.perf_counter()
+    df = pl.read_csv(p)
+    t1 = time.perf_counter()
+    logger.info(f"Loaded hypercubes dataframe in {t1 - t0:.2f} s; shape={df.shape}")
 
-    hypercubes = pd.read_csv(hypercubes_dataframe_path, index_col=0, header=0)
-    logger.info(
-        f"Setup hypercubes dataframe from {hypercubes_dataframe_path} {hypercubes.shape}"
-    )
+    df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
+    df = add_has_annotations_column(df)
 
-    hypercubes = filter_hypercubes_dataframe_storage_server(
-        hypercubes_dataframe=hypercubes,
-        server_folder_path=server_folder_path,
-    )
+    if synthetic_only:
+        df = _coerce_bool_in(df, "is_synthetic").filter(pl.col("is_synthetic"))
 
-    hypercubes = apply_hypercubes_dataframe_filters(
-        hypercubes_dataframe=hypercubes,
-        occupancy_threshold=occupancy_threshold,
-    )
+    if has_annotations:
+        df = _coerce_bool_in(df, "has_annotations").filter(pl.col("has_annotations"))
 
-    hypercubes = apply_hypercubes_dataframe_selections(
-        hypercubes_dataframe=hypercubes,
+    df = create_channel_metadata_columns(df)
+
+    t0 = time.perf_counter()
+    df = apply_hypercubes_dataframe_selections(
+        df,
         max_rois=max_rois,
         max_tiles=max_tiles,
         max_hypercubes=max_hypercubes,
         hpf_list=hpf_list,
         roi_list=roi_list,
         tile_list=tile_list,
+        timepoint_list=timepoint_list,
     )
+    t1 = time.perf_counter()
+    logger.info(f"Applied selections in {t1 - t0:.2f} s; shape={df.shape}")
 
-    logger.info(f"Loaded hypercubes dataframe with {hypercubes.shape}")
-    logger.info(f"Columns: {hypercubes.columns}")
-    logger.info(hypercubes.head())
+    # NOTE: as we scale to billions of hypercubes, these filters may become a bottleneck again
+    #        so we may need to optimize them further by pre-computation or distributed processing
+    t0 = time.perf_counter()
+    df = apply_hypercubes_dataframe_filters(
+        df,
+        occupancy_threshold=occupancy_threshold,
+        occupancy_threshold_filter_type=occupancy_threshold_filter_type,
+    )
+    t1 = time.perf_counter()
+    logger.info(f"Applied filters in {t1 - t0:.2f} s; shape={df.shape}")
 
-    with open(hypercubes_dataframe_path.with_suffix('.json'), 'r') as f:
-        configs = ujson.load(f)
+    try:
+        with open(p.with_suffix(".json"), "r") as f:
+            configs = ujson.load(f)
+    except FileNotFoundError:
+        configs = {}
 
-    return hypercubes, configs
+    return df.to_pandas(use_pyarrow_extension_array=True), configs
+
+
+def load_tiles_dataframe(
+    hypercubes_dataframe_path: str | Path,
+    max_rois: int | None = None,
+    max_tiles: int | None = None,
+    hpf_list: list[int] | None = None,
+    roi_list: list[int] | None = None,
+    tile_list: list[str] | None = None,
+    timepoint_list: list[int] | None = None,
+    server_folder_path: str | None = None,
+    synthetic_only: bool = False,
+    has_annotations: bool = False,
+) -> tuple[pd.DataFrame, dict]:
+    p = Path(hypercubes_dataframe_path)
+    if not p.exists():
+        raise FileNotFoundError(p)
+
+    t0 = time.perf_counter()
+    df = pl.read_csv(p)
+    t1 = time.perf_counter()
+    logger.info(f"Loaded tiles dataframe in {t1 - t0:.2f} s; shape={df.shape}")
+
+    df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
+    df = add_has_annotations_column(df)
+
+    if synthetic_only and "is_synthetic" in df.columns:
+        df = _coerce_bool_in(df, "is_synthetic").filter(pl.col("is_synthetic"))
+
+    if has_annotations and "has_annotations" in df.columns:
+        df = _coerce_bool_in(df, "has_annotations").filter(pl.col("has_annotations"))
+
+    df = create_channel_metadata_columns(df)
+
+    t0 = time.perf_counter()
+    df = apply_hypercubes_dataframe_selections(
+        df,
+        max_rois=max_rois,
+        max_tiles=max_tiles,
+        max_hypercubes=None,
+        hpf_list=hpf_list,
+        roi_list=roi_list,
+        tile_list=tile_list,
+        timepoint_list=timepoint_list,
+    )
+    t1 = time.perf_counter()
+    logger.info(f"Applied tile selections in {t1 - t0:.2f} s; shape={df.shape}")
+
+    try:
+        with open(p.with_suffix(".json"), "r") as f:
+            configs = ujson.load(f)
+    except FileNotFoundError:
+        configs = {}
+
+    return df.to_pandas(use_pyarrow_extension_array=True), configs

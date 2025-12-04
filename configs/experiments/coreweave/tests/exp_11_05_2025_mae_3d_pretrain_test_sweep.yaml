@@ -1,0 +1,30 @@
+# @package _global_
+
+run_type: multi_run
+
+wandb_tags: ["hyperparameter", "sweep", "h100", "lsf", "mae", "large"]
+data_base_dir: training_mae_3d
+
+# NOTE: make sure to include .yaml suffix to naming of config files! These names are appended to configs/experiments/
+#       and written to disk for reproducibility and to be passed to runner.py
+
+# NOTE: defaults_overrides is a list of configs that will be merged into the run config
+#       before applying the run overrides. This is useful for setting defaults to something different
+#      than the global defaults, e.g. for a specific dataloader or model.
+
+sweep:
+  - optimizers:
+      lr: [1e-3]
+
+runs:
+  - cfg: experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain.yaml
+    name: input_128x256x256_test_sweep.yaml
+    defaults_overrides: null
+    overrides:
+      clusters:
+        batch_size: 20 #704 # total batch size
+        worker_nodes: 1 # number of worker nodes
+        gpus_per_worker: 1 # number of gpus per worker node
+        cpus_per_gpu: 12 # number of cpu cores per gpu
+        mem_per_cpu: 40000 # ram per cpu core
+        ray_queue_memory: 0.1

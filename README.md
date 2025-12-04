@@ -2,15 +2,31 @@
 # Cell Observatory Platform
 **The Cell Observatory Platform** is a comprehensive framework for training and evaluating machine learning models on biological image and video datasets. Built with [PyTorch](https://pytorch.org/), accelerated and scaled with [Ray](https://www.ray.io/), model sharding using [DeepSpeed](https://www.deepspeed.ai/), and flexibly configured using [Hydra](https://hydra.cc/), it provides a modular architecture for easy customization and extension.
 
+- [Cell Observatory Platform](#cell-observatory-platform)
 - [Installation](#installation)
-   - [Docker \& Apptainer images](#docker--apptainer-images)
-   - [Clone repository to your host system](#clone-repository-to-your-host-system)
+  - [Docker images](#docker-images)
+  - [Clone the repository to your host system](#clone-the-repository-to-your-host-system)
+  - [Setup Supabase and W\&B accounts](#setup-supabase-and-wb-accounts)
+  - [Setup environment variables](#setup-environment-variables)
 - [Running docker image](#running-docker-image)
+  - [Running docker image on a cluster via apptainer](#running-docker-image-on-a-cluster-via-apptainer)
+    - [amd64/x86\_64](#amd64x86_64)
+    - [arm64/aarch64](#arm64aarch64)
+  - [Building a new apptainer image with a different torch version](#building-a-new-apptainer-image-with-a-different-torch-version)
 - [Get started](#get-started)
   - [Local setup](#local-setup)
+    - [1. Update experiment name](#1-update-experiment-name)
+    - [2. Update your paths](#2-update-your-paths)
+    - [3. Edit resource requirements](#3-edit-resource-requirements)
+    - [4. Run local training job with `manager.py`](#4-run-local-training-job-with-managerpy)
+    - [5. Launch multiple training jobs or Ray Tune jobs with `manager.py`](#5-launch-multiple-training-jobs-or-ray-tune-jobs-with-managerpy)
   - [Cluster setup](#cluster-setup)
+    - [SLURM Setup](#slurm-setup)
+    - [LSF Setup](#lsf-setup)
 - [Configuration layout](#configuration-layout)
   - [Model configurations](#model-configurations)
+    - [1. Select base configurations](#1-select-base-configurations)
+    - [2. Override only what you need](#2-override-only-what-you-need)
   - [Adding new models](#adding-new-models)
 - [Data Pipeline](#data-pipeline)
   - [Structures](#structures)
@@ -19,7 +35,7 @@
   - [Preprocessors](#preprocessors)
   - [MaskGenerator](#maskgenerator)
   - [Transformations](#transformations)
-- [Evaluators](#evaluators)
+  - [Evaluators](#evaluators)
 - [License](#license)
 
 
@@ -28,7 +44,7 @@
 ## Docker [images](https://github.com/cell-observatory/cell_observatory_platform/pkgs/container/cell_observatory_platform)
 Our prebuilt image with Python, Torch, and all packages installed for you.
 ```shell
-docker pull ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
+docker pull ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08
 ```
 
 ## Clone the repository to your host system
@@ -41,7 +57,8 @@ To later update to the latest, greatest
 git pull --recurse-submodules
 ```
 
-> [!NOTE] If you want to run a local version of the image, see the [Dockerfile](https://github.com/cell-observatory/cell_observatory_platform/blob/main/Dockerfile)
+> [!NOTE]
+> If you want to run a local version of the image, see the [Dockerfile](https://github.com/cell-observatory/cell_observatory_platform/blob/main/Dockerfile)
 
 ## Setup Supabase and W&B accounts
 
@@ -53,7 +70,8 @@ Once you have created your Supabase and W&B accounts, you'll need to add your AP
 ## Setup environment variables
 Rename `.env.example` file to `.env` which will be automatically loaded into the container and will be gitignored. The Supabase related environment variables enable database functionality. The W&B API key enables logging functionality. The `REPO_NAME`, `DATA_DIR`, and `STORAGE_SERVER_DIR` environment variables are leverged in the `configs/paths` configuration files to ensure that jobs run and save outputs as expected.
 
-> [!NOTE] `STORAGE_SERVER_DIR` is usually set to the root directory of your files. See example below:
+> [!NOTE]
+> `STORAGE_SERVER_DIR` is usually set to the root directory of your files. See example below:
 > ```shell
 > STORAGE_SERVER_DIR="/clusterfs/scratch/user/"
 > REPO_DIR="/clusterfs/scratch/user/cell_observatory_platform"
@@ -63,6 +81,8 @@ Rename `.env.example` file to `.env` which will be automatically loaded into the
 ```shell
 SUPABASE_USER=REPLACE_ME_WITH_YOUR_SUPABASE_USERNAME
 SUPABASE_PASS=REPLACE_ME_WITH_YOUR_SUPABASE_PASSWORD
+TRINO_USER=REPLACE_ME_WITH_YOUR_TRINO_USERNAME
+TRINO_PASS=REPLACE_ME_WITH_YOUR_TRINO_PASSWORD
 SUPABASE_STAGING_ID=REPLACE_ME_WITH_YOUR_SUPABASE_STAGING_ID
 SUPABASE_PROD_ID=REPLACE_ME_WITH_YOUR_SUPABASE_PROD_ID
 WANDB_API_KEY=REPLACE_ME_WITH_YOUR_WANDB_API_KEY
@@ -77,14 +97,15 @@ STORAGE_SERVER_DIR=REPLACE_ME_WITH_YOUR_STORAGE_SERVER_DIR_WHERE_DATA_SERVER_IS_
 PYTHONPATH=REPLACE_ME_WITH_YOUR_ROOT_REPO_DIR
 ````
 
-> [!IMPORTANT] Username/password and IDs for supabase will be provided upon request. 
+> [!IMPORTANT]
+> Username/password and IDs for supabase will be provided upon request. 
 
 
 # Running docker image
 
 To run docker image, cd to repo directory or replace `$(pwd)` with your local path for the repository.
 ```shell
-docker run --network host -u 1000 --privileged -v $(pwd):/workspace/cell_observatory_platform -w /workspace/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -it --rm  --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8 bash
+docker run --network host -u 1000 --privileged -v $(pwd):/workspace/cell_observatory_platform -w /workspace/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -it --rm  --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08 bash
 ```
 
 ## Running docker image on a cluster via apptainer
@@ -92,12 +113,12 @@ Running an image on a cluster typically requires an apptainer version of the ima
 
 ### amd64/x86_64
 ```shell
-apptainer pull --arch amd64 --force develop_torch_cuda_12_8.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
+apptainer pull --arch amd64 --force develop_torch_25_08.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08
 ```
 
 ### arm64/aarch64
 ```shell
-apptainer pull --arch arm64 --force develop_torch_cuda_12_8.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_cuda_12_8
+apptainer pull --arch arm64 --force develop_torch_25_08.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08
 ```
 
 ## Building a new apptainer image with a different torch version 
@@ -108,10 +129,11 @@ apptainer pull --arch amd64 --force pytorch_25.08-py3.sif docker://nvcr.io/nvidi
 
 Then you can run the following command to build a complete image:  
 ``` shell
-apptainer build --arch amd64 --nv --force develop_torch_cuda_12_8.sif apptainerfile.def
+apptainer build --arch amd64 --nv --force develop_torch_25_08.sif apptainerfile.def
 ```
 
-> [!IMPORTANT] Make sure to pass in the right argument for your system  (`amd64` or `arm64`)
+> [!IMPORTANT]
+> Make sure to pass in the right argument for your system  (`amd64` or `arm64`)
 
 # Get started
 

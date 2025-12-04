@@ -7,6 +7,6 @@ val_metric: val_step_loss
 val_mode: min # 'min' or 'max'
 
 evaluator:
-  _target_: evaluation.base_evaluation.BaseEvaluator
+  _target_: cell_observatory_platform.evaluation.base_evaluation.BaseEvaluator
   training_metrics:
     - "step_loss": "mean"

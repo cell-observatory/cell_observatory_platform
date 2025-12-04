@@ -1,32 +1,36 @@
+import logging
 import os
 import sys
-import logging
 from pathlib import Path
 
+import torch
 import torch.distributed as dist
+from hydra.utils import get_method, instantiate
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
 
-from hydra.utils import instantiate, get_method
-from omegaconf import DictConfig, OmegaConf
-
-if (hasattr(OmegaConf, "has_resolver") and not OmegaConf.has_resolver("eval")):
+if hasattr(OmegaConf, "has_resolver") and not OmegaConf.has_resolver("eval"):
     OmegaConf.register_new_resolver("eval", eval)
 
 import ray
 import ray.train.torch as raytorch
-
 from nvidia.dali.plugin.pytorch import DALIGenericIterator
 
-from utils.context import process_rank, barrier
-from data.datasets.pretrain_dataset_ray import get_dataloader_ray
-from data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
-
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+from cell_observatory_platform.data.datasets.buffers import set_buffers
+from cell_observatory_platform.data.datasets.pretrain_dataset_dali import pretrain_dataset_pipeline
+from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
+from cell_observatory_platform.data.datasets.schedulers import NumaNodeAffinityScheduler
+from cell_observatory_platform.utils.context import (
+    barrier,
+    get_local_numa_nodes,
+    local_rank,
+    node_id,
+    process_rank,
+    torch_gpu_to_numa,
 )
+
+logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +52,9 @@ def build_dataset(cfg, transforms=None):
         hpf_list=cfg.datasets.hpf_list,
         roi_list=cfg.datasets.roi_list,
         tile_list=cfg.datasets.tile_list,
-        occupancy_threshold=cfg.datasets.occupancy_threshold
+        occupancy_threshold=cfg.datasets.occupancy_threshold,
+        synthetic_only=cfg.datasets.synthetic_only,
+        has_annotations=cfg.datasets.has_annotations,
     )
     return dataset
 
@@ -69,10 +75,7 @@ def build_dali_dataset(cfg, transforms=None):
 
     if cfg.datasets.split is not None:
         val_size = round(dataset_len * cfg.datasets.split)
-        train_subset, val_subset = random_split(
-            range(dataset_len),
-            lengths=[dataset_len - val_size, val_size]
-        )
+        train_subset, val_subset = random_split(range(dataset_len), lengths=[dataset_len - val_size, val_size])
         train_indices, val_indices = train_subset.indices, val_subset.indices
 
         train_dataset = instantiate(
@@ -88,7 +91,9 @@ def build_dali_dataset(cfg, transforms=None):
             hpf_list=cfg.datasets.hpf_list,
             roi_list=cfg.datasets.roi_list,
             tile_list=cfg.datasets.tile_list,
-            occupancy_threshold=cfg.datasets.occupancy_threshold
+            occupancy_threshold=cfg.datasets.occupancy_threshold,
+            synthetic_only=cfg.datasets.synthetic_only,
+            has_annotations=cfg.datasets.has_annotations,
         )
         val_dataset = instantiate(
             cfg.datasets.dataset,
@@ -103,7 +108,9 @@ def build_dali_dataset(cfg, transforms=None):
             hpf_list=cfg.datasets.hpf_list,
             roi_list=cfg.datasets.roi_list,
             tile_list=cfg.datasets.tile_list,
-            occupancy_threshold=cfg.datasets.occupancy_threshold
+            occupancy_threshold=cfg.datasets.occupancy_threshold,
+            synthetic_only=cfg.datasets.synthetic_only,
+            has_annotations=cfg.datasets.has_annotations,
         )
 
         return train_dataset, val_dataset
@@ -121,7 +128,9 @@ def build_dali_dataset(cfg, transforms=None):
             hpf_list=cfg.datasets.hpf_list,
             roi_list=cfg.datasets.roi_list,
             tile_list=cfg.datasets.tile_list,
-            occupancy_threshold=cfg.datasets.occupancy_threshold
+            occupancy_threshold=cfg.datasets.occupancy_threshold,
+            synthetic_only=cfg.datasets.synthetic_only,
+            has_annotations=cfg.datasets.has_annotations,
         )
 
     return dataset, None
@@ -132,12 +141,15 @@ def get_dataloader(config: DictConfig):
         for event_writer in config.loggers.event_writers:
             if event_writer._target_.endswith("WandBEventWriter"):
                 for sk, ek in zip(event_writer.step_scalar_keys, event_writer.epoch_scalar_keys):
-                    assert not sk.startswith('val_'), f"WandBEventWriter can't have {sk} when {config.datasets.split=}"
-                    assert not ek.startswith('val_'), f"WandBEventWriter can't have {ek} when {config.datasets.split=}"
+                    assert not sk.startswith("val_"), f"WandBEventWriter can't have {sk} when {config.datasets.split=}"
+                    assert not ek.startswith("val_"), f"WandBEventWriter can't have {ek} when {config.datasets.split=}"
 
     if config.datasets.dataset._target_.endswith("PretrainDataset"):
-        transforms = [instantiate(t) for t in config.datasets.transforms.transforms_list] \
-            if config.datasets.transforms.transforms_list else None
+        transforms = (
+            [instantiate(t) for t in config.datasets.transforms.transforms_list]
+            if config.datasets.transforms.transforms_list
+            else None
+        )
 
         dataset = build_dataset(config, transforms)
 
@@ -163,8 +175,7 @@ def get_dataloader(config: DictConfig):
                     num_workers=config.datasets.num_workers,
                     prefetch_factor=config.datasets.prefetch_factor,
                     persistent_workers=False,
-                    sampler=DistributedSampler(train, drop_last=True)
-                    if config.datasets.distributed_sampler else None,
+                    sampler=DistributedSampler(train, drop_last=True) if config.datasets.distributed_sampler else None,
                     # NOTE: most of worker init functionality done by Ray
                     # see https://docs.ray.io/en/latest/_modules/ray/train/torch/train_loop_utils.html
                     worker_init_fn=db_worker_init_fn,
@@ -179,17 +190,20 @@ def get_dataloader(config: DictConfig):
                     num_workers=config.datasets.num_workers,
                     prefetch_factor=config.datasets.prefetch_factor,
                     persistent_workers=False,
-                    sampler=DistributedSampler(val, shuffle=False, drop_last=True)
-                    if config.datasets.distributed_sampler else None,
+                    sampler=(
+                        DistributedSampler(val, shuffle=False, drop_last=True)
+                        if config.datasets.distributed_sampler
+                        else None
+                    ),
                     worker_init_fn=db_worker_init_fn,
-                    drop_last=True
+                    drop_last=True,
                 )
 
                 if config.distributed_framework == "ray":
                     train = raytorch.prepare_data_loader(train)
                     val = raytorch.prepare_data_loader(val)
 
-                return train, val
+                return train, val, None, None, None
 
             else:
                 dataloader = DataLoader(
@@ -202,8 +216,9 @@ def get_dataloader(config: DictConfig):
                     prefetch_factor=config.datasets.prefetch_factor,
                     persistent_workers=False,
                     # handle cases where we want to run on a single GPU without distributed environment
-                    sampler=DistributedSampler(dataset, drop_last=True)
-                    if config.datasets.distributed_sampler else None,
+                    sampler=(
+                        DistributedSampler(dataset, drop_last=True) if config.datasets.distributed_sampler else None
+                    ),
                     worker_init_fn=db_worker_init_fn,
                     drop_last=True,
                 )
@@ -211,7 +226,7 @@ def get_dataloader(config: DictConfig):
                 if config.distributed_framework == "ray":
                     dataloader = raytorch.prepare_data_loader(dataloader)
 
-                return dataloader, None
+                return dataloader, None, None, None, None
         else:
             return dataset
 
@@ -236,7 +251,7 @@ def get_dataloader(config: DictConfig):
                 prefetch_queue_depth=config.datasets.prefetch_factor,
                 exec_async=config.datasets.exec_async,
                 exec_pipelined=config.datasets.exec_pipelined,
-                device_id=process_rank()
+                exec_dynamic=True,
             )
             train_pipe.build()
             dali_train_loader = DALIGenericIterator(
@@ -244,7 +259,7 @@ def get_dataloader(config: DictConfig):
                 output_map=["data_tensor", "get_item_time"] if train_dataset.time else ["data_tensor"],
                 size=train_dataset.full_iterations * config.clusters.batch_size_per_gpu,
                 auto_reset=True,
-                last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
+                last_batch_policy=instantiate(config.datasets.dali_last_batch_policy),
             )
 
             val_pipe = pretrain_dataset_pipeline(
@@ -256,7 +271,7 @@ def get_dataloader(config: DictConfig):
                 prefetch_queue_depth=config.datasets.prefetch_factor,
                 exec_async=config.datasets.exec_async,
                 exec_pipelined=config.datasets.exec_pipelined,
-                device_id=process_rank()
+                exec_dynamic=True,
             )
             val_pipe.build()
             dali_val_loader = DALIGenericIterator(
@@ -264,10 +279,10 @@ def get_dataloader(config: DictConfig):
                 output_map=["data_tensor", "get_item_time"] if val_dataset.time else ["data_tensor"],
                 size=val_dataset.full_iterations * config.clusters.batch_size_per_gpu,
                 auto_reset=True,
-                last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
+                last_batch_policy=instantiate(config.datasets.dali_last_batch_policy),
             )
 
-            return dali_train_loader, dali_val_loader
+            return dali_train_loader, dali_val_loader, None, None, None
 
         else:
             # DALI dataloader
@@ -280,7 +295,7 @@ def get_dataloader(config: DictConfig):
                 prefetch_queue_depth=config.datasets.prefetch_factor,
                 exec_async=config.datasets.exec_async,
                 exec_pipelined=config.datasets.exec_pipelined,
-                device_id=process_rank()
+                exec_dynamic=True,
             )
             pipe.build()
             dali_loader = DALIGenericIterator(
@@ -288,50 +303,119 @@ def get_dataloader(config: DictConfig):
                 output_map=["data_tensor", "get_item_time"] if train_dataset.time else ["data_tensor"],
                 size=train_dataset.full_iterations * config.clusters.batch_size_per_gpu,
                 auto_reset=True,
-                last_batch_policy=instantiate(config.datasets.dali_last_batch_policy)
+                last_batch_policy=instantiate(config.datasets.dali_last_batch_policy),
             )
-            return dali_loader, None
+            return dali_loader, None, None, None, None
 
     elif config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
-        if isinstance(config.datasets.collate_fn, DictConfig):
-            collate_fn = instantiate(config.datasets.collate_fn)
-        else:
-            collate_fn = get_method(config.datasets.collate_fn)
+        # get numa nodes for this node (gathered on local_rank 0)
+        gpu_to_numa_map = get_local_numa_nodes(worker_numa_node=torch_gpu_to_numa(local_rank())["numa_node"])
+        gpu_numa_nodes = list(gpu_to_numa_map.values()) if gpu_to_numa_map is not None else []
 
-        if config.datasets.split is not None:
-            train_dataset = ray.train.get_dataset_shard("train")
-            val_dataset = ray.train.get_dataset_shard("val")
-            
-            train_dataloader = get_dataloader_ray(
-                dataset=train_dataset,
-                batch_size=config.clusters.batch_size_per_gpu,
-                drop_last=config.datasets.drop_last_policy,
-                collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor,
-                auto_transfer=config.datasets.auto_transfer
+        # TODO: we should consider instantiating the database in a
+        #       partitioned way so each ray actor only loads a subset of the data
+        #       to allow for better scaling when we move towards billion sample datasets
+        #       this is probably the best entrypoint for that change
+        db = None
+        buffer_input_shape = tuple(config.datasets.input_shape)
+
+        try:
+            tile_mode = (
+                hasattr(config.datasets.databases, "with_hypercubes_dataframe")
+                and not config.datasets.databases.with_hypercubes_dataframe
             )
-            val_dataloader = get_dataloader_ray(
-                dataset=val_dataset,
-                batch_size=config.clusters.batch_size_per_gpu,
-                drop_last=config.datasets.drop_last_policy,
-                collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor,
-                auto_transfer=config.datasets.auto_transfer
+        except Exception:
+            tile_mode = False
+
+        if tile_mode:
+            db = instantiate(config.datasets.databases)
+            df = db.hypercubes_dataframe
+
+            if not {"z_size", "y_size", "x_size"}.issubset(df.columns):
+                raise ValueError("Tile-level training requires z_size, y_size, x_size columns in tiles dataframe.")
+
+            max_z = int(df["z_size"].max())
+            max_y = int(df["y_size"].max())
+            max_x = int(df["x_size"].max())
+
+            layout = config.dataset_layout_order.upper()
+            ax2idx = {ax: i for i, ax in enumerate(layout)}
+
+            buffer_input_shape_list = list(buffer_input_shape)
+
+            if "Z" in ax2idx:
+                buffer_input_shape_list[ax2idx["Z"]] = max_z
+            if "Y" in ax2idx:
+                buffer_input_shape_list[ax2idx["Y"]] = max_y
+            if "X" in ax2idx:
+                buffer_input_shape_list[ax2idx["X"]] = max_x
+
+            buffer_input_shape = tuple(buffer_input_shape_list)
+
+            logger.info(
+                f"[DATALOADERS] Using buffer_input_shape={buffer_input_shape} "
+                f"[DATALOADERS] (max tile sizes: z={max_z}, y={max_y}, x={max_x})"
             )
-            return train_dataloader, val_dataloader
-        
-        else: 
-            train_dataset = ray.train.get_dataset_shard("train")
-            train_dataloader = get_dataloader_ray(
-                dataset=train_dataset,
-                batch_size=config.clusters.batch_size_per_gpu,
-                drop_last=config.datasets.drop_last_policy,
-                collate_fn=collate_fn,
-                prefetch_factor=config.datasets.prefetch_factor,
-                auto_transfer=config.datasets.auto_transfer
+
+            if config.datasets.collate_fn.with_resize:
+                collator_input_shape = list(config.datasets.input_shape)
+            else:
+                collator_input_shape = list(buffer_input_shape)
+        else:
+            collator_input_shape = list(config.datasets.input_shape)
+
+        # start numa scheduler actor on rank 0 of each node
+        if local_rank() == 0:
+            ray.logger.info(f"Starting NumaNodeAffinityScheduler on node {node_id()}")
+            ray.logger.info(f"NUMA nodes found on this node: {gpu_numa_nodes}")
+            scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+                node_id=node_id(),
+                soft=False,
             )
-            return train_dataloader, None
-    
+            actor_scheduler = NumaNodeAffinityScheduler.options(
+                name=f"numa_node_affinity_scheduler_node_{node_id()}",
+                namespace="schedulers",
+                lifetime="detached",
+                max_concurrency=config.datasets.max_concurrent_calls,
+                scheduling_strategy=scheduling_strategy,
+            ).remote(
+                policy=config.datasets.numa_node_affinity_policy,
+                oversub_factor=config.datasets.numa_oversub_factor,
+                node_id=node_id(),
+                # get unique list of NUMA nodes with GPUs on this node
+                gpu_numa_nodes=list(set(gpu_numa_nodes)),
+                gpu_to_numa_map=gpu_to_numa_map,
+            )
+
+        barrier()
+
+        buffer_actor, buffer_cfg = set_buffers(
+            local_rank=local_rank(),
+            global_rank=process_rank(),
+            buffer_type="host_memory",
+            batch_size=config.clusters.batch_size_per_gpu,
+            input_shape=buffer_input_shape,
+            dtype=config.storage_dtype,
+            buffer_capacity=config.datasets.buffer_capacity,
+            pin_to_numa_node=config.datasets.pin_numa_node,
+            max_concurrent_calls=config.datasets.max_concurrent_calls,
+            node_id=node_id(),
+            numa_node=torch_gpu_to_numa(local_rank())["numa_node"],
+        )
+
+        collate_fn = instantiate(
+            config.datasets.collate_fn, node_id=node_id(), input_shape=collator_input_shape, debug=config.datasets.debug
+        )
+
+        train_dataloader, val_dataloader, database_df = get_dataloader_ray(
+            cfg=config,
+            batch_size=config.clusters.batch_size_per_gpu,
+            drop_last=config.datasets.drop_last_policy,
+            collate_fn=collate_fn,
+            database=db,
+        )
+        return train_dataloader, val_dataloader, buffer_actor, collate_fn.device_buffer, database_df
+
     else:
         raise NotImplementedError(
             f"Dataset {config.datasets.dataset._target_} is not supported for dataloader building."

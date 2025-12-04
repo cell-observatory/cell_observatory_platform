@@ -24,6 +24,9 @@ class TORCH_DTYPES(Enum):
     bfloat16 = torch.bfloat16
     bf16 = torch.bfloat16
 
+    uint16 = torch.uint16
+    u16 = torch.uint16
+
 class NUMPY_DTYPES(Enum):
     float32 = numpy.float32
     fp32 = numpy.float32
@@ -31,6 +34,8 @@ class NUMPY_DTYPES(Enum):
     float16 = numpy.float16
     fp16 = numpy.float16
 
+    uint16 = numpy.uint16
+    u16 = numpy.uint16
 
 class TENSORSTORE_DTYPES(Enum):
     float32 = tensorstore.float32

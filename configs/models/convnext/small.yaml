@@ -1,8 +1,0 @@
-_target_: models.convnext.ConvNeXtV2
-input_fmt: ${dataset_layout_order}
-input_shape: [1, 128, 128, 128, 1]
-modes: 15
-depths: [3, 3, 27, 3]
-dims: [96, 192, 384, 768]
-drop_path_rate: 0.1
-head_init_scale: 1.

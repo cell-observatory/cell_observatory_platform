@@ -1,9 +1,6 @@
-_target_: models.jepa.JEPA
 input_fmt: ${dataset_layout_order}
-input_shape: ${eval:"[${clusters.batch_size_per_gpu}] + ${datasets.input_shape}"}
-temporal_patch_size: ${datasets.patch_shape.0}
-lateral_patch_size: ${datasets.patch_shape.1}
-axial_patch_size: ${datasets.patch_shape.2}
+input_shape: ${datasets.input_shape}
+patch_shape: ${datasets.patch_shape}
 
 embed_dim: 1280
 predictor_embed_dim: 512
@@ -25,3 +22,12 @@ mlp_layer: SwiGLU
 
 mask_ratio: 0.75
 window_mask_shape: null
+
+abs_sincos_enc: true
+rope_pos_enc: false
+rope_random_rotation_per_head: true
+rope_mixed: false
+rope_theta: 100.0
+weight_init_type: vjepa2
+mlp_wide_silu: false
+loss_fn: l1_masked

@@ -1,30 +1,35 @@
+import logging
 import os
 import sys
 import time
-import logging
 import uuid
 from pathlib import Path
 
-import warnings
-warnings.filterwarnings("ignore")
+# This ensures both relative imports (training.loops) and absolute imports
+# (cell_observatory_platform.training.helpers) work correctly
+_pkg_dir = str(Path(__file__).resolve().parent.parent)
+_workspace_root = str(Path(__file__).resolve().parent.parent.parent)
+for _path in [_pkg_dir, _workspace_root]:
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
-from ray.tune import Tuner
-from ray import init, cluster_resources
-from ray.train.torch import TorchTrainer, TorchConfig
-from ray.train import ScalingConfig, CheckpointConfig, RunConfig, FailureConfig
+import warnings
+
+warnings.filterwarnings("ignore")
 
 import hydra
 from hydra.utils import get_method, instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
+from ray import cluster_resources, init
+from ray.runtime_env import RuntimeEnv
+from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
+from ray.train.torch import TorchConfig, TorchTrainer
+from ray.tune import Tuner
+
 if not OmegaConf.has_resolver("eval"):
     OmegaConf.register_new_resolver("eval", eval)
 if not OmegaConf.has_resolver("now"):
     OmegaConf.register_new_resolver("now", lambda fmt: time.strftime(fmt))
-
-from torch.utils.data import random_split
-
-from training.helpers import record_dataset_len
-from data.datasets.pretrain_dataset_ray import get_dataset_ray
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.DEBUG)
@@ -33,14 +38,18 @@ logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INF
 
 def initialize_session(cfg: DictConfig):
     nsys_env = cfg.hooks.get("nsys_env", None)
-    
-    if nsys_env is not None:
-        nsys_env = OmegaConf.to_container(nsys_env, resolve=True, enum_to_str=True)
-        runtime_env = { **os.environ, **nsys_env }
-    else:
-        runtime_env = {**os.environ}
 
-    if 'head_node_ip' in os.environ and 'port' in os.environ:
+    env_vars = {}
+    env_vars.update(os.environ)
+
+    if nsys_env is not None:
+        env_vars.update(*OmegaConf.to_container(nsys_env, resolve=True, enum_to_str=True))
+
+    workspace_root = str(Path(__file__).resolve().parent.parent)
+
+    runtime_env = RuntimeEnv(working_dir=workspace_root, env_vars=env_vars, py_modules=[workspace_root])
+
+    if "head_node_ip" in os.environ and "port" in os.environ:
         address = os.environ["head_node_ip"]
         port = os.environ["port"]
 
@@ -52,6 +61,9 @@ def initialize_session(cfg: DictConfig):
         )
 
     else:
+        logger.info(f"No existing Ray cluster detected in environment variables.")
+        logger.info(f"Port detected: {os.environ.get('port', 'None')}")
+        logger.info(f"head_node_ip detected: {os.environ.get('head_node_ip', 'None')}")
         logger.info(f"Starting a new local ray cluster")
 
         tmpdir = f"/tmp/symlink_{uuid.uuid1()}"
@@ -68,52 +80,31 @@ def initialize_session(cfg: DictConfig):
             _temp_dir=tmpdir,
         )
 
-    logger.info('\nResources available to this Ray cluster:')
+    logger.info("\nResources available to this Ray cluster:")
     for resource, count in cluster_resources().items():
-        logger.info(f'{resource}: {count}')
+        logger.info(f"{resource}: {count}")
 
     return cluster_resources().items()
 
 
 def run_session(cfg: DictConfig):
-
     scaling_config = ScalingConfig(
         num_workers=cfg.clusters.scaling_config.num_workers,
         resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
         trainer_resources=cfg.clusters.scaling_config.trainer_resources,
-        use_gpu=cfg.clusters.scaling_config.use_gpu
+        use_gpu=cfg.clusters.scaling_config.use_gpu,
     )
 
     checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
+
     run_config = RunConfig(
         log_to_file=cfg.clusters.run_config.log_to_file,
         checkpoint_config=checkpoint_config,
         failure_config=FailureConfig(max_failures=0),
         storage_path=cfg.clusters.run_config.storage_path,
     )
-    
-    torch_config = TorchConfig(timeout_s=cfg.clusters.torch_config.timeout_s)
 
-    if cfg.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
-        db = instantiate(cfg.datasets.databases)
-        dataset_len = len(db.hypercubes_dataframe)
-        if cfg.datasets.split is not None:
-            val_size = round(dataset_len * cfg.datasets.split)
-            train_subset, val_subset = random_split(
-                range(dataset_len),
-                lengths=[dataset_len - val_size, val_size]
-            )
-            train_indices, val_indices = train_subset.indices, val_subset.indices
-            train_dataset = get_dataset_ray(cfg, indices=train_indices, database=db)
-            val_dataset = get_dataset_ray(cfg, indices=val_indices, database=db)
-            dataset = {"train": train_dataset, "val": val_dataset}
-            record_dataset_len(cfg, len(train_indices), len(val_indices))
-        else:
-            train_dataset = get_dataset_ray(cfg, indices=None, database=db)
-            dataset = {"train": train_dataset}
-            record_dataset_len(cfg, dataset_len, 0)
-    else:
-        dataset = None
+    torch_config = TorchConfig(timeout_s=cfg.clusters.torch_config.timeout_s)
 
     trainer = TorchTrainer(
         train_loop_per_worker=get_method(cfg.loop_per_worker_script),
@@ -121,7 +112,7 @@ def run_session(cfg: DictConfig):
         run_config=run_config,
         scaling_config=scaling_config,
         torch_config=torch_config,
-        datasets=dataset
+        datasets=None,
     )
 
     try:
@@ -153,7 +144,7 @@ def run_tune(cfg: DictConfig):
         num_workers=cfg.clusters.scaling_config.num_workers,
         resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
         trainer_resources=cfg.clusters.scaling_config.trainer_resources,
-        use_gpu=cfg.clusters.scaling_config.use_gpu
+        use_gpu=cfg.clusters.scaling_config.use_gpu,
     )
     checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
     run_config = RunConfig(
@@ -169,10 +160,10 @@ def run_tune(cfg: DictConfig):
         run_config=run_config,
         scaling_config=scaling_config,
         torch_config=torch_config,
-        datasets=None
+        datasets=None,
     )
 
-    # NOTE: we need to pass the run config to the Tuner instead of 
+    # NOTE: we need to pass the run config to the Tuner instead of
     #       the trainer directly to allow for Tune to inject
     #       the hyperparameter space and sampling logic into
     #       our train config
@@ -190,12 +181,12 @@ def run_tune(cfg: DictConfig):
         sys.exit(1)
 
 
-@hydra.main(config_path="../configs", config_name="test_pretrain_4d_mae_local")
+@hydra.main(version_base=None, config_path="../configs", config_name=None)
 def main(cfg: DictConfig):
 
     timeit = time.time()
 
-    # ray cluster already set up in: ray_local_script.sh OR 
+    # ray cluster already set up in: ray_local_script.sh OR
     #                                ray_lsf_cluster.sh  OR
     #                                ray_slurm_cluster.sh
     # depending on the cluster Hydra configuration
@@ -212,6 +203,7 @@ def main(cfg: DictConfig):
 
     logger.info(f"Total time elapsed: {time.time() - timeit:.2f} sec.")
     sys.exit(0)
+
 
 if __name__ == "__main__":
     main()

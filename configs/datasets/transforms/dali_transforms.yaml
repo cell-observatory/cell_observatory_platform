@@ -2,4 +2,4 @@ defaults:
   - _self_
 
 transforms_list:
-  - data.transforms.normalize.NormalizeDaliWrapper
+  - cell_observatory_platform.data.transforms.normalize.NormalizeDaliWrapper
