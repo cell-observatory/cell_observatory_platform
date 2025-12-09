@@ -1,0 +1,9 @@
+BUILD: cell_observatory_platform.models.heads.linear_head.BUILD
+
+in_dim: null
+output_dim: null
+use_bn: false
+nlayers: 3
+hidden_dim: 2048
+bottleneck_dim: 256
+mlp_bias: true
