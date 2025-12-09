@@ -20,16 +20,42 @@ from cell_observatory_platform.models.layers.conv3d import Conv3d
 from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
 from cell_observatory_platform.models.layers.utils import c2_xavier_fill, compute_unmasked_ratio, get_reference_points
-from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D
+from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D, CrossAttention
+
+try:
+    from ops3d import _C
+    OPS3D_AVAILABLE = True
+except ImportError:
+    OPS3D_AVAILABLE = False
 
 
 class MSDeformAttnTransformerEncoderLayer(nn.Module):
     def __init__(
-        self, embed_dim=256, feedforward_dim=1024, dropout=0.1, activation="RELU", n_levels=4, n_heads=8, n_points=4
+        self, 
+        embed_dim=256, 
+        feedforward_dim=1024, 
+        dropout=0.1, 
+        activation="RELU", 
+        n_levels=4, 
+        n_heads=8, 
+        n_points=4,
+        use_deform_attention=False,
     ):
         super().__init__()
-
-        self.self_attn = FlashDeformAttn3D(embed_dim, n_levels, n_heads, n_points)
+        use_deform_attention = True if OPS3D_AVAILABLE else False
+        
+        if use_deform_attention:
+            self.with_deform_attention = True
+            self.attn = FlashDeformAttn3D(
+                d_model=embed_dim,
+                n_levels=n_levels,
+                n_heads=n_heads,
+                n_points=n_points,
+            )
+        else:
+            self.with_deform_attention = False
+            self.attn = CrossAttention(dim=embed_dim, num_heads=n_heads)
+                
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(embed_dim)
 

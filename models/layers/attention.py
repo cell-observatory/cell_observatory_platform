@@ -313,6 +313,37 @@ class RopeAttention(nn.Module):
             return x
 
 
+
+class CrossAttention(nn.Module):
+    def __init__(self, dim, num_heads):
+        super().__init__()
+        self.num_heads = num_heads
+        self.q_proj = nn.Linear(dim, dim, bias=True)
+        self.k_proj = nn.Linear(dim, dim, bias=True)
+        self.v_proj = nn.Linear(dim, dim, bias=True)
+        self.o_proj = nn.Linear(dim, dim, bias=True)
+
+    def forward(self, query, feat):
+        B, Nq, C = query.shape
+        Nk = feat.shape[1]
+        H = self.num_heads
+        Hd = C // H
+        q = self.q_proj(query).view(B, Nq, H, Hd).transpose(1, 2)
+        k = self.k_proj(feat).view(B, Nk, H, Hd).transpose(1, 2)
+        v = self.v_proj(feat).view(B, Nk, H, Hd).transpose(1, 2)
+
+        with torch.nn.attention.sdpa_kernel(
+            [
+                torch.nn.attention.SDPBackend.FLASH_ATTENTION,
+                torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
+                torch.nn.attention.SDPBackend.MATH,
+            ]
+        ):
+            out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        out = out.transpose(1, 2).contiguous().view(B, Nq, C)
+        return self.o_proj(out)
+
+
 class FlashDeformAttn3D(nn.Module):
     def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4, use_reg=True):
         """

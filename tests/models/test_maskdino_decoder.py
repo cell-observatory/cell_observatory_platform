@@ -5,10 +5,9 @@ from cell_observatory_platform.models.heads.maskdino_decoder import MaskDINODeco
 
 try:
     from ops3d import _C
-
-    MSDEFORM_ATTN_AVAILABLE = True
+    OPS3D_AVAILABLE = True
 except ImportError:
-    MSDEFORM_ATTN_AVAILABLE = False
+    OPS3D_AVAILABLE = False
 
 
 CUDA_AVAILABLE = torch.cuda.is_available()
@@ -51,8 +50,8 @@ def test_maskdino_gen_encoder_output_proposals():
 
 
 @pytest.mark.skipif(
-    not MSDEFORM_ATTN_AVAILABLE,
-    reason="FlashDeformAttn3D (MSDEFORM_ATTN_AVAILABLE) is not installed.",
+    not OPS3D_AVAILABLE,
+    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
 )
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_maskdino_decoder_forward_no_two_stage_no_denoise():
@@ -154,8 +153,8 @@ def _make_pyramid_features(batch_size, in_channels, device):
 
 
 @pytest.mark.skipif(
-    not MSDEFORM_ATTN_AVAILABLE,
-    reason="FlashDeformAttn3D (MSDEFORM_ATTN_AVAILABLE) is not installed.",
+    not OPS3D_AVAILABLE,
+    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
 )
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_maskdino_decoder_forward_two_stage_no_denoise():
@@ -231,8 +230,8 @@ def test_maskdino_decoder_forward_two_stage_no_denoise():
 
 
 @pytest.mark.skipif(
-    not MSDEFORM_ATTN_AVAILABLE,
-    reason="FlashDeformAttn3D (MSDEFORM_ATTN_AVAILABLE) is not installed.",
+    not OPS3D_AVAILABLE,
+    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
 )
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_maskdino_decoder_forward_two_stage_with_box_init_mask2box():
@@ -296,8 +295,8 @@ def test_maskdino_decoder_forward_two_stage_with_box_init_mask2box():
 
 
 @pytest.mark.skipif(
-    not MSDEFORM_ATTN_AVAILABLE,
-    reason="FlashDeformAttn3D (MSDEFORM_ATTN_AVAILABLE) is not installed.",
+    not OPS3D_AVAILABLE,
+    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
 )
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_maskdino_decoder_forward_with_denoise():
