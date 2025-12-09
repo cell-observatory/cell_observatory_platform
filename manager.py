@@ -439,7 +439,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             print(f"Running in {container_info['ide_type']} IDE in {container_info['container_type']} environment")
 
             # needs to be here to launch jobs in the IDE
-            from training import runner
+            from cell_observatory_platform.training import runner
 
             runner.main(cfg)
 
