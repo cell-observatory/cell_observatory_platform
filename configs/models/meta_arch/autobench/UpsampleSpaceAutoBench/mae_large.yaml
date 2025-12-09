@@ -1,0 +1,12 @@
+BUILD: cell_observatory_platform.models.meta_arch.autobench.UpsampleAutoBench.BUILD
+
+backbone_args: ${models.backbones.mae.large}
+decoder_args: ${models.decoders.vit}
+
+task: upsample
+loss_fn: l2_masked
+
+input_fmt: ${dataset_layout_order}
+input_shape: ${datasets.input_shape}
+patch_shape: ${datasets.patch_shape}
+output_channels: ${tasks.output_channels}

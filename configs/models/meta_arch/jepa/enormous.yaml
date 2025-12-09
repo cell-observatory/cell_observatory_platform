@@ -1,0 +1,37 @@
+BUILD: cell_observatory_platform.models.maskedencoder.BUILD
+
+input_fmt: ${dataset_layout_order}
+input_shape: ${datasets.train_shape}
+patch_shape: ${datasets.patch_shape}
+
+embed_dim: 1792
+# predictor_embed_dim: 1024
+depth: 56
+# predictor_depth: 16
+num_heads: 16
+# predictor_num_heads: 16
+mlp_ratio: 8.5714285714
+
+proj_drop_rate: 0.0
+att_drop_rate: 0.0
+drop_path_rate: 0.1
+init_std: 0.02
+fixed_dropout_depth: false
+# use_conv_proj: false
+norm_layer: RmsNorm
+act_layer: SiLU
+mlp_layer: SwiGLU
+
+# mask_ratio: 0.75
+# window_mask_shape: null
+
+abs_sincos_enc: true
+rope_pos_enc: false
+rope_random_rotation_per_head: true
+rope_mixed: false
+rope_theta: 100.0
+weight_init_type: vjepa2
+mlp_wide_silu: false
+loss_fn: l1_masked
+
+out_layers: null
