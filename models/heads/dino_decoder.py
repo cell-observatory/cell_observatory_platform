@@ -14,7 +14,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.mlp import MLP
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
-from cell_observatory_platform.models.ops.flash_deform_attn import FlashDeformAttn3D
+from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D
 
 
 class DeformableTransformerDecoderLayer(nn.Module):
