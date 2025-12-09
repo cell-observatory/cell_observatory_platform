@@ -1,8 +1,7 @@
 import pytest
 import torch
 
-from cell_observatory_platform.models.patch_embeddings import PatchEmbedding, calc_num_patches
-
+from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
 
 CASES = [
     # 5D: TZYXC
@@ -21,7 +20,7 @@ CASES = [
     dict(
         name="ZYXC",
         input_fmt="ZYXC",
-        input_shape=(2, 12, 32, 32, 1),     # (B, Z, Y, X, C)
+        input_shape=(2, 12, 32, 32, 1),  # (B, Z, Y, X, C)
         lateral_patch_size=8,
         axial_patch_size=3,
         temporal_patch_size=None,
@@ -33,7 +32,7 @@ CASES = [
     dict(
         name="TYXC",
         input_fmt="TYXC",
-        input_shape=(2, 10, 24, 24, 2),     # (B, T, Y, X, C)
+        input_shape=(2, 10, 24, 24, 2),  # (B, T, Y, X, C)
         lateral_patch_size=6,
         axial_patch_size=None,
         temporal_patch_size=5,
@@ -45,7 +44,7 @@ CASES = [
     dict(
         name="YXC",
         input_fmt="YXC",
-        input_shape=(2, 28, 20, 1),         # (B, Y, X, C)
+        input_shape=(2, 28, 20, 1),  # (B, Y, X, C)
         lateral_patch_size=4,
         axial_patch_size=None,
         temporal_patch_size=None,
@@ -57,7 +56,7 @@ CASES = [
     dict(
         name="XC",
         input_fmt="XC",
-        input_shape=(2, 30, 4),             # (B, X, C)
+        input_shape=(2, 30, 4),  # (B, X, C)
         lateral_patch_size=5,
         axial_patch_size=None,
         temporal_patch_size=None,
@@ -72,8 +71,7 @@ def _expected_pixels_per_patch(case):
     t = case.get("temporal_patch_size") or 1
     z = case.get("axial_patch_size") or 1
     l = case["lateral_patch_size"]
-    return case["channels"] * t * z * (l ** 2) if \
-        case["input_fmt"] != "XC" else case["channels"] * t * z * l
+    return case["channels"] * t * z * (l**2) if case["input_fmt"] != "XC" else case["channels"] * t * z * l
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
