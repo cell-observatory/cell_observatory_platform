@@ -34,8 +34,8 @@ from cell_observatory_platform.utils.context import (
 from cell_observatory_platform.utils.profiling import pprof_class, pprof_func
 
 # TODO: fix circular imports
-# from cell_observatory_finetune.data.structures import convert_bbox_format
-# from cell_observatory_finetune.training.helpers import get_image_sizes, mask_ids_to_masks
+# from cell_observatory_platform.data.structures import convert_bbox_format
+# from cell_observatory_platform.training.helpers import get_image_sizes, mask_ids_to_masks
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)

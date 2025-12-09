@@ -1,27 +1,28 @@
 import os
 import time
-from typing import Dict, Any, Tuple
+from typing import Any, Dict, Tuple
 
 import torch
-from torch.utils.data import get_worker_info
 from dask.dataframe.tests.test_pyarrow_compat import dtype
+from torch.utils.data import get_worker_info
 
-from cell_observatory_platform.data.io import read_zarr
+from cell_observatory_platform.data.class_structures.data_sample import DataSample
+from cell_observatory_platform.data.class_structures.image_list import ImageList, cat_image_lists
 from cell_observatory_platform.data.data_types import TENSORSTORE_DTYPES, TORCH_DTYPES
-from cell_observatory_platform.data.structures.data_sample import DataSample
-from cell_observatory_platform.data.structures.image_list import ImageList, cat_image_lists
 from cell_observatory_platform.data.datasets.base_dataset import BaseDataset, default_collate
+from cell_observatory_platform.data.io import read_zarr
 
 
 def collate_pretrain_dataset(samples: list["DataSample"]) -> "DataSample":
     metainfo = default_collate([s.metainfo for s in samples])
-    batch = DataSample(metainfo=metainfo)    
-    # TODO: we can't currently use this collate function since 
-    #      it's unclear if we want to do torch.stack on cpu which 
+    batch = DataSample(metainfo=metainfo)
+    # TODO: we can't currently use this collate function since
+    #      it's unclear if we want to do torch.stack on cpu which
     #       is a result of cat_image_lists
     batched_img = cat_image_lists(image_lists=[s.data_tensor for s in samples])
-    batch.data_tensor = batched_img    
+    batch.data_tensor = batched_img
     return batch.to_dict()
+
 
 def simple_collate_pretrain_dataset(samples: list["DataSample"]) -> "DataSample":
     """
@@ -32,16 +33,18 @@ def simple_collate_pretrain_dataset(samples: list["DataSample"]) -> "DataSample"
     # no image list class until we add a helper function that doesn't stack
     # images in the image list
     image_list = [s.data_tensor.tensor for s in samples]
-    metainfo['collate_time'] = time.time() - collate_time
+    metainfo["collate_time"] = time.time() - collate_time
     return {
-        'data_tensor': image_list,
-        'metainfo': metainfo,
+        "data_tensor": image_list,
+        "metainfo": metainfo,
     }
+
 
 class PretrainDataset(BaseDataset):
     """
     Dataset for pretraining.
     """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._zarr_handles_data = {}
@@ -49,20 +52,17 @@ class PretrainDataset(BaseDataset):
 
     def worker_init_fn(self, worker_id):
         worker_info = get_worker_info()
-        # re-open handles in this worker only 
+        # re-open handles in this worker only
         # important to pass to dataloader
         self.paths = {
             os.path.join(sf, of, tn)
-            for sf, of, tn in 
-            zip(self.hypercubes_dataframe["server_folder"], 
-                self.hypercubes_dataframe["output_folder"], 
-                self.hypercubes_dataframe["tile_name"]
+            for sf, of, tn in zip(
+                self.hypercubes_dataframe["server_folder"],
+                self.hypercubes_dataframe["output_folder"],
+                self.hypercubes_dataframe["tile_name"],
             )
         }
-        self._zarr_handles_data = {
-            p: read_zarr(p, dtype=self.dtype)
-            for p in self.paths
-        }
+        self._zarr_handles_data = {p: read_zarr(p, dtype=self.dtype) for p in self.paths}
 
     def _build_index(self) -> None:
         # convert df into a list of Python dicts
@@ -93,12 +93,8 @@ class PretrainDataset(BaseDataset):
         if torch.isnan(img_tensor).all() or torch.isinf(img_tensor).all():
             raise ValueError(f"Invalid training data: {_data['meta']}")
 
-        img_sample = ImageList(
-            img_tensor,
-            layout=self.input_layout,
-            image_sizes=[img_tensor.shape]
-        )
-        
+        img_sample = ImageList(img_tensor, layout=self.input_layout, image_sizes=[img_tensor.shape])
+
         sample = DataSample(metainfo=_data["meta"])
         sample.data_tensor = img_sample
         return sample
