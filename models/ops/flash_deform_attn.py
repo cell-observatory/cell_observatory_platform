@@ -1,13 +1,16 @@
 from __future__ import absolute_import, division, print_function
 
-import math
-import warnings
-
+import pytest
 import torch
-from torch import nn
-from torch.nn.init import constant_, xavier_uniform_
+import torch.nn.functional as F
+from torch.autograd import Function
+from torch.autograd.function import once_differentiable
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from cell_observatory_platform.models.ops.flash_deform_attn_func import FlashDeformAttnFunction
+try:
+    from ops3d import _C
+except ImportError:
+    print("FlashDeformAttnFunction failed to load. Please compile ops3d if needed.")
 
 
 def _is_power_of_2(n):
@@ -16,177 +19,140 @@ def _is_power_of_2(n):
     return (n & (n - 1) == 0) and n != 0
 
 
-class FlashDeformAttn3D(nn.Module):
-    def __init__(self, d_model=256, n_levels=4, n_heads=8, n_points=4, use_reg=True):
-        """
-        Multi-Scale Deformable Attention Module
+def factors(N):
+    res = []
+    # find all integer divisors of N
+    for i in range(1, N + 1):
+        if N % i == 0:
+            res.append(i)
+    return res
 
-        Args:
-            d_model: hidden dimension
-            n_levels: number of feature levels
-            n_heads: number of attention heads
-            n_points: number of sampling points per attention head per feature level
-        """
-        super().__init__()
 
-        if d_model % n_heads != 0:
-            raise ValueError("d_model must be divisible by n_heads, but got {} and {}".format(d_model, n_heads))
-        _d_per_head = d_model // n_heads
+def findspec(B, Q, G, C):
+    # we fix d_stride=8
+    d_stride = 8
+    ms = factors(B * Q)
+    multiplier = 1
 
-        if _d_per_head % 8 != 0:
-            raise ValueError(
-                f"Per-head dim must be multiple of 8 for this kernel, "
-                f"got d_model={d_model}, n_heads={n_heads}, per_head={_d_per_head}."
-            )
+    # total number of threads per block
+    # is equal to multiplier * G * C / d_stride
+    # maximum = 512 for performance reasons
+    # TODO: check if can go to 1024
+    for m in ms:
+        if m <= 64 and (m * G * C // d_stride) <= 512:
+            multiplier = m
 
-        # set _d_per_head to a power of 2
-        if not _is_power_of_2(_d_per_head):
-            warnings.warn(
-                "Set d_model in MSDeformAttn to make the dimension of each attention head a power of 2 "
-                "which is more efficient in our CUDA implementation."
-            )
+    n_thread = multiplier * G * C // d_stride
+    return d_stride, n_thread
 
-        self.im2col_step = 64
 
-        self.d_model = d_model
-        self.n_levels = n_levels
-        self.n_heads = n_heads
-        self.n_points = n_points
+def findspec_bwd(B, Q, G, C, max_tpb=256, max_mult=64):
+    # 1) pick d_stride so channels_per_thread = C//d_stride fits
+    for d in (1, 2, 4, 8, 16, 32):
+        if C % d == 0 and G * (C // d) <= max_tpb:
+            d_stride = d
+            break
+    else:
+        raise RuntimeError(f"Cannot fit G={G}, C={C} into {max_tpb} threads")
 
-        self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 3)
-        self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
+    # 2) pick multiplier so we can split B*Q / multiplier blocks
+    #    without exceeding max_tpb
+    best_mult = 1
+    for m in factors(B * Q):
+        thr = m * G * (C // d_stride)
+        if m <= max_mult and thr <= max_tpb:
+            best_mult = max(best_mult, m)
 
-        self.value_proj = nn.Linear(d_model, d_model)
-        self.output_proj = nn.Linear(d_model, d_model)
+    blockthread = best_mult * G * (C // d_stride)
+    return d_stride, blockthread
 
-        self.use_reg = use_reg
 
-        self._reset_parameters()
-
-    def _reset_parameters(self):
-        constant_(self.sampling_offsets.weight.data, 0.0)
-
-        # --- --- start of sampling offsets initialization --- ---
-
-        # azimuth
-        thetas = torch.arange(self.n_heads, dtype=torch.float32) * (2.0 * math.pi / self.n_heads)
-        phis = torch.tensor([math.pi / 4, -math.pi / 4], dtype=torch.float32)
-        # alternate heads: up, down, up, down, ...
-        phis = phis.repeat((self.n_heads + 1) // 2)[: self.n_heads]
-
-        # unit vectors on the sphere
-        dirs_x = torch.cos(thetas) * torch.cos(phis)  # cosϕ cosθ
-        dirs_y = torch.sin(thetas) * torch.cos(phis)  # cosϕ sinθ
-        dirs_z = torch.sin(phis)  # sinϕ
-
-        dirs = torch.stack([dirs_x, dirs_y, dirs_z], dim=-1)
-
-        # shape: (H, 1, 1, 3), then broadcast to (H, L, P, 3)
-        grid_init = dirs[:, None, None, :].repeat(1, self.n_levels, self.n_points, 1)
-
-        # scale radius by (i+1)
-        for i in range(self.n_points):
-            scale = (i + 1) / (self.n_points + 1)
-            grid_init[:, :, i, :].mul_(scale)
-
-        with torch.no_grad():
-            self.sampling_offsets.bias.copy_(grid_init.view(-1))
-
-        # --- --- end of sampling offsets initialization --- ---
-
-        constant_(self.attention_weights.weight.data, 0.0)
-        constant_(self.attention_weights.bias.data, 0.0)
-
-        xavier_uniform_(self.value_proj.weight.data)
-        constant_(self.value_proj.bias.data, 0.0)
-
-        xavier_uniform_(self.output_proj.weight.data)
-        constant_(self.output_proj.bias.data, 0.0)
-
+class FlashDeformAttnFunction(Function):
+    @staticmethod
+    # @torch.autocast("cuda", enabled=True, dtype=torch.float16)
     def forward(
-        self,
-        query,
-        reference_points,
-        input_flatten,
-        input_spatial_shapes,
-        input_level_start_index,
-        input_padding_mask=None,
+        ctx,
+        value,
+        value_spatial_shapes,
+        value_level_start_index,
+        sampling_loc_attn,
+        im2col_step,  # partitions batch into bs/im2col calls
+        K=8,  # num points sampled
+        use_reg=True,  # use warp based implementation
     ):
-        """
-        Args:
+        ctx.K = K
+        ctx.im2col_step = im2col_step
 
-            query: (N, Length_{query}, C)
-            reference_points: (N, Length_{query}, n_levels, 3), range in [0, 1], top-left (0,0), bottom-right (1, 1), including padding area
-                or (N, Length_{query}, n_levels, 6), add additional (d, w, h) to form reference boxes
-            input_flatten: (N, \sum_{l=0}^{L-1} D_l \cdot H_l \cdot W_l, C)
-            input_spatial_shapes: (n_levels, 3), [(D_0, H_0, W_0), (D_{1}, H_1, W_1), ..., (D_{L-1}, H_{L-1}, W_{L-1})]
-            input_level_start_index: (n_levels, ), [0, D_0*H_0*W_0, D_0*H_0*W_0+D_1*H_1*W_1, ..., D_0*H_0*W_0+D_1*H_1*W_1+...+D_{L-1}*H_{L-1}*W_{L-1}]
-            input_padding_mask: (N, \sum_{l=0}^{L-1} D_l \cdot H_l \cdot W_l), True for padding elements, False for non-padding elements
-
-        returns: (N, Length_{query}, C)
-        """
-        N, Len_q, _ = query.shape
-        N, Len_in, _ = input_flatten.shape
-        assert (input_spatial_shapes[:, 0] * input_spatial_shapes[:, 1] * input_spatial_shapes[:, 2]).sum() == Len_in
-
-        value = self.value_proj(input_flatten)
-        if input_padding_mask is not None:
-            value = value.masked_fill(input_padding_mask[..., None], float(0))
-
-        # (N, Len_in, C=d_model) -> (N, Len_in, n_heads, d_model // n_heads)
-        value = value.view(N, Len_in, self.n_heads, self.d_model // self.n_heads).to(query.dtype)
-
-        # offsets: (N, Len_q, C=d_model) -> (N, Len_q, n_heads * n_levels * n_points * 3)
-        #                                -> (N, Len_q, n_heads, n_levels, n_points, 3)
-        # weights: (N, Len_q, C=d_model) -> (N, Len_q, n_heads * n_levels * n_points)
-        #                                -> (N, Len_q, n_heads, n_levels * n_points)
-        sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads, self.n_levels, self.n_points, 3)
-        attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads, self.n_levels * self.n_points)
-        # attention_weights = F.softmax(attention_weights, -1).view(N, Len_q, self.n_heads, self.n_levels, self.n_points)
-
-        # conventions: ref_points X,Y,Z => a single point in the feature map, already normalised to [0, 1]
-        #              ref_points X,Y,Z,D,W,H => centre + size of a 3-D bounding box, all in normalised units
-        #              [..., :3] is box centre, [..., 3:] size (d, h, w) learned offsets here are applied to
-        #              box dimensions, not the box centre so we do: loc = box_centre + (δ / n_points) * 0.5 * box_offset
-        #              we dampen magnitude by nr. points s.t. changing n_points does not explode gradients
-        #              (δ / n_points) * 0.5 * box_offset thus makes attn sampling offset displacements inside box
-        if reference_points.shape[-1] == 3:
-            # offset_normalizer = input_spatial_shapes with (D,H,W) reversed to (W,H,D)
-            offset_normalizer = input_spatial_shapes[..., [2, 1, 0]]
-            # (N, Len_q, 1, n_levels, 1, 3) + (N, Len_q, n_heads, n_levels, n_points, 3)
-            #                               / (1, 1, 1, n_levels, 1, 3)
-            #               -> (N, Len_q, n_heads, n_levels, n_points, 3)
-            sampling_locations = (
-                reference_points[:, :, None, :, None, :]
-                + sampling_offsets / offset_normalizer[None, None, None, :, None, :]
-            )
-        elif reference_points.shape[-1] == 6:
-            # (N, Len_q, 1, n_levels, 1, 3) + (N, Len_q, n_heads, n_levels, n_points, 3) / (N, Len_q, 1, n_levels, 1, 3)
-            # -> (N, Len_q, n_heads, n_levels, n_points, 3)
-            sampling_locations = (
-                reference_points[:, :, None, :, None, :3]
-                + sampling_offsets / self.n_points * reference_points[:, :, None, :, None, 3:] * 0.5
-            )
-        else:
-            raise ValueError(
-                "Last dim of reference_points must be 3 or 6, but get {} instead.".format(reference_points.shape[-1])
-            )
-
-        # cat sampling_offsets and attention_weights, generate sampling_loc_attn
-        # (N, Len_q, n_heads, n_levels, n_levels, n_points, 3) -> (N, Len_q, n_heads, n_levels * n_points * 3)
-        sampling_locations = sampling_locations.flatten(-3).to(query.dtype)
-        # sampling_loc_attn: (N, Len_q, n_heads, n_levels * n_points * 4)
-        # 3 for sampling locations, 1 for attention weights
-        sampling_loc_attn = torch.cat([sampling_locations, attention_weights], dim=-1)
-
-        output = FlashDeformAttnFunction.apply(
-            value,
-            input_spatial_shapes,
-            input_level_start_index,
-            sampling_loc_attn,
-            self.im2col_step,
-            self.n_points,
-            self.use_reg,
+        # findspec(Batch Size, Queries, Num_heads = G, Channels per Group = C)
+        # determine number of channels per thread inside group = d_stride and total number of threads in block = multiplier * G * C / d_stride
+        # where we partition threads into blocks of dimension Z=multiplier, Y=G, X=C/d_stride
+        d_stride, blockthread = findspec(value.shape[0], sampling_loc_attn.shape[1], value.shape[2], value.shape[3])
+        d_stride_backward, blockthread_backward = findspec_bwd(
+            value.shape[0], sampling_loc_attn.shape[1], value.shape[2], value.shape[3]
         )
-        output = self.output_proj(output)
+
+        ctx.d_stride_backward = d_stride_backward
+        ctx.blockthread_backward = blockthread_backward
+
+        output = _C.flash_deform_attn_forward(
+            value,
+            value_spatial_shapes,
+            value_level_start_index,
+            sampling_loc_attn,
+            ctx.im2col_step,
+            K,
+            d_stride,
+            blockthread,
+            use_reg,
+        )
+
+        ctx.save_for_backward(value, value_spatial_shapes, value_level_start_index, sampling_loc_attn)
         return output
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad_output):
+        value, value_spatial_shapes, value_level_start_index, sampling_loc_attn = ctx.saved_tensors
+
+        grad_value, grad_sampling_loc_attn = _C.flash_deform_attn_backward(
+            value,
+            value_spatial_shapes,
+            value_level_start_index,
+            sampling_loc_attn,
+            grad_output.contiguous(),
+            ctx.im2col_step,
+            ctx.K,
+            ctx.d_stride_backward,
+            ctx.blockthread_backward,
+        )
+
+        return grad_value, None, None, grad_sampling_loc_attn, None, None, None
+
+
+def ms_deform_attn_core_pytorch_3d(value, value_spatial_shapes, sampling_locations, attention_weights):
+    # for debug / testing only, use cuda version otherwise
+    # N_ = batch_size, S_ = total_spatial_tokens, M_ = num_heads, E_ = embed_dim
+    N_, S_, M_, E_ = value.shape
+    # Lq = num_query_points, L = num_levels, P = num_points (sampling)
+    _, Lq_, M_, L_, P_, _ = sampling_locations.shape
+    value_list = value.split([D_ * H_ * W_ for (D_, H_, W_) in value_spatial_shapes], dim=1)
+    sampling_grids = 2 * sampling_locations - 1
+    sampling_value_list = []
+    for lid_, (D_, H_, W_) in enumerate(value_spatial_shapes):
+        # N_, D_*H_*W_, M_, E_ -> N_, D_*H_*W_, M_*E_ -> N_, M_*E_, D_*H_*W_ -> N_*M_, E_, D_, H_, W_
+        value_l_ = value_list[lid_].flatten(2).transpose(1, 2).reshape(N_ * M_, E_, D_, H_, W_)
+        # N_, Lq_, M_, L, P_, 3 -> N_, Lq_, M_, P_, 3 -> N_, M_, Lq_, P_, 3 -> N_*M_, Lq_, P_, 3
+        # NOTE: grid_sample expects sampling grid to have 3 spatial dims to iterate across
+        #       hence we unsqueeze and add a dummy dim
+        sampling_grid_l_ = sampling_grids[:, :, :, lid_].transpose(1, 2).flatten(0, 1).unsqueeze(1)
+        # N_*M_, E_, Lq_, P_
+        sampling_value_l_ = F.grid_sample(
+            value_l_, sampling_grid_l_, mode="bilinear", padding_mode="zeros", align_corners=False
+        )
+        sampling_value_l_ = sampling_value_l_.squeeze(2)
+        sampling_value_list.append(sampling_value_l_)
+    # (N_, Lq_, M_, L_, P_) -> (N_, M_, Lq_, L_, P_) -> (N_, M_, 1, Lq_, L_*P_)
+    attention_weights = attention_weights.transpose(1, 2).reshape(N_ * M_, 1, Lq_, L_ * P_)
+    #  List[N_*M_, E_, Lq_, P_] -> (N*M, E, Lq, L, P) -> (broadcast mul & sum last dim) -> (N*M, E, Lq) -> (N, M*E, Lq)
+    output = (torch.stack(sampling_value_list, dim=-2).flatten(-2) * attention_weights).sum(-1).view(N_, M_ * E_, Lq_)
+    return output.transpose(1, 2).contiguous()  #  (N, Lq, M*E)
