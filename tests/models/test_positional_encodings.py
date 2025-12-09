@@ -1,26 +1,23 @@
-import pytest
-
-import torch
 import numpy as np
+import pytest
+import torch
 
-from cell_observatory_platform.models.positional_encoding import (
-    sincos,
+from cell_observatory_platform.models.layers.positional_encoding import (
+    PosEmbedding,
     positional_encoding_1d,
     positional_encoding_2d,
     positional_encoding_3d,
     positional_encoding_4d,
-    PosEmbedding,
+    sincos,
 )
-
-from cell_observatory_platform.models.rope import (
+from cell_observatory_platform.models.ops.rope import (
+    apply_rotary_emb,
+    compute_axial_cis,
+    compute_mixed_cis,
     generate_frequency_spectrum,
     generate_grid_indices,
-    compute_mixed_cis,
-    compute_axial_cis,
-    apply_rotary_emb,
     reshape_for_broadcast,
 )
-
 
 # ------------------------------------------------------
 # helpers
@@ -53,13 +50,14 @@ def tokens(fmt, shape, lps, aps, tps):
         return T * Z * Y * X
     raise ValueError
 
+
 def fmt_shapes_and_patches():
     return [
-        ("XC",    (1, 8, 1),               (2, 1, 1), (1, None)),
-        ("YXC",   (1, 4, 4, 1),            (2, 1, 1), (1, 1, None)),
-        ("TYXC",  (1, 3, 4, 4, 1),         (2, 1, 1), (2, 1, 1, None)),
-        ("ZYXC",  (1, 3, 4, 4, 1),         (2, 1, 1), (1, 1, 1, None)),
-        ("TZYXC", (1, 2, 3, 4, 4, 1),      (2, 1, 1), (2, 1, 1, 1, None)),
+        ("XC", (1, 8, 1), (2, 1, 1), (1, None)),
+        ("YXC", (1, 4, 4, 1), (2, 1, 1), (1, 1, None)),
+        ("TYXC", (1, 3, 4, 4, 1), (2, 1, 1), (2, 1, 1, None)),
+        ("ZYXC", (1, 3, 4, 4, 1), (2, 1, 1), (1, 1, 1, None)),
+        ("TZYXC", (1, 2, 3, 4, 4, 1), (2, 1, 1), (2, 1, 1, 1, None)),
     ]
 
 
@@ -72,11 +70,13 @@ def test_sincos_fn_shapes():
     emb = sincos(embed_dim=8, pos=np.arange(4, dtype=np.float32))
     assert emb.shape == (4, 8)
 
+
 def test_posenc_1d_shapes():
     emb = positional_encoding_1d(8, 4, cls_token=False)
     emb_cls = positional_encoding_1d(8, 4, cls_token=True)
     assert emb.shape == (4, 8)
     assert emb_cls.shape == (5, 8)
+
 
 @pytest.mark.parametrize("embed_dim,lateral", [(16, 3), (32, 2)])
 def test_posenc_2d_shapes(embed_dim, lateral):
@@ -85,19 +85,27 @@ def test_posenc_2d_shapes(embed_dim, lateral):
     assert emb.shape == (lateral * lateral, embed_dim)
     assert emb_cls.shape == (1 + lateral * lateral, embed_dim)
 
+
 def test_posenc_3d_axial_and_temporal_shapes():
-    emb_ax = positional_encoding_3d(24, lateral_x_sequence_length=2, lateral_y_sequence_length=2, axial_sequence_length=3, cls_token=False)
-    emb_tm = positional_encoding_3d(24, lateral_x_sequence_length=2, lateral_y_sequence_length=2, temporal_sequence_length=3, cls_token=False)
+    emb_ax = positional_encoding_3d(
+        24, lateral_x_sequence_length=2, lateral_y_sequence_length=2, axial_sequence_length=3, cls_token=False
+    )
+    emb_tm = positional_encoding_3d(
+        24, lateral_x_sequence_length=2, lateral_y_sequence_length=2, temporal_sequence_length=3, cls_token=False
+    )
     assert emb_ax.shape == (3 * 2 * 2, 24)
     assert emb_tm.shape == (3 * 2 * 2, 24)
 
+
 def test_posenc_4d_shapes():
-    emb = positional_encoding_4d(32, 
-                                 lateral_x_sequence_length=2, 
-                                 lateral_y_sequence_length=2, 
-                                 axial_sequence_length=3, 
-                                 temporal_sequence_length=2, 
-                                 cls_token=False)
+    emb = positional_encoding_4d(
+        32,
+        lateral_x_sequence_length=2,
+        lateral_y_sequence_length=2,
+        axial_sequence_length=3,
+        temporal_sequence_length=2,
+        cls_token=False,
+    )
     assert emb.shape == (2 * 3 * 2 * 2, 32)
 
 
@@ -122,11 +130,11 @@ def _patch_shape_from(fmt, lps, aps, tps):
 
 def fmt_shapes_and_patches():
     cases = [
-        ("XC",    (1, 8, 1),               (2, 1, 1)),
-        ("YXC",   (1, 4, 4, 1),            (2, 1, 1)),
-        ("TYXC",  (1, 3, 4, 4, 1),         (2, 1, 1)),
-        ("ZYXC",  (1, 3, 4, 4, 1),         (2, 1, 1)),
-        ("TZYXC", (1, 2, 3, 4, 4, 1),      (2, 1, 1)),
+        ("XC", (1, 8, 1), (2, 1, 1)),
+        ("YXC", (1, 4, 4, 1), (2, 1, 1)),
+        ("TYXC", (1, 3, 4, 4, 1), (2, 1, 1)),
+        ("ZYXC", (1, 3, 4, 4, 1), (2, 1, 1)),
+        ("TZYXC", (1, 2, 3, 4, 4, 1), (2, 1, 1)),
     ]
     out = []
     for fmt, shape, (lps, aps, tps) in cases:
@@ -138,7 +146,7 @@ def fmt_shapes_and_patches():
 @pytest.mark.parametrize("fmt,shape,patches,patch_shape", fmt_shapes_and_patches())
 def test_pos_embedding_forward_no_interp_shapes(fmt, shape, patches, patch_shape):
     lps, aps, tps = patches
-    pe = PosEmbedding(fmt, shape[1:], patch_shape, embed_dim=16, cls_token=False, interpolate=False) 
+    pe = PosEmbedding(fmt, shape[1:], patch_shape, embed_dim=16, cls_token=False, interpolate=False)
     x = torch.zeros(shape)
     y = pe(x)
     assert y.shape == (1, tokens(fmt, shape, lps, aps, tps), 16)
@@ -156,11 +164,11 @@ def test_pos_embedding_forward_interp_identity_shapes(fmt, shape, patches, patch
 @pytest.mark.parametrize(
     "fmt,shape,new_shape,patches",
     [
-        ("XC",    (1,  8, 1),         (1, 12, 1),        (2, 1, 1)),
-        ("YXC",   (1,  4, 4, 1),      (1,  6, 6, 1),     (2, 1, 1)),
-        ("TYXC",  (1,  3, 4, 4, 1),   (1,  6, 6, 6, 1),  (2, 1, 1)),
-        ("ZYXC",  (1,  3, 4, 4, 1),   (1,  3, 6, 6, 1),  (2, 1, 1)),
-        ("TZYXC", (1,  2, 3, 4, 4, 1),(1,  6, 6, 6, 6,1),(2, 1, 1)),
+        ("XC", (1, 8, 1), (1, 12, 1), (2, 1, 1)),
+        ("YXC", (1, 4, 4, 1), (1, 6, 6, 1), (2, 1, 1)),
+        ("TYXC", (1, 3, 4, 4, 1), (1, 6, 6, 6, 1), (2, 1, 1)),
+        ("ZYXC", (1, 3, 4, 4, 1), (1, 3, 6, 6, 1), (2, 1, 1)),
+        ("TZYXC", (1, 2, 3, 4, 4, 1), (1, 6, 6, 6, 6, 1), (2, 1, 1)),
     ],
 )
 def test_pos_embedding_forward_interp_resized_shapes(fmt, shape, new_shape, patches):
@@ -180,10 +188,10 @@ def test_pos_embedding_forward_interp_resized_shapes(fmt, shape, new_shape, patc
 @pytest.mark.parametrize(
     "gen_fmt,head_dim,num_heads,axes",
     [
-        ("YXC",   8,  2, 2),   # 2D
-        ("TYXC", 12, 3, 3),    # 3D (T,Y,X)
-        ("ZYXC", 12, 3, 3),    # 3D (Z,Y,X)
-        ("TZYXC",16, 4, 4),    # 4D
+        ("YXC", 8, 2, 2),  # 2D
+        ("TYXC", 12, 3, 3),  # 3D (T,Y,X)
+        ("ZYXC", 12, 3, 3),  # 3D (Z,Y,X)
+        ("TZYXC", 16, 4, 4),  # 4D
     ],
 )
 @pytest.mark.parametrize("random_rotation_per_head", [False, True])
@@ -199,24 +207,20 @@ def test_generate_frequency_spectrum_shapes(gen_fmt, head_dim, num_heads, axes, 
     assert freqs.shape[1] == num_heads
     assert freqs.shape[2] == head_dim // 2  # last dim should always compress to D/2
 
+
 @pytest.mark.parametrize(
     "fmt,gen_fmt,head_dim,end_x,end_y,end_z,end_t",
     [
-        ("YXC",   "YXC",   8,  3, 2, None, None),
-        ("TYXC",  "TYXC", 12, 3, 2, None, 2),
-        ("ZYXC",  "ZYXC", 12, 3, 2, 2, None),
-        ("TZYXC", "TZYXC",16, 3, 2, 2, 2),
+        ("YXC", "YXC", 8, 3, 2, None, None),
+        ("TYXC", "TYXC", 12, 3, 2, None, 2),
+        ("ZYXC", "ZYXC", 12, 3, 2, 2, None),
+        ("TZYXC", "TZYXC", 16, 3, 2, 2, 2),
     ],
 )
 @pytest.mark.parametrize("random_rotation_per_head", [False, True])
-def test_compute_mixed_and_axial_cis_and_apply_rotary_shapes(fmt, 
-                                                             gen_fmt, 
-                                                             head_dim, 
-                                                             end_x, 
-                                                             end_y, 
-                                                             end_z, 
-                                                             end_t, 
-                                                             random_rotation_per_head):
+def test_compute_mixed_and_axial_cis_and_apply_rotary_shapes(
+    fmt, gen_fmt, head_dim, end_x, end_y, end_z, end_t, random_rotation_per_head
+):
     num_heads = 3
     freqs = generate_frequency_spectrum(
         dim=head_dim,
@@ -226,11 +230,7 @@ def test_compute_mixed_and_axial_cis_and_apply_rotary_shapes(fmt,
         input_fmt=gen_fmt,
     )
 
-    t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, 
-                                               end_y=end_y, 
-                                               end_z=end_z, 
-                                               end_t=end_t, 
-                                               input_fmt=fmt)
+    t_t, t_z, t_y, t_x = generate_grid_indices(end_x=end_x, end_y=end_y, end_z=end_z, end_t=end_t, input_fmt=fmt)
     N = (end_t or 1) * (end_z or 1) * end_y * end_x
     J = head_dim // 2
 
@@ -239,13 +239,7 @@ def test_compute_mixed_and_axial_cis_and_apply_rotary_shapes(fmt,
     assert freqs_cis_mixed.shape == (num_heads, N, J)
 
     # axial
-    freqs_cis_ax = compute_axial_cis(head_dim, 
-                                     end_x, 
-                                     end_y, 
-                                     (end_z or 1), 
-                                     (end_t or 1), 
-                                     input_fmt=fmt, 
-                                     theta=100.0)
+    freqs_cis_ax = compute_axial_cis(head_dim, end_x, end_y, (end_z or 1), (end_t or 1), input_fmt=fmt, theta=100.0)
     assert freqs_cis_ax.shape == (N, J)
 
     # apply_rotary_emb with both broadcast branches
@@ -260,6 +254,7 @@ def test_compute_mixed_and_axial_cis_and_apply_rotary_shapes(fmt,
     # branch 2: [H, N, J]
     xq2, xk2 = apply_rotary_emb(xq, xk, freqs_cis_mixed)
     assert xq2.shape == xq.shape and xk2.shape == xk.shape
+
 
 def test_reshape_for_broadcast_shapes():
     B, H, N, J = 2, 2, 6, 4
