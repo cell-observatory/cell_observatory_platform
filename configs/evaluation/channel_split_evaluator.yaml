@@ -1,0 +1,18 @@
+val_begin: 0
+val_interval: 1
+val_metric: "nrmse"
+val_mode: min # 'min' or 'max'
+
+evaluator:
+  _target_: cell_observatory_platform.evaluation.automated_benchmark_evaluator.AutomatedBenchmarkEvaluator
+  metric_reductions: 
+    - nrmse: mean
+    - mae: mean
+  pred_key: null
+  target_key: "targets"
+  ssim_data_range: 1.0
+  ssim_kernel_size: 11
+  ssim_sigma: 1.5
+  ssim_K1: 0.01
+  ssim_K2: 0.03
+  reduction: "elementwise_mean"
