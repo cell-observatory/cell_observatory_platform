@@ -3,7 +3,7 @@ defaults:
   - /paths/local                             # configs/paths/local.yaml
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
   - /models/BUILD_MAE                        # configs/models/BUILD_MAE.yaml 
-  - /models/mae/tiny                         # configs/models/mae/tiny.yaml
+  - /models/meta_arch/mae/tiny               # configs/models/meta_arch/mae/tiny.yaml
   - /hooks/hooks_with_weight_decay           # configs/hooks/hooks_with_weight_decay.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
