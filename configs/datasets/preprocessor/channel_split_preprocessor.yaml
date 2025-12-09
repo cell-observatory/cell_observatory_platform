@@ -1,0 +1,18 @@
+_target_: cell_observatory_platform.models.layers.preprocessor.ChannelSplitPreprocessor
+
+with_masking: false
+mask_generator: ${datasets.masking.mask_generators.0}
+dtype: ${quantization}
+
+transforms_list:
+  - _target_: cell_observatory_platform.data.transforms.normalize.NormalizeRayWrapper
+    input_layout:
+      _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+      value: ${dataset_layout_order}
+
+patch_shape: ${datasets.patch_shape}
+input_format: ${dataset_layout_order}
+input_shape: ${datasets.input_shape}
+
+seed: ${seed}
+mask_idx: -1

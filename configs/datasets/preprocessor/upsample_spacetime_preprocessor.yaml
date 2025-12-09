@@ -1,0 +1,22 @@
+_target_: cell_observatory_platform.models.layers.preprocessor.UpsamplePreprocessor
+
+mode: upsample_spacetime
+with_masking: true
+mask_generator: ${datasets.masking.mask_generators.0}
+dtype: ${quantization}
+
+transforms_list:
+  - _target_: cell_observatory_platform.data.transforms.normalize.NormalizeRayWrapper
+    input_layout:
+      _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+      value: ${dataset_layout_order}
+
+patch_shape: ${datasets.patch_shape}
+input_format: ${dataset_layout_order}
+input_shape: ${datasets.input_shape}
+
+seed: ${seed}
+ideal_psf_path: "/groups/betzig/betziglab/hph/data/test_psf.tif"
+na_mask_thresholds: [0.7, 0.8, 0.9]
+resize_na_masks: true
+mask_idx: -1

@@ -1,4 +1,4 @@
-_target_: cell_observatory_platform.models.preprocessor.RayPreprocessor
+_target_: cell_observatory_platform.models.layers.preprocessor.RayPreprocessor
 
 dtype: ${quantization}
 with_masking: true
