@@ -111,6 +111,28 @@
       "justMyCode": false
     },
     {
+      "name": "🗂️ tests/ops",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/ops/"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
       "name": "🪏 tests/training/test_hooks",
       "type": "debugpy",
       "request": "launch",
@@ -771,6 +793,28 @@
       "justMyCode": false
     },
     {
+      "name": "🧪 tests/data/test_utils.py",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/data/test_utils.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
       "name": "🛠️ tests/models/test_patch_embeddings",
       "type": "debugpy",
       "request": "launch",
@@ -969,7 +1013,7 @@
       "justMyCode": false
     },
     {
-      "name": "🤖 tests/models/test_baseline_models",
+      "name": "🤖 tests/models/test_dense_predictory",
       "type": "debugpy",
       "request": "launch",
       "module": "pytest",
@@ -981,7 +1025,337 @@
         "--disable-pytest-warnings",
         "--color=yes",
         "-r fEX",
-        "tests/models/test_baseline_models.py"
+        "tests/models/test_dense_predictory.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_dino_decoder",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_dino_decoder.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_global_rpe_decomp_decoder",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_global_rpe_decomp_decoder.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_linear_head",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_linear_head.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_losses",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_losses.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_mask2former_decoder",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_mask2former_decoder.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_mask2former_head",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_mask2former_head.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_maskdino_decoder",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_maskdino_decoder.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_maskdino_head",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_maskdino_head.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_matchers",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_matchers.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_pixel_decoders",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_pixel_decoders.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_plain_detr_transformer_encoder",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_plain_detr_transformer_encoder.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_plain_detr_transformer",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_plain_detr_transformer.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_plainDETR",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_plainDETR.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_utils",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_utils.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🤖 tests/models/test_vit_adapter",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/models/test_vit_adapter.py"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
