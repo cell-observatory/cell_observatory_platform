@@ -402,7 +402,6 @@ class InferencerWorker:
         return self.execute_query(f"SELECT COUNT(*) FROM {table_name};").iloc[0, 0]
 
     def _predict(self, batch_tensor: torch.Tensor, data_sample: dict) -> torch.Tensor:
-        # NOTE: see cell_observatory_finetune for available decoders / heads
         if self.decoder_head_type == "mask2former":
             if self.task != "semantic_segmentation":
                 raise NotImplementedError(f"Task {self.task} not implemented for Mask2Former sliding window inference.")
