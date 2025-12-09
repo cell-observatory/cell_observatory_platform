@@ -1,0 +1,28 @@
+BUILD: cell_observatory_platform.models.masked_predictor.BUILD
+
+input_fmt: ${dataset_layout_order}
+input_shape: ${datasets.train_shape}
+patch_shape: ${datasets.patch_shape}
+
+embed_dim: null
+output_embed_dim: null
+depth: 8
+num_heads: 8
+mlp_ratio: 4.0
+
+proj_drop_rate: 0.0
+att_drop_rate: 0.0
+drop_path_rate: 0.1
+init_std: 0.02
+fixed_dropout_depth: false
+
+norm_layer: RmsNorm
+act_layer: SiLU
+mlp_layer: SwiGLU
+
+abs_sincos_enc: true
+rope_pos_enc: false
+rope_random_rotation_per_head: true
+rope_mixed: false
+rope_theta: 100.0
+mlp_wide_silu: false
