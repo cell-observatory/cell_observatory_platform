@@ -1,0 +1,131 @@
+# models/meta_arch/maskdino/mae_large.yaml
+BUILD: cell_observatory_platform.models.meta_arch.maskdino.BUILD
+
+# Backbone config (MAE)
+backbone_args: ${models.backbones.mae.large}
+
+# Backbone adapter
+adapter_args:
+  BUILD: cell_observatory_platform.models.adapters.vit_adapter.BUILD
+  input_shape: ${datasets.input_shape}
+  dim: 3
+  dtype: ${quantization}
+  backbone_embed_dim: ${models.backbones.mae.large.embed_dim}
+  input_format: ${dataset_layout_order}
+  patch_shape: ${datasets.patch_shape}
+  num_backbone_features: 4
+  add_vit_feature: true
+  conv_inplane: 64
+  use_deform_attention: true
+  n_points: 4
+  n_levels: 1
+  deform_num_heads: 16
+  drop_path_rate: 0.3
+  init_values: 0.0
+  with_cffn: true
+  cffn_ratio: 0.5
+  deform_ratio: 0.5
+  use_extra_extractor: true
+  strategy: axial
+  spatial_prior_module_strides:
+    stem1: [2, 2, 2]
+    stem2: [2, 2, 2]
+    stem3: [1, 1, 1]
+    maxpool: 2
+    stage2: [2, 2, 2]
+    stage3: [2, 2, 2]
+    stage4: [2, 2, 2]
+
+# Pixel decoder (MaskDINOEncoder)
+pixel_decoder_args:
+  BUILD: cell_observatory_platform.models.heads.pixel_decoders.MaskDINOEncoder.BUILD
+
+  input_shape_metadata:
+    "1":
+      channels: ${models.backbones.mae.large.embed_dim}
+      stride: 4
+    "2":
+      channels: ${models.backbones.mae.large.embed_dim}
+      stride: 8
+    "3":
+      channels: ${models.backbones.mae.large.embed_dim}
+      stride: 16
+    "4":
+      channels: ${models.backbones.mae.large.embed_dim}
+      stride: 32
+
+  transformer_in_features: ["1", "2", "3", "4"]
+  target_min_stride: null
+  total_num_feature_levels: 4
+  transformer_encoder_dropout: 0.1
+  transformer_encoder_num_heads: 8
+  transformer_encoder_dim_feedforward: 1024
+  num_transformer_encoder_layers: 4
+  conv_dim: 384
+  mask_dim: 256
+  norm: null
+  dtype: ${quantization}
+
+# Query decoder (MaskDINODecoder)
+decoder_args:
+  BUILD: cell_observatory_platform.models.heads.maskdino_decoder.MaskDINODecoder.BUILD
+
+  in_channels: 384
+  num_classes: 1
+  hidden_dim: 256
+  num_queries: 100
+  feedforward_dim: 2048
+  decoder_num_layers: 4
+  mask_dim: 256
+  enforce_input_projection: true
+  two_stage_flag: true
+  denoise_queries_flag: true
+  noise_scale: 0.4
+  total_denosing_queries: 100
+  initialize_box_type: bitmask
+  with_initial_prediction: true
+  learn_query_embeddings: false
+  total_num_feature_levels: 4
+  dropout: 0.1
+  activation: RELU
+  num_heads: 8
+  decoder_num_points: 4
+  return_intermediates_decoder: true
+  query_dim: 6
+  share_decoder_layers: false
+  dtype: ${quantization}
+
+# Matcher
+matcher_args:
+  BUILD: cell_observatory_platform.models.utils.matchers.HungarianMatcher.BUILD
+  cost_classification: 4.0
+  cost_mask: 5.0
+  cost_mask_dice: 5.0
+  num_points: 1404928
+  cost_box: 5.0
+  cost_box_giou: 2.0
+
+# Criterion
+criterion_args:
+  BUILD: cell_observatory_platform.training.losses.MaskDINO_DETR_Set_Loss.BUILD
+  num_classes: 1
+  loss_weight_dict:
+    loss_ce: 4.0
+    loss_bbox: 5.0
+    loss_giou: 2.0
+    loss_mask: 5.0
+    loss_dice: 5.0
+  no_object_loss_weight: 0.1
+  losses: ["labels", "boxes", "masks"]
+  oversample_ratio: 3.0
+  importance_sample_ratio: 0.75
+  denoise: true
+  with_segmentation: true
+  denoise_losses: ["labels", "boxes", "masks"]
+  semantic_ce_loss: false
+  focal_alpha: 0.25
+
+# Training flags (passed directly into MaskDINO ctor)
+instance_segmentation_flag: true
+topk_per_image: 100
+focus_on_boxes: false
