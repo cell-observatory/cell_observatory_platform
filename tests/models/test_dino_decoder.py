@@ -6,18 +6,16 @@ from cell_observatory_platform.models.heads.dino_decoder import DeformableTransf
 
 try:
     from ops3d import _C
-
-    MSDEFORM_ATTN_AVAILABLE = True
+    OPS3D_AVAILABLE = True
 except ImportError:
-    MSDEFORM_ATTN_AVAILABLE = False
-
-
+    OPS3D_AVAILABLE = False
+    
 CUDA_AVAILABLE = torch.cuda.is_available()
 
 
 @pytest.mark.skipif(
-    not MSDEFORM_ATTN_AVAILABLE,
-    reason="FlashDeformAttn3D (MSDEFORM_ATTN_AVAILABLE) is not installed.",
+    not OPS3D_AVAILABLE,
+    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
 )
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_deformable_transformer_decoder_layer():
@@ -103,8 +101,8 @@ def test_deformable_transformer_decoder_layer():
 
 
 @pytest.mark.skipif(
-    not MSDEFORM_ATTN_AVAILABLE,
-    reason="FlashDeformAttn3D (MSDEFORM_ATTN_AVAILABLE) is not installed.",
+    not OPS3D_AVAILABLE,
+    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
 )
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_transformer_decoder():

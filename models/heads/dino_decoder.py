@@ -14,7 +14,13 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.mlp import MLP
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
-from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D
+from cell_observatory_platform.models.layers.attention import CrossAttention, FlashDeformAttn3D
+
+try:
+    from ops3d import _C
+    OPS3D_AVAILABLE = True
+except ImportError:
+    OPS3D_AVAILABLE = False
 
 
 class DeformableTransformerDecoderLayer(nn.Module):
@@ -29,8 +35,10 @@ class DeformableTransformerDecoderLayer(nn.Module):
         num_points=4,
         use_deformable_box_attention=False,
         summarize_memory_method=None,
+        use_deform_attention=False,
     ):
         super().__init__()
+        use_deform_attention = True if OPS3D_AVAILABLE else False
 
         assert embed_dim // num_heads % 8 == 0, "embed_dim//num_heads must be divisible by 8 ..."
 
@@ -38,12 +46,20 @@ class DeformableTransformerDecoderLayer(nn.Module):
         if use_deformable_box_attention:
             raise NotImplementedError("Deformable box attention is not implemented yet")
         else:
-            self.cross_attention = FlashDeformAttn3D(
-                d_model=embed_dim, n_levels=num_levels, n_heads=num_heads, n_points=num_points
-            )
+            if use_deform_attention:
+                self.with_deform_attention = True
+                self.attn = FlashDeformAttn3D(
+                    d_model=embed_dim,
+                    n_levels=num_levels,
+                    n_heads=num_heads,
+                    n_points=num_points,
+                )
+            else:
+                self.with_deform_attention = False
+                self.attn = CrossAttention(dim=embed_dim, num_heads=num_heads)
 
         self.dropout1 = nn.Dropout(dropout)
-        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm1 = nn.LayerNorm(embed_dim)    
 
         # self attention
         # self.self_attention = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout)

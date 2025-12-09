@@ -1,15 +1,8 @@
 import pytest
 import torch
 
-try:
-    from ops3d import _C
 
-    from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D
-
-    MSDEFORM_ATTN_AVAILABLE = True
-except ImportError:
-    MSDEFORM_ATTN_AVAILABLE = False
-
+from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D
 from cell_observatory_platform.models.adapters.vit_adapter import (
     ConvFFN,
     CrossAttention,
@@ -18,6 +11,13 @@ from cell_observatory_platform.models.adapters.vit_adapter import (
     Extractor,
     SpatialPriorModule,
 )
+
+try:
+    from ops3d import _C
+    OPS3D_AVAILABLE = True
+except ImportError:
+    OPS3D_AVAILABLE = False
+
 
 # --- helpers ----
 
@@ -229,8 +229,8 @@ def test_encoder_adapter_metadata_shapes(B, dim, input_format, spatial_shape, pa
 
 
 @pytest.mark.skipif(
-    not MSDEFORM_ATTN_AVAILABLE,
-    reason="FlashDeformAttn3D (MSDEFORM_ATTN_AVAILABLE) is not installed.",
+    not OPS3D_AVAILABLE,
+    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
 )
 def test_encoder_adapter_forward_deform_attn():
     if not torch.cuda.is_available():

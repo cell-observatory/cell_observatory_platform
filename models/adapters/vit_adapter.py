@@ -7,18 +7,18 @@ import torch.nn.functional as F
 from omegaconf import ListConfig
 from timm.layers.drop import DropPath
 
-try:
-    from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D
-
-    MSDEFORM_ATTN_AVAILABLE = True
-except ImportError:
-    MSDEFORM_ATTN_AVAILABLE = False
-
+from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D, CrossAttention
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
 from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.layers.utils import get_reference_points
 from cell_observatory_platform.training.helpers import get_patch_sizes
+
+try:
+    from ops3d import _C
+    OPS3D_AVAILABLE = True
+except ImportError:
+    OPS3D_AVAILABLE = False
 
 
 class ConvFFN(nn.Module):
@@ -92,36 +92,6 @@ class DWConv(nn.Module):
             out.append(y)
 
         return torch.cat(out, dim=1)
-
-
-class CrossAttention(nn.Module):
-    def __init__(self, dim, num_heads):
-        super().__init__()
-        self.num_heads = num_heads
-        self.q_proj = nn.Linear(dim, dim, bias=True)
-        self.k_proj = nn.Linear(dim, dim, bias=True)
-        self.v_proj = nn.Linear(dim, dim, bias=True)
-        self.o_proj = nn.Linear(dim, dim, bias=True)
-
-    def forward(self, query, feat):
-        B, Nq, C = query.shape
-        Nk = feat.shape[1]
-        H = self.num_heads
-        Hd = C // H
-        q = self.q_proj(query).view(B, Nq, H, Hd).transpose(1, 2)
-        k = self.k_proj(feat).view(B, Nk, H, Hd).transpose(1, 2)
-        v = self.v_proj(feat).view(B, Nk, H, Hd).transpose(1, 2)
-
-        with torch.nn.attention.sdpa_kernel(
-            [
-                torch.nn.attention.SDPBackend.FLASH_ATTENTION,
-                torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
-                torch.nn.attention.SDPBackend.MATH,
-            ]
-        ):
-            out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
-        out = out.transpose(1, 2).contiguous().view(B, Nq, C)
-        return self.o_proj(out)
 
 
 class Extractor(nn.Module):

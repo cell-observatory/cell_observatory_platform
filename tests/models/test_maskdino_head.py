@@ -12,10 +12,10 @@ from cell_observatory_platform.training.losses import DETR_Set_Loss
 
 try:
     from ops3d import _C
-
-    MSDEFORM_ATTN_AVAILABLE = True
+    OPS3D_AVAILABLE = True
 except ImportError:
-    MSDEFORM_ATTN_AVAILABLE = False
+    OPS3D_AVAILABLE = False
+
 
 
 CUDA_AVAILABLE = torch.cuda.is_available()
@@ -45,8 +45,8 @@ class DummyBackbone(nn.Module):
 
 
 @pytest.mark.skipif(
-    not MSDEFORM_ATTN_AVAILABLE,
-    reason="FlashDeformAttn3D (MSDEFORM_ATTN_AVAILABLE) is not installed.",
+    not OPS3D_AVAILABLE,
+    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
 )
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for this test")
 def test_maskdino_forward_train(monkeypatch):
@@ -213,8 +213,8 @@ def test_maskdino_forward_train(monkeypatch):
 
 
 @pytest.mark.skipif(
-    not MSDEFORM_ATTN_AVAILABLE,
-    reason="FlashDeformAttn3D (MSDEFORM_ATTN_AVAILABLE) is not installed.",
+    not OPS3D_AVAILABLE,
+    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
 )
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for this test")
 def test_maskdino_predict():
