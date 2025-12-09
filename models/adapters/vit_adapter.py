@@ -8,7 +8,7 @@ from omegaconf import ListConfig
 from timm.layers.drop import DropPath
 
 try:
-    from cell_observatory_platform.models.ops.flash_deform_attn import FlashDeformAttn3D
+    from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D
 
     MSDEFORM_ATTN_AVAILABLE = True
 except ImportError:

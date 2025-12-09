@@ -8,7 +8,7 @@ pytest.importorskip("torch.cuda")
 if not torch.cuda.is_available():
     pytest.skip("CUDA not available", allow_module_level=True)
 
-from cell_observatory_platform.models.ops.flash_deform_attn_func import (
+from models.ops.flash_deform_attn import (
     FlashDeformAttnFunction,
     ms_deform_attn_core_pytorch_3d,
 )

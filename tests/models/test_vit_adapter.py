@@ -4,7 +4,7 @@ import torch
 try:
     from ops3d import _C
 
-    from cell_observatory_platform.models.ops.flash_deform_attn import FlashDeformAttn3D
+    from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D
 
     MSDEFORM_ATTN_AVAILABLE = True
 except ImportError:

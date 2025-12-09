@@ -20,7 +20,7 @@ from cell_observatory_platform.models.layers.conv3d import Conv3d
 from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
 from cell_observatory_platform.models.layers.utils import c2_xavier_fill, compute_unmasked_ratio, get_reference_points
-from cell_observatory_platform.models.ops.flash_deform_attn import FlashDeformAttn3D
+from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D
 
 
 class MSDeformAttnTransformerEncoderLayer(nn.Module):
