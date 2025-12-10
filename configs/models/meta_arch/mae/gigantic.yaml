@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.maskedencoder.BUILD
+BUILD: cell_observatory_platform.models.meta_arch.mae.BUILD
 
 input_fmt: ${dataset_layout_order}
 input_shape: ${datasets.train_shape}
