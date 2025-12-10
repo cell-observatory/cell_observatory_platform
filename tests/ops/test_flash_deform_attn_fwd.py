@@ -3,7 +3,7 @@ from __future__ import absolute_import, division, print_function
 import pytest
 import torch
 
-from models.ops.flash_deform_attn import (
+from cell_observatory_platform.models.ops.flash_deform_attn import (
     FlashDeformAttnFunction,
     ms_deform_attn_core_pytorch_3d,
 )
