@@ -349,5 +349,5 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
 
 
 def BUILD(cfg: Mapping[str, Any]) -> MaskedAutoEncoder:
-    model_cfg = cfg.models.mae
+    model_cfg = cfg.models.meta_arch.mae
     return MaskedAutoEncoder(**_extract_model_kwargs(model_cfg))

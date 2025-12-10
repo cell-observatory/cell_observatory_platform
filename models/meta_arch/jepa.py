@@ -351,5 +351,5 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
 
 
 def BUILD(cfg: Mapping[str, Any]) -> JEPA:
-    model_cfg = cfg.models.jepa
+    model_cfg = cfg.models.meta_arch.jepa
     return JEPA(**_extract_model_kwargs(model_cfg))
