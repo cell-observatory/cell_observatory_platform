@@ -1,2 +1,2 @@
 # build method for model
-BUILD: cell_observatory_platform.models.meta_arch.maskedautoencoder.BUILD
+BUILD: cell_observatory_platform.models.meta_arch.mae.BUILD
