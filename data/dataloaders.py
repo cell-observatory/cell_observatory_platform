@@ -14,6 +14,7 @@ import ray
 
 from cell_observatory_platform.data.datasets.buffers import set_buffers
 from cell_observatory_platform.data.datasets.schedulers import NumaNodeAffinityScheduler
+from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
 from cell_observatory_platform.utils.context import (
     barrier,
     get_local_numa_nodes,
