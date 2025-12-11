@@ -3,14 +3,14 @@ import pytest
 import torch
 
 from cell_observatory_platform.models.layers.positional_encoding import (
+    # sincos
     PosEmbedding,
     positional_encoding_1d,
     positional_encoding_2d,
     positional_encoding_3d,
     positional_encoding_4d,
     sincos,
-)
-from cell_observatory_platform.models.ops.rope import (
+    # rope
     apply_rotary_emb,
     compute_axial_cis,
     compute_mixed_cis,
