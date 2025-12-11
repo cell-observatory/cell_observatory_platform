@@ -3,124 +3,17 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
-import torch
-from hydra.utils import get_method, instantiate
-from omegaconf import DictConfig
 
-from cell_observatory_platform.data.data_types import TORCH_DTYPES
+import torch
+
+from omegaconf import DictConfig
+from hydra.utils import get_method, instantiate
+
 from cell_observatory_platform.data.io import read_file
+from cell_observatory_platform.data.data_types import TORCH_DTYPES
 from cell_observatory_platform.data.structures import convert_bbox_format
 from cell_observatory_platform.data.utils import create_na_masks, downsample, resize_mask
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding
-
-
-class TorchPreprocessor(torch.nn.Module):
-    def __init__(self, dtype: torch.dtype, with_masking: bool, mask_generator, **kwargs):
-        super().__init__()
-        self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-        self.with_masking = with_masking
-        self.mask_generator = mask_generator
-
-    def forward(self, data_sample: dict, data_time: float) -> dict:
-        """
-        Preprocess the input data sample to maintain uniform data
-        layout accross data loaders.
-        """
-        preprocess_time = time.time()
-
-        inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
-        # inputs, meta = data_sample['data_tensor'], {}
-
-        if isinstance(inputs, list):
-            inputs = torch.stack(inputs, dim=0)
-
-        # TODO: this is relatively slow on GPU, consider moving to CPU
-        #        or skipping this check
-        # if torch.isnan(inputs).all() or torch.isinf(inputs).all():
-        #     raise ValueError(f"Invalid training data")
-
-        if inputs.dtype != self.dtype:
-            # ray.logger.warning(f"Casting inputs to {self.dtype}")
-            inputs = inputs.to(self.dtype)
-
-        assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
-
-        if self.with_masking:
-            masking_time = time.time()
-            masks, context_masks, target_masks, original_patch_indices, channels_to_mask, patches_used = (
-                self.mask_generator(inputs.shape[0])
-            )
-            masking_time = time.time() - masking_time
-
-            return {
-                "data_tensor": inputs,
-                "metainfo": {
-                    "masks": [masks] if self.with_masking else None,
-                    "context_masks": [context_masks] if self.with_masking else None,
-                    "target_masks": [target_masks] if self.with_masking else None,
-                    "original_patch_indices": [original_patch_indices] if self.with_masking else None,
-                    "channels_to_mask": [channels_to_mask] if self.with_masking else None,
-                    "patches_used": [patches_used] if self.with_masking else None,
-                    "preprocess_time": time.time() - preprocess_time,
-                    "data_time": data_time,
-                    "masking_time": masking_time,
-                    **meta,
-                },
-            }
-        else:
-            return {"data_tensor": inputs, "metainfo": meta}
-
-
-class DaliPreprocessor(torch.nn.Module):
-    def __init__(self, dtype: torch.dtype, with_masking: bool, mask_generator, **kwargs):
-        super().__init__()
-        self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-        self.with_masking = with_masking
-        self.mask_generator = mask_generator
-
-    def forward(self, data_sample: Tuple[Dict[str, torch.Tensor]], data_time: float) -> dict:
-        """
-        Preprocess the input data sample to maintain uniform data
-        layout accross data loaders.
-        """
-        preprocess_time = time.time()
-        inputs = data_sample[0]["data_tensor"]
-
-        # TODO: this is relatively slow on GPU, consider moving to CPU
-        #        or skipping this check
-        # if torch.isnan(inputs).all() or torch.isinf(inputs).all():
-        #     raise ValueError(f"Invalid training data")
-
-        if inputs.dtype != self.dtype:
-            # ray.logger.warning(f"Casting inputs to {self.dtype}")
-            inputs = inputs.to(self.dtype)
-
-        assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
-
-        if self.with_masking:
-            masking_time = time.time()
-            masks, context_masks, target_masks, original_patch_indices, channels_to_mask, patches_used = (
-                self.mask_generator(inputs.shape[0])
-            )
-            masking_time = time.time() - masking_time
-
-            return {
-                "data_tensor": inputs,
-                "metainfo": {
-                    "masks": [masks] if self.with_masking else None,
-                    "context_masks": [context_masks] if self.with_masking else None,
-                    "target_masks": [target_masks] if self.with_masking else None,
-                    "original_patch_indices": [original_patch_indices] if self.with_masking else None,
-                    "channels_to_mask": [channels_to_mask] if self.with_masking else None,
-                    "patches_used": [patches_used] if self.with_masking else None,
-                    "data_time": data_time,
-                    "get_item_time": data_sample[0].get("get_item_time", None),
-                    "preprocess_time": time.time() - preprocess_time,
-                    "masking_time": masking_time,
-                },
-            }
-        else:
-            return {"data_tensor": inputs, "metainfo": {}}
 
 
 class RayPreprocessor(torch.nn.Module):

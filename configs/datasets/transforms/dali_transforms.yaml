@@ -1,5 +1,0 @@
-defaults:
-  - _self_
-
-transforms_list:
-  - cell_observatory_platform.data.transforms.normalize.NormalizeDaliWrapper

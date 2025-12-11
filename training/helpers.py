@@ -1,26 +1,30 @@
-import copy
-import itertools
-import logging
-import math
 import os
 import random
-from collections import defaultdict
-from operator import attrgetter
+import logging
 from pathlib import Path
+
+import math
+import copy
+import itertools
+
+from operator import attrgetter
+from collections import defaultdict
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 import numpy as np
+
 import torch
-import torch.functional as F
 import torch.nn as nn
+import torch.functional as F
+
 import ujson
 from omegaconf import DictConfig, open_dict
+
 from timm.layers.weight_init import trunc_normal_
+
+from torchinfo import summary
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper as ptd_checkpoint_wrapper
-from torchinfo import summary
-
-from cell_observatory_platform.data.io import save_file
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
@@ -46,17 +50,11 @@ def record_dataset_len(config, num_train_rows: int, num_val_rows: int):
 
 
 def _infer_steps_per_epoch(config, loader, batch_size, type: str = "train"):
-    if config.datasets.dataset._target_.endswith("PretrainDatasetDali") or config.datasets.dataset._target_.endswith(
-        "PretrainDataset"
-    ):
-        return len(loader)
-
-    elif config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
+    if config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
         if type == "train":
             return config.runtime.get("train_steps_per_epoch")
         elif type == "val":
             return config.runtime.get("val_steps_per_epoch")
-
     else:
         raise TypeError(
             f"Cannot infer steps/epoch for loader type {type(loader)}. "

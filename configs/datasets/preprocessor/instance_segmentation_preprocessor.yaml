@@ -16,7 +16,7 @@ transforms_list:
   #   crop_to_meta_spatial: true
 
   # 2) Normalize after resize
-  - _target_: cell_observatory_platform.data.transforms.normalize.NormalizeRayWrapper
+  - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
     input_layout:
       _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
       value: ${dataset_layout_order}
