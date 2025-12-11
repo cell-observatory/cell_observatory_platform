@@ -1,7 +1,5 @@
 import pytest
 
-pytestmark = pytest.mark.skip(reason="This module is temporarily disabled till we add ops3d to the docker image")
-
 import torch
 import torch.nn as nn
 
@@ -11,6 +9,12 @@ from cell_observatory_platform.models.heads.pixel_decoders import (
     MSDeformAttnTransformerEncoder,
     MSDeformAttnTransformerEncoderLayer,
 )
+
+try:
+    from ops3d import _C
+    OPS3D_AVAILABLE = True
+except ImportError:
+    OPS3D_AVAILABLE = False
 
 
 def _tokens_total(shapes):
@@ -30,8 +34,6 @@ class _ZeroPos(nn.Module):
 @pytest.mark.parametrize("B,C", [(2, 64), (1, 96)])
 def test_encoder_layer_shapes_cuda(B, C):
     if not torch.cuda.is_available():
-        import pytest
-
         pytest.skip("No GPU")
 
     # choose heads so per_head_dim % 8 == 0
@@ -39,7 +41,9 @@ def test_encoder_layer_shapes_cuda(B, C):
     assert C % n_heads == 0 and (C // n_heads) % 8 == 0
 
     layer = MSDeformAttnTransformerEncoderLayer(
-        embed_dim=C, feedforward_dim=4 * C, dropout=0.0, activation="RELU", n_levels=3, n_heads=n_heads, n_points=4
+        embed_dim=C, feedforward_dim=4 * C, dropout=0.0, 
+        activation="RELU", n_levels=3, n_heads=n_heads, n_points=4,
+        use_deform_attention=True if OPS3D_AVAILABLE else False,
     ).cuda()
 
     spatial_shapes = torch.as_tensor([[3, 4, 5], [2, 2, 3], [1, 1, 2]], dtype=torch.long, device="cuda")
@@ -83,6 +87,7 @@ def test_encoder_forward_shapes_cuda(B, C, n_heads, shapes):
         activation="relu",
         num_feature_levels=L,
         enc_num_points=4,
+        use_deform_attention=True if OPS3D_AVAILABLE else False,
     ).cuda()
 
     features = [torch.randn(B, C, D, H, W, device="cuda") for (D, H, W) in shapes]
@@ -120,7 +125,7 @@ def test_maskdino_encoder_forward_features_shapes_cuda(add_extra_levels):
         pytest.skip("No GPU available for FlashDeformAttn3D")
 
     B = 2
-    conv_dim = 64
+    conv_dim = 96
     mask_dim = 16
 
     input_shape = _make_input_shape_dict(48, 64, 96)
@@ -133,17 +138,18 @@ def test_maskdino_encoder_forward_features_shapes_cuda(add_extra_levels):
     total_num_feature_levels = len(transformer_in_features) + (1 if add_extra_levels else 0)
 
     enc = MaskDINOEncoder(
-        input_shape=input_shape,
+        input_shape_metadata=input_shape,
         transformer_in_features=transformer_in_features,
         target_min_stride=8,
         total_num_feature_levels=total_num_feature_levels,
         transformer_encoder_dropout=0.0,
-        transformer_encoder_num_heads=8,  # per-head = 64/8 = 8
+        transformer_encoder_num_heads=12,
         transformer_encoder_dim_feedforward=4 * conv_dim,
         num_transformer_encoder_layers=2,
         conv_dim=conv_dim,
         mask_dim=mask_dim,
         norm=None,
+        use_deform_attention=True if OPS3D_AVAILABLE else False,
     ).cuda()
 
     enc.pos_embedding = _ZeroPos(conv_dim).cuda()
@@ -190,6 +196,7 @@ def test_get_padding_mask_fast_path_all_false():
         activation="relu",
         num_feature_levels=2,
         enc_num_points=4,
+        use_deform_attention=False,
     )
 
     f1 = torch.randn(B, C, 32, 32, 20)
@@ -225,6 +232,7 @@ def test_token_splitting_consistency_cuda(B, C, n_heads, shapes):
         activation="relu",
         num_feature_levels=L,
         enc_num_points=4,
+        use_deform_attention=True if OPS3D_AVAILABLE else False,
     ).cuda()
 
     feats = [torch.randn(B, C, *s, device="cuda") for s in shapes]
@@ -277,6 +285,7 @@ def test_mask2former_pixel_decoder_forward_features_shapes_cuda(add_extra_levels
         conv_dim=conv_dim,
         mask_dim=mask_dim,
         norm=None,
+        use_deform_attention=True if OPS3D_AVAILABLE else False,
     ).cuda()
 
     features = {

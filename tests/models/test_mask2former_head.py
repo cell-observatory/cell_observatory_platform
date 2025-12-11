@@ -1,10 +1,14 @@
 import pytest
 
-pytestmark = pytest.mark.skip(reason="This module is temporarily disabled till we add ops3d to the docker image")
-
 import torch
 
 from cell_observatory_platform.models.heads.mask2former_head import Mask2FormerHead
+
+try:
+    from ops3d import _C
+    OPS3D_AVAILABLE = True
+except ImportError:
+    OPS3D_AVAILABLE = False
 
 
 def _make_input_shape_dict_for_m2f(c1, c2, c3, c4):
@@ -53,6 +57,7 @@ def test_mask2former_head_forward_shapes_cuda():
         pixel_decoder_norm="GroupNorm",
         pixel_decoder_transformer_in_features=("1", "2", "3", "4"),
         pixel_decoder_common_stride=8,
+        use_deform_attention=True if OPS3D_AVAILABLE else False,
     ).cuda()
 
     features = {

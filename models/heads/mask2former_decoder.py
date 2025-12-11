@@ -329,7 +329,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         num_feature_levels: int,
     ):
         super().__init__()
-
+        
         assert input_dim == 3, "We only support 3D input currently."
         assert mask_classification, "We currently only support mask classification."
         self.mask_classification = mask_classification

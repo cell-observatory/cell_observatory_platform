@@ -42,7 +42,9 @@ class MSDeformAttnTransformerEncoderLayer(nn.Module):
         use_deform_attention=False,
     ):
         super().__init__()
-        use_deform_attention = True if OPS3D_AVAILABLE else False
+        
+        if use_deform_attention and not OPS3D_AVAILABLE:
+            raise ImportError("Please install the deformable attention module.")
         
         if use_deform_attention:
             self.with_deform_attention = True
@@ -77,16 +79,26 @@ class MSDeformAttnTransformerEncoderLayer(nn.Module):
 
     def forward(self, x, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
         x_flattened = x.flatten(2)
-        x = x + self.dropout1(
-            self.self_attn(
-                self.with_pos_embed(x, pos),
-                reference_points,
-                x_flattened,
-                spatial_shapes,
-                level_start_index,
-                padding_mask,
+        if self.with_deform_attention:
+            x = x + self.dropout1(
+                self.attn(
+                    self.with_pos_embed(x, pos),
+                    reference_points,
+                    x_flattened,
+                    spatial_shapes,
+                    level_start_index,
+                    padding_mask,
+                )
             )
-        )
+        else:
+            x = x + self.dropout1(
+                self.attn(
+                    self.with_pos_embed(x, pos),
+                    self.with_pos_embed(x_flattened, pos),
+                    # TODO: support cross_attention_mask
+                    # padding_mask,
+                )
+            )
         x = self.norm1(x)
         x = self.forward_ffn(x)
         return x
@@ -103,6 +115,7 @@ class MSDeformAttnTransformerEncoder(nn.Module):
         activation="relu",
         num_feature_levels=4,
         enc_num_points=4,
+        use_deform_attention: bool = True
     ):
         super().__init__()
 
@@ -111,7 +124,8 @@ class MSDeformAttnTransformerEncoder(nn.Module):
         self.num_layers = num_encoder_layers
 
         encoder_layer = MSDeformAttnTransformerEncoderLayer(
-            embed_dim, feedforward_dim, dropout, activation, num_feature_levels, num_heads, enc_num_points
+            embed_dim, feedforward_dim, dropout, activation, 
+            num_feature_levels, num_heads, enc_num_points, use_deform_attention
         )
         self.encoder_layers = nn.ModuleList([copy.deepcopy(encoder_layer) for i in range(num_encoder_layers)])
 
@@ -201,8 +215,14 @@ class MaskDINOEncoder(nn.Module):
         mask_dim: int,
         norm: Callable = None,
         dtype: str = "bfloat16",
+        use_deform_attention: bool = True,
     ):
         super().__init__()
+
+        self.use_deform_attention = use_deform_attention
+
+        if use_deform_attention and not OPS3D_AVAILABLE:
+            raise ImportError("Please install the deformable attention module.")
 
         self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
@@ -288,6 +308,7 @@ class MaskDINOEncoder(nn.Module):
             num_heads=transformer_encoder_num_heads,
             num_encoder_layers=num_transformer_encoder_layers,
             num_feature_levels=self.total_num_feature_levels,
+            use_deform_attention=self.use_deform_attention,
         )
         self.pos_embedding = PositionalEmbeddingSinCos(num_pos_feats=conv_dim // 3, normalize=True, scale=None)
         self.mask_features = Conv3d(
@@ -385,8 +406,13 @@ class Mask2FormerPixelDecoder(nn.Module):
         conv_dim: int,
         mask_dim: int,
         norm: Optional[Union[str, Callable]] = None,
+        use_deform_attention: bool = True,
     ):
         super().__init__()
+
+        self.use_deform_attention = use_deform_attention
+        if use_deform_attention and not OPS3D_AVAILABLE:
+            raise ImportError("Please install the deformable attention module.")
 
         # determine shapes of input features
         input_shapes = {k: v for k, v in input_shape.items() if k in transformer_in_features}
@@ -434,6 +460,7 @@ class Mask2FormerPixelDecoder(nn.Module):
             feedforward_dim=transformer_encoder_dim_feedforward,
             num_encoder_layers=transformer_encoder_layers,
             num_feature_levels=self.transformer_num_feature_levels,
+            use_deform_attention=use_deform_attention
         )
         self.pe_layer = PositionalEmbeddingSinCos(math.ceil(conv_dim / 3), normalize=True)
         self.mask_features = Conv3d(

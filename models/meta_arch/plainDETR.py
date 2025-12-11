@@ -15,20 +15,24 @@ Adapted from:
 """
 
 import copy
-import inspect
 import math
+import inspect
 from typing import Any, Dict, Mapping
 
 import torch
+from torch import nn
 import torch.nn.functional as F
 from hydra.utils import get_method
-from torch import nn
 
-from cell_observatory_platform.data.structures import box_cxcyczwhd_to_xyzxyz, box_xyzxyz_to_cxcyczwhd, delta2bbox
+from cell_observatory_platform.data.structures import (
+    box_cxcyczwhd_to_xyzxyz, 
+    box_xyzxyz_to_cxcyczwhd, 
+    delta2bbox
+)
 from cell_observatory_platform.models.layers.mlp import MLP
-from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
-from cell_observatory_platform.models.layers.utils import inverse_sigmoid
 from cell_observatory_platform.training.helpers import get_clones
+from cell_observatory_platform.models.layers.utils import inverse_sigmoid
+from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
 
 
 class PlainDETR(nn.Module):
