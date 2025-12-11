@@ -13,7 +13,7 @@ from torch.nn.init import constant_, xavier_uniform_
 
 from cell_observatory_platform.models.ops.flash_deform_attn import FlashDeformAttnFunction, _is_power_of_2
 from cell_observatory_platform.data.masking.mask_generator import apply_masks_rope
-from cell_observatory_platform.models.ops.rope import (
+from cell_observatory_platform.models.layers.positional_encoding import (
     apply_rotary_emb,
     compute_axial_cis,
     compute_mixed_cis,
