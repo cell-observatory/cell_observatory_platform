@@ -416,7 +416,7 @@ class EncoderAdapter(nn.Module):
         self.num_backbone_features = num_backbone_features
 
         self.use_deform_attention = use_deform_attention
-        if use_deform_attention and not MSDEFORM_ATTN_AVAILABLE:
+        if use_deform_attention and not OPS3D_AVAILABLE:
             raise ImportError("Please install the deformable attention module.")
 
         self.embed_dim = backbone_embed_dim
