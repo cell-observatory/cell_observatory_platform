@@ -43,6 +43,9 @@ class DummyBackbone(nn.Module):
             features[name] = torch.randn(B, self.channels, D, H, W, device=device, dtype=dtype)
         return features
 
+    def forward_features(self, x):
+        return self.forward(x)
+
 
 @pytest.mark.skipif(
     not OPS3D_AVAILABLE,
@@ -178,7 +181,7 @@ def test_maskdino_forward_train(monkeypatch):
     data_sample = {
         "data_tensor": data_tensor,
         "metainfo": {
-            "targets": [{"labels": labels, "boxes": boxes, "masks": masks}],
+            "targets": [[{"labels": labels, "boxes": boxes, "masks": masks}]],
             "image_sizes": [(D_in, H_in, W_in)],
             "orig_image_sizes": [(D_in, H_in, W_in)],
         },
@@ -205,7 +208,10 @@ def test_maskdino_forward_train(monkeypatch):
     assert outputs["pred_masks"].shape[1] == num_queries
 
     # --- losses sanity & weighting ---
-    assert set(losses.keys()) == set(loss_weight_dict.keys())
+    expected_base_keys = set(loss_weight_dict.keys())
+    assert expected_base_keys.issubset(set(losses.keys()))
+    assert "step_loss" in losses
+
     for k, v in losses.items():
         assert v.dim() == 0
         assert torch.isfinite(v)

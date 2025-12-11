@@ -38,7 +38,9 @@ class DeformableTransformerDecoderLayer(nn.Module):
         use_deform_attention=False,
     ):
         super().__init__()
-        use_deform_attention = True if OPS3D_AVAILABLE else False
+
+        if use_deform_attention and not OPS3D_AVAILABLE:
+            raise ImportError("Please install the deformable attention module.")
 
         assert embed_dim // num_heads % 8 == 0, "embed_dim//num_heads must be divisible by 8 ..."
 
@@ -48,7 +50,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
         else:
             if use_deform_attention:
                 self.with_deform_attention = True
-                self.attn = FlashDeformAttn3D(
+                self.cross_attention = FlashDeformAttn3D(
                     d_model=embed_dim,
                     n_levels=num_levels,
                     n_heads=num_heads,
@@ -56,7 +58,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 )
             else:
                 self.with_deform_attention = False
-                self.attn = CrossAttention(dim=embed_dim, num_heads=num_heads)
+                self.cross_attention = CrossAttention(dim=embed_dim, num_heads=num_heads)
 
         self.dropout1 = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(embed_dim)    
@@ -200,16 +202,25 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 raise NotImplementedError("Unknown summarize_memory_method: {}".format(self.summarize_memory_method))
 
         # pos encoding q -> deformable cross attention -> res + dropout -> norm
-        target_cross_attn = self.cross_attention(
-            self.with_pos_embeddings(target, target_query_pos_embeddings).transpose(
-                0, 1
-            ),  # (bs, num_queries, embed_dim)
-            target_reference_points.transpose(0, 1).contiguous(),  # (bs, num_queries, 3/6)
-            memory.transpose(0, 1),  # (bs, num_tokens, embed_dim)
-            memory_shapes,  # (bs, num_levels, 3)
-            memory_level_start_index,  # (num_levels)
-            memory_key_padding_mask,
-        ).transpose(0, 1)
+        if self.with_deform_attention:
+            target_cross_attn = self.cross_attention(
+                self.with_pos_embeddings(target, target_query_pos_embeddings).transpose(
+                    0, 1
+                ),  # (bs, num_queries, embed_dim)
+                target_reference_points.transpose(0, 1).contiguous(),  # (bs, num_queries, 3/6)
+                memory.transpose(0, 1),  # (bs, num_tokens, embed_dim)
+                memory_shapes,  # (bs, num_levels, 3)
+                memory_level_start_index,  # (num_levels)
+                memory_key_padding_mask,
+            ).transpose(0, 1)
+        else:
+            target_cross_attn = self.cross_attention(
+                self.with_pos_embeddings(target, target_query_pos_embeddings).transpose(0, 1),  # (bs, num_queries, embed_dim)
+                self.with_pos_embeddings(memory, memory_pos_embeddings).transpose(0, 1),  # (bs, num_tokens, embed_dim)
+                # TODO: support memory_key_padding_mask
+                # memory_key_padding_mask,
+            ).transpose(0, 1)
+        
         target = target + self.dropout1(target_cross_attn)
         target = self.norm1(target)
 

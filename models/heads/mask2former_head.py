@@ -38,8 +38,12 @@ class Mask2FormerHead(nn.Module):
         pixel_decoder_norm: str = "GroupNorm",
         pixel_decoder_transformer_in_features: Tuple[str] = ("1", "2", "3", "4"),
         pixel_decoder_common_stride: int = 4,
+        use_deform_attention: bool = True,
     ):
         super().__init__()
+
+        self.use_deform_attention = use_deform_attention
+
         orig_input_shape = input_shape
         input_shape = sorted(input_shape.items(), key=lambda x: x[1]["stride"])
         self.in_features = [k for k, _ in input_shape]
@@ -60,6 +64,7 @@ class Mask2FormerHead(nn.Module):
             norm=pixel_decoder_norm,
             transformer_in_features=pixel_decoder_transformer_in_features,
             target_min_stride=pixel_decoder_common_stride,
+            use_deform_attention=use_deform_attention,
         )
         self.predictor = MultiScaleMaskedTransformerDecoder(
             input_dim=input_dim,

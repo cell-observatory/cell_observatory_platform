@@ -231,20 +231,21 @@ def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
 
     x_mask = masks * x.unsqueeze(0)
     x_max = x_mask.flatten(1).max(-1)[0]
-    x_min = x_mask.masked_fill(~(masks.bool()), 1e8).flatten(1).min(-1)[0]
-
+    
     y_mask = masks * y.unsqueeze(0)
     y_max = y_mask.flatten(1).max(-1)[0]
-    y_min = y_mask.masked_fill(~(masks.bool()), 1e8).flatten(1).min(-1)[0]
 
     z_mask = masks * z.unsqueeze(0)
     z_max = z_mask.flatten(1).max(-1)[0]
-    z_min = z_mask.masked_fill(~(masks.bool()), 1e8).flatten(1).min(-1)[0]
+
+    x_min = x_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
+    y_min = y_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
+    z_min = z_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
 
     mask = torch.stack([x_min, y_min, z_min, x_max, y_max, z_max], 1).to(masks.device, torch.float)
     invalid_mask = (torch.isinf(x_min)) | (torch.isinf(y_min)) | (torch.isinf(z_min))
     mask[invalid_mask] = 0
-    return
+    return mask
 
 
 def box_xyzxyz_to_cxcyczwhd(boxes: Tensor) -> Tensor:
