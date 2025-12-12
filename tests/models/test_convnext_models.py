@@ -39,7 +39,7 @@ def test_convnext_custom(models_kargs):
         dims=(96, 192, 384, 768),
     ).to("cuda")
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_input_data(inputs)
 
     summarize_model(
         model=model,
@@ -72,7 +72,7 @@ def test_convnext_tiny(models_kargs):
         modes=models_kargs["modes"],
     ).to("cuda")
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_input_data(inputs)
 
     summarize_model(
         model=model,
@@ -105,7 +105,7 @@ def test_convnext_small(models_kargs):
         modes=models_kargs["modes"],
     ).to("cuda")
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_input_data(inputs)
 
     summarize_model(
         model=model,
@@ -138,7 +138,7 @@ def test_convnext_base(models_kargs):
         modes=models_kargs["modes"],
     ).to("cuda")
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_input_data(inputs)
 
     summarize_model(
         model=model,
@@ -171,7 +171,7 @@ def test_convnext_large(models_kargs):
         modes=models_kargs["modes"],
     ).to("cuda")
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_input_data(inputs)
 
     summarize_model(
         model=model,
