@@ -379,14 +379,14 @@ class EpochBasedTrainer(BaseTrainer):
 
         # initialize optimizer and learning rate scheduler
         param_groups = get_param_groups(cfg, model)
-        opt, _ = get_optimizer(
+        self.opt, _ = get_optimizer(
             params=param_groups,
             config=cfg,
             optimizer=cfg.optimizers.opt,
             steps_per_epoch=self.steps_per_epoch
         )
         self.schedulers, self.wd_schedulers = get_schedulers(
-            opt=opt,
+            opt=self.opt,
             config=cfg,
             steps_per_epoch=self.steps_per_epoch
         )
@@ -404,7 +404,7 @@ class EpochBasedTrainer(BaseTrainer):
         # initialize deepspeed
         self.model, self.optimizers, _, _ = initialize(
             model=model,
-            optimizer=opt,
+            optimizer=self.opt,
             config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
         self.checkpoint_manager.model = self.model
@@ -614,7 +614,7 @@ class TestTrainer(BaseTrainer):
         self.checkpoint_manager.load()
 
         # initialize optimizer
-        opt, _ = get_optimizer(
+        self.opt, _ = get_optimizer(
             params=model.parameters(),
             config=cfg,
             optimizer=cfg.optimizers.opt,
@@ -634,7 +634,7 @@ class TestTrainer(BaseTrainer):
         # initialize deepspeed
         self.model, self.optimizers, _, _ = initialize(
             model=model,
-            optimizer=opt,
+            optimizer=self.opt,
             config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
 
@@ -725,7 +725,7 @@ class Inferencer(BaseTrainer):
         self.checkpoint_manager.load()
 
         # initialize optimizer
-        opt, _ = get_optimizer(
+        self.opt, _ = get_optimizer(
             params=model.parameters(),
             config=cfg,
             optimizer=cfg.optimizers.opt,
@@ -745,7 +745,7 @@ class Inferencer(BaseTrainer):
         # initialize deepspeed
         self.model, self.optimizers, _, _ = initialize(
             model=model,
-            optimizer=opt,
+            optimizer=self.opt,
             config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
 
