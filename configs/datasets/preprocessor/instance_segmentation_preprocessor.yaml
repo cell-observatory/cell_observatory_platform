@@ -6,14 +6,14 @@ dtype: ${quantization}
 
 transforms_list:
   # 1) Resize to Z=128, Y=256, X=512
-  # - _target_: cell_observatory_platform.data.transforms.resize.Resize
-  #   input_format: ${dataset_layout_order}          # e.g. "ZYXC"
-  #   target_spatial_shape: [128, 256, 512]         # (Z, Y, X)
-  #   mode: trilinear
-  #   align_corners: false
-  #   dtype: ${quantization}
-  #   bbox_format: ${datasets.preprocessor.bbox_output_format}
-  #   crop_to_meta_spatial: true
+  - _target_: cell_observatory_platform.data.transforms.resize.Resize
+    input_format: ${dataset_layout_order}          # e.g. "ZYXC"
+    target_spatial_shape: [128, 256, 512]         # (Z, Y, X)
+    mode: trilinear
+    align_corners: false
+    dtype: ${quantization}
+    bbox_format: ${datasets.preprocessor.bbox_output_format}
+    crop_to_meta_spatial: true
 
   # 2) Normalize after resize
   - _target_: cell_observatory_platform.data.transforms.normalize.Normalize

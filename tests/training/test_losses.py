@@ -74,7 +74,7 @@ def test_fourier_loss_forward_backward(input_fmt, input_shape, patch_shape, in_c
     loss, out = loss_mod(
         targets=targets_masked,
         predictions=predictions_masked,
-        masks=masks_grid,
+        num_patches=masks_grid.sum(),
         aux_loss_meta=aux,
     )
     print(f"Loss output: {loss.item()}")

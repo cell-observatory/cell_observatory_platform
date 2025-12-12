@@ -68,28 +68,19 @@ seed: 42
 
 # clusters
 clusters:
-  batch_size: 1 # total batch size
-  worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 16 # number of cpu cores per gpu
-  mem_per_cpu: 21000 # ram per cpu core
-  ray_queue_memory: 0.1
-
-#paths:
-paths:
-  # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null 
-  pretrained_checkpointdir: null
-
-# clusters
-clusters:
   ray_queue_memory: 0.2
   batch_size: 1 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 16 # number of cpu cores per gpu
   mem_per_cpu: 21000 # ram per cpu core
+
+# paths:
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null 
+  pretrained_checkpointdir: null
 
 # data
 datasets:
@@ -143,6 +134,9 @@ datasets:
       - "prepared_id"
       - "mask_bbox_dict"
 
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: /clusterfs/nvme/hph/git_managed/databases/new_prepared_16_128_128_128_2_hypercube_view.csv
+
   databases:
     occupancy_threshold_filter_type: 'min_ch0'
     synthetic_only: true
@@ -165,10 +159,6 @@ hooks:
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
   - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-    file_prefix: latest_model
-  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
     step_period: 1
     epoch_period: 1

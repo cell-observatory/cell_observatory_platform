@@ -201,7 +201,7 @@ class FourierLoss(torch.nn.Module):
         else:
             raise ValueError(f"Unknown fft loss type: {self.fft_loss}, {type(self.fft_loss)}")
 
-        spatial_loss, _ = self.spatial_loss(targets, predictions, masks, aux_loss_meta=None)
+        spatial_loss, _ = self.spatial_loss(targets, predictions, num_patches, aux_loss_meta=None)
 
         fft_loss = self.alpha * fft_loss
         spatial_loss = (1 - self.alpha) * spatial_loss

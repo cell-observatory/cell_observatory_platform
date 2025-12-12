@@ -8,7 +8,7 @@ backbone_wrapper_args:
   blocks_to_train: null
   out_layers: [10, 14, 18, 22]
   adapter_out_layers: [1] # [0, 1, 2, 3] to use all adapter features
-  backbone_args: ${models.backbones.mae}
+  backbone_args: ${models.backbones.masked_encoder}
 
 # Adapter
 adapter_args:
@@ -19,7 +19,7 @@ adapter_args:
   input_channels: ${tasks.input_channels}
   dtype: ${quantization}
   dim: 3
-  backbone_embed_dim: ${models.backbones.mae.embed_dim}
+  backbone_embed_dim: ${models.backbones.masked_encoder.embed_dim}
   num_backbone_features: 4
   add_vit_feature: true
   conv_inplane: 64
@@ -74,6 +74,7 @@ transformer_args:
     attn_drop: 0.0
     proj_drop: 0.0
     dec_layers: 6
+    nheads: 8
     look_forward_twice: true
     rpe_hidden_dim: 512
     rpe_type: linear
@@ -91,14 +92,14 @@ criterion_args:
   focal_alpha: 0.25
   reparam: true
   matcher_args:
-    BUILD: cell_observatory_platform.models.utils.matchers.build_plain_detr_matcher
+    BUILD: cell_observatory_platform.models.layers.matchers.build_plain_detr_matcher
     cost_class: 2.0
     cost_bbox: 5.0
     cost_giou: 2.0
     cost_bbox_type: reparam
 
 # PlainDETR flags
-backbone_embed_dim: ${models.backbones.mae.embed_dim}
+backbone_embed_dim: ${models.backbones.masked_encoder.embed_dim}
 num_classes: 2
 num_feature_levels: 1
 with_box_refine: true
