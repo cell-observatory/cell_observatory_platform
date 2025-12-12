@@ -362,7 +362,7 @@ class MaskedAutoEncoder(nn.Module):
         else:
             aux_loss_meta = None
 
-        loss, aux_losses = self.loss_fn(targets, predictions, masks, aux_loss_meta)
+        loss, aux_losses = self.loss_fn(targets, predictions, masks.sum(), aux_loss_meta)
 
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions

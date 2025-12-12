@@ -1,17 +1,16 @@
 BUILD: cell_observatory_platform.models.meta_arch.autobench.ChannelSplitAutoBench.BUILD
 
-# Common AutoBench args
 task: channel_split
 input_fmt: ${dataset_layout_order}
-input_shape: ${datasets.train_shape}
+input_shape: ${datasets.input_shape}
+train_shape: ${datasets.train_shape}
 patch_shape: ${datasets.patch_shape}
 
-abs_sincos_enc: ${models.backbones.mae.abs_sincos_enc}
-weight_init_type: ${models.backbones.mae.weight_init_type}
-loss_fn: ${models.backbones.mae.loss_fn}
+abs_sincos_enc: false
+weight_init_type: mae
+loss_fn: l2_masked
 
-embed_dim: ${models.backbones.mae.embed_dim}
+backbone_args: ${models.backbones.masked_encoder}
 
-backbone_args: ${models.backbones.mae}
-
-decoder_args: ${models.decoders}
+decoder_args: ${models.heads.linear}
+# decoder_args: ${models.heads.maskedpredictor}

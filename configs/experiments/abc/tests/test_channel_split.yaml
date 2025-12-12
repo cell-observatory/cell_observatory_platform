@@ -9,8 +9,9 @@ defaults:
   - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
   - /models/BUILD_AutoBench                  # configs/models/BUILD_AutoBench.yaml
   - /models/meta_arch/autobench/ChannelSplitAutoBench/mae_large  # configs/models/meta_arch/autobench/ChannelSplitAutoBench/mae_large.yaml
-  - /models/backbones/mae/large              # configs/models/mae/large.yaml
-  - /models/decoders/linear                  # configs/models/decoders/linear.yaml
+  - /models/backbones/masked_encoder/large              # configs/models/backbones/masked_encoder/large.yaml
+  # - /models/heads/maskedpredictor/large                  # configs/models/decoders/linear.yaml
+  - /models/heads/linear/linear
   - /hooks/hooks                             # configs/hooks/hooks.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
@@ -18,6 +19,7 @@ defaults:
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/models/mae                  # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                      # configs/profiling/profiling.yaml
   - _self_
@@ -99,21 +101,34 @@ datasets:
   num_actors_min: 4
   num_actors_max: 4
 
-  # max_hypercubes: 50000
-  max_hypercubes: null
-  max_rois: 1 # maximum number of ROIs (each ROI can have dozens of tiles)
+  max_hypercubes: 100
+  max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
   max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
   use_cached_hypercubes_dataframe: true
-  hypercubes_dataframe_path: /clusterfs/nvme/segment_4d/databases/prepared_1_128_128_128_2_hypercube_view_NEW.csv
+  hypercubes_dataframe_path: /clusterfs/nvme/hph/git_managed/databases/new_prepared_16_128_128_128_2_hypercube_view.csv
+
+  columns: 
+    - x_start
+    - y_start
+    - z_start
+    - time_start
+    - channel_size
+    - z_size
+    - y_size
+    - x_size
+    - time_size
+    - server_folder
+    - output_folder
+    - tile_name
+    - prepared_id
 
   databases:
     occupancy_threshold_filter_type: 'min_ch0'
-    synthetic_only: true
-    has_annotations: true
+    synthetic_only: false
+    has_annotations: false
     with_hypercubes_dataframe: true
-    server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
-    mask_channel: 1
+    mask_channel: null
 
 # schedulers
 schedulers:
@@ -129,10 +144,6 @@ hooks:
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
   - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-    file_prefix: latest_model
-  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
     step_period: 1
     epoch_period: 1

@@ -374,7 +374,7 @@ class JEPA(nn.Module):
             target_idx_in_patches_used = target_masks
         targets = apply_masks(targets, masks=target_masks)
         predictions = apply_masks(predictions, masks=target_idx_in_patches_used)
-        loss, aux_losses = self.loss_fn(predictions, targets, masks)
+        loss, aux_losses = self.loss_fn(predictions, targets, masks.sum())
 
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions

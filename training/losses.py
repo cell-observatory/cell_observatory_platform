@@ -110,23 +110,23 @@ def get_loss_fn(loss):
     raise ValueError(f"Unknown loss configuration: {loss}")
 
 
-def L2_masked_loss(targets, predictions, masks, aux_loss_meta=None):
+def L2_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
     loss = (targets - predictions) ** 2
     loss = loss.mean(dim=-1)  # mean loss per patch
-    loss = loss.sum() / masks.sum()
+    loss = loss.sum() / num_patches
     return loss, None
 
 
-def L1_masked_loss(targets, predictions, masks, aux_loss_meta=None):
+def L1_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
     # compute loss over masked patches
     loss = torch.abs(targets - predictions)
     loss = loss.mean(dim=-1)  # mean loss per patch
-    loss = loss.sum() / masks.sum()
+    loss = loss.sum() / num_patches
     return loss, None
 
 
 # see: https://github.com/facebookresearch/ijepa/main/src/train.py
-def smooth_L1_masked_loss(targets, predictions, masks, aux_loss_meta=None):
+def smooth_L1_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
     return F.smooth_l1_loss(targets, predictions), None
 
 
@@ -181,7 +181,7 @@ class FourierLoss(torch.nn.Module):
         else:
             raise ValueError(f"Unknown spatial loss type: {spatial_loss}")
 
-    def forward(self, targets, predictions, masks, aux_loss_meta):
+    def forward(self, targets, predictions, num_patches, aux_loss_meta):
         full_targets, full_predictions = aux_loss_meta["targets"], aux_loss_meta["predictions"]
 
         full_targets = self.pe_unpatchify(full_targets)

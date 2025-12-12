@@ -454,7 +454,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
 
         if self.mode in ("upsample_space", "upsample_spacetime"):
             # targets are HR patches
-            targets = self.pe_patchify(inputs)
+            targets = self.pe_patchify(inputs, channels=self.channels)
 
             # pick one NA mask and downsample
             idx = torch.randint(

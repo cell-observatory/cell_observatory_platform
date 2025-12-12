@@ -10,9 +10,12 @@ from omegaconf import DictConfig, OmegaConf
 
 from cell_observatory_platform.training.losses import get_loss_fn
 from cell_observatory_platform.training.helpers import init_weights
+from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.models.layers.attention import RopeAttention
 from cell_observatory_platform.data.masking.mask_generator import apply_masks
+from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
+from cell_observatory_platform.training.helpers import get_nparams_and_flops, get_input_data
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -194,9 +197,9 @@ class ChannelSplitAutoBench(AutoBench):
         x = self.decoder(x)
 
         predictions = x
-        loss = self.loss_fn(predictions, targets, num_patches=self.get_num_patches())
+        loss, aux_losses = self.loss_fn(predictions, targets, num_patches=self.get_num_patches())
 
-        loss_dict = {"step_loss": loss}
+        loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):
@@ -250,9 +253,10 @@ class UpsampleTimeAutoBench(AutoBench):
         # only supervise the masked timepoints
         targets = apply_masks(patches, masks=target_masks)
         predictions = apply_masks(x, masks=target_masks)
-        loss = self.loss_fn(predictions, targets, num_patches=masks.sum())
+        
+        loss, aux_losses = self.loss_fn(predictions, targets, num_patches=self.get_num_patches())
+        loss_dict = {"step_loss": loss, **(aux_losses or {})}
 
-        loss_dict = {"step_loss": loss}
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):
@@ -299,9 +303,10 @@ class UpsampleSpaceAutoBench(AutoBench):
         x = self.decoder(x)
 
         predictions = x
-        loss = self.loss_fn(x, targets, num_patches=self.get_num_patches())
 
-        loss_dict = {"step_loss": loss}
+        loss, aux_losses = self.loss_fn(x, targets, num_patches=self.get_num_patches())
+        loss_dict = {"step_loss": loss, **(aux_losses or {})}
+
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):
@@ -349,9 +354,10 @@ class UpsampleSpaceTimeAutoBench(AutoBench):
         )
 
         predictions = x
-        loss = self.loss_fn(x, targets, num_patches=self.get_num_patches())
 
-        loss_dict = {"step_loss": loss}
+        loss, aux_losses = self.loss_fn(x, targets, num_patches=self.get_num_patches())
+        loss_dict = {"step_loss": loss, **(aux_losses or {})}
+    
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):
@@ -379,33 +385,6 @@ def BUILD(cfg: Mapping[str, Any]) -> AutoBench:
     """
     Dispatcher that picks the appropriate AutoBench subclass
     based on cfg.task and wires backbone/decoder BUILD functions.
-
-    Expected cfg structure:
-
-      models:
-        build:
-          _target_: cell_observatory_platform.models.autobench.build_model
-
-        task: channel_split  # or upsample_time / upsample_space / etc.
-
-        backbone_args:
-          BUILD:
-            _target_: cell_observatory_platform.models.mae_backbone.build_backbone
-          # ... mae/jepa-specific hyperparams ...
-
-        decoder_args:
-          BUILD:
-            _target_: cell_observatory_platform.models.heads.vit_decoder.build_decoder
-          # ... decoder-specific hyperparams ...
-
-        output_channels: 2
-        input_fmt: TZYXC
-        input_shape: [16, 128, 128, 128, 2]
-        patch_shape: [4, 16, 16, 16]
-        loss_fn: l2_masked
-        abs_sincos_enc: false
-        weight_init_type: mae
-
     """
     task = cfg["tasks"]["task"]
     if task == "channel_split":
@@ -425,7 +404,17 @@ def BUILD(cfg: Mapping[str, Any]) -> AutoBench:
     embed_dim = model_cfg.get("embed_dim", backbone_args.get("embed_dim", None))
 
     if model_cfg["input_fmt"] == "ZYXC":
-        output_dim = model_cfg["input_shape"][-1]
+        temporal_patch_size, axial_patch_size, lateral_patch_size = get_patch_sizes(
+            input_format=model_cfg["input_fmt"],
+            patch_shape=model_cfg["patch_shape"],
+        )
+        output_dim = PatchEmbedding.compute_num_pixels_per_patch(
+            channels=model_cfg["input_shape"][-1],
+            temporal_patch_size=temporal_patch_size,
+            axial_patch_size=axial_patch_size,
+            lateral_patch_size=lateral_patch_size,
+            input_format=model_cfg["input_fmt"],
+        )
     else:
         raise ValueError(f"AutoBench currently only supports 'ZYXC' input_fmt, got {model_cfg['input_fmt']}")
 

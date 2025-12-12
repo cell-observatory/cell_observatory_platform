@@ -1,36 +1,38 @@
 # @package _global_
 defaults:
-  - /tasks/instance_segmentation             # configs/tasks/instance_segmentation.yaml
-  - /paths/abc                               # configs/paths/coreweave.yaml
+  - /tasks/upsample_space
+  - /paths/abc                               # configs/paths/abc.yaml
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
-  - /clusters/local                          # configs/clusters/coreweave_h100.yaml
+  - /clusters/local                          # configs/clusters/local.yaml
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
-  - /datasets/preprocessor/instance_segmentation_preprocessor # configs/datasets/preprocessor/instance_segmentation_preprocessor.yaml
+  - /datasets/preprocessor/upsample_space_preprocessor  # configs/datasets/preprocessor/upsample_space_preprocessor.yaml
   - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
-  - /models/BUILD_plainDETR                  # configs/models/BUILD_plainDETR.yaml
-  - /models/meta_arch/plainDETR/mae_large    # configs/models/plainDETR/large.yaml
-  - /models/backbones/masked_encoder/large              # configs/models/mae/large.yaml
-  - /hooks/hooks_with_weight_decay           # configs/hooks/hooks.yaml
+  - /models/BUILD_AutoBench                  # configs/models/BUILD_AutoBench.yaml
+  - /models/meta_arch/autobench/UpsampleSpaceAutoBench/mae_large  # configs/models/meta_arch/autobench/upsample_spaceAutoBench/mae_large.yaml
+  - /models/backbones/masked_encoder/large              # configs/models/backbones/masked_encoder/large.yaml
+  - /models/heads/maskedpredictor/large                  # configs/models/decoders/linear.yaml
+  # - /models/heads/linear/linear
+  - /hooks/hooks                             # configs/hooks/hooks.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
-  - /schedulers/warmup_cosine_decay_with_weight_decay  # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/models/mae                  # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
-  - /profiling/profiling                     # configs/profiling/profiling.yaml
+  - /profiling/profiling                      # configs/profiling/profiling.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: test_instance_segmentation_plain_detr
+experiment_name: test_upsample_space_vit
 wandb_project: testing
 
 # task
-task: finetune_mae
+task: pretrain_mae
 
 # Model type
-network: plainDETR
+network: mae
 
 # engine type
 engine: deepspeed
@@ -66,15 +68,6 @@ seed: 42
 # overrides
 # --------------------------------------------------------------------------------
 
-# clusters
-clusters:
-  batch_size: 1 # total batch size
-  worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 16 # number of cpu cores per gpu
-  mem_per_cpu: 21000 # ram per cpu core
-  ray_queue_memory: 0.1
-
 #paths:
 paths:
   # base output directory for logs, checkpoints, etc.
@@ -95,7 +88,7 @@ clusters:
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-  train_shape: [128, 128, 128, 1]
+  train_shape: [128, 128, 128, 2]
   input_shape: [128, 128, 128, 2]
   patch_shape: [16, 16, 16, null]
   occupancy_threshold: 0.9
@@ -112,44 +105,30 @@ datasets:
   max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
   max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
-  collate_fn:
-    _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
-    dtype: ${dataset_dtype}
-    buffer_dtype: ${storage_dtype}
-    batch_size: ${clusters.batch_size_per_gpu}
-    input_shape: ${datasets.input_shape}
-    device_buffer_capacity: 2
-    pin_numa_node: ${datasets.pin_numa_node}
-    pin_pages: ${datasets.pin_memory}
-    use_masks: false
-    transforms_list: null
-    bbox_data_format: zyxzyx
-    bbox_output_format: cxcyczwhd
-    with_resize: false
-    debug: false
-    columns:
-      - "x_start"
-      - "y_start"
-      - "z_start"
-      - "time_start"
-      - "channel_size"
-      - "z_size"
-      - "y_size"
-      - "x_size"
-      - "time_size"
-      - "server_folder"
-      - "output_folder"
-      - "tile_name"
-      - "prepared_id"
-      - "mask_bbox_dict"
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: /clusterfs/nvme/hph/git_managed/databases/new_prepared_16_128_128_128_2_hypercube_view.csv
+
+  columns: 
+    - x_start
+    - y_start
+    - z_start
+    - time_start
+    - channel_size
+    - z_size
+    - y_size
+    - x_size
+    - time_size
+    - server_folder
+    - output_folder
+    - tile_name
+    - prepared_id
 
   databases:
     occupancy_threshold_filter_type: 'min_ch0'
-    synthetic_only: true
-    has_annotations: true
+    synthetic_only: false
+    has_annotations: false
     with_hypercubes_dataframe: true
-    server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
-    mask_channel: 1
+    mask_channel: null
 
 # schedulers
 schedulers:
@@ -165,10 +144,6 @@ hooks:
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
   - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-    file_prefix: latest_model
-  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
     step_period: 1
     epoch_period: 1
