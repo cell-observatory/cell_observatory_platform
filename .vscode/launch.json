@@ -331,50 +331,6 @@
       "justMyCode": false
     },
     {
-      "name": "🧪 tests/data/test_pretrain_dataset (TORCH)",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_pretrain_dataset.py"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
-      "name": "🧪 tests/data/test_pretrain_dataset_dali (DALI)",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "args": [
-        "-s",
-        "-vvv",
-        "--cache-clear",
-        "--disable-warnings",
-        "--disable-pytest-warnings",
-        "--color=yes",
-        "-r fEX",
-        "tests/data/test_pretrain_dataset_dali.py"
-      ],
-      "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}",
-      "env": {
-        "PYTHONUNBUFFERED": "1"
-      },
-      "justMyCode": false
-    },
-    {
       "name": "🧪 tests/data/test_pretrain_dataset_ray",
       "type": "debugpy",
       "request": "launch",

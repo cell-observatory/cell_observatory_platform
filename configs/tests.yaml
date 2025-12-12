@@ -12,6 +12,7 @@ defaults:
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
 
