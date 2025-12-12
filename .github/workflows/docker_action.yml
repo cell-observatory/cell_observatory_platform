@@ -4,13 +4,12 @@ name: docker-ubuntu-build
 on:
   push:
     branches:
-      - '*/**'
-      - '*'
+      - "*/**"
+      - "*"
     tags:
-      - '*'
+      - "*"
     paths-ignore:
-      - '**.md'
-
+      - "**.md"
 
 # only allow one copy of this workflow to run at a time (the group specified by workflow name and branch)
 # cancel current workflows if they are running (unless on main or releases, so that we just run the latest queue'd.
@@ -20,14 +19,14 @@ concurrency:
 
 env:
   TORCH_VERSION: torch_25_08
-  REGISTRY: ghcr.io  
-  IMAGE_NAME: ${{ github.repository }}  # github.repository as <account>/<repo>
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }} # github.repository as <account>/<repo>
   DO_SIGNING: ${{ false }}
-  BRANCH: ${{ github.head_ref || github.ref_name }}   # 'main' or 'develop'
-  PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings -r fEX --junit-xml=test_results/test-results  # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
-  TESTING: ${{ true }}  # skip tests if we have this branch name
+  BRANCH: ${{ github.head_ref || github.ref_name }} # 'main' or 'develop'
+  PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings -r fEX --junit-xml=test_results/test-results # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
+  TESTING: ${{ true }} # skip tests if we have this branch name
   # TESTMON_DATAFILE: ~/.cache/TESTMON/.testmondata  # where testmon stores its data file
-  
+
 jobs:
   cleanup-docker-runners:
     runs-on:
@@ -39,14 +38,14 @@ jobs:
         shell: bash
     permissions: {}
     steps:
-      - name: 'Cleanup build folder'
+      - name: "Cleanup build folder"
         run: |
           ls -la ./
           rm -rf ./* || true
           rm -rf ./.??* || true
           ls -la ./
 
-  docker-build:      
+  docker-build:
     needs: cleanup-docker-runners
     runs-on:
       group: docker-runners
@@ -82,7 +81,7 @@ jobs:
       - name: Checkout whole repo
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
+          submodules: "recursive"
 
       - name: List files in the repository
         run: |
@@ -94,27 +93,27 @@ jobs:
           ls -lhXR ${{ github.workspace }}
 
       - name: Check dockerfile pytorch version from 'Dockerfile'
-      #  (e.g. 25.06-py3)
+        #  (e.g. 25.06-py3)
         id: dockerfile_pytorch_version
         run: |
-            echo "DOCKER_PYTORCH_VERSION=torch_$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)"
+          echo "DOCKER_PYTORCH_VERSION=torch_$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)"
 
-            {
-              echo 'DOCKER_PYTORCH_VERSION<<EOF'
-              echo "torch_$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)" | tr '.' '_'
-              echo EOF
-            } >> "$GITHUB_OUTPUT"    
+          {
+            echo 'DOCKER_PYTORCH_VERSION<<EOF'
+            echo "torch_$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)" | tr '.' '_'
+            echo EOF
+          } >> "$GITHUB_OUTPUT"    
 
-            cat "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
       - name: Raise error if env.TORCH_VERSION (${{ env.TORCH_VERSION }}) and dockerfile version (${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}) disagree
         if: ${{ ! startsWith( steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION, env.TORCH_VERSION ) }}
         env:
           TORCH_VERSION: ${{ env.TORCH_VERSION }}
           DOCKERFILE_PYTORCH_IMAGE: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # "version 7"
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # "version 7"
         with:
           script: |
-              core.setFailed('Dockerfile and "TORCH_VERSION in docker_action.yml" do not have the same pytorch version! Dockerfile = ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }} "TORCH_VERSION in docker_action.yml" = ${{ env.TORCH_VERSION }}')
+            core.setFailed('Dockerfile and "TORCH_VERSION in docker_action.yml" do not have the same pytorch version! Dockerfile = ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }} "TORCH_VERSION in docker_action.yml" = ${{ env.TORCH_VERSION }}')
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -130,7 +129,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}    # aka ghcr.io
+          registry: ${{ env.REGISTRY }} # aka ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -167,8 +166,7 @@ jobs:
           # cache the nvidia image and setup.  Then don't cache the "pip_install" build stage where we pip install the requirements.txt
           target: ${{ env.TORCH_VERSION }}
           provenance: false # disable provenance to avoid unknown/unknown
-          sbom: false       # disable sbom to avoid unknown/unknown
-
+          sbom: false # disable sbom to avoid unknown/unknown
 
   docker-push:
     needs: docker-build
@@ -208,7 +206,7 @@ jobs:
       - name: Checkout whole repo
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
+          submodules: "recursive"
 
       - name: List files in the repository
         run: |
@@ -230,7 +228,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}    # aka ghcr.io
+          registry: ${{ env.REGISTRY }} # aka ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -264,7 +262,7 @@ jobs:
             BRANCH_NAME=${{ env.BRANCH }}
           target: ${{ env.TORCH_VERSION }}
           provenance: false # disable provenance to avoid unknown/unknown
-          sbom: false       # disable sbom to avoid unknown/unknown
+          sbom: false # disable sbom to avoid unknown/unknown
 
       - id: get-build-name
         run: |
@@ -281,14 +279,13 @@ jobs:
       - name: clean name of "/" characters
         id: step1
         run: |
+          echo "${{ github.head_ref || github.ref_name }}" | tr '/' '_'
+          {
+            echo 'MY_PATH<<EOF'
             echo "${{ github.head_ref || github.ref_name }}" | tr '/' '_'
-            {
-              echo 'MY_PATH<<EOF'
-              echo "${{ github.head_ref || github.ref_name }}" | tr '/' '_'
-              echo EOF
-            } >> "$GITHUB_OUTPUT"            
-            cat "$GITHUB_OUTPUT"
-            
+            echo EOF
+          } >> "$GITHUB_OUTPUT"            
+          cat "$GITHUB_OUTPUT"
 
   get-bootstrap-sif-and-paths:
     needs: sif_path
@@ -304,8 +301,8 @@ jobs:
       SUPABASE_PROD_URI: ${{ secrets.SUPABASE_PROD_URI }}
       SUPABASE_STAGING_URI: ${{ secrets.SUPABASE_STAGING_URI }}
     outputs:
-      BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }}  # BUILT_SIF_FILE: /home/mosaic/Desktop/actions-runner/_work/cell_observatory_platform/cell_observatory_platform/feature_github_actions_updates_torch_25_08.sif
-      SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}   
+      BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} # BUILT_SIF_FILE: /home/mosaic/Desktop/actions-runner/_work/cell_observatory_platform/cell_observatory_platform/feature_github_actions_updates_torch_25_08.sif
+      SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
       SIF_PYTORCH_VERSION: ${{ steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION }}
       DOCKER_PYTORCH_VERSION: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
       DOCKER_PYTORCH_IMAGE: ${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
@@ -316,11 +313,11 @@ jobs:
       - name: Checkout whole repo
         uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
+          submodules: "recursive"
 
       - name: List files in the directory
         run: |
-            ls -lhXR
+          ls -lhXR
 
       # Login against a Docker registry except on PR
       # https://github.com/docker/login-action
@@ -328,56 +325,56 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}    # aka ghcr.io
+          registry: ${{ env.REGISTRY }} # aka ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-          
+
       - name: Get bootstrap pytorch .sif from 'apptainerfile.def'
-      #  (e.g. 25.06-py3)
+        #  (e.g. 25.06-py3)
         id: bootstrap_sif
         run: |
-            echo "sed -n 's/From: //p' apptainerfile.def"
-            {
-              echo 'SIF_FILE<<EOF'
-              sed -n 's/From: //p' apptainerfile.def
-              echo EOF
-            } >> "$GITHUB_OUTPUT"            
-            cat "$GITHUB_OUTPUT"
-      
+          echo "sed -n 's/From: //p' apptainerfile.def"
+          {
+            echo 'SIF_FILE<<EOF'
+            sed -n 's/From: //p' apptainerfile.def
+            echo EOF
+          } >> "$GITHUB_OUTPUT"            
+          cat "$GITHUB_OUTPUT"
+
       - name: Get built sif path
         id: built_sif_path
         run: |
-            echo "BUILT_SIF_PATH=${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+          echo "BUILT_SIF_PATH=${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
 
       - name: Get bootstrap pytorch version from 'apptainerfile.def'
-      #  (e.g. 25.06-py3)
+        #  (e.g. 25.06-py3)
         id: sif_pytorch_version
         run: |
-            echo "SIF_PYTORCH_VERSION=$(grep -Po 'pytorch_\K.*(?=.sif)' apptainerfile.def)" >> "$GITHUB_OUTPUT"
-            cat "$GITHUB_OUTPUT"
+          echo "SIF_PYTORCH_VERSION=$(grep -Po 'pytorch_\K.*(?=.sif)' apptainerfile.def)" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
 
       - name: Get dockerfile pytorch version from 'Dockerfile'
-      #  (e.g. 25.06-py3)
+        #  (e.g. 25.06-py3)
         id: dockerfile_pytorch_version
         run: |
-            echo "DOCKER_PYTORCH_VERSION=$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
-            cat "$GITHUB_OUTPUT"
+          echo "DOCKER_PYTORCH_VERSION=$(grep -Po 'pytorch:\K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
 
-      - name: Get dockerfile pytorch image from 'Dockerfile' 
-      # (e.g. nvcr.io/nvidia/pytorch:25.06-py3)
+      - name: Get dockerfile pytorch image from 'Dockerfile'
+        # (e.g. nvcr.io/nvidia/pytorch:25.06-py3)
         id: dockerfile_pytorch_image
         run: |
-            echo "DOCKER_PYTORCH_IMAGE=$(grep -Po -m 1 'FROM \K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
-            cat "$GITHUB_OUTPUT"
+          echo "DOCKER_PYTORCH_IMAGE=$(grep -Po -m 1 'FROM \K.*(?= AS)' Dockerfile)" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
 
       - name: Copy bootstrap SIF file ~/SIF_files/${{ steps.bootstrap_sif.outputs.SIF_FILE }} to repo
         continue-on-error: true # if it doesn't exist, keep going.
         run: |
-            /bin/cp -sf ~/SIF_files/${{ steps.bootstrap_sif.outputs.SIF_FILE }} .
+          /bin/cp -sf ~/SIF_files/${{ steps.bootstrap_sif.outputs.SIF_FILE }} .
 
       - name: Check that bootstrap SIF file "${{ steps.bootstrap_sif.outputs.SIF_FILE }}" exists
         id: check_if_bootstrap_SIF_exists
-        uses: andstor/file-existence-action@076e0072799f4942c8bc574a82233e1e4d13e9d6   # "version 3.0"
+        uses: andstor/file-existence-action@076e0072799f4942c8bc574a82233e1e4d13e9d6 # "version 3.0"
         env:
           DOCKERFILE_PYTORCH_IMAGE: ${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
           SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
@@ -387,7 +384,6 @@ jobs:
           files: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
           ignore_case: true
           fail: false # fail on missing files
-          
 
       - name: Raise error if pytorch dockerfile version (${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}) and apptainerfile.def version (${{ steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION }}) disagree
         if: ${{ ! startsWith( steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION, steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION) }}
@@ -396,18 +392,18 @@ jobs:
           SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
           SIF_PYTORCH_VERSION: ${{ steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION }}
           DOCKER_PYTORCH_VERSION: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # "version 7"
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # "version 7"
         with:
           script: |
-              core.setFailed('dockerfile and apptainer.def recipe do not have the same pytorch version! SIF_PYTORCH_VERSION = $SIF_PYTORCH_VERSION DOCKER_PYTORCH_VERSION = $DOCKER_PYTORCH_VERSION')
+            core.setFailed('dockerfile and apptainer.def recipe do not have the same pytorch version! SIF_PYTORCH_VERSION = $SIF_PYTORCH_VERSION DOCKER_PYTORCH_VERSION = $DOCKER_PYTORCH_VERSION')
 
-      - name: If apptainer bootstrap doesn't exist, build it. (${{ steps.bootstrap_sif.outputs.SIF_FILE }} from ${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}) 
+      - name: If apptainer bootstrap doesn't exist, build it. (${{ steps.bootstrap_sif.outputs.SIF_FILE }} from ${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }})
         if: steps.check_if_bootstrap_SIF_exists.outputs.files_exists == 'false'
         env:
           DOCKERFILE_PYTORCH_IMAGE: ${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
           SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
         run: |
-            mkdir -p ~/SIF_files/  &&  apptainer build --nv --force ~/SIF_files/${{ steps.bootstrap_sif.outputs.SIF_FILE }} docker://${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
+          mkdir -p ~/SIF_files/  &&  apptainer build --nv --force ~/SIF_files/${{ steps.bootstrap_sif.outputs.SIF_FILE }} docker://${{ steps.dockerfile_pytorch_image.outputs.DOCKER_PYTORCH_IMAGE }}
 
   build_SIF_file_from_apptainerfile:
     needs: get-bootstrap-sif-and-paths
@@ -433,15 +429,15 @@ jobs:
         id: cached_apptainer_build
         # remove old sif file in repo directory.  Then copy from cached version if it exists and checksum passes.
         run: |
-            rm -f ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}  
-            sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}  || true
-            sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
+          rm -f ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}  
+          sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}  || true
+          sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
 
       - name: Check if built SIF file exists ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}
         id: check_if_built_SIF_exists
-        uses: andstor/file-existence-action@076e0072799f4942c8bc574a82233e1e4d13e9d6   # "version 3.0"
+        uses: andstor/file-existence-action@076e0072799f4942c8bc574a82233e1e4d13e9d6 # "version 3.0"
         env:
-          BUILT_SIF_FILE: ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}       
+          BUILT_SIF_FILE: ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}
         with:
           files: ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}
           ignore_case: true
@@ -452,17 +448,16 @@ jobs:
         id: apptainer_build_definition_file
         continue-on-error: true
         run: |
-            /bin/cp -sf ~/SIF_files/${{ needs.get-bootstrap-sif-and-paths.outputs.SIF_FILE }} .
-            apptainer build --nv --force ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }} apptainerfile.def
-                        
-            echo "done building ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }}, now copying to ~/built_SIF for caching"
-            mkdir -p ~/built_SIF
-            sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
-            /bin/cp -f ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
-
+          /bin/cp -sf ~/SIF_files/${{ needs.get-bootstrap-sif-and-paths.outputs.SIF_FILE }} .
+          apptainer build --nv --force ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }} apptainerfile.def
+                      
+          echo "done building ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }}, now copying to ~/built_SIF for caching"
+          mkdir -p ~/built_SIF
+          sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
+          /bin/cp -f ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
 
   build_SIF_file_from_dockerimage:
-    if: needs.build_SIF_file_from_apptainerfile.outputs.output1 == 'failure' 
+    if: needs.build_SIF_file_from_apptainerfile.outputs.output1 == 'failure'
     # if the apptainer build from the definition file failed, then we will try to build from the docker image.
     runs-on:
       group: Default
@@ -470,7 +465,13 @@ jobs:
       contents: write
       packages: write
       checks: write
-    needs: [docker-push, sif_path, build_SIF_file_from_apptainerfile, get-bootstrap-sif-and-paths]
+    needs:
+      [
+        docker-push,
+        sif_path,
+        build_SIF_file_from_apptainerfile,
+        get-bootstrap-sif-and-paths,
+      ]
     steps:
       - name: Cache folder ~/built_SIF
         # uses: dmilkie/local-cache@main
@@ -484,19 +485,19 @@ jobs:
       - name: Build "${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" from docker://${{ needs.docker-push.outputs.IMAGENAME }}
         id: apptainer_build_docker_image
         run: |
-            apptainer build --nv --force ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }} docker://${{ needs.docker-push.outputs.IMAGENAME }}
-                        
-            echo "done building ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }}, now copying to ~/built_SIF for caching"
-            mkdir -p ~/built_SIF
-            sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
-            /bin/cp -f ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
+          apptainer build --nv --force ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }} docker://${{ needs.docker-push.outputs.IMAGENAME }}
+                      
+          echo "done building ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }}, now copying to ~/built_SIF for caching"
+          mkdir -p ~/built_SIF
+          sha256sum requirements.txt Dockerfile apptainerfile.def >  ~/built_SIF/checksum
+          /bin/cp -f ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH }} ~/built_SIF/built.sif
 
       - name: Copy apptainer build if checksums pass
         id: cached_apptainer_build
         run: |
-            rm -f ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}
-            sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}  || true
-            sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
+          rm -f ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}
+          sha256sum --check ~/built_SIF/checksum  &&  /bin/cp -fs ~/built_SIF/built.sif ${{ needs.get-bootstrap-sif-and-paths.outputs.BUILT_SIF_PATH}}  || true
+          sha256sum --check ~/built_SIF/checksum  &&  echo "CHECKSUM=SUCESS" > "$GITHUB_OUTPUT" || echo "CHECKSUM=FAILED" > "$GITHUB_OUTPUT"
       # on error build from the apptainer.def file, we will build the SIF file from the docker image, if that doesn't work go to the (local) docker image.
 
       # - name: Login and Push Apptainer SIF to github
@@ -505,10 +506,14 @@ jobs:
       #       apptainer remote login --username ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }} oras://ghcr.io
       #       apptainer push -U ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif oras://ghcr.io/${{ github.repository }}:${{ github.head_ref || github.ref_name }}_${{ env.TORCH_VERSION }}_sif
 
-
   # if you rename "apptainer-test" to "test", you must also rename this in the branch protection rules. https://github.com/cell-observatory/cell_observatory_platform/settings/branch_protection_rules/60118126
   apptainer-test:
-    needs: [build_SIF_file_from_dockerimage, build_SIF_file_from_apptainerfile, sif_path]
+    needs:
+      [
+        build_SIF_file_from_dockerimage,
+        build_SIF_file_from_apptainerfile,
+        sif_path,
+      ]
     if: |
       always() && 
       (needs.build_SIF_file_from_dockerimage.result == 'skipped' || needs.build_SIF_file_from_dockerimage.result == 'success') &&
@@ -537,7 +542,7 @@ jobs:
       #   with:
       #     path: ${{ env.TESTMON_DATAFILE }}
       #     key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}-branchname
-          
+
       - name: List files in the repository
         run: |
           ls -lhXR ${{ github.workspace }}
@@ -564,20 +569,20 @@ jobs:
         run: |
           rm -f test_results/* || true
           echo "APPTAINER_RUN=apptainer exec --userns --no-home ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
-  
+
       - name: print environment variables
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
 
-      # - name: print testmon 
+      # - name: print testmon
       #   run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
 
-      - name: pip list 
+      - name: pip list
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip list
 
       # pip freeze gives the weird @ file://, while "pip list --format freeze" gives the correct format for a requirements.txt
-      - name: pip freeze 
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip list --format freeze 
-        
+      - name: pip freeze
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} pip list --format freeze
+
       - name: Test NVIDIA-SMI
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} nvidia-smi
 
@@ -591,7 +596,11 @@ jobs:
 
       - name: pytest /tests/data
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml tests/data
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 60
+          max_attempts: 2
+          command: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml tests/data
 
       - name: pytest /tests/models
         if: ${{ env.TESTING }}
@@ -600,20 +609,19 @@ jobs:
       - name: pytest /tests/training
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml tests/training
-      
+
       - name: pytest /tests/ops
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_ops.xml tests/ops
 
-      - name: print testmon2 
+      - name: print testmon2
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
-      
 
       - name: Publish Test Report
-        uses: mikepenz/action-junit-report@97744eca465b8df9e6e33271cb155003f85327f1  # "v5"
+        uses: mikepenz/action-junit-report@97744eca465b8df9e6e33271cb155003f85327f1 # "v5"
         if: success() || failure() # always run even if the previous step fails
         with:
-          report_paths: 'test_results/*.xml'
+          report_paths: "test_results/*.xml"
           detailed_summary: true
           include_passed: true
           group_suite: false
@@ -630,49 +638,45 @@ jobs:
     continue-on-error: true
     needs: [apptainer-test]
     steps:
-    
-    - name: List ~/SIF_files folder
-      continue-on-error: true
-      run: |
-        ls -alhXR SIF_files
+      - name: List ~/SIF_files folder
+        continue-on-error: true
+        run: |
+          ls -alhXR SIF_files
 
-    - name: List runner.tool_cache folder
-      continue-on-error: true
-      run: |
-        ls -alhXR ${{ runner.tool_cache }}
-      
-    # - name: List ~/.cache/TESTMON folder
-    #   continue-on-error: true
-    #   run: |
-    #     ls -alhXR ~/.cache/TESTMON
+      - name: List runner.tool_cache folder
+        continue-on-error: true
+        run: |
+          ls -alhXR ${{ runner.tool_cache }}
 
-    - name: List /home/mosaic/built_SIF folder
-      continue-on-error: true
-      run: |
-        ls -alhXR /home/mosaic/built_SIF
-    
+      # - name: List ~/.cache/TESTMON folder
+      #   continue-on-error: true
+      #   run: |
+      #     ls -alhXR ~/.cache/TESTMON
+      - name: List /home/mosaic/built_SIF folder
+        continue-on-error: true
+        run: |
+          ls -alhXR /home/mosaic/built_SIF
 
-      # - name: Surface failing tests
-      #   if: always()
-      #   uses: pmeier/pytest-results-action@main
-      #   with:
-      #     # A list of JUnit XML files, directories containing the former, and wildcard
-      #     # patterns to process.
-      #     # See @actions/glob for supported patterns.
-      #     path: test_results/*
-      
-      #     # (Optional) Add a summary of the results at the top of the report
-      #     summary: true
-      
-      #     # (Optional) Select which results should be included in the report.
-      #     # Follows the same syntax as `pytest -r`
-      #     #  Show extra test summary info as specified by chars: (f)ailed, (E)rror, (s)kipped, (x)failed, (X)passed, (p)assed, (P)assed with output, (a)ll except passed (p/P), or (A)ll.
-      #     #               (w)arnings are enabled by default (see --disable-warnings), 'N' can be used to reset the list. (default: 'fE').
-      #     display-options: fEX
-      
-      #     # (Optional) Fail the workflow if no JUnit XML was found.
-      #     fail-on-empty: true
-      
-      #     # (Optional) Title of the test results section in the workflow summary
-      #     title: Test results
-          
+        # - name: Surface failing tests
+        #   if: always()
+        #   uses: pmeier/pytest-results-action@main
+        #   with:
+        #     # A list of JUnit XML files, directories containing the former, and wildcard
+        #     # patterns to process.
+        #     # See @actions/glob for supported patterns.
+        #     path: test_results/*
+
+        #     # (Optional) Add a summary of the results at the top of the report
+        #     summary: true
+
+        #     # (Optional) Select which results should be included in the report.
+        #     # Follows the same syntax as `pytest -r`
+        #     #  Show extra test summary info as specified by chars: (f)ailed, (E)rror, (s)kipped, (x)failed, (X)passed, (p)assed, (P)assed with output, (a)ll except passed (p/P), or (A)ll.
+        #     #               (w)arnings are enabled by default (see --disable-warnings), 'N' can be used to reset the list. (default: 'fE').
+        #     display-options: fEX
+
+        #     # (Optional) Fail the workflow if no JUnit XML was found.
+        #     fail-on-empty: true
+
+        #     # (Optional) Title of the test results section in the workflow summary
+        #     title: Test results
