@@ -46,9 +46,9 @@ def test_attention_shapes(dim, num_heads, qk_norm, B, L):
 
 ROPE_CASES = [
     ("YXC", (1, 64, 64, 2), (16,)),  # lateral only
-    ("ZYXC", (1, 8, 64, 64, 2), (4, 16)),  # axial, lateral
+    ("ZYXC", (1, 32, 64, 64, 2), (16, 16)),  # axial, lateral
     ("TYXC", (1, 8, 64, 64, 2), (4, 16)),  # temporal, lateral
-    ("TZYXC", (1, 4, 16, 32, 32, 2), (2, 8, 16)),  # temporal, axial, lateral
+    ("TZYXC", (1, 4, 16, 32, 32, 2), (2, 16, 16)),  # temporal, axial, lateral
 ]
 
 
