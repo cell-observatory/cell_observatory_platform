@@ -11,9 +11,15 @@ from hydra.utils import get_method, instantiate
 
 from cell_observatory_platform.data.io import read_file
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
+from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.data.structures import convert_bbox_format
 from cell_observatory_platform.data.utils import create_na_masks, downsample, resize_mask
-from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding
+from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
+
+
+# --------------------------------------------------------------------------- #
+# Pretraining preprocessor
+# --------------------------------------------------------------------------- #
 
 
 class RayPreprocessor(torch.nn.Module):
@@ -33,6 +39,17 @@ class RayPreprocessor(torch.nn.Module):
             else:
                 # already an instantiated callable object
                 self.transforms.append(t)
+
+        # TODO: once we start supporting variable input shapes,
+        #       update this helper to use input_shape from data samples
+        #       and call calc_num_patches() from PatchEmbedding to get num_patches
+        self.masking_ratio = masking_ratio
+        self.seq_len = self._calculate_seq_len()
+
+    def _calculate_seq_len(self):
+        masking_ratio = self.masking_ratio if self.with_masking else 0.0
+        seq_len = int(self.num_patches * (1-masking_ratio))
+        return seq_len
 
     def forward(self, data_sample: dict, data_time: float) -> dict:
         """
@@ -60,6 +77,8 @@ class RayPreprocessor(torch.nn.Module):
 
         assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 
+        tokens_per_batch = inputs.shape[0] * self.seq_len
+
         if self.with_masking:
             masking_time = time.time()
             masks, context_masks, target_masks, original_patch_indices, channels_to_mask, patches_used = (
@@ -80,15 +99,26 @@ class RayPreprocessor(torch.nn.Module):
                     "data_time": data_time,
                     "masking_time": masking_time,
                     "transform_time": transform_time if self.transforms is not None else -1,
+                    "tokens_per_batch": tokens_per_batch,
                     **meta,
                 },
             }
         else:
-            return {"data_tensor": inputs, "metainfo": {}}
+            return {
+                "data_tensor": inputs, 
+                "metainfo": {
+                    "preprocess_time": time.time() - preprocess_time,
+                    "data_time": data_time,
+                    "masking_time": -1.0,
+                    "transform_time": transform_time if self.transforms is not None else -1,
+                    "tokens_per_batch": tokens_per_batch,
+                    **meta,
+                }
+            }
 
 
 # --------------------------------------------------------------------------- #
-# Base preprocessor
+# Base Finetune preprocessor
 # --------------------------------------------------------------------------- #
 
 
@@ -151,14 +181,30 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         else:
             self.rng.manual_seed(int(seed))
 
-        # patch embedding (used by multiple tasks)
         self.patch_shape = patch_shape
-        self.patch_embedding = PatchEmbedding(
+        self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
+            input_format=input_format,
+            patch_shape=patch_shape
+        )
+        self.num_patches, self.token_shape = calc_num_patches(
             input_fmt=self.input_format,
             input_shape=self.input_shape,
-            patch_shape=self.patch_shape,
-            embed_dim=1,  # dummy value; not used here
-            channels=self.channels,
+            patch_shape=patch_shape,
+        )
+        self.pixels_per_patch = PatchEmbedding.compute_num_pixels_per_patch(channels=self.channels,
+                                                             temporal_patch_size=self.temporal_patch_size,
+                                                             axial_patch_size=self.axial_patch_size,
+                                                             lateral_patch_size=self.lateral_patch_size,
+                                                             input_format=self.input_format
+                                                             )
+        self.pe_patchify = functools.partial(
+            PatchEmbedding.patchify,
+            temporal_patch_size=self.temporal_patch_size,
+            axial_patch_size=self.axial_patch_size,
+            lateral_patch_size=self.lateral_patch_size,
+            input_format=self.input_format,
+            num_patches=self.num_patches,
+            token_shape=self.token_shape,
         )
 
     def _common_pre(
@@ -207,6 +253,8 @@ class BaseFinetunePreprocessor(RayPreprocessor):
     ) -> dict:
         """Attach masking info and timing, returning the standard dict."""
 
+        tokens_per_batch = inputs.shape[0] * self.seq_len
+
         if self.with_masking:
             mt0 = time.time()
             B = inputs.shape[0]
@@ -250,6 +298,7 @@ class BaseFinetunePreprocessor(RayPreprocessor):
                     "data_time": data_time,
                     "masking_time": masking_time,
                     "transform_time": transform_time,
+                    "tokens_per_batch": tokens_per_batch,
                 },
             }
         else:
@@ -262,6 +311,7 @@ class BaseFinetunePreprocessor(RayPreprocessor):
                     "data_time": data_time,
                     "transform_time": transform_time,
                     "masking_time": -1.0,
+                    "tokens_per_batch": tokens_per_batch,
                 },
             }
 
@@ -289,7 +339,7 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
         inputs, transform_time = self._apply_transforms(inputs)
 
         # targets are per-channel patches from original (transformed) input
-        targets = self.patch_embedding.patchify(inputs)
+        targets = self.pe_patchify(inputs)
 
         # model input: average over channels -> [B, ..., 1]
         inputs = inputs.mean(dim=self.channel_idx, keepdim=True)
@@ -379,7 +429,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
 
         if self.mode in ("upsample_space", "upsample_spacetime"):
             # targets are HR patches
-            targets = self.patch_embedding.patchify(inputs)
+            targets = self.pe_patchify(inputs)
 
             # pick one NA mask and downsample
             idx = torch.randint(

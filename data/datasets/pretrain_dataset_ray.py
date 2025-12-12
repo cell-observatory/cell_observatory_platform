@@ -1,21 +1,27 @@
-import ctypes
-import logging
 import os
 import sys
+import ctypes
+import logging
 from multiprocessing import shared_memory
 from typing import Any, Callable, Dict, List, Literal, Optional
+
+import ujson
+from queue import Queue
+from threading import Thread
 
 import cupy as cp
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+from cupy.cuda import runtime as cudart
+
 import ray
 import tensorstore as ts
-import torch
-import ujson
-from cupy.cuda import runtime as cudart
-from hydra.utils import get_method, instantiate
+
 from omegaconf import DictConfig, OmegaConf
+from hydra.utils import get_method, instantiate
+
+import torch
 from torch.utils.data import random_split
 
 from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
@@ -32,10 +38,8 @@ from cell_observatory_platform.utils.context import (
     torch_gpu_to_numa,
 )
 from cell_observatory_platform.utils.profiling import pprof_class, pprof_func
-
-# TODO: fix circular imports
-# from cell_observatory_platform.data.structures import convert_bbox_format
-# from cell_observatory_platform.training.helpers import get_image_sizes, mask_ids_to_masks
+from cell_observatory_platform.data.structures import convert_bbox_format
+from cell_observatory_platform.training.helpers import get_image_sizes, mask_ids_to_masks
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -497,6 +501,8 @@ class CollatorActor:
         pin_numa_node: bool,
         pin_pages: bool,
         node_id: int,
+        callback_strategy: Literal["grpc", "queue"] = "grpc",
+        async_device_copy: bool = False,
         columns: List[str] = [
             # metadata columns to keep from the original dataframe
             "x_start",
@@ -584,6 +590,25 @@ class CollatorActor:
         )
 
         self.debug = debug
+        self.async_device_copy = async_device_copy
+        if callback_strategy not in ("grpc", "queue"):
+            raise ValueError(f"Unknown callback_strategy={callback_strategy}")
+        self.callback_strategy = callback_strategy
+
+        if self.callback_strategy == "queue":
+            self._pending_frees = Queue()
+            self._free_thread = Thread(target=self._free_worker, daemon=True)
+            self._free_thread.start()
+
+    def _free_worker(self):
+        torch.cuda.set_device(self.device)
+        while True:
+            event, host_buffer_idx = self._pending_frees.get()
+            event.synchronize()
+            try:
+                self.host_buffer_actor.put_free.remote(host_buffer_idx)
+            except Exception as e:
+                logger.exception(f"put_free failed for {host_buffer_idx}: {e}")
 
     def _get_device_index(self) -> int:
         gpu_ids = ray.get_gpu_ids()
@@ -628,25 +653,41 @@ class CollatorActor:
             with torch.cuda.stream(self.copy_stream):
                 self.copy_h2d(dst=dst_device, src=h_view)
 
-                def _release_buffer_on_done(stream, error_status, user_data):
-                    actor_reference = user_data["actor"]
-                    host_buffer_idx = user_data["host_buffer_idx"]
-                    # runs after all prior ops in stream
-                    try:
-                        actor_reference.put_free.remote(host_buffer_idx)
-                    except Exception as e:
-                        logger.exception(f"put_free failed for {host_buffer_idx}: {e}")
+                if self.async_device_copy:
 
-                with self.cp_stream:
-                    self.cp_stream.add_callback(
-                        _release_buffer_on_done,
-                        {"actor": self.host_buffer_actor, "host_buffer_idx": host_buffer_idx},
-                    )
+                    if self.callback_strategy == "grpc":
+                        def _release_buffer_on_done(stream, error_status, user_data):
+                            actor_reference = user_data["actor"]
+                            host_buffer_idx = user_data["host_buffer_idx"]
+                            # runs after all prior ops in stream
+                            try:
+                                actor_reference.put_free.remote(host_buffer_idx)
+                            except Exception as e:
+                                logger.exception(f"put_free failed for {host_buffer_idx}: {e}")
 
-            # tells caching allocator & scheduler on training stream
-            # that dst_device is owned by copy_stream
-            torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
-            dst_device.record_stream(self.copy_stream)
+                        with self.cp_stream:
+                            self.cp_stream.add_callback(
+                                _release_buffer_on_done,
+                                {"actor": self.host_buffer_actor, "host_buffer_idx": host_buffer_idx},
+                            )
+                    
+                    else:
+                        event = torch.cuda.Event(enable_timing=False)
+                        event.record(self.copy_stream)
+
+            if not self.async_device_copy:
+                # Force the copy to complete
+                torch.cuda.synchronize(self.device)
+                # Synchronously free host slot
+                ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+
+            else:
+                dst_device.record_stream(self.copy_stream)
+                # tells caching allocator & scheduler on training stream
+                # that dst_device is owned by copy_stream
+                torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
+                if self.callback_strategy == "queue":
+                    self._pending_frees.put((event, host_buffer_idx))
 
             metainfo = {
                 "host_buffer_idx": host_buffer_idx,
@@ -659,7 +700,8 @@ class CollatorActor:
             if self.debug:
                 # NOTE: for testing only, put_free(idx) otherwise called by hooks in
                 #       training loop, see training/hooks.py:FreeDeviceBufferHook
-                ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+                if self.async_device_copy:
+                    ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
                 self.device_buffer.put_free(device_buffer_idx)
 
             return {"data_tensor": dst_device, "metainfo": metainfo}
@@ -795,8 +837,6 @@ class LoaderActor:
             for i in range(self.batch_size):
                 p = os.path.join(
                     batch["server_folder"][i],
-                    # TODO: remove these replacements once new database is ready
-                    # batch["output_folder"][i].replace("2025/7/4", "2025/10/1"),
                     batch["output_folder"][i],
                     batch["tile_name"][i],
                 )
@@ -805,7 +845,6 @@ class LoaderActor:
                     "time_size": batch["time_size"][i],
                     "z_start": batch["z_start"][i],
                     "y_start": batch["y_start"][i],
-                    # "y_start": 0,
                     "x_start": batch["x_start"][i],
                     "z_size": batch["z_size"][i],
                     "y_size": batch["y_size"][i],
@@ -879,6 +918,7 @@ def set_data_context(cfg: DictConfig):
     ctx.use_arrow_tensor_v2 = cfg.datasets.use_arrow_tensor_v2
     ctx.execution_options.locality_with_output = cfg.datasets.locality_with_output
     ctx._enable_actor_pool_on_exit_hook = True
+    ctx.execution_options.preserve_order = cfg.datasets.preserve_order
 
 
 def get_context_spec(cfg: DictConfig) -> Dict[str, Any]:
@@ -960,6 +1000,8 @@ def get_dataset_ray(
         "prepared_id",
         "mask_bbox_dict",
     ],
+    dp_degree: Optional[int] = None,
+    dp_rank: Optional[int] = None,
 ):
     if cfg.datasets.channels_subset is not None:
         # NOTE: this always works because dataset_layout_order is 1-1 matched
@@ -978,7 +1020,20 @@ def get_dataset_ray(
     if indices is not None:
         base_df = base_df.iloc[indices]
 
-    ws, rk = get_world_size(), process_rank()
+    # sort dataframe for consistent sharding across TP/CP/PP ranks
+    base_df = base_df.sort_values(
+        ["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_start"]
+    ).reset_index(drop=True)
+    
+    # TODO: consider checking dataframe consistency before sharding
+    # local_db_hash = df_signature_polars(base_df)
+    # assert_same_db_hash_across_ranks(local_db_hash)
+
+    if dp_degree is not None and dp_rank is not None:
+        ws, rk = dp_degree, dp_rank
+    else:
+        ws, rk = get_world_size(), process_rank()
+
     if cfg.job_type == "predict":
         per_rank_indices = partition_indices_for_inference(
             df=base_df,
@@ -1003,6 +1058,8 @@ def get_dataset_ray(
         table = pa.table(base_df)
         dataset = ray.data.from_arrow(table)
         dataset = dataset.split(n=ws, equal=True)[rk]
+
+        ray.logger.info(f"Rank {rk} assigned dataframe: {dataset.to_pandas().head()}")
 
         if cfg.datasets.drop_last_policy:
             B = cfg.clusters.batch_size_per_gpu
@@ -1052,6 +1109,8 @@ def get_dataloader_ray(
     collate_fn: Optional[Callable],
     drop_last: bool = True,
     database: Optional[Any] = None,
+    dp_degree: Optional[int] = None,
+    dp_rank: Optional[int] = None,
 ):
     if database is None:
         db = instantiate(cfg.datasets.databases)
@@ -1062,16 +1121,23 @@ def get_dataloader_ray(
     dataset_len = len(db.hypercubes_dataframe)
 
     if cfg.datasets.split is not None and 0.0 < float(cfg.datasets.split) < 1.0:
-        set_global_seed(cfg.get("seed", 42))
+        seed = cfg.get("seed", 42)
+        g = torch.Generator()
+        g.manual_seed(int(seed))
+        
         val_size = round(dataset_len * cfg.datasets.split)
-        train_subset, val_subset = random_split(range(dataset_len), lengths=[dataset_len - val_size, val_size])
+        train_subset, val_subset = random_split(range(dataset_len), 
+                                                lengths=[dataset_len - val_size, val_size], 
+                                                generator=g)
         train_indices, val_indices = train_subset.indices, val_subset.indices
 
         train_dataset, train_dataset_len = get_dataset_ray(
-            cfg, indices=train_indices, database=db, columns=list(cfg.datasets.columns)
+            cfg, indices=train_indices, database=db, columns=list(cfg.datasets.columns),
+            dp_degree=dp_degree, dp_rank=dp_rank
         )
         val_dataset, val_dataset_len = get_dataset_ray(
-            cfg, indices=val_indices, database=db, columns=list(cfg.datasets.columns)
+            cfg, indices=val_indices, database=db, columns=list(cfg.datasets.columns),
+            dp_degree=dp_degree, dp_rank=dp_rank
         )
 
         record_dataset_len(cfg, train_dataset_len, val_dataset_len)
@@ -1086,7 +1152,8 @@ def get_dataloader_ray(
 
     else:
         train_dataset, train_dataset_len = get_dataset_ray(
-            cfg, indices=None, database=db, columns=list(cfg.datasets.columns)
+            cfg, indices=None, database=db, columns=list(cfg.datasets.columns),
+            dp_degree=dp_degree, dp_rank=dp_rank
         )
         record_dataset_len(cfg, train_dataset_len, 0)
 

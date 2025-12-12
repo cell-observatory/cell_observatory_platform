@@ -211,6 +211,14 @@ class MaskedEncoder(nn.Module):
         self.out_layers = out_layers
 
     @torch.jit.ignore
+    def get_num_heads(self):
+        return self.encoder.get_num_heads()
+
+    @torch.jit.ignore
+    def get_head_dims(self):
+        return self.encoder.get_head_dims()
+
+    @torch.jit.ignore
     def get_num_layers(self):
         return self.encoder.get_num_layers()
 

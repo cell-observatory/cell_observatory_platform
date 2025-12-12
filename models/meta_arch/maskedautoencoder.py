@@ -1,21 +1,23 @@
+import sys
 import inspect
 import logging
-import sys
 from typing import Any, Dict, Literal, Mapping, Tuple, Union
 
 import torch
 import torch.nn as nn
 
+from cell_observatory_platform.models.layers.mlp import get_mlp
+from cell_observatory_platform.models.layers.norm import get_norm
+
+from cell_observatory_platform.training.losses import get_loss_fn
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
+from cell_observatory_platform.training.helpers import init_weights
+from cell_observatory_platform.models.layers.attention import RopeAttention
+from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.data.masking.mask_generator import apply_masks
 from cell_observatory_platform.models.backbones.maskedencoder import MaskedEncoder
 from cell_observatory_platform.models.heads.maskedpredictor import MaskedPredictor
-from cell_observatory_platform.models.layers.activation import get_activation
-from cell_observatory_platform.models.layers.mlp import get_mlp
-from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
-from cell_observatory_platform.training.helpers import init_weights
-from cell_observatory_platform.training.losses import get_loss_fn
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -263,10 +265,49 @@ class MaskedAutoEncoder(nn.Module):
         )
 
         self.weight_init_type = weight_init_type
-        init_weights(self, weight_init_type=weight_init_type)
 
         self.loss_fn = get_loss_fn(loss_fn)
         self.with_auxiliary_loss = with_auxiliary_loss
+
+    def init_model_weights(self, buffer_device: str | None = None):
+        # TODO: move model inits back into each model class
+        init_weights(self, weight_init_type=self.weight_init_type)
+        for mod in self.modules():
+            if isinstance(mod, RopeAttention):
+                mod.init_rope_parameters(device=buffer_device)
+
+    @torch.jit.ignore
+    def _get_nparams_and_flops(self, 
+                              batch_size: int, 
+                              device: Literal["cuda", "meta"] = "cuda",
+                              masking_ratio: float = 0.0
+    ):
+        if device == "cuda":
+            # TODO: test this path more thoroughly
+            with torch.cuda.device(device):
+                input_shape = (batch_size, *self.input_shape)
+                data_sample = get_masked_input_data(
+                    self,
+                    inputs=input_shape,
+                    device="cuda",
+                    mask_ratio=masking_ratio,
+                )
+                seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
+                model_summary = get_nparams_and_flops(self, data_sample, seq_len)
+                model_param_count, num_flops_per_token = (
+                    model_summary["total_params"], model_summary["training_flops"]
+                )
+        elif device == "meta":
+            print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
+            return -1, -1
+        else:
+            # TODO: add support for meta device calculation for other backends
+            raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
+        return model_param_count, num_flops_per_token
+
+    @torch.jit.ignore
+    def get_patch_embedding(self):
+        return self.masked_encoder.patch_embedding
 
     @torch.jit.ignore
     def get_encoder(self):
@@ -332,7 +373,7 @@ class MaskedAutoEncoder(nn.Module):
             x, original_patch_indices=original_patch_indices, target_masks=target_masks, patches_used=patches_used
         )
 
-        predictions = self.masked_encoder.patch_embedding.unpatchify(x, out_channels=None)
+        predictions = self.masked_encoder.patch_embedding._unpatchify(x, out_channels=None)
         return predictions
 
 

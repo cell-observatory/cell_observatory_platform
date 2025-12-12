@@ -201,7 +201,11 @@ class PosEmbedding(nn.Module):
         )
 
         num_patches_pos_embed = self.num_patches + 1 if self.cls_token else self.num_patches
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches_pos_embed, self.embed_dim), requires_grad=False)
+        self.register_buffer(
+            "pos_embed",
+            torch.zeros(1, num_patches_pos_embed, self.embed_dim),
+            persistent=True
+        )
         self._init_pos_embed(self.pos_embed.data)
 
     def _init_pos_embed(self, pos_embed):
@@ -545,6 +549,9 @@ class PositionalEmbeddingSinCos(nn.Module):
             raise ValueError(f"Unsupported input tensor shape: {x.shape}. Expected 3D or 5D tensor.")
 
 
+# --- --- ROPE helpers --- ---
+
+
 # based on: https://github.com/naver-ai/rope-vit and extended to 3D and 4D
 def generate_frequency_spectrum(dim: int, 
                                 num_heads: int, 
@@ -683,7 +690,6 @@ def generate_grid_indices(
 
 
 def compute_mixed_cis(freqs: torch.Tensor,
-                      num_heads: int,
                       t_x: torch.Tensor,
                       t_y: torch.Tensor,
                       t_z: Optional[torch.Tensor] = None,
@@ -735,13 +741,10 @@ def compute_mixed_cis(freqs: torch.Tensor,
             ones = torch.ones_like(phases)
             freqs_cis = torch.polar(ones, phases)
             
-        if freqs_cis.dim() == 3:
-            return freqs_cis
-        else:
-            return freqs_cis
+        return freqs_cis
 
-def compute_axial_cis(dim: int, 
-                      end_x: int, 
+def compute_axial_cis(dim: int,
+                      end_x: int,
                       end_y: int,
                       end_z: int, 
                       end_t: int,

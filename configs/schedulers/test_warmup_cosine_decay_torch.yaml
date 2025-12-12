@@ -1,0 +1,10 @@
+decay_type: cosine
+
+warmup_steps: 0
+min_lr_factor: 0.0
+decay_ratio: 1.0
+
+wd_scheduler:
+  enabled: true
+  final_wd: 0.0
+  ref_wd: ${optimizers.wd}

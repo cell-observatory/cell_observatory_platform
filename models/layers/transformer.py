@@ -38,7 +38,6 @@ class Transformer(nn.Module):
         dtype: torch.dtype = torch.bfloat16,
     ) -> None:
         super().__init__()
-        self.norm1 = norm_layer(dim)
 
         if rope_pos_enc:
             self.att = RopeAttention(
@@ -69,8 +68,8 @@ class Transformer(nn.Module):
                 norm_layer=norm_layer,
             )
 
+        self.norm1 = norm_layer(dim)
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-
         self.norm2 = norm_layer(dim)
 
         # from:

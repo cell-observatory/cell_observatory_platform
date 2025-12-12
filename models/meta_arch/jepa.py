@@ -261,7 +261,6 @@ class JEPA(nn.Module):
         )
 
         self.weight_init_type = weight_init_type
-        init_weights(self, weight_init_type=weight_init_type)
 
         # NOTE: do deepcopy after weight init
         self.target_encoder = deepcopy(self.input_encoder)
@@ -282,6 +281,46 @@ class JEPA(nn.Module):
                 with GatheredParameters(fetch, enabled=len(fetch) > 0):
                     # input_encoder*B + (target_encoder - input_encoder)*(1-B) = target_encoder*B + input_encoder*(1-B)
                     tparam.data.copy_(torch.lerp(iparam.data, tparam.data, beta))
+
+    def init_model_weights(self, buffer_device: str | None = None):
+        # TODO: move model inits back into each model class
+        init_weights(self, weight_init_type=self.weight_init_type)
+        for mod in self.modules():
+            if isinstance(mod, RopeAttention):
+                mod.init_rope_parameters(device=buffer_device)
+
+    @torch.jit.ignore
+    def _get_nparams_and_flops(self, 
+                              batch_size: int, 
+                              device: Literal["cuda", "meta"] = "cuda",
+                              masking_ratio: float = 0.0
+    ):
+        if device == "cuda":
+            # TODO: test this path more thoroughly
+            with torch.cuda.device(device):
+                input_shape = (batch_size, *self.input_shape)
+                data_sample = get_masked_input_data(
+                    self,
+                    inputs=input_shape,
+                    device="cuda",
+                    mask_ratio=masking_ratio,
+                )                
+                seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
+                model_summary = get_nparams_and_flops(self, data_sample, seq_len)
+                model_param_count, num_flops_per_token = (
+                    model_summary["total_params"], model_summary["training_flops"]
+                )
+        elif device == "meta":
+            print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
+            return -1, -1
+        else:
+            # TODO: add support for meta device calculation for other backends
+            raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
+        return model_param_count, num_flops_per_token
+
+    @torch.jit.ignore
+    def get_patch_embedding(self):
+        return self.input_encoder.patch_embedding
 
     @torch.jit.ignore
     def get_input_encoder(self):

@@ -44,8 +44,8 @@ class ParentDatabase:
         occupancy_threshold_filter_type: str = "min_all",
         base_cube_size: Optional[int] = 128,
         valid_z_sizes: Optional[Sequence[int]] = [128],
-        valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384],
-        valid_x_sizes: Optional[Sequence[int]] = [128, 256, 384, 512, 640, 896, 1024],
+        valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384, 512],
+        valid_x_sizes: Optional[Sequence[int]] = [128, 256, 384, 512, 640, 896, 1024, 2048],
         synthetic_only: bool = False,
         has_annotations: bool = False,
         with_hypercubes_dataframe: bool = True,
@@ -265,9 +265,21 @@ class ParentDatabase:
             shape_df=self.rois_dataframe,
             layout=self.dataset_layout_order,
         )
-        self.hypercubes_dataframe = self.hypercubes_dataframe.head(self.max_hypercubes)
-        print(f"Final length of hypercubes dataframe: {len(self.hypercubes_dataframe)}")
 
+        # NOTE: important to maintain order before downstream processing/splitting
+        self.hypercubes_dataframe = (
+            self.hypercubes_dataframe
+            .sort_values(
+                ["prepared_id", "tile_name",
+                "z_start", "y_start", "x_start", "time_start"]
+            )
+            .reset_index(drop=True)
+        )
+
+        if self.max_hypercubes is not None:
+            self.hypercubes_dataframe = self.hypercubes_dataframe.head(self.max_hypercubes)
+        
+        print(f"Final length of hypercubes dataframe: {len(self.hypercubes_dataframe)}")
         return self.hypercubes_dataframe
 
     def _fetch_tiles_dataframe(self) -> pd.DataFrame:
@@ -395,16 +407,6 @@ class ParentDatabase:
         table["y_size"] = table["tile_y_end"] - table["tile_y_start"]
         table["x_size"] = table["tile_x_end"] - table["tile_x_start"]
 
-        # HOTFIX: synthetic tiles have incorrect tile_*_end bounds in the DB.
-        # For synthetic data, the true tile size should be
-        #   tile_*_end - tile_*_start + base_cube_size (e.g. +128).
-        # --- --- --- ---
-        # if synthetic_only or self.synthetic_only:
-        #     table["z_size"] = table["z_size"] + self.base_cube_size
-        #     table["y_size"] = table["y_size"] + self.base_cube_size
-        #     table["x_size"] = table["x_size"] + self.base_cube_size
-        # --- --- --- ---
-
         table["time_size"] = table["tile_time_size"]
         table["channel_size"] = table["tile_channel_size"]
 
@@ -471,17 +473,6 @@ class ParentDatabase:
                     "channel_size": "tile_channel_size",
                 }
             )
-
-            # HOTFIX: synthetic ROIs have incorrect tile_*_end bounds in the DB.
-            # For synthetic data, the true tile size should be
-            #   tile_*_end - tile_*_start + base_cube_size (e.g. +128).
-            # --- --- --- ---
-            if "is_synthetic" in rois_df.columns:
-                mask = rois_df["is_synthetic"] == True
-                rois_df.loc[mask, "tile_z_end"] = rois_df.loc[mask, "tile_z_end"] + self.base_cube_size
-                rois_df.loc[mask, "tile_y_end"] = rois_df.loc[mask, "tile_y_end"] + self.base_cube_size
-                rois_df.loc[mask, "tile_x_end"] = rois_df.loc[mask, "tile_x_end"] + self.base_cube_size
-            # --- --- --- ---
 
             rois_df.to_csv(roi_csv, index=True, header=True)
             print(f"Saved roi dataframe to {roi_csv}")
@@ -1491,6 +1482,7 @@ class ParentDatabase:
                 .alias(colname)
             )
 
+        out = out.sort(group_cols)
         pdf = out.to_pandas()
 
         # FIXME: we should generalize this to multiple channels

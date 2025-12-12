@@ -1,9 +1,10 @@
-import logging
-import math
 import sys
-from functools import partial
-from typing import Optional
+import math
+import logging
+
 import warnings
+from typing import Optional
+from functools import partial
 
 import torch
 import torch.nn as nn
@@ -48,17 +49,25 @@ class Attention(nn.Module):
         self.head_dim = dim // num_heads
         self.scale = self.head_dim**-0.5
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.wq = nn.Linear(dim, dim, bias=qkv_bias)
+        self.wk = nn.Linear(dim, dim, bias=qkv_bias)
+        self.wv = nn.Linear(dim, dim, bias=qkv_bias)
+
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        
         self.att_drop = nn.Dropout(att_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x, masks=None, return_attention=False):
-        B, L, C = x.shape
-        qkv = self.qkv(x).reshape(B, L, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
+        # NOTE: Use -1 instead of `n_heads` to infer the actual
+        #       local heads from sizes of xq, xk, and xv as TP 
+        #       may have sharded them after the above linear ops.
+        q = self.wq(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+        k = self.wk(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+        v = self.wv(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+
         q = self.q_norm(q)
         k = self.k_norm(k)
 
@@ -112,15 +121,8 @@ class RopeAttention(nn.Module):
         super().__init__()
 
         self.dim = dim
+        self.dtype = dtype
         self.device = device
-
-        temporal_patch_size, axial_patch_size, lateral_patch_size = get_patch_sizes(
-            input_format=input_fmt, patch_shape=patch_shape
-        )
-
-        temporal_patch_size, axial_patch_size, lateral_patch_size = get_patch_sizes(
-            input_format=input_fmt, patch_shape=patch_shape
-        )
 
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
 
@@ -131,43 +133,91 @@ class RopeAttention(nn.Module):
         self.head_dim = dim // num_heads
         self.scale = self.head_dim**-0.5
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.input_fmt = input_fmt
+        self.input_shape = input_shape
+        self.patch_shape = patch_shape
+        
+        self.wq = nn.Linear(dim, dim, bias=qkv_bias)
+        self.wk = nn.Linear(dim, dim, bias=qkv_bias)
+        self.wv = nn.Linear(dim, dim, bias=qkv_bias)
+
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        
         self.att_drop = nn.Dropout(att_drop)
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
 
-        # RoPE parameters
-        self.input_fmt = input_fmt
         self.rope_mixed = rope_mixed
         self.rope_theta = rope_theta
         self.random_rotation_per_head = random_rotation_per_head
 
+        self._rope_inited = False
+        # placeholders; real init will happen later
         if self.rope_mixed:
-            self.compute_cis = partial(compute_mixed_cis, num_heads=self.num_heads, input_fmt=input_fmt)
+            freq_shape = self._get_freqs_shape()
+            freqs_meta = torch.empty(freq_shape, dtype=dtype)
+            self.freqs = nn.Parameter(freqs_meta, requires_grad=True)
+            self.grid_indices = (None, None, None, None)
+        else:
+            self.register_buffer("freqs_cis", None, persistent=True)
+            self.grid_indices = (None, None, None, None)
+
+    def _get_freqs_shape(self):
+        dim_per_head = self.dim // self.num_heads
+        if self.input_fmt == "YXC":
+            return torch.Size([2, self.num_heads, dim_per_head // 2])
+        elif self.input_fmt == "TYXC" or self.input_fmt == "ZYXC":
+            return torch.Size([3, self.num_heads, dim_per_head // 2])
+        elif self.input_fmt == "TZYXC":
+            return torch.Size([4, self.num_heads, dim_per_head // 2])
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+
+    def init_rope_parameters(self, 
+                             device: torch.device, 
+                             dtype: Optional[torch.dtype] = None
+    ):
+        if self._rope_inited:
+            return
+
+        if dtype is None:
+            dtype = self.dtype
+
+        temporal_patch_size, axial_patch_size, lateral_patch_size = get_patch_sizes(
+            input_format=self.input_fmt, patch_shape=self.patch_shape
+        )
+
+        if self.rope_mixed:
+            self.compute_cis = partial(compute_mixed_cis, input_fmt=self.input_fmt)
 
             # learnable frequency spectrum but initialized with
             # standard fixed RoPE frequencies
             freqs = generate_frequency_spectrum(
                 dim=self.dim // self.num_heads,
                 num_heads=self.num_heads,
-                theta=rope_theta,
+                theta=self.rope_theta,
                 random_rotation_per_head=self.random_rotation_per_head,
-                input_fmt=input_fmt,
+                input_fmt=self.input_fmt,
                 dtype=dtype,
+                device=device,
             )
 
-            self.freqs = nn.Parameter(freqs, requires_grad=True)
+            assert freqs.shape == self.freqs.shape, (
+                f"freqs shape mismatch: param={self.freqs.shape}, "
+                f"generated={freqs.shape}"
+            )
 
-            end_x = input_shape[input_fmt.index("X")] // lateral_patch_size
-            end_y = input_shape[input_fmt.index("Y")] // lateral_patch_size
-            end_x = input_shape[input_fmt.index("X")] // lateral_patch_size
-            end_y = input_shape[input_fmt.index("Y")] // lateral_patch_size
+            with torch.no_grad():
+                self.freqs.data.copy_(freqs)
+
+            end_x = self.input_shape[self.input_fmt.index("X")] // lateral_patch_size
+            end_y = self.input_shape[self.input_fmt.index("Y")] // lateral_patch_size
 
             if self.input_fmt == "YXC":
                 _, _, t_y, t_x = generate_grid_indices(
-                    end_x=end_x, end_y=end_y, input_fmt=input_fmt, device=self.device, dtype=dtype
+                    end_x=end_x, end_y=end_y, input_fmt=self.input_fmt, 
+                    device=device, dtype=dtype
                 )
                 self.register_buffer("freqs_t_x", t_x)
                 self.register_buffer("freqs_t_y", t_y)
@@ -175,10 +225,10 @@ class RopeAttention(nn.Module):
                 self.grid_indices = (None, None, t_y, t_x)
 
             elif self.input_fmt == "ZYXC":
-                end_z = input_shape[input_fmt.index("Z")] // axial_patch_size
-                end_z = input_shape[input_fmt.index("Z")] // axial_patch_size
+                end_z = self.input_shape[self.input_fmt.index("Z")] // axial_patch_size
                 _, t_z, t_y, t_x = generate_grid_indices(
-                    end_x=end_x, end_y=end_y, end_z=end_z, input_fmt=input_fmt, device=self.device, dtype=dtype
+                    end_x=end_x, end_y=end_y, end_z=end_z, input_fmt=self.input_fmt, 
+                    device=device, dtype=dtype
                 )
                 self.register_buffer("freqs_t_x", t_x)
                 self.register_buffer("freqs_t_y", t_y)
@@ -187,10 +237,10 @@ class RopeAttention(nn.Module):
                 self.grid_indices = (None, t_z, t_y, t_x)
 
             elif self.input_fmt == "TYXC":
-                end_t = input_shape[input_fmt.index("T")] // temporal_patch_size
-                end_t = input_shape[input_fmt.index("T")] // temporal_patch_size
+                end_t = self.input_shape[self.input_fmt.index("T")] // temporal_patch_size
                 t_t, _, t_y, t_x = generate_grid_indices(
-                    end_x=end_x, end_y=end_y, end_t=end_t, input_fmt=input_fmt, device=self.device, dtype=dtype
+                    end_x=end_x, end_y=end_y, end_t=end_t, input_fmt=self.input_fmt, 
+                    device=device, dtype=dtype
                 )
                 self.register_buffer("freqs_t_x", t_x)
                 self.register_buffer("freqs_t_y", t_y)
@@ -199,17 +249,15 @@ class RopeAttention(nn.Module):
                 self.grid_indices = (t_t, None, t_y, t_x)
 
             elif self.input_fmt == "TZYXC":
-                end_z = input_shape[input_fmt.index("Z")] // axial_patch_size
-                end_t = input_shape[input_fmt.index("T")] // temporal_patch_size
-                end_z = input_shape[input_fmt.index("Z")] // axial_patch_size
-                end_t = input_shape[input_fmt.index("T")] // temporal_patch_size
+                end_z = self.input_shape[self.input_fmt.index("Z")] // axial_patch_size
+                end_t = self.input_shape[self.input_fmt.index("T")] // temporal_patch_size
                 t_t, t_z, t_y, t_x = generate_grid_indices(
                     end_x=end_x,
                     end_y=end_y,
                     end_z=end_z,
                     end_t=end_t,
-                    input_fmt=input_fmt,
-                    device=self.device,
+                    input_fmt=self.input_fmt,
+                    device=device,
                     dtype=dtype,
                 )
                 self.register_buffer("freqs_t_x", t_x)
@@ -220,41 +268,52 @@ class RopeAttention(nn.Module):
                 self.grid_indices = (t_t, t_z, t_y, t_x)
 
             else:
-                raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
+                raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
 
         else:
-            end_x = input_shape[input_fmt.index("X")] // lateral_patch_size
-            end_y = input_shape[input_fmt.index("Y")] // lateral_patch_size
-            end_x = input_shape[input_fmt.index("X")] // lateral_patch_size
-            end_y = input_shape[input_fmt.index("Y")] // lateral_patch_size
+            end_x = self.input_shape[self.input_fmt.index("X")] // lateral_patch_size
+            end_y = self.input_shape[self.input_fmt.index("Y")] // lateral_patch_size
+            end_x = self.input_shape[self.input_fmt.index("X")] // lateral_patch_size
+            end_y = self.input_shape[self.input_fmt.index("Y")] // lateral_patch_size
 
-            if "Z" in input_fmt:
-                end_z = input_shape[input_fmt.index("Z")] // axial_patch_size
-                end_z = input_shape[input_fmt.index("Z")] // axial_patch_size
+            if "Z" in self.input_fmt:
+                end_z = self.input_shape[self.input_fmt.index("Z")] // axial_patch_size
+                end_z = self.input_shape[self.input_fmt.index("Z")] // axial_patch_size
             else:
                 end_z = None
 
-            if "T" in input_fmt:
-                end_t = input_shape[input_fmt.index("T")] // temporal_patch_size
-                end_t = input_shape[input_fmt.index("T")] // temporal_patch_size
+            if "T" in self.input_fmt:
+                end_t = self.input_shape[self.input_fmt.index("T")] // temporal_patch_size
+                end_t = self.input_shape[self.input_fmt.index("T")] // temporal_patch_size
             else:
                 end_t = None
 
-            self.freqs_cis = compute_axial_cis(
-                theta=rope_theta,
+            freqs_cis = compute_axial_cis(
+                theta=self.rope_theta,
                 dim=self.dim // self.num_heads,
                 end_x=end_x,
                 end_y=end_y,
                 end_z=end_z,
                 end_t=end_t,
-                input_fmt=input_fmt,
-                device=self.device,
+                input_fmt=self.input_fmt,
+                device=device,
             )
+            self.register_buffer("freqs_cis", freqs_cis)
+        
+        self._rope_inited = True
 
     def forward(self, x, masks=None, return_attention=False):
+        if not self._rope_inited:
+            raise RuntimeError("RopeAttention.init_rope_parameters() must be called before forward.")
+
         B, L, C = x.shape
-        qkv = self.qkv(x).reshape(B, L, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
+        # NOTE: Use -1 instead of `n_heads` to infer the actual
+        #       local heads from sizes of xq, xk, and xv as TP 
+        #       may have sharded them after the above linear ops.
+        q = self.wq(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+        k = self.wk(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+        v = self.wv(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+
         q = self.q_norm(q)
         k = self.k_norm(k)
 
@@ -280,9 +339,9 @@ class RopeAttention(nn.Module):
         else:
             # axial RoPE does not use learnable frequencies
             if masks is not None:
-                freqs_cis = apply_masks_rope(self.freqs_cis.to(x.dtype), masks, type="axial")
+                freqs_cis = apply_masks_rope(self.freqs_cis, masks, type="axial")
             else:
-                freqs_cis = self.freqs_cis.to(x.dtype)
+                freqs_cis = self.freqs_cis
 
         q_rope, k_rope = apply_rotary_emb(q, k, freqs_cis=freqs_cis)
 
@@ -311,7 +370,6 @@ class RopeAttention(nn.Module):
             x = self.proj(x)
             x = self.proj_drop(x)
             return x
-
 
 
 class CrossAttention(nn.Module):

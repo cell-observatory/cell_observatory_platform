@@ -130,6 +130,42 @@ class PlainDETR(nn.Module):
         self.num_queries_one2one = num_queries_one2one
         self.num_queries_one2many = num_queries_one2many
 
+    def init_model_weights(self, buffer_device: str | None = None):
+        # TODO: move model inits back into each model class
+        # FIXME: add proper weight init logic for PlainDETR
+        # init_weights(self, weight_init_type=self.weight_init_type)
+        for mod in self.modules():
+            if isinstance(mod, RopeAttention):
+                mod.init_rope_parameters(device=buffer_device)
+
+    @torch.jit.ignore
+    def _get_nparams_and_flops(self, 
+                              batch_size: int, 
+                              device: Literal["cuda", "meta"] = "cuda",
+                              masking_ratio: float = 0.0
+    ):
+        if device == "cuda":
+            # TODO: test this path more thoroughly
+            with torch.cuda.device(device):
+                input_shape = (batch_size, *self.input_shape)
+                data_sample = get_input_data(
+                    inputs=input_shape,
+                    device="cuda",
+                )
+                seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
+                model_summary = get_nparams_and_flops(self, data_sample, seq_len)
+                model_param_count, num_flops_per_token = (
+                    model_summary["total_params"], model_summary["training_flops"]
+                )
+        elif device == "meta":
+            print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
+            return -1, -1
+        else:
+            # TODO: add support for meta device calculation for other backends
+            raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
+                    
+        return model_param_count, num_flops_per_token
+
     def _forward(self, samples):
         """The forward expects a List, which consists of:
            - data_sample: batched images, of shape [batch_size x C x D x H x W]
@@ -490,30 +526,6 @@ class PlainDETRReParam(PlainDETR):
 def BUILD(cfg: Mapping[str, Any]) -> PlainDETR:
     """
     Factory for PlainDETR / PlainDETRReParam.
-
-    Expects a cfg shaped like your mae_large.yaml, i.e.:
-
-      BUILD: cell_observatory_platform.models.meta_arch.plainDETR.BUILD
-
-      backbone_wrapper_args: {..., BUILD: "path.to.backbone_wrapper.BUILD"}
-      adapter_args:          {..., BUILD: "path.to.adapter.BUILD"}   (optional if wrapper handles it)
-      transformer_args:      {..., BUILD: "path.to.transformer.BUILD"}
-      criterion_args:        {..., BUILD: "path.to.loss_builder"}
-
-      # plus PlainDETR scalar args at top level
-      backbone_embed_dim: int
-      num_classes: int
-      num_feature_levels: int
-      aux_loss: bool
-      with_box_refine: bool
-      two_stage: bool
-      num_queries_one2one: int
-      num_queries_one2many: int
-      mixed_selection: bool
-      k_one2many: int
-      lambda_one2many: float
-      reparam: bool
-      normalize_pos_encodings: bool
     """
 
     model_cfg = cfg.models.meta_arch.plainDETR
