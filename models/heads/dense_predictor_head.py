@@ -236,7 +236,13 @@ class DPTHead(nn.Module):
             input_shape=self.input_shape,
             patch_shape=patch_shape,
         )
-
+        pixels_per_patch = PatchEmbedding.compute_num_pixels_per_patch(
+            channels=self.output_channels,
+            temporal_patch_size=self.temporal_patch_size,
+            axial_patch_size=self.axial_patch_size,
+            lateral_patch_size=self.lateral_patch_size,
+            input_format=self.input_format,
+        )
         self.pe_patchify = functools.partial(
             PatchEmbedding.patchify,
             temporal_patch_size=self.temporal_patch_size,
@@ -244,6 +250,7 @@ class DPTHead(nn.Module):
             lateral_patch_size=self.lateral_patch_size,
             input_format=self.input_format,
             num_patches=self.num_patches,
+            pixels_per_patch=pixels_per_patch,
             token_shape=self.token_shape,
         )
 
@@ -443,11 +450,7 @@ class DPTHead(nn.Module):
             raise NotImplementedError("Only Dim=3 with axial strategy is supported.")
 
         out = self.pe_patchify(
-            out,
-            input_format=self.input_format,
-            axial_patch_size=self.axial_patch_size,
-            lateral_patch_size=self.lateral_patch_size,
-            temporal_patch_size=self.temporal_patch_size,
+            inputs=out,
             channels=self.output_channels,
         )
 

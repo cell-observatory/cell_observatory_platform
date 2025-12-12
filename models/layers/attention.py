@@ -164,16 +164,18 @@ class RopeAttention(nn.Module):
             self.register_buffer("freqs_cis", None, persistent=True)
             self.grid_indices = (None, None, None, None)
 
-    def _get_freqs_shape(self):
+    def _get_freqs_shape(self) -> torch.Size:
         dim_per_head = self.dim // self.num_heads
-        if self.input_fmt == "YXC":
-            return torch.Size([2, self.num_heads, dim_per_head // 2])
-        elif self.input_fmt == "TYXC" or self.input_fmt == "ZYXC":
-            return torch.Size([3, self.num_heads, dim_per_head // 2])
-        elif self.input_fmt == "TZYXC":
-            return torch.Size([4, self.num_heads, dim_per_head // 2])
-        else:
-            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+        freqs = generate_frequency_spectrum(
+            dim=dim_per_head,
+            num_heads=self.num_heads,
+            theta=self.rope_theta,
+            random_rotation_per_head=self.random_rotation_per_head,
+            input_fmt=self.input_fmt,
+            dtype=self.dtype,
+            device="cpu",
+        )
+        return freqs.shape
 
     def init_rope_parameters(self, 
                              device: torch.device, 

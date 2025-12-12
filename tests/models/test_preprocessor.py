@@ -56,8 +56,8 @@ def _delta_psf_3d(d: int, h: int, w: int) -> torch.Tensor:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for RayPreprocessor tests")
 def test_ray_preprocessor_transform_and_masking_on_cuda():
-    B, C = 2, 3
-    inputs = torch.ones(B, C, dtype=torch.float32, device="cuda")
+    B, T, Y, X, C = 2, 1, 4, 4, 3
+    inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32, device="cuda")
     sample = {"data_tensor": inputs, "metainfo": {"k": "v"}}
 
     def add_five(x: torch.Tensor) -> torch.Tensor:
@@ -67,6 +67,9 @@ def test_ray_preprocessor_transform_and_masking_on_cuda():
     proc = RayPreprocessor(
         dtype=torch.float32,
         with_masking=True,
+        input_format="TYXC",
+        input_shape=(T, Y, X, C),
+        patch_shape=(1, 4, 4, None),
         mask_generator=_dummy_mask_generator,
         transforms_list=[add_five],
     )
@@ -76,31 +79,58 @@ def test_ray_preprocessor_transform_and_masking_on_cuda():
     meta = out["metainfo"]
 
     assert data.is_cuda
+    assert data.shape == inputs.shape
     assert torch.allclose(data, inputs + 5)
 
     for k in ("masks", "context_masks", "target_masks", "original_patch_indices", "channels_to_mask"):
-        assert k in meta and isinstance(meta[k], list) and len(meta[k]) == 1
+        assert k in meta
+        assert isinstance(meta[k], list)
+        assert len(meta[k]) == 1
 
     assert isinstance(meta["preprocess_time"], float)
     assert isinstance(meta["masking_time"], float)
     assert isinstance(meta["transform_time"], float)
     assert meta["data_time"] == 0.33
 
+    assert meta["tokens_per_batch"] == B * proc.seq_len
+
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for RayPreprocessor tests")
 def test_ray_preprocessor_no_mask_returns_empty_meta():
-    inputs = torch.zeros(2, 2, dtype=torch.float32, device="cuda")
+    B, T, Y, X, C = 2, 1, 4, 4, 2
+    inputs = torch.zeros((B, T, Y, X, C), dtype=torch.float32, device="cuda")
     sample = {"data_tensor": inputs, "metainfo": {}}
 
-    proc = RayPreprocessor(dtype=torch.float32, with_masking=False, mask_generator=_dummy_mask_generator)
-    out = proc(sample, data_time=0.0)
+    proc = RayPreprocessor(
+        dtype=torch.float32,
+        with_masking=False,
+        input_format="TYXC",
+        input_shape=(T, Y, X, C),
+        patch_shape=(1, 4, 4, None),
+        mask_generator=_dummy_mask_generator,
+        transforms_list=None,
+    )
 
-    assert out["data_tensor"].is_cuda
-    assert out["metainfo"] == {}
+    out = proc(sample, data_time=0.0)
+    data = out["data_tensor"]
+    meta = out["metainfo"]
+
+    assert data.is_cuda
+    assert data.shape == inputs.shape
+    assert torch.allclose(data, inputs)
+
+    for k in ("masks", "context_masks", "target_masks", "original_patch_indices", "channels_to_mask", "patches_used"):
+        assert k not in meta
+
+    assert isinstance(meta["preprocess_time"], float)
+    assert meta["masking_time"] == -1.0
+    assert isinstance(meta["transform_time"], float)
+    assert meta["data_time"] == 0.0
+    assert meta["tokens_per_batch"] == B * proc.seq_len
 
 
 def test_requires_c_last_in_input_format():
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         ChannelSplitPreprocessor(
             patch_shape=(1, 2, 4, 4, 1, None),
             transforms_list=[],

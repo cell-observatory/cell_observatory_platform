@@ -61,7 +61,10 @@ class RayPreprocessor(torch.nn.Module):
         # TODO: once we start supporting variable input shapes,
         #       update this helper to use input_shape from data samples
         #       and call calc_num_patches() from PatchEmbedding to get num_patches
-        self.masking_ratio = mask_generator.random_masking_ratio
+        if self.with_masking and self.mask_generator is not None and hasattr(self.mask_generator, "random_masking_ratio"):
+            self.masking_ratio = self.mask_generator.random_masking_ratio
+        else:
+            self.masking_ratio = 0.0
         self.seq_len = self._calculate_seq_len()
 
     def _calculate_seq_len(self):
@@ -226,6 +229,7 @@ class BaseFinetunePreprocessor(RayPreprocessor):
             input_format=self.input_format,
             num_patches=self.num_patches,
             token_shape=self.token_shape,
+            pixels_per_patch=self.pixels_per_patch,
         )
 
     def _common_pre(
@@ -360,7 +364,7 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
         inputs, transform_time = self._apply_transforms(inputs)
 
         # targets are per-channel patches from original (transformed) input
-        targets = self.pe_patchify(inputs)
+        targets = self.pe_patchify(inputs, channels=self.channels)
 
         # model input: average over channels -> [B, ..., 1]
         inputs = inputs.mean(dim=self.channel_idx, keepdim=True)
