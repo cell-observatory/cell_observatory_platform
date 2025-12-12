@@ -194,9 +194,9 @@ class FourierLoss(torch.nn.Module):
         full_targets_fft = torch.abs(full_targets_fft)
         full_predictions_fft = torch.abs(full_predictions_fft)
 
-        if self.fft_loss == "L1":
+        if self.fft_loss == "l1_masked":
             fft_loss = (full_targets_fft - full_predictions_fft).abs().mean()
-        elif self.fft_loss == "L2":
+        elif self.fft_loss == "l2_masked":
             fft_loss = ((full_targets_fft - full_predictions_fft) ** 2).mean()
         else:
             raise ValueError(f"Unknown fft loss type: {self.fft_loss}, {type(self.fft_loss)}")

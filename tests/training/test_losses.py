@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from cell_observatory_platform.training.losses import FourierLoss
+from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding
 
 
 @pytest.mark.parametrize(
@@ -32,7 +33,15 @@ def test_fourier_loss_forward_backward(input_fmt, input_shape, patch_shape, in_c
     full_shape = (B, *input_shape)
     full_targets_img = torch.randn(full_shape, device=device)
 
-    full_targets_patches = loss_mod.patch_embedding.patchify(full_targets_img)
+    pe = PatchEmbedding(
+        input_fmt=input_fmt,
+        input_shape=input_shape,
+        patch_shape=patch_shape,
+        embed_dim=256,
+        channels=in_chans,
+    )
+    full_targets_patches = pe._patchify(full_targets_img)
+    
     B_, P, D = full_targets_patches.shape
     assert B_ == B and P > 4, "Test expects more than 4 patches to mask a few."
 
