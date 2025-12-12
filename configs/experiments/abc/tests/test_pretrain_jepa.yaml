@@ -127,7 +127,7 @@ models:
     abs_sincos_enc: false
     rope_pos_enc: true
     rope_random_rotation_per_head: true
-    rope_mixed: false
+    rope_mixed: true
     rope_theta: 100.0
     with_auxiliary_loss: false
     # loss_fn:

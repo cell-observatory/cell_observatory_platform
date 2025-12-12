@@ -1,5 +1,6 @@
 import os
 import time
+import functools
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np

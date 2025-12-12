@@ -329,7 +329,7 @@ class RopeAttention(nn.Module):
             # works no matter what input_fmt is since unused t_* are None
             freqs_cis = self.compute_cis(
                 freqs=self.freqs.to(x.device),
-                num_heads=self.num_heads,
+                # num_heads=self.num_heads,
                 t_t=t_t,
                 t_z=t_z,
                 t_y=t_y,

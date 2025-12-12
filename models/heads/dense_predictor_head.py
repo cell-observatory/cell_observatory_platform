@@ -6,13 +6,13 @@ https://github.com/DepthAnything/Depth-Anything-V2/blob/main/depth_anything_v2/d
 
 import inspect
 from typing import Any, Mapping
+import functools
 
 import torch.nn as nn
 import torch.nn.functional as F
 
-from cell_observatory_platform.models.layers.patch_embeddings import patchify
 from cell_observatory_platform.training.helpers import get_patch_sizes
-
+from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
 
 class ResidualConvUnit(nn.Module):
     def __init__(self, features, activation, bn, dim, strategy="axial"):
@@ -231,6 +231,21 @@ class DPTHead(nn.Module):
         self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
             input_format=input_format, patch_shape=patch_shape
         )
+        self.num_patches, self.token_shape = calc_num_patches(
+            input_fmt=self.input_format,
+            input_shape=self.input_shape,
+            patch_shape=patch_shape,
+        )
+
+        self.pe_patchify = functools.partial(
+            PatchEmbedding.patchify,
+            temporal_patch_size=self.temporal_patch_size,
+            axial_patch_size=self.axial_patch_size,
+            lateral_patch_size=self.lateral_patch_size,
+            input_format=self.input_format,
+            num_patches=self.num_patches,
+            token_shape=self.token_shape,
+        )
 
         self.dim = 4 if "T" in input_format else 3
         if self.dim != 3:
@@ -427,9 +442,9 @@ class DPTHead(nn.Module):
         else:
             raise NotImplementedError("Only Dim=3 with axial strategy is supported.")
 
-        out = patchify(
+        out = self.pe_patchify(
             out,
-            input_fmt=self.input_format,
+            input_format=self.input_format,
             axial_patch_size=self.axial_patch_size,
             lateral_patch_size=self.lateral_patch_size,
             temporal_patch_size=self.temporal_patch_size,
