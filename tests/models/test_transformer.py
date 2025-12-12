@@ -67,8 +67,7 @@ def test_rope_attention_shapes(dim, num_heads, rope_mixed, case):
     B = 2
 
     x = torch.randn(B, L, dim, device="cuda")
-    m = (
-        RopeAttention(
+    m = RopeAttention(
             dim=dim,
             num_heads=num_heads,
             qkv_bias=True,
@@ -81,11 +80,10 @@ def test_rope_attention_shapes(dim, num_heads, rope_mixed, case):
             input_fmt=input_fmt,
             input_shape=input_shape,
             patch_shape=patch_shape,
-        )
-        .to("cuda")
-        .eval()
-    )
-
+    ).to("cuda")
+    m.init_rope_parameters(device="cuda")
+    m.eval()
+            
     y = m(x)
     assert y.shape == (B, L, dim)
 
@@ -127,6 +125,12 @@ def test_transformer_shapes(rope_pos_enc, dim, num_heads, mlp_ratio, case):
         patch_shape=patch_shape,
         wide_silu=False,
     ).to("cuda")
+    
+    for mod in m.modules():
+        if isinstance(mod, RopeAttention):
+            mod.init_rope_parameters(device="cuda")
+
     m.eval()
+    
     y = m(x)
     assert y.shape == (B, L, dim)
