@@ -1,5 +1,5 @@
 activation_checkpoint:
-  enable: true
+  enable: false
   # modules to activation checkpoint (either module with list of transformer blocks or
   # a list of transformer blocks)
   modules: ["input_encoder.encoder", "target_predictor.encoder"]
@@ -20,7 +20,7 @@ activation_checkpoint:
   mm_recompute_frac: 2
 
 torch_compile:
-  enable: true
+  enable: false
   # modules to compile
   modules: ["input_encoder.encoder", "target_predictor.encoder"]
   block_names: "transformer_blocks"

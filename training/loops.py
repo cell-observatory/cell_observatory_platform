@@ -9,7 +9,7 @@ import time
 import logging
 import weakref
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Dict
+from typing import Any, List, Optional, Sequence, Dict, Sequence
 
 from omegaconf import DictConfig, OmegaConf, open_dict
 from hydra.utils import get_class, instantiate, get_method
@@ -30,7 +30,8 @@ from cell_observatory_platform.training.helpers import (
     configure_torch_comm_env,
     apply_compile,
     apply_activation_checkpointing,
-    load_model_from_ckpt
+    load_model_from_ckpt,
+    aggregate_microbatch_losses
 )
 from cell_observatory_platform.training.hooks import HookBase
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
@@ -329,6 +330,22 @@ class EpochBasedTrainer(BaseTrainer):
         BUILD = get_method(cfg.models.BUILD)
         model = BUILD(cfg)
 
+        with torch.no_grad():
+            model.init_model_weights(buffer_device="cuda")
+
+        # FIXME: temporarily disable flops and param counting
+        # if hasattr(model, "_get_nparams_and_flops"):
+        #     # NOTE: used to calculate flops and params for logging purposes
+        #     self.model_param_count, self.num_flops_per_token = \
+        #         model._get_nparams_and_flops(batch_size=cfg.clusters.batch_size_per_gpu, device="meta")
+        # else:
+        #     logger.warning(
+        #         "Model does not implement `_get_nparams_and_flops` method. "
+        #         "Setting model_param_count and num_flops_per_token to -1."
+        #         "Flops and parameter counts will be unavailable in reported metrics."
+        #     )
+        #     self.model_param_count, self.num_flops_per_token = -1, -1
+
         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
         # initialize checkpoint manager
@@ -379,9 +396,9 @@ class EpochBasedTrainer(BaseTrainer):
         # activation checkpointing, and torch Compile 
         if cfg.optimizations is not None:
             enable_optimizations(cfg=cfg)
-        if cfg.optimizations.activation_checkpoint.enable:
+        if cfg.optimizations.models.activation_checkpoint.enable:
             apply_activation_checkpointing(cfg, model)
-        if cfg.optimizations.torch_compile.enable:
+        if cfg.optimizations.models.torch_compile.enable:
             model = apply_compile(cfg, model)
 
         # initialize deepspeed
@@ -442,7 +459,7 @@ class EpochBasedTrainer(BaseTrainer):
         
         self.train_dataloader_iter = iter(self.train_dataloader)
 
-        for idx, data_sample in enumerate(self.train_dataloader):
+        for _ in range(self.steps_per_epoch):
             self.run_step()
 
         if self.val_dataloader and \
@@ -528,7 +545,7 @@ class EpochBasedTrainer(BaseTrainer):
 
         self.after_validation()
     
-    def run_validation_step(self, idx: int, data_sample: Sequence[dict]) -> None:
+    def run_validation_step(self, idx: int) -> None:
         """
         Iterate one validation step.
         """
@@ -609,9 +626,9 @@ class TestTrainer(BaseTrainer):
         # activation checkpointing, and torch Compile 
         if cfg.optimizations is not None:
             enable_optimizations(cfg=cfg)
-        if cfg.optimizations.activation_checkpoint.enable:
+        if cfg.optimizations.models.activation_checkpoint.enable:
             apply_activation_checkpointing(cfg, model)
-        if cfg.optimizations.torch_compile.enable:
+        if cfg.optimizations.models.torch_compile.enable:
             model = apply_compile(cfg, model)
 
         # initialize deepspeed
@@ -720,9 +737,9 @@ class Inferencer(BaseTrainer):
         # activation checkpointing, and torch Compile 
         if cfg.optimizations is not None:
             enable_optimizations(cfg=cfg)
-        if cfg.optimizations.activation_checkpoint.enable:
+        if cfg.optimizations.models.activation_checkpoint.enable:
             apply_activation_checkpointing(cfg, model)
-        if cfg.optimizations.torch_compile.enable:
+        if cfg.optimizations.models.torch_compile.enable:
             model = apply_compile(cfg, model)
 
         # initialize deepspeed
@@ -944,7 +961,7 @@ class ParallelEpochBasedTrainer(BaseTrainer):
             parallel_dims.tp_enabled
             and not cfg.parallelism.training.disable_loss_parallel
         )
-        enable_compiled_autograd = cfg.optimizations.torch_compile.get(
+        enable_compiled_autograd = cfg.optimizations.models.torch_compile.get(
             "enable_compiled_autograd"
         )
         self.train_context = dist_utils.get_train_context(loss_parallel_enabled, 

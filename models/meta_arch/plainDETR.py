@@ -17,7 +17,7 @@ Adapted from:
 import copy
 import math
 import inspect
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Literal
 
 import torch
 from torch import nn
@@ -30,8 +30,13 @@ from cell_observatory_platform.data.structures import (
     delta2bbox
 )
 from cell_observatory_platform.models.layers.mlp import MLP
-from cell_observatory_platform.training.helpers import get_clones
+from cell_observatory_platform.training.helpers import (
+    get_clones, 
+    get_nparams_and_flops, 
+    get_input_data
+)
 from cell_observatory_platform.models.layers.utils import inverse_sigmoid
+from cell_observatory_platform.models.layers.attention import RopeAttention
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
 
 

@@ -23,7 +23,15 @@ from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedd
 
 
 class RayPreprocessor(torch.nn.Module):
-    def __init__(self, dtype: torch.dtype, with_masking: bool, mask_generator, transforms_list=None):
+    def __init__(self, 
+                 dtype: torch.dtype, 
+                 with_masking: bool, 
+                 input_format: str,
+                 input_shape: tuple[int, ...],
+                 patch_shape: tuple[int, int, int],
+                 mask_generator, 
+                 transforms_list=None
+    ):
         super().__init__()
         self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
         self.with_masking = with_masking
@@ -40,10 +48,19 @@ class RayPreprocessor(torch.nn.Module):
                 # already an instantiated callable object
                 self.transforms.append(t)
 
+        self.input_shape = input_shape
+        self.patch_shape = patch_shape
+        self.input_format = input_format
+        self.num_patches, _ = calc_num_patches(
+            input_fmt=self.input_format,
+            input_shape=self.input_shape,
+            patch_shape=self.patch_shape,
+        )
+
         # TODO: once we start supporting variable input shapes,
         #       update this helper to use input_shape from data samples
         #       and call calc_num_patches() from PatchEmbedding to get num_patches
-        self.masking_ratio = masking_ratio
+        self.masking_ratio = mask_generator.random_masking_ratio
         self.seq_len = self._calculate_seq_len()
 
     def _calculate_seq_len(self):
@@ -141,6 +158,9 @@ class BaseFinetunePreprocessor(RayPreprocessor):
             transforms_list=transforms_list,
             with_masking=with_masking,
             mask_generator=mask_generator,
+            patch_shape=patch_shape,
+            input_format=input_format,
+            input_shape=input_shape,
         )
 
         self.input_format = input_format

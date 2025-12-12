@@ -61,6 +61,7 @@ class Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x, masks=None, return_attention=False):
+        B, L, C = x.shape
         # NOTE: Use -1 instead of `n_heads` to infer the actual
         #       local heads from sizes of xq, xk, and xv as TP 
         #       may have sharded them after the above linear ops.
