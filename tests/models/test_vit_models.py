@@ -42,7 +42,7 @@ def test_vit_custom(models_kargs):
         rope_pos_enc=models_kargs["rope_pos_enc"],
     ).to("cuda")
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_input_data(inputs)
 
     summarize_model(
         model=model,
@@ -79,7 +79,7 @@ def test_vit_tiny(models_kargs):
         fixed_dropout_depth=models_kargs["fixed_dropout_depth"],
     ).to("cuda")
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_input_data(inputs)
 
     summarize_model(
         model=model,
@@ -116,7 +116,7 @@ def test_vit_small(models_kargs):
         fixed_dropout_depth=models_kargs["fixed_dropout_depth"],
     ).to("cuda")
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_input_data(inputs)
 
     summarize_model(
         model=model,
@@ -153,7 +153,7 @@ def test_vit_base(models_kargs):
         fixed_dropout_depth=models_kargs["fixed_dropout_depth"],
     ).to("cuda")
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_input_data(inputs)
 
     summarize_model(
         model=model,
@@ -190,7 +190,7 @@ def test_vit_large(models_kargs):
         fixed_dropout_depth=models_kargs["fixed_dropout_depth"],
     ).to("cuda")
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_input_data(inputs)
 
     summarize_model(
         model=model,
@@ -227,7 +227,7 @@ def test_vit_huge(models_kargs):
         fixed_dropout_depth=models_kargs["fixed_dropout_depth"],
     ).to("cuda")
 
-    input_data = get_input_data(model, inputs)
+    input_data = get_input_data(inputs)
 
     summarize_model(
         model=model,

@@ -3,6 +3,9 @@ _target_: cell_observatory_platform.models.layers.preprocessor.RayPreprocessor
 dtype: ${quantization}
 with_masking: true
 mask_generator: ${datasets.masking.mask_generators.0}
+input_format: ${dataset_layout_order}
+input_shape: ${datasets.input_shape}
+patch_shape: ${datasets.patch_shape}
 transforms_list: 
   - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
     input_layout:

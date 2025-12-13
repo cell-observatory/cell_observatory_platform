@@ -7,6 +7,53 @@ from torch import Tensor
 from cell_observatory_platform.models.ops.roi_align_nd import RoIAlign3DFunction
 
 
+def mask_ids_to_masks(batch_size, spatial_shape, mask_ids_batch, masks, device):
+    """
+    Convert per-sample mask IDs to per-sample binary masks.
+
+    Args:
+        batch_size (int): Number of samples in the batch.
+        spatial_shape (tuple): Shape of the spatial dimensions.
+        mask_ids_batch (list[list[int]]): For each sample in the batch, a list of instance IDs.
+        masks (torch.Tensor): Tensor containing instance-ID maps.
+                              Shape: [B, *spatial] or [*spatial] (then B assumed 1).
+        input_format (str): Input format string (e.g. "TZYXC"). Used for sanity checks.
+        input_shape (tuple): Shape of the input (no batch), matching input_format.
+        device (torch.device): Device for output tensors.
+
+    Returns:
+        list[torch.Tensor]: For each sample b, a tensor of shape
+                            [NUM_INST_b, *spatial], dtype=bool.
+    """
+    masks = masks.to(device)
+
+    B = batch_size
+    if len(mask_ids_batch) != B:
+        raise ValueError(f"mask_ids_batch length ({len(mask_ids_batch)}) " f"does not match batch size ({B}).")
+
+    binary_masks_batch = []
+    for b in range(B):
+        instance_ids = list(mask_ids_batch[b])
+        m = masks[b]
+
+        if len(instance_ids) == 0:
+            # No instances: return empty [0, *spatial]
+            empty = torch.zeros(
+                (0,) + spatial_shape,
+                dtype=torch.bool,
+                device=device,
+            )
+            binary_masks_batch.append(empty)
+            continue
+
+        ids_tensor = torch.as_tensor(instance_ids, device=device, dtype=m.dtype)
+        view_shape = (len(instance_ids),) + (1,) * m.dim()  # [N_inst, 1, 1, ...]
+        binary_masks = m.unsqueeze(0) == ids_tensor.view(view_shape)  # [N_inst, *spatial]
+        binary_masks_batch.append(binary_masks.to(torch.bool))
+
+    return binary_masks_batch
+
+
 def delta2bbox(
     proposals, deltas, max_shape=None, whd_ratio_clip=16 / 1000, clip_border=True, add_ctr_clamp=False, ctr_clamp=32
 ):
@@ -231,7 +278,7 @@ def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
 
     x_mask = masks * x.unsqueeze(0)
     x_max = x_mask.flatten(1).max(-1)[0]
-    
+
     y_mask = masks * y.unsqueeze(0)
     y_max = y_mask.flatten(1).max(-1)[0]
 

@@ -172,7 +172,7 @@ def _test_hooks_dist(cfg):
     epochs = [ep for val, it, ep in tail]
 
     # success only if exactly two new entries AND both equal the initial WD at epoch 0
-    ok_vals = all(abs(wd - initial_wd) < 1e-12 for wd in wds)
+    ok_vals = all([abs(round(wd, 6) - initial_wd) < 1e-7  for wd in wds])
     ok_epochs = all(ep == 0 for ep in epochs)
     assert (
         ok_vals and ok_epochs

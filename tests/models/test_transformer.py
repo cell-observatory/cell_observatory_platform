@@ -46,9 +46,9 @@ def test_attention_shapes(dim, num_heads, qk_norm, B, L):
 
 ROPE_CASES = [
     ("YXC", (1, 64, 64, 2), (16,)),  # lateral only
-    ("ZYXC", (1, 8, 64, 64, 2), (4, 16)),  # axial, lateral
+    ("ZYXC", (1, 32, 64, 64, 2), (16, 16)),  # axial, lateral
     ("TYXC", (1, 8, 64, 64, 2), (4, 16)),  # temporal, lateral
-    ("TZYXC", (1, 4, 16, 32, 32, 2), (2, 8, 16)),  # temporal, axial, lateral
+    ("TZYXC", (1, 4, 16, 32, 32, 2), (2, 16, 16)),  # temporal, axial, lateral
 ]
 
 
@@ -67,24 +67,22 @@ def test_rope_attention_shapes(dim, num_heads, rope_mixed, case):
     B = 2
 
     x = torch.randn(B, L, dim, device="cuda")
-    m = (
-        RopeAttention(
-            dim=dim,
-            num_heads=num_heads,
-            qkv_bias=True,
-            qk_norm=False,
-            proj_bias=True,
-            att_drop=0.0,
-            proj_drop=0.0,
-            rope_mixed=rope_mixed,
-            rope_theta=10.0,
-            input_fmt=input_fmt,
-            input_shape=input_shape,
-            patch_shape=patch_shape,
-        )
-        .to("cuda")
-        .eval()
-    )
+    m = RopeAttention(
+        dim=dim,
+        num_heads=num_heads,
+        qkv_bias=True,
+        qk_norm=False,
+        proj_bias=True,
+        att_drop=0.0,
+        proj_drop=0.0,
+        rope_mixed=rope_mixed,
+        rope_theta=10.0,
+        input_fmt=input_fmt,
+        input_shape=input_shape,
+        patch_shape=patch_shape,
+    ).to("cuda")
+    m.init_rope_parameters(device="cuda")
+    m.eval()
 
     y = m(x)
     assert y.shape == (B, L, dim)
@@ -127,6 +125,12 @@ def test_transformer_shapes(rope_pos_enc, dim, num_heads, mlp_ratio, case):
         patch_shape=patch_shape,
         wide_silu=False,
     ).to("cuda")
+
+    for mod in m.modules():
+        if isinstance(mod, RopeAttention):
+            mod.init_rope_parameters(device="cuda")
+
     m.eval()
+
     y = m(x)
     assert y.shape == (B, L, dim)

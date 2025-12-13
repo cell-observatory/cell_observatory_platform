@@ -235,7 +235,7 @@ def test_compute_mixed_and_axial_cis_and_apply_rotary_shapes(
     J = head_dim // 2
 
     # mixed per-head
-    freqs_cis_mixed = compute_mixed_cis(freqs, num_heads, t_x, t_y, t_z, t_t, input_fmt=fmt)
+    freqs_cis_mixed = compute_mixed_cis(freqs, t_x, t_y, t_z, t_t, input_fmt=fmt)
     assert freqs_cis_mixed.shape == (num_heads, N, J)
 
     # axial

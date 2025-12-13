@@ -1,14 +1,28 @@
-import json
-import logging
-import math
+"""
+Partly adapted from:
+https://github.com/pytorch/torchtitan/torchtitan/components/lr_scheduler.py
+"""
+
 import re
-from typing import Dict, List
+import math
+import json
+import copy
+import logging
+import functools
+from typing import Dict, List, Any, Callable, Iterator
 
 import torch
 import torch.nn as nn
-from omegaconf import DictConfig
-from timm.scheduler import create_scheduler_v2
 from torch.optim.lr_scheduler import LinearLR
+
+from timm.scheduler import create_scheduler_v2
+
+from omegaconf import DictConfig
+
+from torch.distributed.checkpoint.stateful import Stateful
+from torch.optim.lr_scheduler import LambdaLR, LRScheduler
+
+from cell_observatory_platform.training.optimizers import OptimizersContainer
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
@@ -36,7 +50,8 @@ def get_param_groups(config, model: nn.Module) -> List[Dict]:
         dec_scales = [dec_layer_decay ** (dec_L - i) for i in range(dec_L + 1)]
 
         def _layer_id_from_name(suffix: str, L: int) -> int:
-            if suffix.startswith(("patch_embedding", "pos_embedding", "cls_token", "token_param", "patch_projection")):
+            if suffix.startswith(("patch_embedding", "pos_embedding", "cls_token",
+                                  "token_param", "patch_projection")):
                 return 0
             m = re.search(r"transformer_blocks\.(\d+)", suffix)
             if m:
@@ -63,9 +78,9 @@ def get_param_groups(config, model: nn.Module) -> List[Dict]:
                 continue
 
             if n.startswith("masked_encoder."):
-                side, suffix, L, scales = "enc", n[len("masked_encoder.") :], enc_L, enc_scales
+                side, suffix, L, scales = "enc", n[len("masked_encoder."):], enc_L, enc_scales
             elif n.startswith("masked_decoder."):
-                side, suffix, L, scales = "dec", n[len("masked_decoder.") :], dec_L, dec_scales
+                side, suffix, L, scales = "dec", n[len("masked_decoder."):], dec_L, dec_scales
             else:
                 raise ValueError(f"Parameter {n} not under masked_encoder/decoder")
 
@@ -91,29 +106,22 @@ def get_param_groups(config, model: nn.Module) -> List[Dict]:
     elif config.optimizers.param_group_split_mode == "vjepa":
         param_groups = [
             {
-                "params": (
-                    p for n, p in model.input_encoder.named_parameters() if ("bias" not in n) and (len(p.shape) != 1)
-                )
-            },
-            {
-                "params": (
-                    p for n, p in model.target_predictor.named_parameters() if ("bias" not in n) and (len(p.shape) != 1)
-                )
-            },
-            {
-                "params": (
-                    p for n, p in model.input_encoder.named_parameters() if ("bias" in n) or (len(p.shape) == 1)
-                ),
-                "WD_exclude": True,
-                "weight_decay": 0,
-            },
-            {
-                "params": (
-                    p for n, p in model.target_predictor.named_parameters() if ("bias" in n) or (len(p.shape) == 1)
-                ),
-                "WD_exclude": True,
-                "weight_decay": 0,
-            },
+                'params': (p for n, p in model.input_encoder.named_parameters()
+                        if ('bias' not in n) and (len(p.shape) != 1))
+            }, {
+                'params': (p for n, p in model.target_predictor.named_parameters()
+                        if ('bias' not in n) and (len(p.shape) != 1))
+            }, {
+                'params': (p for n, p in model.input_encoder.named_parameters()
+                        if ('bias' in n) or (len(p.shape) == 1)),
+                'WD_exclude': True,
+                'weight_decay': 0
+            }, {
+                'params': (p for n, p in model.target_predictor.named_parameters()
+                        if ('bias' in n) or (len(p.shape) == 1)),
+                'WD_exclude': True,
+                'weight_decay': 0
+            }
         ]
         return param_groups
 
@@ -122,27 +130,19 @@ def get_param_groups(config, model: nn.Module) -> List[Dict]:
         zero_init_bias_wd = config.optimizers.zero_init_bias_wd
 
         param_groups = [
+            {"params": (p for n, p in model.input_encoder.named_parameters() \
+                        if ("bias" not in n) and (len(p.shape) != 1))},
+            {"params": (p for n, p in model.target_predictor.named_parameters() \
+                        if ("bias" not in n) and (len(p.shape) != 1))},
             {
-                "params": (
-                    p for n, p in model.input_encoder.named_parameters() if ("bias" not in n) and (len(p.shape) != 1)
-                )
-            },
-            {
-                "params": (
-                    p for n, p in model.target_predictor.named_parameters() if ("bias" not in n) and (len(p.shape) != 1)
-                )
-            },
-            {
-                "params": (
-                    p for n, p in model.input_encoder.named_parameters() if ("bias" in n) or (len(p.shape) == 1)
-                ),
+                "params": (p for n, p in model.input_encoder.named_parameters() \
+                            if ("bias" in n) or (len(p.shape) == 1)),
                 "WD_exclude": zero_init_bias_wd,
                 "weight_decay": 0,
             },
             {
-                "params": (
-                    p for n, p in model.target_predictor.named_parameters() if ("bias" in n) or (len(p.shape) == 1)
-                ),
+                "params": (p for n, p in model.target_predictor.named_parameters() \
+                           if ("bias" in n) or (len(p.shape) == 1)),
                 "WD_exclude": zero_init_bias_wd,
                 "weight_decay": 0,
             },
@@ -156,7 +156,12 @@ def get_param_groups(config, model: nn.Module) -> List[Dict]:
         )
 
 
-def get_schedulers(opt: torch.optim.Optimizer, steps_per_epoch: int, config: DictConfig, decay: str = "cosine"):
+def get_schedulers(
+    opt: torch.optim.Optimizer,
+    steps_per_epoch: int,
+    config: DictConfig,
+    decay: str = 'cosine'
+):
     if config.schedulers.type == "fixedlr":
         scheduler = LinearLR(
             opt,
@@ -218,7 +223,7 @@ def get_schedulers(opt: torch.optim.Optimizer, steps_per_epoch: int, config: Dic
             optimizer=opt,
             ref_wd=config.schedulers.wd_scheduler.ref_wd,
             T_max=config.schedulers.epochs * steps_per_epoch,
-            final_wd=config.schedulers.wd_scheduler.final_wd,
+            final_wd=config.schedulers.wd_scheduler.final_wd
         )
 
         _hook_is_registered = False
@@ -227,9 +232,8 @@ def get_schedulers(opt: torch.optim.Optimizer, steps_per_epoch: int, config: Dic
                 _hook_is_registered = True
                 break
         if not _hook_is_registered:
-            raise ValueError(
-                "WeightDecayScheduleHook not found in " "config.hooks.hooks_list but wd_scheduler.enabled is True"
-            )
+            raise ValueError("WeightDecayScheduleHook not found in "
+                             "config.hooks.hooks_list but wd_scheduler.enabled is True")
 
     else:
         wd_scheduler = None
@@ -239,19 +243,26 @@ def get_schedulers(opt: torch.optim.Optimizer, steps_per_epoch: int, config: Dic
 
 # from: https://github.com/facebookresearch/vjepa2/blob/main/src/utils/schedulers.py
 class WarmupStableDecaySchedule(object):
-    def __init__(
-        self, optimizer, warmup_steps, anneal_steps, T_max, start_lr, ref_lr, final_lr=0.0, update_type="step"
-    ):
+    def __init__(self, 
+                 optimizer, 
+                 warmup_steps, 
+                 anneal_steps, 
+                 T_max, 
+                 start_lr, 
+                 ref_lr, 
+                 final_lr=0.0,
+                 update_type="step"
+):
         self._step = 0.0
         self.optimizer = optimizer
-
+        
         self.start_lr = start_lr
         self.ref_lr = ref_lr
         self.final_lr = final_lr
-
+        
         self.anneal_steps = anneal_steps
         self.warmup_steps = warmup_steps
-
+        
         self.T_max = T_max - warmup_steps - anneal_steps
         self.update_type = update_type
 
@@ -260,10 +271,10 @@ class WarmupStableDecaySchedule(object):
         if self._step < self.warmup_steps:
             progress = float(self._step) / float(max(1, self.warmup_steps))
             new_lr = self.start_lr + progress * (self.ref_lr - self.start_lr)
-
+        
         elif self._step < self.T_max + self.warmup_steps:
             new_lr = self.ref_lr
-
+        
         else:
             _step = self._step - (self.T_max + self.warmup_steps)
             progress = float(_step) / float(max(1, self.anneal_steps))
@@ -275,11 +286,16 @@ class WarmupStableDecaySchedule(object):
                 group["lr"] *= group["lr_scale"]
 
         return new_lr
-
+    
 
 # from: https://github.com/facebookresearch/vjepa2/blob/main/src/utils/schedulers.py
 class CosineWeightDecaySchedule(object):
-    def __init__(self, optimizer, ref_wd, T_max, final_wd=0.0):
+    def __init__(self, 
+                 optimizer, 
+                 ref_wd, 
+                 T_max, 
+                 final_wd=0.0
+):
         self._step = 0.0
         self.optimizer = optimizer
 
@@ -295,12 +311,284 @@ class CosineWeightDecaySchedule(object):
 
         if self.final_wd <= self.ref_wd:
             new_wd = max(self.final_wd, new_wd)
-
+        
         else:
             new_wd = min(self.final_wd, new_wd)
 
         for group in self.optimizer.param_groups:
             if ("WD_exclude" not in group) or not group["WD_exclude"]:
                 group["weight_decay"] = new_wd
-
+        
         return new_wd
+
+
+# --- TorchTitan Support --- #
+
+
+class WDSchedulersContainer(Stateful):
+    """Container for multiple weight-decay schedulers.
+
+    This class wraps one `CosineWeightDecaySchedule` per optimizer into a single
+    object, mirroring `LRSchedulersContainer` for LR.
+
+    **Limitations**
+    We assume all weight-decay schedulers are identical (same config). We only
+    store the state of the first one and broadcast it to the others on load.
+    """
+
+    schedulers: list[CosineWeightDecaySchedule]
+
+    def __init__(
+        self,
+        optimizers: OptimizersContainer,
+        ref_wd: float,
+        final_wd: float,
+        training_steps: int,
+    ) -> None:
+        assert len(optimizers) > 0, (
+            "Must have at least one optimizer to create WDSchedulersContainer"
+        )
+        if training_steps <= 0:
+            raise ValueError(
+                f"training_steps must be positive, got {training_steps}"
+            )
+
+        self.schedulers = [
+            CosineWeightDecaySchedule(
+                optimizer=optimizer,
+                ref_wd=ref_wd,
+                T_max=training_steps,
+                final_wd=final_wd,
+            )
+            for optimizer in optimizers
+        ]
+
+    def __iter__(self) -> Iterator[CosineWeightDecaySchedule]:
+        return iter(self.schedulers)
+
+    def __len__(self) -> int:
+        return len(self.schedulers)
+
+    def step(self) -> None:
+        """Advance all underlying weight-decay schedulers by one step."""
+        for scheduler in self.schedulers:
+            scheduler.step()
+
+    def state_dict(self) -> dict[str, Any]:
+        """Save state from the first scheduler and reuse for all.
+
+        The only quantity we really care about is the current step counter.
+        """
+        if not self.schedulers:
+            return {}
+        return {"_step": copy.deepcopy(self.schedulers[0]._step)}
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Load the same state into all schedulers."""
+        if not self.schedulers:
+            return
+        step = float(state_dict.get("_step", 0.0))
+        for scheduler in self.schedulers:
+            scheduler._step = step
+
+
+def build_wd_schedulers(
+    optimizers: OptimizersContainer,
+    wd_scheduler_config: dict,
+    training_steps: int,
+) -> WDSchedulersContainer | None:
+    """Create a WDSchedulersContainer for the given optimizers and config.
+
+    Args:
+        optimizers (OptimizersContainer): The corresponding optimizers whose
+            `param_groups` will get their `weight_decay` updated.
+        wd_scheduler_config (dict): Weight-decay scheduler config, expected keys:
+            - "enabled": bool
+            - "ref_wd": float
+            - "final_wd": float
+            - "type": str (currently only "cosine" is supported)
+        training_steps (int): Total number of training steps (T_max for the schedule).
+
+    Returns:
+        WDSchedulersContainer | None: The constructed container, or None if
+            the scheduler is disabled.
+    """
+    if not wd_scheduler_config.get("enabled", False):
+        return None
+
+    sched_type = wd_scheduler_config.get("type", "cosine")
+    if sched_type != "cosine":
+        raise NotImplementedError(
+            f"Unknown weight-decay scheduler type: {sched_type}"
+        )
+
+    ref_wd = float(wd_scheduler_config["ref_wd"])
+    final_wd = float(wd_scheduler_config.get("final_wd", 0.0))
+
+    if training_steps <= 0:
+        raise ValueError(
+            f"training_steps must be positive, got {training_steps}"
+        )
+
+    return WDSchedulersContainer(
+        optimizers=optimizers,
+        ref_wd=ref_wd,
+        final_wd=final_wd,
+        training_steps=training_steps,
+    )
+
+
+class LRSchedulersContainer(Stateful):
+    """Container for multiple learning rate schedulers.
+
+    This class is used to wrap multiple LRSchedulers into a single object that can be
+    used to reduce the complexity of the training loop. This mimics the behavior of
+    ``torch.optim.lr_scheduler.LRScheduler``. The design concept is the same as
+    ``OptimizersContainer``. This class currently only supports ``LambdaLR``.
+
+    **Limitations**
+    This class assumes all the lr schedulers are the same. There is no easy way to support
+    resharding for multiple different LRSchedulers because LRScheduler.state_dict() is not
+    resharding friendly. Therefore, the limitation is used to allow TorchTitan to support
+    lr scheduler resharding.
+
+    Args:
+        optimizers (OptimizersContainer): The corresponding optimizers for the lr_schedulers.
+    """
+
+    schedulers: list[LRScheduler]
+
+    def __init__(self, optimizers: OptimizersContainer, lr_lambda: Callable) -> None:
+        assert (
+            len(optimizers) > 0
+        ), "Must have at least one optimizer to create LRScheduler"
+
+        self.schedulers = [LambdaLR(optimizer, lr_lambda) for optimizer in optimizers]
+
+    def __iter__(self) -> Iterator[LRScheduler]:
+        return iter(self.schedulers)
+
+    def __len__(self) -> int:
+        return len(self.schedulers)
+
+    def step(self) -> None:
+        for scheduler in self.schedulers:
+            scheduler.step()
+
+    def state_dict(self) -> dict[str, Any]:
+        # While there may be multiple schedulers, we only save the first one because
+        # the state_dict is the same for all. See the limitations section in the
+        # docstring.
+        return self.schedulers[0].state_dict()
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        # Load the same state_dict for all schedulers. The key value we're concerned
+        # within ``LRScheduler.state_dict()`` is ``last_epoch``, which is an integer
+        # that is immutable. As long as ``training.steps`` and ``lr_scheduler.warmup_steps``
+        # in ``job_config`` remain unchanged when resuming from a checkpoint, this
+        # approach is safe. We call ``copy()`` here to ensure extra safety.
+        for scheduler in self.schedulers:
+            scheduler.load_state_dict(copy.deepcopy(state_dict))
+
+
+def build_lr_schedulers(
+    optimizers: OptimizersContainer,
+    lr_scheduler_config: dict,
+    training_steps: int,
+) -> LRSchedulersContainer:
+    """Create a LRSchedulerContainer for the given optimizers and job config.
+
+    This function creates a ``LRSchedulersContainer`` for the given optimizers.
+    ``lr_scheduler_config`` should define the correct lr scheduler parameters.
+
+    Args:
+        optimizers (OptimizersContainer): The corresponding optimizers for the
+            lr_schedulers.
+        lr_scheduler_config (dict): The lr scheduler config.
+        training_steps (int): The total number of training steps.
+    """
+    warmup_steps = int(lr_scheduler_config["warmup_steps"])
+
+    if warmup_steps > training_steps:
+        logger.warning(
+            f"Warmup steps ({warmup_steps}) exceed total training steps ({training_steps}). "
+            f"Adjusting warmup steps to {training_steps}."
+        )
+        warmup_steps = training_steps
+
+    if lr_scheduler_config["decay_ratio"] is not None:
+        decay_steps = round(training_steps * lr_scheduler_config["decay_ratio"])
+        if warmup_steps + decay_steps > training_steps:
+            logger.warning(
+                f"Warmup ({warmup_steps}) + decay ({decay_steps}) steps exceed "
+                f"total training steps ({training_steps}). "
+                f"Adjusting decay steps to {training_steps - warmup_steps}."
+            )
+            decay_steps = training_steps - warmup_steps
+    else:
+        decay_steps = training_steps - warmup_steps
+    
+    # Add a virtual last step to prevent the learning rate from dropping to 0
+    stable_steps = training_steps + 1 - warmup_steps - decay_steps
+    lr_decay_type = lr_scheduler_config["decay_type"]
+    min_lr_factor = lr_scheduler_config["min_lr_factor"]
+
+    def linear_warmup_stable_decay(
+        current_step: int,
+        warmup_steps: int,
+        stable_steps: int,
+        decay_steps: int,
+        lr_decay_type: str,
+        min_lr_factor: float,
+    ):
+        """
+        Computes linear warmup followed by stable learning rate for a while,
+        then some type of decay.
+
+        Per LambdaLR requirement, this is accomplished by returning
+        a multiplicative factor `curr_adjustment` ranging from 1 to 0
+        to adjust the learning rate to create the desired schedule.
+
+        We offer three types of learning rate decay schedules:
+        1. `linear`: decays linearly from 1 to 0 over the decay period.
+        2. `sqrt`: decays as 1 minus the square root of the decay progress.
+        3. `cosine`: follows a cosine curve, decaying according to the values of the half-period of the cosine function.
+
+        If `min_lr_factor` is specified, the decay range is scaled from 1 to `min_lr_factor`
+        to ensure the learning rate does not drop below this minimum value.
+        """
+        warmup_stable_steps = warmup_steps + stable_steps
+        if current_step < warmup_steps:
+            # linear warmup
+            # 0-indexed step, hence + 1 adjustments
+            current_step += 1
+            assert (
+                warmup_steps != 0
+            ), "warmup_steps must not be zero to reach this branch"
+            curr_adjustment = float(current_step / warmup_steps)
+        elif current_step < warmup_stable_steps:
+            curr_adjustment = 1.0
+        else:
+            # 0-indexed step, hence + 1 adjustments
+            current_step += 1
+            assert decay_steps != 0, "decay_steps must not be zero to reach this branch"
+            progress = float(current_step - warmup_stable_steps) / decay_steps
+
+            if lr_decay_type == "linear":
+                curr_adjustment = 1 - progress
+            elif lr_decay_type == "sqrt":
+                curr_adjustment = 1 - math.sqrt(progress)
+            elif lr_decay_type == "cosine":
+                curr_adjustment = 0.5 * (1.0 + math.cos(math.pi * progress))
+            curr_adjustment = min_lr_factor + (1 - min_lr_factor) * curr_adjustment
+        return curr_adjustment
+
+    lr_lambda = functools.partial(
+        linear_warmup_stable_decay,
+        warmup_steps=warmup_steps,
+        stable_steps=stable_steps,
+        decay_steps=decay_steps,
+        lr_decay_type=lr_decay_type,
+        min_lr_factor=min_lr_factor,
+    )
+    return LRSchedulersContainer(optimizers, lr_lambda)

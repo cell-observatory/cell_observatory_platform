@@ -38,7 +38,6 @@ class Transformer(nn.Module):
         dtype: torch.dtype = torch.bfloat16,
     ) -> None:
         super().__init__()
-        self.norm1 = norm_layer(dim)
 
         if rope_pos_enc:
             self.att = RopeAttention(
@@ -69,8 +68,8 @@ class Transformer(nn.Module):
                 norm_layer=norm_layer,
             )
 
+        self.norm1 = norm_layer(dim)
         self.drop_path1 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-
         self.norm2 = norm_layer(dim)
 
         # from:
@@ -91,6 +90,14 @@ class Transformer(nn.Module):
         )
 
         self.drop_path2 = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+
+    def init_model_weights(self, buffer_device: str | None = None):
+        # TODO: move model inits back into each model class
+        # FIXME: add proper weight init logic for MaskDINO
+        # init_weights(self, weight_init_type=self.weight_init_type)
+        for mod in self.modules():
+            if isinstance(mod, RopeAttention):
+                mod.init_rope_parameters(device=buffer_device)
 
     def forward(self, x, masks=None, return_attention=False):
         ln1 = self.norm1(x)

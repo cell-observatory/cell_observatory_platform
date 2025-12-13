@@ -94,7 +94,7 @@ def test_patchify_shapes_reshape(case):
     exp_pixels = _expected_pixels_per_patch(case)
     assert pe.pixels_per_patch == exp_pixels
 
-    patches = pe.patchify(x, reshape=True)
+    patches = pe._patchify(x, reshape=True)
     assert patches.shape == (case["input_shape"][0], num_patches, exp_pixels)
 
     out = pe(x)

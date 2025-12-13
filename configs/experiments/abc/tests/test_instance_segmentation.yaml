@@ -9,7 +9,7 @@ defaults:
   - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
   - /models/BUILD_plainDETR                  # configs/models/BUILD_plainDETR.yaml
   - /models/meta_arch/plainDETR/mae_large    # configs/models/plainDETR/large.yaml
-  - /models/backbones/mae/large              # configs/models/mae/large.yaml
+  - /models/backbones/masked_encoder/large              # configs/models/mae/large.yaml
   - /hooks/hooks_with_weight_decay           # configs/hooks/hooks.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
@@ -17,6 +17,7 @@ defaults:
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay_with_weight_decay  # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/models/mae                  # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
@@ -65,24 +66,20 @@ seed: 42
 # overrides
 # --------------------------------------------------------------------------------
 
-# deepspeed:
-#   flops_profiler:
-#     enabled: false
-
 # clusters
 clusters:
+  ray_queue_memory: 0.2
   batch_size: 1 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 16 # number of cpu cores per gpu
   mem_per_cpu: 21000 # ram per cpu core
-  ray_queue_memory: 0.1
 
-#paths:
+# paths:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null
+  resume_checkpointdir: null 
   pretrained_checkpointdir: null
 
 # data
@@ -102,13 +99,9 @@ datasets:
   num_actors_min: 4
   num_actors_max: 4
 
-  # max_hypercubes: 50000
-  max_hypercubes: null
-  max_rois: 1 # maximum number of ROIs (each ROI can have dozens of tiles)
+  max_hypercubes: 100
+  max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
   max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-
-  use_cached_hypercubes_dataframe: true
-  hypercubes_dataframe_path: /clusterfs/nvme/segment_4d/databases/prepared_1_128_128_128_2_hypercube_view_NEW.csv
 
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
@@ -141,6 +134,9 @@ datasets:
       - "prepared_id"
       - "mask_bbox_dict"
 
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: /clusterfs/nvme/hph/git_managed/databases/new_prepared_16_128_128_128_2_hypercube_view.csv
+
   databases:
     occupancy_threshold_filter_type: 'min_ch0'
     synthetic_only: true
@@ -163,10 +159,6 @@ hooks:
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
   - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-    file_prefix: latest_model
-  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
     step_period: 1
     epoch_period: 1

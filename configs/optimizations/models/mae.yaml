@@ -1,0 +1,32 @@
+activation_checkpoint:
+  enable: false
+  # modules to activation checkpoint (either module with list of transformer blocks or
+  # a list of transformer blocks)
+  modules: ["masked_encoder.encoder", "masked_decoder.encoder"]
+  block_names: "transformer_blocks"
+  # options: "op" or a positive int representing layer frequency
+  selective_ac_option: 2
+  # list of fully qualified names (FQNs) of modules to force recompute 
+  # of any modules w. same shapes, applied when selective_ac_option=="op"
+  # uses selective activation checkpointing per operation
+  # this op should match "layers.layer_id.module_fqn" where layer_id is the layer index
+  # you get from model.layers.named_children() and where module_fqn is the name 
+  # you get from module.named_modules()
+  per_op_sac_force_recompute_mm_shapes_by_fqns: null
+  # `full` applies activation checkpointing to all layers whereas `selective`
+  # either applies it to layers with a specific frequency or to specific modules, see
+  # per_op_sac_force_recompute_mm_shapes_by_fqns
+  mode: "selective"  # options: "full", "selective"
+  mm_recompute_frac: 2
+
+torch_compile:
+  enable: false
+  # modules to compile
+  modules: ["masked_encoder.encoder", "masked_decoder.encoder"]
+  block_names: "transformer_blocks"
+  range: block_based # options: "full", "block_based"
+  mode: null
+  dynamic: false
+  blockbased_fullgraph: false
+  enable_compiled_autograd: false
+  backend: inductor #"inductor"  # e.g. "inductor", "aot_eager", etc.

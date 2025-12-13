@@ -8,7 +8,10 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import Checkpoi
 from omegaconf import open_dict
 
 from cell_observatory_platform.tests.conftest import config
-from cell_observatory_platform.training.helpers import apply_activation_checkpointing, _apply_ac_to_module
+from cell_observatory_platform.training.helpers import (
+    apply_activation_checkpointing,
+    _apply_ac_to_module,
+)
 
 
 # TODO: add tests to test with all the models we currently support
@@ -24,7 +27,7 @@ class MLPBlock(nn.Module):
     def forward(self, x):
         # x: [B, T, D]
         B, T, D = x.shape
-        h = x.reshape(B*T, D)
+        h = x.reshape(B * T, D)
         h = h @ self.proj1.weight.t()
         h = torch.nn.functional.relu(h)
         h = h @ self.proj2.weight.t()
@@ -32,14 +35,20 @@ class MLPBlock(nn.Module):
 
 
 class TinyModel(nn.Module):
+    """
+    Tiny model with a stack of blocks under encoder.layers so that
+    apply_activation_checkpointing can discover them via:
+    modules = ["encoder"], block_names = "layers".
+    """
+
     def __init__(self, d_model=32):
         super().__init__()
-        # 4 blocks so layer-frequency tests are unambiguous
-        self.layers = nn.ModuleList([MLPBlock(d_model) for _ in range(4)])
+        self.encoder = nn.Module()
+        self.encoder.layers = nn.ModuleList([MLPBlock(d_model) for _ in range(4)])
         self.out = nn.Linear(d_model, 1, bias=False)
 
     def forward(self, x):
-        for blk in self.layers:
+        for blk in self.encoder.layers:
             x = blk(x)
         return self.out(x).mean()
 
@@ -87,19 +96,28 @@ def _get_input(B=2, T=8, D=32):
 
 def make_config(
     config=config,
-    ac_enabled=True,
-    mode="full",
+    ac_enabled: bool = True,
+    mode: str = "full",
     selective_ac_option=None,
     fqn_filters=None,
-    mm_recompute_frac=2
+    mm_recompute_frac: int = 2,
 ):
     with open_dict(config):
-        config.optimizations.activation_checkpoint.enabled = ac_enabled
-        config.optimizations.activation_checkpoint.mode = mode
-        config.optimizations.activation_checkpoint.selective_ac_option = selective_ac_option
-        config.optimizations.activation_checkpoint.per_op_sac_force_recompute_mm_shapes_by_fqns = fqn_filters
-        config.optimizations.activation_checkpoint.mm_recompute_frac = mm_recompute_frac
-        config.optimizations.activation_checkpoint.modules = ["layers"]
+        if "models" not in config.optimizations:
+            config.optimizations.models = {}
+        if "activation_checkpoint" not in config.optimizations.models:
+            config.optimizations.models.activation_checkpoint = {}
+
+        ac_cfg = config.optimizations.models.activation_checkpoint
+        ac_cfg.enabled = ac_enabled
+        ac_cfg.mode = mode
+        ac_cfg.selective_ac_option = selective_ac_option
+        ac_cfg.per_op_sac_force_recompute_mm_shapes_by_fqns = fqn_filters
+        ac_cfg.mm_recompute_frac = mm_recompute_frac
+
+        ac_cfg.modules = ["encoder"]
+        ac_cfg.block_names = "layers"
+
     return config
 
 
@@ -115,8 +133,7 @@ def test_full_wraps_all_layers_and_effect_per_block(config):
     cfg = make_config(config, mode="full")
     apply_activation_checkpointing(cfg, model)
 
-    # structure: every layer should be wrapped
-    wrapped_flags = [isinstance(m, CheckpointWrapper) for m in model.layers]
+    wrapped_flags = [isinstance(m, CheckpointWrapper) for m in model.encoder.layers]
     assert all(wrapped_flags), f"full mode: expected all layers wrapped, got {wrapped_flags}"
 
     # effect: each wrapped block should save fewer tensors than its unwrapped counterpart
@@ -124,7 +141,7 @@ def test_full_wraps_all_layers_and_effect_per_block(config):
     # make a fresh, unwrapped reference block with identical shapes
     ref_block = MLPBlock()
     # compare per-block (shape-identical) saved tensors
-    for i, blk in enumerate(model.layers):
+    for i, blk in enumerate(model.encoder.layers):
         wrapped_cnt = block_saved_tensors(blk, x)
         ref_cnt = block_saved_tensors(ref_block, x)
         assert wrapped_cnt < ref_cnt, f"layer {i}: wrapped should save fewer ({wrapped_cnt} < {ref_cnt})"
@@ -132,21 +149,23 @@ def test_full_wraps_all_layers_and_effect_per_block(config):
 
 def test_selective_op_wraps_all_layers_and_targets_fqn_layer(config):
     model = TinyModel()
-    cfg = make_config(config, mode="selective",
-                      selective_ac_option="op",
-                      fqn_filters=["layers.0.proj1"],
-                      mm_recompute_frac=8)  # no global thinning
+    cfg = make_config(
+        config,
+        mode="selective",
+        selective_ac_option="op",
+        fqn_filters=["encoder.layers.0.proj1"],
+        mm_recompute_frac=8,
+    )
     apply_activation_checkpointing(cfg, model)
 
     # all wrapped structurally
-    wrapped_flags = [isinstance(m, CheckpointWrapper) for m in model.layers]
+    wrapped_flags = [isinstance(m, CheckpointWrapper) for m in model.encoder.layers]
     assert all(wrapped_flags), f"op-selective: expected all layers wrapped, got {wrapped_flags}"
 
-    # targeted layer should recompute its first mm in backward
-    # more mm calls overall
+    # targeted layer should recompute its first mm in backward -> more mm calls overall
     x = _get_input()
-    mm0 = run_and_count_mm_calls(model.layers[0], x)
-    mm1 = run_and_count_mm_calls(model.layers[1], x)
+    mm0 = run_and_count_mm_calls(model.encoder.layers[0], x)
+    mm1 = run_and_count_mm_calls(model.encoder.layers[1], x)
     assert mm0 > mm1, f"layer 0 should execute more mm ops due to recompute (got {mm0} vs {mm1})"
 
 
@@ -156,14 +175,14 @@ def test_selective_layer_frequency_wraps_every_kth_layer_exact(config):
     cfg = make_config(config, mode="selective", selective_ac_option="2")
     apply_activation_checkpointing(cfg, model)
 
-    wrapped = [isinstance(m, CheckpointWrapper) for m in model.layers]
+    wrapped = [isinstance(m, CheckpointWrapper) for m in model.encoder.layers]
     # with global counter starting at 0 and incrementing per visitation:
     # layer indices 1 and 3 should be wrapped for ac_freq=2 (since count%2==0 wraps 2nd, 4th, ...)
     assert wrapped == [False, True, False, True], f"expected [F,T,F,T], got {wrapped}"
 
     # effect: wrapped blocks (1,3) save fewer tensors than unwrapped neighbors (0,2)
     x = _get_input()
-    cnts = [block_saved_tensors(blk, x) for blk in model.layers]
+    cnts = [block_saved_tensors(blk, x) for blk in model.encoder.layers]
     assert cnts[1] < cnts[0], f"layer 1 should save fewer than layer 0 ({cnts[1]} < {cnts[0]})"
     assert cnts[3] < cnts[2], f"layer 3 should save fewer than layer 2 ({cnts[3]} < {cnts[2]})"
 

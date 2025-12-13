@@ -9,8 +9,14 @@ from hydra.utils import get_method
 from omegaconf import DictConfig, OmegaConf
 
 from cell_observatory_platform.data.masking.mask_generator import apply_masks
-from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
-from cell_observatory_platform.training.helpers import init_weights
+from cell_observatory_platform.models.layers.attention import RopeAttention
+from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
+from cell_observatory_platform.training.helpers import (
+    get_input_data,
+    get_nparams_and_flops,
+    get_patch_sizes,
+    init_weights,
+)
 from cell_observatory_platform.training.losses import get_loss_fn
 
 logging.basicConfig(
@@ -85,6 +91,42 @@ class AutoBench(nn.Module, ABC):
         """
         raise NotImplementedError
 
+    def init_model_weights(self, buffer_device: str | None = None):
+        # TODO: move model inits back into each model class
+        init_weights(self, weight_init_type=self.weight_init_type)
+        for mod in self.modules():
+            if isinstance(mod, RopeAttention):
+                mod.init_rope_parameters(device=buffer_device)
+
+    @torch.jit.ignore
+    def _get_nparams_and_flops(
+        self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
+    ):
+        # FIXME: this may be inaccurate when we start working on
+        #        temporal masking related tasks
+        if device == "cuda":
+            # TODO: test this path more thoroughly
+            with torch.cuda.device(device):
+                input_shape = (batch_size, *self.input_shape)
+                data_sample = get_input_data(
+                    inputs=input_shape,
+                    device="cuda",
+                )
+                seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
+                model_summary = get_nparams_and_flops(self, data_sample, seq_len)
+                model_param_count, num_flops_per_token = (
+                    model_summary["total_params"],
+                    model_summary["training_flops"],
+                )
+        elif device == "meta":
+            print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
+            return -1, -1
+        else:
+            # TODO: add support for meta device calculation for other backends
+            raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
+
+        return model_param_count, num_flops_per_token
+
     @torch.jit.ignore
     def get_num_patches(self) -> int:
         """
@@ -144,8 +186,6 @@ class ChannelSplitAutoBench(AutoBench):
         self.backbone = build_backbone(backbone_args)
         self.decoder = build_decoder(decoder_args)
 
-        self._init_all_weights()
-
         if self.input_fmt[-1] != "C":
             raise ValueError(f"ChannelSplitAutoBench expects input_fmt to end with 'C', got {self.input_fmt}")
         self.output_channels = self.input_shape[-1]
@@ -158,9 +198,9 @@ class ChannelSplitAutoBench(AutoBench):
         x = self.decoder(x)
 
         predictions = x
-        loss = self.loss_fn(predictions, targets, num_patches=self.get_num_patches())
+        loss, aux_losses = self.loss_fn(predictions, targets, num_patches=self.get_num_patches())
 
-        loss_dict = {"step_loss": loss}
+        loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):
@@ -196,8 +236,6 @@ class UpsampleTimeAutoBench(AutoBench):
         self.backbone = build_backbone(backbone_args)
         self.decoder = build_decoder(decoder_args)
 
-        self._init_all_weights()
-
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
         masks = meta.get("masks", [None])[0]
@@ -216,9 +254,10 @@ class UpsampleTimeAutoBench(AutoBench):
         # only supervise the masked timepoints
         targets = apply_masks(patches, masks=target_masks)
         predictions = apply_masks(x, masks=target_masks)
-        loss = self.loss_fn(predictions, targets, num_patches=masks.sum())
 
-        loss_dict = {"step_loss": loss}
+        loss, aux_losses = self.loss_fn(predictions, targets, num_patches=self.get_num_patches())
+        loss_dict = {"step_loss": loss, **(aux_losses or {})}
+
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):
@@ -257,8 +296,6 @@ class UpsampleSpaceAutoBench(AutoBench):
         self.backbone = build_backbone(backbone_args)
         self.decoder = build_decoder(decoder_args)
 
-        self._init_all_weights()
-
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
         targets = meta.get("targets", [None])[0]
@@ -267,9 +304,10 @@ class UpsampleSpaceAutoBench(AutoBench):
         x = self.decoder(x)
 
         predictions = x
-        loss = self.loss_fn(x, targets, num_patches=self.get_num_patches())
 
-        loss_dict = {"step_loss": loss}
+        loss, aux_losses = self.loss_fn(x, targets, num_patches=self.get_num_patches())
+        loss_dict = {"step_loss": loss, **(aux_losses or {})}
+
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):
@@ -301,8 +339,6 @@ class UpsampleSpaceTimeAutoBench(AutoBench):
         self.backbone = build_backbone(backbone_args)
         self.decoder = build_decoder(decoder_args)
 
-        self._init_all_weights()
-
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
         targets = meta.get("targets", [None])[0]
@@ -319,9 +355,10 @@ class UpsampleSpaceTimeAutoBench(AutoBench):
         )
 
         predictions = x
-        loss = self.loss_fn(x, targets, num_patches=self.get_num_patches())
 
-        loss_dict = {"step_loss": loss}
+        loss, aux_losses = self.loss_fn(x, targets, num_patches=self.get_num_patches())
+        loss_dict = {"step_loss": loss, **(aux_losses or {})}
+
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):
@@ -349,33 +386,6 @@ def BUILD(cfg: Mapping[str, Any]) -> AutoBench:
     """
     Dispatcher that picks the appropriate AutoBench subclass
     based on cfg.task and wires backbone/decoder BUILD functions.
-
-    Expected cfg structure:
-
-      models:
-        build:
-          _target_: cell_observatory_platform.models.autobench.build_model
-
-        task: channel_split  # or upsample_time / upsample_space / etc.
-
-        backbone_args:
-          BUILD:
-            _target_: cell_observatory_platform.models.mae_backbone.build_backbone
-          # ... mae/jepa-specific hyperparams ...
-
-        decoder_args:
-          BUILD:
-            _target_: cell_observatory_platform.models.heads.vit_decoder.build_decoder
-          # ... decoder-specific hyperparams ...
-
-        output_channels: 2
-        input_fmt: TZYXC
-        input_shape: [16, 128, 128, 128, 2]
-        patch_shape: [4, 16, 16, 16]
-        loss_fn: l2_masked
-        abs_sincos_enc: false
-        weight_init_type: mae
-
     """
     task = cfg["tasks"]["task"]
     if task == "channel_split":
@@ -395,7 +405,17 @@ def BUILD(cfg: Mapping[str, Any]) -> AutoBench:
     embed_dim = model_cfg.get("embed_dim", backbone_args.get("embed_dim", None))
 
     if model_cfg["input_fmt"] == "ZYXC":
-        output_dim = model_cfg["input_shape"][-1]
+        temporal_patch_size, axial_patch_size, lateral_patch_size = get_patch_sizes(
+            input_format=model_cfg["input_fmt"],
+            patch_shape=model_cfg["patch_shape"],
+        )
+        output_dim = PatchEmbedding.compute_num_pixels_per_patch(
+            channels=model_cfg["input_shape"][-1],
+            temporal_patch_size=temporal_patch_size,
+            axial_patch_size=axial_patch_size,
+            lateral_patch_size=lateral_patch_size,
+            input_format=model_cfg["input_fmt"],
+        )
     else:
         raise ValueError(f"AutoBench currently only supports 'ZYXC' input_fmt, got {model_cfg['input_fmt']}")
 

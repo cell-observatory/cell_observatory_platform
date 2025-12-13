@@ -9,7 +9,9 @@ from cell_observatory_platform.data.structures import box_cxcyczwhd_to_xyzxyz
 from cell_observatory_platform.models.heads.maskdino_decoder import MaskDINODecoder
 from cell_observatory_platform.models.heads.maskdino_head import MaskDINOHead
 from cell_observatory_platform.models.heads.pixel_decoders import MaskDINOEncoder
+from cell_observatory_platform.models.layers.attention import RopeAttention
 from cell_observatory_platform.models.layers.matchers import HungarianMatcher
+from cell_observatory_platform.training.helpers import get_input_data, get_nparams_and_flops, init_weights
 from cell_observatory_platform.training.losses import DETR_Set_Loss
 
 
@@ -41,6 +43,41 @@ class MaskDINO(nn.Module):
         self.topk_per_image = topk_per_image
         self.instance_segmentation_flag = instance_segmentation_flag
         self.focus_on_boxes = focus_on_boxes
+
+    def init_model_weights(self, buffer_device: str | None = None):
+        # TODO: move model inits back into each model class
+        # FIXME: add proper weight init logic for MaskDINO
+        # init_weights(self, weight_init_type=self.weight_init_type)
+        for mod in self.modules():
+            if isinstance(mod, RopeAttention):
+                mod.init_rope_parameters(device=buffer_device)
+
+    @torch.jit.ignore
+    def _get_nparams_and_flops(
+        self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
+    ):
+        if device == "cuda":
+            # TODO: test this path more thoroughly
+            with torch.cuda.device(device):
+                input_shape = (batch_size, *self.input_shape)
+                data_sample = get_input_data(
+                    inputs=input_shape,
+                    device="cuda",
+                )
+                seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
+                model_summary = get_nparams_and_flops(self, data_sample, seq_len)
+                model_param_count, num_flops_per_token = (
+                    model_summary["total_params"],
+                    model_summary["training_flops"],
+                )
+        elif device == "meta":
+            print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
+            return -1, -1
+        else:
+            # TODO: add support for meta device calculation for other backends
+            raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
+
+        return model_param_count, num_flops_per_token
 
     @staticmethod
     def adjust_loss_weight_dict(

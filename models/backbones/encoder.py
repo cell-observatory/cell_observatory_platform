@@ -97,6 +97,14 @@ class Encoder(nn.Module):
     def get_num_layers(self):
         return len(self.transformer_blocks)
 
+    @torch.jit.ignore
+    def get_num_heads(self):
+        return self.num_heads
+
+    @torch.jit.ignore
+    def get_head_dims(self):
+        return self.embed_dim // self.num_heads
+
     def forward(self, x, masks=None):
         outs = []
         for i, t in enumerate(self.transformer_blocks):

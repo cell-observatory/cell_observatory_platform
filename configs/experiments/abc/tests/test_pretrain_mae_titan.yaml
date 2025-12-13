@@ -1,0 +1,169 @@
+# @package _global_
+defaults:
+  - /paths/abc                         # configs/paths/coreweave.yaml
+  - /hydra/overrides                   # configs/hydra/overrides.yaml (not working)
+  - /clusters/local                    # configs/clusters/local.yaml
+  - /datasets/pretrain_dataset_ray     # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/meta_arch/mae/large        # configs/models/jepa/large.yaml
+  - /models/BUILD_MAE                  # configs/models/BUILD_AutoBench.yaml
+  - /datasets/preprocessor/ray_preprocessor  # configs/datasets/preprocessor/ray_preprocessor.yaml
+  - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
+  - /checkpoint/checkpoint_titan             # configs/checkpoint/checkpoint.yaml
+  - /loggers/loggers                   # configs/loggers/loggers.yaml
+  - /evaluation/base_evaluator         # configs/evaluation/base_evaluator.yaml
+  - /optimizers/adamw_titan_mae        # configs/optimizers/lamb.yaml
+  - /schedulers/test_warmup_cosine_decay_titan # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/models/mae           # configs/optimizations/models/mae.yaml
+  - /optimizations/optimizations # configs/optimizations/optimizations.yaml
+  - /profiling/profiling
+  - _self_
+
+# experiment name (used for logging)
+experiment_name: test_titan_mae
+wandb_project: testing
+
+# task
+task: pretrain_mae
+
+# Model type
+network: mae
+
+# engine type
+engine: deepspeed
+
+# distributed framework
+distributed_framework: ray
+
+# run type
+run_type: single_run # single_run, multi_run, or tune
+
+# job type
+job_type: train # train or test
+
+# trainer type
+trainer: training.loops.ParallelEpochBasedTrainer
+
+# loop per worker script
+loop_per_worker_script: training.loops.train_loop_per_worker
+
+# training quantization
+quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
+
+# dtype for training data
+dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
+storage_dtype: uint16 # data type for storage
+
+# dataset layout in the zarr files
+dataset_layout_order: ZYXC
+
+seed: 42
+
+# overrides
+# --------------------------------------------------------------------------------
+
+# clusters
+clusters:
+  batch_size: 1 # total batch size
+  worker_nodes: 1 # number of worker nodes
+  gpus_per_worker: 1 # number of gpus per worker node
+  cpus_per_gpu: 12 # number of cpu cores per gpu
+  mem_per_cpu: 16000 # ram per cpu core
+  ray_queue_memory: 0.2
+
+#paths:
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+
+# data
+datasets:
+  # mainly used by other configs but determined here for ease of access
+  batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  train_shape: [128, 128, 128, 2]
+  input_shape: [128, 128, 128, 2]
+  patch_shape: [16, 16, 16, null]
+  occupancy_threshold: 0.9
+
+  split: 0.1
+  return_dataloader: true
+  distributed_sampler: true
+
+  buffer_capacity: 20
+  num_actors_min: 4
+  num_actors_max: 4
+
+  max_hypercubes: 100
+  max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+  max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: /clusterfs/nvme/hph/git_managed/databases/new_prepared_16_128_128_128_2_hypercube_view.csv
+
+  columns: 
+    - x_start
+    - y_start
+    - z_start
+    - time_start
+    - channel_size
+    - z_size
+    - y_size
+    - x_size
+    - time_size
+    - server_folder
+    - output_folder
+    - tile_name
+    - prepared_id
+
+  databases:
+    occupancy_threshold_filter_type: 'min_ch0'
+    synthetic_only: false
+    has_annotations: false
+    with_hypercubes_dataframe: true
+    mask_channel: null
+
+# TO TEST: (1) sincos, (2) ROPE axial (3) ROPE mixed (4) Fourier loss
+models:
+  mae:
+    abs_sincos_enc: false
+    rope_pos_enc: true
+    rope_random_rotation_per_head: true
+    rope_mixed: false
+    rope_theta: 100.0
+    with_auxiliary_loss: true
+    loss_fn:
+      loss_type: "fourier_loss"
+      alpha: 0.001
+      fft_loss: "L1"
+      spatial_loss: "l2_masked"
+      input_fmt: ${dataset_layout_order}
+      input_shape: ${datasets.input_shape}
+      patch_shape: ${datasets.patch_shape}
+      embed_dim: ${models.mae.embed_dim}
+
+# schedulers
+schedulers:
+  epochs: 2
+
+# hooks
+hooks:
+  hooks_list:
+  # - _target_: training.hooks.WeightDecayScheduleHook
+  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
+  # - _target_: training.hooks.LRScheduler
+  - _target_: cell_observatory_platform.training.hooks.IterationTimer
+  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  # - _target_: training.hooks.PeriodicCheckpointer
+  #   file_prefix: latest_model
+  # - _target_: training.hooks.BestCheckpointer
+    # checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  # - _target_: training.hooks.TorchMemoryStats
+  #   step_period: 1
+  #   epoch_period: 1
+  #   logdir: ${loggers.logdir}
+  # - _target_: training.hooks.BestMetricSaver
+  #   metric_name: ${evaluation.val_metric}
+  #   compare_fn: ${evaluation.val_mode}
+  #   eval_after_validation: true

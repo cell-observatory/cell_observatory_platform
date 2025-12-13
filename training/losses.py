@@ -1,9 +1,12 @@
+import contextlib
 import copy
+import functools
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
+from torch.nn.functional import interpolate
 
 from cell_observatory_platform.data.masking.mask_generator import apply_masks
 from cell_observatory_platform.data.structures import (
@@ -13,7 +16,7 @@ from cell_observatory_platform.data.structures import (
     generalized_box_iou,
 )
 from cell_observatory_platform.models.layers.matchers import build_plain_detr_matcher
-from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding
+from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
 from cell_observatory_platform.models.layers.utils import (
     batch_tensors,
     get_uncertain_point_coords_with_randomness,
@@ -27,7 +30,40 @@ from cell_observatory_platform.models.ops.losses import (
     sigmoid_ce_loss,
     sigmoid_focal_loss,
 )
+from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.utils.context import get_world_size, is_torch_dist_initialized
+
+
+# adapted from: https://github.com/pytorch/torchtitan/torchtitan/components/loss.py
+class RescaleAccumulatedLoss:
+    def __init__(self, unwrapped_loss_fn, accumulation_steps):
+        self.skip_rescale = False
+        self.unwrapped_loss_fn = unwrapped_loss_fn
+        self.accumulation_steps = accumulation_steps
+
+        functools.update_wrapper(self, unwrapped_loss_fn, updated=tuple())
+
+    def __call__(self, *args, **kwargs):
+        result = self.unwrapped_loss_fn(*args, **kwargs)
+        if self.skip_rescale:
+            return result
+
+        if isinstance(result, tuple):
+            loss, *rest = result
+            loss = loss / self.accumulation_steps
+            return (loss, *rest)
+        else:
+            return result / self.accumulation_steps
+
+    @contextlib.contextmanager
+    def no_rescale(self):
+        """Context manager for disabling rescaling"""
+        previous = self.skip_rescale
+        self.skip_rescale = True
+        try:
+            yield
+        finally:
+            self.skip_rescale = previous
 
 
 def get_loss_fn(loss):
@@ -41,11 +77,13 @@ def get_loss_fn(loss):
             return mapping[loss]
         raise ValueError(f"Unknown loss type: {loss}")
 
+    rescale = False
     if isinstance(loss, DictConfig):
+        rescale = bool(loss.get("rescale", False))
         loss = OmegaConf.to_container(loss, resolve=True)
 
     if isinstance(loss, dict) and loss.get("loss_type") == "fourier_loss":
-        return FourierLoss(
+        fourier_loss = FourierLoss(
             alpha=loss.get("alpha", 0.001),
             fft_loss=loss.get("fft_loss", "l1_masked"),
             spatial_loss=loss.get("spatial_loss", "l2_masked"),
@@ -55,26 +93,36 @@ def get_loss_fn(loss):
             embed_dim=loss["embed_dim"],
         )
 
-    raise ValueError(f"Unknown loss type.")
+        if rescale:
+            accumulation_steps = loss.get("accumulation_steps", None)
+            if accumulation_steps is None:
+                raise ValueError(
+                    "Loss config has rescale=True but accumulation_steps was not provided " "to get_loss_fn()."
+                )
+            return RescaleAccumulatedLoss(fourier_loss, accumulation_steps)
+
+        return fourier_loss
+
+    raise ValueError(f"Unknown loss configuration: {loss}")
 
 
-def L2_masked_loss(targets, predictions, masks, aux_loss_meta=None):
+def L2_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
     loss = (targets - predictions) ** 2
     loss = loss.mean(dim=-1)  # mean loss per patch
-    loss = loss.sum() / masks.sum()
+    loss = loss.sum() / num_patches
     return loss, None
 
 
-def L1_masked_loss(targets, predictions, masks, aux_loss_meta=None):
+def L1_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
     # compute loss over masked patches
     loss = torch.abs(targets - predictions)
     loss = loss.mean(dim=-1)  # mean loss per patch
-    loss = loss.sum() / masks.sum()
+    loss = loss.sum() / num_patches
     return loss, None
 
 
 # see: https://github.com/facebookresearch/ijepa/main/src/train.py
-def smooth_L1_masked_loss(targets, predictions, masks, aux_loss_meta=None):
+def smooth_L1_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
     return F.smooth_l1_loss(targets, predictions), None
 
 
@@ -93,16 +141,23 @@ class FourierLoss(torch.nn.Module):
         self.in_chans = axis_to_value["C"]
         self.num_frames = axis_to_value.get("T", None)
 
-        self.patch_embedding = PatchEmbedding(
+        self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
+            input_format=input_fmt, patch_shape=patch_shape
+        )
+        _, self.token_shape = calc_num_patches(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
-            patch_shape=self.patch_shape,
-            embed_dim=self.embed_dim,
-            channels=self.in_chans,
+            patch_shape=patch_shape,
         )
-        for p in self.patch_embedding.parameters():
-            p.requires_grad_(False)
-        self.patch_embedding.eval()
+        self.pe_unpatchify = functools.partial(
+            PatchEmbedding.unpatchify,
+            temporal_patch_size=self.temporal_patch_size,
+            axial_patch_size=self.axial_patch_size,
+            lateral_patch_size=self.lateral_patch_size,
+            token_shape=self.token_shape,
+            input_format=self.input_fmt,
+            out_channels=None,
+        )
 
         self.alpha = alpha
         self.fft_loss = fft_loss
@@ -113,14 +168,11 @@ class FourierLoss(torch.nn.Module):
         else:
             raise ValueError(f"Unknown spatial loss type: {spatial_loss}")
 
-    def forward(self, targets, predictions, masks, aux_loss_meta):
-        patches_used = aux_loss_meta.get("patches_used", None)
-        target_masks = aux_loss_meta["target_masks"]
-
+    def forward(self, targets, predictions, num_patches, aux_loss_meta):
         full_targets, full_predictions = aux_loss_meta["targets"], aux_loss_meta["predictions"]
 
-        full_targets = self.patch_embedding.unpatchify(full_targets, out_channels=None)
-        full_predictions = self.patch_embedding.unpatchify(full_predictions, out_channels=None)
+        full_targets = self.pe_unpatchify(full_targets)
+        full_predictions = self.pe_unpatchify(full_predictions)
 
         # NOTE: works for ZYXC and TZYXC formats
         full_targets_fft = torch.fft.fftn(full_targets.to(torch.float32), dim=(-4, -3, -2))
@@ -136,7 +188,7 @@ class FourierLoss(torch.nn.Module):
         else:
             raise ValueError(f"Unknown fft loss type: {self.fft_loss}, {type(self.fft_loss)}")
 
-        spatial_loss, _ = self.spatial_loss(targets, predictions, masks, aux_loss_meta=None)
+        spatial_loss, _ = self.spatial_loss(targets, predictions, num_patches, aux_loss_meta=None)
 
         fft_loss = self.alpha * fft_loss
         spatial_loss = (1 - self.alpha) * spatial_loss

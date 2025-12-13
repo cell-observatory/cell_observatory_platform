@@ -1,7 +1,8 @@
+import logging
 import os
 import sys
-import logging
 from pathlib import Path
+from typing import Optional
 
 import torch
 from hydra.utils import get_method, instantiate
@@ -13,8 +14,8 @@ if hasattr(OmegaConf, "has_resolver") and not OmegaConf.has_resolver("eval"):
 import ray
 
 from cell_observatory_platform.data.datasets.buffers import set_buffers
-from cell_observatory_platform.data.datasets.schedulers import NumaNodeAffinityScheduler
 from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
+from cell_observatory_platform.data.datasets.schedulers import NumaNodeAffinityScheduler
 from cell_observatory_platform.utils.context import (
     barrier,
     get_local_numa_nodes,
@@ -28,7 +29,7 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s -
 logger = logging.getLogger(__name__)
 
 
-def get_dataloader(config: DictConfig):
+def get_dataloader(config: DictConfig, dp_degree: Optional[int] = None, dp_rank: Optional[int] = None):
     if config.datasets.split is None and config.datasets.split == 0:
         for event_writer in config.loggers.event_writers:
             if event_writer._target_.endswith("WandBEventWriter"):
@@ -142,6 +143,8 @@ def get_dataloader(config: DictConfig):
             drop_last=config.datasets.drop_last_policy,
             collate_fn=collate_fn,
             database=db,
+            dp_degree=dp_degree,
+            dp_rank=dp_rank,
         )
         return train_dataloader, val_dataloader, buffer_actor, collate_fn.device_buffer, database_df
 

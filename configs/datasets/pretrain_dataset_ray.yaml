@@ -91,3 +91,7 @@ context:
     total_bytes_limit: 0
 
 debug: false
+
+preserve_order: false # only matters for TP
+callback_strategy: grpc # grpc, queue
+async_device_copy: false

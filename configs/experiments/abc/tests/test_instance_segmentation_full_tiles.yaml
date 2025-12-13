@@ -7,16 +7,19 @@ defaults:
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
   - /datasets/preprocessor/instance_segmentation_preprocessor # configs/datasets/preprocessor/instance_segmentation_preprocessor.yaml
   - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
-  - /models/plainDETR/mae_large              # configs/models/plainDETR/large.yaml
+  - /models/BUILD_plainDETR                  # configs/models/BUILD_plainDETR.yaml
+  - /models/meta_arch/plainDETR/mae_large    # configs/models/plainDETR/large.yaml
+  - /models/backbones/masked_encoder/large              # configs/models/mae/large.yaml
   - /hooks/hooks_with_weight_decay           # configs/hooks/hooks.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
-  - /optimizers/lamb                     # configs/optimizers/lamb.yaml
+  - /optimizers/lamb                          # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay_with_weight_decay  # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
-  - /profiling/profiling                     # configs/profiling/profiling.yaml
+  - /optimizations/models/mae                 # configs/optimizations/models/mae.yaml
+  - /optimizations/optimizations              # configs/optimizations/optimizations.yaml
+  - /profiling/profiling                      # configs/profiling/profiling.yaml
   - _self_
 
 # experiment name (used for logging)
@@ -84,10 +87,11 @@ datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   input_shape: [128, 256, 512, 2]
+  train_shape: [128, 256, 512, 1]
   patch_shape: [16, 16, 16, null]
   occupancy_threshold: 0.9
 
-  split: 0.1
+  split: null
   return_dataloader: true
   distributed_sampler: true
 
@@ -97,11 +101,10 @@ datasets:
 
   # max_hypercubes: 50000
   max_hypercubes: null
-  max_rois: 20 # maximum number of ROIs (each ROI can have dozens of tiles)
+  max_rois: 5 # maximum number of ROIs (each ROI can have dozens of tiles)
   max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
   use_cached_hypercubes_dataframe: true
-  # hypercubes_dataframe_path: /clusterfs/nvme/segment_4d/databases/prepared_1_128_128_128_2_hypercube_view_NEW.csv
   hypercubes_dataframe_path: /clusterfs/nvme/segment_4d/databases/prepared_tile_view_w_annotations_fixed.csv
 
   collate_fn:
@@ -144,7 +147,7 @@ datasets:
 
 # schedulers
 schedulers:
-  epochs: 2
+  epochs: 1
 
 # hooks
 hooks:
@@ -155,10 +158,6 @@ hooks:
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
   - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-    file_prefix: latest_model
-  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
     step_period: 1
     epoch_period: 1

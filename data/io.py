@@ -304,9 +304,8 @@ def filter_hypercubes_dataframe_storage_server(df: pl.DataFrame, server_folder_p
 
     if str(server_folder_path).startswith("/groups"):
         flag = "exists_prfs"
-    elif str(server_folder_path).startswith("/aws") or str(server_folder_path).startswith(
-        "/workspace/CellObservatoryData"
-    ):
+    elif str(server_folder_path).startswith("/aws") \
+        or str(server_folder_path).startswith("/workspace/CellObservatoryData"):
         flag = "exists_aws"
     elif str(server_folder_path).startswith("/lustre"):
         flag = "exists_oak"
@@ -374,19 +373,25 @@ def apply_hypercubes_dataframe_selections(
 
     if max_rois is not None and "prepared_id" in df.columns:
         keep_rois = (
-            df.select(pl.col("prepared_id").unique()).select(pl.col("prepared_id").head(max_rois)).to_series().to_list()
+            df.select(pl.col("prepared_id").unique()).sort("prepared_id").select(pl.col("prepared_id").head(max_rois)).to_series().to_list()
         )
         df = df.filter(pl.col("prepared_id").is_in(keep_rois))
 
     if max_tiles is not None and "tile_name" in df.columns:
         keep_tiles = (
-            df.select(pl.col("tile_name").unique()).select(pl.col("tile_name").head(max_tiles)).to_series().to_list()
+            df.select(pl.col("tile_name").unique()).sort("tile_name").select(pl.col("tile_name").head(max_tiles)).to_series().to_list()
         )
         df = df.filter(pl.col("tile_name").is_in(keep_tiles))
 
     if max_hypercubes is not None:
-        df = df.head(max_hypercubes)
-
+        df = (
+            df.sort(
+                ["prepared_id", "tile_name",
+                "z_start", "y_start", "x_start", "time_start"]
+            )
+            .head(max_hypercubes)
+        )
+    
     return df
 
 
@@ -544,7 +549,7 @@ def load_hypercubes_dataframe(
         raise FileNotFoundError(p)
 
     t0 = time.perf_counter()
-    df = pl.read_csv(p)
+    df = pl.read_csv(p, null_values=["NULL", "null", "NaN", ""])
     t1 = time.perf_counter()
     logger.info(f"Loaded hypercubes dataframe in {t1 - t0:.2f} s; shape={df.shape}")
 

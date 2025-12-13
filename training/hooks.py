@@ -20,6 +20,7 @@ import torch
 from fvcore.common.timer import Timer
 from ray.train import Checkpoint, report
 from torch.profiler import ProfilerActivity
+from torchtitan.distributed import utils as dist_utils
 
 from cell_observatory_platform.training.helpers import log_data_timings
 from cell_observatory_platform.training.loggers import EventWriter
@@ -69,7 +70,7 @@ class HookBase:
         """
         pass
 
-    def after_backward(self):
+    def after_backward(self, data_sample, outputs, loss_dict):
         """
         Called after the backward pass of each iteration.
         """
@@ -193,13 +194,26 @@ class LRScheduler(HookBase):
     for each parameter group in the optimizer.
     """
 
-    def before_train(self):
-        self.optimizer = self.trainer.opt
-        self.scheduler = self.trainer.scheduler
-        self.update_type = self.trainer.scheduler.update_type
+    def __init__(self, backend: str = "DEEPSPEED"):
+        super().__init__()
+        self.backend = backend.upper()
 
-        self._group_labels = [g.get("name", f"group{i}") for i, g in enumerate(self.optimizer.param_groups)]
-        self._best_param_group_id = self.get_best_param_group_id(self.optimizer)
+    def before_train(self):
+        self.optimizers = self.trainer.optimizers
+        self.schedulers = self.trainer.schedulers
+        self.update_type = self.trainer.schedulers.update_type
+
+        if self.backend == "TORCHTITAN":
+            self.multi_model_opt = True
+            assert hasattr(self.schedulers, "schedulers"), "When using multiple optimizers, schedulers should exist."
+        elif self.backend == "DEEPSPEED":
+            self.multi_model_opt = False
+        else:
+            raise NotImplementedError(f"Backend {self.backend} not supported.")
+
+        if not self.multi_model_opt:
+            self._group_labels = [g.get("name", f"group{i}") for i, g in enumerate(self.optimizers.param_groups)]
+            self._best_param_group_id = self.get_best_param_group_id(self.optimizers)
 
     @staticmethod
     def get_best_param_group_id(optimizer):
@@ -221,17 +235,16 @@ class LRScheduler(HookBase):
                     return i
 
     def after_step(self, data_sample, outputs, loss_dict):
-        # TODO: add below?
-        # if self.trainer.model.is_gradient_accumulation_boundary():
-        lr = self.optimizer.param_groups[self._best_param_group_id]["lr"]
+        if not self.multi_model_opt:
+            lr = self.optimizers.param_groups[self._best_param_group_id]["lr"]
+        else:
+            lr = self.schedulers.schedulers[0].get_last_lr()[0]
+
         self.trainer.event_recorder.put_scalar("lr", lr)
-        # NOTE: alternatively, we can summarize all LR groups
-        # for label, group in zip(self._group_labels, self.optimizer.param_groups):
-        #     self.trainer.event_recorder.put_scalar(f"lr/{label}", group["lr"])
         if self.update_type == "epoch":
-            self.scheduler.step(epoch=self.trainer._epoch)
+            self.schedulers.step(epoch=self.trainer._epoch)
         elif self.update_type == "step":
-            self.scheduler.step(self.trainer._iter)
+            self.schedulers.step(self.trainer._iter)
         else:
             raise NotImplementedError(f"{self.update_type=} is not supported")
 
@@ -456,7 +469,7 @@ class PeriodicWriter(HookBase):
         #       `period` epochs?
         self._writers = writers
 
-        # FIXME: errors related to use in cell_observatory_platform
+        # FIXME: errors related to use in cell_observatory_finetune
         # for w in self._writers.writers:
         #     assert isinstance(w, EventWriter), "All writers must be \
         #         EventWriter instances. But got: {}".format(type(w))
@@ -481,36 +494,52 @@ class PeriodicCheckpointer(HookBase):
     Checkpointing, executed every ``period`` epoch and after the last epoch.
     """
 
-    def __init__(self, file_prefix="latest_model"):
+    def __init__(self, file_prefix="latest_model", backend: str = "TORCHTITAN"):
         super().__init__()
+        self.backend = backend.upper()
         self.file_prefix = file_prefix
 
     def before_train(self):
-        self.period = self.trainer.checkpoint_manager.save_period
+        if self.backend == "DEEPSPEED":
+            self.period = self.trainer.checkpoint_manager.save_period
 
     def after_epoch(self):
         """
         Checkpointing is done after each epoch.
         """
-        if (self.trainer._epoch + 1) % self.period == 0:
-            self.trainer.checkpoint_manager.save(
-                prefix=self.file_prefix,
-                save_epoch=self.trainer._epoch + 1,
-                save_best_loss=self.trainer._curr_val_metric,
-                save_step=self.trainer._iter,
-            )
+        if self.backend == "DEEPSPEED":
+            if (self.trainer._epoch + 1) % self.period == 0:
+                self.trainer.checkpoint_manager.save(
+                    prefix=self.file_prefix,
+                    save_epoch=self.trainer._epoch + 1,
+                    save_best_loss=self.trainer._curr_val_metric,
+                    save_step=self.trainer._iter,
+                )
+        elif self.backend == "TORCHTITAN":
+            self.trainer.checkpoint_manager.save(curr_step=self.trainer._iter, last_step=False)
+        else:
+            raise NotImplementedError(f"Backend {self.backend} not supported.")
 
     def after_train(self):
         """
         Checkpointing is done after the last epoch.
         """
-        if self.trainer._epoch + 1 >= self.trainer._max_epochs:
-            self.trainer.checkpoint_manager.save(
-                prefix=self.file_prefix,
-                save_epoch=self.trainer._epoch + 1,
-                save_best_loss=self.trainer._curr_val_metric,
-                save_step=self.trainer._iter,
-            )
+        if self.backend == "DEEPSPEED":
+            if self.trainer._epoch + 1 >= self.trainer._max_epochs:
+                self.trainer.checkpoint_manager.save(
+                    prefix=self.file_prefix,
+                    save_epoch=self.trainer._epoch + 1,
+                    save_best_loss=self.trainer._curr_val_metric,
+                    save_step=self.trainer._iter,
+                )
+        elif self.backend == "TORCHTITAN":
+            self.trainer.checkpoint_manager.save(curr_step=self.trainer._iter, last_step=True)
+        else:
+            raise NotImplementedError(f"Backend {self.backend} not supported.")
+
+        if self.backend == "TORCHTITAN":
+            if hasattr(self.trainer, "checkpoint_manager") and self.trainer.checkpoint_manager is not None:
+                self.trainer.checkpoint_manager.close()
 
 
 class BestCheckpointer(HookBase):
@@ -638,6 +667,8 @@ class BestMetricSaver(HookBase):
         if math.isnan(val) or math.isinf(val):
             return False
         self.trainer.best_metric = val
+        self.trainer.best_metric_epoch = self.trainer._epoch
+        self.trainer.best_metric_iter = self.trainer._iter
         return True
 
     def update_best_metrics(self, latest_metric_val):
@@ -926,9 +957,15 @@ class EMASchedulerHook(HookBase):
 
 
 class WeightDecayScheduleHook(HookBase):
+    def __init__(self, backend: str = "DEEPSPEED"):
+        super().__init__()
+        self.backend = backend.upper()
+
     def before_train(self):
-        self.wd_scheduler = self.trainer.wd_scheduler
-        assert self.wd_scheduler is not None, "WeightDecayScheduleHook requires wd_scheduler to be set in the trainer."
+        self.wd_schedulers = self.trainer.wd_schedulers
+        assert (
+            self.wd_schedulers is not None
+        ), "WeightDecayScheduleHook requires wd_schedulers to be set in the trainer."
         self.event_recorder = self.trainer.event_recorder
         if self.event_recorder is None:
             logger.warning(
@@ -937,16 +974,24 @@ class WeightDecayScheduleHook(HookBase):
             )
 
     def after_step(self, **kwargs):
-        # DeepSpeed performs the optimizer step at boundary
-        # after that prepare WD for the next optimizer step
-        # is_gradient_accumulation_boundary queries whether the current
-        # micro-batch is at the boundary of gradient accumulation, and
-        # thus will trigger gradient reductions and an optimizer step
-        if self.trainer.model.is_gradient_accumulation_boundary():
-            self.wd_scheduler.step()
+        if self.backend == "DEEPSPEED":
+            # DeepSpeed performs the optimizer step at boundary
+            # after that prepare WD for the next optimizer step
+            # is_gradient_accumulation_boundary queries whether the current
+            # micro-batch is at the boundary of gradient accumulation, and
+            # thus will trigger gradient reductions and an optimizer step
+            if self.trainer.model.is_gradient_accumulation_boundary():
+                self.wd_schedulers.step()
+                if self.event_recorder:
+                    wd0 = self.trainer.optimizers.param_groups[0]["weight_decay"]
+                    self.event_recorder.put_scalars(scope="step", wd=wd0)
+        elif self.backend == "TORCHTITAN":
+            self.wd_schedulers.step(self.trainer._iter)
             if self.event_recorder:
-                wd0 = self.trainer.opt.param_groups[0]["weight_decay"]
+                wd0 = self.trainer.optimizers[0].param_groups[0]["weight_decay"]
                 self.event_recorder.put_scalars(scope="step", wd=wd0)
+        else:
+            raise NotImplementedError(f"Backend {self.backend} not supported.")
 
 
 class FreeDeviceBufferHook(HookBase):
@@ -957,18 +1002,45 @@ class FreeDeviceBufferHook(HookBase):
 
     def before_train(self):
         self.device_buffer = self.trainer.device_buffer
+        self.with_grad_accumulation = self.trainer.with_grad_accumulation
 
     def before_test(self):
         self.device_buffer = self.trainer.device_buffer
 
     def after_step(self, **kwargs):
-        device_buffer_idx = kwargs["data_sample"]["metainfo"]["device_buffer_idx"]
-        self.device_buffer.put_free(device_buffer_idx)
+        if not self.with_grad_accumulation:
+            device_buffer_idx = kwargs["data_sample"]["metainfo"]["device_buffer_idx"]
+            self.device_buffer.put_free(device_buffer_idx)
 
     def after_test_step(self, data_sample, outputs, loss_dict):
-        device_buffer_idx = data_sample["metainfo"]["device_buffer_idx"]
-        self.device_buffer.put_free(device_buffer_idx)
+        if not self.with_grad_accumulation:
+            device_buffer_idx = data_sample["metainfo"]["device_buffer_idx"]
+            self.device_buffer.put_free(device_buffer_idx)
 
     def after_val_step(self, data_sample, outputs, loss_dict):
-        device_buffer_idx = data_sample["metainfo"]["device_buffer_idx"]
-        self.device_buffer.put_free(device_buffer_idx)
+        if not self.with_grad_accumulation:
+            device_buffer_idx = data_sample["metainfo"]["device_buffer_idx"]
+            self.device_buffer.put_free(device_buffer_idx)
+
+    def after_backward(self, **kwargs):
+        if self.with_grad_accumulation:
+            device_buffer_idx = kwargs["data_sample"]["metainfo"]["device_buffer_idx"]
+            self.device_buffer.put_free(device_buffer_idx)
+
+
+class AdjustTimeoutHook(HookBase):
+    """
+    A hook that adjusts the training timeout for distributed processes.
+    """
+
+    def __init__(self, world_mesh, timeout: int):
+        super().__init__()
+        self.world_mesh = world_mesh
+        self.train_timeout_seconds = timeout
+
+    def before_step(self):
+        if self.trainer._iter == 1:
+            dist_utils.set_pg_timeouts(
+                timeout=datetime.timedelta(seconds=self.train_timeout_seconds),
+                world_mesh=self.world_mesh,
+            )
