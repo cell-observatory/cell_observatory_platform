@@ -4,15 +4,16 @@ https://github.com/DepthAnything/Depth-Anything-V2/blob/main/depth_anything_v2/u
 https://github.com/DepthAnything/Depth-Anything-V2/blob/main/depth_anything_v2/dpt.py#L118
 """
 
+import functools
 import inspect
 from typing import Any, Mapping
-import functools
 
 import torch.nn as nn
 import torch.nn.functional as F
 
-from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
+from cell_observatory_platform.training.helpers import get_patch_sizes
+
 
 class ResidualConvUnit(nn.Module):
     def __init__(self, features, activation, bn, dim, strategy="axial"):

@@ -98,7 +98,7 @@ class Transformer(nn.Module):
         for mod in self.modules():
             if isinstance(mod, RopeAttention):
                 mod.init_rope_parameters(device=buffer_device)
-                
+
     def forward(self, x, masks=None, return_attention=False):
         ln1 = self.norm1(x)
 

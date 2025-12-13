@@ -15,29 +15,21 @@ Adapted from:
 """
 
 import copy
-import math
 import inspect
-from typing import Any, Dict, Mapping, Literal
+import math
+from typing import Any, Dict, Literal, Mapping
 
 import torch
-from torch import nn
 import torch.nn.functional as F
 from hydra.utils import get_method
+from torch import nn
 
-from cell_observatory_platform.data.structures import (
-    box_cxcyczwhd_to_xyzxyz, 
-    box_xyzxyz_to_cxcyczwhd, 
-    delta2bbox
-)
-from cell_observatory_platform.models.layers.mlp import MLP
-from cell_observatory_platform.training.helpers import (
-    get_clones, 
-    get_nparams_and_flops, 
-    get_input_data
-)
-from cell_observatory_platform.models.layers.utils import inverse_sigmoid
+from cell_observatory_platform.data.structures import box_cxcyczwhd_to_xyzxyz, box_xyzxyz_to_cxcyczwhd, delta2bbox
 from cell_observatory_platform.models.layers.attention import RopeAttention
+from cell_observatory_platform.models.layers.mlp import MLP
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
+from cell_observatory_platform.models.layers.utils import inverse_sigmoid
+from cell_observatory_platform.training.helpers import get_clones, get_input_data, get_nparams_and_flops
 
 
 class PlainDETR(nn.Module):
@@ -144,10 +136,8 @@ class PlainDETR(nn.Module):
                 mod.init_rope_parameters(device=buffer_device)
 
     @torch.jit.ignore
-    def _get_nparams_and_flops(self, 
-                              batch_size: int, 
-                              device: Literal["cuda", "meta"] = "cuda",
-                              masking_ratio: float = 0.0
+    def _get_nparams_and_flops(
+        self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
     ):
         if device == "cuda":
             # TODO: test this path more thoroughly
@@ -160,7 +150,8 @@ class PlainDETR(nn.Module):
                 seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
                 model_summary = get_nparams_and_flops(self, data_sample, seq_len)
                 model_param_count, num_flops_per_token = (
-                    model_summary["total_params"], model_summary["training_flops"]
+                    model_summary["total_params"],
+                    model_summary["training_flops"],
                 )
         elif device == "meta":
             print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
@@ -168,7 +159,7 @@ class PlainDETR(nn.Module):
         else:
             # TODO: add support for meta device calculation for other backends
             raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
-                    
+
         return model_param_count, num_flops_per_token
 
     def _forward(self, samples):

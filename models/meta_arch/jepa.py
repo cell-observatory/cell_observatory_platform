@@ -9,20 +9,16 @@ import torch.nn as nn
 from deepspeed.runtime.zero import GatheredParameters
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 
-from cell_observatory_platform.models.layers.mlp import get_mlp
-from cell_observatory_platform.models.layers.norm import get_norm
-from cell_observatory_platform.training.losses import get_loss_fn
-from cell_observatory_platform.training.helpers import (
-    init_weights,
-    get_masked_input_data, 
-    get_nparams_and_flops
-)
-from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.data.masking.mask_generator import apply_masks
-from cell_observatory_platform.models.layers.attention import RopeAttention
 from cell_observatory_platform.models.backbones.maskedencoder import MaskedEncoder
 from cell_observatory_platform.models.heads.maskedpredictor import MaskedPredictor
+from cell_observatory_platform.models.layers.activation import get_activation
+from cell_observatory_platform.models.layers.attention import RopeAttention
+from cell_observatory_platform.models.layers.mlp import get_mlp
+from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
+from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops, init_weights
+from cell_observatory_platform.training.losses import get_loss_fn
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -295,10 +291,8 @@ class JEPA(nn.Module):
                 mod.init_rope_parameters(device=buffer_device)
 
     @torch.jit.ignore
-    def _get_nparams_and_flops(self, 
-                              batch_size: int, 
-                              device: Literal["cuda", "meta"] = "cuda",
-                              masking_ratio: float = 0.0
+    def _get_nparams_and_flops(
+        self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
     ):
         if device == "cuda":
             # TODO: test this path more thoroughly
@@ -309,11 +303,12 @@ class JEPA(nn.Module):
                     inputs=input_shape,
                     device="cuda",
                     mask_ratio=masking_ratio,
-                )                
+                )
                 seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
                 model_summary = get_nparams_and_flops(self, data_sample, seq_len)
                 model_param_count, num_flops_per_token = (
-                    model_summary["total_params"], model_summary["training_flops"]
+                    model_summary["total_params"],
+                    model_summary["training_flops"],
                 )
         elif device == "meta":
             print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")

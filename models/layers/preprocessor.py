@@ -1,22 +1,19 @@
+import functools
 import os
 import time
-import functools
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
-
 import torch
-
-from omegaconf import DictConfig
 from hydra.utils import get_method, instantiate
+from omegaconf import DictConfig
 
-from cell_observatory_platform.data.io import read_file
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
-from cell_observatory_platform.training.helpers import get_patch_sizes
+from cell_observatory_platform.data.io import read_file
 from cell_observatory_platform.data.structures import convert_bbox_format
 from cell_observatory_platform.data.utils import create_na_masks, downsample, resize_mask
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
-
+from cell_observatory_platform.training.helpers import get_patch_sizes
 
 # --------------------------------------------------------------------------- #
 # Pretraining preprocessor
@@ -24,14 +21,15 @@ from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedd
 
 
 class RayPreprocessor(torch.nn.Module):
-    def __init__(self, 
-                 dtype: torch.dtype, 
-                 with_masking: bool, 
-                 input_format: str,
-                 input_shape: tuple[int, ...],
-                 patch_shape: tuple[int, int, int],
-                 mask_generator, 
-                 transforms_list=None
+    def __init__(
+        self,
+        dtype: torch.dtype,
+        with_masking: bool,
+        input_format: str,
+        input_shape: tuple[int, ...],
+        patch_shape: tuple[int, int, int],
+        mask_generator,
+        transforms_list=None,
     ):
         super().__init__()
         self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
@@ -61,7 +59,11 @@ class RayPreprocessor(torch.nn.Module):
         # TODO: once we start supporting variable input shapes,
         #       update this helper to use input_shape from data samples
         #       and call calc_num_patches() from PatchEmbedding to get num_patches
-        if self.with_masking and self.mask_generator is not None and hasattr(self.mask_generator, "random_masking_ratio"):
+        if (
+            self.with_masking
+            and self.mask_generator is not None
+            and hasattr(self.mask_generator, "random_masking_ratio")
+        ):
             self.masking_ratio = self.mask_generator.random_masking_ratio
         else:
             self.masking_ratio = 0.0
@@ -69,7 +71,7 @@ class RayPreprocessor(torch.nn.Module):
 
     def _calculate_seq_len(self):
         masking_ratio = self.masking_ratio if self.with_masking else 0.0
-        seq_len = int(self.num_patches * (1-masking_ratio))
+        seq_len = int(self.num_patches * (1 - masking_ratio))
         return seq_len
 
     def forward(self, data_sample: dict, data_time: float) -> dict:
@@ -126,7 +128,7 @@ class RayPreprocessor(torch.nn.Module):
             }
         else:
             return {
-                "data_tensor": inputs, 
+                "data_tensor": inputs,
                 "metainfo": {
                     "preprocess_time": time.time() - preprocess_time,
                     "data_time": data_time,
@@ -134,7 +136,7 @@ class RayPreprocessor(torch.nn.Module):
                     "transform_time": transform_time if self.transforms is not None else -1,
                     "tokens_per_batch": tokens_per_batch,
                     **meta,
-                }
+                },
             }
 
 
@@ -207,20 +209,20 @@ class BaseFinetunePreprocessor(RayPreprocessor):
 
         self.patch_shape = patch_shape
         self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
-            input_format=input_format,
-            patch_shape=patch_shape
+            input_format=input_format, patch_shape=patch_shape
         )
         self.num_patches, self.token_shape = calc_num_patches(
             input_fmt=self.input_format,
             input_shape=self.input_shape,
             patch_shape=patch_shape,
         )
-        self.pixels_per_patch = PatchEmbedding.compute_num_pixels_per_patch(channels=self.channels,
-                                                             temporal_patch_size=self.temporal_patch_size,
-                                                             axial_patch_size=self.axial_patch_size,
-                                                             lateral_patch_size=self.lateral_patch_size,
-                                                             input_format=self.input_format
-                                                             )
+        self.pixels_per_patch = PatchEmbedding.compute_num_pixels_per_patch(
+            channels=self.channels,
+            temporal_patch_size=self.temporal_patch_size,
+            axial_patch_size=self.axial_patch_size,
+            lateral_patch_size=self.lateral_patch_size,
+            input_format=self.input_format,
+        )
         self.pe_patchify = functools.partial(
             PatchEmbedding.patchify,
             temporal_patch_size=self.temporal_patch_size,

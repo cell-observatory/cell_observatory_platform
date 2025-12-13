@@ -8,14 +8,16 @@ import torch.nn as nn
 from hydra.utils import get_method
 from omegaconf import DictConfig, OmegaConf
 
-from cell_observatory_platform.training.losses import get_loss_fn
-from cell_observatory_platform.training.helpers import init_weights
-from cell_observatory_platform.training.helpers import get_patch_sizes
-from cell_observatory_platform.models.layers.attention import RopeAttention
 from cell_observatory_platform.data.masking.mask_generator import apply_masks
-from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding
-from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
-from cell_observatory_platform.training.helpers import get_nparams_and_flops, get_input_data
+from cell_observatory_platform.models.layers.attention import RopeAttention
+from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
+from cell_observatory_platform.training.helpers import (
+    get_input_data,
+    get_nparams_and_flops,
+    get_patch_sizes,
+    init_weights,
+)
+from cell_observatory_platform.training.losses import get_loss_fn
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -97,12 +99,10 @@ class AutoBench(nn.Module, ABC):
                 mod.init_rope_parameters(device=buffer_device)
 
     @torch.jit.ignore
-    def _get_nparams_and_flops(self, 
-                              batch_size: int, 
-                              device: Literal["cuda", "meta"] = "cuda",
-                              masking_ratio: float = 0.0
+    def _get_nparams_and_flops(
+        self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
     ):
-        # FIXME: this may be inaccurate when we start working on 
+        # FIXME: this may be inaccurate when we start working on
         #        temporal masking related tasks
         if device == "cuda":
             # TODO: test this path more thoroughly
@@ -115,7 +115,8 @@ class AutoBench(nn.Module, ABC):
                 seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
                 model_summary = get_nparams_and_flops(self, data_sample, seq_len)
                 model_param_count, num_flops_per_token = (
-                    model_summary["total_params"], model_summary["training_flops"]
+                    model_summary["total_params"],
+                    model_summary["training_flops"],
                 )
         elif device == "meta":
             print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
@@ -123,7 +124,7 @@ class AutoBench(nn.Module, ABC):
         else:
             # TODO: add support for meta device calculation for other backends
             raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
-                    
+
         return model_param_count, num_flops_per_token
 
     @torch.jit.ignore
@@ -253,7 +254,7 @@ class UpsampleTimeAutoBench(AutoBench):
         # only supervise the masked timepoints
         targets = apply_masks(patches, masks=target_masks)
         predictions = apply_masks(x, masks=target_masks)
-        
+
         loss, aux_losses = self.loss_fn(predictions, targets, num_patches=self.get_num_patches())
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
 
@@ -357,7 +358,7 @@ class UpsampleSpaceTimeAutoBench(AutoBench):
 
         loss, aux_losses = self.loss_fn(x, targets, num_patches=self.get_num_patches())
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
-    
+
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):

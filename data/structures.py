@@ -29,10 +29,7 @@ def mask_ids_to_masks(batch_size, spatial_shape, mask_ids_batch, masks, device):
 
     B = batch_size
     if len(mask_ids_batch) != B:
-        raise ValueError(
-            f"mask_ids_batch length ({len(mask_ids_batch)}) "
-            f"does not match batch size ({B})."
-        )
+        raise ValueError(f"mask_ids_batch length ({len(mask_ids_batch)}) " f"does not match batch size ({B}).")
 
     binary_masks_batch = []
     for b in range(B):
@@ -51,7 +48,7 @@ def mask_ids_to_masks(batch_size, spatial_shape, mask_ids_batch, masks, device):
 
         ids_tensor = torch.as_tensor(instance_ids, device=device, dtype=m.dtype)
         view_shape = (len(instance_ids),) + (1,) * m.dim()  # [N_inst, 1, 1, ...]
-        binary_masks = (m.unsqueeze(0) == ids_tensor.view(view_shape))  # [N_inst, *spatial]
+        binary_masks = m.unsqueeze(0) == ids_tensor.view(view_shape)  # [N_inst, *spatial]
         binary_masks_batch.append(binary_masks.to(torch.bool))
 
     return binary_masks_batch
@@ -281,7 +278,7 @@ def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
 
     x_mask = masks * x.unsqueeze(0)
     x_max = x_mask.flatten(1).max(-1)[0]
-    
+
     y_mask = masks * y.unsqueeze(0)
     y_max = y_mask.flatten(1).max(-1)[0]
 

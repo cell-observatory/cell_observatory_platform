@@ -1,6 +1,6 @@
+import logging
 import os
 import sys
-import logging
 from pathlib import Path
 from typing import Optional
 
@@ -14,8 +14,8 @@ if hasattr(OmegaConf, "has_resolver") and not OmegaConf.has_resolver("eval"):
 import ray
 
 from cell_observatory_platform.data.datasets.buffers import set_buffers
-from cell_observatory_platform.data.datasets.schedulers import NumaNodeAffinityScheduler
 from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
+from cell_observatory_platform.data.datasets.schedulers import NumaNodeAffinityScheduler
 from cell_observatory_platform.utils.context import (
     barrier,
     get_local_numa_nodes,

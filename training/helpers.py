@@ -1,44 +1,27 @@
-import os
-import random
-import logging
-from pathlib import Path
-
-import math
 import copy
 import itertools
-
-import polars as pl
-
-from operator import attrgetter
+import logging
+import math
+import os
+import random
 from collections import defaultdict
-from typing import (
-    Any, 
-    Callable, 
-    Dict, 
-    List, 
-    Mapping, 
-    Optional, 
-    Tuple, 
-    Union, 
-    Sequence
-)
+from operator import attrgetter
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
-
+import polars as pl
 import torch
-import torch.nn as nn
-import torch.functional as F
 import torch.distributed as dist
-
+import torch.functional as F
+import torch.nn as nn
 import ujson
 from omegaconf import DictConfig, open_dict
-
 from timm.layers.weight_init import trunc_normal_
-
-from torchinfo import summary
-from torchtitan.components.checkpoint import CheckpointManager
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper as ptd_checkpoint_wrapper
+from torchinfo import summary
+from torchtitan.components.checkpoint import CheckpointManager
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
@@ -652,10 +635,7 @@ def _apply_ac_to_module(
         )
 
     if use_op_sac:
-        from torch.utils.checkpoint import (
-            CheckpointPolicy,
-            create_selective_checkpoint_contexts,
-        )
+        from torch.utils.checkpoint import CheckpointPolicy, create_selective_checkpoint_contexts
 
         mm_recompute_shapes, per_op_act_ckpt_fqns = set(), []
         # True if len(per_op_sac_force_recompute_mm_shapes_by_fqns) > 0 or

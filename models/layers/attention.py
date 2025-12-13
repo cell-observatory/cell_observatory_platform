@@ -1,10 +1,9 @@
-import sys
-import math
 import logging
-
+import math
+import sys
 import warnings
-from typing import Optional
 from functools import partial
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -12,7 +11,6 @@ import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.init import constant_, xavier_uniform_
 
-from cell_observatory_platform.models.ops.flash_deform_attn import FlashDeformAttnFunction, _is_power_of_2
 from cell_observatory_platform.data.masking.mask_generator import apply_masks_rope
 from cell_observatory_platform.models.layers.positional_encoding import (
     apply_rotary_emb,
@@ -21,6 +19,7 @@ from cell_observatory_platform.models.layers.positional_encoding import (
     generate_frequency_spectrum,
     generate_grid_indices,
 )
+from cell_observatory_platform.models.ops.flash_deform_attn import FlashDeformAttnFunction, _is_power_of_2
 from cell_observatory_platform.training.helpers import get_patch_sizes
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -55,7 +54,7 @@ class Attention(nn.Module):
 
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        
+
         self.att_drop = nn.Dropout(att_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
@@ -63,7 +62,7 @@ class Attention(nn.Module):
     def forward(self, x, masks=None, return_attention=False):
         B, L, C = x.shape
         # NOTE: Use -1 instead of `n_heads` to infer the actual
-        #       local heads from sizes of xq, xk, and xv as TP 
+        #       local heads from sizes of xq, xk, and xv as TP
         #       may have sharded them after the above linear ops.
         q = self.wq(x).view(B, L, -1, self.head_dim).transpose(1, 2)
         k = self.wk(x).view(B, L, -1, self.head_dim).transpose(1, 2)
@@ -137,14 +136,14 @@ class RopeAttention(nn.Module):
         self.input_fmt = input_fmt
         self.input_shape = input_shape
         self.patch_shape = patch_shape
-        
+
         self.wq = nn.Linear(dim, dim, bias=qkv_bias)
         self.wk = nn.Linear(dim, dim, bias=qkv_bias)
         self.wv = nn.Linear(dim, dim, bias=qkv_bias)
 
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
-        
+
         self.att_drop = nn.Dropout(att_drop)
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
@@ -177,10 +176,7 @@ class RopeAttention(nn.Module):
         )
         return freqs.shape
 
-    def init_rope_parameters(self, 
-                             device: torch.device, 
-                             dtype: Optional[torch.dtype] = None
-    ):
+    def init_rope_parameters(self, device: torch.device, dtype: Optional[torch.dtype] = None):
         if self._rope_inited:
             return
 
@@ -207,8 +203,7 @@ class RopeAttention(nn.Module):
             )
 
             assert freqs.shape == self.freqs.shape, (
-                f"freqs shape mismatch: param={self.freqs.shape}, "
-                f"generated={freqs.shape}"
+                f"freqs shape mismatch: param={self.freqs.shape}, " f"generated={freqs.shape}"
             )
 
             with torch.no_grad():
@@ -219,8 +214,7 @@ class RopeAttention(nn.Module):
 
             if self.input_fmt == "YXC":
                 _, _, t_y, t_x = generate_grid_indices(
-                    end_x=end_x, end_y=end_y, input_fmt=self.input_fmt, 
-                    device=device, dtype=dtype
+                    end_x=end_x, end_y=end_y, input_fmt=self.input_fmt, device=device, dtype=dtype
                 )
                 self.register_buffer("freqs_t_x", t_x)
                 self.register_buffer("freqs_t_y", t_y)
@@ -230,8 +224,7 @@ class RopeAttention(nn.Module):
             elif self.input_fmt == "ZYXC":
                 end_z = self.input_shape[self.input_fmt.index("Z")] // axial_patch_size
                 _, t_z, t_y, t_x = generate_grid_indices(
-                    end_x=end_x, end_y=end_y, end_z=end_z, input_fmt=self.input_fmt, 
-                    device=device, dtype=dtype
+                    end_x=end_x, end_y=end_y, end_z=end_z, input_fmt=self.input_fmt, device=device, dtype=dtype
                 )
                 self.register_buffer("freqs_t_x", t_x)
                 self.register_buffer("freqs_t_y", t_y)
@@ -242,8 +235,7 @@ class RopeAttention(nn.Module):
             elif self.input_fmt == "TYXC":
                 end_t = self.input_shape[self.input_fmt.index("T")] // temporal_patch_size
                 t_t, _, t_y, t_x = generate_grid_indices(
-                    end_x=end_x, end_y=end_y, end_t=end_t, input_fmt=self.input_fmt, 
-                    device=device, dtype=dtype
+                    end_x=end_x, end_y=end_y, end_t=end_t, input_fmt=self.input_fmt, device=device, dtype=dtype
                 )
                 self.register_buffer("freqs_t_x", t_x)
                 self.register_buffer("freqs_t_y", t_y)
@@ -302,7 +294,7 @@ class RopeAttention(nn.Module):
                 device=device,
             )
             self.register_buffer("freqs_cis", freqs_cis)
-        
+
         self._rope_inited = True
 
     def forward(self, x, masks=None, return_attention=False):
@@ -311,7 +303,7 @@ class RopeAttention(nn.Module):
 
         B, L, C = x.shape
         # NOTE: Use -1 instead of `n_heads` to infer the actual
-        #       local heads from sizes of xq, xk, and xv as TP 
+        #       local heads from sizes of xq, xk, and xv as TP
         #       may have sharded them after the above linear ops.
         q = self.wq(x).view(B, L, -1, self.head_dim).transpose(1, 2)
         k = self.wk(x).view(B, L, -1, self.head_dim).transpose(1, 2)

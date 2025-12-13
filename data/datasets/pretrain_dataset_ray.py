@@ -1,34 +1,31 @@
-import os
-import sys
 import ctypes
 import logging
+import os
+import sys
 from multiprocessing import shared_memory
-from typing import Any, Callable, Dict, List, Literal, Optional
-
-import ujson
 from queue import Queue
 from threading import Thread
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 import cupy as cp
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-from cupy.cuda import runtime as cudart
-
 import ray
 import tensorstore as ts
-
-from omegaconf import DictConfig, OmegaConf
-from hydra.utils import get_method, instantiate
-
 import torch
+import ujson
+from cupy.cuda import runtime as cudart
+from hydra.utils import get_method, instantiate
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import random_split
 
-from cell_observatory_platform.data.io import read_zarr
-from cell_observatory_platform.inference.utils import tile_owner
-from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, get_buffers
 from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
-from cell_observatory_platform.training.helpers import get_data_dim, record_dataset_len, get_image_sizes
+from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, get_buffers
+from cell_observatory_platform.data.io import read_zarr
+from cell_observatory_platform.data.structures import convert_bbox_format, mask_ids_to_masks
+from cell_observatory_platform.inference.utils import tile_owner
+from cell_observatory_platform.training.helpers import get_data_dim, get_image_sizes, record_dataset_len
 from cell_observatory_platform.utils.context import (
     bind_current_process_to_node,
     get_world_size,
@@ -38,7 +35,6 @@ from cell_observatory_platform.utils.context import (
     torch_gpu_to_numa,
 )
 from cell_observatory_platform.utils.profiling import pprof_class, pprof_func
-from cell_observatory_platform.data.structures import convert_bbox_format, mask_ids_to_masks
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -655,6 +651,7 @@ class CollatorActor:
                 if self.async_device_copy:
 
                     if self.callback_strategy == "grpc":
+
                         def _release_buffer_on_done(stream, error_status, user_data):
                             actor_reference = user_data["actor"]
                             host_buffer_idx = user_data["host_buffer_idx"]
@@ -669,7 +666,7 @@ class CollatorActor:
                                 _release_buffer_on_done,
                                 {"actor": self.host_buffer_actor, "host_buffer_idx": host_buffer_idx},
                             )
-                    
+
                     else:
                         event = torch.cuda.Event(enable_timing=False)
                         event.record(self.copy_stream)
@@ -1023,7 +1020,7 @@ def get_dataset_ray(
     base_df = base_df.sort_values(
         ["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_start"]
     ).reset_index(drop=True)
-    
+
     # TODO: consider checking dataframe consistency before sharding
     # local_db_hash = df_signature_polars(base_df)
     # assert_same_db_hash_across_ranks(local_db_hash)
@@ -1123,20 +1120,28 @@ def get_dataloader_ray(
         seed = cfg.get("seed", 42)
         g = torch.Generator()
         g.manual_seed(int(seed))
-        
+
         val_size = round(dataset_len * cfg.datasets.split)
-        train_subset, val_subset = random_split(range(dataset_len), 
-                                                lengths=[dataset_len - val_size, val_size], 
-                                                generator=g)
+        train_subset, val_subset = random_split(
+            range(dataset_len), lengths=[dataset_len - val_size, val_size], generator=g
+        )
         train_indices, val_indices = train_subset.indices, val_subset.indices
 
         train_dataset, train_dataset_len = get_dataset_ray(
-            cfg, indices=train_indices, database=db, columns=list(cfg.datasets.columns),
-            dp_degree=dp_degree, dp_rank=dp_rank
+            cfg,
+            indices=train_indices,
+            database=db,
+            columns=list(cfg.datasets.columns),
+            dp_degree=dp_degree,
+            dp_rank=dp_rank,
         )
         val_dataset, val_dataset_len = get_dataset_ray(
-            cfg, indices=val_indices, database=db, columns=list(cfg.datasets.columns),
-            dp_degree=dp_degree, dp_rank=dp_rank
+            cfg,
+            indices=val_indices,
+            database=db,
+            columns=list(cfg.datasets.columns),
+            dp_degree=dp_degree,
+            dp_rank=dp_rank,
         )
 
         record_dataset_len(cfg, train_dataset_len, val_dataset_len)
@@ -1151,8 +1156,7 @@ def get_dataloader_ray(
 
     else:
         train_dataset, train_dataset_len = get_dataset_ray(
-            cfg, indices=None, database=db, columns=list(cfg.datasets.columns),
-            dp_degree=dp_degree, dp_rank=dp_rank
+            cfg, indices=None, database=db, columns=list(cfg.datasets.columns), dp_degree=dp_degree, dp_rank=dp_rank
         )
         record_dataset_len(cfg, train_dataset_len, 0)
 

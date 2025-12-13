@@ -6,13 +6,13 @@ from typing import Any, List, Literal, Mapping, Union
 import torch
 import torch.nn as nn
 
+from cell_observatory_platform.data.masking.mask_generator import apply_masks
+from cell_observatory_platform.models.backbones.encoder import Encoder
+from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.mlp import get_mlp
 from cell_observatory_platform.models.layers.norm import get_norm
-from cell_observatory_platform.models.backbones.encoder import Encoder
-from cell_observatory_platform.data.masking.mask_generator import apply_masks
-from cell_observatory_platform.models.layers.activation import get_activation
-from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
+from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
