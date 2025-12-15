@@ -59,10 +59,12 @@
 # CFG="experiments/coreweave/exp_11_11_25_mae_lr_X_masking_ratio_fourier_loss/exp_11_08_25_0p01_X_0p7.yaml"
 # CFG="experiments/coreweave/exp_11_11_25_mae_lr_X_masking_ratio_fourier_loss/exp_11_08_25_0p001_X_0p7.yaml"
 
-CFG="experiments/coreweave/tests/exp_11_13_25_test_inference.yaml"
+# CFG="experiments/coreweave/tests/exp_11_13_25_test_inference.yaml"
 
 # CFG="experiments/coreweave/exp_11_15_25_mae_ps_8_fourier_loss/exp_11_15_25_0p0005_X_0p7.yaml"
 # CFG="experiments/coreweave/exp_11_15_25_mae_ps_8_fourier_loss/exp_11_15_25_0p002_X_0p7_ps16.yaml"
+
+CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p001_X_0p7.yaml"
 
 # --- JEPA
 
