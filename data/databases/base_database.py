@@ -1,11 +1,14 @@
+import os
 import logging
 import sys
 import time
 from abc import abstractmethod
 from pathlib import Path
 from sqlite3 import NotSupportedError
-from typing import Any, Dict, Iterable, Literal, Optional, Sequence
+from typing import Any, Dict, Iterable, Literal, Optional, Sequence, Union
 from warnings import filters
+
+from dotenv import load_dotenv
 
 import connectorx as cx
 import numpy as np
@@ -1601,3 +1604,88 @@ class ParentDatabase:
 
         work = work[valid_mask].reset_index(drop=True)
         return work
+
+
+def get_prepared_rois_csv(
+    dotenv_path: str,
+    roi_csv_path: Union[str, Path],
+    force: bool = True,
+    protocol: str = "binary",
+    statement_timeout_ms: int = 600_000,
+    index: bool = True,
+    with_staging: bool = False,
+) -> Path:
+    load_dotenv(dotenv_path, verbose=True)
+
+    if with_staging:
+        database_url = os.environ.get("SUPABASE_STAGING_URI")
+    else:
+        database_url = os.environ.get("SUPABASE_PROD_URI")
+
+    if database_url is None:
+        raise ValueError("SUPABASE_PROD_URI environment variable not set")
+    
+    PREPARED_ROIS_QUERY = """
+    SELECT id,
+        x_start, y_start, z_start,
+        z_end, y_end, x_end,
+        time_size, channel_size, is_synthetic
+    FROM prepared
+    """
+
+    RENAME_MAP = {
+        "id": "prepared_id",
+        "z_end": "tile_z_end",
+        "y_end": "tile_y_end",
+        "x_end": "tile_x_end",
+        "z_start": "tile_z_start",
+        "y_start": "tile_y_start",
+        "x_start": "tile_x_start",
+        "time_size": "tile_time_size",
+        "channel_size": "tile_channel_size",
+    }
+
+    roi_csv = Path(roi_csv_path)
+    roi_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    if roi_csv.exists() and not force:
+        raise FileExistsError(f"{roi_csv} already exists (force=False).")
+
+    def execute_query(
+        database_url: str,
+        query: str | list[str],
+        protocol: str = "binary",
+        statement_timeout_ms: int = 600_000,
+        retries: int = 3,
+    ) -> pd.DataFrame:
+        conn = f"{database_url}?options=-c%20statement_timeout%3D{statement_timeout_ms}"
+
+        last_err: Exception | None = None
+        for i in range(retries):
+            try:
+                t0 = time.perf_counter()
+                result = cx.read_sql(conn=conn, query=query, protocol=protocol, return_type="arrow")
+                df = result.to_pandas(split_blocks=False, date_as_object=False)
+                t1 = time.perf_counter()
+                logger.info(f"Took {t1 - t0:.2f}s to fetch dataframe with shape {df.shape}")
+                return df
+            except Exception as e:
+                last_err = e
+                logger.warning(f"Attempt {i + 1} failed with error: {e}. Retrying...")
+
+        logger.error(f"Failed to execute query: {query}")
+        raise RuntimeError(f"Failed to execute query after {retries} attempts") from last_err
+
+    df = execute_query(
+        database_url,
+        PREPARED_ROIS_QUERY,
+        protocol=protocol,
+        statement_timeout_ms=statement_timeout_ms,
+    ).rename(columns=RENAME_MAP)
+
+    tmp = roi_csv.with_suffix(roi_csv.suffix + ".tmp")
+    df.to_csv(tmp, index=index, header=True)
+    os.replace(tmp, roi_csv)
+
+    print(f"Saved roi dataframe to {roi_csv}")
+    return roi_csv
