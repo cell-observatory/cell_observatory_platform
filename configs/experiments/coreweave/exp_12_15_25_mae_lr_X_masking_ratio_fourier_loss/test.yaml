@@ -149,7 +149,7 @@ models:
       loss_fn:
         loss_type: "fourier_loss"
         alpha: 0.001
-        fft_loss: "L1"
+        fft_loss: "l1_masked"
         spatial_loss: "l2_masked"
         input_fmt: ${dataset_layout_order}
         input_shape: ${datasets.input_shape}
