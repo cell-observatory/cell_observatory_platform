@@ -167,6 +167,9 @@ class FourierLoss(torch.nn.Module):
             self.spatial_loss = get_loss_fn("l2_masked")
         else:
             raise ValueError(f"Unknown spatial loss type: {spatial_loss}")
+        
+        if self.fft_loss not in ["l1_masked", "l2_masked"]:
+            raise ValueError(f"Unknown fft loss type: {self.fft_loss}")
 
     def forward(self, targets, predictions, num_patches, aux_loss_meta):
         full_targets, full_predictions = aux_loss_meta["targets"], aux_loss_meta["predictions"]
