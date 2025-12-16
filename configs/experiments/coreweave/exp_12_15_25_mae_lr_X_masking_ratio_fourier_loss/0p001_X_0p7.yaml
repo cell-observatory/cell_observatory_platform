@@ -78,6 +78,7 @@ datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   input_shape: [128, 256, 256, 2]
+  train_shape: [128, 256, 256, 2]
   patch_shape: [16, 16, 16, null]
   occupancy_threshold: 0.9
 
@@ -95,7 +96,7 @@ datasets:
   max_hypercubes: 1000000
 
   use_cached_hypercubes_dataframe: true
-  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_256_256_2_hypercube_view.csv
 
   databases:
     occupancy_threshold_filter_type: 'min_ch0'
