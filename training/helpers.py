@@ -1480,7 +1480,7 @@ HASH_COLS = ["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_
 def df_signature_polars(df_pd) -> int:
     df_pl = pl.from_pandas(df_pd[HASH_COLS])
     # get a UInt64 hash per row
-    row_hashes = df_pl.hash_rows()
+    row_hashes = df_pl.hash_rows(seed=0)
     # reduce locally to a single scalar (e.g. xor or sum)
     local_sig = int(row_hashes.reduce(lambda a, b: a ^ b))
     return local_sig

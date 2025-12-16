@@ -490,7 +490,10 @@ class EpochBasedTrainer(BaseTrainer):
             # a "step_loss" key together with
             # the outputs of the model
             loss_dict = self.forward_backward_step(self._iter, data_sample)
-            microbatch_loss_dicts.append(loss_dict)
+            microbatch_loss_dicts.append({
+                k: (v.detach() if torch.is_tensor(v) else v)
+                for k, v in loss_dict.items()
+            })
 
         self.model.step()
 
@@ -562,7 +565,10 @@ class EpochBasedTrainer(BaseTrainer):
             )
 
             loss_dict, outputs = self.validation_forward_step(data_sample)
-            microbatch_loss_dicts.append(loss_dict)
+            microbatch_loss_dicts.append({
+                k: (v.detach() if torch.is_tensor(v) else v)
+                for k, v in loss_dict.items()
+            })
 
             self.evaluator.process(data_sample, outputs, loss_dict)
 
@@ -1103,7 +1109,10 @@ class ParallelEpochBasedTrainer(BaseTrainer):
             data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
             
             loss_dict = self.forward_backward_step(self._iter, data_sample)
-            microbatch_loss_dicts.append(loss_dict)
+            microbatch_loss_dicts.append({
+                k: (v.detach() if torch.is_tensor(v) else v)
+                for k, v in loss_dict.items()
+            })
 
         grad_norm = dist_utils.clip_grad_norm_(
             [p for m in self.model_parts for p in m.parameters()],
@@ -1227,7 +1236,10 @@ class ParallelEpochBasedTrainer(BaseTrainer):
             )
 
             loss_dict, outputs = self.validation_forward_step(data_sample)
-            microbatch_loss_dicts.append(loss_dict)
+            microbatch_loss_dicts.append({
+                k: (v.detach() if torch.is_tensor(v) else v)
+                for k, v in loss_dict.items()
+            })
 
             self.evaluator.process(data_sample, outputs, loss_dict)
 

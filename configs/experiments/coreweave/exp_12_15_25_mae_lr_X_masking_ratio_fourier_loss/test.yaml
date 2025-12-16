@@ -138,22 +138,23 @@ schedulers:
 
 # ROPE axial
 models:
-  mae:
-    abs_sincos_enc: false
-    rope_pos_enc: true
-    rope_random_rotation_per_head: true
-    rope_mixed: false
-    rope_theta: 100.0
-    with_auxiliary_loss: true
-    loss_fn:
-      loss_type: "fourier_loss"
-      alpha: 0.001
-      fft_loss: "L1"
-      spatial_loss: "l2_masked"
-      input_fmt: ${dataset_layout_order}
-      input_shape: ${datasets.input_shape}
-      patch_shape: ${datasets.patch_shape}
-      embed_dim: ${models.embed_dim}
+  meta_arch:
+    mae:
+      abs_sincos_enc: false
+      rope_pos_enc: true
+      rope_random_rotation_per_head: true
+      rope_mixed: false
+      rope_theta: 100.0
+      with_auxiliary_loss: true
+      loss_fn:
+        loss_type: "fourier_loss"
+        alpha: 0.001
+        fft_loss: "L1"
+        spatial_loss: "l2_masked"
+        input_fmt: ${dataset_layout_order}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        embed_dim: ${models.embed_dim}
 
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}

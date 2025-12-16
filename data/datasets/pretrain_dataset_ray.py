@@ -25,7 +25,7 @@ from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, 
 from cell_observatory_platform.data.io import read_zarr
 from cell_observatory_platform.data.structures import convert_bbox_format, mask_ids_to_masks
 from cell_observatory_platform.inference.utils import tile_owner
-from cell_observatory_platform.training.helpers import get_data_dim, get_image_sizes, record_dataset_len
+from cell_observatory_platform.training.helpers import get_data_dim, get_image_sizes, record_dataset_len, df_signature_polars
 from cell_observatory_platform.utils.context import (
     bind_current_process_to_node,
     get_world_size,
@@ -1022,7 +1022,8 @@ def get_dataset_ray(
     ).reset_index(drop=True)
 
     # TODO: consider checking dataframe consistency before sharding
-    # local_db_hash = df_signature_polars(base_df)
+    local_db_hash = df_signature_polars(base_df)
+    print(f"Dataset dataframe signature hash on rank {process_rank()}: {local_db_hash}")
     # assert_same_db_hash_across_ranks(local_db_hash)
 
     if dp_degree is not None and dp_rank is not None:
