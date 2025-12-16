@@ -1479,11 +1479,13 @@ HASH_COLS = ["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_
 
 def df_signature_polars(df_pd) -> int:
     df_pl = pl.from_pandas(df_pd[HASH_COLS])
-    # get a UInt64 hash per row
+    # UInt64 per row
     row_hashes = df_pl.hash_rows(seed=0)
-    # reduce locally to a single scalar (e.g. xor or sum)
-    local_sig = int(row_hashes.reduce(lambda a, b: a ^ b))
-    return local_sig
+    # Reduce to one scalar
+    h = row_hashes.to_numpy()
+    sig_u64 = np.bitwise_xor.reduce(h)
+    # convert to a signed int64
+    return int(sig_u64.view(np.int64))
 
 
 def assert_same_db_hash_across_ranks(local_hash: int, group=None):
