@@ -23,6 +23,7 @@ from torch.distributed.checkpoint.state_dict import (
 )
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.optim import Optimizer
+from torch.optim import Muon
 
 from torchtitan.distributed import ParallelDims
 from torchtitan.components.ft import FTManager, has_torchft
@@ -44,8 +45,8 @@ def get_optimizer(
             params,
             lr=config.optimizers.lr,
             weight_decay=config.optimizers.wd,
-            betas=(0.9, 0.99),
-            eps=1e-08,
+            betas=tuple(config.optimizers.betas),
+            eps=config.optimizers.eps,
         )
     elif optimizer == "lamb":
         opt = FusedLamb(
@@ -54,6 +55,15 @@ def get_optimizer(
             weight_decay=config.optimizers.wd,
             betas=(0.9, 0.99),
             eps=1e-08,
+        )
+    elif optimizer == "muon":
+        opt = Muon(
+            params,
+            lr=config.optimizers.lr,
+            weight_decay=config.optimizers.wd,
+            betas=tuple(config.optimizers.betas),
+            eps=config.optimizers.eps,
+            adjust_lr_fn=config.optimizers.get("adjust_lr_fn", None),
         )
     else:
         raise ValueError(f"Optimizer {optimizer} not supported")
