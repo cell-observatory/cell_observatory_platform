@@ -96,7 +96,7 @@ datasets:
   max_hypercubes: 5000
 
   use_cached_hypercubes_dataframe: true
-  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_256_256_2_hypercube_view.csv
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
 
   databases:
     occupancy_threshold_filter_type: 'min_ch0'

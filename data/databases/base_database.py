@@ -45,7 +45,9 @@ class ParentDatabase:
         server_folder_path: Optional[Path | str] = None,
         occupancy_threshold: Optional[float] = None,
         occupancy_threshold_filter_type: str = "min_all",
-        base_cube_size: Optional[int] = 128,
+        base_cube_size_x: Optional[int] = 128,
+        base_cube_size_y: Optional[int] = 128,
+        base_cube_size_z: Optional[int] = 128,
         valid_z_sizes: Optional[Sequence[int]] = [128],
         valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384, 512],
         valid_x_sizes: Optional[Sequence[int]] = [128, 256, 384, 512, 640, 896, 1024, 2048],
@@ -126,7 +128,10 @@ class ParentDatabase:
 
         self.with_hypercubes_dataframe = with_hypercubes_dataframe
 
-        self.base_cube_size = base_cube_size
+        self.base_cube_size_x = base_cube_size_x
+        self.base_cube_size_y = base_cube_size_y
+        self.base_cube_size_z = base_cube_size_z
+
         self.num_timepoints, z_slices, y_slices, x_slices = self._get_slices_from_layout_order(
             input_format=self.dataset_layout_order, input_shape=self.input_shape
         )
@@ -148,9 +153,9 @@ class ParentDatabase:
                 self.x_slices = x_slices
 
             if (
-                self.z_slices != self.base_cube_size
-                or self.y_slices != self.base_cube_size
-                or self.x_slices != self.base_cube_size
+                self.z_slices != self.base_cube_size_z
+                or self.y_slices != self.base_cube_size_y
+                or self.x_slices != self.base_cube_size_x
             ):
                 self.max_hypercubes = max_hypercubes
                 if max_hypercubes is None:
@@ -158,9 +163,9 @@ class ParentDatabase:
                 else:
                     self.max_hypercubes_128 = (
                         max_hypercubes
-                        * (self.z_slices // self.base_cube_size)
-                        * (self.y_slices // self.base_cube_size)
-                        * (self.x_slices // self.base_cube_size)
+                        * (self.z_slices // self.base_cube_size_z)
+                        * (self.y_slices // self.base_cube_size_y)
+                        * (self.x_slices // self.base_cube_size_x)
                     )
                     print(
                         f"Requesting {self.max_hypercubes_128 - max_hypercubes} extra hypercubes \
@@ -228,15 +233,15 @@ class ParentDatabase:
             self.hypercubes_dataframe["server_folder"] = self.server_folder_path
 
         if (
-            self.z_slices != self.base_cube_size
-            or self.y_slices != self.base_cube_size
-            or self.x_slices != self.base_cube_size
+            self.z_slices != self.base_cube_size_z
+            or self.y_slices != self.base_cube_size_y
+            or self.x_slices != self.base_cube_size_x
         ):
             print(
-                f"Size of volume axes not equal to base cube size of {self.base_cube_size}, aggregating hypercubes..."
+                f"Size of volume axes not equal to base cube size, aggregating hypercubes..."
             )
         else:
-            print(f"Volume axes equal base cube size {self.base_cube_size}, running metadata aggregation only...")
+            print(f"Volume axes equal base cube size, running metadata aggregation only...")
 
         self.aggregate_hypercubes(
             z_slices=self.z_slices,

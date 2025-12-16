@@ -33,3 +33,6 @@ server_folder_path: ${paths.server_folder_path}
 with_hypercubes_dataframe: true
 
 mask_channel: 1
+base_cube_size_x: 128
+base_cube_size_y: 128
+base_cube_size_z: 128
