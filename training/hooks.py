@@ -494,7 +494,7 @@ class PeriodicCheckpointer(HookBase):
     Checkpointing, executed every ``period`` epoch and after the last epoch.
     """
 
-    def __init__(self, file_prefix="latest_model", backend: str = "TORCHTITAN"):
+    def __init__(self, file_prefix="latest_model", backend: str = "DEEPSPEED"):
         super().__init__()
         self.backend = backend.upper()
         self.file_prefix = file_prefix

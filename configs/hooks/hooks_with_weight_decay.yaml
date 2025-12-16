@@ -33,10 +33,12 @@ hooks_list:
   - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
   - _target_: cell_observatory_platform.training.hooks.SamplerSetter
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
+    backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
   - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
   - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
     file_prefix: latest_model
+    backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
@@ -44,6 +46,7 @@ hooks_list:
     compare_fn: ${evaluation.val_mode}
     eval_after_validation: true
   - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
+    backend: DEEPSPEED
   # - _target_: cell_observatory_platform.training.hooks.NsysProfilerHook
   #   start_iter: 40
   #   end_iter: 90
