@@ -154,7 +154,7 @@ models:
         input_fmt: ${dataset_layout_order}
         input_shape: ${datasets.input_shape}
         patch_shape: ${datasets.patch_shape}
-        embed_dim: ${models.embed_dim}
+        embed_dim: ${models.meta_arch.mae.embed_dim}
 
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
