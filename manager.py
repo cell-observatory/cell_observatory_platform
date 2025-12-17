@@ -95,48 +95,6 @@ def sanitize_name(val):
     return str(val).lower()
 
 
-def _get_sweep_list(d):
-    def _walk(prefix, obj):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                yield from _walk(f"{prefix}.{k}" if prefix else k, v)
-        else:
-            yield (prefix, obj)
-
-    leafs = list(_walk("", d))
-    leaf_lists = [(k, v) for (k, v) in leafs if isinstance(v, list)]
-    assert len(leaf_lists) == 1, f"sweep element must contain exactly one list-valued leaf; got: {leaf_lists}"
-    return leaf_lists[0]
-
-
-def get_sweep_axes(sweep_cfg):
-    if sweep_cfg is None:
-        return []
-
-    d = OmegaConf.to_container(sweep_cfg, resolve=True)
-
-    if isinstance(d, list):
-        axes = []
-        for item in d:
-            assert isinstance(item, dict), f"Each sweep entry must be a dict; got {type(item)}"
-            key, values = _get_sweep_list(item)
-            axes.append((key, values))
-        return axes
-
-    if isinstance(d, dict):
-        key, values = _get_sweep_list(d)
-        return [(key, values)]
-
-    raise TypeError(f"Unsupported sweep type: {type(d)}")
-
-
-def sanitize_name(val):
-    if isinstance(val, float):
-        s = f"{val}"
-        return s.replace(".", "p")
-    return str(val).lower()
-
-
 def set_env_from_cfg(cfg: DictConfig) -> None:
     def _to_str(v):
         return "1" if isinstance(v, bool) and v else "0" if isinstance(v, bool) else str(v)
@@ -193,35 +151,6 @@ def main(cfg: DictConfig):
             # next we merge the run overrides with the resulting run config
             override_cfg = OmegaConf.create(OmegaConf.to_container(run.overrides))
             run_cfg = OmegaConf.merge(run_cfg, override_cfg)
-
-            sweep_axes = get_sweep_axes(cfg.get("sweep", None))
-            if sweep_axes:
-                sweep_combinations = itertools.product(*[[(k, v) for v in vals] for (k, vals) in sweep_axes])
-            else:
-                sweep_combinations = [()]
-
-            for sweep_combination in sweep_combinations:
-                run_cfg_sweep = run_cfg
-                run_name = run.name
-
-                if sweep_combination:
-                    dotlist = [f"{k}={v}" for (k, v) in sweep_combination]
-                    run_cfg_sweep = OmegaConf.merge(run_cfg, OmegaConf.from_dotlist(dotlist))
-
-                    sweep_cfg_name_suffix = []
-                    for k, v in sweep_combination:
-                        safe_key = k.replace(".", "_")
-                        sweep_cfg_name_suffix.append(f"{safe_key}_{sanitize_name(v)}")
-                    run_name = f"{Path(run_name).with_suffix('')}_sweep_" + "_".join(sweep_cfg_name_suffix) + ".yaml"
-
-                if cfg.get("data_base_dir"):
-                    logger.info(f"Root directory for runs set to: {cfg.data_base_dir}")
-                    run_path = run_cfg_sweep.paths.outdir / Path(cfg.data_base_dir) / Path(run_name).with_suffix("")
-                    run_path.mkdir(parents=True, exist_ok=True)
-                else:
-                    logger.info(f"Root directory for runs set to: {run_cfg_sweep.paths.outdir}")
-                    run_path = run_cfg_sweep.paths.outdir / Path(run_name).with_suffix("")
-                    run_path.mkdir(parents=True, exist_ok=True)
 
             sweep_axes = get_sweep_axes(cfg.get("sweep", None))
             if sweep_axes:
