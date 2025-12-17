@@ -164,7 +164,6 @@ def posixify(s: str) -> str:
 
 # modify Hydra config on cmd line to use different models
 @hydra.main(config_path="configs", config_name=None)
-@hydra.main(config_path="configs", config_name=None)
 def main(cfg: DictConfig):
     logger.info(f"Launch config: {OmegaConf.to_yaml(cfg)}")
 
@@ -223,6 +222,7 @@ def main(cfg: DictConfig):
                     logger.info(f"Root directory for runs set to: {run_cfg_sweep.paths.outdir}")
                     run_path = run_cfg_sweep.paths.outdir / Path(run_name).with_suffix("")
                     run_path.mkdir(parents=True, exist_ok=True)
+
             sweep_axes = get_sweep_axes(cfg.get("sweep", None))
             if sweep_axes:
                 sweep_combinations = itertools.product(*[[(k, v) for v in vals] for (k, vals) in sweep_axes])
@@ -255,18 +255,7 @@ def main(cfg: DictConfig):
                 with open_dict(run_cfg_sweep.paths):
                     run_cfg_sweep.paths.outdir = str(run_path)
                     logger.info(f"Output directory for this run: {run_cfg_sweep.paths.outdir}")
-                with open_dict(run_cfg_sweep.paths):
-                    run_cfg_sweep.paths.outdir = str(run_path)
-                    logger.info(f"Output directory for this run: {run_cfg_sweep.paths.outdir}")
 
-                if cfg.get("wandb_tags"):
-                    logger.info(f"Adding W&B tags: {cfg.wandb_tags}")
-                    # TODO: we should consider making event_writers a dict
-                    #       instead of a list to prevent these kinds of loops
-                    with open_dict(run_cfg_sweep):
-                        for event_writer in run_cfg_sweep.loggers.event_writers:
-                            if event_writer._target_.endswith("WandBEventWriter"):
-                                event_writer.tags = event_writer.tags + list(cfg.wandb_tags)
                 if cfg.get("wandb_tags"):
                     logger.info(f"Adding W&B tags: {cfg.wandb_tags}")
                     # TODO: we should consider making event_writers a dict
@@ -278,17 +267,7 @@ def main(cfg: DictConfig):
 
                 with open_dict(run_cfg_sweep):
                     run_cfg_sweep.experiment_name = run_name.replace(".yaml", "")
-                with open_dict(run_cfg_sweep):
-                    run_cfg_sweep.experiment_name = run_name.replace(".yaml", "")
 
-                # save the run config to a file for reproducibility
-                # and so we can pass to the runner and inject
-                # package global variable since we are saving
-                # config in `experiments` folder
-                run_cfg_path = run_path / run_name
-                run_cfg_yml = OmegaConf.to_yaml(run_cfg_sweep)
-                run_cfg_yml = "#@package _global_\n" + run_cfg_yml
-                run_cfg_path.write_text(run_cfg_yml)
                 # save the run config to a file for reproducibility
                 # and so we can pass to the runner and inject
                 # package global variable since we are saving
@@ -299,11 +278,7 @@ def main(cfg: DictConfig):
                 run_cfg_path.write_text(run_cfg_yml)
 
                 logger.info(f"Run config saved to: {run_cfg_path}")
-                logger.info(f"Run config saved to: {run_cfg_path}")
 
-                # launch the job
-                logger.info(f"Run config after overrides: {run_cfg_yml}")
-                launch_job(run_cfg_sweep, run_config_name=run_cfg_path)
                 # launch the job
                 logger.info(f"Run config after overrides: {run_cfg_yml}")
                 launch_job(run_cfg_sweep, run_config_name=run_cfg_path)
