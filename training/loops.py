@@ -425,8 +425,9 @@ class EpochBasedTrainer(BaseTrainer):
             logger.info(f"[Trainer] Fast forwarding lr and wd schedulers to iter {self.start_iter} and epoch {self.start_epoch}.")
             # fast forward lr and wd schedulers to the correct step
             # TODO: consider making more flexible
-            for _ in range(self.start_iter):
-                self.wd_schedulers.step()
+            if self.wd_schedulers is not None:
+                for _ in range(self.start_iter):
+                    self.wd_schedulers.step()
             
             if self.schedulers.update_type == "epoch":
                 for epoch in range(self.start_epoch):
@@ -495,7 +496,7 @@ class EpochBasedTrainer(BaseTrainer):
                 for k, v in loss_dict.items()
             })
 
-        self.model.step()
+            self.model.step()
 
         # for short testing runs:
         # if idx > 25:
