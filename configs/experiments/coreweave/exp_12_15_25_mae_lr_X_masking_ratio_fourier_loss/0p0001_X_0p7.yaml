@@ -27,6 +27,8 @@ task: pretrain_mae
 # Model type
 network: mae
 
+backend: DEEPSPEED
+
 # engine type
 engine: deepspeed
 

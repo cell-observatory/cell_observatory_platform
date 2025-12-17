@@ -56,15 +56,15 @@ def get_optimizer(
             betas=(0.9, 0.99),
             eps=1e-08,
         )
-    elif optimizer == "muon":
-        opt = Muon(
-            params,
-            lr=config.optimizers.lr,
-            weight_decay=config.optimizers.wd,
-            betas=tuple(config.optimizers.betas),
-            eps=config.optimizers.eps,
-            adjust_lr_fn=config.optimizers.get("adjust_lr_fn", None),
-        )
+    # NOTE: not supported fully yet
+    # elif optimizer == "muon":
+    #     opt = Muon(
+    #         params,
+    #         lr=config.optimizers.lr,
+    #         weight_decay=config.optimizers.wd,
+    #         eps=config.optimizers.eps,
+    #         adjust_lr_fn=config.optimizers.get("adjust_lr_fn", None),
+    #     )
     else:
         raise ValueError(f"Optimizer {optimizer} not supported")
 
