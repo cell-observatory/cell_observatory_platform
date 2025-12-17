@@ -816,10 +816,10 @@ class LoaderActor:
         return view
 
     def _get_handle(self, path: str):
-        h = self._handles.get(path)
-        if h is None:
-            h = read_zarr(path, dtype=self.dtype, context=self.ctx, cast=False)
-            self._handles[path] = h
+        # h = self._handles.get(path)
+        # if h is None:
+        h = read_zarr(path, dtype=self.dtype, context=self.ctx, cast=False)
+        # self._handles[path] = h
         return h
 
     def __call__(self, batch):

@@ -16,14 +16,15 @@ from typing import Any, Generic, Iterator, TypeVar
 
 import torch
 import torch.nn as nn
+from torch.optim import Optimizer, Muon
 from torch.distributed.checkpoint.state_dict import (
     get_optimizer_state_dict,
     set_optimizer_state_dict,
     StateDictOptions,
 )
 from torch.distributed.checkpoint.stateful import Stateful
-from torch.optim import Optimizer
-from torch.optim import Muon
+
+from timm.optim.lion import Lion
 
 from torchtitan.distributed import ParallelDims
 from torchtitan.components.ft import FTManager, has_torchft
@@ -55,6 +56,13 @@ def get_optimizer(
             weight_decay=config.optimizers.wd,
             betas=(0.9, 0.99),
             eps=1e-08,
+        )
+    elif optimizer == "lion":
+        opt = Lion(
+            params,
+            lr=config.optimizers.lr,
+            weight_decay=config.optimizers.wd,
+            betas=tuple(config.optimizers.betas),
         )
     # NOTE: not supported fully yet
     # elif optimizer == "muon":
