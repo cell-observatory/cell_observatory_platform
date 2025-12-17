@@ -65,7 +65,7 @@ export RAY_PROMETHEUS_HOST="${head_node_ip}:9090"
 do_cleanup() {
     cleanup_jobs=()
 
-    blaunch -z $head_node bash -lc "
+    blaunch -z $head_node "
         apptainer exec --userns --nv \
             --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
             $env bash -lc '
@@ -90,7 +90,7 @@ do_cleanup() {
     if (( num_workers > 0 )); then
         i=0
         for host in "${workers[@]}"; do
-            blaunch -z $host bash -lc "
+            blaunch -z $host "
                 apptainer exec --userns --nv \
                 --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
                 $env bash -lc '
@@ -129,8 +129,8 @@ do_cleanup() {
 blaunch -z $head_node "
     apptainer exec --userns --nv \
         --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
-        $env bash -lc 'exec /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
-            -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory'
+        $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
+            -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory
 " &
 head_bg_pid=$!
 
@@ -165,8 +165,8 @@ if [ ${nodes} -gt 1 ]; then
         blaunch -z "$host" "
         apptainer exec --userns --nv \
             --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
-            $env bash -lc 'exec /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
-            -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i'
+            $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
+                -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i
         " &
         worker_pids+=($!)
         i+=1
