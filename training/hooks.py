@@ -215,13 +215,14 @@ class LRScheduler(HookBase):
     def before_train(self):
         self.optimizers = self.trainer.optimizers
         self.schedulers = self.trainer.schedulers
-        self.update_type = self.trainer.schedulers.update_type
 
         if self.backend == "TORCHTITAN":
             self.multi_model_opt = True
+            self.update_type = "step"
             assert hasattr(self.schedulers, "schedulers"), "When using multiple optimizers, schedulers should exist."
         elif self.backend == "DEEPSPEED":
             self.multi_model_opt = False
+            self.update_type = self.trainer.schedulers.update_type
         else:
             raise NotImplementedError(f"Backend {self.backend} not supported.")
 
@@ -258,7 +259,12 @@ class LRScheduler(HookBase):
         if self.update_type == "epoch":
             self.schedulers.step(epoch=self.trainer._epoch)
         elif self.update_type == "step":
-            self.schedulers.step(self.trainer._iter)
+            if self.backend == "TORCHTITAN":
+                self.schedulers.step()
+            elif self.backend == "DEEPSPEED":
+                self.schedulers.step(self.trainer._iter)
+            else:
+                raise NotImplementedError(f"{self.backend=} is not supported")
         else:
             raise NotImplementedError(f"{self.update_type=} is not supported")
 
@@ -516,6 +522,10 @@ class PeriodicCheckpointer(HookBase):
     def before_train(self):
         if self.backend == "DEEPSPEED":
             self.period = self.trainer.checkpoint_manager.save_period
+        elif self.backend == "TORCHTITAN":
+            self.period = self.trainer.checkpoint_save_period
+        else:
+            raise NotImplementedError(f"Backend {self.backend} not supported.")
 
     def after_epoch(self):
         """
@@ -557,13 +567,19 @@ class PeriodicCheckpointer(HookBase):
 
 
 class BestCheckpointer(HookBase):
-    def __init__(self, checkpointdir: Union[str, Path]):
+    def __init__(self, checkpointdir: Union[str, Path], backend: str = "DEEPSPEED"):
         super().__init__()
         # NOTE: period is same as in PeriodicCheckpointer
         self.checkpoint_dir = Path(checkpointdir)
+        self.backend = backend.upper()
 
     def before_train(self):
-        self.period = self.trainer.checkpoint_manager.save_period
+        if self.backend == "DEEPSPEED":
+            self.period = self.trainer.checkpoint_manager.save_period
+        elif self.backend == "TORCHTITAN":
+            self.period = self.trainer.checkpoiunt_save_period
+        else:
+            raise NotImplementedError(f"Backend {self.backend} not supported.")
 
     def after_validation(self):
         if (self.trainer._epoch + 1) % self.period == 0:
@@ -1156,7 +1172,10 @@ class MemoryDebugHook(HookBase):
             parts.append(ray_resources_summary())
 
             parts.append("\n[ray object store / memory summary]")
-            parts.append(ray_memory_summary(stats_only=True))
+            if self.trainer._epoch > 40 and self.trainer._epoch % 50 == 0:
+                parts.append(ray_memory_summary(stats_only=False))
+            else:
+                parts.append(ray_memory_summary(stats_only=True))
 
         if self.include_top_processes:
             parts.append("\n[top processes by RSS]")

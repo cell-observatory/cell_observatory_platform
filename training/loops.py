@@ -311,6 +311,8 @@ class EpochBasedTrainer(BaseTrainer):
         ), "Deepspeed gradient_accumulation_steps does not match the calculated value."
         self.with_grad_accumulation = self.gradient_accumulation_steps > 1
         assert self.gradient_accumulation_steps > 0, "Calculated gradient accumulation steps must be > 0."
+        # NOTE: turn off gradient accumulation for now while debugging
+        assert self.gradient_accumulation_steps == 1, "Gradient accumulation currently not supported."
 
         # initialize dataset and dataloader
         # get_dataloader() returns a tuple of dataloaders
@@ -457,132 +459,250 @@ class EpochBasedTrainer(BaseTrainer):
         Iterate one epoch.
         """
         self.before_epoch()
-        
-        self.train_dataloader_iter = iter(self.train_dataloader)
 
-        for _ in range(self.steps_per_epoch):
-            self.run_step()
+        end = time.perf_counter()
+        for idx, data_sample in enumerate(self.train_dataloader):
+            data_time = time.perf_counter() - end
+            data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
+            # run one step with the fetched data sample
+            self.run_step(idx, data_sample)
+            end = time.perf_counter()
 
-        if self.val_dataloader and \
-           (self._epoch >= self.val_begin and
-            (self._epoch - self.val_begin) % self.val_interval == 0):
+        if self.val_dataloader and (
+            self._epoch >= self.val_begin and (self._epoch - self.val_begin) % self.val_interval == 0
+        ):
             # run validation
             self.run_validation()
 
         self.after_epoch()
         self._epoch += 1
 
-    def run_step(self) -> None:
+    def run_step(self, idx, data_sample: Sequence[dict]) -> None:
         """
-        Iterate one step.
+        Iterate one mini-batch.
         """
         self.before_step()
-        
-        microbatch_loss_dicts = []
-        for _microbatch in range(self.gradient_accumulation_steps):
-            t_start = time.perf_counter()
-            data_sample = next(self.train_dataloader_iter)
-            data_time = time.perf_counter() - t_start
-            data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
 
-            # we enforce that all models compute
-            # their losses in the forward pass
-            # and return a loss_dict with at least
-            # a "step_loss" key together with
-            # the outputs of the model
-            loss_dict = self.forward_backward_step(self._iter, data_sample)
-            microbatch_loss_dicts.append({
-                k: (v.detach() if torch.is_tensor(v) else v)
-                for k, v in loss_dict.items()
-            })
+        # we enforce that all models compute
+        # their losses in the forward pass
+        # and return a loss_dict with at least
+        # a "step_loss" key together with
+        # the outputs of the model
+        meta = data_sample.get("metainfo", None)
+        loss_dict, outputs = self.model(data_sample)
 
-            self.model.step()
+        del outputs  # Need to free outputs before bkwd to avoid peaking memory
+        loss = loss_dict["step_loss"]
+        loss_dict_log = {
+            k: (v.detach().float().cpu().item() if torch.is_tensor(v) else v)
+            for k, v in loss_dict.items()
+        }
+
+        outputs = None
+        data_sample = None
+        loss_dict = None
+
+        self.model.backward(loss)
+        self.model.step()
 
         # for short testing runs:
         # if idx > 25:
         #     raise RuntimeError(
         #         f"Training stopped at step {idx} for testing."
         #     )
-        # logger.info(f"step_loss: {loss_dict['step_loss']}, lr: {self.optimizers.param_groups[0]['lr']}")
+        # logger.info(f"step_loss: {loss_dict['step_loss']}, lr: {self.opt.param_groups[0]['lr']}")
 
-        aggregated_loss = aggregate_microbatch_losses(microbatch_loss_dicts, self.gradient_accumulation_steps)
-        self.after_step(data_sample=data_sample, outputs=None, loss_dict=aggregated_loss)
+        self.after_step(
+            data_sample={"metainfo": meta} if meta is not None else None,
+            outputs=None,
+            loss_dict=loss_dict_log,
+        )
         self._iter += 1
-
-    def forward_backward_step(self, idx, data_sample: Sequence[dict]):
-        """
-        Iterate one mini-batch fwd+bkwd step.
-        """
-        loss_dict, outputs = self.model(data_sample)
-        # Need to free outputs before bwd to avoid peaking memory
-        del outputs
-        self.model.backward(loss_dict["step_loss"])
-        
-        self.after_backward(data_sample=data_sample, loss_dict=loss_dict, outputs=None)
-        
-        return loss_dict
 
     def run_validation(self) -> None:
         """
         Run validation.
         """
         self.before_validation()
-
-        self.val_dataloader_iter = iter(self.val_dataloader)
-
         # technically, contexts could be a hook
         # but kept here for clarity
         with inference_context(self.model):
             with torch.no_grad():
-                for step_idx in range(self.val_steps_per_epoch):
-                    self.run_validation_step(step_idx)
+                end = time.perf_counter()
+                for idx, data_sample in enumerate(self.val_dataloader):
+                    data_time = time.perf_counter() - end
+                    data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
+                    # run one step with the fetched data sample
+                    self.run_validation_step(idx, data_sample)
+                    end = time.perf_counter()
 
         metrics = self.evaluator.evaluate()
         self.event_recorder.put_scalars(
-            scope="epoch",
-            prefix="val_",
-            **{k: (v.item() if torch.is_tensor(v) else v)
-                for k, v in metrics.items()
-            }
+            scope="epoch", prefix="val_", **{k: (v.item() if torch.is_tensor(v) else v) for k, v in metrics.items()}
         )
         self.evaluator.reset()
 
         self.after_validation()
-    
-    def run_validation_step(self, idx: int) -> None:
+
+    def run_validation_step(self, idx: int, data_sample: Sequence[dict]) -> None:
         """
         Iterate one validation step.
         """
         self.before_val_step()
 
-        microbatch_loss_dicts = []
-        for _microbatch in range(self.gradient_accumulation_steps):
-            t_start = time.perf_counter()
-            data_sample = next(self.val_dataloader_iter)
-            data_time = time.perf_counter() - t_start
-            data_sample = self.preprocessor(
-                data_sample=data_sample,
-                data_time=data_time,
-            )
+        loss_dict, outputs = self.model(data_sample)
+        self.evaluator.process(data_sample, outputs, loss_dict)
 
-            loss_dict, outputs = self.validation_forward_step(data_sample)
-            microbatch_loss_dicts.append({
-                k: (v.detach() if torch.is_tensor(v) else v)
-                for k, v in loss_dict.items()
-            })
+        self.after_val_step(data_sample={"metainfo": data_sample.get("metainfo")}, outputs=None, loss_dict=None)
 
-            self.evaluator.process(data_sample, outputs, loss_dict)
+        outputs = None
+        loss_dict = None
+        data_sample = None
 
-        aggregated_loss = aggregate_microbatch_losses(microbatch_loss_dicts, self.gradient_accumulation_steps)
-        self.after_val_step(data_sample=data_sample, outputs=None, loss_dict=aggregated_loss)
         self._val_iter += 1
 
-    def validation_forward_step(self, data_sample: Sequence[dict]):
-        """
-        Run microbatch for validation.
-        """
-        loss_dict, outputs = self.model(data_sample)
-        return loss_dict, outputs
+    # def run(self):
+    #     """
+    #     Launch training.
+    #     """
+    #     self.before_train()
+
+    #     while self._epoch < self._max_epochs and not self.stop_training:
+    #         self.run_epoch()
+
+    #     self.after_train()
+
+    # def run_epoch(self) -> None:
+    #     """
+    #     Iterate one epoch.
+    #     """
+    #     self.before_epoch()
+        
+    #     self.train_dataloader_iter = iter(self.train_dataloader)
+
+    #     for _ in range(self.steps_per_epoch):
+    #         self.run_step()
+
+    #     if self.val_dataloader and \
+    #        (self._epoch >= self.val_begin and
+    #         (self._epoch - self.val_begin) % self.val_interval == 0):
+    #         # run validation
+    #         self.run_validation()
+
+    #     self.after_epoch()
+    #     self._epoch += 1
+
+    # def run_step(self) -> None:
+    #     """
+    #     Iterate one step.
+    #     """
+    #     self.before_step()
+        
+    #     microbatch_loss_dicts = []
+    #     for _microbatch in range(self.gradient_accumulation_steps):
+    #         t_start = time.perf_counter()
+    #         data_sample = next(self.train_dataloader_iter)
+    #         data_time = time.perf_counter() - t_start
+    #         data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
+
+    #         # we enforce that all models compute
+    #         # their losses in the forward pass
+    #         # and return a loss_dict with at least
+    #         # a "step_loss" key together with
+    #         # the outputs of the model
+    #         loss_dict = self.forward_backward_step(self._iter, data_sample)
+    #         microbatch_loss_dicts.append({
+    #             k: (v.detach() if torch.is_tensor(v) else v)
+    #             for k, v in loss_dict.items()
+    #         })
+
+    #         self.model.step()
+
+    #     # for short testing runs:
+    #     # if idx > 25:
+    #     #     raise RuntimeError(
+    #     #         f"Training stopped at step {idx} for testing."
+    #     #     )
+    #     # logger.info(f"step_loss: {loss_dict['step_loss']}, lr: {self.optimizers.param_groups[0]['lr']}")
+
+    #     aggregated_loss = aggregate_microbatch_losses(microbatch_loss_dicts, self.gradient_accumulation_steps)
+    #     self.after_step(data_sample=data_sample, outputs=None, loss_dict=aggregated_loss)
+    #     self._iter += 1
+
+    # def forward_backward_step(self, idx, data_sample: Sequence[dict]):
+    #     """
+    #     Iterate one mini-batch fwd+bkwd step.
+    #     """
+    #     loss_dict, outputs = self.model(data_sample)
+    #     # Need to free outputs before bwd to avoid peaking memory
+    #     del outputs
+    #     self.model.backward(loss_dict["step_loss"])
+        
+    #     self.after_backward(data_sample=data_sample, loss_dict=loss_dict, outputs=None)
+        
+    #     return loss_dict
+
+    # def run_validation(self) -> None:
+    #     """
+    #     Run validation.
+    #     """
+    #     self.before_validation()
+
+    #     self.val_dataloader_iter = iter(self.val_dataloader)
+
+    #     # technically, contexts could be a hook
+    #     # but kept here for clarity
+    #     with inference_context(self.model):
+    #         with torch.no_grad():
+    #             for step_idx in range(self.val_steps_per_epoch):
+    #                 self.run_validation_step(step_idx)
+
+    #     metrics = self.evaluator.evaluate()
+    #     self.event_recorder.put_scalars(
+    #         scope="epoch",
+    #         prefix="val_",
+    #         **{k: (v.item() if torch.is_tensor(v) else v)
+    #             for k, v in metrics.items()
+    #         }
+    #     )
+    #     self.evaluator.reset()
+
+    #     self.after_validation()
+    
+    # def run_validation_step(self, idx: int) -> None:
+    #     """
+    #     Iterate one validation step.
+    #     """
+    #     self.before_val_step()
+
+    #     microbatch_loss_dicts = []
+    #     for _microbatch in range(self.gradient_accumulation_steps):
+    #         t_start = time.perf_counter()
+    #         data_sample = next(self.val_dataloader_iter)
+    #         data_time = time.perf_counter() - t_start
+    #         data_sample = self.preprocessor(
+    #             data_sample=data_sample,
+    #             data_time=data_time,
+    #         )
+
+    #         loss_dict, outputs = self.validation_forward_step(data_sample)
+    #         microbatch_loss_dicts.append({
+    #             k: (v.detach() if torch.is_tensor(v) else v)
+    #             for k, v in loss_dict.items()
+    #         })
+
+    #         self.evaluator.process(data_sample, outputs, loss_dict)
+
+    #     aggregated_loss = aggregate_microbatch_losses(microbatch_loss_dicts, self.gradient_accumulation_steps)
+    #     self.after_val_step(data_sample=data_sample, outputs=None, loss_dict=aggregated_loss)
+    #     self._val_iter += 1
+
+    # def validation_forward_step(self, data_sample: Sequence[dict]):
+    #     """
+    #     Run microbatch for validation.
+    #     """
+    #     loss_dict, outputs = self.model(data_sample)
+    #     return loss_dict, outputs
 
 
 class TestTrainer(BaseTrainer):
@@ -943,7 +1063,7 @@ class ParallelEpochBasedTrainer(BaseTrainer):
             parallel_dims=parallel_dims,
             ft_manager=self.ft_manager,
         )
-        self.lr_schedulers = build_lr_schedulers(
+        self.schedulers = build_lr_schedulers(
             optimizers=self.optimizers,
             lr_scheduler_config=cfg.schedulers,
             training_steps=self.steps_per_epoch
@@ -985,7 +1105,7 @@ class ParallelEpochBasedTrainer(BaseTrainer):
         self.metrics_processor = MetricsProcessor(
             gradient_accumulation_steps=self.gradient_accumulation_steps,
             optimizers=self.optimizers,
-            lr_schedulers=self.lr_schedulers,
+            lr_schedulers=self.schedulers,
             model_parts=self.model_parts,
             parallel_dims=self.parallel_dims,
             timers=self.timers,
@@ -1004,11 +1124,12 @@ class ParallelEpochBasedTrainer(BaseTrainer):
 
         # initialize checkpoint manager
         # NOTE: any attributes must be initialized before checkpoint loading
+        self.checkpoiunt_save_period = cfg.checkpoint.checkpoint_manager.save_period
         self.checkpoint_manager = CheckpointManager(
             dataloader=None,
             model_parts=self.model_parts,
             optimizers=self.optimizers,
-            lr_schedulers=self.lr_schedulers,
+            lr_schedulers=self.schedulers,
             states={"train_state": self, "wd_schedulers": self.wd_schedulers},
             checkpoint_config=cfg.checkpoint.checkpoint_manager,
             # TODO: support sd_adapter

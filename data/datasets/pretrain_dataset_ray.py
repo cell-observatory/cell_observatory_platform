@@ -678,10 +678,10 @@ class CollatorActor:
                 ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
 
             else:
-                dst_device.record_stream(self.copy_stream)
                 # tells caching allocator & scheduler on training stream
                 # that dst_device is owned by copy_stream
                 torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
+                dst_device.record_stream(self.copy_stream)
                 if self.callback_strategy == "queue":
                     self._pending_frees.put((event, host_buffer_idx))
 
@@ -816,10 +816,10 @@ class LoaderActor:
         return view
 
     def _get_handle(self, path: str):
-        # h = self._handles.get(path)
-        # if h is None:
-        h = read_zarr(path, dtype=self.dtype, context=self.ctx, cast=False)
-        # self._handles[path] = h
+        h = self._handles.get(path)
+        if h is None:
+            h = read_zarr(path, dtype=self.dtype, context=self.ctx, cast=False)
+            self._handles[path] = h
         return h
 
     def __call__(self, batch):
@@ -914,7 +914,7 @@ def set_data_context(cfg: DictConfig):
     ctx.use_arrow_tensor_v2 = cfg.datasets.use_arrow_tensor_v2
     ctx.execution_options.locality_with_output = cfg.datasets.locality_with_output
     ctx._enable_actor_pool_on_exit_hook = True
-    ctx.execution_options.preserve_order = cfg.datasets.preserve_order
+    # ctx.execution_options.preserve_order = cfg.datasets.preserve_order
 
 
 def get_context_spec(cfg: DictConfig) -> Dict[str, Any]:
