@@ -491,24 +491,115 @@ class LRSchedulersContainer(Stateful):
             scheduler.load_state_dict(copy.deepcopy(state_dict))
 
 
+def linear_warmup_stable_decay(
+    current_step: int,
+    warmup_steps: int,
+    stable_steps: int,
+    decay_steps: int,
+    lr_decay_type: str,
+    min_lr_factor: float,
+):
+    """
+    Computes linear warmup followed by stable learning rate for a while,
+    then some type of decay.
+
+    Per LambdaLR requirement, this is accomplished by returning
+    a multiplicative factor `curr_adjustment` ranging from 1 to 0
+    to adjust the learning rate to create the desired schedule.
+
+    We offer three types of learning rate decay schedules:
+    1. `linear`: decays linearly from 1 to 0 over the decay period.
+    2. `sqrt`: decays as 1 minus the square root of the decay progress.
+    3. `cosine`: follows a cosine curve, decaying according to the values of the half-period of the cosine function.
+
+    If `min_lr_factor` is specified, the decay range is scaled from 1 to `min_lr_factor`
+    to ensure the learning rate does not drop below this minimum value.
+    """
+    warmup_stable_steps = warmup_steps + stable_steps
+    if current_step < warmup_steps:
+        # linear warmup
+        # 0-indexed step, hence + 1 adjustments
+        current_step += 1
+        assert (
+            warmup_steps != 0
+        ), "warmup_steps must not be zero to reach this branch"
+        curr_adjustment = float(current_step / warmup_steps)
+    elif current_step < warmup_stable_steps:
+        curr_adjustment = 1.0
+    else:
+        # 0-indexed step, hence + 1 adjustments
+        current_step += 1
+        assert decay_steps != 0, "decay_steps must not be zero to reach this branch"
+        progress = float(current_step - warmup_stable_steps) / decay_steps
+
+        if lr_decay_type == "linear":
+            curr_adjustment = 1 - progress
+        elif lr_decay_type == "sqrt":
+            curr_adjustment = 1 - math.sqrt(progress)
+        elif lr_decay_type == "cosine":
+            curr_adjustment = 0.5 * (1.0 + math.cos(math.pi * progress))
+        curr_adjustment = min_lr_factor + (1 - min_lr_factor) * curr_adjustment
+    return curr_adjustment
+
+
+def warmup_decay_cooldown_min(
+    current_step: int,
+    warmup_steps: int,
+    decay_steps: int,
+    cooldown_steps: int,
+    lr_decay_type: str,
+    warmup_min_factor: float,
+    min_lr_factor: float,
+):
+    """
+    Multiplicative LR factor schedule (DeepSpeed/timm-like):
+
+      warmup:   warmup_min_factor -> 1.0
+      decay:    1.0 -> min_lr_factor    (linear / sqrt / cosine)
+      cooldown: hold min_lr_factor
+    """
+    # warmup
+    if current_step < warmup_steps:
+        t = float(current_step + 1) / float(warmup_steps)
+        return warmup_min_factor + t * (1.0 - warmup_min_factor)
+
+    # decay
+    decay_start = warmup_steps
+    decay_end = warmup_steps + decay_steps
+    if current_step < decay_end:
+        if decay_steps == 0:
+            return min_lr_factor
+        t = float(current_step - decay_start + 1) / float(decay_steps)
+        if lr_decay_type == "linear":
+            f = 1.0 - t
+        elif lr_decay_type == "sqrt":
+            f = 1.0 - math.sqrt(t)
+        elif lr_decay_type == "cosine":
+            f = 0.5 * (1.0 + math.cos(math.pi * t))
+        else:
+            raise ValueError(f"Unknown lr_decay_type: {lr_decay_type}")
+        return min_lr_factor + (1.0 - min_lr_factor) * f
+
+    return min_lr_factor
+
+
 def build_lr_schedulers(
-    optimizers: OptimizersContainer,
+    optimizers,
     lr_scheduler_config: dict,
     training_steps: int,
+    steps_per_epoch: int,
 ) -> LRSchedulersContainer:
-    """Create a LRSchedulerContainer for the given optimizers and job config.
-
-    This function creates a ``LRSchedulersContainer`` for the given optimizers.
-    ``lr_scheduler_config`` should define the correct lr scheduler parameters.
-
-    Args:
-        optimizers (OptimizersContainer): The corresponding optimizers for the
-            lr_schedulers.
-        lr_scheduler_config (dict): The lr scheduler config.
-        training_steps (int): The total number of training steps.
     """
-    warmup_steps = int(lr_scheduler_config["warmup_steps"])
+    Supports two schedules via lr_scheduler_config["schedule"]:
+      1) "linear_warmup_stable_decay" (existing TorchTitan behavior)
+      2) "warmup_decay_cooldown_min"  (DeepSpeed/timm-like ratios + cooldown hold)
+    """
+    schedule = lr_scheduler_config.get("schedule")
 
+    warmup_steps = int(lr_scheduler_config["warmup"] * steps_per_epoch)
+    cooldown_steps = int(lr_scheduler_config.get("cooldown", 0) * steps_per_epoch)
+
+    # clamp warmup to training_steps
     if warmup_steps > training_steps:
         logger.warning(
             f"Warmup steps ({warmup_steps}) exceed total training steps ({training_steps}). "
@@ -516,79 +607,50 @@ def build_lr_schedulers(
         )
         warmup_steps = training_steps
 
-    if lr_scheduler_config["decay_ratio"] is not None:
-        decay_steps = round(training_steps * lr_scheduler_config["decay_ratio"])
-        if warmup_steps + decay_steps > training_steps:
-            logger.warning(
-                f"Warmup ({warmup_steps}) + decay ({decay_steps}) steps exceed "
-                f"total training steps ({training_steps}). "
-                f"Adjusting decay steps to {training_steps - warmup_steps}."
-            )
-            decay_steps = training_steps - warmup_steps
+    # decay_steps
+    if lr_scheduler_config.get("decay_epochs", None) is not None:
+        decay_steps = int(round(lr_scheduler_config["decay_epochs"] * steps_per_epoch))
     else:
-        decay_steps = training_steps - warmup_steps
-    
-    # Add a virtual last step to prevent the learning rate from dropping to 0
-    stable_steps = training_steps + 1 - warmup_steps - decay_steps
-    lr_decay_type = lr_scheduler_config["decay_type"]
-    min_lr_factor = lr_scheduler_config["min_lr_factor"]
-
-    def linear_warmup_stable_decay(
-        current_step: int,
-        warmup_steps: int,
-        stable_steps: int,
-        decay_steps: int,
-        lr_decay_type: str,
-        min_lr_factor: float,
-    ):
-        """
-        Computes linear warmup followed by stable learning rate for a while,
-        then some type of decay.
-
-        Per LambdaLR requirement, this is accomplished by returning
-        a multiplicative factor `curr_adjustment` ranging from 1 to 0
-        to adjust the learning rate to create the desired schedule.
-
-        We offer three types of learning rate decay schedules:
-        1. `linear`: decays linearly from 1 to 0 over the decay period.
-        2. `sqrt`: decays as 1 minus the square root of the decay progress.
-        3. `cosine`: follows a cosine curve, decaying according to the values of the half-period of the cosine function.
-
-        If `min_lr_factor` is specified, the decay range is scaled from 1 to `min_lr_factor`
-        to ensure the learning rate does not drop below this minimum value.
-        """
-        warmup_stable_steps = warmup_steps + stable_steps
-        if current_step < warmup_steps:
-            # linear warmup
-            # 0-indexed step, hence + 1 adjustments
-            current_step += 1
-            assert (
-                warmup_steps != 0
-            ), "warmup_steps must not be zero to reach this branch"
-            curr_adjustment = float(current_step / warmup_steps)
-        elif current_step < warmup_stable_steps:
-            curr_adjustment = 1.0
+        if schedule == "warmup_decay_cooldown_min":
+            decay_steps = training_steps - warmup_steps - cooldown_steps
         else:
-            # 0-indexed step, hence + 1 adjustments
-            current_step += 1
-            assert decay_steps != 0, "decay_steps must not be zero to reach this branch"
-            progress = float(current_step - warmup_stable_steps) / decay_steps
+            decay_steps = training_steps - warmup_steps
 
-            if lr_decay_type == "linear":
-                curr_adjustment = 1 - progress
-            elif lr_decay_type == "sqrt":
-                curr_adjustment = 1 - math.sqrt(progress)
-            elif lr_decay_type == "cosine":
-                curr_adjustment = 0.5 * (1.0 + math.cos(math.pi * progress))
-            curr_adjustment = min_lr_factor + (1 - min_lr_factor) * curr_adjustment
-        return curr_adjustment
+    # clamp the trio to fit into training_steps
+    warmup_steps = min(warmup_steps, training_steps)
+    remaining = training_steps - warmup_steps
+    decay_steps = max(0, min(decay_steps, remaining))
+    remaining -= decay_steps
+    cooldown_steps = max(0, min(cooldown_steps, remaining))
 
-    lr_lambda = functools.partial(
-        linear_warmup_stable_decay,
-        warmup_steps=warmup_steps,
-        stable_steps=stable_steps,
-        decay_steps=decay_steps,
-        lr_decay_type=lr_decay_type,
-        min_lr_factor=min_lr_factor,
-    )
+    lr_decay_type = lr_scheduler_config["decay_type"]
+    min_lr_factor = float(lr_scheduler_config["cos_min_ratio"])
+
+    if schedule == "linear_warmup_stable_decay":
+        # Add a virtual last step to prevent the learning rate from dropping to 0
+        stable_steps = training_steps + 1 - warmup_steps - decay_steps
+        lr_lambda = functools.partial(
+            linear_warmup_stable_decay,
+            warmup_steps=warmup_steps,
+            stable_steps=stable_steps,
+            decay_steps=decay_steps,
+            lr_decay_type=lr_decay_type,
+            min_lr_factor=min_lr_factor,
+        )
+
+    elif schedule == "warmup_decay_cooldown_min":
+        warmup_min_factor = float(lr_scheduler_config.get("warmup_min_ratio"))
+        lr_lambda = functools.partial(
+            warmup_decay_cooldown_min,
+            warmup_steps=warmup_steps,
+            decay_steps=decay_steps,
+            cooldown_steps=cooldown_steps,
+            lr_decay_type=lr_decay_type,
+            warmup_min_factor=warmup_min_factor,
+            min_lr_factor=min_lr_factor,
+        )
+
+    else:
+        raise ValueError(f"Unknown lr scheduler schedule: {schedule}")
+
     return LRSchedulersContainer(optimizers, lr_lambda)
