@@ -1,2 +1,3 @@
 # build method for model
 BUILD: cell_observatory_platform.models.meta_arch.maskedautoencoder.BUILD
+PARALLELISM: cell_observatory_platform.parallelism.mae.PARALLELIZE
