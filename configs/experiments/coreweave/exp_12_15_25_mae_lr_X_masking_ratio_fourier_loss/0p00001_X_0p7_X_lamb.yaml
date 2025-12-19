@@ -12,13 +12,13 @@ defaults:
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb_mae                     # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/mae                # configs/optimizations/models/jepa.yaml
+  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling
   - _self_
 
 # experiment name (used for logging)
-experiment_name: mae_large_128x256x256_300_epoch_lr_0p001_mask_0p7_fourier_loss
+experiment_name: mae_large_128x256x256_300_epoch_lr_0p00001_mask_0p7_fourier_loss_opt_lamb
 wandb_project: pretraining_3d_v2
 
 # task
@@ -26,6 +26,8 @@ task: pretrain_mae
 
 # Model type
 network: mae
+
+backend: DEEPSPEED
 
 # engine type
 engine: deepspeed
@@ -155,13 +157,12 @@ models:
 
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
-  lr: 1e-3
-
+  lr: 1e-5
+  
 # hooks
 hooks:
   hooks_list:
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
@@ -171,10 +172,6 @@ hooks:
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
-    step_period: 1
-    epoch_period: 1
-    logdir: ${loggers.logdir}
   - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
     metric_name: ${evaluation.val_metric}
     compare_fn: ${evaluation.val_mode}
