@@ -304,8 +304,9 @@ def filter_hypercubes_dataframe_storage_server(df: pl.DataFrame, server_folder_p
 
     if str(server_folder_path).startswith("/groups"):
         flag = "exists_prfs"
-    elif str(server_folder_path).startswith("/aws") \
-        or str(server_folder_path).startswith("/workspace/CellObservatoryData"):
+    elif str(server_folder_path).startswith("/aws") or str(server_folder_path).startswith(
+        "/workspace/CellObservatoryData"
+    ):
         flag = "exists_aws"
     elif str(server_folder_path).startswith("/lustre"):
         flag = "exists_oak"
@@ -373,122 +374,27 @@ def apply_hypercubes_dataframe_selections(
 
     if max_rois is not None and "prepared_id" in df.columns:
         keep_rois = (
-            df.select(pl.col("prepared_id").unique()).sort("prepared_id").select(pl.col("prepared_id").head(max_rois)).to_series().to_list()
+            df.select(pl.col("prepared_id").unique())
+            .sort("prepared_id")
+            .select(pl.col("prepared_id").head(max_rois))
+            .to_series()
+            .to_list()
         )
         df = df.filter(pl.col("prepared_id").is_in(keep_rois))
 
     if max_tiles is not None and "tile_name" in df.columns:
         keep_tiles = (
-            df.select(pl.col("tile_name").unique()).sort("tile_name").select(pl.col("tile_name").head(max_tiles)).to_series().to_list()
+            df.select(pl.col("tile_name").unique())
+            .sort("tile_name")
+            .select(pl.col("tile_name").head(max_tiles))
+            .to_series()
+            .to_list()
         )
         df = df.filter(pl.col("tile_name").is_in(keep_tiles))
 
     if max_hypercubes is not None:
-        df = (
-            df.sort(
-                ["prepared_id", "tile_name",
-                "z_start", "y_start", "x_start", "time_start"]
-            )
-            .head(max_hypercubes)
-        )
-    
-    return df
+        df = df.sort(["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_start"]).head(max_hypercubes)
 
-
-def compute_df_stats(df: pl.DataFrame) -> pl.DataFrame:
-    def _parse_string_col(expr: pl.Expr) -> pl.Expr:
-        return (
-            expr.cast(pl.Utf8)
-            .str.strip_chars()
-            .str.replace_all(r"^[\[\{\(]\s*", "", literal=False)
-            .str.replace_all(r"\s*[\]\}\)]$", "", literal=False)
-            .str.replace_all("\n", " ", literal=True)
-            .str.replace_all('"', "", literal=True)
-            .str.replace_all("'", "", literal=True)
-            .str.replace_all(r"[,\s]+", " ", literal=False)
-            .str.strip_chars()
-            .str.extract_all(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
-            .list.eval(pl.element().cast(pl.Float64))
-        )
-
-    def _parse_occupancy_expr(colname: str, dtypes: Dict[str, pl.DataType]) -> pl.Expr:
-        dt = dtypes[colname]
-        if isinstance(dt, pl.List) and dt.inner in (pl.Float32, pl.Float64):
-            return pl.col(colname).cast(pl.List(pl.Float64))
-        if dt == pl.Utf8:
-            return _parse_string_col(pl.col(colname))
-        raise TypeError(f"Unsupported dtype for {colname}: {dt!r}")
-
-    ch0 = _parse_occupancy_expr("occupancy_ratios_ch_0", df.schema)
-    ch1 = _parse_occupancy_expr("occupancy_ratios_ch_1", df.schema)
-
-    df = df.with_columns(
-        ch0.alias("occupancy_ratios_ch_0_parsed"),
-        ch1.alias("occupancy_ratios_ch_1_parsed"),
-    )
-
-    if "time_size" in df.columns:
-        df = df.with_columns(
-            pl.when(pl.col("time_size").is_not_null())
-            .then(pl.col("occupancy_ratios_ch_0_parsed").list.slice(0, pl.col("time_size").cast(pl.Int64)))
-            .otherwise(pl.col("occupancy_ratios_ch_0_parsed"))
-            .alias("occupancy_ratios_ch_0"),
-            pl.when(pl.col("time_size").is_not_null())
-            .then(pl.col("occupancy_ratios_ch_1_parsed").list.slice(0, pl.col("time_size").cast(pl.Int64)))
-            .otherwise(pl.col("occupancy_ratios_ch_1_parsed"))
-            .alias("occupancy_ratios_ch_1"),
-        )
-    else:
-        df = df.with_columns(
-            pl.col("occupancy_ratios_ch_0_parsed").alias("occupancy_ratios_ch_0"),
-            pl.col("occupancy_ratios_ch_1_parsed").alias("occupancy_ratios_ch_1"),
-        )
-
-    return df.with_columns(
-        pl.col("occupancy_ratios_ch_0").list.min().alias("min_occupancy_ratios_ch_0"),
-        pl.col("occupancy_ratios_ch_0").list.mean().alias("mean_occupancy_ratios_ch_0"),
-        pl.col("occupancy_ratios_ch_0").list.median().alias("med_occupancy_ratios_ch_0"),
-        pl.col("occupancy_ratios_ch_1").list.min().alias("min_occupancy_ratios_ch_1"),
-        pl.col("occupancy_ratios_ch_1").list.mean().alias("mean_occupancy_ratios_ch_1"),
-        pl.col("occupancy_ratios_ch_1").list.median().alias("med_occupancy_ratios_ch_1"),
-    )
-
-
-def apply_occupancy_threshold(
-    df: pl.DataFrame,
-    occupancy_threshold: float | None = 0.0,
-    occupancy_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
-) -> pl.DataFrame:
-    t = 0.0 if occupancy_threshold is None else float(occupancy_threshold)
-    df = compute_df_stats(df)
-    if occupancy_threshold_filter_type == "min_all":
-        mask = (pl.col("min_occupancy_ratios_ch_0") >= t) & (pl.col("min_occupancy_ratios_ch_1") >= t)
-    elif occupancy_threshold_filter_type == "min_ch0":
-        mask = pl.col("min_occupancy_ratios_ch_0") >= t
-    elif occupancy_threshold_filter_type == "min_ch1":
-        mask = pl.col("min_occupancy_ratios_ch_1") >= t
-    else:
-        raise ValueError(occupancy_threshold_filter_type)
-    return df.filter(mask)
-
-
-def apply_hypercubes_dataframe_filters(
-    df: pl.DataFrame, occupancy_threshold: float | None = 0.0, occupancy_threshold_filter_type: str = "min_ch0"
-) -> pl.DataFrame:
-    df = apply_occupancy_threshold(
-        df,
-        occupancy_threshold=occupancy_threshold,
-        occupancy_threshold_filter_type=occupancy_threshold_filter_type,
-    )
-    stats = df.select(
-        pl.col("min_occupancy_ratios_ch_0").min().alias("ch0_min"),
-        pl.col("min_occupancy_ratios_ch_0").quantile(0.5).alias("ch0_med"),
-        pl.col("min_occupancy_ratios_ch_0").max().alias("ch0_max"),
-        pl.col("min_occupancy_ratios_ch_1").min().alias("ch1_min"),
-        pl.col("min_occupancy_ratios_ch_1").quantile(0.5).alias("ch1_med"),
-        pl.col("min_occupancy_ratios_ch_1").max().alias("ch1_max"),
-    ).to_dicts()
-    logger.info(f"Min-occupancy summary: {stats}")
     return df
 
 
@@ -522,10 +428,10 @@ def create_channel_metadata_columns(df: pl.DataFrame, expected_channel_ids=["0",
         for ch in expected_channel_ids:
             if f"mask_bbox_dict_ch_{ch}" in df.columns:
                 df = df.with_columns(pl.col(f"mask_bbox_dict_ch_{ch}").alias("mask_bbox_dict"))
-    if "histograms" not in df.columns:
-        for ch in expected_channel_ids:
-            if f"histogram_ch_{ch}" in df.columns:
-                df = df.with_columns(pl.col(f"histogram_ch_{ch}").alias("histograms"))
+    # if "histograms" not in df.columns:
+    #     for ch in expected_channel_ids:
+    #         if f"histogram_ch_{ch}" in df.columns:
+    #             df = df.with_columns(pl.col(f"histogram_ch_{ch}").alias("histograms"))
     return df
 
 
@@ -539,8 +445,6 @@ def load_hypercubes_dataframe(
     tile_list: list[str] | None = None,
     timepoint_list: list[int] | None = None,
     server_folder_path: str | None = None,
-    occupancy_threshold: float | None = None,
-    occupancy_threshold_filter_type: str = "min_ch0",
     synthetic_only: bool = False,
     has_annotations: bool = False,
 ) -> tuple[pl.DataFrame, dict]:
@@ -577,17 +481,6 @@ def load_hypercubes_dataframe(
     )
     t1 = time.perf_counter()
     logger.info(f"Applied selections in {t1 - t0:.2f} s; shape={df.shape}")
-
-    # NOTE: as we scale to billions of hypercubes, these filters may become a bottleneck again
-    #        so we may need to optimize them further by pre-computation or distributed processing
-    t0 = time.perf_counter()
-    df = apply_hypercubes_dataframe_filters(
-        df,
-        occupancy_threshold=occupancy_threshold,
-        occupancy_threshold_filter_type=occupancy_threshold_filter_type,
-    )
-    t1 = time.perf_counter()
-    logger.info(f"Applied filters in {t1 - t0:.2f} s; shape={df.shape}")
 
     try:
         with open(p.with_suffix(".json"), "r") as f:

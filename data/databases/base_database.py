@@ -1,5 +1,5 @@
-import os
 import logging
+import os
 import sys
 import time
 from abc import abstractmethod
@@ -8,15 +8,19 @@ from sqlite3 import NotSupportedError
 from typing import Any, Dict, Iterable, Literal, Optional, Sequence, Union
 from warnings import filters
 
-from dotenv import load_dotenv
-
 import connectorx as cx
 import numpy as np
 import pandas as pd
 import polars as pl
 import ujson
+from dotenv import load_dotenv
 
-from cell_observatory_platform.data.io import load_hypercubes_dataframe, load_tiles_dataframe
+from cell_observatory_platform.data.io import (
+    add_has_annotations_column,
+    create_channel_metadata_columns,
+    load_hypercubes_dataframe,
+    load_tiles_dataframe,
+)
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -44,7 +48,7 @@ class ParentDatabase:
         max_partitions: Optional[int] = 10,
         server_folder_path: Optional[Path | str] = None,
         occupancy_threshold: Optional[float] = None,
-        occupancy_threshold_filter_type: str = "min_all",
+        occupancy_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
         base_cube_size_x: Optional[int] = 128,
         base_cube_size_y: Optional[int] = 128,
         base_cube_size_z: Optional[int] = 128,
@@ -206,8 +210,6 @@ class ParentDatabase:
                 roi_list=self.roi_list,
                 tile_list=self.tile_list,
                 timepoint_list=self.timepoint_list,
-                occupancy_threshold=self.occupancy_threshold,
-                occupancy_threshold_filter_type=self.occupancy_threshold_filter_type,
                 synthetic_only=self.synthetic_only,
                 has_annotations=self.has_annotations,
             )
@@ -222,7 +224,6 @@ class ParentDatabase:
                 roi_list=self.roi_list,
                 tile_list=self.tile_list,
                 timepoint_list=self.timepoint_list,
-                occupancy_threshold=self.occupancy_threshold,
                 synthetic_only=self.synthetic_only,
                 has_annotations=self.has_annotations,
             )
@@ -237,9 +238,7 @@ class ParentDatabase:
             or self.y_slices != self.base_cube_size_y
             or self.x_slices != self.base_cube_size_x
         ):
-            print(
-                f"Size of volume axes not equal to base cube size, aggregating hypercubes..."
-            )
+            print(f"Size of volume axes not equal to base cube size, aggregating hypercubes...")
         else:
             print(f"Volume axes equal base cube size, running metadata aggregation only...")
 
@@ -256,6 +255,17 @@ class ParentDatabase:
             )
             print("Overriding values in the dataframe")
             self.hypercubes_dataframe["time_size"] = self.num_timepoints
+
+        # NOTE: as we scale to billions of hypercubes, these filters may become a bottleneck again
+        #        so we may need to optimize them further by pre-computation or distributed processing
+        t0 = time.perf_counter()
+        self.hypercubes_dataframe = self._apply_occupancy_threshold(
+            df=self.hypercubes_dataframe,
+            occupancy_threshold=self.occupancy_threshold,
+            occupancy_threshold_filter_type=self.occupancy_threshold_filter_type,
+        )
+        t1 = time.perf_counter()
+        logger.info(f"Applied filters in {t1 - t0:.2f} s; shape={self.hypercubes_dataframe.shape}")
 
         # NOTE: may be reset below in check_hypercube_sizes
         self.hypercubes_dataframe["z_size"] = self.z_slices
@@ -275,18 +285,13 @@ class ParentDatabase:
         )
 
         # NOTE: important to maintain order before downstream processing/splitting
-        self.hypercubes_dataframe = (
-            self.hypercubes_dataframe
-            .sort_values(
-                ["prepared_id", "tile_name",
-                "z_start", "y_start", "x_start", "time_start"]
-            )
-            .reset_index(drop=True)
-        )
+        self.hypercubes_dataframe = self.hypercubes_dataframe.sort_values(
+            ["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_start"]
+        ).reset_index(drop=True)
 
         if self.max_hypercubes is not None:
             self.hypercubes_dataframe = self.hypercubes_dataframe.head(self.max_hypercubes)
-        
+
         print(f"Final length of hypercubes dataframe: {len(self.hypercubes_dataframe)}")
         return self.hypercubes_dataframe
 
@@ -337,6 +342,28 @@ class ParentDatabase:
 
         print(f"Final length of tiles dataframe: {len(self.hypercubes_dataframe)}")
         return self.hypercubes_dataframe
+
+    def _apply_occupancy_threshold(
+        self,
+        df: pd.DataFrame,
+        occupancy_threshold: Optional[float] = None,
+        occupancy_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
+    ) -> pd.DataFrame:
+        t = 0.0 if occupancy_threshold is None else float(occupancy_threshold)
+
+        if occupancy_threshold_filter_type == "min_all":
+            df = df[df["min_occupancy_ratios_ch_0"] >= t and df["min_occupancy_ratios_ch_1"] >= t]
+
+        elif occupancy_threshold_filter_type == "min_ch0":
+            df = df[df["min_occupancy_ratios_ch_0"] >= t]
+
+        elif occupancy_threshold_filter_type == "min_ch1":
+            df = df[df["min_occupancy_ratios_ch_1"] >= t]
+
+        else:
+            raise ValueError(occupancy_threshold_filter_type)
+
+        return df
 
     def get_tiles(
         self,
@@ -650,7 +677,6 @@ class ParentDatabase:
         roi_list: Optional[Sequence[int]] = None,
         tile_list: Optional[Sequence[str]] = None,
         timepoint_list: Optional[Iterable[int]] = None,
-        occupancy_threshold: Optional[float] = None,
         synthetic_only: bool = False,
         has_annotations: bool = False,
     ) -> list[str]:
@@ -943,6 +969,7 @@ class ParentDatabase:
         timepoint_list: Optional[Iterable[int]] = None,
         hypercubes_dataframe_path: Optional[Path] = None,
         occupancy_threshold: Optional[float] = None,
+        occupancy_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
         synthetic_only: bool = False,
         has_annotations: bool = False,
     ) -> pd.DataFrame:
@@ -963,7 +990,6 @@ class ParentDatabase:
                 roi_list=roi_list,
                 tile_list=tile_list,
                 timepoint_list=timepoint_list,
-                occupancy_threshold=occupancy_threshold,
                 synthetic_only=synthetic_only,
                 has_annotations=has_annotations,
             )
@@ -987,7 +1013,6 @@ class ParentDatabase:
                 roi_list=roi_list,
                 tile_list=tile_list,
                 timepoint_list=timepoint_list,
-                occupancy_threshold=occupancy_threshold,
                 synthetic_only=synthetic_only,
                 has_annotations=has_annotations,
             )
@@ -1008,10 +1033,6 @@ class ParentDatabase:
                 f"`time_sizes` for all rows in the dataframe should be {self.num_timepoints}. Found: {table['time_size'].unique()}"
             )
             table["time_size"] = self.num_timepoints
-
-        # FIXME: is this the best default for has_annotations?
-        if "has_annotations" not in table.columns:
-            table["has_annotations"] = True if has_annotations else False
 
         num_rows, num_cols = table.shape
         print(f"\nRetrieved {num_rows} rows. \t Retrieved {num_cols} columns.")
@@ -1043,7 +1064,14 @@ class ParentDatabase:
         print(f"\nUpdated {num_rows} rows using {filters=}.")
         return table
 
-    def _aggregate(self, df_pd, group_cols, z_slices=128, y_slices=128, x_slices=128):
+    def _aggregate(
+        self,
+        df_pd,
+        group_cols: Iterable = ["time_start", "z_start", "y_start", "x_start", "prepared_id", "tile_name"],
+        z_slices=128,
+        y_slices=128,
+        x_slices=128,
+    ):
 
         df = pl.from_pandas(df_pd)
 
@@ -1462,6 +1490,13 @@ class ParentDatabase:
             )
         )
 
+        out = out.with_columns(
+            pl.col("occupancy_ratios_ch_0").cast(pl.List(pl.Float64)).list.min().alias("min_occupancy_ratios_ch_0"),
+            pl.col("occupancy_ratios_ch_0").cast(pl.List(pl.Float64)).list.mean().alias("mean_occupancy_ratios_ch_0"),
+            pl.col("occupancy_ratios_ch_1").cast(pl.List(pl.Float64)).list.min().alias("min_occupancy_ratios_ch_1"),
+            pl.col("occupancy_ratios_ch_1").cast(pl.List(pl.Float64)).list.mean().alias("mean_occupancy_ratios_ch_1"),
+        )
+
         # shift bbox back to local coordinates
         for ch in _channel_ids:
             colname = f"mask_bbox_dict_ch_{ch}"
@@ -1629,7 +1664,7 @@ def get_prepared_rois_csv(
 
     if database_url is None:
         raise ValueError("SUPABASE_PROD_URI environment variable not set")
-    
+
     PREPARED_ROIS_QUERY = """
     SELECT id,
         x_start, y_start, z_start,
