@@ -1,31 +1,37 @@
 # @package _global_
 defaults:
-  - /paths/coreweave                         # configs/paths/coreweave.yaml
+  - /tasks/instance_segmentation             # configs/tasks/instance_segmentation.yaml
+  - /paths/coreweave                               # configs/paths/coreweave.yaml
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
-  - /clusters/coreweave_h100                 # configs/clusters/local.yaml
-  - /datasets/pretrain_dataset_ray     # configs/datasets/pretrain_dataset_ray.yaml
-  - /models/meta_arch/mae/large                  # configs/models/jepa/large.yaml
-  - /models/BUILD_MAE                  # configs/models/BUILD_AutoBench.yaml  
+  - /clusters/coreweave_h100                          # configs/clusters/coreweave_h100.yaml
+  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
+  - /datasets/preprocessor/instance_segmentation_preprocessor # configs/datasets/preprocessor/instance_segmentation_preprocessor.yaml
+  - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
+  - /models/BUILD_plainDETR                  # configs/models/BUILD_plainDETR.yaml
+  - /models/meta_arch/plainDETR/mae_large    # configs/models/plainDETR/large.yaml
+  - /models/backbones/masked_encoder/large              # configs/models/mae/large.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
-  - /optimizers/lamb_mae                     # configs/optimizers/lamb.yaml
-  - /schedulers/warmup_cosine_decay # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/mae                # configs/optimizations/models/jepa.yaml
+  - /optimizers/lamb                         # configs/optimizers/lamb.yaml
+  - /schedulers/warmup_cosine_decay  # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/models/mae                  # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
-  - /profiling/profiling
+  - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: mae_large_128x256x256_300_epoch_lr_0p001_mask_0p7_fourier_loss
-wandb_project: pretraining_3d_v2
+experiment_name: instance_segmentation_plainDETR_baseline_128x256x512_100_epoch_lr_0p00001_opt_lamb
+wandb_project: finetuning_3d_v2
 
 # task
-task: pretrain_mae
+task: finetuning
 
 # Model type
-network: mae
+network: baseline
+
+backend: DEEPSPEED
 
 # engine type
 engine: deepspeed
@@ -46,17 +52,21 @@ trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
 loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
 
 # training quantization
-quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
+quantization: bfloat16 # data type for training, options: float32, float16
 
-# dtype for training data
-dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
-storage_dtype: uint16 # data type for storage
+# NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model
+dataset_dtype: float16 # data type for loading data, options: float32, float16
+storage_dtype: uint16
 
 # dataset layout in the zarr files
 dataset_layout_order: ZYXC
 
+# seed
+seed: 42
+
 # overrides
 # --------------------------------------------------------------------------------
+
 
 # clusters
 clusters:
@@ -71,14 +81,15 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null
+  resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
   pretrained_checkpointdir: null
 
+# data
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-  input_shape: [128, 256, 256, 2]
-  train_shape: [128, 256, 256, 2]
+  train_shape: [128, 256, 512, 1]
+  input_shape: [128, 256, 512, 2]
   patch_shape: [16, 16, 16, null]
   occupancy_threshold: 0.9
 
@@ -100,68 +111,56 @@ datasets:
 
   databases:
     occupancy_threshold_filter_type: 'min_ch0'
-    synthetic_only: false
-    has_annotations: false
+    synthetic_only: true
+    has_annotations: true
+    server_folder_path: ${paths.server_folder_path}/synthetic
     with_hypercubes_dataframe: true
-    mask_channel: null
+    mask_channel: 1
 
-  columns: [ 'x_start', 'y_start', 'z_start', 'time_start',
-          'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
-          'server_folder', 'output_folder',
-          'tile_name', 'prepared_id']
-
-  preserve_order: false # only matters for TP
-  callback_strategy: grpc # grpc, queue
-  async_device_copy: false
-
-  masking:
-    mask_generators:
-      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
-        layout: ${datasets.dataset.input_layout}
-        input_shape: ${datasets.input_shape}
-        patch_shape: ${datasets.patch_shape}
-        input_format: ${dataset_layout_order}
-
-        mask_mode: 
-          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
-          value: "random"
-
-        random_masking_ratio: 0.7
+  collate_fn:
+    _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
+    dtype: ${dataset_dtype}
+    buffer_dtype: ${storage_dtype}
+    batch_size: ${clusters.batch_size_per_gpu}
+    input_shape: ${datasets.input_shape}
+    device_buffer_capacity: 2
+    pin_numa_node: ${datasets.pin_numa_node}
+    pin_pages: ${datasets.pin_memory}
+    use_masks: false
+    transforms_list: null
+    bbox_data_format: zyxzyx
+    bbox_output_format: cxcyczwhd
+    with_resize: false
+    debug: false
+    columns:
+      - "x_start"
+      - "y_start"
+      - "z_start"
+      - "time_start"
+      - "channel_size"
+      - "z_size"
+      - "y_size"
+      - "x_size"
+      - "time_size"
+      - "server_folder"
+      - "output_folder"
+      - "tile_name"
+      - "prepared_id"
+      - "mask_bbox_dict"
 
 schedulers:
   epochs: 300
   warmup: 30
   cooldown: 15
 
-# ROPE axial
-models:
-  meta_arch:
-    mae:
-      abs_sincos_enc: false
-      rope_pos_enc: true
-      rope_random_rotation_per_head: true
-      rope_mixed: false
-      rope_theta: 100.0
-      with_auxiliary_loss: true
-      loss_fn:
-        loss_type: "fourier_loss"
-        alpha: 0.001
-        fft_loss: "l1_masked"
-        spatial_loss: "l2_masked"
-        input_fmt: ${dataset_layout_order}
-        input_shape: ${datasets.input_shape}
-        patch_shape: ${datasets.patch_shape}
-        embed_dim: ${models.meta_arch.mae.embed_dim}
-
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
-  lr: 1e-3
+  lr: 1e-5
 
 # hooks
 hooks:
   hooks_list:
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
@@ -171,10 +170,6 @@ hooks:
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
-    step_period: 1
-    epoch_period: 1
-    logdir: ${loggers.logdir}
   - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
     metric_name: ${evaluation.val_metric}
     compare_fn: ${evaluation.val_mode}
