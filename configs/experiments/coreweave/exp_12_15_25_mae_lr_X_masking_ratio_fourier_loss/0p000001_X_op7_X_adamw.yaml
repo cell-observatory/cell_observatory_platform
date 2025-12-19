@@ -10,7 +10,7 @@ defaults:
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
-  - /optimizers/adamw                     # configs/optimizers/adamw.yaml
+  - /optimizers/adamw_mae                     # configs/optimizers/adamw.yaml
   - /schedulers/warmup_cosine_decay # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml

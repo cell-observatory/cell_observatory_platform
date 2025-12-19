@@ -10,7 +10,7 @@ defaults:
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
-  - /optimizers/adamw                     # configs/optimizers/adamw.yaml
+  - /optimizers/adamw_mae                     # configs/optimizers/adamw.yaml
   - /schedulers/warmup_cosine_decay # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
@@ -84,7 +84,7 @@ datasets:
   patch_shape: [16, 16, 16, null]
   occupancy_threshold: 0.9
 
-  split: 0.0
+  split: 0.1
   return_dataloader: true
   distributed_sampler: true
 
@@ -163,7 +163,6 @@ optimizers:
 hooks:
   hooks_list:
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  # - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
@@ -173,10 +172,6 @@ hooks:
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  # - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
-  #   step_period: 1
-  #   epoch_period: 1
-  #   logdir: ${loggers.logdir}
   - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
     metric_name: ${evaluation.val_metric}
     compare_fn: ${evaluation.val_mode}
