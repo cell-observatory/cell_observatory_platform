@@ -73,7 +73,7 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null
+  resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
   pretrained_checkpointdir: null
 
 datasets:
@@ -158,7 +158,7 @@ models:
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
   lr: 1e-5
-  
+
 # hooks
 hooks:
   hooks_list:
