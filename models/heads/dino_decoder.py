@@ -11,8 +11,9 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.mlp import MLP
+from cell_observatory_platform.models.layers.utils import inverse_sigmoid
+from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
 from cell_observatory_platform.models.layers.attention import CrossAttention, FlashDeformAttn3D
 
@@ -284,6 +285,8 @@ class TransformerDecoder(nn.Module):
             self.decoder_layers = []
 
         self.norm = norm
+        
+        # HACK: bbox regressor is defined in the MaskDINODecoder class
         self.bbox_regressor = None
         self.class_predictor = None
         self.deformable_decoder = deformable_decoder
@@ -384,15 +387,14 @@ class TransformerDecoder(nn.Module):
                 cross_attention_mask=memory_mask,
             )
 
-            # NOTE: not used in MaskDINO implementation
             # iterative reference point update
             # predict deltas from decoder output and update reference points accordingly
-            # if self.bbox_embed is not None:
-            #     reference_points_pre_sigmoid = inverse_sigmoid(reference_points)
-            #     deltas = self.bbox_embed[layer_id](output).to(device)
-            #     reference_points_updated = (deltas + reference_points_pre_sigmoid).sigmoid()
-            #     reference_points = reference_points_updated.detach()
-            #     reference_points_list.append(reference_points_updated)
+            if self.bbox_embed is not None:
+                reference_points_pre_sigmoid = inverse_sigmoid(reference_points)
+                deltas = self.bbox_embed[layer_id](decoder_output).to(target.device)
+                reference_points_updated = (deltas + reference_points_pre_sigmoid).sigmoid()
+                reference_points = reference_points_updated.detach()
+                reference_points_list.append(reference_points_updated)
 
             intermediates.append(self.norm(decoder_output))
 

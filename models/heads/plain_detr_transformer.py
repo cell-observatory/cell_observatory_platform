@@ -444,9 +444,9 @@ class TransformerReParam(Transformer):
         mask_flatten_ = memory_padding_mask[:, : D_ * H_ * W_].view(N_, D_, H_, W_, 1)
 
         # valid_*: [N_] — any valid pixel in each i-slice
-        valid_D = (~mask_flatten_).any(dim=(2, 3)).sum(dim=1)  # [N_, 1] — any valid pixel in each D-slice
-        valid_H = (~mask_flatten_).any(dim=(1, 3)).sum(dim=1)  # [N_, 1] — any valid pixel in each H-slice
-        valid_W = (~mask_flatten_).any(dim=(1, 2)).sum(dim=1)  # [N_, 1] — any valid pixel in each W-slice
+        valid_D = (~mask_flatten_).any(dim=(2, 3)).sum(dim=1) * stride  # [N_, 1] — any valid pixel in each D-slice
+        valid_H = (~mask_flatten_).any(dim=(1, 3)).sum(dim=1) * stride  # [N_, 1] — any valid pixel in each H-slice
+        valid_W = (~mask_flatten_).any(dim=(1, 2)).sum(dim=1) * stride  # [N_, 1] — any valid pixel in each W-slice
 
         # img_size: [N_, 1, 6] (W, H, D, W, H, D)
         img_size = torch.cat([valid_W, valid_H, valid_D, valid_W, valid_H, valid_D], dim=-1).unsqueeze(1)

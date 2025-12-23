@@ -537,7 +537,7 @@ def BUILD(cfg: Mapping[str, Any]) -> PlainDETR:
     if adapter_cfg is not None:
         backbone = build_backbone_wrapper(bw_cfg, adapter_cfg)
     else:
-        backbone = build_backbone_wrapper(bw_cfg)
+        backbone = build_backbone_wrapper(bw_cfg, None)
 
     # ------------------------------------------------------------------
     # 2) Build transformer

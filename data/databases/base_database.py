@@ -53,7 +53,7 @@ class ParentDatabase:
         base_cube_size_y: Optional[int] = 128,
         base_cube_size_z: Optional[int] = 128,
         valid_z_sizes: Optional[Sequence[int]] = [128],
-        valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384, 512],
+        valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384, 512, 1024],
         valid_x_sizes: Optional[Sequence[int]] = [128, 256, 384, 512, 640, 896, 1024, 2048],
         synthetic_only: bool = False,
         has_annotations: bool = False,

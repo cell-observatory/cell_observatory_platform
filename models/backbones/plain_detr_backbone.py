@@ -15,6 +15,7 @@ Adapted from:
 """
 
 from typing import List, Optional
+import functools
 
 import torch
 import torch.nn.functional as F
@@ -22,6 +23,7 @@ from hydra.utils import get_method
 from torch import nn
 
 from cell_observatory_platform.models.layers.norm import LayerNorm3D
+from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
 
 
 class PlainDETRBackbone(nn.Module):
@@ -34,6 +36,10 @@ class PlainDETRBackbone(nn.Module):
         blocks_to_train: Optional[List[str]] = None,
         use_layernorm: bool = True,
         adapter_out_layers: Optional[List[int]] = None,
+        backbone_output_format: str = "feature_map",
+        input_shape: Optional[List[int]] = [128, 256, 512, 2],
+        patch_shape: Optional[List[int]] = [16, 32, 32, None],
+        input_format: Optional[str] = "ZYXC",
     ):
         super().__init__()
 
@@ -57,11 +63,35 @@ class PlainDETRBackbone(nn.Module):
             self.adapter = BUILD_ADAPTER(adapter_args)
         else:
             # TODO: implement logic to handle positional encodings without adapter
-            raise NotImplementedError("Backbone adapter must be specified for PlainDETRBackbone.")
-            # self.with_backbone_adapter = False
+            # raise NotImplementedError("Backbone adapter must be specified for PlainDETRBackbone.")
+            self.with_backbone_adapter = False
 
         self.adapter_out_layers = adapter_out_layers
 
+        if len(backbone_embed_dims) > 1:
+            self.multi_scale_features = True
+        else:
+            self.multi_scale_features = False
+
+        self.input_shape = input_shape
+        self.patch_shape = patch_shape
+        self.input_format = input_format
+        _, token_shape = calc_num_patches(
+            input_fmt=self.input_format,
+            input_shape=self.input_shape,
+            patch_shape=patch_shape,
+        )
+        if self.input_format == "ZYXC":
+            t, z, y, x, c = token_shape
+            self.token_shape = [z, y, x]
+        else:
+            raise NotImplementedError(f"Input format {self.input_format} not supported yet.")
+
+        assert self.input_format[-1] == "C", "The last dimension of input_format must be 'C'."
+        self.out_channels = self.input_shape[-1]
+        self.backbone_output_format = backbone_output_format
+        self.backbone_returns_sequence = self.backbone_output_format == "sequence"
+        
     def forward(self, data_sample: dict) -> List[dict]:
         features = self.backbone.forward_features(data_sample["data_tensor"])
 
@@ -72,7 +102,19 @@ class PlainDETRBackbone(nn.Module):
             features_list = [features_dict[k] for k in sorted(features_dict.keys(), key=int)]
         else:
             # we assume backbone.forward_features already returns a list of feature maps
-            features_list = features
+            if self.multi_scale_features:
+                features_list = features
+            else:
+                features_list = [features]
+
+            if self.backbone_returns_sequence:
+                assert hasattr(self.backbone, "patch_embedding"), \
+                    "Backbone must have patch_embedding attribute to unpatchify."
+                for idx, feat in enumerate(features_list):
+                    B, N, C = feat.shape
+                    features_list[idx] = feat.transpose(1, 2).reshape(
+                        B, C, *self.token_shape
+                    )
 
         if self.use_layernorm:
             features_list = [ln(x).contiguous() for ln, x in zip(self.layer_norms, features_list)]
@@ -91,7 +133,7 @@ class PlainDETRBackbone(nn.Module):
         return out
 
 
-def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict]) -> nn.Module:
+def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> nn.Module:
     out_layers = backbone_wrapper_args.get("out_layers", None)
     if out_layers is not None:
         backbone_wrapper_args["backbone_args"]["out_layers"] = out_layers
@@ -104,5 +146,9 @@ def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict]) -> nn.Modul
         blocks_to_train=backbone_wrapper_args.get("blocks_to_train"),
         use_layernorm=backbone_wrapper_args.get("use_layernorm", True),
         adapter_out_layers=backbone_wrapper_args.get("adapter_out_layers"),
+        backbone_output_format=backbone_wrapper_args.get("backbone_output_format"),
+        input_shape=backbone_wrapper_args.get("input_shape"),
+        input_format=backbone_wrapper_args.get("input_format"),
+        patch_shape=backbone_wrapper_args.get("patch_shape"),
     )
     return model

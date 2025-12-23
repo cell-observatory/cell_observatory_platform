@@ -105,6 +105,8 @@ class FinetuneCollatorActor:
         use_masks: bool = False,
         with_resize: bool = False,
         debug: bool = False,
+        normalize_bboxes: bool = False,
+        async_device_copy: bool = False,
     ):
         self.columns = columns
 
@@ -114,7 +116,8 @@ class FinetuneCollatorActor:
 
         self.batch_size = batch_size
         # shape for the device buffer (after resize, without mask channel)
-        self.input_shape = self._get_input_shape(input_shape, input_format)
+        self.input_shape = tuple(input_shape)
+        self.spatial_shape = self._get_spatial_shape(self.input_shape, input_format)
         self.device_buffer_capacity = device_buffer_capacity
 
         self.input_format = input_format.upper()
@@ -200,6 +203,7 @@ class FinetuneCollatorActor:
             )
 
         self.use_masks = use_masks
+        self.normalize_bboxes = normalize_bboxes
 
         ray.logger.info(
             f"FinetuneCollatorActor on rank {self.global_rank} and Numa Node {self.numa_node} "
@@ -214,8 +218,17 @@ class FinetuneCollatorActor:
         )
 
         self.debug = debug
+        self.async_device_copy = async_device_copy
+
+    def _get_spatial_shape(self, input_shape: tuple, input_format: str) -> tuple:
+        input_format = input_format.upper()
+        if input_format == "ZYXC":
+            return input_shape[:-1]
+        else:
+            raise NotImplementedError(f"Unsupported input_format: {input_format}")
 
     def _get_input_shape(self, input_shape: tuple, input_format: str) -> tuple:
+        # TODO: generalize this beyond last channel mask removal
         input_format = input_format.upper()
         if input_format == "ZYXC":
             # remove mask channel: (Z, Y, X, C_full) -> (Z, Y, X, C_full-1)
@@ -238,7 +251,7 @@ class FinetuneCollatorActor:
         except Exception:
             pass
 
-    def _split_inputs_and_masks(self, inputs: torch.Tensor):
+    def _get_masks(self, inputs: torch.Tensor):
         """
         inputs: (B, Z, Y, X, C_full)
         returns:
@@ -257,10 +270,8 @@ class FinetuneCollatorActor:
                 f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
             )
 
-        masks = inputs[..., -1]  # (B, Z, Y, X), view
-        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
-
-        return inputs_wo_mask, masks
+        masks = inputs[..., -1].clone()  # (B, Z, Y, X), view
+        return inputs, masks
 
     def _build_targets(
         self,
@@ -330,7 +341,12 @@ class FinetuneCollatorActor:
 
         if self.bbox_data_format != self.bbox_output_format:
             bboxes_batch = [
-                convert_bbox_format(b, self.bbox_data_format, self.bbox_output_format) for b in bboxes_batch
+                convert_bbox_format(b, 
+                                    self.bbox_data_format, 
+                                    self.bbox_output_format, 
+                                    self.normalize_bboxes, 
+                                    # spatial shape is (Z, Y, X), need (X, Y, Z)
+                                    self.spatial_shape[::-1]) for b in bboxes_batch
             ]
 
         targets: List[Dict[str, Any]] = []
@@ -379,7 +395,7 @@ class FinetuneCollatorActor:
             )
 
             inputs_full = torch.from_numpy(h_view)
-            inputs_no_mask, masks_labelmap = self._split_inputs_and_masks(inputs_full)
+            inputs, masks_labelmap = self._get_masks(inputs_full)
 
             meta_cpu: Dict[str, Any] = {}
             for k in self.columns:
@@ -408,7 +424,7 @@ class FinetuneCollatorActor:
             meta_cpu["padding_mask"] = torch.as_tensor(padding_mask)
 
             sample_cpu = {
-                "data_tensor": inputs_no_mask,
+                "data_tensor": inputs,
                 "metainfo": {
                     **meta_cpu,
                     "targets": targets_cpu,
@@ -422,7 +438,7 @@ class FinetuneCollatorActor:
                 inputs_resized = sample_cpu["data_tensor"]
                 metainfo_resized = sample_cpu["metainfo"]
             else:
-                inputs_resized = inputs_no_mask
+                inputs_resized = inputs
                 metainfo_resized = {
                     **meta_cpu,
                     "targets": targets_cpu,
@@ -434,25 +450,36 @@ class FinetuneCollatorActor:
             with torch.cuda.stream(self.copy_stream):
                 self._copy_h2d(dst=dst_device, src=inputs_resized)
 
-                def _release_buffer_on_done(stream, error_status, user_data):
-                    actor_reference = user_data["actor"]
-                    hb_idx = user_data["host_buffer_idx"]
-                    try:
-                        actor_reference.put_free.remote(hb_idx)
-                    except Exception as e:
-                        logger.exception(f"put_free failed for {hb_idx}: {e}")
+                if self.async_device_copy:
 
-                with self.cp_stream:
-                    self.cp_stream.add_callback(
-                        _release_buffer_on_done,
-                        {
-                            "actor": self.host_buffer_actor,
-                            "host_buffer_idx": host_buffer_idx,
-                        },
-                    )
+                    def _release_buffer_on_done(stream, error_status, user_data):
+                        actor_reference = user_data["actor"]
+                        hb_idx = user_data["host_buffer_idx"]
+                        try:
+                            actor_reference.put_free.remote(hb_idx)
+                        except Exception as e:
+                            logger.exception(f"put_free failed for {hb_idx}: {e}")
 
-            torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
-            dst_device.record_stream(self.copy_stream)
+                    with self.cp_stream:
+                        self.cp_stream.add_callback(
+                            _release_buffer_on_done,
+                            {
+                                "actor": self.host_buffer_actor,
+                                "host_buffer_idx": host_buffer_idx,
+                            },
+                        )
+
+            if not self.async_device_copy:
+                # Force the copy to complete
+                torch.cuda.synchronize(self.device)
+                # Synchronously free host slot
+                ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+
+            else:
+                # tells caching allocator & scheduler on training stream
+                # that dst_device is owned by copy_stream
+                torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
+                dst_device.record_stream(self.copy_stream)
 
             metainfo: Dict[str, Any] = {
                 "host_buffer_idx": host_buffer_idx,
@@ -478,7 +505,10 @@ class FinetuneCollatorActor:
             metainfo["targets"] = targets_gpu
 
             if self.debug:
-                ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+                # NOTE: for testing only, put_free(idx) otherwise called by hooks in
+                #       training loop, see training/hooks.py:FreeDeviceBufferHook
+                if self.async_device_copy:
+                    ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
                 self.device_buffer.put_free(device_buffer_idx)
 
             return {"data_tensor": dst_device, "metainfo": metainfo}
