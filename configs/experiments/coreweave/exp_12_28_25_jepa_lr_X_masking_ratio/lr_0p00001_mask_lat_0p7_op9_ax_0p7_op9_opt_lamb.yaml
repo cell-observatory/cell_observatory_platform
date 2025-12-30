@@ -18,7 +18,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: jepa_large_128x256x256_300_epoch_lr_0p00001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb
+experiment_name: jepa_large_128x256x256_300_epoch_lr_0p00001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb
 wandb_project: pretraining_3d_v2
 
 # task
@@ -73,7 +73,7 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
+  # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
   pretrained_checkpointdir: null
 
 # data
@@ -130,8 +130,8 @@ datasets:
         patch_shape: ${datasets.patch_shape}
         input_format: ${dataset_layout_order}
 
-        lateral_mask_scale: [0.8, 0.9]
-        axial_mask_scale: [0.8, 0.9]
+        lateral_mask_scale: [0.7, 0.9]
+        axial_mask_scale: [0.7, 0.9]
         # temporal_mask_scale: 0.5 # not used
         aspect_ratio_scale_hw: [0.75, 1.5]
         num_blocks: 2

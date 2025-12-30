@@ -18,7 +18,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: jepa_large_128x256x256_300_epoch_lr_0p00001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb
+experiment_name: jepa_large_128x256x256_300_epoch_lr_0p0001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb
 wandb_project: pretraining_3d_v2
 
 # task
@@ -73,7 +73,7 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
+  # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
   pretrained_checkpointdir: null
 
 # data
@@ -162,7 +162,7 @@ schedulers:
 
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
-  lr: 1e-5
+  lr: 1e-4
 
 # hooks
 hooks:
