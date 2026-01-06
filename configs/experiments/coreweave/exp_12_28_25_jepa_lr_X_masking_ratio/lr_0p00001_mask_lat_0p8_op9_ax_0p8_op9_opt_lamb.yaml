@@ -62,8 +62,8 @@ dataset_layout_order: ZYXC
 
 # clusters
 clusters:
-  batch_size: 5632 # total batch size
-  worker_nodes: 8 # number of worker nodes
+  batch_size: 2816 # total batch size
+  worker_nodes: 4 # number of worker nodes
   gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
   mem_per_cpu: 40000 # ram per cpu core
