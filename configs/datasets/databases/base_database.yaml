@@ -23,6 +23,10 @@ has_annotations: ${datasets.has_annotations} # whether the data has annotations
 occupancy_threshold: ${datasets.occupancy_threshold} # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
 occupancy_threshold_filter_type: 'min_ch0'
 
+cdf_threshold: ${datasets.cdf_threshold} # to filter our hypercubes with less than this CDF threshold
+cdf_target: ${datasets.cdf_target} # to filter our hypercubes with less than this CDF target
+cdf_threshold_filter_type: 'min_ch0'
+
 verbose: true # to print debug messages
 hypercubes_dataframe_path: ${datasets.hypercubes_dataframe_path}
 use_cached_hypercubes_dataframe: ${datasets.use_cached_hypercubes_dataframe} # if True, will use the cached hypercubes dataframe from the given path

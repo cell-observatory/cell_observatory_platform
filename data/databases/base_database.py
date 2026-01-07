@@ -3,6 +3,7 @@ import os
 import sys
 import time
 from abc import abstractmethod
+from functools import partial
 from pathlib import Path
 from sqlite3 import NotSupportedError
 from typing import Any, Dict, Iterable, Literal, Optional, Sequence, Union
@@ -49,6 +50,9 @@ class ParentDatabase:
         server_folder_path: Optional[Path | str] = None,
         occupancy_threshold: Optional[float] = None,
         occupancy_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
+        cdf_threshold: Optional[float] = 150,
+        cdf_target: Literal["80", "90", "95", "99"] = "90",
+        cdf_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
         base_cube_size_x: Optional[int] = 128,
         base_cube_size_y: Optional[int] = 128,
         base_cube_size_z: Optional[int] = 128,
@@ -124,6 +128,10 @@ class ParentDatabase:
 
         self.occupancy_threshold = occupancy_threshold
         self.occupancy_threshold_filter_type = occupancy_threshold_filter_type
+
+        self.cdf_threshold = cdf_threshold
+        self.cdf_target = cdf_target
+        self.cdf_threshold_filter_type = cdf_threshold_filter_type
 
         self.mask_channel = mask_channel
         self.synthetic_only = synthetic_only
@@ -265,7 +273,17 @@ class ParentDatabase:
             occupancy_threshold_filter_type=self.occupancy_threshold_filter_type,
         )
         t1 = time.perf_counter()
-        logger.info(f"Applied filters in {t1 - t0:.2f} s; shape={self.hypercubes_dataframe.shape}")
+        logger.info(f"Applied OCC filters in {t1 - t0:.2f} s; shape={self.hypercubes_dataframe.shape}")
+
+        t0 = time.perf_counter()
+        self.hypercubes_dataframe = self._apply_cdf_threshold(
+            df=self.hypercubes_dataframe,
+            cdf_threshold=self.cdf_threshold,
+            cdf_target=self.cdf_target,
+            cdf_threshold_filter_type=self.cdf_threshold_filter_type,
+        )
+        t1 = time.perf_counter()
+        logger.info(f"Applied CDF filters in {t1 - t0:.2f} s; shape={self.hypercubes_dataframe.shape}")
 
         # NOTE: may be reset below in check_hypercube_sizes
         self.hypercubes_dataframe["z_size"] = self.z_slices
@@ -363,6 +381,28 @@ class ParentDatabase:
         else:
             raise ValueError(occupancy_threshold_filter_type)
 
+        return df
+
+    def _apply_cdf_threshold(
+        self,
+        df: pd.DataFrame,
+        cdf_threshold: Optional[float] = 150,
+        cdf_target: Literal["80", "90", "95", "99"] = "90",
+        cdf_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
+    ) -> pd.DataFrame:
+        t = 0.0 if cdf_threshold is None else float(cdf_threshold)
+
+        if cdf_threshold_filter_type == "min_all":
+            df = df[df[f"cdf_{cdf_target}_ch_0"] >= t and df[f"cdf_{cdf_target}_ch_1"] >= t]
+
+        elif cdf_threshold_filter_type == "min_ch0":
+            df = df[df[f"cdf_{cdf_target}_ch_0"] >= t]
+
+        elif cdf_threshold_filter_type == "min_ch1":
+            df = df[df[f"cdf_{cdf_target}_ch_1"] >= t]
+
+        else:
+            raise ValueError(cdf_threshold_filter_type)
         return df
 
     def get_tiles(
@@ -968,8 +1008,6 @@ class ParentDatabase:
         tile_list: Optional[Sequence[str]] = None,
         timepoint_list: Optional[Iterable[int]] = None,
         hypercubes_dataframe_path: Optional[Path] = None,
-        occupancy_threshold: Optional[float] = None,
-        occupancy_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
         synthetic_only: bool = False,
         has_annotations: bool = False,
     ) -> pd.DataFrame:
@@ -1273,6 +1311,26 @@ class ParentDatabase:
                         return None
                     return ujson.dumps(hist)
 
+                def _get_cdf(ch_meta_str, ch_id=ch, percentile="90.0"):
+                    if ch_meta_str is None:
+                        return None
+                    if isinstance(ch_meta_str, str):
+                        try:
+                            ch_meta = ujson.loads(ch_meta_str)
+                        except Exception:
+                            return None
+                    elif isinstance(ch_meta_str, dict):
+                        ch_meta = ch_meta_str
+                    else:
+                        return None
+
+                    hist = ch_meta.get("histogram")
+
+                    if hist is not None:
+                        return hist.get(percentile, None)
+                    else:
+                        return None
+
                 def _get_mask_bbox_dict(row, ch_id=ch):
                     ch_meta_val = row[f"pc_metadata_json_ch_{ch}"]
                     if ch_meta_val is None:
@@ -1332,8 +1390,21 @@ class ParentDatabase:
                         pl.struct([f"pc_metadata_json_ch_{ch}", "cube_z_start", "cube_y_start", "cube_x_start"])
                         .map_elements(_get_mask_bbox_dict, return_dtype=pl.Utf8)
                         .alias(f"mask_bbox_dict_ch_{ch}"),
+                        pl.col(f"pc_metadata_json_ch_{ch}")
+                        .map_elements(partial(_get_cdf, percentile="80.0"), return_dtype=pl.Int16)
+                        .alias(f"cdf_80_ch_{ch}"),
+                        pl.col(f"pc_metadata_json_ch_{ch}")
+                        .map_elements(partial(_get_cdf, percentile="90.0"), return_dtype=pl.Int16)
+                        .alias(f"cdf_90_ch_{ch}"),
+                        pl.col(f"pc_metadata_json_ch_{ch}")
+                        .map_elements(partial(_get_cdf, percentile="95.0"), return_dtype=pl.Int16)
+                        .alias(f"cdf_95_ch_{ch}"),
+                        pl.col(f"pc_metadata_json_ch_{ch}")
+                        .map_elements(partial(_get_cdf, percentile="99.0"), return_dtype=pl.Int16)
+                        .alias(f"cdf_99_ch_{ch}"),
                     ]
                 )
+
         else:
             _channel_ids = []
             df = df.with_columns(pl.lit(None).alias("_pc_metadata_parsed"))
@@ -1447,6 +1518,10 @@ class ParentDatabase:
             pl.col("exists").max(),
             pl.col("exists_prfs").max(),
             pl.col("exists_aws").max(),
+            pl.col("cdf_80_ch_0").min(),
+            pl.col("cdf_90_ch_0").min(),
+            pl.col("cdf_95_ch_0").min(),
+            pl.col("cdf_99_ch_0").min(),
         ]
 
         # Only aggregate JSON columns if they actually exist
