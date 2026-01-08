@@ -93,6 +93,11 @@ datasets:
   exec_async: true
   exec_pipelined: true
 
+  occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
+  cdf_threshold: 0 # to filter our hypercubes with less than this CDF threshold
+  cdf_target: 90 # to filter our hypercubes with less than this CDF target
+
+
 evaluation:
   val_begin: 0
   val_interval: 1
