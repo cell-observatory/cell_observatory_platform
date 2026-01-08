@@ -770,7 +770,6 @@ class ParentDatabase:
                     {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
                 FROM {table_name} {table_name_shortcut}
                 {filters} 
-                ORDER BY first_pc_id DESC
                 {limit}
             """
         ]
