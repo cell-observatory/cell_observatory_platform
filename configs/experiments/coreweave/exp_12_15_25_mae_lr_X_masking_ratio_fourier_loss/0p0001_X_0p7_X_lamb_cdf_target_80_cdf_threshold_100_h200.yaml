@@ -103,7 +103,6 @@ datasets:
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
 
   databases:
-    cdf_threshold: null
     cdf_target: 80
     cdf_threshold: 100
     occupancy_threshold_filter_type: 'min_ch0'
