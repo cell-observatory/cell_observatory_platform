@@ -25,19 +25,15 @@ class MaskDINO(nn.Module):
         num_queries: int,
         instance_segmentation_flag: bool,
         topk_per_image: int,
-        adapter: Optional[nn.Module] = None,
         focus_on_boxes: bool = False,
     ):
         super().__init__()
 
         self.backbone = backbone
         self.segmentation_head = segmentation_head
+        
         self.matcher = matcher
         self.criterion = criterion
-
-        self.with_adapter = adapter is not None
-        if self.with_adapter:
-            self.adapter = adapter
 
         self.num_queries = num_queries
         self.topk_per_image = topk_per_image
@@ -131,11 +127,7 @@ class MaskDINO(nn.Module):
         return weight_dict
 
     def forward(self, data_sample: dict):
-        features = self.backbone.forward_features(data_sample["data_tensor"])
-        if self.with_adapter:
-            features_dict = self.adapter(data_sample["data_tensor"], features)
-        else:
-            features_dict = features
+        features_dict = self.backbone(data_sample)
 
         outputs, denoise_predictions = self.segmentation_head(
             features_dict, targets=data_sample["metainfo"]["targets"][0]
@@ -156,11 +148,7 @@ class MaskDINO(nn.Module):
         return losses, outputs
 
     def predict(self, data_sample: dict):
-        features = self.backbone.forward_features(data_sample["data_tensor"])
-        if self.with_adapter:
-            features_dict = self.adapter(data_sample["data_tensor"], features)
-        else:
-            features_dict = features
+        features_dict = self.backbone(data_sample)
 
         outputs, _ = self.segmentation_head(features_dict, targets=None)
         predicted_labels, predicted_boxes, predicted_masks = [
@@ -284,33 +272,29 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
     # 1) Backbone
     # ----------------------------------------------------
 
-    backbone_cfg = model_cfg["backbone_args"]
-    BUILD_BACKBONE = get_method(backbone_cfg["BUILD"])
-    backbone = BUILD_BACKBONE(backbone_cfg)
-
-    # ----------------------------------------------------
-    # 2) Optional backbone adapter
-    # ----------------------------------------------------
+    bw_cfg = model_cfg["backbone_wrapper_args"]
+    build_backbone_wrapper = get_method(bw_cfg.BUILD)
 
     adapter_cfg = model_cfg.get("adapter_args", None)
     if adapter_cfg is not None:
-        BUILD_ADAPTER = adapter_cfg["BUILD"]
-        adapter = BUILD_ADAPTER(adapter_cfg)
+        backbone = build_backbone_wrapper(bw_cfg, adapter_cfg)
     else:
-        adapter = None
+        backbone = build_backbone_wrapper(bw_cfg, None)
 
     # ----------------------------------------------------
     # 3) Pixel decoder (MaskDINOEncoder)
     # ----------------------------------------------------
 
-    pixel_decoder_cfg: Mapping[str, Any] = model_cfg["pixel_decoder_args"]
+    pixel_decoder_cfg = model_cfg["pixel_decoder_args"]
+    # TODO: move to BUILD function for MaskDINOEncoder
     pixel_decoder = MaskDINOEncoder(**_extract_kwargs(pixel_decoder_cfg))
 
     # ----------------------------------------------------
     # 4) Transformer decoder (MaskDINODecoder)
     # ----------------------------------------------------
 
-    decoder_cfg: Mapping[str, Any] = model_cfg["decoder_args"]
+    decoder_cfg = model_cfg["decoder_args"]
+    # TODO: move to BUILD function for MaskDINODecoder
     decoder = MaskDINODecoder(**_extract_kwargs(decoder_cfg))
 
     num_classes = decoder_cfg["num_classes"]
@@ -332,14 +316,15 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
     # 6) Matcher
     # ----------------------------------------------------
 
-    matcher_cfg: Mapping[str, Any] = model_cfg["matcher_args"]
+    matcher_cfg = model_cfg["matcher_args"]
+    # TODO: move to BUILD function for HungarianMatcher
     matcher = HungarianMatcher(**_extract_kwargs(matcher_cfg))
 
     # ----------------------------------------------------
     # 7) Criterion: adjust loss weights, then build DETR_Set_Loss
     # ----------------------------------------------------
 
-    criterion_cfg: Mapping[str, Any] = model_cfg["criterion_args"]
+    criterion_cfg = model_cfg["criterion_args"]
 
     base_loss_weight_dict = criterion_cfg["loss_weight_dict"]
     denoise = criterion_cfg["denoise"]
@@ -353,6 +338,7 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
         decoder_num_layers=decoder_num_layers,
     )
 
+    # TODO: move into BUILD function for DETR_Set_Loss
     criterion = DETR_Set_Loss(
         num_classes=criterion_cfg["num_classes"],
         matcher=matcher,
@@ -385,6 +371,5 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
         num_queries=num_queries,
         instance_segmentation_flag=instance_segmentation_flag,
         topk_per_image=topk_per_image,
-        adapter=adapter,
         focus_on_boxes=focus_on_boxes,
     )

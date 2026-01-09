@@ -1,0 +1,29 @@
+BUILD: cell_observatory_platform.models.heads.maskdino_decoder.MaskDINODecoder.BUILD
+
+in_channels: 384
+num_classes: 2
+hidden_dim: 256
+num_queries: 200
+feedforward_dim: 2048
+decoder_num_layers: 4 # 1
+mask_dim: 256
+enforce_input_projection: true
+two_stage_flag: true
+denoise_queries_flag: false
+# denoise_queries_flag: false
+noise_scale: 0.4
+total_denosing_queries: 400 # ensure this is > max expected num labels per image
+initialize_box_type: null #bitmask
+with_initial_prediction: true
+learn_query_embeddings: false
+# total_num_feature_levels: 4
+total_num_feature_levels: 1
+dropout: 0.1
+activation: RELU
+num_heads: 8
+decoder_num_points: 4
+return_intermediates_decoder: true
+query_dim: 6
+share_decoder_layers: false
+dtype: ${quantization}
+use_deform_attention: false

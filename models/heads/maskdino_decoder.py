@@ -46,6 +46,7 @@ class MaskDINODecoder(nn.Module):
         query_dim: int = 6,
         share_decoder_layers: bool = False,
         dtype: str = "bfloat16",
+        use_deform_attention: bool = False,
     ):
         """
         Args:
@@ -145,6 +146,7 @@ class MaskDINODecoder(nn.Module):
             self.num_feature_levels,
             num_heads,
             decoder_num_points,
+            use_deform_attention=use_deform_attention,
         )
         self.decoder = TransformerDecoder(
             decoder_layer,
@@ -176,6 +178,9 @@ class MaskDINODecoder(nn.Module):
         _bbox_regressor_layerlist = [_bbox_regressor for i in range(self.num_layers)]
         self.bbox_regressor = nn.ModuleList(_bbox_regressor_layerlist)
         self.decoder.bbox_regressor = self.bbox_regressor
+
+        # IMPORTANT: share bbox regressor with decoder
+        self.decoder.bbox_embed = self.bbox_regressor
 
     @staticmethod
     def gen_encoder_output_proposals(memory, memory_padding_mask, shapes):
@@ -249,6 +254,7 @@ class MaskDINODecoder(nn.Module):
 
             # fix number of denoising queries such that each label
             # gets the same number of queries with total = total query num
+            # FIXME: may error if num_labels_per_image is very large
             denoise_queries_per_label = self.total_denosing_queries // (int(max(num_labels_per_image)))
 
             # binary mask indicating which GT boxes/labels should be used for denoising (currently all 1s)
@@ -541,6 +547,7 @@ class MaskDINODecoder(nn.Module):
         # iterate over feature levels in reverse order
         for idx in range(self.num_feature_levels - 1, -1, -1):
             bs, c, d, h, w = x[idx].shape
+            # (bs, c, d, h, w) -> (bs, d_model, d, h, w) -> (bs, d_model, dxhxw) -> (bs, dxhxw, d_model)
             shapes.append(torch.as_tensor([d, h, w], dtype=torch.long, device=device))
             # (bs, c, d, h, w) -> (bs, d_model, d, h, w) → (bs, d_model, dxhxw) -> (bs, dxhxw, d_model)
             x_flatten.append(self.input_proj[idx](x[idx]).flatten(2).transpose(1, 2))
@@ -556,8 +563,10 @@ class MaskDINODecoder(nn.Module):
         # prod(1) => (num_feature_levels, ) = [d1*h1*w1, d2*h2*w2, ...], .cumsum(0) => CUMSUM([d1*h1*w1, d2*h2*w2, ...])
         level_start_index = torch.cat((shapes.new_zeros((1,)), shapes.prod(1).cumsum(0)[:-1]))  # (num_feature_levels, )
         # get ratio mask vs unmasked volume for each feature level (padded, not real data vs real data)
-        valid_ratios = torch.stack([compute_unmasked_ratio(mask) for mask in masks], 1)  # (B, num_feature_levels, 3)
-
+        # reverse axis dims of valid_ratios to HDW since this is what is expected downstream
+        masks_rev = [masks[i] for i in range(self.num_feature_levels - 1, -1, -1)]
+        valid_ratios = torch.stack([compute_unmasked_ratio(m)[..., [2, 1, 0]] for m in masks_rev], 1)
+        
         # queries_learned_topk is populated if learned query_features is used
         predictions_class, predictions_mask, queries_learned_topk = [], [], None
         if self.two_stage_flag:

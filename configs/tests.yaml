@@ -57,6 +57,8 @@ dataset_dtype: float16 # data type for loading data, options: float32, float16
 # dataset layout in the zarr files
 dataset_layout_order: TZYXC
 
+seed: 42
+
 # overrides
 # --------------------------------------------------------------------------------
 

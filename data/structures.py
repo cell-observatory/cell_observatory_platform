@@ -1,5 +1,5 @@
 import math
-from typing import Tuple
+from typing import Tuple, Sequence, List, Optional
 
 import torch
 from torch import Tensor
@@ -81,9 +81,11 @@ def delta2bbox(
     bboxes = torch.cat([x1y1z1, x2y2z2], dim=-1)
 
     if clip_border and max_shape is not None:
-        bboxes[..., 0::3].clamp_(min=0).clamp_(max=max_shape[1])
-        bboxes[..., 1::3].clamp_(min=0).clamp_(max=max_shape[0])
-        bboxes[..., 2::3].clamp_(min=0).clamp_(max=max_shape[2])
+        # max_shape: (D, H, W)
+        # bboxes: (x,y,z,w,h,d)
+        bboxes[..., 0::3].clamp_(min=0).clamp_(max=max_shape[2])
+        bboxes[..., 1::3].clamp_(min=0).clamp_(max=max_shape[1])
+        bboxes[..., 2::3].clamp_(min=0).clamp_(max=max_shape[0])
 
     return bboxes
 
@@ -116,7 +118,12 @@ def bbox2delta(proposals, gt, means=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), stds=(1.0, 1
     return deltas
 
 
-def convert_bbox_format(bboxes, bbox_input_format, bbox_output_format):
+def convert_bbox_format(bboxes, 
+                        bbox_input_format, 
+                        bbox_output_format, 
+                        normalize: bool = False, 
+                        spatial_size: Optional[Sequence[float]] = None
+) -> Tensor:
     """
     Convert bounding boxes from one format to another.
     Supported formats: 'cxcyczwhd', 'xyzxyz'
@@ -129,11 +136,11 @@ def convert_bbox_format(bboxes, bbox_input_format, bbox_output_format):
     if bbox_input_format == "cxcyczwhd" and bbox_output_format == "xyzxyz":
         return box_cxcyczwhd_to_xyzxyz(bboxes)
     elif bbox_input_format == "xyzxyz" and bbox_output_format == "cxcyczwhd":
-        return box_xyzxyz_to_cxcyczwhd(bboxes)
+        return box_xyzxyz_to_cxcyczwhd(bboxes, normalize=normalize, spatial_size=spatial_size)
     elif bbox_input_format == "zyxzyx" and bbox_output_format == "cxcyczwhd":
         # zyxzyx -> xyzxyz -> cxcyczwhd
         bboxes = bboxes[:, [2, 1, 0, 5, 4, 3]]
-        return box_xyzxyz_to_cxcyczwhd(bboxes)
+        return box_xyzxyz_to_cxcyczwhd(bboxes, normalize=normalize, spatial_size=spatial_size)
     elif bbox_input_format == "cxcyczwhd" and bbox_output_format == "zyxzyx":
         # cxcyczwhd -> xyzxyz -> zyxzyx
         bboxes = box_cxcyczwhd_to_xyzxyz(bboxes)
@@ -295,7 +302,10 @@ def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
     return mask
 
 
-def box_xyzxyz_to_cxcyczwhd(boxes: Tensor) -> Tensor:
+def box_xyzxyz_to_cxcyczwhd(boxes: Tensor, 
+                            normalize: bool = False, 
+                            spatial_size: Optional[Sequence[float]] = None
+) -> Tensor:
     """
     Converts bounding boxes from (x1, y1, z1, x2, y2, z2) format to (cx, cy, cz, w, h, d) format.
     (x1, y1, z1) refer to top left of bounding box
@@ -314,9 +324,16 @@ def box_xyzxyz_to_cxcyczwhd(boxes: Tensor) -> Tensor:
     h = y2 - y1
     d = z2 - z1
 
-    boxes = torch.stack((cx, cy, cz, w, h, d), dim=-1)
+    boxes_c = torch.stack((cx, cy, cz, w, h, d), dim=-1)
 
-    return boxes
+    if normalize:
+        if spatial_size is None:
+            raise ValueError("spatial_size=(W,H,D) must be provided when normalize=True")
+        W, H, D = spatial_size
+        scale = boxes_c.new_tensor([W, H, D, W, H, D])
+        boxes_c = boxes_c / scale
+
+    return boxes_c
 
 
 # implementation from https://github.com/kuangliu/torchcv/blob/master/torchcv/utils/box.py

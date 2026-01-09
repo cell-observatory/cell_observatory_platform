@@ -151,7 +151,10 @@ class MSDeformAttnTransformerEncoder(nn.Module):
     def get_padding_mask(self, masks, features):
         # if any feature needs padding (dim not divisible by 32) we keep the user-passed masks,
         # otherwise we return all-false masks of the right shape
-        enable_mask = any((f.size(2) % 32 != 0) or (f.size(3) % 32 != 0) for f in features)
+        enable_mask = any(
+            (f.size(2) % 32 != 0) or (f.size(3) % 32 != 0) or (f.size(4) % 32 != 0)
+            for f in features
+        )
         if masks is None or not enable_mask:
             return [
                 torch.zeros((f.size(0), f.size(2), f.size(3), f.size(4)), device=f.device, dtype=torch.bool)
@@ -188,12 +191,13 @@ class MSDeformAttnTransformerEncoder(nn.Module):
         masks_flattened = torch.cat(masks_flattened, dim=1)
 
         # [bs, num_levels, 3] (valid ratio for each level)
-        valid_ratios = torch.stack([compute_unmasked_ratio(m) for m in masks], 1)
+        valid_ratios = torch.stack([compute_unmasked_ratio(m)[..., [2, 1, 0]] for m in masks], 1)
 
         # call deformable attention layer on features with masks
         # to ensure only working over valid pixels
         memory = self.forward_features(
-            features_flattened, feature_shapes, level_start_index, valid_ratios, positional_embeddings, masks_flattened
+            features_flattened, feature_shapes, level_start_index, 
+            valid_ratios, positional_embeddings, masks_flattened
         )
 
         return memory, feature_shapes, level_start_index
@@ -346,8 +350,9 @@ class MaskDINOEncoder(nn.Module):
                 extra_features_list.append(feature)
                 extra_pos_embeddings_list.append(self.pos_embedding(feature))
 
+        # TODO: check whether we should reverse here or not
         # reverse to go from low to high resolution
-        extra_features_list = extra_features_list[::-1]
+        # extra_features_list = extra_features_list[::-1]
 
         features_list, pos_embeddings_list = [], []
         for idx, feature_map in enumerate(self.feature_maps[::-1]):
