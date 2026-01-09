@@ -39,6 +39,7 @@ from cell_observatory_platform.data.dataloaders import get_dataloader
 from cell_observatory_platform.parallelism.utils import get_cp_buffers
 from cell_observatory_platform.training.loggers import EventRecorder, MetricsProcessor
 from cell_observatory_platform.training.optimizers import get_optimizer, build_optimizers
+from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
 from cell_observatory_platform.utils.context import inference_context, process_rank, get_world_size
 from cell_observatory_platform.training.schedulers import get_param_groups, get_schedulers, build_lr_schedulers, build_wd_schedulers
 
@@ -315,15 +316,9 @@ class EpochBasedTrainer(BaseTrainer):
         assert self.gradient_accumulation_steps == 1, "Gradient accumulation currently not supported."
 
         # initialize dataset and dataloader
-        # get_dataloader() returns a tuple of dataloaders
-        # (train_dataloader, val_dataloader) where
-        # val_dataloader is None if no validation set is provided
-        self.train_dataloader, self.val_dataloader, \
-            self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
+        _, _, self.dataloader_config, self.host_buffer_actor, self.device_buffer, _ = get_dataloader(cfg)
 
         self.steps_per_epoch, self.val_steps_per_epoch = get_steps_per_epoch(
-            train_dataloader=self.train_dataloader,
-            val_dataloader=self.val_dataloader,
             config=cfg,
             gradient_accumulation_steps=self.gradient_accumulation_steps
         )
@@ -460,19 +455,24 @@ class EpochBasedTrainer(BaseTrainer):
         """
         self.before_epoch()
 
+        train_dataloader, val_dataloader, _ = get_dataloader_ray(
+            **self.dataloader_config,
+            epoch=self._epoch
+        )
+
         end = time.perf_counter()
-        for idx, data_sample in enumerate(self.train_dataloader):
+        for idx, data_sample in enumerate(train_dataloader):
             data_time = time.perf_counter() - end
             data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
             # run one step with the fetched data sample
             self.run_step(idx, data_sample)
             end = time.perf_counter()
 
-        if self.val_dataloader and (
+        if val_dataloader and (
             self._epoch >= self.val_begin and (self._epoch - self.val_begin) % self.val_interval == 0
         ):
             # run validation
-            self.run_validation()
+            self.run_validation(val_dataloader)
 
         self.after_epoch()
         self._epoch += 1
@@ -519,7 +519,7 @@ class EpochBasedTrainer(BaseTrainer):
         )
         self._iter += 1
 
-    def run_validation(self) -> None:
+    def run_validation(self, val_dataloader) -> None:
         """
         Run validation.
         """
@@ -529,7 +529,7 @@ class EpochBasedTrainer(BaseTrainer):
         with inference_context(self.model):
             with torch.no_grad():
                 end = time.perf_counter()
-                for idx, data_sample in enumerate(self.val_dataloader):
+                for idx, data_sample in enumerate(val_dataloader):
                     data_time = time.perf_counter() - end
                     data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
                     # run one step with the fetched data sample
@@ -717,8 +717,7 @@ class TestTrainer(BaseTrainer):
         self.with_grad_accumulation = False
 
         # initialize dataset and dataloader
-        self.test_dataloader, _, \
-            self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
+        self.test_dataloader, _, _, self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
 
         self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
             train_dataloader=self.test_dataloader,
@@ -828,8 +827,7 @@ class Inferencer(BaseTrainer):
         self.with_grad_accumulation = False
 
         # initialize dataset and dataloader
-        self.test_dataloader, _, \
-            self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
+        self.test_dataloader, _, _, self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
 
         self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
             train_dataloader=self.test_dataloader,
@@ -965,8 +963,8 @@ class ParallelEpochBasedTrainer(BaseTrainer):
 
         # Initialize dataset and dataloader        
         self.train_dataloader_iter, self.val_dataloader_iter = None, None
-        self.train_dataloader, self.val_dataloader, \
-            self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg, dp_degree, dp_rank)
+        self.train_dataloader, self.val_dataloader, _, \
+            self.host_buffer_actor, self.device_buffer, _ = get_dataloader(cfg, dp_degree, dp_rank)
 
         self.steps_per_epoch, self.val_steps_per_epoch = get_steps_per_epoch(
             train_dataloader=self.train_dataloader,

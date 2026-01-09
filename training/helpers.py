@@ -46,7 +46,7 @@ def record_dataset_len(config, num_train_rows: int, num_val_rows: int):
         }
 
 
-def _infer_steps_per_epoch(config, loader, type: str = "train"):
+def _infer_steps_per_epoch(config, type: str = "train"):
     if config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
         if type == "train":
             return config.runtime.get("train_steps_per_epoch")
@@ -54,23 +54,20 @@ def _infer_steps_per_epoch(config, loader, type: str = "train"):
             return config.runtime.get("val_steps_per_epoch")
     else:
         raise TypeError(
-            f"Cannot infer steps/epoch for loader type {type(loader)}. "
+            f"Cannot infer steps/epoch for loader. "
             f"Extend the _infer_steps_per_epoch function to handle this type."
         )
 
 
-def get_steps_per_epoch(train_dataloader, 
-                        val_dataloader, 
-                        config: DictConfig, 
-                        gradient_accumulation_steps: int = 1,
+def get_steps_per_epoch(
+    config: DictConfig, 
+    gradient_accumulation_steps: int = 1,
 ):
+    with_validation_loop = isinstance(config.datasets.split, float) and config.datasets.split > 0
     # TODO: double check correctness
-    steps_per_epoch = _infer_steps_per_epoch(config,
-                                             train_dataloader,
-                                             type="train")
+    steps_per_epoch = _infer_steps_per_epoch(config,type="train")
     val_steps_per_epoch = _infer_steps_per_epoch(config,
-                                                 val_dataloader, 
-                                                 type="val") if val_dataloader else None
+                                                 type="val") if with_validation_loop else None
     logger.info(
         f"Steps per epoch: {steps_per_epoch}, "
         f"Validation steps per epoch: {val_steps_per_epoch}"
@@ -81,9 +78,8 @@ def get_steps_per_epoch(train_dataloader,
             f"Steps per epoch is None or <= 0. Cannot proceed with training."
         )
     
-    if (val_steps_per_epoch is None or val_steps_per_epoch <= 0) and val_dataloader is not None:
-        raise ValueError("Validation Dataloader is provided but validation steps per epoch is None or <= 0."
-        )
+    if (val_steps_per_epoch is None or val_steps_per_epoch <= 0) and with_validation_loop is not None:
+        raise ValueError("Validation Dataloader is provided but validation steps per epoch is None or <= 0.")
     
     if gradient_accumulation_steps > 1:
         if steps_per_epoch % gradient_accumulation_steps != 0:

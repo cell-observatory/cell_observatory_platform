@@ -974,8 +974,16 @@ def partition_indices_for_inference(
     return rows_per_rank
 
 
+def shuffle_table(table: pa.Table, seed: int) -> pa.Table:
+    n = table.num_rows
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n)
+    return table.take(pa.array(perm, type=pa.int64()))
+
+
 def get_dataset_ray(
     cfg: DictConfig,
+    seed: Optional[int],
     indices: Optional[List[int]],
     database: Optional[Any] = None,
     columns: list = [
@@ -998,7 +1006,12 @@ def get_dataset_ray(
     ],
     dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
+    shuffle: bool = False,
+    drop_last: bool = True,
 ):
+    if seed is not None and not shuffle:
+        raise ValueError("Seed provided but shuffle is False.")
+
     if cfg.datasets.channels_subset is not None:
         # NOTE: this always works because dataset_layout_order is 1-1 matched
         num_channels = cfg.datasets.input_shape[cfg.dataset_layout_order.index("C")]
@@ -1036,7 +1049,7 @@ def get_dataset_ray(
             df=base_df,
             world_size=ws,
             batch_size=cfg.clusters.batch_size_per_gpu,
-            drop_last_policy=cfg.datasets.drop_last_policy,
+            drop_last_policy=drop_last,
             roi_col="prepared_id",
             tile_col="tile_name",
         )
@@ -1053,19 +1066,25 @@ def get_dataset_ray(
 
     else:
         table = pa.table(base_df)
-        dataset = ray.data.from_arrow(table)
-        dataset = dataset.split(n=ws, equal=True)[rk]
+        if shuffle:
+            table = shuffle_table(table, seed=seed)
+        
+        n = table.num_rows
+        n_shard = (n // ws) * ws
+        table = table.slice(0, n_shard)
 
-        ray.logger.info(f"Rank {rk} assigned dataframe: {dataset.to_pandas().head()}")
+        shard_len = n_shard // ws
+        local_table = table.slice(rk * shard_len, shard_len)
 
-        if cfg.datasets.drop_last_policy:
+        if drop_last:
             B = cfg.clusters.batch_size_per_gpu
-            n = dataset.count()
-            dataset = dataset.limit((n // B) * B)
-            dataset_len = dataset.count()
-        else:
-            dataset_len = dataset.count()
+            keep = (local_table.num_rows // B) * B
+            local_table = local_table.slice(0, keep)
 
+        dataset = ray.data.from_arrow(local_table)
+        dataset_len = local_table.num_rows
+
+    # NOTE: this is necessary to avoid slow startup
     dataset = dataset.repartition(target_num_rows_per_block=cfg.datasets.rows_per_block, shuffle=False)
 
     scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
@@ -1104,11 +1123,14 @@ def get_dataloader_ray(
     cfg: DictConfig,
     batch_size: int,
     collate_fn: Optional[Callable],
+    epoch: int = 0,
     drop_last: bool = True,
     database: Optional[Any] = None,
     dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
 ):
+    assert hasattr(cfg, "seed"), "cfg.seed is required for Ray Dataloader."
+
     if database is None:
         db = instantiate(cfg.datasets.databases)
     else:
@@ -1118,9 +1140,8 @@ def get_dataloader_ray(
     dataset_len = len(db.hypercubes_dataframe)
 
     if cfg.datasets.split is not None and 0.0 < float(cfg.datasets.split) < 1.0:
-        seed = cfg.get("seed", 42)
         g = torch.Generator()
-        g.manual_seed(int(seed))
+        g.manual_seed(int(cfg.seed))
 
         val_size = round(dataset_len * cfg.datasets.split)
         train_subset, val_subset = random_split(
@@ -1135,6 +1156,9 @@ def get_dataloader_ray(
             columns=list(cfg.datasets.columns),
             dp_degree=dp_degree,
             dp_rank=dp_rank,
+            seed=int(cfg.seed) + int(epoch),
+            shuffle=True,
+            drop_last=drop_last,
         )
         val_dataset, val_dataset_len = get_dataset_ray(
             cfg,
@@ -1143,6 +1167,9 @@ def get_dataloader_ray(
             columns=list(cfg.datasets.columns),
             dp_degree=dp_degree,
             dp_rank=dp_rank,
+            seed=None,
+            shuffle=False,
+            drop_last=drop_last,
         )
 
         record_dataset_len(cfg, train_dataset_len, val_dataset_len)
@@ -1157,7 +1184,9 @@ def get_dataloader_ray(
 
     else:
         train_dataset, train_dataset_len = get_dataset_ray(
-            cfg, indices=None, database=db, columns=list(cfg.datasets.columns), dp_degree=dp_degree, dp_rank=dp_rank
+            cfg, indices=None, database=db, columns=list(cfg.datasets.columns), 
+            dp_degree=dp_degree, dp_rank=dp_rank, 
+            seed=int(cfg.seed) + int(epoch), shuffle=True, drop_last=drop_last
         )
         record_dataset_len(cfg, train_dataset_len, 0)
 

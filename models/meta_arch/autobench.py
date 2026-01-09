@@ -58,6 +58,7 @@ class AutoBench(nn.Module, ABC):
         loss_fn: str = "l2_masked",
         abs_sincos_enc: bool = False,
         weight_init_type: str = "mae",
+        with_auxiliary_loss: bool = False,
     ):
         super().__init__()
         self.backbone_args = backbone_args
@@ -71,6 +72,7 @@ class AutoBench(nn.Module, ABC):
         self.abs_sincos_enc = abs_sincos_enc
 
         self.loss_fn = get_loss_fn(loss_fn)
+        self.with_auxiliary_loss = with_auxiliary_loss
         self.weight_init_type = weight_init_type
 
         # Will be set in subclasses
@@ -193,12 +195,23 @@ class ChannelSplitAutoBench(AutoBench):
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
         targets = meta.get("targets", [None])[0]
+        target_masks = meta.get("target_masks", [None])[0]
+        patches_used = meta.get("patches_used", [None])[0]
 
         x, patches = self.backbone(inputs)
         x = self.decoder(x)
 
         predictions = x
-        loss, aux_losses = self.loss_fn(predictions, targets, num_patches=self.get_num_patches())
+
+        if self.with_auxiliary_loss:
+            aux_loss_meta = {
+                "targets": targets,
+                "predictions": predictions,
+            }
+        else:
+            aux_loss_meta = None
+
+        loss, aux_losses = self.loss_fn(predictions, targets, num_patches=self.get_num_patches(), aux_loss_meta=aux_loss_meta)
 
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions
@@ -299,15 +312,24 @@ class UpsampleSpaceAutoBench(AutoBench):
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
         targets = meta.get("targets", [None])[0]
+        target_masks = meta.get("target_masks", [None])[0]
+        patches_used = meta.get("patches_used", [None])[0]
 
         x, patches = self.backbone(inputs)
         x = self.decoder(x)
 
         predictions = x
+        if self.with_auxiliary_loss:
+            aux_loss_meta = {
+                "targets": targets,
+                "predictions": predictions,
+            }
+        else:
+            aux_loss_meta = None
 
-        loss, aux_losses = self.loss_fn(x, targets, num_patches=self.get_num_patches())
+        loss, aux_losses = self.loss_fn(predictions, targets, num_patches=self.get_num_patches(), aux_loss_meta=aux_loss_meta)
+
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
-
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):
@@ -448,6 +470,7 @@ def BUILD(cfg: Mapping[str, Any]) -> AutoBench:
         loss_fn=model_cfg.get("loss_fn"),
         abs_sincos_enc=model_cfg.get("abs_sincos_enc"),
         weight_init_type=model_cfg.get("weight_init_type"),
+        with_auxiliary_loss=model_cfg.get("with_auxiliary_loss", False),
     )
 
     if task == "channel_split":

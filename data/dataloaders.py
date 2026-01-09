@@ -29,8 +29,12 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s -
 logger = logging.getLogger(__name__)
 
 
-def get_dataloader(config: DictConfig, dp_degree: Optional[int] = None, dp_rank: Optional[int] = None):
-    if config.datasets.split is None and config.datasets.split == 0:
+def get_dataloader(
+    config: DictConfig, 
+    dp_degree: Optional[int] = None, 
+    dp_rank: Optional[int] = None,
+):
+    if config.datasets.split is None or config.datasets.split == 0:
         for event_writer in config.loggers.event_writers:
             if event_writer._target_.endswith("WandBEventWriter"):
                 for sk, ek in zip(event_writer.step_scalar_keys, event_writer.epoch_scalar_keys):
@@ -46,7 +50,7 @@ def get_dataloader(config: DictConfig, dp_degree: Optional[int] = None, dp_rank:
         #       partitioned way so each ray actor only loads a subset of the data
         #       to allow for better scaling when we move towards billion sample datasets
         #       this is probably the best entrypoint for that change
-        db = None
+        db = instantiate(config.datasets.databases)
         buffer_input_shape = tuple(config.datasets.input_shape)
 
         try:
@@ -58,7 +62,6 @@ def get_dataloader(config: DictConfig, dp_degree: Optional[int] = None, dp_rank:
             tile_mode = False
 
         if tile_mode:
-            db = instantiate(config.datasets.databases)
             df = db.hypercubes_dataframe
 
             if not {"z_size", "y_size", "x_size"}.issubset(df.columns):
@@ -137,6 +140,15 @@ def get_dataloader(config: DictConfig, dp_degree: Optional[int] = None, dp_rank:
             config.datasets.collate_fn, node_id=node_id(), input_shape=collator_input_shape, debug=config.datasets.debug
         )
 
+        dataloader_config = {
+            "cfg": config,
+            "batch_size": config.clusters.batch_size_per_gpu,
+            "drop_last": config.datasets.drop_last_policy,
+            "collate_fn": collate_fn,
+            "database": db,
+            "dp_degree": dp_degree,
+            "dp_rank": dp_rank,
+        }
         train_dataloader, val_dataloader, database_df = get_dataloader_ray(
             cfg=config,
             batch_size=config.clusters.batch_size_per_gpu,
@@ -146,7 +158,8 @@ def get_dataloader(config: DictConfig, dp_degree: Optional[int] = None, dp_rank:
             dp_degree=dp_degree,
             dp_rank=dp_rank,
         )
-        return train_dataloader, val_dataloader, buffer_actor, collate_fn.device_buffer, database_df
+
+        return train_dataloader, val_dataloader, dataloader_config, buffer_actor, collate_fn.device_buffer, database_df
 
     else:
         raise NotImplementedError(
