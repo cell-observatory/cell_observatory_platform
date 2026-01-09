@@ -370,7 +370,7 @@ class ParentDatabase:
         t = 0.0 if occupancy_threshold is None else float(occupancy_threshold)
 
         if occupancy_threshold_filter_type == "min_all":
-            df = df[df["min_occupancy_ratios_ch_0"] >= t and df["min_occupancy_ratios_ch_1"] >= t]
+            df = df[(df["min_occupancy_ratios_ch_0"] >= t) & (df["min_occupancy_ratios_ch_1"] >= t)]
 
         elif occupancy_threshold_filter_type == "min_ch0":
             df = df[df["min_occupancy_ratios_ch_0"] >= t]
@@ -1390,16 +1390,16 @@ class ParentDatabase:
                         .map_elements(_get_mask_bbox_dict, return_dtype=pl.Utf8)
                         .alias(f"mask_bbox_dict_ch_{ch}"),
                         pl.col(f"pc_metadata_json_ch_{ch}")
-                        .map_elements(partial(_get_cdf, percentile="80.0"), return_dtype=pl.Int16)
+                        .map_elements(partial(_get_cdf, percentile="80.0"), return_dtype=pl.UInt32)
                         .alias(f"cdf_80_ch_{ch}"),
                         pl.col(f"pc_metadata_json_ch_{ch}")
-                        .map_elements(partial(_get_cdf, percentile="90.0"), return_dtype=pl.Int16)
+                        .map_elements(partial(_get_cdf, percentile="90.0"), return_dtype=pl.UInt32)
                         .alias(f"cdf_90_ch_{ch}"),
                         pl.col(f"pc_metadata_json_ch_{ch}")
-                        .map_elements(partial(_get_cdf, percentile="95.0"), return_dtype=pl.Int16)
+                        .map_elements(partial(_get_cdf, percentile="95.0"), return_dtype=pl.UInt32)
                         .alias(f"cdf_95_ch_{ch}"),
                         pl.col(f"pc_metadata_json_ch_{ch}")
-                        .map_elements(partial(_get_cdf, percentile="99.0"), return_dtype=pl.Int16)
+                        .map_elements(partial(_get_cdf, percentile="99.0"), return_dtype=pl.UInt32)
                         .alias(f"cdf_99_ch_{ch}"),
                     ]
                 )
