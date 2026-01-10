@@ -18,7 +18,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200
+experiment_name: jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_90_cdf_threshold_150_h200_2M
 wandb_project: pretraining_3d_v2
 
 # task
@@ -95,15 +95,15 @@ datasets:
   num_actors_min: 4
   num_actors_max: 12
 
-  max_hypercubes: 1000000
+  max_hypercubes: 2000000
 
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
 
   databases:
     occupancy_threshold_filter_type: 'min_ch0'
-    cdf_target: 80
-    cdf_threshold: 100
+    cdf_target: 90
+    cdf_threshold: 150
     synthetic_only: false
     has_annotations: false
     with_hypercubes_dataframe: true

@@ -393,7 +393,7 @@ class ParentDatabase:
         t = 0.0 if cdf_threshold is None else float(cdf_threshold)
 
         if cdf_threshold_filter_type == "min_all":
-            df = df[df[f"cdf_{cdf_target}_ch_0"] >= t and df[f"cdf_{cdf_target}_ch_1"] >= t]
+            df = df[(df[f"cdf_{cdf_target}_ch_0"] >= t) & (df[f"cdf_{cdf_target}_ch_1"] >= t)]
 
         elif cdf_threshold_filter_type == "min_ch0":
             df = df[df[f"cdf_{cdf_target}_ch_0"] >= t]
