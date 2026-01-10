@@ -34,13 +34,6 @@ def get_dataloader(
     dp_degree: Optional[int] = None, 
     dp_rank: Optional[int] = None,
 ):
-    if config.datasets.split is None or config.datasets.split == 0:
-        for event_writer in config.loggers.event_writers:
-            if event_writer._target_.endswith("WandBEventWriter"):
-                for sk, ek in zip(event_writer.step_scalar_keys, event_writer.epoch_scalar_keys):
-                    assert not sk.startswith("val_"), f"WandBEventWriter can't have {sk} when {config.datasets.split=}"
-                    assert not ek.startswith("val_"), f"WandBEventWriter can't have {ek} when {config.datasets.split=}"
-
     if config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
         # get numa nodes for this node (gathered on local_rank 0)
         gpu_to_numa_map = get_local_numa_nodes(worker_numa_node=torch_gpu_to_numa(local_rank())["numa_node"])
