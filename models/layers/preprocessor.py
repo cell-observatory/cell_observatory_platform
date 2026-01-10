@@ -344,6 +344,96 @@ class BaseFinetunePreprocessor(RayPreprocessor):
 
 
 # --------------------------------------------------------------------------- #
+# Denoising task
+# --------------------------------------------------------------------------- #
+
+
+class DenoisingPreprocessor(BaseFinetunePreprocessor):
+    """
+    Task: denoising
+    - inputs: noisy image
+    - targets: clean image
+
+    args:
+    - poisson_eta: float or tuple[float, float] representing quantum efficiency of the camera. 
+    If tuple, sample Uniformly from the range for each batch element.
+    - gaussian_sigma: float or tuple[float, float] representing Gaussian distribution parameter.
+    If tuple, sample Uniformly from the range for each batch element.
+
+    Models image noise as a Mixed Poisson-Gaussian distribution:
+    I = I_clean + I_noise
+    I_noise = poisson_noise(I_clean * poisson_eta) + gaussian_noise(0, gaussian_sigma)
+
+    Poisson noise represents the shot noise modeled as a Poisson distribution 
+    where noise is proportional to the product of the intensity of the light and 
+    the quantum efficiency of the camera.
+    
+    Gaussian noise represents the read noise modeled as a Gaussian distribution 
+    where noise is proportional to the read noise of the camera.
+    """
+    
+    def __init__(
+        self, 
+        poisson_eta: float | tuple[float, float],
+        gaussian_sigma: float | tuple[float, float],
+        *args, **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        if not isinstance(poisson_eta, (float, int)) and not (isinstance(poisson_eta, (tuple, list)) and len(poisson_eta) == 2):
+            raise ValueError("poisson_eta must be a float or tuple of two floats")
+        if not isinstance(gaussian_sigma, (float, int)) and not (isinstance(gaussian_sigma, (tuple, list)) and len(gaussian_sigma) == 2):
+            raise ValueError("gaussian_sigma must be a float or tuple of two floats")
+        self.poisson_eta = poisson_eta
+        self.gaussian_sigma = gaussian_sigma
+    
+    def _add_noise(self, inputs: torch.Tensor) -> tuple[torch.Tensor, float]:
+        t0 = time.time()
+        B = inputs.shape[0]
+        device = inputs.device
+        # If poisson_eta and gaussian_sigma are tuples, sample from them
+        # otherwise, use the same statistical value for all batch elements
+        if isinstance(self.poisson_eta, tuple):
+            poisson_etas = torch.empty(B, device=device) # (B,)
+            poisson_etas.uniform_(*self.poisson_eta, generator=self.rng)
+        else:
+            poisson_etas = torch.full(B, self.poisson_eta, device=device) # (B,)
+        if isinstance(self.gaussian_sigma, tuple):
+            gaussian_sigmas = torch.empty(B, device=device) # (B,)
+            gaussian_sigmas.uniform_(*self.gaussian_sigma, generator=self.rng)
+        else:
+            gaussian_sigmas = torch.full(B, self.gaussian_sigma, device=device) # (B,)
+
+        # Broadcast poisson_etas and gaussian_sigmas to match inputs shape
+        poisson_etas = poisson_etas.view(-1, *[1] * (inputs.ndim - 1)) # (B, ..., 1)
+        gaussian_sigmas = gaussian_sigmas.view(-1, *[1] * (inputs.ndim - 1)) # (B, ..., 1)
+
+        # For each batch element, sample and add Poisson and Gaussian noise
+        poisson_counts = torch.poisson(poisson_etas * inputs, generator=self.rng)
+        # Generate independent Gaussian samples for each pixel with per-batch STD
+        gaussian_noise = torch.randn(inputs.shape, device=device, generator=self.rng) * gaussian_sigmas
+        return inputs + poisson_counts + gaussian_noise, time.time() - t0
+        
+    def forward(self, data_sample: dict, data_time: float) -> dict:
+        inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
+    
+        # FIXME: consider if this is the correct order of operations
+        inputs, transform_time = self._apply_transforms(inputs)
+        targets = inputs.clone()  # Clean transformed image (before noise)
+        inputs, noising_time = self._add_noise(inputs)  # Noisy transformed image
+        
+        transform_time += noising_time
+        
+        return self._finalize(
+            inputs=inputs,
+            meta=meta,
+            targets=targets,
+            data_time=data_time_value,
+            preprocess_t0=t0,
+            transform_time=transform_time,
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Channel-splitting task
 # --------------------------------------------------------------------------- #
 
