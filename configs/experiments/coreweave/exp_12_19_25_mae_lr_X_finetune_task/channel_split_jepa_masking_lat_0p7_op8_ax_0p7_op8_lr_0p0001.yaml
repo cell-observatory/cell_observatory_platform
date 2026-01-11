@@ -69,6 +69,15 @@ seed: 42
 # overrides
 # --------------------------------------------------------------------------------
 
+deepspeed:
+  checkpoint:
+    load_universal: true
+
+checkpoint:
+  checkpoint_manager:
+    ckpt_include_prefixes: [backbone] # only load masked_encoder weights from the pretrained model
+    ckpt_translate_map: {input_encoder: backbone}
+
 clusters:
   batch_size: 1536 # total batch size
   worker_nodes: 4 # number of worker nodes
@@ -89,7 +98,7 @@ datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   input_shape: [128, 256, 256, 2]
-  train_shape: [128, 256, 256, 2]
+  train_shape: [128, 256, 256, 1]
   patch_shape: [16, 16, 16, null]
   occupancy_threshold: 0.9
 
@@ -132,8 +141,22 @@ schedulers:
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
   lr: 1e-4
-
+  
 models:
+  backbones:
+    masked_encoder:
+      abs_sincos_enc: false
+      rope_pos_enc: true
+      rope_random_rotation_per_head: true
+      rope_mixed: false
+      rope_theta: 100.0
+  heads:
+    maskedpredictor:
+      abs_sincos_enc: false
+      rope_pos_enc: true
+      rope_random_rotation_per_head: true
+      rope_mixed: false
+      rope_theta: 100.0
   meta_arch:
     autobench:
       ChannelSplitAutoBench:
