@@ -355,63 +355,115 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
     - targets: clean image
 
     args:
-    - poisson_eta: float or tuple[float, float] representing quantum efficiency of the camera. 
-    If tuple, sample Uniformly from the range for each batch element.
-    - gaussian_sigma: float or tuple[float, float] representing Gaussian distribution parameter.
-    If tuple, sample Uniformly from the range for each batch element.
+    - quantum_efficiency: float or tuple[float, float] representing quantum efficiency of the camera
+      (conversion from incident photons to electrons). If tuple, sample uniformly from the range for each batch element.
+    - electrons_per_count: float or tuple[float, float] representing the conversion factor from electrons to counts.
+      If tuple, sample uniformly from the range for each batch element.
+    - sigma_background_noise: float or tuple[float, float] representing read noise from the camera in counts.
+      If tuple, sample uniformly from the range for each batch element.
+    - mean_background_offset: float or tuple[float, float] representing the camera background offset in counts.
+      If tuple, sample uniformly from the range for each batch element.
 
-    Models image noise as a Mixed Poisson-Gaussian distribution:
-    I = I_clean + I_noise
-    I_noise = poisson_noise(I_clean * poisson_eta) + gaussian_noise(0, gaussian_sigma)
+    Models image noise following the physical sensor pipeline:
+    1. Convert photons → electrons using quantum_efficiency
+    2. Add shot noise (Poisson) in electron space
+    3. Add dark/read noise (Gaussian) in electron space
+    4. Convert electrons → counts using electrons_per_count
+    5. Add camera background offset (in counts)
+    6. Clip negative values to 0
 
     Poisson noise represents the shot noise modeled as a Poisson distribution 
     where noise is proportional to the product of the intensity of the light and 
     the quantum efficiency of the camera.
     
     Gaussian noise represents the read noise modeled as a Gaussian distribution 
-    where noise is proportional to the read noise of the camera.
+    (dark/read noise from the camera electronics).
     """
     
     def __init__(
         self, 
-        poisson_eta: float | tuple[float, float],
-        gaussian_sigma: float | tuple[float, float],
+        quantum_efficiency: float | tuple[float, float],
+        electrons_per_count: float | tuple[float, float],
+        sigma_background_noise: float | tuple[float, float],
+        mean_background_offset: float | tuple[float, float],
         *args, **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        if not isinstance(poisson_eta, (float, int)) and not (isinstance(poisson_eta, (tuple, list)) and len(poisson_eta) == 2):
-            raise ValueError("poisson_eta must be a float or tuple of two floats")
-        if not isinstance(gaussian_sigma, (float, int)) and not (isinstance(gaussian_sigma, (tuple, list)) and len(gaussian_sigma) == 2):
-            raise ValueError("gaussian_sigma must be a float or tuple of two floats")
-        self.poisson_eta = poisson_eta
-        self.gaussian_sigma = gaussian_sigma
+        if not isinstance(quantum_efficiency, (float, int)) and not (isinstance(quantum_efficiency, (tuple, list)) and len(quantum_efficiency) == 2):
+            raise ValueError("quantum_efficiency must be a float or tuple of two floats")
+        if not isinstance(electrons_per_count, (float, int)) and not (isinstance(electrons_per_count, (tuple, list)) and len(electrons_per_count) == 2):
+            raise ValueError("electrons_per_count must be a float or tuple of two floats")
+        if not isinstance(sigma_background_noise, (float, int)) and not (isinstance(sigma_background_noise, (tuple, list)) and len(sigma_background_noise) == 2):
+            raise ValueError("sigma_background_noise must be a float or tuple of two floats")
+        if not isinstance(mean_background_offset, (float, int)) and not (isinstance(mean_background_offset, (tuple, list)) and len(mean_background_offset) == 2):
+            raise ValueError("mean_background_offset must be a float or tuple of two floats")
+        
+        self.quantum_efficiency = quantum_efficiency
+        self.electrons_per_count = electrons_per_count
+        self.sigma_background_noise = sigma_background_noise
+        self.mean_background_offset = mean_background_offset
     
     def _add_noise(self, inputs: torch.Tensor) -> tuple[torch.Tensor, float]:
         t0 = time.time()
         B = inputs.shape[0]
         device = inputs.device
-        # If poisson_eta and gaussian_sigma are tuples, sample from them
-        # otherwise, use the same statistical value for all batch elements
-        if isinstance(self.poisson_eta, tuple):
-            poisson_etas = torch.empty(B, device=device) # (B,)
-            poisson_etas.uniform_(*self.poisson_eta, generator=self.rng)
+        
+        # Sample parameters for each batch element if they are tuples
+        if isinstance(self.quantum_efficiency, tuple):
+            qe = torch.empty(B, device=device)
+            qe.uniform_(*self.quantum_efficiency, generator=self.rng)
         else:
-            poisson_etas = torch.full(B, self.poisson_eta, device=device) # (B,)
-        if isinstance(self.gaussian_sigma, tuple):
-            gaussian_sigmas = torch.empty(B, device=device) # (B,)
-            gaussian_sigmas.uniform_(*self.gaussian_sigma, generator=self.rng)
+            qe = torch.full((B,), self.quantum_efficiency, device=device)
+            
+        if isinstance(self.electrons_per_count, tuple):
+            epc = torch.empty(B, device=device)
+            epc.uniform_(*self.electrons_per_count, generator=self.rng)
         else:
-            gaussian_sigmas = torch.full(B, self.gaussian_sigma, device=device) # (B,)
+            epc = torch.full((B,), self.electrons_per_count, device=device)
+            
+        if isinstance(self.sigma_background_noise, tuple):
+            sigma_bg = torch.empty(B, device=device)
+            sigma_bg.uniform_(*self.sigma_background_noise, generator=self.rng)
+        else:
+            sigma_bg = torch.full((B,), self.sigma_background_noise, device=device)
+            
+        if isinstance(self.mean_background_offset, tuple):
+            mean_offset = torch.empty(B, device=device)
+            mean_offset.uniform_(*self.mean_background_offset, generator=self.rng)
+        else:
+            mean_offset = torch.full((B,), self.mean_background_offset, device=device)
 
-        # Broadcast poisson_etas and gaussian_sigmas to match inputs shape
-        poisson_etas = poisson_etas.view(-1, *[1] * (inputs.ndim - 1)) # (B, ..., 1)
-        gaussian_sigmas = gaussian_sigmas.view(-1, *[1] * (inputs.ndim - 1)) # (B, ..., 1)
+        # Broadcast to match inputs shape
+        qe = qe.view(-1, *[1] * (inputs.ndim - 1))
+        epc = epc.view(-1, *[1] * (inputs.ndim - 1))
+        sigma_bg = sigma_bg.view(-1, *[1] * (inputs.ndim - 1))
+        mean_offset = mean_offset.view(-1, *[1] * (inputs.ndim - 1))
 
-        # For each batch element, sample and add Poisson and Gaussian noise
-        poisson_counts = torch.poisson(poisson_etas * inputs, generator=self.rng)
-        # Generate independent Gaussian samples for each pixel with per-batch STD
-        gaussian_noise = torch.randn(inputs.shape, device=device, generator=self.rng) * gaussian_sigmas
-        return inputs + poisson_counts + gaussian_noise, time.time() - t0
+        # Convert photons → electrons
+        image_electrons = inputs * qe
+        
+        # Add shot noise (Poisson) in electron space
+        shot_noise = torch.poisson(image_electrons, generator=self.rng) - image_electrons
+        
+        # Convert read noise from counts to electrons
+        sigma_bg_electrons = sigma_bg * epc
+        
+        # Add dark/read noise (Gaussian) in electron space
+        dark_read_noise = torch.randn(inputs.shape, device=device, generator=self.rng) * sigma_bg_electrons
+        
+        # Add noise in electron space
+        image_electrons = image_electrons + shot_noise + dark_read_noise
+        
+        # Convert electrons → counts
+        image_counts = image_electrons / epc
+        
+        # Add camera background offset
+        image_counts = image_counts + mean_offset
+        
+        # Clip negative values
+        image_counts = torch.clamp(image_counts, min=0)
+        
+        return image_counts, time.time() - t0
         
     def forward(self, data_sample: dict, data_time: float) -> dict:
         inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
