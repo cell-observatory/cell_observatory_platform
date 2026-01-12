@@ -4,6 +4,7 @@ import torch
 from cell_observatory_platform.data.utils import resize_mask
 from cell_observatory_platform.models.layers.preprocessor import (
     ChannelSplitPreprocessor,
+    DenoisingPreprocessor,
     InstanceSegmentationPreprocessor,
     RayPreprocessor,
     UpsamplePreprocessor,
@@ -242,3 +243,264 @@ def test_resize_mask_broadcast_3d_with_time_and_channel():
     assert mask.shape[FMT_3D.index("Z")] == DEPTH
     assert mask.shape[FMT_3D.index("Y")] == HEIGHT
     assert mask.shape[FMT_3D.index("X")] == WIDTH
+
+
+# -------------------------
+# DenoisingPreprocessor tests
+# -------------------------
+
+
+def test_denoising_preprocessor_init():
+    """Test initialization with float and tuple parameters."""
+    # Float parameters
+    proc = DenoisingPreprocessor(
+        quantum_efficiency=0.82,
+        electrons_per_count=0.22,
+        sigma_background_noise=40.0,
+        mean_background_offset=100.0,
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, None),
+        transforms_list=[],
+        with_masking=False,
+        mask_generator=None,
+        input_format=FMT_2D,
+        input_shape=SHAPE_2D[1:],
+    )
+    assert proc.quantum_efficiency == 0.82
+    assert proc.electrons_per_count == 0.22
+    assert proc.sigma_background_noise == 40.0
+    assert proc.mean_background_offset == 100.0
+
+    # Tuple parameters
+    proc = DenoisingPreprocessor(
+        quantum_efficiency=(0.7, 0.9),
+        electrons_per_count=(0.2, 0.3),
+        sigma_background_noise=(30, 50),
+        mean_background_offset=(80, 120),
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, None),
+        transforms_list=[],
+        with_masking=False,
+        mask_generator=None,
+        input_format=FMT_2D,
+        input_shape=SHAPE_2D[1:],
+    )
+    assert proc.quantum_efficiency == (0.7, 0.9)
+    assert proc.electrons_per_count == (0.2, 0.3)
+
+
+def test_denoising_preprocessor_init_invalid_params():
+    """Test that invalid parameter values raise ValueError."""
+    with pytest.raises(ValueError, match="quantum_efficiency must be a float or tuple of two floats"):
+        DenoisingPreprocessor(
+            quantum_efficiency="invalid",
+            electrons_per_count=0.22,
+            sigma_background_noise=40.0,
+            mean_background_offset=100.0,
+            dtype=torch.float32,
+            patch_shape=(1, 4, 4, None),
+            transforms_list=[],
+            with_masking=False,
+            mask_generator=None,
+            input_format=FMT_2D,
+            input_shape=SHAPE_2D[1:],
+        )
+
+    with pytest.raises(ValueError, match="electrons_per_count must be a float or tuple of two floats"):
+        DenoisingPreprocessor(
+            quantum_efficiency=0.82,
+            electrons_per_count=(0.1,),  # wrong length
+            sigma_background_noise=40.0,
+            mean_background_offset=100.0,
+            dtype=torch.float32,
+            patch_shape=(1, 4, 4, None),
+            transforms_list=[],
+            with_masking=False,
+            mask_generator=None,
+            input_format=FMT_2D,
+            input_shape=SHAPE_2D[1:],
+        )
+
+
+def test_denoising_preprocessor_noise_addition():
+    """Test noise addition with float and tuple parameters."""
+    # Fixed parameters
+    proc = DenoisingPreprocessor(
+        quantum_efficiency=0.82,
+        electrons_per_count=0.22,
+        sigma_background_noise=40.0,
+        mean_background_offset=100.0,
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, None),
+        transforms_list=[],
+        with_masking=False,
+        mask_generator=None,
+        input_format=FMT_2D,
+        input_shape=SHAPE_2D[1:],
+        seed=42,
+    )
+
+    B, T, Y, X, C = 2, 1, 8, 8, 2
+    inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32) * 100.0
+
+    noisy_inputs, time_taken = proc._add_noise(inputs)
+
+    assert not torch.allclose(inputs, noisy_inputs, atol=1e-6)
+    assert noisy_inputs.shape == inputs.shape
+    assert torch.all(noisy_inputs >= 0)  # After clipping
+    assert isinstance(time_taken, float) and time_taken >= 0
+
+    # Tuple parameters - check per-batch variation
+    proc = DenoisingPreprocessor(
+        quantum_efficiency=(0.7, 0.9),
+        electrons_per_count=(0.2, 0.3),
+        sigma_background_noise=(30, 50),
+        mean_background_offset=(80, 120),
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, None),
+        transforms_list=[],
+        with_masking=False,
+        mask_generator=None,
+        input_format=FMT_2D,
+        input_shape=SHAPE_2D[1:],
+        seed=42,
+    )
+
+    B, T, Y, X, C = 4, 1, 8, 8, 2
+    inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32) * 100.0
+    noisy_inputs, _ = proc._add_noise(inputs)
+
+    # Different batch elements should have different noise patterns
+    batch_0_noise = noisy_inputs[0] - inputs[0]
+    batch_1_noise = noisy_inputs[1] - inputs[1]
+    assert not torch.allclose(batch_0_noise, batch_1_noise, atol=1e-6)
+
+
+def test_denoising_preprocessor_forward():
+    """Test forward pass produces noisy inputs and clean targets."""
+    proc = DenoisingPreprocessor(
+        quantum_efficiency=0.82,
+        electrons_per_count=0.22,
+        sigma_background_noise=40.0,
+        mean_background_offset=100.0,
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, None),
+        transforms_list=[],
+        with_masking=False,
+        mask_generator=None,
+        input_format=FMT_2D,
+        input_shape=SHAPE_2D[1:],
+        seed=42,
+    )
+
+    B, T, Y, X, C = 2, 1, 8, 8, 2
+    inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32) * 100.0
+    sample = {"data_tensor": inputs, "metainfo": {}}
+
+    output = proc(sample, data_time=0.1)
+
+    assert "data_tensor" in output and "metainfo" in output
+    noisy_inputs = output["data_tensor"]
+    targets = output["metainfo"]["targets"][0]
+
+    assert not torch.allclose(inputs, noisy_inputs, atol=1e-6)
+    assert noisy_inputs.shape == inputs.shape
+    assert targets.shape == inputs.shape
+    assert not torch.allclose(targets, noisy_inputs, atol=1e-6)
+
+    meta = output["metainfo"]
+    assert isinstance(meta["preprocess_time"], float)
+    assert isinstance(meta["transform_time"], float)
+    assert meta["data_time"] == 0.1
+
+
+def test_denoising_preprocessor_with_transforms():
+    """Test forward pass applies transforms before noise."""
+    def add_constant(x: torch.Tensor) -> torch.Tensor:
+        return x + 50.0
+
+    proc = DenoisingPreprocessor(
+        quantum_efficiency=0.82,
+        electrons_per_count=0.22,
+        sigma_background_noise=40.0,
+        mean_background_offset=100.0,
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, None),
+        transforms_list=[add_constant],
+        with_masking=False,
+        mask_generator=None,
+        input_format=FMT_2D,
+        input_shape=SHAPE_2D[1:],
+        seed=42,
+    )
+
+    B, T, Y, X, C = 2, 1, 8, 8, 2
+    inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32) * 100.0
+    sample = {"data_tensor": inputs, "metainfo": {}}
+
+    output = proc(sample, data_time=0.1)
+
+    targets = output["metainfo"]["targets"][0]
+    expected_targets = inputs + 50.0
+    assert torch.allclose(targets, expected_targets, atol=1e-5)
+
+
+def test_denoising_preprocessor_reproducibility():
+    """Test that same seed produces same noise, different seeds produce different noise."""
+    B, T, Y, X, C = 2, 1, 8, 8, 2
+    inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32) * 100.0
+    sample = {"data_tensor": inputs, "metainfo": {}}
+
+    proc1 = DenoisingPreprocessor(
+        quantum_efficiency=0.82,
+        electrons_per_count=0.22,
+        sigma_background_noise=40.0,
+        mean_background_offset=100.0,
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, None),
+        transforms_list=[],
+        with_masking=False,
+        mask_generator=None,
+        input_format=FMT_2D,
+        input_shape=SHAPE_2D[1:],
+        seed=42,
+    )
+
+    proc2 = DenoisingPreprocessor(
+        quantum_efficiency=0.82,
+        electrons_per_count=0.22,
+        sigma_background_noise=40.0,
+        mean_background_offset=100.0,
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, None),
+        transforms_list=[],
+        with_masking=False,
+        mask_generator=None,
+        input_format=FMT_2D,
+        input_shape=SHAPE_2D[1:],
+        seed=42,
+    )
+
+    proc3 = DenoisingPreprocessor(
+        quantum_efficiency=0.82,
+        electrons_per_count=0.22,
+        sigma_background_noise=40.0,
+        mean_background_offset=100.0,
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, None),
+        transforms_list=[],
+        with_masking=False,
+        mask_generator=None,
+        input_format=FMT_2D,
+        input_shape=SHAPE_2D[1:],
+        seed=123,
+    )
+
+    output1 = proc1(sample, data_time=0.0)
+    output2 = proc2(sample, data_time=0.0)
+    output3 = proc3(sample, data_time=0.0)
+
+    # Same seed produces same results
+    assert torch.allclose(output1["data_tensor"], output2["data_tensor"], atol=1e-6)
+    # Different seed produces different results
+    assert not torch.allclose(output1["data_tensor"], output3["data_tensor"], atol=1e-6)
