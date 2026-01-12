@@ -351,26 +351,34 @@ class BaseFinetunePreprocessor(RayPreprocessor):
 class DenoisingPreprocessor(BaseFinetunePreprocessor):
     """
     Task: denoising
-    - inputs: noisy image
-    - targets: clean image
+    - inputs: noisy image (in counts, uint16 range)
+    - targets: clean image (in counts, uint16 range)
 
     args:
     - quantum_efficiency: float or tuple[float, float] representing quantum efficiency of the camera
-      (conversion from incident photons to electrons). If tuple, sample uniformly from the range for each batch element.
+      (conversion from incident photons to electrons). 
+      If tuple, sample uniformly from the range [min, max] giving a random value for each batch element.
     - electrons_per_count: float or tuple[float, float] representing the conversion factor from electrons to counts.
-      If tuple, sample uniformly from the range for each batch element.
+      If tuple, sample uniformly from the range [min, max] giving a random value for each batch element.
     - sigma_background_noise: float or tuple[float, float] representing read noise from the camera in counts.
-      If tuple, sample uniformly from the range for each batch element.
+      If tuple, sample uniformly from the range [min, max] giving a random value for each batch element.
     - mean_background_offset: float or tuple[float, float] representing the camera background offset in counts.
-      If tuple, sample uniformly from the range for each batch element.
+      If tuple, sample uniformly from the range [min, max] giving a random value for each batch element.
 
-    Models image noise following the physical sensor pipeline:
-    1. Convert photons → electrons using quantum_efficiency
-    2. Add shot noise (Poisson) in electron space
-    3. Add dark/read noise (Gaussian) in electron space
-    4. Convert electrons → counts using electrons_per_count
-    5. Add camera background offset (in counts)
-    6. Clip negative values to 0
+    Takes clean images in counts and applies realistic sensor noise model:
+    
+    REVERSE sensor pipeline (to extract clean photons):
+    1. Remove camera background offset
+    2. Convert counts → electrons
+    3. Convert electrons → photons
+    
+    FORWARD sensor pipeline with noise (to generate noisy counts):
+    4. Convert photons → electrons using quantum_efficiency
+    5. Add shot noise (Poisson) in electron space
+    6. Add dark/read noise (Gaussian) in electron space
+    7. Convert electrons → counts using electrons_per_count
+    8. Add camera background offset (in counts)
+    9. Clip to valid uint16 range [0, 65535]
 
     Poisson noise represents the shot noise modeled as a Poisson distribution 
     where noise is proportional to the product of the intensity of the light and 
@@ -439,20 +447,26 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
         sigma_bg = sigma_bg.view(-1, *[1] * (inputs.ndim - 1))
         mean_offset = mean_offset.view(-1, *[1] * (inputs.ndim - 1))
 
-        # Convert photons → electrons
-        image_electrons = inputs * qe
+        # REVERSE sensor pipeline: clean counts → photons
+        # Remove camera background offset
+        clean_counts = torch.clamp(inputs - mean_offset, min=0)
         
-        # Add shot noise (Poisson) in electron space
+        # Convert counts → electrons
+        clean_electrons = clean_counts * epc
+        
+        # Convert electrons → photons
+        clean_photons = clean_electrons / qe
+        
+        # FORWARD sensor pipeline with noise: photons → noisy counts
+        # Convert photons → electrons with shot noise
+        image_electrons = clean_photons * qe
         shot_noise = torch.poisson(image_electrons, generator=self.rng) - image_electrons
-        
-        # Convert read noise from counts to electrons
-        sigma_bg_electrons = sigma_bg * epc
+        image_electrons = image_electrons + shot_noise
         
         # Add dark/read noise (Gaussian) in electron space
+        sigma_bg_electrons = sigma_bg * epc
         dark_read_noise = torch.randn(inputs.shape, device=device, generator=self.rng) * sigma_bg_electrons
-        
-        # Add noise in electron space
-        image_electrons = image_electrons + shot_noise + dark_read_noise
+        image_electrons = image_electrons + dark_read_noise
         
         # Convert electrons → counts
         image_counts = image_electrons / epc
@@ -460,8 +474,8 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
         # Add camera background offset
         image_counts = image_counts + mean_offset
         
-        # Clip negative values
-        image_counts = torch.clamp(image_counts, min=0)
+        # Clip to valid range [0, 65535] for uint16
+        image_counts = torch.clamp(image_counts, min=0, max=65535)
         
         return image_counts, time.time() - t0
         
