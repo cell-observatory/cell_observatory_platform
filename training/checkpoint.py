@@ -36,7 +36,7 @@ class CheckpointManager:
         ckpt_translate_map: Optional[Dict[str, str]] = None,
     ):
         self.model = model
-        self.engine = engine
+        self.engine = engine.upper()
         self.save_period = save_period
         self.zero_stage = zero_stage
         self.load_dtype = load_dtype
@@ -86,7 +86,7 @@ class CheckpointManager:
         save_best_loss: Optional[float] = None,
     ):
         self.save_checkpointdir.mkdir(parents=True, exist_ok=True)
-        if self.engine == "deepspeed":
+        if self.engine == "DEEPSPEED":
             client_state = {"epoch": save_epoch, "iter": save_step, "best_loss": save_best_loss}
             self.model.save_checkpoint(self.save_checkpointdir, client_state=client_state, tag=prefix)
         else:
@@ -111,7 +111,7 @@ class CheckpointManager:
 
         ckpt_zero_stage = self._get_zero_stage(os.path.join(self.load_checkpointdir, self.checkpoint_tag))
 
-        if self.use_custom_state_dict_filter is not None and self.engine == "deepspeed":
+        if self.use_custom_state_dict_filter is not None and self.engine == "DEEPSPEED":
             custom_load_fn = self.make_state_dict_filter_fn(
                 include_prefixes=self.ckpt_include_prefixes, translate_map=self.ckpt_translate_map
             )

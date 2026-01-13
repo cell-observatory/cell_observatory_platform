@@ -720,8 +720,6 @@ class TestTrainer(BaseTrainer):
         self.test_dataloader, _, _, self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
 
         self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
-            train_dataloader=self.test_dataloader,
-            val_dataloader=None,
             config=cfg
         )
 
@@ -739,7 +737,7 @@ class TestTrainer(BaseTrainer):
         )
         self.checkpoint_manager.load()
 
-        # initialize optimizer
+        # initialize optimizer (needed for deepspeed init)
         self.opt, _ = get_optimizer(
             params=model.parameters(),
             config=cfg,
@@ -830,8 +828,6 @@ class Inferencer(BaseTrainer):
         self.test_dataloader, _, _, self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
 
         self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
-            train_dataloader=self.test_dataloader,
-            val_dataloader=None,
             config=cfg
         )
 

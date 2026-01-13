@@ -55,7 +55,8 @@ def mask_ids_to_masks(batch_size, spatial_shape, mask_ids_batch, masks, device):
 
 
 def delta2bbox(
-    proposals, deltas, max_shape=None, whd_ratio_clip=16 / 1000, clip_border=True, add_ctr_clamp=False, ctr_clamp=32
+    proposals, deltas, max_shape=None, whd_ratio_clip=16 / 1000, 
+    clip_border=True, add_ctr_clamp=False, ctr_clamp=32
 ):
     dxyz = deltas[..., :3]
     whd = deltas[..., 3:]

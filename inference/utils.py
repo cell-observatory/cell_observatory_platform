@@ -98,7 +98,7 @@ def preds_dict_to_pdf(
     preds_tc_or_czyx: dict[str, np.ndarray],
     axes_map: dict[str, Literal["TCZYX", "CZYX"]],
     out_path: Path | str,
-    z_step: int = 1,
+    z_step: int = 15,
     pmin: float = 1.0,
     pmax: float = 99.0,
     mip_depth: int = 20,
@@ -297,6 +297,8 @@ def save_predictions(
     save_as_pdf: bool,
     z_step_pdf: int,
     filetype: Literal["tiff", "zarr"],
+    pmin: float = 1.0,
+    pmax: float = 99.0,
     zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
     zarr_shard_shape: Optional[Tuple[int, ...]] = None,
 ):
@@ -318,7 +320,6 @@ def save_predictions(
     save_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[save_predictions] Saving predictions for tile {name}...")
-    print(f"[save_predictions] Writing PDF to: {pdf_path}")
 
     # Dict case: multi-output
     if isinstance(predictions, dict):
@@ -334,11 +335,14 @@ def save_predictions(
         # Single PDF with all outputs on the same pages
         if save_as_pdf:
             pdf_path = save_dir / f"pred_{name}_MIP.pdf"
+            print(f"[save_predictions] Writing PDF to: {pdf_path}")
             preds_dict_to_pdf(
                 arr_map,
                 axes_map,
                 out_path=pdf_path,
                 z_step=z_step_pdf,
+                pmin=pmin,
+                pmax=pmax,
             )
 
         # Separate volumes per output type

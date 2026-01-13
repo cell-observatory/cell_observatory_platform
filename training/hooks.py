@@ -1036,6 +1036,7 @@ class FreeDeviceBufferHook(HookBase):
 
     def before_test(self):
         self.device_buffer = self.trainer.device_buffer
+        self.with_grad_accumulation = self.trainer.with_grad_accumulation
 
     def after_step(self, **kwargs):
         if not self.with_grad_accumulation:
