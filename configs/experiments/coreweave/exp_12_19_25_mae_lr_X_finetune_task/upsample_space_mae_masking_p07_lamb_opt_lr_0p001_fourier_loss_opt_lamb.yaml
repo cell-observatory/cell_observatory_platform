@@ -24,7 +24,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: upsample_space_baseline_128x256x256_100_epoch_lr_0p001_fourier_loss_opt_lamb_h200
+experiment_name: upsample_space_mae_masking_p07_128x256x256_100_epoch_lr_0p001_fourier_loss_opt_lamb_h200
 wandb_project: finetuning_3d_v2
 
 backend: DEEPSPEED
@@ -57,6 +57,15 @@ seed: 42
 # overrides
 # --------------------------------------------------------------------------------
 
+deepspeed:
+  checkpoint:
+    load_universal: true
+
+checkpoint:
+  checkpoint_manager:
+    ckpt_include_prefixes: [backbone] # only load masked_encoder weights from the pretrained model
+    ckpt_translate_map: {masked_encoder: backbone}
+
 clusters:
   batch_size: 2560 # total batch size
   worker_nodes: 4 # number of worker nodes
@@ -69,7 +78,7 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  pretrained_checkpointdir: null
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200/checkpoints
   resume_checkpointdir: null
 
 # data
