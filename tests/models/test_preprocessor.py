@@ -2,6 +2,8 @@ import pytest
 import torch
 
 from cell_observatory_platform.data.utils import resize_mask
+from cell_observatory_platform.data.transforms.noise import MixedPoissonGaussianNoise
+from cell_observatory_platform.data.transforms.make_targets import DeepCopyInputsAsTargets
 from cell_observatory_platform.models.layers.preprocessor import (
     ChannelSplitPreprocessor,
     DenoisingPreprocessor,
@@ -254,67 +256,44 @@ def test_denoising_preprocessor_init():
     """Test initialization with float and tuple parameters."""
     # Float parameters
     proc = DenoisingPreprocessor(
+        denoising_type="microscopy",
+        transforms_list=[DeepCopyInputsAsTargets(), MixedPoissonGaussianNoise(
         quantum_efficiency=0.82,
         electrons_per_count=0.22,
         sigma_background_noise=40.0,
         mean_background_offset=100.0,
+        seed=42,
+        )],
         dtype=torch.float32,
         patch_shape=(1, 4, 4, None),
-        transforms_list=[],
         with_masking=False,
         mask_generator=None,
         input_format=FMT_2D,
         input_shape=SHAPE_2D[1:],
     )
-    assert proc.quantum_efficiency == 0.82
-    assert proc.electrons_per_count == 0.22
-    assert proc.sigma_background_noise == 40.0
-    assert proc.mean_background_offset == 100.0
-
-    # Tuple parameters
-    proc = DenoisingPreprocessor(
-        quantum_efficiency=(0.7, 0.9),
-        electrons_per_count=(0.2, 0.3),
-        sigma_background_noise=(30, 50),
-        mean_background_offset=(80, 120),
-        dtype=torch.float32,
-        patch_shape=(1, 4, 4, None),
-        transforms_list=[],
-        with_masking=False,
-        mask_generator=None,
-        input_format=FMT_2D,
-        input_shape=SHAPE_2D[1:],
-    )
-    assert proc.quantum_efficiency == (0.7, 0.9)
-    assert proc.electrons_per_count == (0.2, 0.3)
-
+    assert len(proc.transforms) == 2, "Expected two transforms"
+    assert isinstance(proc.transforms[0], DeepCopyInputsAsTargets), "Expected DeepCopyInputsAsTargets transform"
+    assert isinstance(proc.transforms[1], MixedPoissonGaussianNoise), "Expected MixedPoissonGaussianNoise transform"
+    assert proc.transforms[1].quantum_efficiency == 0.82, "Expected quantum efficiency to be 0.82"
+    assert proc.transforms[1].electrons_per_count == 0.22, "Expected electrons per count to be 0.22"
+    assert proc.transforms[1].sigma_background_noise == 40.0, "Expected sigma background noise to be 40.0"
+    assert proc.transforms[1].mean_background_offset == 100.0, "Expected mean background offset to be 100.0"
+    assert proc.transforms[1].rng.initial_seed() == 42, "Expected seed to be 42"
 
 def test_denoising_preprocessor_init_invalid_params():
     """Test that invalid parameter values raise ValueError."""
     with pytest.raises(ValueError, match="quantum_efficiency must be a float or tuple of two floats"):
         DenoisingPreprocessor(
-            quantum_efficiency="invalid",
-            electrons_per_count=0.22,
-            sigma_background_noise=40.0,
-            mean_background_offset=100.0,
+            denoising_type="microscopy",
+            transforms_list=[DeepCopyInputsAsTargets(), MixedPoissonGaussianNoise(
+                quantum_efficiency="invalid",
+                electrons_per_count=0.22,
+                sigma_background_noise=40.0,
+                mean_background_offset=100.0,
+                seed=42,
+            )],
             dtype=torch.float32,
             patch_shape=(1, 4, 4, None),
-            transforms_list=[],
-            with_masking=False,
-            mask_generator=None,
-            input_format=FMT_2D,
-            input_shape=SHAPE_2D[1:],
-        )
-
-    with pytest.raises(ValueError, match="electrons_per_count must be a float or tuple of two floats"):
-        DenoisingPreprocessor(
-            quantum_efficiency=0.82,
-            electrons_per_count=(0.1,),  # wrong length
-            sigma_background_noise=40.0,
-            mean_background_offset=100.0,
-            dtype=torch.float32,
-            patch_shape=(1, 4, 4, None),
-            transforms_list=[],
             with_masking=False,
             mask_generator=None,
             input_format=FMT_2D,
@@ -326,181 +305,166 @@ def test_denoising_preprocessor_noise_addition():
     """Test noise addition with float and tuple parameters."""
     # Fixed parameters
     proc = DenoisingPreprocessor(
-        quantum_efficiency=0.82,
-        electrons_per_count=0.22,
-        sigma_background_noise=40.0,
-        mean_background_offset=100.0,
+        denoising_type="microscopy",
+        transforms_list=[DeepCopyInputsAsTargets(), MixedPoissonGaussianNoise(
+            quantum_efficiency=0.82,
+            electrons_per_count=0.22,
+            sigma_background_noise=40.0,
+            mean_background_offset=100.0,
+            seed=42,
+        )],
         dtype=torch.float32,
         patch_shape=(1, 4, 4, None),
-        transforms_list=[],
         with_masking=False,
         mask_generator=None,
         input_format=FMT_2D,
         input_shape=SHAPE_2D[1:],
-        seed=42,
     )
 
     B, T, Y, X, C = 2, 1, 8, 8, 2
     inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32) * 100.0
-
-    noisy_inputs, time_taken = proc._add_noise(inputs)
-
-    assert not torch.allclose(inputs, noisy_inputs, atol=1e-6)
-    assert noisy_inputs.shape == inputs.shape
-    assert torch.all(noisy_inputs >= 0)  # After clipping
-    assert isinstance(time_taken, float) and time_taken >= 0
+    inputs_clone = inputs.clone()
+    sample = {"data_tensor": inputs, "metainfo": {}}
+    noisy_inputs = proc(sample, data_time=0.0)["data_tensor"]
+    assert not torch.allclose(inputs_clone, noisy_inputs, atol=1e-6), "Noised inputs are the same as original inputs"
+    assert noisy_inputs.shape == inputs_clone.shape, "Noised inputs have different shape than original inputs"
+    assert torch.all(noisy_inputs >= 0), "Noised inputs are not in valid range [0, 65535]"
 
     # Tuple parameters - check per-batch variation
     proc = DenoisingPreprocessor(
-        quantum_efficiency=(0.7, 0.9),
-        electrons_per_count=(0.2, 0.3),
-        sigma_background_noise=(30, 50),
-        mean_background_offset=(80, 120),
+        denoising_type="microscopy",
+        transforms_list=[DeepCopyInputsAsTargets(), MixedPoissonGaussianNoise(
+            quantum_efficiency=(0.7, 0.9),
+            electrons_per_count=(0.2, 0.3),
+            sigma_background_noise=(30, 50),
+            mean_background_offset=(80, 120),
+            seed=42,
+        )],
         dtype=torch.float32,
         patch_shape=(1, 4, 4, None),
-        transforms_list=[],
         with_masking=False,
         mask_generator=None,
         input_format=FMT_2D,
         input_shape=SHAPE_2D[1:],
-        seed=42,
     )
 
     B, T, Y, X, C = 4, 1, 8, 8, 2
     inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32) * 100.0
-    noisy_inputs, _ = proc._add_noise(inputs)
+    inputs_clone = inputs.clone()
+    sample = {"data_tensor": inputs, "metainfo": {}}
+    noisy_inputs = proc(sample, data_time=0.0)["data_tensor"]
 
     # Different batch elements should have different noise patterns
-    batch_0_noise = noisy_inputs[0] - inputs[0]
-    batch_1_noise = noisy_inputs[1] - inputs[1]
-    assert not torch.allclose(batch_0_noise, batch_1_noise, atol=1e-6)
+    batch_0_noise = noisy_inputs[0] - inputs_clone[0]
+    batch_1_noise = noisy_inputs[1] - inputs_clone[1]
+    assert not torch.allclose(batch_0_noise, batch_1_noise, atol=1e-6), "Different batch elements have the same noised output"
 
 
 def test_denoising_preprocessor_forward():
     """Test forward pass produces noisy inputs and clean targets."""
     proc = DenoisingPreprocessor(
-        quantum_efficiency=0.82,
-        electrons_per_count=0.22,
-        sigma_background_noise=40.0,
-        mean_background_offset=100.0,
+        denoising_type="microscopy",
+        transforms_list=[DeepCopyInputsAsTargets(), MixedPoissonGaussianNoise(
+            quantum_efficiency=0.82,
+            electrons_per_count=0.22,
+            sigma_background_noise=40.0,
+            mean_background_offset=100.0,
+            seed=42,
+        )],
         dtype=torch.float32,
         patch_shape=(1, 4, 4, None),
-        transforms_list=[],
         with_masking=False,
         mask_generator=None,
         input_format=FMT_2D,
         input_shape=SHAPE_2D[1:],
-        seed=42,
     )
 
     B, T, Y, X, C = 2, 1, 8, 8, 2
     inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32) * 100.0
+    inputs_clone = inputs.clone()
     sample = {"data_tensor": inputs, "metainfo": {}}
 
     output = proc(sample, data_time=0.1)
 
-    assert "data_tensor" in output and "metainfo" in output
+    assert "data_tensor" in output and "metainfo" in output, "data_tensor and metainfo are not in output"
     noisy_inputs = output["data_tensor"]
     targets = output["metainfo"]["targets"][0]
 
-    assert not torch.allclose(inputs, noisy_inputs, atol=1e-6)
-    assert noisy_inputs.shape == inputs.shape
-    assert targets.shape == inputs.shape
-    assert not torch.allclose(targets, noisy_inputs, atol=1e-6)
+    assert not torch.allclose(inputs_clone, noisy_inputs, atol=1e-6), "Noised inputs are the same as original inputs"
+    assert noisy_inputs.shape == inputs_clone.shape, "Noised inputs have different shape than original inputs"
+    assert targets.shape == inputs_clone.shape, "Targets have different shape than original inputs"
+    assert not torch.allclose(targets, noisy_inputs, atol=1e-6), "Targets are the same as noised inputs"
 
     meta = output["metainfo"]
-    assert isinstance(meta["preprocess_time"], float)
-    assert isinstance(meta["transform_time"], float)
-    assert meta["data_time"] == 0.1
-
-
-def test_denoising_preprocessor_with_transforms():
-    """Test forward pass applies transforms before noise."""
-    def add_constant(x: torch.Tensor) -> torch.Tensor:
-        return x + 50.0
-
-    proc = DenoisingPreprocessor(
-        quantum_efficiency=0.82,
-        electrons_per_count=0.22,
-        sigma_background_noise=40.0,
-        mean_background_offset=100.0,
-        dtype=torch.float32,
-        patch_shape=(1, 4, 4, None),
-        transforms_list=[add_constant],
-        with_masking=False,
-        mask_generator=None,
-        input_format=FMT_2D,
-        input_shape=SHAPE_2D[1:],
-        seed=42,
-    )
-
-    B, T, Y, X, C = 2, 1, 8, 8, 2
-    inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32) * 100.0
-    sample = {"data_tensor": inputs, "metainfo": {}}
-
-    output = proc(sample, data_time=0.1)
-
-    targets = output["metainfo"]["targets"][0]
-    expected_targets = inputs + 50.0
-    assert torch.allclose(targets, expected_targets, atol=1e-5)
+    assert isinstance(meta["preprocess_time"], float), "preprocess_time is not a float"
+    assert isinstance(meta["transform_time"], float), "transform_time is not a float"
+    assert meta["data_time"] == 0.1, "data_time was modified"
 
 
 def test_denoising_preprocessor_reproducibility():
     """Test that same seed produces same noise, different seeds produce different noise."""
     B, T, Y, X, C = 2, 1, 8, 8, 2
     inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32) * 100.0
-    sample = {"data_tensor": inputs, "metainfo": {}}
+    sample1 = {"data_tensor": inputs.clone(), "metainfo": {}}
+    sample2 = {"data_tensor": inputs.clone(), "metainfo": {}}
+    sample3 = {"data_tensor": inputs.clone(), "metainfo": {}}
 
     proc1 = DenoisingPreprocessor(
-        quantum_efficiency=0.82,
-        electrons_per_count=0.22,
-        sigma_background_noise=40.0,
-        mean_background_offset=100.0,
+        denoising_type="microscopy",
+        transforms_list=[DeepCopyInputsAsTargets(), MixedPoissonGaussianNoise(
+            quantum_efficiency=0.82,
+            electrons_per_count=0.22,
+            sigma_background_noise=40.0,
+            mean_background_offset=100.0,
+            seed=42,
+        )],
         dtype=torch.float32,
         patch_shape=(1, 4, 4, None),
-        transforms_list=[],
         with_masking=False,
         mask_generator=None,
         input_format=FMT_2D,
         input_shape=SHAPE_2D[1:],
-        seed=42,
     )
 
     proc2 = DenoisingPreprocessor(
-        quantum_efficiency=0.82,
-        electrons_per_count=0.22,
-        sigma_background_noise=40.0,
-        mean_background_offset=100.0,
+        denoising_type="microscopy",
+        transforms_list=[DeepCopyInputsAsTargets(), MixedPoissonGaussianNoise(
+            quantum_efficiency=0.82,
+            electrons_per_count=0.22,
+            sigma_background_noise=40.0,
+            mean_background_offset=100.0,
+            seed=42,
+        )],
         dtype=torch.float32,
         patch_shape=(1, 4, 4, None),
-        transforms_list=[],
         with_masking=False,
         mask_generator=None,
         input_format=FMT_2D,
         input_shape=SHAPE_2D[1:],
-        seed=42,
     )
 
     proc3 = DenoisingPreprocessor(
-        quantum_efficiency=0.82,
-        electrons_per_count=0.22,
-        sigma_background_noise=40.0,
-        mean_background_offset=100.0,
+        denoising_type="microscopy",
+        transforms_list=[DeepCopyInputsAsTargets(), MixedPoissonGaussianNoise(
+            quantum_efficiency=0.82,
+            electrons_per_count=0.22,
+            sigma_background_noise=40.0,
+            mean_background_offset=100.0,
+            seed=123,
+        )],
         dtype=torch.float32,
         patch_shape=(1, 4, 4, None),
-        transforms_list=[],
         with_masking=False,
         mask_generator=None,
         input_format=FMT_2D,
         input_shape=SHAPE_2D[1:],
-        seed=123,
     )
 
-    output1 = proc1(sample, data_time=0.0)
-    output2 = proc2(sample, data_time=0.0)
-    output3 = proc3(sample, data_time=0.0)
+    output1 = proc1(sample1, data_time=0.0)
+    output2 = proc2(sample2, data_time=0.0)
+    output3 = proc3(sample3, data_time=0.0)
 
     # Same seed produces same results
-    assert torch.allclose(output1["data_tensor"], output2["data_tensor"], atol=1e-6)
+    assert torch.allclose(output1["data_tensor"], output2["data_tensor"], atol=1e-6), "Same seed produces different results"
     # Different seed produces different results
-    assert not torch.allclose(output1["data_tensor"], output3["data_tensor"], atol=1e-6)
+    assert not torch.allclose(output1["data_tensor"], output3["data_tensor"], atol=1e-6), "Different seed produces same results"
