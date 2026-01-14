@@ -20,6 +20,6 @@ seed: ${seed}
 # ideal_psf_path: /clusterfs/nvme/segment_4d/psf/amp_0-p0/1.tif
 ideal_psf_path: "/workspace/CellObservatoryData/hph/data/psf.tif"
 # na_mask_thresholds: [0.7, 0.8, 0.9]
-na_mask_thresholds: [0.5, 0.6, 0.7]
+na_mask_thresholds: [0.3, 0.4, 0.5, 0.6, 0.7]
 resize_na_masks: true
 mask_idx: -1
