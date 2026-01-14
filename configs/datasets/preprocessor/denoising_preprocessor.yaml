@@ -5,12 +5,18 @@ mask_generator: ${datasets.masking.mask_generators.0}
 dtype: ${quantization}
 
 transforms_list:
+# 1) DeepCopyInputsAsTargets to create targets from inputs
+  - _target_: cell_observatory_platform.data.transforms.make_targets.DeepCopyInputsAsTargets
+
+# 2) MixedPoissonGaussianNoise to add noise to inputs (inplace)
   - _target_: cell_observatory_platform.data.transforms.noise.MixedPoissonGaussianNoise
-    quantum_efficiency: 0.82
-    electrons_per_count: 0.22
-    sigma_background_noise: 40
-    mean_background_offset: 100
+    quantum_efficiency: ${tasks.denoising.quantum_efficiency}
+    electrons_per_count: ${tasks.denoising.electrons_per_count}
+    sigma_background_noise: ${tasks.denoising.sigma_background_noise}
+    mean_background_offset: ${tasks.denoising.mean_background_offset}
     seed: ${seed}
+
+# 3) Normalize to normalize the data
   - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
     input_layout:
       _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
