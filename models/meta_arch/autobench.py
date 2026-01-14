@@ -223,7 +223,7 @@ class ChannelSplitAutoBench(AutoBench):
         x = self.decoder(x)
 
         # Assume backbone exposes patch_embedding.unpatchify (MaskedEncoder-style)
-        return self.backbone.patch_embedding.unpatchify(
+        return self.backbone.patch_embedding._unpatchify(
             x,
             out_channels=self.output_channels if self.output_channels is not None else None,
         )
@@ -287,7 +287,7 @@ class UpsampleTimeAutoBench(AutoBench):
             target_masks=target_masks,
         )
 
-        return self.backbone.patch_embedding.unpatchify(x, out_channels=None)
+        return self.backbone.patch_embedding._unpatchify(x, out_channels=None)
 
 
 class UpsampleSpaceAutoBench(AutoBench):
@@ -338,7 +338,7 @@ class UpsampleSpaceAutoBench(AutoBench):
         x, patches = self.backbone(inputs)
         x = self.decoder(x)
 
-        return self.backbone.patch_embedding.unpatchify(x, out_channels=None)
+        return self.backbone.patch_embedding._unpatchify(x, out_channels=None)
 
 
 class UpsampleSpaceTimeAutoBench(AutoBench):
@@ -396,7 +396,7 @@ class UpsampleSpaceTimeAutoBench(AutoBench):
             target_masks=target_masks,
         )
 
-        return self.backbone.patch_embedding.unpatchify(x, out_channels=None)
+        return self.backbone.patch_embedding._unpatchify(x, out_channels=None)
 
 
 # -------------------------------------------------------------------
