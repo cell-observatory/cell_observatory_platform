@@ -215,7 +215,7 @@ class DenoisingAutoBench(AutoBench):
         return loss_dict, predictions
 
     def predict(self, data_sample: dict):
-
+        inputs = data_sample["data_tensor"]
         x, patches = self.backbone(inputs)
         x = self.decoder(x)
 
@@ -466,7 +466,7 @@ def BUILD(cfg: Mapping[str, Any]) -> AutoBench:
     task = cfg["tasks"]["task"]
     if task == "denoising":
         model_cfg = cfg.models.meta_arch.autobench.DenoisingAutoBench
-    if task == "channel_split":
+    elif task == "channel_split":
         model_cfg = cfg.models.meta_arch.autobench.ChannelSplitAutoBench
     elif task == "upsample_time":
         model_cfg = cfg.models.meta_arch.autobench.UpsampleTimeAutoBench

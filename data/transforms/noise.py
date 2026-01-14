@@ -5,8 +5,8 @@ class MixedPoissonGaussianNoise:
         self, 
         quantum_efficiency: float | tuple[float, float], 
         electrons_per_count: float | tuple[float, float], 
-        sigma_background_noise: float | tuple[float, float], 
-        mean_background_offset: float | tuple[float, float],
+        sigma_background_noise: int| tuple[int, int] | float | tuple[float, float], 
+        mean_background_offset: int| tuple[int, int] | float | tuple[float, float],
         seed: int | None = None,
     ):
         """
@@ -130,6 +130,7 @@ class MixedPoissonGaussianNoise:
         image_batch += mean_offset
         
         # Clip to valid range [0, 65535] for uint16
+        # TODO: Should we clamp to 0-65535 or just min=0?
         image_batch = torch.clamp(image_batch, min=0, max=65535)
         
         return image_batch
