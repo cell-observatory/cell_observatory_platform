@@ -78,7 +78,7 @@ def get_steps_per_epoch(
             f"Steps per epoch is None or <= 0. Cannot proceed with training."
         )
     
-    if (val_steps_per_epoch is None or val_steps_per_epoch <= 0) and with_validation_loop is not None:
+    if (val_steps_per_epoch is None or val_steps_per_epoch <= 0) and with_validation_loop:
         raise ValueError("Validation Dataloader is provided but validation steps per epoch is None or <= 0.")
     
     if gradient_accumulation_steps > 1:

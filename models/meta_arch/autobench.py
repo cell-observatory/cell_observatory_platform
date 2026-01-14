@@ -277,6 +277,7 @@ class ChannelSplitAutoBench(AutoBench):
         x, patches = self.backbone(inputs)
         x = self.decoder(x)
 
+        # Assume backbone exposes patch_embedding.unpatchify (MaskedEncoder-style)
         return self.backbone.patch_embedding._unpatchify(
             x,
             out_channels=self.output_channels if self.output_channels is not None else None,

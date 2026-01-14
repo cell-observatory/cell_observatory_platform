@@ -1,37 +1,31 @@
 # @package _global_
 defaults:
-  - /tasks/channel_split
-  - /paths/coreweave                               # configs/paths/abc.yaml
-  - /hydra/overrides                               # configs/hydra/overrides.yaml (not working)
-  - /clusters/coreweave_h100                       # configs/clusters/local.yaml
-  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
-  - /datasets/preprocessor/channel_split_preprocessor # configs/datasets/preprocessor/channel_split_preprocessor.yaml
-  - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
-  - /models/BUILD_AutoBench                  # configs/models/BUILD_AutoBench.yaml
-  - /models/meta_arch/autobench/ChannelSplitAutoBench/mae_large  # configs/models/meta_arch/autobench/ChannelSplitAutoBench/mae_large.yaml
-  - /models/backbones/masked_encoder/large              # configs/models/backbones/masked_encoder/large.yaml
-  - /models/heads/maskedpredictor/large                 # configs/models/decoders/linear.yaml
-  # - /models/heads/linear/linear
+  - /paths/coreweave                         # configs/paths/coreweave.yaml
+  - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
+  - /clusters/coreweave_h200                 # configs/clusters/local.yaml
+  - /datasets/pretrain_dataset_ray     # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/meta_arch/mae/large                  # configs/models/jepa/large.yaml
+  - /models/BUILD_MAE                  # configs/models/BUILD_AutoBench.yaml  
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
-  - /optimizers/lamb                         # configs/optimizers/lamb.yaml
-  - /schedulers/warmup_cosine_decay          # configs/schedulers/warmup_cosine_decay.yaml
+  - /optimizers/lamb_mae                     # configs/optimizers/lamb.yaml
+  - /schedulers/warmup_cosine_decay # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
-  - /profiling/profiling                     # configs/profiling/profiling.yaml
+  - /profiling/profiling
   - _self_
 
 # experiment name (used for logging)
-experiment_name: channel_split_baseline_128x256x256_100_epoch_lr_0p00001_fourier_loss_opt_lamb
-wandb_project: finetuning_3d_v2
+experiment_name: mae_large_128x256x256_300_epoch_lr_0p001_mask_0p7_fourier_loss_cdf_target_80_cdf_threshold_100_h200
+wandb_project: pretraining_3d_v2
 
 # task
-task: finetuning
+task: pretrain_mae
 
 # Model type
-network: baseline
+network: mae
 
 backend: DEEPSPEED
 
@@ -54,25 +48,24 @@ trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
 loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
 
 # training quantization
-quantization: bfloat16 # data type for training, options: float32, float16
+quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
 
-# NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model
-dataset_dtype: float16 # data type for loading data, options: float32, float16
-storage_dtype: uint16
+# dtype for training data
+dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
+storage_dtype: uint16 # data type for storage
 
 # dataset layout in the zarr files
 dataset_layout_order: ZYXC
 
-# seed
 seed: 42
 
 # overrides
 # --------------------------------------------------------------------------------
 
-
+# clusters
 clusters:
   batch_size: 2560 # total batch size
-  worker_nodes: 8 # number of worker nodes
+  worker_nodes: 4 # number of worker nodes
   gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
   mem_per_cpu: 40000 # ram per cpu core
@@ -82,7 +75,7 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null
+  # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
   pretrained_checkpointdir: null
 
 datasets:
@@ -110,6 +103,8 @@ datasets:
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
 
   databases:
+    cdf_target: 80
+    cdf_threshold: 100
     occupancy_threshold_filter_type: 'min_ch0'
     synthetic_only: false
     has_annotations: false
@@ -125,14 +120,48 @@ datasets:
   callback_strategy: grpc # grpc, queue
   async_device_copy: false
 
+  masking:
+    mask_generators:
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
+
+        mask_mode: 
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "random"
+
+        random_masking_ratio: 0.7
+
 schedulers:
-  epochs: 100
-  warmup: 10
-  cooldown: 5
+  epochs: 300
+  warmup: 30
+  cooldown: 15
+
+# ROPE axial
+models:
+  meta_arch:
+    mae:
+      abs_sincos_enc: false
+      rope_pos_enc: true
+      rope_random_rotation_per_head: true
+      rope_mixed: false
+      rope_theta: 100.0
+      with_auxiliary_loss: true
+      loss_fn:
+        loss_type: "fourier_loss"
+        alpha: 0.001
+        fft_loss: "l1_masked"
+        spatial_loss: "l2_masked"
+        input_fmt: ${dataset_layout_order}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        embed_dim: ${models.meta_arch.mae.embed_dim}
 
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
-  lr: 1e-5
+  lr: 1e-3
 
 # hooks
 hooks:

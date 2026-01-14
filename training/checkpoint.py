@@ -36,7 +36,7 @@ class CheckpointManager:
         ckpt_translate_map: Optional[Dict[str, str]] = None,
     ):
         self.model = model
-        self.engine = engine
+        self.engine = engine.upper()
         self.save_period = save_period
         self.zero_stage = zero_stage
         self.load_dtype = load_dtype
@@ -86,7 +86,7 @@ class CheckpointManager:
         save_best_loss: Optional[float] = None,
     ):
         self.save_checkpointdir.mkdir(parents=True, exist_ok=True)
-        if self.engine == "deepspeed":
+        if self.engine == "DEEPSPEED":
             client_state = {"epoch": save_epoch, "iter": save_step, "best_loss": save_best_loss}
             self.model.save_checkpoint(self.save_checkpointdir, client_state=client_state, tag=prefix)
         else:
@@ -111,7 +111,7 @@ class CheckpointManager:
 
         ckpt_zero_stage = self._get_zero_stage(os.path.join(self.load_checkpointdir, self.checkpoint_tag))
 
-        if self.use_custom_state_dict_filter is not None and self.engine == "deepspeed":
+        if self.use_custom_state_dict_filter is not None and self.engine == "DEEPSPEED":
             custom_load_fn = self.make_state_dict_filter_fn(
                 include_prefixes=self.ckpt_include_prefixes, translate_map=self.ckpt_translate_map
             )
@@ -209,9 +209,9 @@ class CheckpointManager:
             src = self._prefix_aware_load_state_dict(src, dst_module)
             missing, unexpected = dst_module.load_state_dict(src, strict=False)
             if missing:
-                logger.info("[CheckpointManager] (torch) missing keys: %s", list(missing)[:20])
+                logger.info("[CheckpointManager] (torch) missing keys: %s", list(missing))
             if unexpected:
-                logger.info("[CheckpointManager] (torch) unexpected keys: %s", list(unexpected)[:20])
+                logger.info("[CheckpointManager] (torch) unexpected keys: %s", list(unexpected))
 
         # optional dtype cast
         if self.load_dtype is not None:
@@ -247,19 +247,13 @@ class CheckpointManager:
         include_prefixes = list(include_prefixes) if include_prefixes else None
         translate_map = dict(translate_map) if translate_map else {}
 
-        def _translate_key(k: str):
-            if k in translate_map:
-                return translate_map[k]
-            if k.startswith("module."):
-                core = k[len("module.") :]
-                if core in translate_map:
-                    mapped = translate_map[core]
-                    return f"module.{mapped}" if not mapped.startswith("module.") else mapped
-            else:
-                with_mod = f"module.{k}"
-                if with_mod in translate_map:
-                    mapped = translate_map[with_mod]
-                    return mapped[len("module.") :] if mapped.startswith("module.") else mapped
+        def _translate_key(k: str) -> str:
+            # prefix-based rename: old.* -> new.*
+            for old, new in translate_map.items():
+                if k == old:
+                    return new
+                if k.startswith(old + "."):
+                    return new + k[len(old):]  # keeps the dot + suffix
             return k
 
         def custom_load_fn(src: Dict[str, torch.Tensor], dst: torch.nn.Module):
@@ -291,6 +285,13 @@ class CheckpointManager:
                 else:
                     dropped.append((k, tuple(v.shape), tuple(dst_t.shape) if dst_t is not None else None))
 
+            # NOTE: helpful debug logging
+            # ray.logger.warning(
+            #     "[CheckpointManager] Src state dict keys: {} | Dst state dict keys: {}",
+            #     src_state_dict.keys(),
+            #     dst_state_dict.keys(),
+            # )
+
             missing, unexpected = dst.load_state_dict(keep, strict=False)
 
             if dropped:
@@ -301,10 +302,16 @@ class CheckpointManager:
                 )
             if missing:
                 ray.logger.info(
-                    "[CheckpointManager] Model missing keys after load (left at init): %s", list(missing)[:20]
+                    "[CheckpointManager] Model missing keys after load (left at init): %s", list(missing)
                 )
             if unexpected:
-                ray.logger.info("[CheckpointManager] Unexpected keys ignored: %s", list(unexpected)[:20])
+                ray.logger.info("[CheckpointManager] Unexpected keys ignored: %s", list(unexpected))
+
+            ray.logger.warning(
+                    "[CheckpointManager] Kept %d tensors:\n%s",
+                    len(keep),
+                    "\n".join([f"  - {k}: {tuple(v.shape)}" for (k, v) in keep.items()]),
+            )
 
         return custom_load_fn
 

@@ -1,19 +1,26 @@
-import logging
 import os
+import re
+import logging
+import functools
 from pathlib import Path
-from typing import Callable, Iterable, List, Literal, Optional, Tuple
+from typing import Callable, Iterable, List, Literal, Optional, Tuple, Any, Dict
 
-import connectorx as cx
-import numpy as np
-import pandas as pd
 import ray
 import torch
-from dotenv import load_dotenv
 from torch import distributed as dist
 
+import numpy as np
+import pandas as pd
+import connectorx as cx
+
+from omegaconf import OmegaConf
+from dotenv import load_dotenv
+
 from cell_observatory_platform.data.io import save_file
-from cell_observatory_platform.inference.utils import save_predictions, stable_key_owner, tile_hash
+from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.utils.context import barrier, get_world_size, process_rank
+from cell_observatory_platform.inference.utils import save_predictions, stable_key_owner, tile_hash
+from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +40,8 @@ class InferencerWorker:
         save_as_volume: bool,
         z_step_pdf: int,
         input_format: str,
+        input_shape: List[int],
+        patch_shape: List[Optional[int]],
         inference_mode: str,
         decoder_head_type: str,
         roi_tile_list: List[Tuple[int, str]],
@@ -48,7 +57,9 @@ class InferencerWorker:
         save_format: Literal["tiff", "zarr"] = "tiff",
         zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
         zarr_shard_shape: Optional[Tuple[int, ...]] = None,
-        auxiliary_outputs: Optional[List[Tuple[str, dict]]] = None,
+        auxiliary_outputs: Optional[Any] = None,
+        pmin: float = 1.0,
+        pmax: float = 99.0,
     ):
         self.database = database
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
@@ -58,7 +69,26 @@ class InferencerWorker:
         self.timepoint_list = timepoint_list
 
         self.dtype = dtype
+        self.input_shape = input_shape
+        self.patch_shape = patch_shape
         self.input_format = input_format
+
+        self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
+            input_format=self.input_format, patch_shape=patch_shape
+        )
+        _, self.token_shape = calc_num_patches(
+            input_fmt=self.input_format,
+            input_shape=self.input_shape,
+            patch_shape=patch_shape,
+        )
+        self.pe_unpatchify = functools.partial(
+            PatchEmbedding.unpatchify,
+            temporal_patch_size=self.temporal_patch_size,
+            axial_patch_size=self.axial_patch_size,
+            lateral_patch_size=self.lateral_patch_size,
+            token_shape=self.token_shape,
+            input_format=self.input_format,
+        )
 
         # roi_tile_list is a list of (roi_id, tile_name) tuples
         # to restrict inference to
@@ -71,6 +101,8 @@ class InferencerWorker:
         self.task = task
         self.inference_mode = inference_mode
 
+        self.pmin = pmin
+        self.pmax = pmax
         self.z_step_pdf = z_step_pdf
         self.save_as_pdf = save_as_pdf
         self.save_as_volume = save_as_volume
@@ -96,13 +128,31 @@ class InferencerWorker:
         # DictConfig -> plain dict[str, dict]
         self.outputs_metadata = {str(name): dict(meta) for name, meta in outputs_metadata.items()}
 
-        if auxiliary_outputs is not None:
-            self.auxiliary_outputs = {str(name): dict(meta) for name, meta in auxiliary_outputs.items()}
+        # Normalize auxiliary_outputs into dict[name -> spec]
+        if auxiliary_outputs is not None and not isinstance(auxiliary_outputs, (dict, list, tuple)):
+            # Hydra DictConfig/ListConfig -> plain container
+            auxiliary_outputs = OmegaConf.to_container(auxiliary_outputs, resolve=True)
+
+        if auxiliary_outputs:
+            if isinstance(auxiliary_outputs, dict):
+                self.auxiliary_outputs = {str(name): dict(spec) for name, spec in auxiliary_outputs.items()}
+            else:
+                aux: Dict[str, Dict[str, Any]] = {}
+                for item in auxiliary_outputs:
+                    if isinstance(item, (tuple, list)) and len(item) == 2:
+                        name, spec = item
+                        aux[str(name)] = dict(spec)
+                    else:
+                        # item is expected to be a mapping with "name"
+                        item = dict(item)
+                        aux[str(item["name"])] = item
+                self.auxiliary_outputs = aux
         else:
             self.auxiliary_outputs = {}
 
         self.save_auxiliary_outputs = bool(self.auxiliary_outputs)
 
+        # FIXME: enforce user naming main_output_name instead
         # main prediction output name; assume first key in outputs_metadata
         self.main_output_name = next(iter(self.outputs_metadata.keys()))
         self.num_output_channels = self.outputs_metadata[self.main_output_name].get("num_output_channels")
@@ -669,7 +719,7 @@ class InferencerWorker:
             zeros_before = (cnt_view == 0).sum()
 
             pred_view.add_(pred_hypercube)
-            cnt_view.add_(1)
+            cnt_view.add_(1.0)
 
             zeros_after = (cnt_view == 0).sum()
             filled = int((zeros_before - zeros_after).item())
@@ -704,7 +754,12 @@ class InferencerWorker:
 
         preds_dict = {}
         for dt in self.data_types:
-            preds = st[f"pred_{dt}"] / st[f"cnt_{dt}"].clamp_min(1)
+            p = st[f"pred_{dt}"]
+            c = st[f"cnt_{dt}"]
+
+            c.clamp_min_(1.0)
+            p.div_(c)
+            preds = p
 
             # Optional per-output activation from outputs_metadata
             meta = self.outputs_metadata.get(dt, {})
@@ -727,6 +782,8 @@ class InferencerWorker:
             filetype=self.inference_save_format,
             zarr_chunk_shape=self.inference_zarr_chunk_shape,
             zarr_shard_shape=self.inference_zarr_shard_shape,
+            pmin=self.pmin,
+            pmax=self.pmax,
         )
 
         print(f"Finished saving predictions for tile {name} (ROI {row.get('id', 'unknown')})")
@@ -745,10 +802,101 @@ class InferencerWorker:
         st = self._tile_state[key]
         if st[f"pred_{data_type}"] is None:
             st[f"pred_{data_type}"] = torch.zeros(st[f"shape_{data_type}"], dtype=self.dtype, device="cpu")
-            st[f"cnt_{data_type}"] = torch.zeros((*st[f"shape_{data_type}"][:-1], 1), dtype=torch.int32, device="cpu")
+            st[f"cnt_{data_type}"] = torch.zeros((*st[f"shape_{data_type}"][:-1], 1), dtype=torch.float16, device="cpu")
         return st[f"pred_{data_type}"], st[f"cnt_{data_type}"]
 
-    def predict(self, data_sample):
+    _PATH_TOKEN = re.compile(r"""
+        ([^.[]+)
+        (?:\[(\d+)\])?
+    """, re.X)
+
+    @staticmethod
+    def resolve_path(root: Any, path: str) -> Any:
+        """
+        Resolve 'path' against 'root'.
+        Supports dict keys, attributes, and list indices via '[i]' or bare '.i'.
+        Examples:
+        - "data_tensor"
+        - "metainfo.masks[0]"
+        - "metainfo.masks.0"   (treated like index 0)
+        """
+        cur = root
+        for part in path.split("."):
+            if part == "":
+                continue
+
+            # allow bare numeric segments as list indices (".0")
+            if part.isdigit():
+                cur = cur[int(part)]
+                continue
+
+            # support "key" and "key[i]"
+            m = InferencerWorker._PATH_TOKEN.fullmatch(part)
+            if not m:
+                raise KeyError(f"Bad path segment: {part!r} (full path: {path!r})")
+            key, idx = m.group(1), m.group(2)
+
+            # descend by key/attr
+            if isinstance(cur, dict):
+                cur = cur[key]
+            else:
+                cur = getattr(cur, key)
+
+            # optional index
+            if idx is not None:
+                cur = cur[int(idx)]
+
+        return cur
+
+    @staticmethod
+    def _iter_aux_specs(auxiliary_outputs: Any) -> Iterable[Tuple[str, Dict[str, Any]]]:
+        """
+        Yields (name, spec) pairs from either:
+        - list of {name, path, ...}
+        - dict name -> {path, ...}
+        """
+        if auxiliary_outputs is None:
+            return []
+        if isinstance(auxiliary_outputs, dict):
+            return auxiliary_outputs.items()
+        # assume list-like
+        return ((spec["name"], spec) for spec in auxiliary_outputs)
+
+    def _preprocess(self, data_sample: dict) -> dict:
+        """
+        Materialize + normalize all outputs that will be saved
+        """
+        specs: Dict[str, Dict[str, Any]] = {}
+
+        for name, meta in self.outputs_metadata.items():
+            m = dict(meta) if meta is not None else {}
+            specs[name] = m
+
+        for aux_name, spec in self.auxiliary_outputs.items():
+            s = dict(spec) if spec is not None else {}
+            specs[aux_name] = s
+
+        for name, spec in specs.items():
+            path = spec.get("path", name)
+
+            try:
+                x = self.resolve_path(data_sample, path)
+            except Exception:
+                continue  # predictions etc not in data_sample yet
+
+            if not isinstance(x, torch.Tensor):
+                raise TypeError(f"{name}: expected torch.Tensor at preprocessing, got {type(x)} (path={path!r})")
+
+            if bool(spec.get("patchified", False)):
+                x = self.pe_unpatchify(x, out_channels=spec.get("num_output_channels"))
+
+            data_sample[name] = x
+
+        return data_sample
+
+    def predict(self, data_sample: dict):
+        data_sample = self._preprocess(data_sample)
+
         X = data_sample["data_tensor"]
         metadata = data_sample["metainfo"]
 
@@ -763,14 +911,16 @@ class InferencerWorker:
         done_keys = self._apply_recv(keys_recv, coords_recv, pred_hypercubes_recv, data_type=self.main_output_name)
 
         if self.save_auxiliary_outputs:
-            for aux_output, aux_metadata in self.auxiliary_outputs.items():
-                aux_pred_hypercubes = data_sample[aux_output]
+            for aux_name, spec in self._iter_aux_specs(self.auxiliary_outputs):
+                aux_path, out_ch = spec["path"], spec["num_output_channels"]
+                aux_pred_hypercubes = data_sample[aux_name]
+
                 # NOTE: might need to generalize _build_pred_buckets
                 aux_buckets = self._build_pred_buckets(aux_pred_hypercubes, metadata)
                 aux_keys_recv, aux_coords_recv, aux_pred_hypercubes_recv = self._alltoall(
-                    aux_buckets, metadata, out_channels=aux_metadata["num_output_channels"]
+                    aux_buckets, metadata, out_channels=out_ch
                 )
-                self._apply_recv(aux_keys_recv, aux_coords_recv, aux_pred_hypercubes_recv, data_type=aux_output)
+                self._apply_recv(aux_keys_recv, aux_coords_recv, aux_pred_hypercubes_recv, data_type=aux_name)
 
     def finalize(self):
         for key in list(self._tile_state.keys()):
