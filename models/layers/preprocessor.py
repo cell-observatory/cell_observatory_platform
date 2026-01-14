@@ -238,7 +238,9 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         self,
         data_sample: dict,
         data_time: float,
-    ) -> tuple[torch.Tensor, dict, float, float]:
+        *,
+        return_dict: bool = False,
+    ) -> dict | tuple[torch.Tensor, dict, float, float]:
         """Shared beginning of forward()."""
         preprocess_t0 = time.time()
 
@@ -250,9 +252,16 @@ class BaseFinetunePreprocessor(RayPreprocessor):
 
         data_time_value = data_time
 
-        return inputs, meta, preprocess_t0, data_time_value
+        if return_dict:
+            data_sample["inputs"] = inputs
+            data_sample["metainfo"] = meta
+            data_sample["preprocess_t0"] = preprocess_t0
+            data_sample["data_time"] = data_time_value
+            return data_sample
+        else:
+            return inputs, meta, preprocess_t0, data_time_value
 
-    def _apply_transforms(self, data):
+    def _apply_transforms(self, data: torch.Tensor | dict) -> tuple[torch.Tensor | dict, float]:
         """
         Apply transforms to either:
           - a torch.Tensor (image only), or
@@ -355,146 +364,49 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
     - targets: clean image (in counts, uint16 range)
 
     args:
-    - quantum_efficiency: float or tuple[float, float] representing quantum efficiency of the camera
-      (conversion from incident photons to electrons). 
-      If tuple, sample uniformly from the range [min, max] giving a random value for each batch element.
-    - electrons_per_count: float or tuple[float, float] representing the conversion factor from electrons to counts.
-      If tuple, sample uniformly from the range [min, max] giving a random value for each batch element.
-    - sigma_background_noise: float or tuple[float, float] representing read noise from the camera in counts.
-      If tuple, sample uniformly from the range [min, max] giving a random value for each batch element.
-    - mean_background_offset: float or tuple[float, float] representing the camera background offset in counts.
-      If tuple, sample uniformly from the range [min, max] giving a random value for each batch element.
+    - denoising_type: str representing the type of denoising task to perform
+    - transforms_list: list of transforms to apply to the input data
+    
+    Current denoising tasks:
+    - microscopy: adds realistic sensor noise to the input data
+    
+    NOTE: Noise is added as a transform to the input data.
+    If there is added noise (e.g. sensor noise), it should be added to the transforms_list.
 
-    Takes clean images in counts and applies realistic sensor noise model:
-    
-    REVERSE sensor pipeline (to extract clean photons):
-    1. Remove camera background offset
-    2. Convert counts → electrons
-    3. Convert electrons → photons
-    
-    FORWARD sensor pipeline with noise (to generate noisy counts):
-    4. Convert photons → electrons using quantum_efficiency
-    5. Add shot noise (Poisson) in electron space
-    6. Add dark/read noise (Gaussian) in electron space
-    7. Convert electrons → counts using electrons_per_count
-    8. Add camera background offset (in counts)
-    9. Clip to valid uint16 range [0, 65535]
-
-    Poisson noise represents the shot noise modeled as a Poisson distribution 
-    where noise is proportional to the product of the intensity of the light and 
-    the quantum efficiency of the camera.
-    
-    Gaussian noise represents the read noise modeled as a Gaussian distribution 
-    (dark/read noise from the camera electronics).
     """
     
     def __init__(
         self, 
-        quantum_efficiency: float | tuple[float, float],
-        electrons_per_count: float | tuple[float, float],
-        sigma_background_noise: float | tuple[float, float],
-        mean_background_offset: float | tuple[float, float],
+        denoising_type: str,
+        transforms_list: Optional[list] = None,
         *args, **kwargs,
     ):
-        super().__init__(*args, **kwargs)
-        if not isinstance(quantum_efficiency, (float, int)) and not (isinstance(quantum_efficiency, (tuple, list)) and len(quantum_efficiency) == 2):
-            raise ValueError("quantum_efficiency must be a float or tuple of two floats")
-        if not isinstance(electrons_per_count, (float, int)) and not (isinstance(electrons_per_count, (tuple, list)) and len(electrons_per_count) == 2):
-            raise ValueError("electrons_per_count must be a float or tuple of two floats")
-        if not isinstance(sigma_background_noise, (float, int)) and not (isinstance(sigma_background_noise, (tuple, list)) and len(sigma_background_noise) == 2):
-            raise ValueError("sigma_background_noise must be a float or tuple of two floats")
-        if not isinstance(mean_background_offset, (float, int)) and not (isinstance(mean_background_offset, (tuple, list)) and len(mean_background_offset) == 2):
-            raise ValueError("mean_background_offset must be a float or tuple of two floats")
-        
-        self.quantum_efficiency = quantum_efficiency
-        self.electrons_per_count = electrons_per_count
-        self.sigma_background_noise = sigma_background_noise
-        self.mean_background_offset = mean_background_offset
-    
-    def _add_noise(self, inputs: torch.Tensor) -> tuple[torch.Tensor, float]:
-        t0 = time.time()
-        B = inputs.shape[0]
-        device = inputs.device
-        
-        # Sample parameters for each batch element if they are tuples
-        if isinstance(self.quantum_efficiency, tuple):
-            qe = torch.empty(B, device=device)
-            qe.uniform_(*self.quantum_efficiency, generator=self.rng)
-        else:
-            qe = torch.full((B,), self.quantum_efficiency, device=device)
-            
-        if isinstance(self.electrons_per_count, tuple):
-            epc = torch.empty(B, device=device)
-            epc.uniform_(*self.electrons_per_count, generator=self.rng)
-        else:
-            epc = torch.full((B,), self.electrons_per_count, device=device)
-            
-        if isinstance(self.sigma_background_noise, tuple):
-            sigma_bg = torch.empty(B, device=device)
-            sigma_bg.uniform_(*self.sigma_background_noise, generator=self.rng)
-        else:
-            sigma_bg = torch.full((B,), self.sigma_background_noise, device=device)
-            
-        if isinstance(self.mean_background_offset, tuple):
-            mean_offset = torch.empty(B, device=device)
-            mean_offset.uniform_(*self.mean_background_offset, generator=self.rng)
-        else:
-            mean_offset = torch.full((B,), self.mean_background_offset, device=device)
+        if denoising_type not in ("microscopy",):
+            raise ValueError(f"Unknown denoising type: {denoising_type}")
+        if (transforms_list is None or len(transforms_list) == 0) and denoising_type == "microscopy":
+            raise ValueError("transforms_list must be provided with at least one transform for microscopy denoising")
 
-        # Broadcast to match inputs shape
-        qe = qe.view(-1, *[1] * (inputs.ndim - 1))
-        epc = epc.view(-1, *[1] * (inputs.ndim - 1))
-        sigma_bg = sigma_bg.view(-1, *[1] * (inputs.ndim - 1))
-        mean_offset = mean_offset.view(-1, *[1] * (inputs.ndim - 1))
+        super().__init__(*args, transforms_list=transforms_list, **kwargs)
 
-        # REVERSE sensor pipeline: clean counts → photons
-        # Remove camera background offset
-        clean_counts = torch.clamp(inputs - mean_offset, min=0)
-        
-        # Convert counts → electrons
-        clean_electrons = clean_counts * epc
-        
-        # Convert electrons → photons
-        clean_photons = clean_electrons / qe
-        
-        # FORWARD sensor pipeline with noise: photons → noisy counts
-        # Convert photons → electrons with shot noise
-        image_electrons = clean_photons * qe
-        shot_noise = torch.poisson(image_electrons, generator=self.rng) - image_electrons
-        image_electrons = image_electrons + shot_noise
-        
-        # Add dark/read noise (Gaussian) in electron space
-        sigma_bg_electrons = sigma_bg * epc
-        dark_read_noise = torch.randn(inputs.shape, device=device, generator=self.rng) * sigma_bg_electrons
-        image_electrons = image_electrons + dark_read_noise
-        
-        # Convert electrons → counts
-        image_counts = image_electrons / epc
-        
-        # Add camera background offset
-        image_counts = image_counts + mean_offset
-        
-        # Clip to valid range [0, 65535] for uint16
-        image_counts = torch.clamp(image_counts, min=0, max=65535)
-        
-        return image_counts, time.time() - t0
-        
+        self.denoising_type = denoising_type
+
     def forward(self, data_sample: dict, data_time: float) -> dict:
-        inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
+        data_sample = self._common_pre(
+            data_sample=data_sample,
+            data_time=data_time,
+            return_dict=True,
+        )
     
         # FIXME: consider if this is the correct order of operations
-        inputs, transform_time = self._apply_transforms(inputs)
-        targets = inputs.clone()  # Clean transformed image (before noise)
-        inputs, noising_time = self._add_noise(inputs)  # Noisy transformed image
-        
-        transform_time += noising_time
-        
+        data_sample, transform_time = self._apply_transforms(data_sample)
+        # FIXME: Streamline this so that we either consistently pass data_sample 
+        # or its components (e.g. data_tensor, metainfo, targets, etc.)
         return self._finalize(
-            inputs=inputs,
-            meta=meta,
-            targets=targets,
-            data_time=data_time_value,
-            preprocess_t0=t0,
+            inputs=data_sample["data_tensor"],
+            meta=data_sample["metainfo"],
+            targets=data_sample["metainfo"].pop("targets")[0],
+            data_time=data_sample["data_time"],
+            preprocess_t0=data_sample["preprocess_t0"],
             transform_time=transform_time,
         )
 
