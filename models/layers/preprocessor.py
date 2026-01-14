@@ -397,14 +397,21 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
             return_dict=True,
         )
     
-        # FIXME: consider if this is the correct order of operations
         data_sample, transform_time = self._apply_transforms(data_sample)
+        
+        # TODO: Consider refactoring this to support non-transformer-based decoders
+        # Patchify targets for transformer-based decoders
+        targets = self.pe_patchify(
+            data_sample["metainfo"].pop("targets")[0], 
+            channels=self.channels,
+        )
+
         # FIXME: Streamline this so that we either consistently pass data_sample 
         # or its components (e.g. data_tensor, metainfo, targets, etc.)
         return self._finalize(
             inputs=data_sample["data_tensor"],
             meta=data_sample["metainfo"],
-            targets=data_sample["metainfo"].pop("targets")[0],
+            targets=targets,
             data_time=data_sample["data_time"],
             preprocess_t0=data_sample["preprocess_t0"],
             transform_time=transform_time,
