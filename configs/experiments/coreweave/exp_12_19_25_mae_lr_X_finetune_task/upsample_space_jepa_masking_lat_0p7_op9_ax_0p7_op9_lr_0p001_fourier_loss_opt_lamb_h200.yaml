@@ -78,8 +78,9 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200/checkpoints
-  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+  # pretrained_checkpointdir: ${paths.data_path}/pretrained_models/jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200/checkpoints
+  resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
 
 # data
 datasets:
