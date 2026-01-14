@@ -1,0 +1,24 @@
+_target_: cell_observatory_platform.models.layers.preprocessor.DenoisingPreprocessor
+
+with_masking: false
+mask_generator: ${datasets.masking.mask_generators.0}
+dtype: ${quantization}
+
+transforms_list:
+  - _target_: cell_observatory_platform.data.transforms.noise.MixedPoissonGaussianNoise
+    quantum_efficiency: 0.82
+    electrons_per_count: 0.22
+    sigma_background_noise: 40
+    mean_background_offset: 100
+    seed: ${seed}
+  - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+    input_layout:
+      _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+      value: ${dataset_layout_order}
+
+patch_shape: ${datasets.patch_shape}
+input_format: ${dataset_layout_order}
+input_shape: ${datasets.input_shape}
+
+seed: ${seed}
+mask_idx: -1
