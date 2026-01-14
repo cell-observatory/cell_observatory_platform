@@ -792,3 +792,194 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         plt.savefig(self.debug_savepath)
 
         raise RuntimeError("Debug visualization — stopping after first batch.")
+
+# --------------------------------------------------------------------------- #
+# Object Detection task
+# --------------------------------------------------------------------------- #
+
+class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
+    """
+    Task: object detection
+
+    Assumes upstream FinetuneCollatorActor has already:
+      - built 3D bboxes,
+      - populated metainfo["targets"] with per-element dicts:
+          {
+            "boxes": (N_obj, 6),
+            "labels": (N_obj,)
+          },
+      - computed image_sizes / orig_image_sizes / padding_mask,
+      - (optionally) applied Resize() to image + boxes + padding_mask.
+
+    Here we only:
+      - run any remaining transforms (if configured) on the
+        {"data_tensor", "metainfo"} dict, and
+      - package everything into the final standard output format.
+    """
+
+    def __init__(
+        self,
+        *,
+        transforms_list: list | None,
+        with_masking: bool,
+        mask_generator,
+        patch_shape: tuple[int, int, int],
+        dtype: torch.dtype | str,
+        input_format: str,
+        input_shape: tuple[int, ...],
+        seed: int | None = None,
+        mask_idx: int = -1,
+        bbox_data_format: Optional[str] = None,
+        bbox_output_format: Optional[str] = None,
+        debug_savepath: str = None,
+    ):
+        super().__init__(
+            transforms_list=transforms_list,
+            with_masking=with_masking,
+            mask_generator=mask_generator,
+            patch_shape=patch_shape,
+            dtype=dtype,
+            input_format=input_format,
+            input_shape=input_shape,
+            seed=seed,
+            mask_idx=mask_idx,
+        )
+
+        if bbox_data_format is None or bbox_output_format is None:
+            raise ValueError("bbox_data_format and bbox_output_format must be specified for instance_segmentation.")
+        self.bbox_data_format = bbox_data_format
+        self.bbox_output_format = bbox_output_format
+
+        self.debug_savepath = debug_savepath
+
+    def _split_inputs_and_mask(self, inputs: torch.Tensor):
+        """
+        inputs: (B, Z, Y, X, C_full)
+        returns:
+          inputs_wo_mask: (B, Z, Y, X, C_full-1)
+          masks_labelmap: (B, Z, Y, X)
+        """
+        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
+        B, Z, Y, X, C = inputs.shape
+
+        if C < 2:
+            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
+
+        # For zero-copy we *require* the mask to be the last channel
+        if self.mask_idx not in (-1, C - 1):
+            raise ValueError(
+                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+            )
+
+        masks = inputs[..., -1]  # (B, Z, Y, X), view
+        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
+
+        return inputs_wo_mask, masks
+
+    def forward(self, data_sample: dict, data_time: float) -> dict:
+        """
+        Now expects `data_sample` coming from FinetuneCollatorActor, i.e.:
+
+          data_sample = {
+            "data_tensor": (B, Z, Y, X, C_no_mask)   # already resized if Resize was used
+            "metainfo": {
+                ...,
+                "image_sizes": (B, 3),
+                "orig_image_sizes": (B, 3),
+                "padding_mask": (B, Z, Y, X),
+                "targets": List[Dict[str, Tensor]],  # masks/boxes/mask_ids/labels
+            }
+          }
+
+        We only:
+          - ensure dtype,
+          - run any remaining transforms on the full dict (if configured),
+          - unpack targets and finalize.
+        """
+        inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
+
+        inputs_wo_mask, masks_labelmap = self._split_inputs_and_mask(inputs)
+
+        sample = {
+            "data_tensor": inputs_wo_mask,
+            "metainfo": meta,
+        }
+        sample, transform_time = self._apply_transforms(sample)
+
+        if self.debug_savepath is not None:
+            self._debug_visualize_batch(sample)
+
+        inputs = sample["data_tensor"]
+        meta = sample["metainfo"]
+        targets = meta.pop("targets")
+
+        return self._finalize(
+            inputs=inputs,
+            meta=meta,
+            targets=targets,
+            data_time=data_time_value,
+            preprocess_t0=t0,
+            transform_time=transform_time,
+        )
+
+    def _debug_visualize_batch(self, sample: dict) -> None:
+        """
+        Debug helper:
+        - plots middle Z slice of the first sample's image
+        - overlays all bboxes on the image slice
+        - prints full metainfo
+        - raises an error to stop training
+        """
+        import matplotlib.pyplot as plt
+
+        inputs = sample["data_tensor"]
+        meta = sample["metainfo"]
+        targets = meta["targets"]
+
+        vol = inputs[0]
+        if self.input_format == "ZYXC":
+            # vol: (Z, Y, X, C)
+            Z, Y, X, C = vol.shape
+            z_mid = Z // 2
+            img_slice = vol[z_mid, :, :, 0].float().detach().cpu().numpy()
+        else:
+            raise RuntimeError(f"Debug visualize only supports ZYXC/TZYXC, got {self.input_format}")
+
+        lo = float(np.percentile(img_slice, 1))
+        hi = float(np.percentile(img_slice, 99))
+
+        tgt0 = targets[0]
+        boxes = tgt0["boxes"]
+
+        boxes = boxes.float().detach().cpu()
+
+        boxes_zyx = convert_bbox_format(boxes, self.bbox_output_format, "zyxzyx")
+
+        print("=== DEBUG metainfo ===")
+        print(meta)
+        print("[DEBUG] inputs min/max:", float(inputs.min()), float(inputs.max()))
+
+        # Plot image + boxes
+        fig, ax_img = plt.subplots(1, 1, figsize=(10, 5))
+        ax_img.imshow(img_slice, cmap="gray", vmin=lo, vmax=hi)
+        for b in boxes_zyx:
+            z1, y1, x1, z2, y2, x2 = b.tolist()
+            z1 = int(round(z1))
+            z2 = int(round(z2))
+            if z1 <= z_mid <= z2:
+                rect = plt.Rectangle(
+                    (x1, y1),
+                    (x2 - x1),
+                    (y2 - y1),
+                    fill=False,
+                    edgecolor="r",
+                    linewidth=1,
+                )
+                ax_img.add_patch(rect)
+        ax_img.set_title("Image + bboxes")
+        ax_img.set_axis_off()
+
+        plt.tight_layout()
+        plt.savefig(self.debug_savepath)
+
+        raise RuntimeError("Debug visualization — stopping after first batch.")
