@@ -86,7 +86,7 @@ datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   input_shape: [128, 256, 256, 2]
-  train_shape: [128, 256, 256, 1]
+  train_shape: [128, 256, 256, 2]
   patch_shape: [16, 16, 16, null]
   occupancy_threshold: 0.9
 
