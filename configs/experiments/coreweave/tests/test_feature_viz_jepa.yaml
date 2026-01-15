@@ -4,15 +4,15 @@ defaults:
   - /hydra/overrides                                   # configs/hydra/overrides.yaml (not working)
   - /clusters/coreweave_h100                             # configs/clusters/local.yaml
   - /datasets/pretrain_dataset_ray                     # configs/datasets/pretrain_dataset.yaml
-  - /models/meta_arch/mae/large                  # configs/models/jepa/large.yaml
-  - /models/BUILD_MAE                  # configs/models/BUILD_AutoBench.yaml  
+  - /models/meta_arch/jepa/large        # configs/models/jepa/large.yaml
+  - /models/BUILD_JEPA                  # configs/models/BUILD_AutoBench.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
-  - /optimizers/lamb                         # configs/optimizers/lamb.yaml
+  - /optimizers/lamb_jepa                         # configs/optimizers/lamb.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /schedulers/warmup_cosine_decay # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
+  - /optimizations/models/jepa                # configs/optimizations/models/jepa.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - /inference/inference_feature_viz                      # configs/inference/inference.yaml
@@ -57,7 +57,7 @@ deepspeed:
 
 checkpoint:
   checkpoint_manager:
-    ckpt_include_prefixes: [masked_encoder] # only load masked_encoder weights from the pretrained model
+    ckpt_include_prefixes: [input_encoder] # only load masked_encoder weights from the pretrained model
 
 inference:
   roi_tile_list:
@@ -77,7 +77,7 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/results/inference/${experiment_name}
   resume_checkpointdir: null 
-  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200/checkpoints
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200/checkpoints
 
 # data
 datasets:
@@ -129,24 +129,15 @@ schedulers:
 
 # ROPE axial
 # ROPE axial
+# ROPE axial
 models:
   meta_arch:
-    mae:
+    jepa:
       abs_sincos_enc: false
       rope_pos_enc: true
       rope_random_rotation_per_head: true
       rope_mixed: false
       rope_theta: 100.0
-      with_auxiliary_loss: true
-      loss_fn:
-        loss_type: "fourier_loss"
-        alpha: 0.001
-        fft_loss: "l1_masked"
-        spatial_loss: "l2_masked"
-        input_fmt: ${dataset_layout_order}
-        input_shape: ${datasets.input_shape}
-        patch_shape: ${datasets.patch_shape}
-        embed_dim: ${models.meta_arch.mae.embed_dim}
 
 # hooks
 hooks:
