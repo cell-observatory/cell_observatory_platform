@@ -296,7 +296,7 @@ def pca_reduce(
     k: int = 3,
     sample_voxels: Optional[int] = 50000,
     seed: int = 0,
-    fit: Literal["per_t", "global"] = "per_t",
+    fit: Literal["per_t", "per_tz", "global"] = "per_tz",
     chunk: int = 1_000_000,
     ignore_all_zero: bool = False,
 ) -> np.ndarray:
@@ -311,12 +311,13 @@ def pca_reduce(
     T, Z, Y, X, C = vol_tzyxc.shape
 
     def _fit_basis(flat_np: np.ndarray, seed_offset: int):
-        # NOTE: if we remove background hypercubes, we may remove these 
+        # NOTE: if we remove background hypercubes, we may remove these
         #       tokens from the PCA fit
         if ignore_all_zero:
             nz = np.any(flat_np != 0, axis=1)
             flat_np = flat_np[nz] if int(nz.sum()) > k else flat_np
         N = flat_np.shape[0]
+
         # sample or all (avoid allocating a giant permutation)
         if sample_voxels is None or sample_voxels >= N:
             Xs = torch.from_numpy(flat_np)
@@ -342,21 +343,34 @@ def pca_reduce(
         mu_g, W_g = None, None
 
     for t in range(T):
-        flat = vol_tzyxc[t].reshape(-1, C).astype(np.float32, copy=False)  # (N,C)
+        if fit == "per_tz":
+            for z in range(Z):
+                flat = vol_tzyxc[t, z].reshape(-1, C).astype(np.float32, copy=False)  # (Y*X,C)
+                mu, W = _fit_basis(flat, seed_offset=(t * 1000003 + z))
 
-        if fit == "per_t":
-            mu, W = _fit_basis(flat, seed_offset=t)
+                flat_t = torch.from_numpy(flat)
+                N = flat.shape[0]
+                out_flat = out[t, z].reshape(-1, k)
+                for s in range(0, N, chunk):
+                    e = min(s + chunk, N)
+                    proj = (flat_t[s:e] - mu) @ W
+                    out_flat[s:e] = proj.numpy()
         else:
-            mu, W = mu_g, W_g
+            flat = vol_tzyxc[t].reshape(-1, C).astype(np.float32, copy=False)  # (Z*Y*X,C)
 
-        flat_t = torch.from_numpy(flat)  # CPU tensor
-        N = flat.shape[0]
-        out_flat = out[t].reshape(-1, k)
+            if fit == "per_t":
+                mu, W = _fit_basis(flat, seed_offset=t)
+            else:
+                mu, W = mu_g, W_g
 
-        for s in range(0, N, chunk):
-            e = min(s + chunk, N)
-            proj = (flat_t[s:e] - mu) @ W
-            out_flat[s:e] = proj.numpy()
+            flat_t = torch.from_numpy(flat)  # CPU tensor
+            N = flat.shape[0]
+            out_flat = out[t].reshape(-1, k)
+
+            for s in range(0, N, chunk):
+                e = min(s + chunk, N)
+                proj = (flat_t[s:e] - mu) @ W
+                out_flat[s:e] = proj.numpy()
 
     return out
 
@@ -374,7 +388,7 @@ def save_feature_visualizations(
     # PCA knobs
     k: int = 3,
     seed: int = 0,
-    fit: Literal["per_t", "global"] = "per_t",
+    fit: Literal["per_t", "global", "per_tz"] = "per_tz",
     sample_voxels: Optional[int] = 50000,
     chunk: int = 1_000_000,
     upsample_to_gt: bool = True,
