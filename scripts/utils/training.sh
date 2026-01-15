@@ -40,6 +40,8 @@
 
 # --- MAE
 
+# --- OLD EXPERIMENTS ---
+
 # CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain.yaml"
 # CFG="experiments/coreweave/tests/exp_11_05_2025_mae_3d_pretrain_test_sweep.yaml"
 # CFG="experiments/coreweave/tests/exp_11_08_25_test_interactive.yaml"
@@ -64,17 +66,108 @@
 # CFG="experiments/coreweave/exp_11_15_25_mae_ps_8_fourier_loss/exp_11_15_25_0p0005_X_0p7.yaml"
 # CFG="experiments/coreweave/exp_11_15_25_mae_ps_8_fourier_loss/exp_11_15_25_0p002_X_0p7_ps16.yaml"
 
-# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/test.yaml"
-# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p001_X_0p7.yaml"
+# ---- ---- ------- 
 
-# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p0001_X_0p7.yaml"
-CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p0001_X_op7_X_adamw.yaml"
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p0001_X_0p7_X_lamb.yaml"
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p00001_X_0p7_X_lamb.yaml"
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p000001_X_0p7_X_lamb.yaml"
+
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p0001_X_op7_X_adamw.yaml"
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p00001_X_op7_X_adamw.yaml"
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p000001_X_op7_X_adamw.yaml"
+
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p00001_X_op7_X_lion.yaml"
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p000001_X_op7_X_lion.yaml"
 
 # --- JEPA
 
 # CFG="experiments/coreweave/exp_11_10_25_jepa_lr_X_masking_ratio/exp_11_08_25_0p01_X_0p6.yaml"
 # CFG="experiments/coreweave/exp_11_10_25_jepa_lr_X_masking_ratio/exp_11_08_25_0p01_X_0p7.yaml"
 # CFG="experiments/coreweave/exp_11_10_25_jepa_lr_X_masking_ratio/exp_11_08_25_0p01_X_0p8.yaml"
+
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p00001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p00001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p00001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_h200.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p00001_mask_lat_0p7_op8_ax_0p7_op8_opt_lamb.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p0001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p00001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb_h200.yaml"
+
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p00001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb_h200.yaml"
+
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p0001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_h200.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p0001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb_h200.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p0001_mask_lat_0p7_op8_ax_0p7_op8_opt_lamb_h200.yaml"
+
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_h200.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb_h200.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p7_op8_ax_0p7_op8_opt_lamb_h200.yaml"
+
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p01_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_h200.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p01_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb_h200.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p01_mask_lat_0p7_op8_ax_0p7_op8_opt_lamb_h200.yaml"
+
+# --- filters
+
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p0001_X_0p7_X_lamb_cdf_target_90_cdf_threshold_150_h200_2M.yaml"
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p0001_X_0p7_X_lamb_cdf_target_90_cdf_threshold_150_h200.yaml"
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p0001_X_0p7_X_lamb_cdf_target_80_cdf_threshold_100_h200.yaml"
+
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_90_cdf_threshold_150_h200.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_90_cdf_threshold_150_h200_2M.yaml"
+
+# TO RUN
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p7_op8_ax_0p7_op8_opt_lamb_cdf_target_80_cdf_threshold_100_h200.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200.yaml"
+
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p001_X_0p7_X_lamb_cdf_target_80_cdf_threshold_100_h200.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p01_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200.yaml"
+
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p1_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200.yaml"
+
+# ---- masking ratios (TO RUN)
+
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p0001_X_0p6_X_lamb.yaml"
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p0001_X_0p8_X_lamb.yaml"
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p0001_X_0p9_X_lamb.yaml"
+
+# ---- Finetune (TO RUN)
+
+# channel split
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/channel_split_baseline_lamb_opt_lr_0p001.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/channel_split_baseline_lamb_opt_lr_0p0001.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/channel_split_mae_masking_p07_lamb_opt_lr_0p0001.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/channel_split_mae_masking_p07_lamb_opt_lr_0p001.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/channel_split_mae_masking_p07_lamb_opt_lr_0p01.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/channel_split_jepa_masking_lat_0p7_op9_ax_0p7_op9_lr_0p0001.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/channel_split_jepa_masking_lat_0p7_op9_ax_0p7_op9_lr_0p001.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/channel_split_jepa_masking_lat_0p7_op9_ax_0p7_op9_lr_0p01.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/channel_split_jepa_masking_lat_0p8_op9_ax_0p8_op9_lr_0p0001.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/channel_split_jepa_masking_lat_0p7_op8_ax_0p7_op8_lr_0p0001.yaml"
+
+# upsampling
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_baseline_lr_0p001_h200.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_baseline_lr_0p01_h200.yaml"
+
+# TO RUN MAE
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_space_mae_masking_p07_lamb_opt_lr_0p001_fourier_loss_opt_lamb.yaml"
+
+# TO RUN JEPA
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_space_jepa_masking_lat_0p7_op9_ax_0p7_op9_lr_0p001_fourier_loss_opt_lamb_h200.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_space_jepa_masking_lat_0p7_op8_ax_0p7_op8_lr_0p001_fourier_loss_opt_lamb_h200.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_space_jepa_masking_lat_0p8_op9_ax_0p8_op9_lr_0p001_fourier_loss_opt_lamb_h200.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsampling_mae_masking_p07_lamb_opt_lr_0p0001.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_space_mae_masking_p09_lamb_opt_lr_0p001_fourier_loss_opt_lamb.yaml"
+
+# detection
+
+
 
 # --- Linux
 
