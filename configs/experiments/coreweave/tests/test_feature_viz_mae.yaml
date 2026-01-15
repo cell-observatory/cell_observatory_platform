@@ -15,7 +15,7 @@ defaults:
   - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
-  - /inference/inference_feature_viz                      # configs/inference/inference.yaml
+  - /inference/inference_feature_viz_mae                      # configs/inference/inference.yaml
   - _self_
 
 # experiment name (used for logging)

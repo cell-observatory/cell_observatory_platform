@@ -15,7 +15,7 @@ defaults:
   - /optimizations/models/jepa                # configs/optimizations/models/jepa.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
-  - /inference/inference_feature_viz                      # configs/inference/inference.yaml
+  - /inference/inference_feature_viz_jepa                      # configs/inference/inference.yaml
   - _self_
 
 # experiment name (used for logging)
@@ -127,8 +127,6 @@ datasets:
 schedulers:
   epochs: 1
 
-# ROPE axial
-# ROPE axial
 # ROPE axial
 models:
   meta_arch:
