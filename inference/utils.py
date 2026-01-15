@@ -298,6 +298,7 @@ def pca_reduce(
     seed: int = 0,
     fit: Literal["per_t", "global"] = "per_t",
     chunk: int = 1_000_000,
+    ignore_all_zero: bool = False,
 ) -> np.ndarray:
     """
     Reduce C -> k via PCA, returning float32 (T,Z,Y,X,k).
@@ -310,6 +311,11 @@ def pca_reduce(
     T, Z, Y, X, C = vol_tzyxc.shape
 
     def _fit_basis(flat_np: np.ndarray, seed_offset: int):
+        # NOTE: if we remove background hypercubes, we may remove these 
+        #       tokens from the PCA fit
+        if ignore_all_zero:
+            nz = np.any(flat_np != 0, axis=1)
+            flat_np = flat_np[nz] if int(nz.sum()) > k else flat_np
         N = flat_np.shape[0]
         # sample or all (avoid allocating a giant permutation)
         if sample_voxels is None or sample_voxels >= N:
@@ -390,6 +396,7 @@ def save_feature_visualizations(
 
     gt = _ensure_numpy_tzyxc(predictions[gt_key])       # (Tg,Zg,Yg,Xg,Cg)
     feat = _ensure_numpy_tzyxc(predictions[feat_key])   # (Tf,Zf,Yf,Xf,Cf)
+    bg = np.all(feat == 0, axis=-1)  # (Tf,Zf,Yf,Xf)  True=background
 
     # PCA -> (Tf,Zf,Yf,Xf,3)
     feat_rgb = pca_reduce(
@@ -403,6 +410,7 @@ def save_feature_visualizations(
 
     # optional sigmoid scaling for nicer visualization (as in DINO)
     feat_rgb = 1.0 / (1.0 + np.exp(-2.0 * feat_rgb))  # sigmoid(2*x)
+    feat_rgb[bg] = 0.0  # keep background black
 
     Tg, Zg, Yg, Xg, Cg = gt.shape
     Tf, Zf, Yf, Xf, _ = feat_rgb.shape
