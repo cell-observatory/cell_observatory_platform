@@ -17,10 +17,11 @@ from omegaconf import OmegaConf
 from dotenv import load_dotenv
 
 from cell_observatory_platform.data.io import save_file
+from cell_observatory_platform.utils.common import ceil_div
 from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.utils.context import barrier, get_world_size, process_rank
-from cell_observatory_platform.inference.utils import save_predictions, stable_key_owner, tile_hash
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
+from cell_observatory_platform.inference.utils import save_predictions, stable_key_owner, tile_hash, save_feature_visualizations
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -73,22 +74,26 @@ class InferencerWorker:
         self.patch_shape = patch_shape
         self.input_format = input_format
 
-        self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
+        temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
             input_format=self.input_format, patch_shape=patch_shape
         )
-        _, self.token_shape = calc_num_patches(
+        _, token_shape = calc_num_patches(
             input_fmt=self.input_format,
             input_shape=self.input_shape,
             patch_shape=patch_shape,
         )
         self.pe_unpatchify = functools.partial(
             PatchEmbedding.unpatchify,
-            temporal_patch_size=self.temporal_patch_size,
+            temporal_patch_size=temporal_patch_size,
             axial_patch_size=self.axial_patch_size,
             lateral_patch_size=self.lateral_patch_size,
-            token_shape=self.token_shape,
+            token_shape=token_shape,
             input_format=self.input_format,
         )
+        # NOTE: if input format does not contain 'T' we set patch size to 1
+        #       since buffers assume that the T-axis exists
+        self.temporal_patch_size = temporal_patch_size if temporal_patch_size else 1
+        self.token_shape = self._get_token_shape(token_shape, self.input_format)
 
         # roi_tile_list is a list of (roi_id, tile_name) tuples
         # to restrict inference to
@@ -170,6 +175,12 @@ class InferencerWorker:
         ray.logger.info(f"Data types to save: {self.data_types}")
         ray.logger.info(f"Auxiliary outputs: {self.auxiliary_outputs}")
         ray.logger.info(f"Main output metadata: {self.outputs_metadata}")
+
+    def _get_token_shape(self, token_shape: Tuple[int, ...], input_format: str) -> Tuple[int, ...]:
+        if input_format == "ZYXC":
+            return token_shape[1:-1]  # drop T and C dimensions
+        else:
+            raise ValueError(f"Unsupported input format: {input_format}")
 
     def _get_data_tiles_metadata(self) -> pd.DataFrame:
         roi_csv = self.hypercubes_dataframe_path.with_name(f"{self.hypercubes_dataframe_path.stem}_rois.csv")
@@ -476,6 +487,27 @@ class InferencerWorker:
         elif self.decoder_head_type == "pretrain":
             pred_hypercubes = self.model.predict(data_sample)
 
+        elif self.decoder_head_type == "feature_extractor":
+            # NOTE: we expect patchified prediction tensors here
+            pred_hypercubes = self.model.forward_features(batch_tensor, masks=None)
+            
+            if self.input_format == "ZYXC":
+                B, N, C = pred_hypercubes.shape
+
+                # FIXME: this will break if the backbone does further downsampling
+                num = int(np.prod(self.token_shape))
+                # CLS token
+                if N == num + 1:
+                    pred_hypercubes = pred_hypercubes[:, 1:, :]
+                    N -= 1
+                if N != num:
+                    raise RuntimeError(f"forward_features returned N={N}, expected {num} (token_shape={self.token_shape})")
+
+                pred_hypercubes = pred_hypercubes.view(B, *self.token_shape, C)
+                pred_hypercubes = pred_hypercubes.unsqueeze(1)
+            else:
+                raise ValueError("Feature extractor only supports ZYXC input format for now.")
+
         else:
             raise NotImplementedError(
                 f"Decoder head type {self.decoder_head_type} not supported for sliding window inference."
@@ -530,15 +562,32 @@ class InferencerWorker:
             for dt in self.data_types:
                 if dt == self.main_output_name:
                     C = self.num_output_channels
+
+                    if self.decoder_head_type == "feature_extractor":
+                        # for feature visualization, output shape is feature grid
+                        # of tokens which are spatially smaller than the input tensor                        
+                        Tt = ceil_div(vol_T, self.temporal_patch_size)
+                        Zt = ceil_div(vol_Z, self.axial_patch_size)
+                        Yt = ceil_div(vol_Y, self.lateral_patch_size)
+                        Xt = ceil_div(vol_X, self.lateral_patch_size)
+                        out_shape = (Tt, Zt, Yt, Xt, C)
+                        tile_volume_dt = Tt * Zt * Yt * Xt
+
+                    else:
+                        out_shape = (*out_spatial_shape, C)
+                        tile_volume_dt = tile_volume
+
                 else:
                     meta = self.auxiliary_outputs.get(dt)
                     C = meta.get("num_output_channels")
                     assert C is not None, f"num_output_channels must be specified for auxiliary output {dt}"
+                    tile_volume_dt = tile_volume
+                    out_shape = (*out_spatial_shape, C)
 
-                st[f"shape_{dt}"] = (*out_spatial_shape, C)
+                st[f"shape_{dt}"] = out_shape
                 st[f"pred_{dt}"] = None
                 st[f"cnt_{dt}"] = None
-                st[f"remaining_{dt}"] = tile_volume
+                st[f"remaining_{dt}"] = tile_volume_dt
                 st[f"done_{dt}"] = False
 
             self._tile_state[key] = st
@@ -549,7 +598,7 @@ class InferencerWorker:
 
         os.makedirs(self.inference_save_dir, exist_ok=True)
 
-    def _build_pred_buckets(self, pred_hypercubes: torch.Tensor, meta: dict):
+    def _build_pred_buckets(self, pred_hypercubes: torch.Tensor, meta: dict, with_token_grid: bool):
         ws = get_world_size()
         pred_buckets = {r: [] for r in range(ws)}
         for b in range(pred_hypercubes.size(0)):
@@ -573,13 +622,24 @@ class InferencerWorker:
             patch = pred_hypercubes[b]
             if self.input_format == "ZYXC" and patch.ndim == 4:
                 patch = patch.unsqueeze(0)
+
+            if with_token_grid:
+                st, sz, sy, sx = self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size, self.lateral_patch_size
+                t0f, z0f, y0f, x0f = t0 // st, z0 // sz, y0 // sy, x0 // sx
+                Tf, Zf, Yf, Xf = patch.shape[:4]  # patch is [Tt, Zt, Yt, Xt, C]
+                coords = torch.tensor([t0f, t0f+Tf, z0f, z0f+Zf, y0f, y0f+Yf, x0f, x0f+Xf],
+                                    device=patch.device, dtype=torch.int32)
+            else:
+                coords = torch.tensor([t0, t1, z0, z1, y0, y1, x0, x1], device=patch.device, dtype=torch.int32)
+
             pred_buckets[owner_rank].append(
                 (
                     torch.tensor([roi, tile_hash(tile_nm)], device=patch.device, dtype=torch.long),
-                    torch.tensor([t0, t1, z0, z1, y0, y1, x0, x1], device=patch.device, dtype=torch.int32),
+                    coords,
                     patch,
                 )
             )
+
         return pred_buckets
 
     def _pack_for_alltoall(
@@ -772,26 +832,41 @@ class InferencerWorker:
 
             preds_dict[dt] = preds
 
-        save_predictions(
-            name=base_sample_name,
-            predictions=preds_dict,
-            save_dir=self.inference_save_dir,
-            save_as_volume=self.save_as_volume,
-            save_as_pdf=self.save_as_pdf,
-            z_step_pdf=self.z_step_pdf,
-            filetype=self.inference_save_format,
-            zarr_chunk_shape=self.inference_zarr_chunk_shape,
-            zarr_shard_shape=self.inference_zarr_shard_shape,
-            pmin=self.pmin,
-            pmax=self.pmax,
-        )
+        if self.decoder_head_type == "feature_extractor":
+            save_feature_visualizations(
+                name=base_sample_name,
+                predictions=preds_dict,
+                save_dir=self.inference_save_dir,
+                gt_key="data_tensor",
+                feat_key=self.main_output_name,
+                z_step_pdf=self.z_step_pdf,
+                pmin=self.pmin,
+                pmax=self.pmax,
+                fit="per_t",
+                sample_voxels=50_000,
+            )
+            print(f"Finished saving feature visualizations for tile {name} (ROI {row.get('id', 'unknown')})")
+        else:
+            save_predictions(
+                name=base_sample_name,
+                predictions=preds_dict,
+                save_dir=self.inference_save_dir,
+                save_as_volume=self.save_as_volume,
+                save_as_pdf=self.save_as_pdf,
+                z_step_pdf=self.z_step_pdf,
+                filetype=self.inference_save_format,
+                zarr_chunk_shape=self.inference_zarr_chunk_shape,
+                zarr_shard_shape=self.inference_zarr_shard_shape,
+                pmin=self.pmin,
+                pmax=self.pmax,
+            )
 
-        print(f"Finished saving predictions for tile {name} (ROI {row.get('id', 'unknown')})")
-        print(
-            f"[finish_if_done] key={key}, base_sample_name={base_sample_name}, "
-            f"save_dir={self.inference_save_dir}, save_as_pdf={self.save_as_pdf}, "
-            f"save_as_volume={self.save_as_volume}"
-        )
+            print(f"Finished saving predictions for tile {name} (ROI {row.get('id', 'unknown')})")
+            print(
+                f"[finish_if_done] key={key}, base_sample_name={base_sample_name}, "
+                f"save_dir={self.inference_save_dir}, save_as_pdf={self.save_as_pdf}, "
+                f"save_as_volume={self.save_as_volume}"
+            )
 
         for dt in self.data_types:
             st[f"done_{dt}"] = True
@@ -904,7 +979,7 @@ class InferencerWorker:
         #       see training/loops.py for details
         pred_hypercubes = self._predict(X, data_sample)
 
-        buckets = self._build_pred_buckets(pred_hypercubes, metadata)
+        buckets = self._build_pred_buckets(pred_hypercubes, metadata, with_token_grid=(self.decoder_head_type=="feature_extractor"))
         keys_recv, coords_recv, pred_hypercubes_recv = self._alltoall(
             buckets, metadata, out_channels=self.num_output_channels
         )
@@ -916,7 +991,7 @@ class InferencerWorker:
                 aux_pred_hypercubes = data_sample[aux_name]
 
                 # NOTE: might need to generalize _build_pred_buckets
-                aux_buckets = self._build_pred_buckets(aux_pred_hypercubes, metadata)
+                aux_buckets = self._build_pred_buckets(aux_pred_hypercubes, metadata, with_token_grid=False)
                 aux_keys_recv, aux_coords_recv, aux_pred_hypercubes_recv = self._alltoall(
                     aux_buckets, metadata, out_channels=out_ch
                 )

@@ -8,7 +8,7 @@ import logging
 import numpy as np
 from tqdm.auto import tqdm
 from pathlib import Path
-from astropy import convolution
+# from astropy import convolution
 import multiprocessing as mp
 from line_profiler_pycharm import profile
 from typing import Any, List, Union, Optional, Generator
@@ -28,6 +28,10 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def ceil_div(a, b): 
+    return (a + b - 1) // b
 
 
 @profile
@@ -200,24 +204,24 @@ def mape(y: np.array, p: np.array, axis=0) -> np.array:
     return 100 * np.mean(error[np.isfinite(error)], axis=axis)
 
 
-@profile
-def fftconvolution(kernel, sample):
-    if kernel.shape[0] == 1 or kernel.shape[-1] == 1:
-        kernel = np.squeeze(kernel)
+# @profile
+# def fftconvolution(kernel, sample):
+#     if kernel.shape[0] == 1 or kernel.shape[-1] == 1:
+#         kernel = np.squeeze(kernel)
 
-    if sample.shape[0] == 1 or sample.shape[-1] == 1:
-        sample = np.squeeze(sample)
+#     if sample.shape[0] == 1 or sample.shape[-1] == 1:
+#         sample = np.squeeze(sample)
 
-    conv = convolution.convolve_fft(
-        sample,
-        kernel,
-        allow_huge=True,
-        normalize_kernel=False,
-        nan_treatment='fill',
-        fill_value=0
-    ).astype(sample.dtype)  # otherwise returns as float64
-    conv[conv < 0] = 0  # clip negative small values
-    return conv
+#     conv = convolution.convolve_fft(
+#         sample,
+#         kernel,
+#         allow_huge=True,
+#         normalize_kernel=False,
+#         nan_treatment='fill',
+#         fill_value=0
+#     ).astype(sample.dtype)  # otherwise returns as float64
+#     conv[conv < 0] = 0  # clip negative small values
+#     return conv
 
 
 def fft_decon(kernel, sample, iters):
