@@ -151,7 +151,7 @@
 
 # upsampling
 
-# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_baseline_lr_0p001_h200.yaml"
+CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_baseline_lr_0p001_h200.yaml"
 # CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_baseline_lr_0p01_h200.yaml"
 
 # TO RUN MAE
