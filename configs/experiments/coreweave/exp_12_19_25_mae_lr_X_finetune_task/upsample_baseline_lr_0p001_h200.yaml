@@ -24,7 +24,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: upsample_space_baseline_128x256x256_100_epoch_lr_0p001_fourier_loss_opt_lamb_h200
+experiment_name: upsample_space_baseline_128x256x256_100_epoch_lr_0p001_fourier_loss_opt_lamb_h200_p3_p7_mask
 wandb_project: finetuning_3d_v2
 
 backend: DEEPSPEED
