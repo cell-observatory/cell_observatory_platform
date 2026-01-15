@@ -1,0 +1,17 @@
+BUILD: cell_observatory_platform.models.meta_arch.autobench.UpsampleAutoBench.BUILD
+
+backbone_args: ${models.backbones.masked_encoder}
+
+# decoder_args: ${models.heads.linear}
+decoder_args: ${models.heads.maskedpredictor}
+
+task: upsample
+loss_fn: l2_masked
+abs_sincos_enc: false
+weight_init_type: mae
+
+input_fmt: ${dataset_layout_order}
+input_shape: ${datasets.input_shape}
+train_shape: ${datasets.train_shape}
+patch_shape: ${datasets.patch_shape}
+output_channels: ${tasks.output_channels}

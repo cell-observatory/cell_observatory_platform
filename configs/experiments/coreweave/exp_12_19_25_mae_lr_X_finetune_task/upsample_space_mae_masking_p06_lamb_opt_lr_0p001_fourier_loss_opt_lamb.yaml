@@ -8,7 +8,7 @@ defaults:
   - /datasets/preprocessor/upsample_space_preprocessor # configs/datasets/preprocessor/upsample_space_preprocessor.yaml
   - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
   - /models/BUILD_AutoBench                  # configs/models/BUILD_AutoBench.yaml
-  - /models/meta_arch/autobench/UpsampleSpaceAutoBench/jepa_large  # configs/models/meta_arch/autobench/ChannelSplitAutoBench/jepa_large.yaml
+  - /models/meta_arch/autobench/UpsampleSpaceAutoBench/mae_large  # configs/models/meta_arch/autobench/ChannelSplitAutoBench/mae_large.yaml
   - /models/backbones/masked_encoder/large              # configs/models/backbones/masked_encoder/large.yaml
   - /models/heads/maskedpredictor/large                 # configs/models/decoders/linear.yaml
   # - /models/heads/linear/linear
@@ -18,13 +18,13 @@ defaults:
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay          # configs/schedulers/warmup_cosine_decay.yaml
-  - /optimizations/models/jepa               # configs/optimizations/models/jepa.yaml
+  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: upsample_space_jepa_masking_lat_0p8_op9_ax_0p8_op9_lr_0p001_fourier_loss_opt_lamb_h200
+experiment_name: upsample_space_mae_masking_p06_128x256x256_100_epoch_lr_0p001_fourier_loss_opt_lamb_h200
 wandb_project: finetuning_3d_v2
 
 backend: DEEPSPEED
@@ -64,7 +64,7 @@ deepspeed:
 checkpoint:
   checkpoint_manager:
     ckpt_include_prefixes: [backbone] # only load masked_encoder weights from the pretrained model
-    ckpt_translate_map: {input_encoder: backbone}
+    ckpt_translate_map: {masked_encoder: backbone}
 
 clusters:
   batch_size: 1408 # total batch size
@@ -78,7 +78,7 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200/checkpoints
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p6_fourier_loss_cdf_target_90_cdf_threshold_150_h200/checkpoints
   resume_checkpointdir: null
 
 # data

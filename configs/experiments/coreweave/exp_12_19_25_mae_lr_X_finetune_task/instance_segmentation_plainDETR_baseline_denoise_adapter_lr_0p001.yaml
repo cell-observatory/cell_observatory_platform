@@ -1,30 +1,31 @@
 # @package _global_
 defaults:
-  - /tasks/upsample_space
+  - /tasks/instance_segmentation             # configs/tasks/instance_segmentation.yaml
   - /paths/coreweave                               # configs/paths/abc.yaml
   - /hydra/overrides                               # configs/hydra/overrides.yaml (not working)
   - /clusters/coreweave_h200                       # configs/clusters/local.yaml
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
-  - /datasets/preprocessor/upsample_space_preprocessor # configs/datasets/preprocessor/upsample_space_preprocessor.yaml
+  - /datasets/preprocessor/instance_segmentation_preprocessor # configs/datasets/preprocessor/instance_segmentation_preprocessor.yaml
   - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
-  - /models/BUILD_AutoBench                  # configs/models/BUILD_AutoBench.yaml
-  - /models/meta_arch/autobench/UpsampleSpaceAutoBench/jepa_large  # configs/models/meta_arch/autobench/ChannelSplitAutoBench/jepa_large.yaml
-  - /models/backbones/masked_encoder/large              # configs/models/backbones/masked_encoder/large.yaml
-  - /models/heads/maskedpredictor/large                 # configs/models/decoders/linear.yaml
-  # - /models/heads/linear/linear
+  - /models/BUILD_plainDETR                  # configs/models/BUILD_plainDETR.yaml
+  - /models/meta_arch/plainDETR/mae_large_denoise_w_adapter    # configs/models/plainDETR/large.yaml
+  - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
+  - /models/backbones/plain_detr_backbone/plain_detr_backbone_w_adapter   # configs/models/backbones/plain_detr_backbone/plain_detr_backbone.yaml
+  - /models/heads/plain_detr_transformer/plain_detr_transformer # configs/models/heads/plain_detr_transformer/plain_detr_transformer.yaml
+  - /models/adapters/vit_adapter             # configs/models/adapters/vit_adapter.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
-  - /schedulers/warmup_cosine_decay          # configs/schedulers/warmup_cosine_decay.yaml
-  - /optimizations/models/jepa               # configs/optimizations/models/jepa.yaml
+  - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: upsample_space_jepa_masking_lat_0p8_op9_ax_0p8_op9_lr_0p001_fourier_loss_opt_lamb_h200
+experiment_name: instance_segmentation_plainDETR_baseline_denoise_w_adapter_128x256x512_300_epoch_lr_0p001_opt_lamb
 wandb_project: finetuning_3d_v2
 
 backend: DEEPSPEED
@@ -57,17 +58,9 @@ seed: 42
 # overrides
 # --------------------------------------------------------------------------------
 
-deepspeed:
-  checkpoint:
-    load_universal: true
-
-checkpoint:
-  checkpoint_manager:
-    ckpt_include_prefixes: [backbone] # only load masked_encoder weights from the pretrained model
-    ckpt_translate_map: {input_encoder: backbone}
-
+# clusters
 clusters:
-  batch_size: 1408 # total batch size
+  batch_size: 128 # total batch size (2/gpu)
   worker_nodes: 4 # number of worker nodes
   gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
@@ -78,15 +71,15 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200/checkpoints
   resume_checkpointdir: null
+  pretrained_checkpointdir: null
 
 # data
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-  input_shape: [128, 256, 256, 2]
-  train_shape: [128, 256, 256, 2]
+  train_shape: [128, 256, 512, 1]
+  input_shape: [128, 256, 512, 2]
   patch_shape: [16, 16, 16, null]
   occupancy_threshold: 0.9
 
@@ -98,66 +91,66 @@ datasets:
   num_actors_min: 4
   num_actors_max: 12
 
-  max_hypercubes: 1000000
+  # max_hypercubes: 500
+  # max_hypercubes: 2000000
+  # max_hypercubes: 50000
+  # max_hypercubes: 1000000
+  max_hypercubes: null
 
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
 
   databases:
+    cdf_threshold: null
     occupancy_threshold_filter_type: 'min_ch0'
-    cdf_target: 90
-    cdf_threshold: 150
-    synthetic_only: false
-    has_annotations: false
+    synthetic_only: true
+    has_annotations: true
+    server_folder_path: ${paths.server_folder_path}/synthetic
     with_hypercubes_dataframe: true
-    mask_channel: null
+    mask_channel: 1
 
-  columns: [ 'x_start', 'y_start', 'z_start', 'time_start',
-          'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
-          'server_folder', 'output_folder',
-          'tile_name', 'prepared_id']
+  collate_fn:
+    _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
+    dtype: ${dataset_dtype}
+    buffer_dtype: ${storage_dtype}
+    batch_size: ${clusters.batch_size_per_gpu}
+    input_shape: ${datasets.input_shape}
+    device_buffer_capacity: 2
+    pin_numa_node: ${datasets.pin_numa_node}
+    pin_pages: ${datasets.pin_memory}
+    use_masks: false
+    transforms_list: null
+    bbox_data_format: zyxzyx
+    bbox_output_format: cxcyczwhd
+    with_resize: false
+    debug: false
+    async_device_copy: false
+    normalize_bboxes: false
+    columns:
+      - "x_start"
+      - "y_start"
+      - "z_start"
+      - "time_start"
+      - "channel_size"
+      - "z_size"
+      - "y_size"
+      - "x_size"
+      - "time_size"
+      - "server_folder"
+      - "output_folder"
+      - "tile_name"
+      - "prepared_id"
+      - "mask_bbox_dict"
 
-  preserve_order: false # only matters for TP
-  callback_strategy: grpc # grpc, queue
-  async_device_copy: false
-
+# schedulers
 schedulers:
-  epochs: 100
-  warmup: 20
-  cooldown: 10
+  epochs: 300
+  warmup: 30
+  cooldown: 15
 
 optimizers:
-  wd:  ${eval:'${optimizers.lr} * 0.1'}
+  wd: ${eval:'${optimizers.lr} * 0.1'}
   lr: 1e-3
-  
-models:
-  backbones:
-    masked_encoder:
-      abs_sincos_enc: false
-      rope_pos_enc: true
-      rope_random_rotation_per_head: true
-      rope_mixed: false
-      rope_theta: 100.0
-  heads:
-    maskedpredictor:
-      abs_sincos_enc: false
-      rope_pos_enc: true
-      rope_random_rotation_per_head: true
-      rope_mixed: false
-      rope_theta: 100.0
-  meta_arch:
-    autobench:
-      UpsampleSpaceAutoBench:
-        with_auxiliary_loss: true
-        loss_fn:
-          loss_type: "fourier_loss"
-          alpha: 0.001
-          fft_loss: "l1_masked"
-          spatial_loss: "l2_masked"
-          input_fmt: ${dataset_layout_order}
-          input_shape: ${datasets.input_shape}
-          patch_shape: ${datasets.patch_shape}
-          embed_dim: ${models.heads.maskedpredictor.embed_dim}
 
 # hooks
 hooks:
