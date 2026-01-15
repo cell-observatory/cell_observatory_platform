@@ -69,7 +69,8 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  pretrained_checkpointdir: null
+  # pretrained_checkpointdir: null
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/upsample_space_baseline_128x256x256_100_epoch_lr_0p001_fourier_loss_opt_lamb_h200_p3_p7_mask/checkpoints
   resume_checkpointdir: null
 
 # data
