@@ -30,6 +30,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def ceil_div(a, b): 
+    return (a + b - 1) // b
+
+
 @profile
 def multiprocess(
         jobs: Union[Generator, List, np.ndarray],

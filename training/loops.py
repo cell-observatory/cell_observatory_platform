@@ -727,6 +727,9 @@ class TestTrainer(BaseTrainer):
         BUILD = get_method(cfg.models.BUILD)
         model = BUILD(cfg)
 
+        with torch.no_grad():
+            model.init_model_weights(buffer_device="cuda")
+
         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
         # initialize checkpoint manager and
@@ -834,6 +837,9 @@ class Inferencer(BaseTrainer):
         # initialize model
         BUILD = get_method(cfg.models.BUILD)
         model = BUILD(cfg)
+
+        with torch.no_grad():
+            model.init_model_weights(buffer_device="cuda")
 
         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 

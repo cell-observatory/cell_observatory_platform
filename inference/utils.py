@@ -1,10 +1,12 @@
 import hashlib
 from pathlib import Path
-from typing import Literal, Optional, Tuple, Union
+from typing import Literal, Optional, Tuple, Union, Dict
+
+import torch
+import numpy as np
+import torch.nn.functional as F
 
 import matplotlib.pyplot as plt
-import numpy as np
-import torch
 from matplotlib.backends.backend_pdf import PdfPages
 
 from cell_observatory_platform.data.io import save_file
@@ -287,6 +289,163 @@ def _save_zarr_volume(
         input_format=axes,  # axes string encodes layout
         dtype="float16",
     )
+
+
+def pca_reduce(
+    vol_tzyxc: np.ndarray,   # (T,Z,Y,X,C)
+    k: int = 3,
+    sample_voxels: Optional[int] = 50000,
+    seed: int = 0,
+    fit: Literal["per_t", "global"] = "per_t",
+    chunk: int = 1_000_000,
+) -> np.ndarray:
+    """
+    Reduce C -> k via PCA, returning float32 (T,Z,Y,X,k).
+    Minimal and fast-ish: torch.pca_lowrank on a sample, chunked projection.
+    """
+    vol_tzyxc = np.asarray(vol_tzyxc)
+    if vol_tzyxc.ndim != 5:
+        raise ValueError(f"Expected (T,Z,Y,X,C), got {vol_tzyxc.shape}")
+
+    T, Z, Y, X, C = vol_tzyxc.shape
+
+    def _fit_basis(flat_np: np.ndarray, seed_offset: int):
+        N = flat_np.shape[0]
+        # sample or all (avoid allocating a giant permutation)
+        if sample_voxels is None or sample_voxels >= N:
+            Xs = torch.from_numpy(flat_np)
+        else:
+            idx = np.random.default_rng(seed + seed_offset).choice(N, size=sample_voxels, replace=False)
+            Xs = torch.from_numpy(flat_np[idx])
+
+        if Xs.shape[0] <= k:
+            raise ValueError(f"PCA needs >k samples; got {Xs.shape[0]} for k={k}")
+
+        mu = Xs.mean(dim=0, keepdim=True)         # (1,C)
+        Xc = Xs - mu                              # (n,C)
+        _, _, V = torch.pca_lowrank(Xc, q=k, center=False)  # V: (C,q)
+        W = V[:, :k].contiguous()                 # (C,k)
+        return mu.squeeze(0).float(), W.float()   # (C,), (C,k)
+
+    out = np.empty((T, Z, Y, X, k), dtype=np.float32)
+
+    if fit == "global":
+        flat_all = vol_tzyxc.reshape(-1, C).astype(np.float32, copy=False)
+        mu_g, W_g = _fit_basis(flat_all, seed_offset=999)
+    else:
+        mu_g, W_g = None, None
+
+    for t in range(T):
+        flat = vol_tzyxc[t].reshape(-1, C).astype(np.float32, copy=False)  # (N,C)
+
+        if fit == "per_t":
+            mu, W = _fit_basis(flat, seed_offset=t)
+        else:
+            mu, W = mu_g, W_g
+
+        flat_t = torch.from_numpy(flat)  # CPU tensor
+        N = flat.shape[0]
+        out_flat = out[t].reshape(-1, k)
+
+        for s in range(0, N, chunk):
+            e = min(s + chunk, N)
+            proj = (flat_t[s:e] - mu) @ W
+            out_flat[s:e] = proj.numpy()
+
+    return out
+
+
+def save_feature_visualizations(
+    name: str,
+    predictions: Dict[str, ArrayLike],
+    save_dir: Path | str,
+    *,
+    gt_key: str = "data_tensor",
+    feat_key: Optional[str] = None,
+    z_step_pdf: int = 8,
+    pmin: float = 1.0,
+    pmax: float = 99.0,
+    # PCA knobs
+    k: int = 3,
+    seed: int = 0,
+    fit: Literal["per_t", "global"] = "per_t",
+    sample_voxels: Optional[int] = 50000,
+    chunk: int = 1_000_000,
+    upsample_to_gt: bool = True,
+):
+    """
+    Simple PDF generator:
+      - top: PCA RGB of feature volume at (t,z)
+      - below: all GT channels at (t,z)
+    Writes: pred_{name}_FEATURES.pdf
+    """
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    if gt_key not in predictions:
+        raise KeyError(f"Missing gt_key={gt_key!r} in predictions keys={list(predictions.keys())}")
+
+    if feat_key is None:
+        raise ValueError("feat_key must be specified for feature visualization")
+
+    gt = _ensure_numpy_tzyxc(predictions[gt_key])       # (Tg,Zg,Yg,Xg,Cg)
+    feat = _ensure_numpy_tzyxc(predictions[feat_key])   # (Tf,Zf,Yf,Xf,Cf)
+
+    # PCA -> (Tf,Zf,Yf,Xf,3)
+    feat_rgb = pca_reduce(
+        feat,
+        k=k,
+        sample_voxels=sample_voxels,
+        seed=seed,
+        fit=fit,
+        chunk=chunk,
+    )
+
+    # optional sigmoid scaling for nicer visualization (as in DINO)
+    feat_rgb = 1.0 / (1.0 + np.exp(-2.0 * feat_rgb))  # sigmoid(2*x)
+
+    Tg, Zg, Yg, Xg, Cg = gt.shape
+    Tf, Zf, Yf, Xf, _ = feat_rgb.shape
+
+    # upsample PCA RGB to GT spatial size (Z,Y,X) using stride if exact, else nearest interpolate
+    if upsample_to_gt and (Zf, Yf, Xf) != (Zg, Yg, Xg):
+        ft = torch.from_numpy(feat_rgb).permute(0, 4, 1, 2, 3)  # (T,3,Z,Y,X)
+        ft = F.interpolate(ft, size=(Zg, Yg, Xg), mode="nearest")
+        feat_rgb = ft.permute(0, 2, 3, 4, 1).cpu().numpy()
+        Tf, Zf, Yf, Xf, _ = feat_rgb.shape
+
+    pdf_path = save_dir / f"pred_{name}_FEATURES.pdf"
+    with PdfPages(pdf_path) as pdf:
+        for t in range(min(Tg, Tf)):
+            for z in range(0, min(Zg, Zf), z_step_pdf):
+                # figure: 1 (rgb) + Cg rows
+                fig, axes = plt.subplots(
+                    1 + Cg, 1,
+                    figsize=(10, 3 * (1 + Cg)),
+                    squeeze=False,
+                )
+                axes = axes[:, 0]
+
+                # --- RGB features (top) ---
+                ax0 = axes[0]
+                rgb = feat_rgb[t, z]  # (Y,X,3)
+                ax0.imshow(rgb, interpolation="nearest")
+                ax0.set_title(f"{name} | {feat_key} PCA | t={t} z={z}")
+                ax0.axis("off")
+
+                # --- GT channels (below) ---
+                for c in range(Cg):
+                    ax = axes[1 + c]
+                    img = gt[t, z, :, :, c]
+                    ax.imshow(_normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
+                    ax.set_title(f"{gt_key} | t={t} z={z} c={c}")
+                    ax.axis("off")
+
+                fig.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+
+    print(f"[save_feature_visualizations] wrote {pdf_path}")
 
 
 def save_predictions(
