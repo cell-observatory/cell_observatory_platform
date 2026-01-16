@@ -19,7 +19,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: test_inference_feature_viz_mae
+experiment_name: test_inference_feature_viz_mae_p7
 wandb_project: testing
 
 backend: DEEPSPEED
@@ -77,8 +77,8 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/results/inference/${experiment_name}
   resume_checkpointdir: null
-  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p9_fourier_loss/checkpoints 
-  # pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200/checkpoints
+  # pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p9_fourier_loss/checkpoints 
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200/checkpoints
 
 # data
 datasets:
