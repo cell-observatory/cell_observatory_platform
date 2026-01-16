@@ -11,6 +11,7 @@ timepoint_list: ${datasets.databases.timepoint_list}
 task: null
 inference_mode: "sliding_window"
 decoder_head_type: "feature_extractor"
+feature_viz_type: pca
 
 roi_tile_list: null
 
@@ -44,7 +45,7 @@ zarr_shard_shape: [128, 128, 128]
 outputs_metadata:
   predictions: 
     activation: null
-    num_output_channels: ${models.meta_arch.mae.embed_dim}
+    num_output_channels: ${models.meta_arch.jepa.embed_dim}
 
 auxiliary_outputs:
   - name: data_tensor
