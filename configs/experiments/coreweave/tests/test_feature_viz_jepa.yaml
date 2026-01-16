@@ -15,11 +15,11 @@ defaults:
   - /optimizations/models/jepa                # configs/optimizations/models/jepa.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
-  - /inference/inference_feature_viz_jepa                      # configs/inference/inference.yaml
+  - /inference/inference_feature_viz_patch_cosine_jepa                      # configs/inference/inference.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: test_inference_feature_viz_jepa_p07_p09
+experiment_name: test_inference_feature_viz_jepa_cosine_sim_p07_p09
 wandb_project: testing
 
 backend: DEEPSPEED
