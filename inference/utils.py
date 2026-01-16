@@ -375,6 +375,96 @@ def pca_reduce(
     return out
 
 
+def patch_cosine_sim_maps(
+    feat_tzyxc: np.ndarray,              # (Tf,Zf,Yf,Xf,Cf) feature volume (patch grid)
+    gt_tzyxc: np.ndarray,                # (Tg,Zg,Yg,Xg,Cg) used only to pick reference pixel per GT channel
+    *,
+    stride_zyx: tuple[int, int, int] = (1, 1, 1),
+    sample_p: float = 99.0,
+    eps: float = 1e-8,
+    ignore_all_zero: bool = True,
+) -> np.ndarray:
+    """
+    Returns sim maps on the *GT grid*: (T,Zg,Yg,Xg,Cg).
+
+    Steps (per t,z,gt_channel):
+      1) pick a reference GT pixel (y,x) from gt intensity at that z
+      2) map that GT (z,y,x) to feature-grid (zf,yf,xf) via stride_zyx
+      3) cosine(sim) on feature slice (t,zf,:,:)
+      4) upsample sim slice back to GT (Yg,Xg) by nearest (and repeat in z blocks by stride)
+    """
+    feat_tzyxc = np.asarray(feat_tzyxc)
+    gt_tzyxc = np.asarray(gt_tzyxc)
+
+    if feat_tzyxc.ndim != 5 or gt_tzyxc.ndim != 5:
+        raise ValueError(f"Expected feat and gt in TZYXC, got {feat_tzyxc.shape} and {gt_tzyxc.shape}")
+
+    Tf, Zf, Yf, Xf, Cf = feat_tzyxc.shape
+    Tg, Zg, Yg, Xg, Cg = gt_tzyxc.shape
+
+    if Tf != Tg:
+        raise ValueError(f"feat and gt must share T (or you must align time first). Got Tf={Tf} Tg={Tg}")
+
+    sz, sy, sx = stride_zyx
+    if sz <= 0 or sy <= 0 or sx <= 0:
+        raise ValueError(f"stride_zyx must be positive ints, got {stride_zyx}")
+
+    # normalize features for cosine: f / ||f||
+    f = torch.from_numpy(feat_tzyxc.astype(np.float32, copy=False))  # (T,Zf,Yf,Xf,Cf)
+    if ignore_all_zero:
+        bg = torch.all(f == 0, dim=-1, keepdim=True)                 # (T,Zf,Yf,Xf,1)
+    else:
+        bg = None
+
+    f_norm = torch.linalg.norm(f, dim=-1, keepdim=True).clamp_min(eps)
+    f_unit = f / f_norm
+    if bg is not None:
+        f_unit = torch.where(bg, torch.zeros_like(f_unit), f_unit)
+
+    # output on GT grid
+    sims_gt = torch.empty((Tg, Zg, Yg, Xg, Cg), dtype=torch.float32)
+
+    gt = gt_tzyxc.astype(np.float32, copy=False)
+
+    for t in range(Tg):
+        for z in range(Zg):
+            # map GT z -> feature zf
+            zf_idx = min(z // sz, Zf - 1)
+
+            # feature slice for this (t,zf): (Yf*Xf, Cf)
+            fz = f_unit[t, zf_idx].reshape(-1, Cf)
+
+            for cg in range(Cg):
+                img = gt[t, z, :, :, cg]
+                flat_img = img.reshape(-1)
+
+                thr = np.percentile(flat_img, sample_p)
+                cand = np.where(flat_img >= thr)[0]
+                if cand.size == 0:
+                    idx_gt = int(flat_img.argmax())
+                else:
+                    idx_gt = int(cand[flat_img[cand].argmax()])
+
+                yg = idx_gt // Xg
+                xg = idx_gt % Xg
+
+                # map GT (y,x) -> feature (yf,xf)
+                yf_idx = min(yg // sy, Yf - 1)
+                xf_idx = min(xg // sx, Xf - 1)
+                idx_feat = yf_idx * Xf + xf_idx
+
+                ref = fz[idx_feat]  # (Cf,) already unit
+                sim_feat = (fz @ ref).reshape(Yf, Xf)  # (Yf,Xf)
+
+                # upsample feature sim map -> GT (Yg,Xg)
+                sim_gt_2d = F.interpolate(
+                    sim_feat[None, None, :, :], size=(Yg, Xg), mode="nearest"
+                )[0, 0]
+                sims_gt[t, z, :, :, cg] = sim_gt_2d
+
+    return sims_gt.numpy()
+
+
 def save_feature_visualizations(
     name: str,
     predictions: Dict[str, ArrayLike],
@@ -392,11 +482,16 @@ def save_feature_visualizations(
     sample_voxels: Optional[int] = 50000,
     chunk: int = 1_000_000,
     upsample_to_gt: bool = True,
+    # NEW: feature viz mode + patch-sim knobs
+    viz: Literal["pca", "patch_cosine"] = "pca",
+    stride_zyx: tuple[int, int, int] = (1, 1, 1),
+    patch_sample_p: float = 99.0,
+    patch_ignore_all_zero: bool = True,
 ):
     """
-    Simple PDF generator:
-      - top: PCA RGB of feature volume at (t,z)
-      - below: all GT channels at (t,z)
+    PDF generator:
+      viz="pca": top = PCA RGB of feature volume at (t,z), below = all GT channels at (t,z)
+      viz="patch_cosine": top = cosine-sim maps (one per GT channel), below = GT channels
     Writes: pred_{name}_FEATURES.pdf
     """
     save_dir = Path(save_dir)
@@ -404,64 +499,103 @@ def save_feature_visualizations(
 
     if gt_key not in predictions:
         raise KeyError(f"Missing gt_key={gt_key!r} in predictions keys={list(predictions.keys())}")
-
     if feat_key is None:
         raise ValueError("feat_key must be specified for feature visualization")
 
     gt = _ensure_numpy_tzyxc(predictions[gt_key])       # (Tg,Zg,Yg,Xg,Cg)
     feat = _ensure_numpy_tzyxc(predictions[feat_key])   # (Tf,Zf,Yf,Xf,Cf)
-    bg = np.all(feat == 0, axis=-1)  # (Tf,Zf,Yf,Xf)  True=background
-
-    # PCA -> (Tf,Zf,Yf,Xf,3)
-    feat_rgb = pca_reduce(
-        feat,
-        k=k,
-        sample_voxels=sample_voxels,
-        seed=seed,
-        fit=fit,
-        chunk=chunk,
-    )
-
-    # optional sigmoid scaling for nicer visualization (as in DINO)
-    feat_rgb = 1.0 / (1.0 + np.exp(-2.0 * feat_rgb))  # sigmoid(2*x)
-    feat_rgb[bg] = 0.0  # keep background black
 
     Tg, Zg, Yg, Xg, Cg = gt.shape
-    Tf, Zf, Yf, Xf, _ = feat_rgb.shape
 
-    # upsample PCA RGB to GT spatial size (Z,Y,X) using stride if exact, else nearest interpolate
-    if upsample_to_gt and (Zf, Yf, Xf) != (Zg, Yg, Xg):
-        ft = torch.from_numpy(feat_rgb).permute(0, 4, 1, 2, 3)  # (T,3,Z,Y,X)
-        ft = F.interpolate(ft, size=(Zg, Yg, Xg), mode="nearest")
-        feat_rgb = ft.permute(0, 2, 3, 4, 1).cpu().numpy()
+    if viz == "patch_cosine":
+        sim_maps = patch_cosine_sim_maps(
+            feat,
+            gt,
+            stride_zyx=stride_zyx,
+            sample_p=patch_sample_p,
+            ignore_all_zero=patch_ignore_all_zero,
+        )  # (Tg,Zg,Yg,Xg,Cg)
+
+        Tf, Zf = Tg, Zg  # for loop bounds below
+        feat_rgb = None
+
+    else:
+        bg = np.all(feat == 0, axis=-1)  # (Tf,Zf,Yf,Xf) True=background
+
+        # PCA -> (Tf,Zf,Yf,Xf,3)
+        feat_rgb = pca_reduce(
+            feat,
+            k=k,
+            sample_voxels=sample_voxels,
+            seed=seed,
+            fit=fit,
+            chunk=chunk,
+        )
+
+        # optional sigmoid scaling for nicer visualization (as in DINO)
+        feat_rgb = 1.0 / (1.0 + np.exp(-2.0 * feat_rgb))  # sigmoid(2*x)
+        feat_rgb[bg] = 0.0  # keep background black
+
         Tf, Zf, Yf, Xf, _ = feat_rgb.shape
+
+        # upsample PCA RGB to GT spatial size (Z,Y,X)
+        if upsample_to_gt and (Zf, Yf, Xf) != (Zg, Yg, Xg):
+            ft = torch.from_numpy(feat_rgb).permute(0, 4, 1, 2, 3)  # (T,3,Z,Y,X)
+            ft = F.interpolate(ft, size=(Zg, Yg, Xg), mode="nearest")
+            feat_rgb = ft.permute(0, 2, 3, 4, 1).cpu().numpy()
+            Tf, Zf, _, _, _ = feat_rgb.shape
 
     pdf_path = save_dir / f"pred_{name}_FEATURES.pdf"
     with PdfPages(pdf_path) as pdf:
         for t in range(min(Tg, Tf)):
             for z in range(0, min(Zg, Zf), z_step_pdf):
-                # figure: 1 (rgb) + Cg rows
-                fig, axes = plt.subplots(
-                    1 + Cg, 1,
-                    figsize=(10, 3 * (1 + Cg)),
-                    squeeze=False,
-                )
-                axes = axes[:, 0]
 
-                # --- RGB features (top) ---
-                ax0 = axes[0]
-                rgb = feat_rgb[t, z]  # (Y,X,3)
-                ax0.imshow(rgb, interpolation="nearest")
-                ax0.set_title(f"{name} | {feat_key} PCA | t={t} z={z}")
-                ax0.axis("off")
+                if viz == "patch_cosine":
+                    fig, axes = plt.subplots(
+                        2 * Cg, 1,
+                        figsize=(10, 3 * (2 * Cg)),
+                        squeeze=False,
+                    )
+                    axes = axes[:, 0]
 
-                # --- GT channels (below) ---
-                for c in range(Cg):
-                    ax = axes[1 + c]
-                    img = gt[t, z, :, :, c]
-                    ax.imshow(_normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
-                    ax.set_title(f"{gt_key} | t={t} z={z} c={c}")
-                    ax.axis("off")
+                    # --- cosine sim maps (top) ---
+                    for c in range(Cg):
+                        ax = axes[c]
+                        sim = sim_maps[t, z, :, :, c]  # (Yg,Xg), roughly in [-1,1]
+                        sim_vis = np.clip((sim + 1.0) * 0.5, 0.0, 1.0)  # -> [0,1]
+                        ax.imshow(sim_vis, cmap="viridis", interpolation="nearest")
+                        ax.set_title(f"{name} | {feat_key} cosine-sim | t={t} z={z} c={c} (stride={stride_zyx})")
+                        ax.axis("off")
+
+                    # --- GT channels (bottom) ---
+                    for c in range(Cg):
+                        ax = axes[Cg + c]
+                        img = gt[t, z, :, :, c]
+                        ax.imshow(_normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
+                        ax.set_title(f"{gt_key} | t={t} z={z} c={c}")
+                        ax.axis("off")
+
+                else:
+                    # original PCA layout: 1 (rgb) + Cg rows
+                    fig, axes = plt.subplots(
+                        1 + Cg, 1,
+                        figsize=(10, 3 * (1 + Cg)),
+                        squeeze=False,
+                    )
+                    axes = axes[:, 0]
+
+                    ax0 = axes[0]
+                    rgb = feat_rgb[t, z]  # (Yg,Xg,3)
+                    ax0.imshow(rgb, interpolation="nearest")
+                    ax0.set_title(f"{name} | {feat_key} PCA | t={t} z={z}")
+                    ax0.axis("off")
+
+                    for c in range(Cg):
+                        ax = axes[1 + c]
+                        img = gt[t, z, :, :, c]
+                        ax.imshow(_normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
+                        ax.set_title(f"{gt_key} | t={t} z={z} c={c}")
+                        ax.axis("off")
 
                 fig.tight_layout()
                 pdf.savefig(fig)
