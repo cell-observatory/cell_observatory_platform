@@ -24,7 +24,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: instance_segmentation_plainDETR_baseline_denoise_128x256x512_600_epoch_lr_0p0001_opt_lamb_denoise_200q_no_aux_loss_2_classes
+experiment_name: instance_segmentation_plainDETR_baseline_denoise_128x256x512_600_epoch_lr_0p001_opt_lamb_denoise_200q_no_aux_loss
 wandb_project: finetuning_3d_v2
 
 backend: DEEPSPEED
@@ -149,31 +149,14 @@ schedulers:
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}
-  lr: 1e-4
+  lr: 1e-3
 
 models:
   meta_arch:
     plainDETR:
-      aux_loss: false
-      num_classes: 2
       num_queries_one2many: 200
       k_one2many: 1
-      criterion_args:
-        BUILD: cell_observatory_platform.training.losses.build_plainDETR_Set_Loss
-        num_classes: 2
-        weight_dict:
-          loss_ce: 2.0
-          loss_bbox: 5.0
-          loss_giou: 2.0
-        losses: ["labels", "boxes", "cardinality"]
-        focal_alpha: 0.25
-        reparam: true
-        matcher_args:
-          BUILD: cell_observatory_platform.models.layers.matchers.build_plain_detr_matcher
-          cost_class: 2.0
-          cost_bbox: 5.0
-          cost_giou: 2.0
-          cost_bbox_type: reparam
+      aux_loss: false
 
 # hooks
 hooks:
