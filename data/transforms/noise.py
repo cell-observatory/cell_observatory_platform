@@ -110,8 +110,14 @@ class MixedPoissonGaussianNoise:
         # 1. Convert photons → electrons
         image_batch *= qe
 
-        # 2. Compute shot noise (Poisson) in electron space
-        shot_noise = torch.poisson(image_batch, generator=self.rng)
+        # 2. Compute shot noised electrons (Poisson thinned by QE) 
+        # Shot noise alone should be done in photon space (e.g. photons arrival ~ Poisson(irradiance))
+        # However, we actually want to sample from the total random process (photon arrival AND detection).
+        # Because photon arrival is a hidden variable ~ Binomial(n_photons_arrived, QE)
+        # we can sample from the marginal distribution of detection as a Poisson thinning process.        
+        # Where detected photons = Poisson(n_photons_arrived * QE) = Poisson(electrons)
+        # https://stats.libretexts.org/Bookshelves/Probability_Theory/Probability_Mathematical_Statistics_and_Stochastic_Processes_(Siegrist)/14%3A_The_Poisson_Process/14.05%3A_Thinning_and_Superpositon
+        photons_detected = torch.poisson(image_batch, generator=self.rng)
         
         # 3. Compute dark/read noise (Gaussian) in electron space
         dark_read_noise = torch.randn(
@@ -120,8 +126,8 @@ class MixedPoissonGaussianNoise:
             generator=self.rng
         ) * sigma_bg * epc
 
-        # 4. Add shot noise and dark/read noise to electrons
-        image_batch += shot_noise + dark_read_noise
+        # 4. electrons = detected photons + dark/read noise
+        image_batch = photons_detected + dark_read_noise
         
         # 5. Convert electrons → counts
         image_batch /= epc
