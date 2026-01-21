@@ -2,6 +2,7 @@ import functools
 import os
 import time
 from typing import Any, Dict, Optional, Tuple
+from dataclasses import dataclass, asdict, field
 
 import numpy as np
 import torch
@@ -238,28 +239,19 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         self,
         data_sample: dict,
         data_time: float,
-        *,
-        return_dict: bool = False,
-    ) -> dict | tuple[torch.Tensor, dict, float, float]:
+    ) -> tuple[torch.Tensor, dict, float, float]:
         """Shared beginning of forward()."""
         preprocess_t0 = time.time()
 
         inputs = data_sample["data_tensor"]
-        meta = data_sample.get("metainfo", {})
+        meta = data_sample["metainfo"]
 
         if inputs.dtype != self.dtype:
             inputs = inputs.to(self.dtype)
 
         data_time_value = data_time
 
-        if return_dict:
-            data_sample["inputs"] = inputs
-            data_sample["metainfo"] = meta
-            data_sample["preprocess_t0"] = preprocess_t0
-            data_sample["data_time"] = data_time_value
-            return data_sample
-        else:
-            return inputs, meta, preprocess_t0, data_time_value
+        return inputs, meta, preprocess_t0, data_time_value
 
     def _apply_transforms(self, data: torch.Tensor | dict) -> tuple[torch.Tensor | dict, float]:
         """
@@ -288,7 +280,6 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         transform_time: float,
     ) -> dict:
         """Attach masking info and timing, returning the standard dict."""
-
         tokens_per_batch = inputs.shape[0] * self.seq_len
 
         if self.with_masking:
@@ -391,10 +382,9 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
         self.denoising_type = denoising_type
 
     def forward(self, data_sample: dict, data_time: float) -> dict:
-        data_sample = self._common_pre(
+        inputs, meta, preprocess_t0, data_time_value = self._common_pre(
             data_sample=data_sample,
             data_time=data_time,
-            return_dict=True,
         )
     
         data_sample, transform_time = self._apply_transforms(data_sample)
@@ -402,18 +392,18 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
         # TODO: Consider refactoring this to support non-transformer-based decoders
         # Patchify targets for transformer-based decoders
         targets = self.pe_patchify(
-            data_sample["metainfo"].pop("targets")[0], 
+            meta["targets"][0], 
             channels=self.channels,
         )
 
         # FIXME: Streamline this so that we either consistently pass data_sample 
         # or its components (e.g. data_tensor, metainfo, targets, etc.)
         return self._finalize(
-            inputs=data_sample["data_tensor"],
-            meta=data_sample["metainfo"],
+            inputs=inputs,
+            meta=meta,
             targets=targets,
-            data_time=data_sample["data_time"],
-            preprocess_t0=data_sample["preprocess_t0"],
+            data_time=data_time_value,
+            preprocess_t0=preprocess_t0,
             transform_time=transform_time,
         )
 
@@ -432,13 +422,16 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
     """
 
     def forward(self, data_sample: dict, data_time: float) -> dict:
-        inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
+        inputs, meta, preprocess_t0, data_time_value = self._common_pre(
+            data_sample=data_sample,
+            data_time=data_time,
+        )
 
         if self.channel_idx is None:
             raise ValueError("Channel axis 'C' not present in input_format; cannot channel_split.")
 
         # FIXME: consider if this is the correct order of operations
-        inputs, transform_time = self._apply_transforms(inputs)
+        inputs, transform_time = self._apply_transforms(data=inputs)
 
         # targets are per-channel patches from original (transformed) input
         targets = self.pe_patchify(inputs, channels=self.channels)
@@ -451,7 +444,7 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
             meta=meta,
             targets=targets,
             data_time=data_time_value,
-            preprocess_t0=t0,
+            preprocess_t0=preprocess_t0,
             transform_time=transform_time,
         )
 
@@ -525,9 +518,12 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             self.na_masks = None
 
     def forward(self, data_sample: dict, data_time: float) -> dict:
-        inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
+        inputs, meta, preprocess_t0, data_time_value = self._common_pre(
+            data_sample=data_sample,
+            data_time=data_time,
+        )
 
-        inputs, transform_time = self._apply_transforms(inputs)
+        inputs, transform_time = self._apply_transforms(data=inputs)
 
         if self.mode in ("upsample_space", "upsample_spacetime"):
             # targets are HR patches
@@ -552,7 +548,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             )
             inputs = downsample(
                 na_mask=na_mask,
-                inputs=inputs,
+                inputs=data_sample["data_tensor"],
                 spatial_dims=self.spatial_dims,
             )
         elif self.mode == "upsample_time":
@@ -565,7 +561,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             meta=meta,
             targets=targets,
             data_time=data_time_value,
-            preprocess_t0=t0,
+            preprocess_t0=preprocess_t0,
             transform_time=transform_time,
         )
 
