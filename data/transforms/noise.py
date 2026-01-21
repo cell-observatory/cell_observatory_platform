@@ -113,7 +113,7 @@ class MixedPoissonGaussianNoise:
         # 2. Compute shot noised electrons (Poisson thinned by QE) 
         # Shot noise alone should be done in photon space (e.g. photons arrival ~ Poisson(irradiance))
         # However, we actually want to sample from the total random process (photon arrival AND detection).
-        # Because photon arrival is a hidden variable ~ Binomial(n_photons_arrived, QE)
+        # Because photon arrival is a hidden variable
         # we can sample from the marginal distribution of detection as a Poisson thinning process.        
         # Where detected photons = Poisson(n_photons_arrived * QE) = Poisson(electrons)
         # https://stats.libretexts.org/Bookshelves/Probability_Theory/Probability_Mathematical_Statistics_and_Stochastic_Processes_(Siegrist)/14%3A_The_Poisson_Process/14.05%3A_Thinning_and_Superpositon
