@@ -9,10 +9,10 @@ decoder_num_layers: 4 # 1
 mask_dim: 256
 enforce_input_projection: true
 two_stage_flag: true
-denoise_queries_flag: false
+denoise_queries_flag: true
 noise_scale: 0.4
-total_denosing_queries: null # ensure this is > max expected num labels per image
-initialize_box_type: null
+total_denosing_queries: 400 # ensure this is > max expected num labels per image
+initialize_box_type: null #bitmask
 with_initial_prediction: true
 learn_query_embeddings: false
 # total_num_feature_levels: 4

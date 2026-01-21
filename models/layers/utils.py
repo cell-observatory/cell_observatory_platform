@@ -307,7 +307,7 @@ def compute_unmasked_ratio(mask):
     valid_ratio_h = valid_H.float() / H
     valid_ratio_w = valid_W.float() / W
 
-    valid_ratio = torch.stack([valid_ratio_d, valid_ratio_w, valid_ratio_h], -1)  # [B, 3]
+    valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h, valid_ratio_d], -1)  # [B, 3]
     return valid_ratio
 
 
