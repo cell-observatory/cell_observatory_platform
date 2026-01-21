@@ -105,10 +105,12 @@ class FinetuneCollatorActor:
         use_masks: bool = False,
         with_resize: bool = False,
         debug: bool = False,
+        debug_device_idx: Optional[int] = None,
         normalize_bboxes: bool = False,
         async_device_copy: bool = False,
     ):
         self.columns = columns
+        self.debug_device_idx = debug_device_idx
 
         self.node_id = node_id
         self.local_rank = local_rank()
@@ -239,8 +241,13 @@ class FinetuneCollatorActor:
 
     def _get_device_index(self) -> int:
         gpu_ids = ray.get_gpu_ids()
-        assert gpu_ids, "No GPUs assigned to this worker by Ray"
-        return int(gpu_ids[0])
+        if gpu_ids:
+            return int(gpu_ids[0])
+        # Fallback for debug mode (running outside Ray Train workers)
+        elif self.debug_device_idx is not None:
+            return self.debug_device_idx
+        else:
+            raise RuntimeError("No GPUs assigned to this worker by Ray")
 
     def __del__(self):
         try:
@@ -545,8 +552,10 @@ class CollatorActor:
             "prepared_id",
         ],
         debug: bool = False,
+        debug_device_idx: Optional[int] = None,
     ):
         self.columns = columns
+        self.debug_device_idx = debug_device_idx
 
         self.node_id = node_id
         self.local_rank = local_rank()
@@ -637,8 +646,13 @@ class CollatorActor:
 
     def _get_device_index(self) -> int:
         gpu_ids = ray.get_gpu_ids()
-        assert gpu_ids, "No GPUs assigned to this worker by Ray"
-        return int(gpu_ids[0])
+        if gpu_ids:
+            return int(gpu_ids[0])
+        # Fallback for debug mode (running outside Ray Train workers)
+        elif self.debug_device_idx is not None:
+            return self.debug_device_idx
+        else:
+            raise RuntimeError("No GPUs assigned to this worker by Ray")
 
     def __del__(self):
         try:
