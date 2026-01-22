@@ -19,7 +19,7 @@ checkpoint_manager:
   save_checkpointdir: ${paths.outdir}/checkpoints # directory to save checkpoints
   load_dtype: ${quantization}
   checkpoint_tag: latest_model
-  engine: ${backend} # engine to use for training
+  backend: ${backend} # engine to use for training
   use_custom_state_dict_filter: true
   load_optimizer: true
   save_period: 1 # save every n epochs
