@@ -1,18 +1,18 @@
 # @package _global_
 defaults:
-  - /paths/coreweave                         # configs/paths/coreweave.yaml
-  - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
-  - /clusters/coreweave_h100                 # configs/clusters/local.yaml
-  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
-  - /models/mae/large                        # configs/models/jepa/large.yaml
-  - /hooks/hooks_with_weight_decay           # configs/hooks/hooks_with_weight_decay.yaml
-  - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
-  - /loggers/loggers                         # configs/loggers/loggers.yaml
-  - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
-  - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
-  - /optimizers/lamb_mae                     # configs/optimizers/lamb.yaml
+  - /paths/coreweave # configs/paths/coreweave.yaml
+  - /hydra/overrides # configs/hydra/overrides.yaml (not working)
+  - /clusters/coreweave_h100 # configs/clusters/local.yaml
+  - /datasets/pretrain_dataset_ray # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/mae/large # configs/models/jepa/large.yaml
+  - /hooks/hooks_with_weight_decay # configs/hooks/hooks_with_weight_decay.yaml
+  - /checkpoint/checkpoint # configs/checkpoint/checkpoint.yaml
+  - /loggers/loggers # configs/loggers/loggers.yaml
+  - /evaluation/base_evaluator # configs/evaluation/base_evaluator.yaml
+  - /deepspeed/zero2 # configs/deepspeed/zero2.yaml
+  - /optimizers/lamb_mae # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay_with_weight_decay # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /optimizations/optimizations # configs/optimizations/optimizations.yaml
   - /profiling/profiling
   - _self_
 
@@ -20,14 +20,7 @@ defaults:
 experiment_name: mae_large_128x256x256_150_epoch_lr_0p05_mask_0p7_v2
 wandb_project: pretraining_3d
 
-# task
-task: pretrain_mae
-
-# Model type
-network: mae
-
-# engine type
-engine: deepspeed
+backend: DEEPSPEED
 
 # distributed framework
 distributed_framework: ray
@@ -97,7 +90,7 @@ datasets:
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
 
   databases:
-    occupancy_threshold_filter_type: 'min_ch0'
+    occupancy_threshold_filter_type: "min_ch0"
 
   masking:
     mask_generators:
@@ -107,7 +100,7 @@ datasets:
         patch_shape: ${datasets.patch_shape}
         input_format: ${dataset_layout_order}
 
-        mask_mode: 
+        mask_mode:
           _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
           value: "random"
 
@@ -131,7 +124,7 @@ models:
     rope_theta: 100.0
 
 optimizers:
-  wd:  ${eval:'${optimizers.lr} * 0.1'}
+  wd: ${eval:'${optimizers.lr} * 0.1'}
   lr: 5e-2
 
 checkpoint_manager:
@@ -140,21 +133,21 @@ checkpoint_manager:
 # hooks
 hooks:
   hooks_list:
-  - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
-  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
-  - _target_: cell_observatory_platform.training.hooks.LRScheduler
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
-  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-    file_prefix: latest_model
-  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
-    step_period: 1
-    epoch_period: 1
-    logdir: ${loggers.logdir}
-  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
-    metric_name: ${evaluation.val_metric}
-    compare_fn: ${evaluation.val_mode}
-    eval_after_validation: true
+    - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
+    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+    - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
+    - _target_: cell_observatory_platform.training.hooks.LRScheduler
+    - _target_: cell_observatory_platform.training.hooks.IterationTimer
+    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+    - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+      file_prefix: latest_model
+    - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+      checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+    - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
+      step_period: 1
+      epoch_period: 1
+      logdir: ${loggers.logdir}
+    - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+      metric_name: ${evaluation.val_metric}
+      compare_fn: ${evaluation.val_mode}
+      eval_after_validation: true

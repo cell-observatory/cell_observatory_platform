@@ -1,19 +1,19 @@
 # @package _global_
 defaults:
-  - /paths/coreweave                         # configs/paths/coreweave.yaml
-  - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
-  - /clusters/coreweave_h100                 # configs/clusters/local.yaml
-  - /datasets/pretrain_dataset_ray     # configs/datasets/pretrain_dataset_ray.yaml
-  - /models/meta_arch/mae/large                  # configs/models/jepa/large.yaml
-  - /models/BUILD_MAE                  # configs/models/BUILD_AutoBench.yaml  
-  - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
-  - /loggers/loggers                         # configs/loggers/loggers.yaml
-  - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
-  - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
-  - /optimizers/adamw_mae                     # configs/optimizers/adamw.yaml
+  - /paths/coreweave # configs/paths/coreweave.yaml
+  - /hydra/overrides # configs/hydra/overrides.yaml (not working)
+  - /clusters/coreweave_h100 # configs/clusters/local.yaml
+  - /datasets/pretrain_dataset_ray # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/meta_arch/mae/large # configs/models/jepa/large.yaml
+  - /models/BUILD_MAE # configs/models/BUILD_AutoBench.yaml
+  - /checkpoint/checkpoint # configs/checkpoint/checkpoint.yaml
+  - /loggers/loggers # configs/loggers/loggers.yaml
+  - /evaluation/base_evaluator # configs/evaluation/base_evaluator.yaml
+  - /deepspeed/zero2 # configs/deepspeed/zero2.yaml
+  - /optimizers/adamw_mae # configs/optimizers/adamw.yaml
   - /schedulers/warmup_cosine_decay # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
-  - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /optimizations/models/mae # configs/optimizations/models/mae.yaml
+  - /optimizations/optimizations # configs/optimizations/optimizations.yaml
   - /profiling/profiling
   - _self_
 
@@ -21,16 +21,7 @@ defaults:
 experiment_name: mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_opt_adamw
 wandb_project: pretraining_3d_v2
 
-# task
-task: pretrain_mae
-
-# Model type
-network: mae
-
 backend: DEEPSPEED
-
-# engine type
-engine: deepspeed
 
 # distributed framework
 distributed_framework: ray
@@ -98,16 +89,28 @@ datasets:
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
 
   databases:
-    occupancy_threshold_filter_type: 'min_ch0'
+    occupancy_threshold_filter_type: "min_ch0"
     synthetic_only: false
     has_annotations: false
     with_hypercubes_dataframe: true
     mask_channel: null
 
-  columns: [ 'x_start', 'y_start', 'z_start', 'time_start',
-          'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
-          'server_folder', 'output_folder',
-          'tile_name', 'prepared_id']
+  columns:
+    [
+      "x_start",
+      "y_start",
+      "z_start",
+      "time_start",
+      "channel_size",
+      "z_size",
+      "y_size",
+      "x_size",
+      "time_size",
+      "server_folder",
+      "output_folder",
+      "tile_name",
+      "prepared_id",
+    ]
 
   preserve_order: false # only matters for TP
   callback_strategy: grpc # grpc, queue
@@ -121,7 +124,7 @@ datasets:
         patch_shape: ${datasets.patch_shape}
         input_format: ${dataset_layout_order}
 
-        mask_mode: 
+        mask_mode:
           _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
           value: "random"
 
@@ -153,23 +156,23 @@ models:
         embed_dim: ${models.meta_arch.mae.embed_dim}
 
 optimizers:
-  wd:  ${eval:'${optimizers.lr} * 0.1'}
+  wd: ${eval:'${optimizers.lr} * 0.1'}
   lr: 1e-4
 
 # hooks
 hooks:
   hooks_list:
-  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.LRScheduler
-    backend: DEEPSPEED
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
-  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-    file_prefix: latest_model
-    backend: DEEPSPEED
-  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
-    metric_name: ${evaluation.val_metric}
-    compare_fn: ${evaluation.val_mode}
-    eval_after_validation: true
+    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+    - _target_: cell_observatory_platform.training.hooks.LRScheduler
+      backend: DEEPSPEED
+    - _target_: cell_observatory_platform.training.hooks.IterationTimer
+    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+    - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+      file_prefix: latest_model
+      backend: DEEPSPEED
+    - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+      checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+    - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+      metric_name: ${evaluation.val_metric}
+      compare_fn: ${evaluation.val_mode}
+      eval_after_validation: true

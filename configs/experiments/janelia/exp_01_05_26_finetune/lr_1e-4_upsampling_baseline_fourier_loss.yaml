@@ -28,16 +28,7 @@ experiment_name: upsample_space_baseline_128x256x256_50_epoch_lr_0p0001_fourier_
 wandb_project: finetuning_3d_v2
 # wandb_project: testing
 
-# task
-task: finetuning
-
-# Model type
-network: baseline
-
 backend: DEEPSPEED
-
-# engine type
-engine: deepspeed
 
 # distributed framework
 distributed_framework: ray

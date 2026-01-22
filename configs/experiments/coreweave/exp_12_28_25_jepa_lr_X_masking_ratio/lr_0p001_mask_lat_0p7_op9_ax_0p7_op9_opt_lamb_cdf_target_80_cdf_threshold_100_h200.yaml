@@ -21,16 +21,7 @@ defaults:
 experiment_name: jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200
 wandb_project: pretraining_3d_v2
 
-# task
-task: pretrain_jepa
-
-# Model type
-network: jepa
-
 backend: DEEPSPEED
-
-# engine type
-engine: deepspeed
 
 # distributed framework
 distributed_framework: ray

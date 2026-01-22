@@ -27,16 +27,7 @@ defaults:
 experiment_name: channel_split_jepa_masking_lat_0p7_op9_ax_0p7_op9_lr_0p01
 wandb_project: finetuning_3d_v2
 
-# task
-task: finetuning
-
-# Model type
-network: baseline
-
 backend: DEEPSPEED
-
-# engine type
-engine: deepspeed
 
 # distributed framework
 distributed_framework: ray
