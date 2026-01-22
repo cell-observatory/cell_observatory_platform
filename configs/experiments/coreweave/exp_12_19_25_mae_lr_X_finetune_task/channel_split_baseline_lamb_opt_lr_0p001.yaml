@@ -27,12 +27,6 @@ defaults:
 experiment_name: channel_split_baseline_lr_0p001_fourier_loss_opt_lamb_cdf_target_90_cdf_threshold_150
 wandb_project: finetuning_3d_v2
 
-# task
-task: finetuning
-
-# Model type
-network: baseline
-
 backend: DEEPSPEED
 
 # engine type

@@ -15,11 +15,11 @@ defaults:
   - /optimizations/models/jepa                # configs/optimizations/models/jepa.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
-  - /inference/inference_feature_viz_jepa                      # configs/inference/inference.yaml
+  - /inference/inference_feature_viz_patch_cosine_jepa                      # configs/inference/inference.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: test_inference_feature_viz_jepa
+experiment_name: test_inference_feature_viz_jepa_cosine_sim_p07_p09
 wandb_project: testing
 
 backend: DEEPSPEED
@@ -77,8 +77,10 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/results/inference/${experiment_name}
   resume_checkpointdir: null 
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200_w_hook/checkpoints
   # pretrained_checkpointdir: ${paths.data_path}/pretrained_models/jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200/checkpoints
-  pretrained_checkpointdir:  ${paths.data_path}/pretrained_models/jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200/checkpoints
+  # pretrained_checkpointdir:  ${paths.data_path}/pretrained_models/jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p8_op9_ax_0p8_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200/checkpoints
+  # pretrained_checkpointdir: ${paths.data_path}/pretrained_models/jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p7_op8_ax_0p7_op8_opt_lamb_cdf_target_80_cdf_threshold_100_h200/checkpoints
 
 # data
 datasets:

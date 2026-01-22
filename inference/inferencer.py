@@ -61,6 +61,7 @@ class InferencerWorker:
         auxiliary_outputs: Optional[Any] = None,
         pmin: float = 1.0,
         pmax: float = 99.0,
+        feature_viz_type: Optional[str] = None,
     ):
         self.database = database
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
@@ -113,6 +114,7 @@ class InferencerWorker:
         self.save_as_volume = save_as_volume
 
         self.decoder_head_type = decoder_head_type
+        self.feature_viz_type = feature_viz_type
 
         self.inference_save_dir = save_dir
         self.inference_save_format = save_format
@@ -844,6 +846,8 @@ class InferencerWorker:
                 pmax=self.pmax,
                 fit="per_t",
                 sample_voxels=50_000,
+                viz=self.feature_viz_type,
+                stride_zyx=(self.axial_patch_size, self.lateral_patch_size, self.lateral_patch_size)
             )
             print(f"Finished saving feature visualizations for tile {name} (ROI {row.get('id', 'unknown')})")
         else:

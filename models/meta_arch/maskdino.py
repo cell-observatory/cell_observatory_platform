@@ -136,14 +136,16 @@ class MaskDINO(nn.Module):
         # bipartite matching-based loss
         losses = self.criterion(outputs, data_sample["metainfo"]["targets"][0], denoise_predictions)
 
-        for loss in list(losses.keys()):
-            if loss in self.criterion.loss_weight_dict:
-                losses[loss] *= self.criterion.loss_weight_dict[loss]
-            else:
-                # remove this loss if not specified in loss_weight_dict
-                losses.pop(loss)
+        # for loss in list(losses.keys()):
+        #     if loss in self.criterion.loss_weight_dict:
+        #         losses[loss] *= self.criterion.loss_weight_dict[loss]
+        #     else:
+        #         # remove this loss if not specified in loss_weight_dict
+        #         losses.pop(loss)
 
-        losses["step_loss"] = sum(losses.values())
+        losses["step_loss"] = sum(
+            losses[k] * self.criterion.loss_weight_dict[k] for k in losses.keys() if k in self.criterion.loss_weight_dict
+        )
 
         return losses, outputs
 

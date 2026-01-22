@@ -1,34 +1,26 @@
 defaults:
-  - /clusters/local                          # configs/clusters/local.yaml
-  - /paths/local                             # configs/paths/local.yaml
-  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
-  - /models/BUILD_MAE                        # configs/models/BUILD_MAE.yaml 
-  - /models/meta_arch/mae/tiny               # configs/models/meta_arch/mae/tiny.yaml
-  - /hooks/hooks_with_weight_decay           # configs/hooks/hooks_with_weight_decay.yaml
-  - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
-  - /loggers/loggers                         # configs/loggers/loggers.yaml
-  - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
-  - /deepspeed/zero3                         # configs/deepspeed/zero3.yaml
-  - /optimizers/lamb                         # configs/optimizers/lamb.yaml
-  - /schedulers/test_warmup_cosine_decay     # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
-  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
-  - /profiling/profiling                     # configs/profiling/profiling.yaml
+  - /clusters/local # configs/clusters/local.yaml
+  - /paths/local # configs/paths/local.yaml
+  - /datasets/pretrain_dataset_ray # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/BUILD_MAE # configs/models/BUILD_MAE.yaml
+  - /models/meta_arch/mae/tiny # configs/models/meta_arch/mae/tiny.yaml
+  - /hooks/hooks_with_weight_decay # configs/hooks/hooks_with_weight_decay.yaml
+  - /checkpoint/checkpoint # configs/checkpoint/checkpoint.yaml
+  - /loggers/loggers # configs/loggers/loggers.yaml
+  - /evaluation/base_evaluator # configs/evaluation/base_evaluator.yaml
+  - /deepspeed/zero3 # configs/deepspeed/zero3.yaml
+  - /optimizers/lamb # configs/optimizers/lamb.yaml
+  - /schedulers/test_warmup_cosine_decay # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/optimizations # configs/optimizations/optimizations.yaml
+  - /optimizations/models/mae # configs/optimizations/models/mae.yaml
+  - /profiling/profiling # configs/profiling/profiling.yaml
   - _self_
-
 
 # experiment name (used for logging)
 experiment_name: tests
 wandb_project: platform_github_action_tests
 
-# task
-task: pretrain_mae
-
-# Model type
-network: mae
-
-# engine type
-engine: deepspeed
+backend: DEEPSPEED
 
 # distributed framework
 distributed_framework: ray
@@ -50,9 +42,8 @@ quantization: bfloat16 # data type for training, options: bfloat16, float32, flo
 storage_dtype: uint16 # data type for storage
 
 # dtype for training data
-# NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model 
-dataset_dtype: float16 # data type for loading data, options: float32, float16 
-
+# NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model
+dataset_dtype: float16 # data type for loading data, options: float32, float16
 
 # dataset layout in the zarr files
 dataset_layout_order: TZYXC
@@ -65,7 +56,7 @@ seed: 42
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null 
+  resume_checkpointdir: null
   pretrained_checkpointdir: null
 
 clusters:
@@ -91,14 +82,13 @@ datasets:
   max_hypercubes: 100 # maximum number of hypercubes to return
   use_cached_hypercubes_dataframe: false
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
-  
+
   exec_async: true
   exec_pipelined: true
 
   occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
   cdf_threshold: 0 # to filter our hypercubes with less than this CDF threshold
   cdf_target: 90 # to filter our hypercubes with less than this CDF target
-
 
 evaluation:
   val_begin: 0
@@ -115,48 +105,48 @@ evaluation:
 
 loggers:
   event_writers:
-      - _target_: cell_observatory_platform.training.loggers.LocalEventWriter
-        save_dir: ${loggers.logdir}
-        step_scalars_prefix: step_logbook
-        epoch_scalars_prefix: epoch_logbook
-        scalars_save_format: csv
+    - _target_: cell_observatory_platform.training.loggers.LocalEventWriter
+      save_dir: ${loggers.logdir}
+      step_scalars_prefix: step_logbook
+      epoch_scalars_prefix: epoch_logbook
+      scalars_save_format: csv
 
 hooks:
   hooks_list:
-  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
-  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.LRScheduler
-  - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
-    warmup_iter: 2
-  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-    file_prefix: latest_model
-  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: cell_observatory_platform.training.hooks.TorchProfiler
-    output_dir: ${loggers.logdir}/profiler
-    schedule:
-      skip_first: 1
-      warmup: 1
-      active: 3
-      repeat: 2
-      wait: 1
-    activities:
-      - CUDA
-      - CPU
-    save_tensorboard: true
-    shutdown_after_profile: False
-  - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
-    step_period: 5
-    epoch_period: 1
-    logdir: ${loggers.logdir}
-  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
-    metric_name: ${evaluation.val_metric}
-    compare_fn: ${evaluation.val_mode}
-    eval_after_validation: true
-  - _target_: cell_observatory_platform.training.hooks.EarlyStopHook
-    patience: 10
-    stopping_threshold: 0.01
-    mode: ${evaluation.val_mode}
-    metric_name: ${evaluation.val_metric}
+    - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
+    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+    - _target_: cell_observatory_platform.training.hooks.LRScheduler
+    - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
+    - _target_: cell_observatory_platform.training.hooks.IterationTimer
+      warmup_iter: 2
+    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+    - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+      file_prefix: latest_model
+    - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+      checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+    - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+      output_dir: ${loggers.logdir}/profiler
+      schedule:
+        skip_first: 1
+        warmup: 1
+        active: 3
+        repeat: 2
+        wait: 1
+      activities:
+        - CUDA
+        - CPU
+      save_tensorboard: true
+      shutdown_after_profile: False
+    - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
+      step_period: 5
+      epoch_period: 1
+      logdir: ${loggers.logdir}
+    - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+      metric_name: ${evaluation.val_metric}
+      compare_fn: ${evaluation.val_mode}
+      eval_after_validation: true
+    - _target_: cell_observatory_platform.training.hooks.EarlyStopHook
+      patience: 10
+      stopping_threshold: 0.01
+      mode: ${evaluation.val_mode}
+      metric_name: ${evaluation.val_metric}

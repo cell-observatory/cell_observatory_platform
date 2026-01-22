@@ -29,14 +29,14 @@ class CheckpointManager:
         load_dtype: Optional[str] = None,
         resume_checkpointdir: Optional[Union[str, Path]] = None,
         pretrained_checkpointdir: Optional[Union[str, Path]] = None,
-        engine: Literal["deepspeed"] = "deepspeed",
+        backend: Literal["DEEPSPEED"] = "DEEPSPEED",
         checkpoint_tag: str = "best_model",
         use_custom_state_dict_filter: Optional[List[str]] = None,
         ckpt_include_prefixes: Optional[List[str]] = None,
         ckpt_translate_map: Optional[Dict[str, str]] = None,
     ):
         self.model = model
-        self.engine = engine.upper()
+        self.backend = backend.upper()
         self.save_period = save_period
         self.zero_stage = zero_stage
         self.load_dtype = load_dtype
@@ -86,11 +86,11 @@ class CheckpointManager:
         save_best_loss: Optional[float] = None,
     ):
         self.save_checkpointdir.mkdir(parents=True, exist_ok=True)
-        if self.engine == "DEEPSPEED":
+        if self.backend == "DEEPSPEED":
             client_state = {"epoch": save_epoch, "iter": save_step, "best_loss": save_best_loss}
             self.model.save_checkpoint(self.save_checkpointdir, client_state=client_state, tag=prefix)
         else:
-            raise NotImplementedError("Saving checkpoints for " "other engines not implemented yet.")
+            raise NotImplementedError("Saving checkpoints for " "other backends not implemented yet.")
 
     def load(self):
         if self.resume_checkpointdir is not None:
@@ -111,7 +111,7 @@ class CheckpointManager:
 
         ckpt_zero_stage = self._get_zero_stage(os.path.join(self.load_checkpointdir, self.checkpoint_tag))
 
-        if self.use_custom_state_dict_filter is not None and self.engine == "DEEPSPEED":
+        if self.use_custom_state_dict_filter is not None and self.backend == "DEEPSPEED":
             custom_load_fn = self.make_state_dict_filter_fn(
                 include_prefixes=self.ckpt_include_prefixes, translate_map=self.ckpt_translate_map
             )

@@ -1,19 +1,19 @@
 # @package _global_
 defaults:
-  - /paths/abc                         # configs/paths/coreweave.yaml
-  - /hydra/overrides                   # configs/hydra/overrides.yaml (not working)
-  - /clusters/local                    # configs/clusters/local.yaml
-  - /datasets/pretrain_dataset_ray     # configs/datasets/pretrain_dataset_ray.yaml
-  - /models/meta_arch/mae/large        # configs/models/jepa/large.yaml
-  - /models/BUILD_MAE                  # configs/models/BUILD_AutoBench.yaml
-  - /datasets/preprocessor/ray_preprocessor  # configs/datasets/preprocessor/ray_preprocessor.yaml
-  - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
-  - /checkpoint/checkpoint_titan             # configs/checkpoint/checkpoint.yaml
-  - /loggers/loggers                   # configs/loggers/loggers.yaml
-  - /evaluation/base_evaluator         # configs/evaluation/base_evaluator.yaml
-  - /optimizers/adamw_titan_mae        # configs/optimizers/lamb.yaml
+  - /paths/abc # configs/paths/coreweave.yaml
+  - /hydra/overrides # configs/hydra/overrides.yaml (not working)
+  - /clusters/local # configs/clusters/local.yaml
+  - /datasets/pretrain_dataset_ray # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/meta_arch/mae/large # configs/models/jepa/large.yaml
+  - /models/BUILD_MAE # configs/models/BUILD_AutoBench.yaml
+  - /datasets/preprocessor/ray_preprocessor # configs/datasets/preprocessor/ray_preprocessor.yaml
+  - /datasets/masking/mask_generator # configs/datasets/masking/mask_generator.yaml
+  - /checkpoint/checkpoint_titan # configs/checkpoint/checkpoint.yaml
+  - /loggers/loggers # configs/loggers/loggers.yaml
+  - /evaluation/base_evaluator # configs/evaluation/base_evaluator.yaml
+  - /optimizers/adamw_titan_mae # configs/optimizers/lamb.yaml
   - /schedulers/test_warmup_cosine_decay_titan # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/mae           # configs/optimizations/models/mae.yaml
+  - /optimizations/models/mae # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations # configs/optimizations/optimizations.yaml
   - /profiling/profiling
   - _self_
@@ -22,14 +22,7 @@ defaults:
 experiment_name: test_titan_mae
 wandb_project: testing
 
-# task
-task: pretrain_mae
-
-# Model type
-network: mae
-
-# engine type
-engine: deepspeed
+backend: TORCHTITAN
 
 # distributed framework
 distributed_framework: ray
@@ -101,7 +94,7 @@ datasets:
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: /clusterfs/nvme/hph/git_managed/databases/new_prepared_16_128_128_128_2_hypercube_view.csv
 
-  columns: 
+  columns:
     - x_start
     - y_start
     - z_start
@@ -117,7 +110,7 @@ datasets:
     - prepared_id
 
   databases:
-    occupancy_threshold_filter_type: 'min_ch0'
+    occupancy_threshold_filter_type: "min_ch0"
     synthetic_only: false
     has_annotations: false
     with_hypercubes_dataframe: true
@@ -149,16 +142,16 @@ schedulers:
 # hooks
 hooks:
   hooks_list:
-  # - _target_: training.hooks.WeightDecayScheduleHook
-  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
-  # - _target_: training.hooks.LRScheduler
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
-  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+    # - _target_: training.hooks.WeightDecayScheduleHook
+    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+    - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
+    # - _target_: training.hooks.LRScheduler
+    - _target_: cell_observatory_platform.training.hooks.IterationTimer
+    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
   # - _target_: training.hooks.PeriodicCheckpointer
   #   file_prefix: latest_model
   # - _target_: training.hooks.BestCheckpointer
-    # checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  # checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   # - _target_: training.hooks.TorchMemoryStats
   #   step_period: 1
   #   epoch_period: 1

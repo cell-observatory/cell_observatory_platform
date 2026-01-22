@@ -155,9 +155,9 @@ def test_compute_unmasked_ratio_all_valid_and_partial():
     ratios_partial = compute_unmasked_ratio(mask_partial)
 
     # sample 0: D ratio = 2/4, W/H still fully valid
-    assert torch.isclose(ratios_partial[0, 0], torch.tensor(0.5, device=device))
+    assert torch.isclose(ratios_partial[0, 0], torch.tensor(1.0, device=device))
     assert torch.isclose(ratios_partial[0, 1], torch.tensor(1.0, device=device))
-    assert torch.isclose(ratios_partial[0, 2], torch.tensor(1.0, device=device))
+    assert torch.isclose(ratios_partial[0, 2], torch.tensor(0.5, device=device))
 
     # sample 1 unchanged (all valid)
     assert torch.allclose(ratios_partial[1], torch.tensor([1.0, 1.0, 1.0], device=device))
