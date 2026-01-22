@@ -2,7 +2,7 @@ BUILD: cell_observatory_platform.models.heads.maskdino_decoder.MaskDINODecoder.B
 
 in_channels: 384
 num_classes: 1 # 2
-hidden_dim: 256
+hidden_dim: 384 # needs to be multiple of 3
 num_queries: 200
 feedforward_dim: 2048
 decoder_num_layers: 4 # 1

@@ -533,7 +533,7 @@ class DETR_Set_Loss(nn.Module):
 
         # in case of auxiliary losses, we repeat loss computation with the output of intermediate layers
         if "auxiliary_outputs" in outputs:
-            first_auxiliary_output_idx = 0 if "intermediate_outputs" in outputs else 1
+            first_auxiliary_output_idx = 0 if "intermediates" in outputs else 1
             for i, auxiliary_output in enumerate(outputs["auxiliary_outputs"]):
                 # hungarian matcher to get indices of the matched auxiliary_outputs and targets
                 auxiliary_matched_target_indices = self.matcher(auxiliary_output, targets, costs=self.costs)
@@ -572,8 +572,9 @@ class DETR_Set_Loss(nn.Module):
 
                         losses.update(extra_losses)
 
-        if "intermediate_outputs" in outputs:
-            intermediate_outputs = outputs["intermediate_outputs"]
+        # initial encoder predictions
+        if "intermediates" in outputs:
+            intermediate_outputs = outputs["intermediates"]
             intermediate_matched_target_indices = self.matcher(intermediate_outputs, targets, costs=self.costs)
             for loss in self.losses:
                 extra_losses = self.compute_loss(
