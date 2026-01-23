@@ -83,7 +83,7 @@ datasets:
   patch_shape: [16, 16, 16, null]
   occupancy_threshold: 0.9
 
-  split: 0.1
+  split: 0.0
   return_dataloader: true
   distributed_sampler: true
 
