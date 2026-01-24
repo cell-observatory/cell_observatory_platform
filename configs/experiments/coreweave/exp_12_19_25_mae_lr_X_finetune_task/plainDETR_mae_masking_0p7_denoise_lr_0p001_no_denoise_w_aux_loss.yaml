@@ -24,7 +24,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: instance_segmentation_plainDETR_mae_masking_0p9_denoise_128x256x512_600_epoch_lr_0p001_opt_lamb_no_denoise_w_aux_loss
+experiment_name: instance_segmentation_plainDETR_mae_masking_0p7_denoise_128x256x512_600_epoch_lr_0p001_opt_lamb_no_denoise_w_aux_loss
 wandb_project: finetuning_3d_v2
 
 backend: DEEPSPEED
@@ -80,7 +80,7 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
   resume_checkpointdir: null
-  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p9_fourier_loss_cdf_target_90_cdf_threshold_150_h200/checkpoints
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200/checkpoints
 
 # data
 datasets:
