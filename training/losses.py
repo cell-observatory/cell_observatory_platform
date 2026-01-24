@@ -532,7 +532,8 @@ class DETR_Set_Loss(nn.Module):
             losses.update(extra_losses)
 
         # in case of auxiliary losses, we repeat loss computation with the output of intermediate layers
-        if "auxiliary_outputs" in outputs:
+        # we do not do denoising for auxiliary outputs so we do not compute if not training
+        if "auxiliary_outputs" in outputs and self.training:
             first_auxiliary_output_idx = 0 if "intermediates" in outputs else 1
             for i, auxiliary_output in enumerate(outputs["auxiliary_outputs"]):
                 # hungarian matcher to get indices of the matched auxiliary_outputs and targets
