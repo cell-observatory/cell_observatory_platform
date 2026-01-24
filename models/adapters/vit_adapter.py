@@ -158,7 +158,7 @@ class Extractor(nn.Module):
                 None,
             )
         else:
-            attn = self.attn(self.query_norm(query), self.feat_norm(features))
+            attn = self.attn(self.query_norm(query), self.feat_norm(features), self.feat_norm(features))
 
         query = query + attn
 

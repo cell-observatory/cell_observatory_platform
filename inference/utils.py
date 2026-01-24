@@ -1,15 +1,19 @@
+from tqdm import tqdm
 import hashlib
 from pathlib import Path
-from typing import Literal, Optional, Tuple, Union, Dict
+from typing import Literal, Optional, Tuple, Union, Dict, Sequence, Any
 
 import torch
 import numpy as np
 import torch.nn.functional as F
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.colors import ListedColormap, BoundaryNorm
 
 from cell_observatory_platform.data.io import save_file
+from cell_observatory_platform.data.structures import convert_bbox_format
 
 ArrayLike = Union[np.ndarray, torch.Tensor]
 
@@ -43,16 +47,21 @@ def _normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
     return np.clip(out, 0, 1)
 
 
+def _ensure_numpy(preds: ArrayLike):
+    """Convert to numpy array if needed."""
+    if isinstance(preds, torch.Tensor):
+        arr = preds.float().detach().cpu().numpy()
+    else:
+        arr = np.asarray(preds)
+    return arr
+
 def _ensure_numpy_tzyxc(preds: ArrayLike) -> np.ndarray:
     """
     Ensures we have a numpy array in TZYXC:
       - if input is ZYXC -> add T=1
       - if input is TZYXC -> no-op
     """
-    if isinstance(preds, torch.Tensor):
-        arr = preds.detach().cpu().numpy()
-    else:
-        arr = np.asarray(preds)
+    arr = _ensure_numpy(preds)
 
     if arr.ndim == 4:  # Z,Y,X,C
         arr = arr[None, ...]
@@ -705,3 +714,275 @@ def save_predictions(
             )
         else:
             raise ValueError(f"Unsupported save format: {filetype!r}")
+
+
+def _boxes_in_z_slice(boxes_xyzxyz: np.ndarray, z: int) -> np.ndarray:
+    """
+    Keep boxes whose z-extent intersects slice plane at (z + 0.5).
+    boxes are xyzxyz in local voxel coords.
+    """
+    b = np.asarray(boxes_xyzxyz, dtype=np.float32)
+    if b.size == 0:
+        return b.reshape(0, 6)
+    plane = float(z) + 0.5
+    keep = (plane >= b[:, 2]) & (plane < b[:, 5])
+    return b[keep]
+
+
+def _region_str(region: Optional[Dict[str, Any]]) -> str:
+    """
+    Human-readable crop descriptor for figure titles.
+    Expects region like:
+      {"roi":..., "tile_name":..., "coords": (t0,t1,z0,z1,y0,y1,x0,x1), "coord_frame":"voxel", ...}
+    """
+    if not region:
+        return ""
+    coords = region.get("coords", None)
+    if coords is None:
+        return ""
+    t0, t1, z0, z1, y0, y1, x0, x1 = coords
+    roi = region.get("roi", None)
+    tile = region.get("tile_name", None)
+    frame = region.get("coord_frame", None)
+
+    parts = []
+    if roi is not None:
+        parts.append(f"roi={roi}")
+    if tile is not None:
+        parts.append(f"tile={tile}")
+    parts.append(f"crop t[{t0},{t1}) z[{z0},{z1}) y[{y0},{y1}) x[{x0},{x1})")
+    if frame is not None:
+        parts.append(f"frame={frame}")
+    return " | " + " ".join(parts)
+
+
+def _label_and_cmap_from_instance_masks(masks_nyx: ArrayLike, thr: float = 0.5):
+    """
+    masks_nyx: (N,Y,X) binary or logits/probs.
+    Returns:
+      label_yx: (Y,X) with values {0..N} where 0=background, i+1 = instance i
+      cmap, norm suitable for imshow(label_yx, cmap=cmap, norm=norm)
+    """
+    m = _ensure_numpy(masks_nyx)
+    if m.size == 0:
+        return np.zeros((1, 1), np.int32), ListedColormap([[0, 0, 0, 0]]), BoundaryNorm([-0.5, 0.5], 1)
+
+    # binarize if needed
+    if m.dtype != np.bool_:
+        m = m > thr
+
+    N, Y, X = m.shape
+    label = np.zeros((Y, X), dtype=np.int32)
+
+    # simple overwrite in order; good enough for viz
+    for i in range(N):
+        label[m[i]] = i + 1
+
+    # background transparent + unique color per instance
+    if N <= 20:
+        cols = plt.get_cmap("tab20")(np.linspace(0, 1, max(N, 1)))
+    else:
+        cols = plt.get_cmap("hsv")(np.linspace(0, 1, N, endpoint=False))
+
+    cols = np.vstack([[0, 0, 0, 0], cols])  # label 0 transparent
+    cmap = ListedColormap(cols)
+    norm = BoundaryNorm(np.arange(N + 2) - 0.5, N + 1)
+    return label, cmap, norm
+
+
+def save_instance_predictions(
+    save_dir: Path | str,
+    identifiers: Sequence[str],
+    images: Sequence[ArrayLike],
+    preds: Sequence[Dict[str, Any]],
+    targets: Sequence[Dict[str, Any]],
+    regions: Optional[Sequence[Dict[str, Any]]] = None,
+    pred_boxes_key: str = "boxes",
+    pred_masks_key: str = "masks",
+    gt_boxes_key: str = "boxes",
+    gt_masks_key: str = "masks",
+    pred_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "xyzxyz",
+    gt_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "cxcyczwhd",
+    z_step: int = 10,
+    pmin: float = 1.0,
+    pmax: float = 99.0,
+    background_channel: int = 0,
+    scale_gt_boxes: bool = True,
+    input_format: Literal["ZYXC"] = "ZYXC",
+):
+    """
+    For each record, for each (t,z):
+      Row 1: Background channel (duplicated in both columns for alignment)
+      Row 2 (optional): Boxes  [GT | Pred] drawn on background
+      Row 3 (optional): Masks  [GT | Pred] mask overlay on background
+
+    Drops row 2 if BOTH GT+Pred boxes missing/empty.
+    Drops row 3 if BOTH GT+Pred masks missing/empty.
+
+    Writes: <ident>_instances.pdf
+    """
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    n = len(identifiers)
+    if not (len(images) == len(preds) == len(targets) == n):
+        raise ValueError("identifiers/images/preds/targets must have same length")
+    
+    if regions is not None and len(regions) != n:
+        raise ValueError("regions must be None or same length as identifiers")
+
+    def _has_nonempty(x: Any) -> bool:
+        if x is None:
+            return False
+        arr = _ensure_numpy(x)
+        return arr.size > 0
+
+    for i in tqdm(range(n), desc="records", unit="rec"):
+        ident = str(identifiers[i])
+        img_tzyxc = _ensure_numpy_tzyxc(images[i])  # (T,Z,Y,X,C)
+        T, Z, Y, X, C = img_tzyxc.shape
+
+        region = regions[i] if regions is not None else None
+        region_s = _region_str(region)
+
+        if not (0 <= background_channel < C):
+            raise ValueError(f"background_channel={background_channel} out of range for C={C}")
+
+        # ---- Boxes ----
+        gt_boxes = targets[i].get(gt_boxes_key, None)
+        pr_boxes = preds[i].get(pred_boxes_key, None)
+
+        if gt_boxes is None:
+            gt_xyzxyz = np.zeros((0, 6), dtype=np.float32)
+        else:
+            # convert to "xyzxyz" and apply scale factors if given
+            gt_boxes = convert_bbox_format(
+                gt_boxes,
+                bbox_input_format=gt_boxes_format,
+                bbox_output_format="xyzxyz",
+                scale_factors=torch.tensor([X, Y, Z, X, Y, Z], dtype=torch.float32) if scale_gt_boxes else None,
+            )
+            gt_xyzxyz = _ensure_numpy(gt_boxes).reshape(-1, 6).astype(np.float32)
+
+        if pr_boxes is None:
+            pr_xyzxyz = np.zeros((0, 6), dtype=np.float32)
+        else:
+            # we assume preds are already in "xyzxyz" format and scaled appropriately
+            pr_xyzxyz = _ensure_numpy(pr_boxes).reshape(-1, 6).astype(np.float32)
+
+        # ---- Masks ----
+        gt_masks = targets[i].get(gt_masks_key, None)
+        pr_masks = preds[i].get(pred_masks_key, None)
+
+        # FIXME: we unsqueeze since downstream plotting logic
+        #       expects (N,T,Z,Y,X) shape, generalize later if needed
+        if gt_masks is not None:
+            if input_format == "ZYXC":
+                gt_masks = gt_masks.unsqueeze(1)  # (N,T,Z,Y,X)
+            else:
+                raise ValueError(f"Unsupported input_format for gt_masks: {input_format!r}")
+            gt_masks = _ensure_numpy(gt_masks)
+        if pr_masks is not None:
+            if input_format == "ZYXC":
+                pr_masks = pr_masks.unsqueeze(1)  # (N,T,Z,Y,X)
+            else:
+                raise ValueError(f"Unsupported input_format for pr_masks: {input_format!r}")
+            pr_masks = _ensure_numpy(pr_masks)
+
+        # --- plot ---
+        has_boxes_row = _has_nonempty(gt_xyzxyz) or _has_nonempty(pr_xyzxyz)
+        has_masks_row = _has_nonempty(gt_masks) or _has_nonempty(pr_masks)
+
+        row_kinds: list[str] = ["bg"]
+        if has_boxes_row:
+            row_kinds.append("boxes")
+        if has_masks_row:
+            row_kinds.append("masks")
+
+        print(f"[save_instance_predictions] {ident}: T={T} Z={Z} | rows: {row_kinds}")
+
+        out_pdf = save_dir / f"{ident}_instances.pdf"
+        with PdfPages(out_pdf) as pdf:
+            for t in tqdm(range(T), desc=f"{ident} T", unit="t"):
+                for z in tqdm(range(0, Z, max(1, int(z_step))), desc=f"{ident} Z", unit="z", leave=False):
+
+                    nrows = len(row_kinds)                    
+                    fig, ax = plt.subplots(nrows, 2, figsize=(12, 4.8 * nrows), squeeze=False)
+
+                    # Page header: ident + crop info
+                    fig.suptitle(f"T={t} Z={z}{region_s}", fontsize=12)
+
+                    # background slice
+                    bg = _normalize_slice(
+                        img_tzyxc[t, z, :, :, background_channel],
+                        pmin=pmin,
+                        pmax=pmax,
+                    )
+
+                    r = 0
+
+                    # --- Row: background ---
+                    for c in range(2):
+                        a = ax[r, c]
+                        a.imshow(bg, cmap="gray", interpolation="nearest")
+                        a.set_title(f"T={t} Z={z} | background C={background_channel}")
+                        a.axis("off")
+                    r += 1
+
+                    # --- Row: boxes (optional) ---
+                    if has_boxes_row:
+                        # GT boxes
+                        a0 = ax[r, 0]
+                        a0.imshow(bg, cmap="gray", interpolation="nearest")
+                        for (x0, y0, z0, x1, y1, z1) in _boxes_in_z_slice(gt_xyzxyz, z=z):
+                            w = max(0.0, float(x1 - x0))
+                            h = max(0.0, float(y1 - y0))
+                            if w > 0 and h > 0:
+                                a0.add_patch(
+                                    Rectangle((float(x0), float(y0)), w, h, fill=False, linewidth=1.5, edgecolor="lime")
+                                )
+                        a0.set_title(f"T={t} Z={z} | GT boxes")
+                        a0.axis("off")
+
+                        # Pred boxes
+                        a1 = ax[r, 1]
+                        a1.imshow(bg, cmap="gray", interpolation="nearest")
+                        for (x0, y0, z0, x1, y1, z1) in _boxes_in_z_slice(pr_xyzxyz, z=z):
+                            w = max(0.0, float(x1 - x0))
+                            h = max(0.0, float(y1 - y0))
+                            if w > 0 and h > 0:
+                                a1.add_patch(
+                                    Rectangle((float(x0), float(y0)), w, h, fill=False, linewidth=1.5, edgecolor="cyan")
+                                )
+                        a1.set_title(f"T={t} Z={z} | Pred boxes")
+                        a1.axis("off")
+
+                        r += 1
+
+                        # --- Row: masks (optional) ---
+                        if has_masks_row:
+                            # GT
+                            a0 = ax[r, 0]
+                            a0.imshow(bg, cmap="gray", interpolation="nearest")
+                            if gt_masks is not None and gt_masks.shape[0] > 0:
+                                gt_label, gt_cmap, gt_norm = _label_and_cmap_from_instance_masks(gt_masks[:, t, z])
+                                a0.imshow(gt_label, cmap=gt_cmap, norm=gt_norm, interpolation="nearest", alpha=0.45)
+                            a0.set_title(f"T={t} Z={z} | GT masks (all instances)")
+                            a0.axis("off")
+
+                            # Pred
+                            a1 = ax[r, 1]
+                            a1.imshow(bg, cmap="gray", interpolation="nearest")
+                            if pr_masks is not None and pr_masks.shape[0] > 0:
+                                pr_label, pr_cmap, pr_norm = _label_and_cmap_from_instance_masks(pr_masks[:, t, z])
+                                a1.imshow(pr_label, cmap=pr_cmap, norm=pr_norm, interpolation="nearest", alpha=0.45)
+                            a1.set_title(f"T={t} Z={z} | Pred masks (all instances)")
+                            a1.axis("off")
+
+                            r += 1
+
+                    fig.tight_layout(rect=[0, 0, 1, 0.96])
+                    pdf.savefig(fig)
+                    plt.close(fig)
+
+        print(f"[save_instance_predictions] wrote {out_pdf}")

@@ -452,6 +452,14 @@ def log_data_timings(
             for k, v in loss_dict.items()
             }
         )
+    elif type == "val":
+        trainer.event_recorder.put_scalars(
+            scope="step",
+            prefix="val_",
+            **{k: (v.item() if torch.is_tensor(v) else v)
+            for k, v in loss_dict.items()
+            }
+        )
 
 
 def get_input_data(inputs, device: Optional[torch.device] = 'cuda'):

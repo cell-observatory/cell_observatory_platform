@@ -551,12 +551,21 @@ class EpochBasedTrainer(BaseTrainer):
         self.before_val_step()
 
         loss_dict, outputs = self.model(data_sample)
+        loss_dict_log = {
+            k: (v.detach().float().cpu().item() if torch.is_tensor(v) else v)
+            for k, v in loss_dict.items()
+        }
         self.evaluator.process(data_sample, outputs, loss_dict)
 
-        self.after_val_step(data_sample={"metainfo": data_sample.get("metainfo")}, outputs=None, loss_dict=None)
+        self.after_val_step(
+            data_sample={"metainfo": data_sample.get("metainfo")}, 
+            outputs=None, 
+            loss_dict=loss_dict_log
+        )
 
         outputs = None
         loss_dict = None
+        loss_dict_log = None
         data_sample = None
 
         self._val_iter += 1

@@ -42,8 +42,8 @@ def _prod(tup):
 def test_cross_attention_shapes(B, Nq, Nk, C, H):
     m = CrossAttention(dim=C, num_heads=H)
     q = torch.randn(B, Nq, C)
-    k = torch.randn(B, Nk, C)
-    out = m(q, k)
+    k = v = torch.randn(B, Nk, C)
+    out = m(q, k, v)
     assert out.shape == (B, Nq, C)
 
 

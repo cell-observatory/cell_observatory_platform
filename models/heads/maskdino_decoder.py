@@ -237,6 +237,7 @@ class MaskDINODecoder(nn.Module):
         output_memory = output_memory.masked_fill(~output_proposals_valid, float(0))
         return output_memory, output_proposals
 
+    # FIXME: legacy code, should be rewritten
     def generate_denoising_queries(self, targets, target_query_embeddings, reference_point_embeddings, batch_size):
         if self.training:
             labels_per_image = [
@@ -297,8 +298,8 @@ class MaskDINODecoder(nn.Module):
                 total_denoise_labels.scatter_(0, flipped_indices, new_label_ids)
 
                 denoise_bbox_deltas = torch.zeros_like(total_denoise_bboxes_copy)
-                denoise_bbox_deltas[:, :3] = total_denoise_bboxes_copy[:, 3:] / 2  # shift amount of dd, dh, dw
-                denoise_bbox_deltas[:, 3:] = total_denoise_bboxes_copy[:, 3:]  # starting dd, dw, dh
+                denoise_bbox_deltas[:, :3] = total_denoise_bboxes_copy[:, 3:] / 2  # shift amount of dw, dh, dd
+                denoise_bbox_deltas[:, 3:] = total_denoise_bboxes_copy[:, 3:]  # starting size w, h, d
 
                 # randomly shift bbox coordinates ([-1,1] * bbox_deltas * noise_scale)
                 total_denoise_bboxes_copy += (
@@ -311,7 +312,6 @@ class MaskDINODecoder(nn.Module):
 
             # embed/encode noised labels and bboxes
             total_denoise_label_embeddings = self.label_embeddings(total_denoise_labels.long().cuda()).to(self.dtype)
-            # encode bboxes into sigmoid space
             total_denoise_bboxes_encoded = inverse_sigmoid(total_denoise_bboxes_copy)
 
             # pad all denoising queries to the same size
@@ -542,12 +542,12 @@ class MaskDINODecoder(nn.Module):
             ]
 
         x_flatten, mask_flatten, shapes = [], [], []
-        # iterate over feature levels in reverse order
+        # iterate over feature levels in reverse order from coarsest to finest 
+        # (see PixelDecoder for more details on feature level ordering)
         for idx in range(self.num_feature_levels - 1, -1, -1):
             bs, c, d, h, w = x[idx].shape
-            # (bs, c, d, h, w) -> (bs, d_model, d, h, w) -> (bs, d_model, dxhxw) -> (bs, dxhxw, d_model)
             shapes.append(torch.as_tensor([d, h, w], dtype=torch.long, device=device))
-            # (bs, c, d, h, w) -> (bs, d_model, d, h, w) → (bs, d_model, dxhxw) -> (bs, dxhxw, d_model)
+            # Conv3d: (bs, c, d, h, w) -> (bs, d_model, d, h, w) → (bs, d_model, dxhxw) -> (bs, dxhxw, d_model)
             x_flatten.append(self.input_proj[idx](x[idx]).flatten(2).transpose(1, 2))
             # (bs, d, h, w) -> (bs, dxhxw)
             mask_flatten.append(masks[idx].flatten(1))
@@ -560,16 +560,15 @@ class MaskDINODecoder(nn.Module):
         # get the start index of each feature level in token sequence [0, d1*h1*w1, d1*h1*w1 + d2*h2*w2, ...]
         # prod(1) => (num_feature_levels, ) = [d1*h1*w1, d2*h2*w2, ...], .cumsum(0) => CUMSUM([d1*h1*w1, d2*h2*w2, ...])
         level_start_index = torch.cat((shapes.new_zeros((1,)), shapes.prod(1).cumsum(0)[:-1]))  # (num_feature_levels, )
-        # get ratio mask vs unmasked volume for each feature level (padded, not real data vs real data)
-        # reverse axis dims of valid_ratios to HDW since this is what is expected downstream
-        masks_rev = [masks[i] for i in range(self.num_feature_levels - 1, -1, -1)]
-        valid_ratios = torch.stack([compute_unmasked_ratio(m)[..., [2, 1, 0]] for m in masks_rev], 1)
+        # valid ratio: (bs, num_feature_levels, 3)
+        valid_ratios = torch.stack([compute_unmasked_ratio(m) for m in masks], 1)
         
         # queries_learned_topk is populated if learned query_features is used
         predictions_class, predictions_mask, queries_learned_topk = [], [], None
         if self.two_stage_flag:
             # generate queries for topk query selection which will be used to initialize the decoder
             # note that output_memory and queries_learned are terminology used largely interchangeably
+            # NOTE:  output_proposals are WHDWHD format
             output_memory, output_proposals = self.gen_encoder_output_proposals(x_flatten, mask_flatten, shapes)
             output_memory = self.encoder_output_norm(self.encoder_output_mlp(output_memory))
 
@@ -604,6 +603,7 @@ class MaskDINODecoder(nn.Module):
                 topk_proposals.unsqueeze(-1).repeat(1, 1, self.hidden_dim),
             )
 
+            # TODO: skip transpose?
             outputs_labels, outputs_masks = self.forward_prediction_heads(
                 output_memory_topk.transpose(0, 1), pixel_decoder_output
             )
@@ -630,6 +630,7 @@ class MaskDINODecoder(nn.Module):
                 flatten_mask = outputs_masks.detach().flatten(0, 1)  # (B * num_queries, D, H, W)
                 d, h, w = outputs_masks.shape[-3:]
 
+                # NOTE: both methods return boxes in (x_min, y_min, z_min, x_max, y_max, z_max) format
                 if self.initialize_box_type == "bitmask":  # slower, but more accurate
                     # TODO: implement same safety check as in masks_to_boxes_v2
                     # refpoint_embeddings = BitMasks(flatten_mask > 0).get_bounding_boxes().tensor.to(device)
@@ -646,6 +647,7 @@ class MaskDINODecoder(nn.Module):
                 ).to(device)
                 # (B * num_queries, 6) -> (B, num_queries, 6)
                 refpoint_embeddings = refpoint_embeddings.reshape(outputs_masks.shape[0], outputs_masks.shape[1], 6)
+                # # NOTE: reference points assumed to be in unsigmoid range for all paths
                 refpoint_embeddings = inverse_sigmoid(refpoint_embeddings)
 
             else:
@@ -698,9 +700,9 @@ class MaskDINODecoder(nn.Module):
 
         # NOTE: target = queries in this case (nn.Transformer vs DETR nomenclature)
         intermediates, reference_points_list = self.decoder(
-            # (bs,d_model,num_queries+num_dn_queries)
+            # (num_queries+num_dn_queries, bs, d_model)
             target=queries.transpose(0, 1),
-            # (bs,c,SUM{dxhxw})
+            # (SUM{dxhxw}, bs, d_model)
             memory=x_flatten.transpose(0, 1),
             # (bs,SUM{dxhxw})
             memory_key_padding_mask=mask_flatten,

@@ -78,13 +78,13 @@ class MSDeformAttnTransformerEncoderLayer(nn.Module):
         return self.norm2(x)
 
     def forward(self, x, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
-        x_flattened = x.flatten(2)
+        q = self.with_pos_embed(x, pos)
         if self.with_deform_attention:
             x = x + self.dropout1(
                 self.attn(
-                    self.with_pos_embed(x, pos),
+                    q,
                     reference_points,
-                    x_flattened,
+                    x,
                     spatial_shapes,
                     level_start_index,
                     padding_mask,
@@ -92,9 +92,11 @@ class MSDeformAttnTransformerEncoderLayer(nn.Module):
             )
         else:
             x = x + self.dropout1(
+                # cross attention: query, key, value
                 self.attn(
-                    self.with_pos_embed(x, pos),
-                    self.with_pos_embed(x_flattened, pos),
+                    q, 
+                    q, 
+                    x,
                     # TODO: support cross_attention_mask
                     # padding_mask,
                 )
@@ -185,13 +187,14 @@ class MSDeformAttnTransformerEncoder(nn.Module):
         ]
         positional_embeddings = torch.cat(positional_embeddings, dim=1)  # [bs, d*h*w, embed_dim]
 
-        # [bs, l, d, h, w] -> [bs, l, d*h*w]
+        # list: [bs, d, h, w] -> [bs, d*h*w] for each level list
         masks_flattened = [mask.flatten(1) for mask in masks]
         # [bs, num_levels, d*h*w]
         masks_flattened = torch.cat(masks_flattened, dim=1)
 
-        # [bs, num_levels, 3] (valid ratio for each level)
-        valid_ratios = torch.stack([compute_unmasked_ratio(m)[..., [2, 1, 0]] for m in masks], 1)
+        # [bs, num_levels, 3] (valid ratio for each level), compute_unmasked_ratio gives (W, H, D)
+        # which is what get_reference_points expects
+        valid_ratios = torch.stack([compute_unmasked_ratio(m) for m in masks], 1)
 
         # call deformable attention layer on features with masks
         # to ensure only working over valid pixels
@@ -241,10 +244,10 @@ class MaskDINOEncoder(nn.Module):
 
         # determine shapes of input features
         input_shapes = {k: v for k, v in input_shape_metadata.items() if k in transformer_in_features}
-        # sort feature shapes from high to low resolution
+        # sort feature shapes from high to low resolution (take values and sort by stride in ascending order)
         input_shapes_sorted = sorted(input_shapes.items(), key=lambda x: -x[1]["stride"])
 
-        # define feature maps and determine number of feature levels
+        # define feature maps and determine number of feature levels (turn into tuples)
         data_items = [(feature, map["stride"], map["channels"]) for feature, map in input_shapes_sorted]
         self.feature_maps, self.feature_maps_strides, feature_maps_in_channels = zip(*data_items)
         self.num_feature_levels = len(self.feature_maps)
@@ -282,7 +285,7 @@ class MaskDINOEncoder(nn.Module):
                     )
                 )
 
-            # we optionally add extra feature levels
+            # we optionally add extra feature levels (assumes coarsest backbone level has max channels)
             extra_in_channels = [max(feature_maps_in_channels)] + [conv_dim] * (
                 self.total_num_feature_levels - self.num_feature_levels - 1
             )
@@ -350,18 +353,16 @@ class MaskDINOEncoder(nn.Module):
                 extra_features_list.append(feature)
                 extra_pos_embeddings_list.append(self.pos_embedding(feature))
 
-        # TODO: check whether we should reverse here or not
-        # reverse to go from low to high resolution
-        # extra_features_list = extra_features_list[::-1]
-
         features_list, pos_embeddings_list = [], []
         for idx, feature_map in enumerate(self.feature_maps[::-1]):
             # x: [B, C, D, H, W] append to feature list and get pos. encodings
-            # reverse order to go from finest to coarsest resolution
+            # reverse order to go from finest to coarsest resolution and then append extra levels
+            # which are already in finest to coarsest order (relative to coarsest backbone level)
             x = features[feature_map]
             features_list.append(self.channel_align_projection[idx](x))
             pos_embeddings_list.append(self.pos_embedding(x))
 
+        # NOTE: goes finest -> coarsest order
         features_list.extend(extra_features_list)
         pos_embeddings_list.extend(extra_pos_embeddings_list)
 
@@ -394,7 +395,7 @@ class MaskDINOEncoder(nn.Module):
             )
             output_feature_maps.append(output_map)
 
-        return self.mask_features(output_feature_maps[-1]), output_feature_maps[0], output_feature_maps
+        return self.mask_features(output_feature_maps[0]), output_feature_maps[0], output_feature_maps
 
 
 class Mask2FormerPixelDecoder(nn.Module):

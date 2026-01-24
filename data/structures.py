@@ -123,7 +123,8 @@ def convert_bbox_format(bboxes,
                         bbox_input_format, 
                         bbox_output_format, 
                         normalize: bool = False, 
-                        spatial_size: Optional[Sequence[float]] = None
+                        spatial_size: Optional[Sequence[float]] = None,
+                        scale_factors: Optional[Tensor] = None
 ) -> Tensor:
     """
     Convert bounding boxes from one format to another.
@@ -133,20 +134,33 @@ def convert_bbox_format(bboxes,
     bbox_output_format = bbox_output_format.lower()
 
     if bbox_input_format == bbox_output_format:
+        if scale_factors is not None:
+            bboxes = bboxes * scale_factors.to(bboxes.device)
         return bboxes
     if bbox_input_format == "cxcyczwhd" and bbox_output_format == "xyzxyz":
-        return box_cxcyczwhd_to_xyzxyz(bboxes)
+        boxes = box_cxcyczwhd_to_xyzxyz(bboxes)
+        if scale_factors is not None:
+            boxes = boxes * scale_factors.to(boxes.device)
+        return boxes
     elif bbox_input_format == "xyzxyz" and bbox_output_format == "cxcyczwhd":
-        return box_xyzxyz_to_cxcyczwhd(bboxes, normalize=normalize, spatial_size=spatial_size)
+        boxes = box_xyzxyz_to_cxcyczwhd(bboxes, normalize=normalize, spatial_size=spatial_size)
+        if scale_factors is not None:
+            boxes = boxes * scale_factors.to(boxes.device)
+        return boxes
     elif bbox_input_format == "zyxzyx" and bbox_output_format == "cxcyczwhd":
         # zyxzyx -> xyzxyz -> cxcyczwhd
-        bboxes = bboxes[:, [2, 1, 0, 5, 4, 3]]
-        return box_xyzxyz_to_cxcyczwhd(bboxes, normalize=normalize, spatial_size=spatial_size)
+        boxes = bboxes[:, [2, 1, 0, 5, 4, 3]]
+        boxes = box_xyzxyz_to_cxcyczwhd(boxes, normalize=normalize, spatial_size=spatial_size)
+        if scale_factors is not None:
+            boxes = boxes * scale_factors.to(boxes.device)
+        return boxes
     elif bbox_input_format == "cxcyczwhd" and bbox_output_format == "zyxzyx":
         # cxcyczwhd -> xyzxyz -> zyxzyx
-        bboxes = box_cxcyczwhd_to_xyzxyz(bboxes)
-        bboxes = bboxes[:, [2, 1, 0, 5, 4, 3]]
-        return bboxes
+        boxes = box_cxcyczwhd_to_xyzxyz(bboxes)
+        boxes = boxes[:, [2, 1, 0, 5, 4, 3]]
+        if scale_factors is not None:
+            boxes = boxes * scale_factors.to(boxes.device)
+        return boxes
     else:
         raise ValueError(f"Unsupported bbox format conversion from {bbox_input_format} to {bbox_output_format}")
 
@@ -272,7 +286,7 @@ def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
     Compute the bounding boxes around the provided masks.
     The masks should be in format [N, D, H, W] where N is
     the number of masks, (D, H, W) are the spatial dimensions.
-    Returns a [N, 6] tensors, with the boxes in xyxy format
+    Returns a [N, 6] tensors, with the boxes in xyzxyz format
     """
     if masks.numel() == 0:
         return torch.zeros((0, 6), device=masks.device)

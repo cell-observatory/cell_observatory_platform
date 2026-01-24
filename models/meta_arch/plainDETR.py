@@ -53,6 +53,7 @@ class PlainDETR(nn.Module):
         lambda_one2many: float = 0.0,
         reparam: bool = True,
         normalize_pos_encodings: bool = True,
+        topk: int = 100,
     ):
         super().__init__()
 
@@ -126,6 +127,10 @@ class PlainDETR(nn.Module):
         self.lambda_one2many = lambda_one2many
         self.num_queries_one2one = num_queries_one2one
         self.num_queries_one2many = num_queries_one2many
+
+        # for inference
+        self.topk = topk
+        self.reparam = reparam
 
     def init_model_weights(self, buffer_device: str | None = None):
         # TODO: move model inits back into each model class
@@ -470,53 +475,61 @@ class PlainDETRReParam(PlainDETR):
             for a, b, c, d in zip(outputs_class[:-1], outputs_coord[:-1], outputs_coord_old[:-1], outputs_deltas[:-1])
         ]
 
+    def predict(self, samples: Dict):
+        outputs = self._forward(samples)
+        preds = self._predict(
+            outputs,
+            target_sizes=samples["metainfo"]["image_sizes"],
+            original_target_sizes=samples["metainfo"]["orig_image_sizes"],
+        )
+        return preds
 
-# class PostProcess(nn.Module):
-#     def __init__(self, topk=100, reparam=False):
-#         super().__init__()
-#         self.topk = topk
-#         self.reparam = reparam
+    def _predict(self, outputs, target_sizes, original_target_sizes=None):
+        """
+        Parameters:
+            outputs: raw outputs of the model
+            target_sizes: tensor of dimension [batch_size x 3] containing the size of each images of the batch
+                          For evaluation, this must be the original image size (before any data augmentation).
+                          For visualization, this should be the image size after data augment, but before padding.
+        """
+        out_logits, out_bbox = outputs["pred_logits"], outputs["pred_boxes"]
 
-#     @torch.no_grad()
-#     def forward(self, outputs, target_sizes, original_target_sizes=None):
-#         """
-#         Parameters:
-#             outputs: raw outputs of the model
-#             target_sizes: tensor of dimension [batch_size x 3] containing the size of each images of the batch
-#                           For evaluation, this must be the original image size (before any data augmentation).
-#                           For visualization, this should be the image size after data augment, but before padding.
-#         """
-#         out_logits, out_bbox = outputs["pred_logits"], outputs["pred_boxes"]
+        assert len(out_logits) == len(target_sizes), "the batch size of out_logits and target_sizes must be equal"
+        assert target_sizes.shape[1] == 3, "target_sizes should have shape [batch_size x 3]"
+        assert not self.reparam or original_target_sizes.shape[1] == 3, "original_target_sizes should have shape [batch_size x 3]"
 
-#         assert len(out_logits) == len(target_sizes), "the batch size of out_logits and target_sizes must be equal"
-#         assert target_sizes.shape[1] == 3, "target_sizes should have shape [batch_size x 3]"
-#         assert not self.reparam or original_target_sizes.shape[1] == 3, "original_target_sizes should have shape [batch_size x 3]"
+        # prob: [BS, num_queries, num_classes]
+        prob = out_logits.sigmoid()
+        # topk: [BS, topk] for both values and indexes
+        topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), self.topk, dim=1)
 
-#         prob = out_logits.sigmoid()
-#         topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), self.topk, dim=1)
+        scores = topk_values
+        # get the corresponding boxes and labels for each topk score
+        # since scores are flattened such that indexes = box_index * num_classes + class_index
+        topk_boxes = topk_indexes // out_logits.shape[2]
+        labels = topk_indexes % out_logits.shape[2]
+        boxes = box_cxcyczwhd_to_xyzxyz(out_bbox)
+        # boxes: [BS, topk, 6]
+        boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 6))
 
-#         scores = topk_values
-#         topk_boxes = topk_indexes // out_logits.shape[2]
-#         labels = topk_indexes % out_logits.shape[2]
-#         boxes = box_cxcyczwhd_to_xyzxyz(out_bbox)
-#         boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 6))
+        # target_sizes: [BS, 3]
+        img_w, img_h, img_d = target_sizes.unbind(1)
+        if self.reparam:
+            # img_i: [BS, 1, 1, 1]
+            img_w, img_h, img_d = img_w[:, None, None], img_h[:, None, None], img_d[:, None, None]
+            boxes[..., 0::3].clamp_(min=torch.zeros_like(img_w), max=img_w)
+            boxes[..., 1::3].clamp_(min=torch.zeros_like(img_h), max=img_h)
+            boxes[..., 2::3].clamp_(min=torch.zeros_like(img_d), max=img_d)
+            scale_w, scale_h, scale_d = (original_target_sizes / target_sizes).unbind(1)
+            scale_fct = torch.stack([scale_w, scale_h, scale_d, scale_w, scale_h, scale_d], dim=1)
+        else:
+            scale_fct = torch.stack([img_w, img_h, img_d, img_w, img_h, img_d], dim=1)
 
-#         img_h, img_w, img_d = target_sizes.unbind(1)
-#         if self.reparam:
-#             # img_i: [BS, 1, 1, 1]
-#             img_h, img_w, img_d = img_h[:, None, None], img_w[:, None, None], img_d[:, None, None]
-#             boxes[..., 0::3].clamp_(min=torch.zeros_like(img_w), max=img_w)
-#             boxes[..., 1::3].clamp_(min=torch.zeros_like(img_h), max=img_h)
-#             boxes[..., 2::3].clamp_(min=torch.zeros_like(img_d), max=img_d)
-#             scale_h, scale_w, scale_d = (original_target_sizes / target_sizes).unbind(1)
-#             scale_fct = torch.stack([scale_w, scale_h, scale_w, scale_h, scale_d, scale_d], dim=1)
-#         else:
-#             scale_fct = torch.stack([img_w, img_h, img_w, img_h, img_d, img_d], dim=1)
+        # boxes: [BS, topk, 6], scale_fct: [BS, 6]
+        boxes = boxes * scale_fct[:, None, :]
 
-#         boxes = boxes * scale_fct[:, None, :]
-
-#         results = [{"scores": s, "labels": l, "boxes": b} for s, l, b in zip(scores, labels, boxes)]
-#         return results
+        results = [{"scores": s, "labels": l, "boxes": b} for s, l, b in zip(scores, labels, boxes)]
+        return results
 
 
 def BUILD(cfg: Mapping[str, Any]) -> PlainDETR:
