@@ -24,7 +24,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: instance_segmentation_plainDETR_mae_masking_0p7_denoise_128x256x512_600_epoch_lr_0p001_opt_lamb_no_denoise_w_aux_loss
+experiment_name: instance_segmentation_plainDETR_mae_masking_0p7_no_rope_denoise_128x256x512_600_epoch_lr_0p001_opt_lamb_no_denoise_w_aux_loss
 wandb_project: finetuning_3d_v2
 
 backend: DEEPSPEED
@@ -80,7 +80,7 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
   resume_checkpointdir: null
-  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200/checkpoints
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200_no_rope/checkpoints
 
 # data
 datasets:
@@ -161,13 +161,13 @@ optimizers:
   lr: 1e-3
 
 models:
-  backbones:
-    masked_encoder:
-      abs_sincos_enc: false
-      rope_pos_enc: true
-      rope_random_rotation_per_head: true
-      rope_mixed: false
-      rope_theta: 100.0
+  # backbones:
+  #   masked_encoder:
+  #     abs_sincos_enc: false
+  #     rope_pos_enc: true
+  #     rope_random_rotation_per_head: true
+  #     rope_mixed: false
+  #     rope_theta: 100.0
   meta_arch:
     plainDETR:
       aux_loss: true
