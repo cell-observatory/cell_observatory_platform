@@ -635,9 +635,9 @@ class MaskDINODecoder(nn.Module):
                     # TODO: implement same safety check as in masks_to_boxes_v2
                     # refpoint_embeddings = BitMasks(flatten_mask > 0).get_bounding_boxes().tensor.to(device)
                     refpoint_embeddings = bitmask_to_boxes(flatten_mask > 0).to(device)
-                elif self.initialize_box_type == "mask2box":  # faster
-                    # returns: (N, 6)
-                    refpoint_embeddings = masks_to_boxes_v2(flatten_mask > 0).to(device)
+                # elif self.initialize_box_type == "mask2box":  # faster
+                #     # returns: (N, 6)
+                #     refpoint_embeddings = masks_to_boxes_v2(flatten_mask > 0).to(device)
                 else:
                     assert NotImplementedError, "Unknown box initialization type: {}".format(self.initialize_box_type)
 

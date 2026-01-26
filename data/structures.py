@@ -384,6 +384,7 @@ def _upcast(t: Tensor) -> Tensor:
 
 def bitmask_to_boxes(masks: torch.Tensor) -> torch.Tensor:
     assert masks.dim() == 4, f"Expected (N, D, H, W), got {masks.shape}"
+    assert masks.dtype == torch.bool, f"Expected masks.dtype == torch.bool, got {masks.dtype}"
 
     N, D, H, W = masks.shape
     device = masks.device
@@ -391,19 +392,13 @@ def bitmask_to_boxes(masks: torch.Tensor) -> torch.Tensor:
     if N == 0:
         return masks.new_zeros((0, 6), dtype=torch.float32)
 
-    # Treat non-zero as foreground
-    if masks.dtype is torch.bool:
-        masks_bool = masks
-    else:
-        masks_bool = masks != 0
-
     boxes = torch.zeros((N, 6), dtype=torch.float32, device=device)
 
     # occupancy along each principal axis
     # shapes: (N, W), (N, H), (N, D)
-    x_any = masks_bool.any(dim=(1, 2))  # collapse D,H -> occupancy along X
-    y_any = masks_bool.any(dim=(1, 3))  # collapse D,W -> occupancy along Y
-    z_any = masks_bool.any(dim=(2, 3))  # collapse H,W -> occupancy along Z
+    x_any = masks.any(dim=(1, 2))  # collapse D,H -> occupancy along X
+    y_any = masks.any(dim=(1, 3))  # collapse D,W -> occupancy along Y
+    z_any = masks.any(dim=(2, 3))  # collapse H,W -> occupancy along Z
 
     for idx in range(N):
         xs = torch.where(x_any[idx])[0]
