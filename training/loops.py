@@ -345,12 +345,13 @@ class EpochBasedTrainer(BaseTrainer):
 
         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
+        # FIXME: not always desirable to force load model weights from this checkpoint
         # initialize checkpoint manager
-        if os.environ.get("RESTART", "FALSE").upper() == "TRUE":
-            logger.info("RESTART flag detected. Resuming from latest checkpoint.")
-            with open_dict(cfg):
-                cfg.paths.resume_checkpointdir = Path(cfg.paths.outdir) / "checkpoints"
-                cfg.checkpoint.checkpoint_manager.resume_checkpointdir = cfg.paths.resume_checkpointdir
+        # if os.environ.get("RESTART", "FALSE").upper() == "TRUE":
+        #     logger.info("RESTART flag detected. Resuming from latest checkpoint.")
+        #     with open_dict(cfg):
+        #         cfg.paths.resume_checkpointdir = Path(cfg.paths.outdir) / "checkpoints"
+        #         cfg.checkpoint.checkpoint_manager.resume_checkpointdir = cfg.paths.resume_checkpointdir
 
         self.checkpoint_manager = instantiate(
             cfg.checkpoint.checkpoint_manager,
