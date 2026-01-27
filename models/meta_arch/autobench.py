@@ -489,7 +489,7 @@ def BUILD(cfg: Mapping[str, Any]) -> AutoBench:
             patch_shape=model_cfg["patch_shape"],
         )
         output_dim = PatchEmbedding.compute_num_pixels_per_patch(
-            channels=model_cfg["input_shape"][-1],
+            channels=model_cfg["train_shape"][-1],
             temporal_patch_size=temporal_patch_size,
             axial_patch_size=axial_patch_size,
             lateral_patch_size=lateral_patch_size,
