@@ -381,14 +381,43 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
 
         self.denoising_type = denoising_type
 
+    def _split_inputs_and_mask(self, inputs: torch.Tensor):
+        """
+        inputs: (B, Z, Y, X, C_full)
+        returns:
+          inputs_wo_mask: (B, Z, Y, X, C_full-1)
+          masks_labelmap: (B, Z, Y, X)
+        """
+        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
+        B, Z, Y, X, C = inputs.shape
+
+        if C < 2:
+            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
+
+        # For zero-copy we *require* the mask to be the last channel
+        if self.mask_idx not in (-1, C - 1):
+            raise ValueError(
+                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+            )
+
+        masks = inputs[..., -1].clone()  # (B, Z, Y, X), view
+        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
+        
+        return inputs_wo_mask, masks
+
     def forward(self, data_sample: dict, data_time: float) -> dict:
         inputs, meta, preprocess_t0, data_time_value = self._common_pre(
             data_sample=data_sample,
             data_time=data_time,
         )
-    
-        data_sample, transform_time = self._apply_transforms(data_sample)
-        
+        inputs_wo_mask, masks_labelmap = self._split_inputs_and_mask(inputs)
+        sample = {
+            "data_tensor": inputs_wo_mask,
+            "metainfo": meta,
+        }
+
+        sample, transform_time = self._apply_transforms(sample)
+
         # TODO: Consider refactoring this to support non-transformer-based decoders
         # Patchify targets for transformer-based decoders
         targets = self.pe_patchify(
@@ -399,8 +428,8 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
         # FIXME: Streamline this so that we either consistently pass data_sample 
         # or its components (e.g. data_tensor, metainfo, targets, etc.)
         return self._finalize(
-            inputs=inputs,
-            meta=meta,
+            inputs=sample["data_tensor"],
+            meta=sample["metainfo"],
             targets=targets,
             data_time=data_time_value,
             preprocess_t0=preprocess_t0,
