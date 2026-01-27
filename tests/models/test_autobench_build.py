@@ -38,6 +38,7 @@ def _make_cfg(*, task: str, input_fmt: str = "ZYXC"):
         },
         "input_fmt": input_fmt,
         "input_shape": [4, 4, 4, 2],  # Z, Y, X, C (only used when input_fmt == "ZYXC")
+        "train_shape": [4, 4, 4, 2],  
         "patch_shape": [2, 2],  # axial, lateral
         "loss_fn": "l2_masked",
         "abs_sincos_enc": False,
