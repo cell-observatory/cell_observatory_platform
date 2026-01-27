@@ -512,15 +512,17 @@ class PlainDETRReParam(PlainDETR):
         # boxes: [BS, topk, 6]
         boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 6))
 
+        # NOTE: (important!) target_sizes and original_target_sizes are in 
+        #       (D, H, W) format while most other code uses (H, W, D) format
         # target_sizes: [BS, 3]
-        img_w, img_h, img_d = target_sizes.unbind(1)
+        img_d, img_h, img_w = target_sizes.unbind(1)
         if self.reparam:
             # img_i: [BS, 1, 1, 1]
             img_w, img_h, img_d = img_w[:, None, None], img_h[:, None, None], img_d[:, None, None]
             boxes[..., 0::3].clamp_(min=torch.zeros_like(img_w), max=img_w)
             boxes[..., 1::3].clamp_(min=torch.zeros_like(img_h), max=img_h)
             boxes[..., 2::3].clamp_(min=torch.zeros_like(img_d), max=img_d)
-            scale_w, scale_h, scale_d = (original_target_sizes / target_sizes).unbind(1)
+            scale_d, scale_h, scale_w = (original_target_sizes / target_sizes).unbind(1)
             scale_fct = torch.stack([scale_w, scale_h, scale_d, scale_w, scale_h, scale_d], dim=1)
         else:
             scale_fct = torch.stack([img_w, img_h, img_d, img_w, img_h, img_d], dim=1)
