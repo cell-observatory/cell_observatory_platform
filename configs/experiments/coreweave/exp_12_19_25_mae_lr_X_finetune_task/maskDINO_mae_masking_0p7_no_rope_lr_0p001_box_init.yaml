@@ -162,6 +162,12 @@ optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}
   lr: 1e-3
 
+optimizations:
+  models:
+    maskdino:
+      torch_compile:
+        enable: false
+
 # hooks
 hooks:
   hooks_list:
