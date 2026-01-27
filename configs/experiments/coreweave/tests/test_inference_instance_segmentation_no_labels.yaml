@@ -64,7 +64,8 @@ deepspeed:
 
 inference:
   roi_tile_list:
-  - [17, "000x_002y_001z.zarr"]
+  - [130, "000x_002y_000z.zarr"]
+  - [147, "000x_002y_000z.zarr"]
 
 # clusters
 clusters:
@@ -79,7 +80,7 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/results/inference/${experiment_name}
   resume_checkpointdir: null 
-  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb_box_init/TorchTrainer_2026-01-27_13-01-43/TorchTrainer_62216_00000_0_2026-01-27_13-01-43/checkpoint_000010
+  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb_box_init/TorchTrainer_2026-01-27_13-01-43/TorchTrainer_62216_00000_0_2026-01-27_13-01-43/checkpoint_000013
 
 # data
 datasets:
@@ -107,8 +108,8 @@ datasets:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
-    roi_list: [17]
-    tile_list: ["000x_002y_001z.zarr"]
+    roi_list: [130, 147]
+    tile_list: ["000x_002y_000z.zarr"]
     timepoint_list: [0]
 
     cdf_threshold: null
