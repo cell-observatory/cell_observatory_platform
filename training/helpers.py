@@ -7,7 +7,7 @@ import random
 from collections import defaultdict
 from operator import attrgetter
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union, Iterable
 
 import numpy as np
 import polars as pl
@@ -506,7 +506,7 @@ def enable_optimizations(cfg: DictConfig):
 # https://github.com/pytorch/torchtitan/main/torchtitan/models/llama3/infra/parallelize.py
 def apply_activation_checkpointing(cfg: DictConfig, model: nn.Module):
     """Apply activation checkpointing to the model."""
-    num_blocks = apply_ac_over_discovered_stacks(cfg.optimizations.models.activation_checkpoint, model)
+    num_blocks = apply_ac_over_discovered_stacks(cfg.activation_checkpoint, model)
     logger.info(f"Applied activation checkpointing to {num_blocks} transformer blocks.")
 
 
@@ -553,30 +553,33 @@ def _as_stack(
 
 
 def yield_transformer_stacks(
-    cfg_modules: List[str],
-    block_names: str,
+    cfg_module_blocks: Sequence[Tuple[str, Union[str, Sequence[str]]]],
     model: nn.Module,
 ):
-    for module_fqn in cfg_modules:
+    for module_fqn, block_names in cfg_module_blocks:
         submod = attrgetter(module_fqn)(model)
-        stack_fqn, stack = _as_stack(
-            module_fqn, submod, block_names=block_names
-        )
-        yield (stack_fqn, stack)
+        # allow either a single block name or a list/tuple of block names per module
+        if isinstance(block_names, str):
+            block_names = [block_names]
+        for bn in block_names:
+            stack_fqn, stack = _as_stack(module_fqn, submod, block_names=bn)
+            yield (stack_fqn, stack)
     return
 
 
 def apply_ac_over_discovered_stacks(cfg, model: nn.Module):
     cfg_modules = cfg.get("modules", None)
-    block_names = cfg.get("block_names", None)
-    if cfg_modules is None or block_names is None:
-        raise ValueError(
-            "Activation checkpointing config must specify "
-            "'modules' and 'block_names' fields."
-        ) 
+    cfg_module_blocks: List[Tuple[str, Union[str, Sequence[str]]]] = []
+    for entry in cfg_modules:
+        if isinstance(entry, str) or not isinstance(entry, Sequence) or len(entry) != 2:
+            raise ValueError(
+                "Activation checkpointing 'modules' entries must be "
+                "(module_fqn, block_names_or_list)."
+            )
+        cfg_module_blocks.append((entry[0], entry[1]))
 
     wrapped = 0
-    for stack_fqn, stack in yield_transformer_stacks(cfg_modules, block_names, model):
+    for stack_fqn, stack in yield_transformer_stacks(cfg_module_blocks, model):
         for i, block in enumerate(stack):
             wrapped_block = _apply_ac_to_module(
                 module=block,
@@ -743,7 +746,7 @@ def _apply_ac_to_module(
 
 
 def apply_compile(cfg: DictConfig, model: nn.Module):
-    cfg_compile = cfg.optimizations.models.torch_compile
+    cfg_compile = cfg.torch_compile
     if cfg_compile.range == "full":
         logger.info("Applying torch.compile to the whole model.")
         model = torch.compile(
@@ -773,12 +776,26 @@ def _apply_compile_over_discovered_stacks(cfg, model: nn.Module):
     so the tree printer can show [TC].
     """
     cfg_modules = cfg.get("modules")
-    block_names = cfg.get("block_names")
 
     num_blocks_compiled = 0
     compiled_fqns = set()
 
-    for stack_fqn, stack in yield_transformer_stacks(cfg_modules, block_names, model):
+    if cfg_modules is None:
+        raise ValueError(
+            "torch_compile config must specify "
+            "'modules' (list[(module, block_names)])."
+        )
+
+    cfg_module_blocks: List[Tuple[str, Union[str, Sequence[str]]]] = []
+    for entry in cfg_modules:
+            if isinstance(entry, str) or not isinstance(entry, Sequence) or len(entry) != 2:
+                raise ValueError(
+                    "torch_compile 'modules' entries must be "
+                    "(module_fqn, block_names_or_list)."
+                )
+            cfg_module_blocks.append((entry[0], entry[1]))
+
+    for stack_fqn, stack in yield_transformer_stacks(cfg_module_blocks, model):
         for i, block in enumerate(stack):
             compiled = torch.compile(
                 block,
@@ -796,6 +813,65 @@ def _apply_compile_over_discovered_stacks(cfg, model: nn.Module):
     # stash a summary for the printer
     setattr(model, "_compiled_fqns", compiled_fqns)
     return num_blocks_compiled
+
+
+def get_model_optimizations_node(
+    cfg: Optional[DictConfig],
+    models_path: str = "optimizations.models",
+    leaf_keys: Iterable[str] = ("activation_checkpoint", "torch_compile"),
+    max_depth: int = 42,
+):
+    """
+    Return the DictConfig node that contains model-specific optimization settings,
+    even if cfg.optimizations.models is nested through multiple single-key dict layers.
+
+    It will:
+      1) Resolve cfg.<models_path>
+      2) If that node already contains any of `leaf_keys`, return it (legacy layout).
+      3) Otherwise, repeatedly "peel" one level deeper IF the node has exactly one
+         non-internal key, until it finds a node containing any of `leaf_keys`.
+      4) Raise if it encounters ambiguity (0 or >1 keys) before reaching a leaf.
+    """
+    if cfg is None:
+        return None
+
+    # Walk down dotted path to cfg.optimizations.models
+    node = cfg
+    for part in models_path.split("."):
+        if node is None or not hasattr(node, "get"):
+            return None
+        node = node.get(part, None)
+        if node is None:
+            return None
+
+    def has_leaf(n: DictConfig) -> bool:
+        return any(n.get(k, None) is not None for k in leaf_keys)
+
+    # If already at leaf (legacy), return immediately
+    if has_leaf(node):
+        return node
+
+    # Otherwise peel through single-key dict layers
+    cur = node
+    for _ in range(max_depth):
+        if cur is None or not hasattr(cur, "keys"):
+            return None
+
+        if has_leaf(cur):
+            return cur
+
+        keys = [k for k in cur.keys() if not str(k).startswith("_")]
+        if len(keys) != 1:
+            raise ValueError(
+                f"Expected exactly one key while peeling cfg.{models_path}, "
+                f"but got keys={keys}. (Reached node={cur})"
+            )
+        cur = cur[keys[0]]
+
+    raise ValueError(
+        f"Exceeded max_depth={max_depth} while peeling cfg.{models_path}. "
+        f"Likely a cycle or unexpected structure."
+    )
 
 
 # helpers for printing model structure with
