@@ -767,10 +767,13 @@ class TestTrainer(BaseTrainer):
         # activation checkpointing, and torch Compile 
         if cfg.optimizations is not None:
             enable_optimizations(cfg=cfg)
-        if cfg.optimizations.models.activation_checkpoint.enable:
-            apply_activation_checkpointing(cfg, model)
-        if cfg.optimizations.models.torch_compile.enable:
-            model = apply_compile(cfg, model)
+        opt_cfg = get_model_optimizations_node(cfg)
+        if opt_cfg.activation_checkpoint.enable:
+            logger.info("[Trainer] Applying activation checkpointing...")
+            apply_activation_checkpointing(opt_cfg, model)
+        if opt_cfg.torch_compile.enable:
+            logger.info("[Trainer] Applying torch.compile...")
+            model = apply_compile(opt_cfg, model)
 
         # initialize deepspeed
         self.model, self.optimizers, _, _ = initialize(
@@ -878,10 +881,13 @@ class Inferencer(BaseTrainer):
         # activation checkpointing, and torch Compile 
         if cfg.optimizations is not None:
             enable_optimizations(cfg=cfg)
-        if cfg.optimizations.models.activation_checkpoint.enable:
-            apply_activation_checkpointing(cfg, model)
-        if cfg.optimizations.models.torch_compile.enable:
-            model = apply_compile(cfg, model)
+        opt_cfg = get_model_optimizations_node(cfg)
+        if opt_cfg.activation_checkpoint.enable:
+            logger.info("[Trainer] Applying activation checkpointing...")
+            apply_activation_checkpointing(opt_cfg, model)
+        if opt_cfg.torch_compile.enable:
+            logger.info("[Trainer] Applying torch.compile...")
+            model = apply_compile(opt_cfg, model)
 
         # initialize deepspeed
         self.model, self.optimizers, _, _ = initialize(
