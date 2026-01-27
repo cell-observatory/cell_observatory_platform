@@ -235,6 +235,11 @@ class DETR_Set_Loss(nn.Module):
 
         self.with_segmentation = with_segmentation
 
+        if self.with_segmentation:
+            self.costs = ["cls", "box", "mask"]
+        else:
+            self.costs = ["cls", "box"]
+
         self.losses = losses
         self.loss_weight_dict = loss_weight_dict
         self.no_object_loss_weight = no_object_loss_weight
@@ -483,7 +488,7 @@ class DETR_Set_Loss(nn.Module):
                 denoise_query_target_indices.append((padded_denoise_query_target_index, denoise_query_target_index))
 
         # use Hungarian matcher to compute the indices of the matched predictions and targets
-        matched_target_indices = self.matcher(outputs_without_aux_data, targets)
+        matched_target_indices = self.matcher(outputs_without_aux_data, targets, costs=self.costs)
 
         # compute number of target boxes accross all nodes for normalization
         total_num_masks = sum(len(target["labels"]) for target in targets)
@@ -529,10 +534,10 @@ class DETR_Set_Loss(nn.Module):
 
         # in case of auxiliary losses, we repeat loss computation with the output of intermediate layers
         if "auxiliary_outputs" in outputs:
-            first_auxiliary_output_idx = 0 if "intermediate_outputs" in outputs else 1
+            first_auxiliary_output_idx = 0 if "intermediates" in outputs else 1
             for i, auxiliary_output in enumerate(outputs["auxiliary_outputs"]):
                 # hungarian matcher to get indices of the matched auxiliary_outputs and targets
-                auxiliary_matched_target_indices = self.matcher(auxiliary_output, targets)
+                auxiliary_matched_target_indices = self.matcher(auxiliary_output, targets, costs=self.costs)
                 for loss in self.losses:
                     extra_losses = self.compute_loss(
                         loss, auxiliary_output, targets, auxiliary_matched_target_indices, average_num_masks_per_node
@@ -568,9 +573,10 @@ class DETR_Set_Loss(nn.Module):
 
                         losses.update(extra_losses)
 
-        if "intermediate_outputs" in outputs:
-            intermediate_outputs = outputs["intermediate_outputs"]
-            intermediate_matched_target_indices = self.matcher(intermediate_outputs, targets)
+        # initial encoder predictions
+        if "intermediates" in outputs:
+            intermediate_outputs = outputs["intermediates"]
+            intermediate_matched_target_indices = self.matcher(intermediate_outputs, targets, costs=self.costs)
             for loss in self.losses:
                 extra_losses = self.compute_loss(
                     loss, intermediate_outputs, targets, intermediate_matched_target_indices, average_num_masks_per_node

@@ -1,34 +1,27 @@
 # @package _global_
 defaults:
-  - /paths/coreweave                         # configs/paths/coreweave.yaml
-  - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
-  - /clusters/coreweave_h100                 # configs/clusters/local.yaml
-  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset_ray.yaml
-  - /models/mae/large                        # configs/models/jepa/large.yaml
-  - /hooks/hooks_with_weight_decay           # configs/hooks/hooks_with_weight_decay.yaml
-  - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
-  - /loggers/loggers                         # configs/loggers/loggers.yaml
-  - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
-  - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
-  - /optimizers/lamb_mae                     # configs/optimizers/lamb.yaml
+  - /paths/coreweave # configs/paths/coreweave.yaml
+  - /hydra/overrides # configs/hydra/overrides.yaml (not working)
+  - /clusters/coreweave_h100 # configs/clusters/local.yaml
+  - /datasets/pretrain_dataset_ray # configs/datasets/pretrain_dataset_ray.yaml
+  - /models/mae/large # configs/models/jepa/large.yaml
+  - /hooks/hooks_with_weight_decay # configs/hooks/hooks_with_weight_decay.yaml
+  - /checkpoint/checkpoint # configs/checkpoint/checkpoint.yaml
+  - /loggers/loggers # configs/loggers/loggers.yaml
+  - /evaluation/base_evaluator # configs/evaluation/base_evaluator.yaml
+  - /deepspeed/zero2 # configs/deepspeed/zero2.yaml
+  - /optimizers/lamb_mae # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay_with_weight_decay # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /optimizations/optimizations # configs/optimizations/optimizations.yaml
   - /profiling/profiling
-  - /inference/inference                      # configs/inference/inference.yaml
+  - /inference/inference # configs/inference/inference.yaml
   - _self_
 
 # experiment name (used for logging)
 experiment_name: test_inference
 wandb_project: testing
 
-# task
-task: pretrain_mae
-
-# Model type
-network: mae
-
-# engine type
-engine: deepspeed
+backend: DEEPSPEED
 
 # distributed framework
 distributed_framework: ray
@@ -64,7 +57,7 @@ num_output_channels: 2
 
 inference:
   roi_tile_list:
-  - [17, "000x_002y_001z.zarr"]
+    - [17, "000x_002y_001z.zarr"]
 
 # clusters
 clusters:
@@ -79,7 +72,7 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/results/inference/${experiment_name}
-  resume_checkpointdir: null 
+  resume_checkpointdir: null
   # pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/mae_large_128x256x256_150_epoch_lr_0p001_mask_0p8/TorchTrainer_2025-11-09_18-38-00/TorchTrainer_45e0e_00000_0_2025-11-09_18-38-00/checkpoint_000149
   pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/mae_large_128x256x256_150_epoch_lr_0p001_mask_0p7_fourier_loss_no_ld/TorchTrainer_2025-11-13_17-39-19/TorchTrainer_bd05c_00000_0_2025-11-13_17-39-19/checkpoint_000113
 
@@ -126,10 +119,10 @@ models:
 # hooks
 hooks:
   hooks_list:
-  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
-  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
-    step_period: 1
-    epoch_period: 1
-    logdir: ${loggers.logdir}
+    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+    - _target_: cell_observatory_platform.training.hooks.IterationTimer
+    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+    - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
+      step_period: 1
+      epoch_period: 1
+      logdir: ${loggers.logdir}

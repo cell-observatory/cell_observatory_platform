@@ -457,7 +457,7 @@ def load_hypercubes_dataframe(
     t1 = time.perf_counter()
     logger.info(f"Loaded hypercubes dataframe in {t1 - t0:.2f} s; shape={df.shape}")
 
-    df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
+    # df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
     df = add_has_annotations_column(df)
 
     if synthetic_only:

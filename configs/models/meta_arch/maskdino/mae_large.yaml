@@ -27,7 +27,7 @@ matcher_args:
 # Criterion
 criterion_args:
   BUILD: cell_observatory_platform.training.losses.MaskDINO_DETR_Set_Loss.BUILD
-  num_classes: 2
+  num_classes: 1
   num_points: 20000
   loss_weight_dict:
     loss_ce: 4.0

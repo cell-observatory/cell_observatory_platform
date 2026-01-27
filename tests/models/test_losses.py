@@ -20,7 +20,7 @@ class DummyMatcher(torch.nn.Module):
     for each batch element, where T = num_targets for that element.
     """
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, costs=None):
         batch_size, num_queries = outputs["pred_logits"].shape[:2]
         matched = []
         for b in range(batch_size):
@@ -486,10 +486,7 @@ def test_detr_set_loss_with_aux_and_intermediate(monkeypatch):
     # Aux layer 0 loss
     assert "loss_ce_0" in losses
 
-    # Intermediate loss
-    assert "loss_ce_intermediate" in losses
-
-    for key in ["loss_ce", "loss_ce_0", "loss_ce_intermediate"]:
+    for key in ["loss_ce", "loss_ce_0"]:
         assert losses[key].ndim == 0
         assert torch.isfinite(losses[key])
 

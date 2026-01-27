@@ -22,16 +22,7 @@ defaults:
 experiment_name: mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_opt_adamw_titan
 wandb_project: pretraining_3d_v2
 
-# task
-task: pretrain_mae
-
-# Model type
-network: mae
-
 backend: TORCHTITAN
-
-# engine type
-engine: torchtitan
 
 # distributed framework
 distributed_framework: ray

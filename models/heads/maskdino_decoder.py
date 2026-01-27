@@ -177,8 +177,6 @@ class MaskDINODecoder(nn.Module):
         # share box prediction each layer
         _bbox_regressor_layerlist = [_bbox_regressor for i in range(self.num_layers)]
         self.bbox_regressor = nn.ModuleList(_bbox_regressor_layerlist)
-        self.decoder.bbox_regressor = self.bbox_regressor
-
         # IMPORTANT: share bbox regressor with decoder
         self.decoder.bbox_embed = self.bbox_regressor
 
@@ -206,19 +204,19 @@ class MaskDINODecoder(nn.Module):
                 torch.linspace(0, W - 1, W, dtype=torch.float32, device=memory.device),
                 indexing="ij",
             )
-            # grid: 3x(D, H, W, 1) -> (D, H, W, 3)
+            # grid: 3x(W, H, D, 1) -> (W, H, D, 3)
             grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1), grid_z.unsqueeze(-1)], -1)
             # scale: 3 x (N,1) -> (N,3) -> (N, 1, 1, 1, 3)
             scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1), valid_D.unsqueeze(-1)], 1).view(
                 N, 1, 1, 1, 3
             )
-            # grid: (D, H, W, 3) -> (1, D, H, W, 3) -> (N, D, H, W, 3) -> +0.5 (move corner to centre) & scale (normalize [0,1])
+            # grid: (W, H, D, 3) -> (1, W, H, D, 3) -> (N, W, H, D, 3) -> +0.5 (move corner to centre) & scale (normalize [0,1])
             grid = (grid.unsqueeze(0).expand(N, -1, -1, -1, -1) + 0.5) / scale
 
             # all anchors at this level get same d,h,w in normalized units
             # with different anchor locations given by grid centre positions
             whd = torch.ones_like(grid) * 0.05 * (2.0**lvl)  # scale size by 0.05 × 2^level
-            # (N, D, H, W, 3) -> (N, D, H, W, 6) -> (N, D*H*W, 6)
+            # (N, W, H, D, 3) -> (N, W, H, D, 6) -> (N, D*H*W, 6)
             proposal = torch.cat((grid, whd), -1).view(N, -1, 6)
             proposals.append(proposal)
 
@@ -228,7 +226,7 @@ class MaskDINODecoder(nn.Module):
         output_proposals = torch.cat(proposals, 1)
         # check which proposals have (x,y,z,w,h,d) in range [0,1] (normalized by padding mask)
         output_proposals_valid = ((output_proposals > 0.01) & (output_proposals < 0.99)).all(-1, keepdim=True)
-        # standard logit transform log(p / (1 - p))
+        # standard logit transform log(p / (1 - p)), we do additive bbox prediction and then sigmoid to revert to [0,1]
         output_proposals = torch.log(output_proposals / (1 - output_proposals))
         # set to inf where padding mask is True (invalid proposals) or outside valid range (any softmax will ignore)
         output_proposals = output_proposals.masked_fill(memory_padding_mask.unsqueeze(-1), float("inf"))
@@ -528,7 +526,7 @@ class MaskDINODecoder(nn.Module):
         assert len(x) == self.num_feature_levels, "The number of feature maps much match self.num_feature_levels"
         device = x[0].device
 
-        # disabling masking does not affect performance unless feature map
+        # allegedly disabling masking does not affect performance unless feature map
         # is not divisible by 32
         if masks is None or not any(
             feature_map.size(2) % 32 or feature_map.size(3) % 32 or feature_map.size(4) % 32 for feature_map in x

@@ -15,11 +15,11 @@ defaults:
   - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
-  - /inference/inference_feature_viz_mae                      # configs/inference/inference.yaml
+  - /inference/inference_feature_viz_patch_cosine_mae                      # configs/inference/inference.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: test_inference_feature_viz_mae
+experiment_name: test_inference_feature_viz_mae_p9
 wandb_project: testing
 
 backend: DEEPSPEED
@@ -75,7 +75,8 @@ clusters:
 #paths:
 paths:
   # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.data_path}/results/inference/${experiment_name}
+  # outdir: ${paths.data_path}/results/inference/${experiment_name}
+  outdir: ${paths.data_path}/results/inference_cosine_sim/${experiment_name}
   resume_checkpointdir: null
   pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p9_fourier_loss/checkpoints 
   # pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200/checkpoints

@@ -27,16 +27,7 @@ defaults:
 experiment_name: channel_split_mae_masking_p07_lamb_opt_lr_0p0001_fourier_loss_opt_lamb
 wandb_project: finetuning_3d_v2
 
-# task
-task: finetuning
-
-# Model type
-network: baseline
-
 backend: DEEPSPEED
-
-# engine type
-engine: deepspeed
 
 # distributed framework
 distributed_framework: ray

@@ -237,7 +237,7 @@ class TransformerDecoder(nn.Module):
         num_layers,
         norm=None,
         return_intermediates=True,
-        embed_dim=256,
+        embed_dim=384,
         query_dim=4,
         modulate_dhw_attn=True,
         num_feature_levels=1,
@@ -286,7 +286,6 @@ class TransformerDecoder(nn.Module):
 
         self.norm = norm
         # HACK: bbox regressor is defined in the MaskDINODecoder class
-        self.bbox_regressor = None
         self.class_predictor = None
         self.deformable_decoder = deformable_decoder
 
