@@ -1,4 +1,8 @@
 import torch
+from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 class MixedPoissonGaussianNoise:
     def __init__(
@@ -8,6 +12,8 @@ class MixedPoissonGaussianNoise:
         sigma_background_noise: int| tuple[int, int] | float | tuple[float, float], 
         mean_background_offset: int| tuple[int, int] | float | tuple[float, float],
         seed: int | None = None,
+        *,
+        visualization_dir: str | None = None,
     ):
         """
         Adds realistic mixed Poisson-Gaussian noise to the input data.
@@ -53,11 +59,23 @@ class MixedPoissonGaussianNoise:
         self.electrons_per_count = electrons_per_count
         self.sigma_background_noise = sigma_background_noise
         self.mean_background_offset = mean_background_offset
-        self.rng = torch.Generator()
-        if seed is not None:
-            self.rng.manual_seed(seed)
+        self.seed = seed
+        self._generators: dict[torch.device, torch.Generator] = {}
+        
+        self.visualization_dir = Path(visualization_dir) if visualization_dir is not None else None
+        if self.visualization_dir is not None:
+            self.visualization_dir.mkdir(parents=True, exist_ok=True)
 
-    def __call__(self, data: torch.Tensor | dict) -> torch.Tensor | dict:
+    def _get_generator(self, device: torch.device) -> torch.Generator:
+        """Get or create a generator for the specified device."""
+        if device not in self._generators:
+            gen = torch.Generator(device=device)
+            if self.seed is not None:
+                gen.manual_seed(self.seed)
+            self._generators[device] = gen
+        return self._generators[device]
+
+    def __call__(self, data: torch.Tensor | dict) -> torch.Tensor | dict:            
         if isinstance(data, torch.Tensor):
             return self._add_noise(data)
         if isinstance(data, dict):
@@ -72,35 +90,47 @@ class MixedPoissonGaussianNoise:
         raise TypeError(f"MixedPoissonGaussianNoise expects torch.Tensor or dict, got {type(data)}")
     
     def _add_noise(self, image_batch: torch.Tensor) -> torch.Tensor:
+        # Save original dtype of image_batch
+        original_dtype = image_batch.dtype
+        
+        # Convert to float32 for numerical precision
+        image_batch = image_batch.to(dtype=torch.float32)
+
+        if self.visualization_dir is not None:
+            logger.warning(f"Visualization directory set to {self.visualization_dir}. Original image batch will be cloned and images will be saved to this directory.")
+            original_image_batch = image_batch.clone()
+            
+
         B = image_batch.shape[0]
         device = image_batch.device
+        rng = self._get_generator(device)
         
         # Sample parameters for each batch element (image) if parameters are tuples
         if isinstance(self.quantum_efficiency, tuple):
             qe = torch.empty(B, device=device)
-            qe.uniform_(*self.quantum_efficiency, generator=self.rng)
+            qe.uniform_(*self.quantum_efficiency, generator=rng)
         else:
             qe = torch.full((B,), self.quantum_efficiency, device=device)
             
         if isinstance(self.electrons_per_count, tuple):
             epc = torch.empty(B, device=device)
-            epc.uniform_(*self.electrons_per_count, generator=self.rng)
+            epc.uniform_(*self.electrons_per_count, generator=rng)
         else:
             epc = torch.full((B,), self.electrons_per_count, device=device)
             
         if isinstance(self.sigma_background_noise, tuple):
             sigma_bg = torch.empty(B, device=device)
-            sigma_bg.uniform_(*self.sigma_background_noise, generator=self.rng)
+            sigma_bg.uniform_(*self.sigma_background_noise, generator=rng)
         else:
             sigma_bg = torch.full((B,), self.sigma_background_noise, device=device)
             
         if isinstance(self.mean_background_offset, tuple):
             mean_offset = torch.empty(B, device=device)
-            mean_offset.uniform_(*self.mean_background_offset, generator=self.rng)
+            mean_offset.uniform_(*self.mean_background_offset, generator=rng)
         else:
             mean_offset = torch.full((B,), self.mean_background_offset, device=device)
 
-        # Broadcast to match inputs shape e.g. (B, T, Y, X, C) => (B, 1, 1, 1, 1)
+        # Broadcast to match inputs shape e.g. (B, T, Z, Y, X, C) => (B, 1, 1, 1, 1, 1)
         qe = qe.view(-1, *[1] * (image_batch.ndim - 1))
         epc = epc.view(-1, *[1] * (image_batch.ndim - 1))
         sigma_bg = sigma_bg.view(-1, *[1] * (image_batch.ndim - 1))
@@ -117,13 +147,13 @@ class MixedPoissonGaussianNoise:
         # we can sample from the marginal distribution of detection as a Poisson thinning process.        
         # Where detected photons = Poisson(n_photons_arrived * QE) = Poisson(electrons)
         # https://stats.libretexts.org/Bookshelves/Probability_Theory/Probability_Mathematical_Statistics_and_Stochastic_Processes_(Siegrist)/14%3A_The_Poisson_Process/14.05%3A_Thinning_and_Superpositon
-        photons_detected = torch.poisson(image_batch, generator=self.rng)
+        photons_detected = torch.poisson(image_batch, generator=rng)
         
         # 3. Compute dark/read noise (Gaussian) in electron space
         dark_read_noise = torch.randn(
             image_batch.shape, 
             device=device, 
-            generator=self.rng
+            generator=rng
         ) * sigma_bg * epc
 
         # 4. electrons = detected photons + dark/read noise
@@ -139,4 +169,72 @@ class MixedPoissonGaussianNoise:
         # TODO: Should we clamp to 0-65535 or just min=0?
         image_batch = torch.clamp(image_batch, min=0, max=65535)
         
+        if self.visualization_dir is not None:
+            noise_params = {
+                "quantum_efficiency": self.quantum_efficiency,
+                "electrons_per_count": self.electrons_per_count,
+                "sigma_background_noise": self.sigma_background_noise,
+                "mean_background_offset": self.mean_background_offset,
+            }
+            self.plot_noise(original_image_batch, image_batch, noise_params)
+            
+        # Restore original dtype
+        image_batch = image_batch.to(dtype=original_dtype)
         return image_batch
+    
+    def plot_noise(
+        self, 
+        image_batch: torch.Tensor, 
+        image_batch_noised: torch.Tensor,
+        noise_params: dict,
+    ) -> None:
+        """
+        Plot the noise added to the image.
+        """
+        import matplotlib.pyplot as plt
+        import torch
+        from pathlib import Path
+        
+        # Assume B, Z, Y, X, C        
+        B, Z, Y, X, C = image_batch.shape
+        # Convert to numpy if torch
+        if isinstance(image_batch, torch.Tensor):
+            image_batch_numpy = image_batch.detach().cpu().numpy()
+        if isinstance(image_batch_noised, torch.Tensor):
+            image_batch_noised_numpy = image_batch_noised.detach().cpu().numpy()
+
+        # noise_params_str = "_".join([f"{k}-{v[0].item():.2f}" for k, v in noise_params.items()])
+        
+        # Plot central orthoslices (XY, XZ, YZ) for each channel
+        # Layout: 2 rows (clean/noised) × (3 * C) columns (XY, XZ, YZ per channel)
+        n_cols = 3 * C
+        fig, axes = plt.subplots(2, n_cols, figsize=(4 * n_cols, 8), squeeze=False)
+        
+        for c in range(C):
+            col_base = c * 3
+            # XY plane (Z slice)
+            axes[0, col_base].imshow(image_batch_numpy[0, Z//2, :, :, c], cmap="gray")
+            axes[1, col_base].imshow(image_batch_noised_numpy[0, Z//2, :, :, c], cmap="gray")
+            axes[0, col_base].set_title(f"Ch {c} XY (clean)")
+            axes[1, col_base].set_title(f"Ch {c} XY (noised)")
+            
+            # XZ plane (Y slice)
+            axes[0, col_base + 1].imshow(image_batch_numpy[0, :, Y//2, :, c], cmap="gray", aspect="auto")
+            axes[1, col_base + 1].imshow(image_batch_noised_numpy[0, :, Y//2, :, c], cmap="gray", aspect="auto")
+            axes[0, col_base + 1].set_title(f"Ch {c} XZ (clean)")
+            axes[1, col_base + 1].set_title(f"Ch {c} XZ (noised)")
+            
+            # YZ plane (X slice)
+            axes[0, col_base + 2].imshow(image_batch_numpy[0, :, :, X//2, c], cmap="gray", aspect="auto")
+            axes[1, col_base + 2].imshow(image_batch_noised_numpy[0, :, :, X//2, c], cmap="gray", aspect="auto")
+            axes[0, col_base + 2].set_title(f"Ch {c} YZ (clean)")
+            axes[1, col_base + 2].set_title(f"Ch {c} YZ (noised)")
+            
+            for i in range(3):
+                axes[0, col_base + i].axis("off")
+                axes[1, col_base + i].axis("off")
+        
+        plt.tight_layout()
+        plt.savefig(self.visualization_dir / f"noise_plot.png")
+        plt.close(fig)
+
