@@ -19,7 +19,7 @@ defaults:
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
+  - /optimizations/models/maskdino/mae_large                # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
@@ -62,10 +62,10 @@ deepspeed:
   checkpoint:
     load_universal: true
 
-checkpoint:
-  checkpoint_manager:
-    ckpt_include_prefixes: [backbone] # only load masked_encoder weights from the pretrained model
-    ckpt_translate_map: {masked_encoder: backbone.backbone}
+# checkpoint:
+#   checkpoint_manager:
+#     ckpt_include_prefixes: [backbone] # only load masked_encoder weights from the pretrained model
+#     ckpt_translate_map: {masked_encoder: backbone.backbone}
 
 # clusters
 clusters:
@@ -80,8 +80,9 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null
-  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200_no_rope/checkpoints
+  resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
+  pretrained_checkpointdir: null
+  # pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200_no_rope/checkpoints
 
 # data
 datasets:
