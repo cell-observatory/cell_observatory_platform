@@ -795,7 +795,7 @@ def save_instance_predictions(
     identifiers: Sequence[str],
     images: Sequence[ArrayLike],
     preds: Sequence[Dict[str, Any]],
-    targets: Sequence[Dict[str, Any]],
+    targets: Optional[Sequence[Dict[str, Any]]] = None,
     regions: Optional[Sequence[Dict[str, Any]]] = None,
     pred_boxes_key: str = "boxes",
     pred_masks_key: str = "masks",
@@ -825,9 +825,11 @@ def save_instance_predictions(
     save_dir.mkdir(parents=True, exist_ok=True)
 
     n = len(identifiers)
+    if targets is None:
+        targets = [{} for _ in range(n)]
     if not (len(images) == len(preds) == len(targets) == n):
         raise ValueError("identifiers/images/preds/targets must have same length")
-    
+
     if regions is not None and len(regions) != n:
         raise ValueError("regions must be None or same length as identifiers")
 
@@ -878,13 +880,26 @@ def save_instance_predictions(
         #       expects (N,T,Z,Y,X) shape, generalize later if needed
         if gt_masks is not None:
             if input_format == "ZYXC":
-                gt_masks = gt_masks.unsqueeze(1)  # (N,T,Z,Y,X)
+                # accept either torch or numpy; only add T dim if missing
+                if isinstance(gt_masks, torch.Tensor):
+                    if gt_masks.ndim == 4:
+                        gt_masks = gt_masks.unsqueeze(1)  # (N,1,Z,Y,X)
+                else:
+                    gt_masks = np.asarray(gt_masks)
+                    if gt_masks.ndim == 4:
+                        gt_masks = gt_masks[:, None, ...]
             else:
                 raise ValueError(f"Unsupported input_format for gt_masks: {input_format!r}")
             gt_masks = _ensure_numpy(gt_masks)
         if pr_masks is not None:
             if input_format == "ZYXC":
-                pr_masks = pr_masks.unsqueeze(1)  # (N,T,Z,Y,X)
+                if isinstance(pr_masks, torch.Tensor):
+                    if pr_masks.ndim == 4:
+                        pr_masks = pr_masks.unsqueeze(1)  # (N,1,Z,Y,X)
+                else:
+                    pr_masks = np.asarray(pr_masks)
+                    if pr_masks.ndim == 4:
+                        pr_masks = pr_masks[:, None, ...]
             else:
                 raise ValueError(f"Unsupported input_format for pr_masks: {input_format!r}")
             pr_masks = _ensure_numpy(pr_masks)
@@ -959,27 +974,27 @@ def save_instance_predictions(
 
                         r += 1
 
-                        # --- Row: masks (optional) ---
-                        if has_masks_row:
-                            # GT
-                            a0 = ax[r, 0]
-                            a0.imshow(bg, cmap="gray", interpolation="nearest")
-                            if gt_masks is not None and gt_masks.shape[0] > 0:
-                                gt_label, gt_cmap, gt_norm = _label_and_cmap_from_instance_masks(gt_masks[:, t, z])
-                                a0.imshow(gt_label, cmap=gt_cmap, norm=gt_norm, interpolation="nearest", alpha=0.45)
-                            a0.set_title(f"T={t} Z={z} | GT masks (all instances)")
-                            a0.axis("off")
+                    # --- Row: masks (optional) ---
+                    if has_masks_row:
+                        # GT
+                        a0 = ax[r, 0]
+                        a0.imshow(bg, cmap="gray", interpolation="nearest")
+                        if gt_masks is not None and gt_masks.shape[0] > 0:
+                            gt_label, gt_cmap, gt_norm = _label_and_cmap_from_instance_masks(gt_masks[:, t, z])
+                            a0.imshow(gt_label, cmap=gt_cmap, norm=gt_norm, interpolation="nearest", alpha=0.45)
+                        a0.set_title(f"T={t} Z={z} | GT masks (all instances)")
+                        a0.axis("off")
 
-                            # Pred
-                            a1 = ax[r, 1]
-                            a1.imshow(bg, cmap="gray", interpolation="nearest")
-                            if pr_masks is not None and pr_masks.shape[0] > 0:
-                                pr_label, pr_cmap, pr_norm = _label_and_cmap_from_instance_masks(pr_masks[:, t, z])
-                                a1.imshow(pr_label, cmap=pr_cmap, norm=pr_norm, interpolation="nearest", alpha=0.45)
-                            a1.set_title(f"T={t} Z={z} | Pred masks (all instances)")
-                            a1.axis("off")
+                        # Pred
+                        a1 = ax[r, 1]
+                        a1.imshow(bg, cmap="gray", interpolation="nearest")
+                        if pr_masks is not None and pr_masks.shape[0] > 0:
+                            pr_label, pr_cmap, pr_norm = _label_and_cmap_from_instance_masks(pr_masks[:, t, z])
+                            a1.imshow(pr_label, cmap=pr_cmap, norm=pr_norm, interpolation="nearest", alpha=0.45)
+                        a1.set_title(f"T={t} Z={z} | Pred masks (all instances)")
+                        a1.axis("off")
 
-                            r += 1
+                        r += 1
 
                     fig.tight_layout(rect=[0, 0, 1, 0.96])
                     pdf.savefig(fig)

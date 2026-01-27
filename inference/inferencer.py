@@ -1050,11 +1050,22 @@ class InferencerWorker:
                     self._apply_recv(aux_keys_recv, aux_coords_recv, aux_pred_hypercubes_recv, data_type=aux_name)
 
         elif self.aggregate_mode == "save_local":
+            # targets may be absent in pure inference; normalize to per-record list[dict]
+            B = len(metadata["prepared_id"])
+            targets = metadata.get("targets", None)
+            if targets is None:
+                targets = [{} for _ in range(B)]
+            elif isinstance(targets, dict):
+                targets = [targets for _ in range(B)]
+            elif isinstance(targets, (list, tuple)) and len(targets) == 1 and isinstance(targets[0], (list, tuple)):
+                # common pattern: targets wrapped once
+                targets = targets[0]
+
             self._save_local_records(
                 data_sample=data_sample,
                 preds=preds,
                 # FIXME: generalize
-                targets=metadata["targets"][0],
+                targets=targets,
                 metadata=metadata
             )
 
@@ -1064,7 +1075,7 @@ class InferencerWorker:
     def _save_local_records(self, 
                             data_sample: dict,
                             preds: Dict[str, Any], 
-                            targets: Dict[str, Any], 
+                            targets: List[Dict[str, Any]],
                             metadata: dict
     ):
         """

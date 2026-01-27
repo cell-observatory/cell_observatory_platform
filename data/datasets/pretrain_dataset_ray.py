@@ -103,6 +103,8 @@ class FinetuneCollatorActor:
         bbox_output_format: str = "zyxzyx",
         transforms_list: Optional[List[DictConfig]] = None,
         use_masks: bool = False,
+        require_targets: bool = True,
+        expect_mask_channel: bool = True,
         with_resize: bool = False,
         debug: bool = False,
         normalize_bboxes: bool = False,
@@ -203,6 +205,8 @@ class FinetuneCollatorActor:
             )
 
         self.use_masks = use_masks
+        self.require_targets = require_targets
+        self.expect_mask_channel = expect_mask_channel
         self.normalize_bboxes = normalize_bboxes
 
         ray.logger.info(
@@ -395,22 +399,39 @@ class FinetuneCollatorActor:
             )
 
             inputs_full = torch.from_numpy(h_view)
-            inputs, masks_labelmap = self._get_masks(inputs_full)
+            # In inference we may have no labelmap channel at all.
+            if self.expect_mask_channel:
+                inputs, masks_labelmap = self._get_masks(inputs_full)
+            else:
+                inputs, masks_labelmap = inputs_full, None
 
             meta_cpu: Dict[str, Any] = {}
             for k in self.columns:
                 if k in batch:
                     meta_cpu[k] = batch[k]
 
-            if "mask_bbox_dict" not in meta_cpu:
-                raise KeyError("FinetuneCollatorActor expects 'mask_bbox_dict' in columns.")
-
-            mask_bbox_dict_batch = list(meta_cpu["mask_bbox_dict"])
-
-            targets_cpu = self._build_targets(
-                masks_labelmap=masks_labelmap,
-                mask_bbox_dict_batch=mask_bbox_dict_batch,
-            )
+            # Build targets only when requested (training). For inference, produce empty targets
+            # so downstream transforms that expect `metainfo["targets"]` still work.
+            if self.require_targets:
+                if "mask_bbox_dict" not in meta_cpu:
+                    raise KeyError("FinetuneCollatorActor expects 'mask_bbox_dict' in columns when require_targets=True.")
+                mask_bbox_dict_batch = list(meta_cpu["mask_bbox_dict"])
+                targets_cpu = self._build_targets(
+                    masks_labelmap=masks_labelmap,
+                    mask_bbox_dict_batch=mask_bbox_dict_batch,
+                )
+            else:
+                B = inputs.shape[0]
+                device = torch.device("cpu")
+                targets_cpu = []
+                for _ in range(B):
+                    targets_cpu.append(
+                        {
+                            "boxes": torch.zeros((0, 6), device=device, dtype=torch.float32),
+                            "mask_ids": torch.zeros((0,), device=device, dtype=torch.long),
+                            "labels": torch.zeros((0,), device=device, dtype=torch.long),
+                        }
+                    )
 
             image_sizes, orig_image_sizes, padding_mask = get_image_sizes(
                 input_format=self.input_format,
