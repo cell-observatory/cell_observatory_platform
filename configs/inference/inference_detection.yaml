@@ -28,7 +28,7 @@ verbose: false
 max_hypercubes: null
 max_partitions: 10
 
-save_dir: ${paths.outdir}/inference_feature_viz
+save_dir: ${paths.outdir}/inference_detection
 
 # plotting parameters
 save_as_pdf: true
