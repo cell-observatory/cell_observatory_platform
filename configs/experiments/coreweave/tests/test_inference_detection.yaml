@@ -83,7 +83,7 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/results/inference/${experiment_name}
   resume_checkpointdir: null
-  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb/TorchTrainer_2026-01-24_21-09-30/TorchTrainer_07c68_00000_0_2026-01-24_21-09-30/checkpoint_000263
+  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/instance_segmentation_plainDETR_mae_masking_0p7_no_rope_denoise_128x256x512_600_epoch_lr_0p001_opt_lamb_denoise_1000q_w_aux_loss/TorchTrainer_2026-01-26_14-16-16/TorchTrainer_a1ea8_00000_0_2026-01-26_14-16-16/checkpoint_000155
 
 # data
 datasets:
@@ -104,7 +104,6 @@ datasets:
 
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
-  # hypercubes_dataframe_path:  /clusterfs/nvme/segment_4d/databases/prepared_1_128_128_128_2_hypercube_view.csv
 
   databases:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
@@ -119,7 +118,6 @@ datasets:
     synthetic_only: true
     has_annotations: true
     server_folder_path: ${paths.server_folder_path}/synthetic
-    # server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
     with_hypercubes_dataframe: true
     mask_channel: 1
 
@@ -159,6 +157,17 @@ datasets:
   preserve_order: false # only matters for TP
   callback_strategy: grpc # grpc, queue
   async_device_copy: false
+
+models:
+  meta_arch:
+    plainDETR:
+      aux_loss: true
+
+optimizations:
+  models:
+    plainDETR:
+      torch_compile:
+        enable: false
 
 # schedulers
 schedulers:
