@@ -80,7 +80,7 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
+  resume_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb_box_init/TorchTrainer_2026-01-26_15-37-59/TorchTrainer_0cad7_00000_0_2026-01-26_15-37-59/checkpoint_000120
   pretrained_checkpointdir: null
   # pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200_no_rope/checkpoints
 
