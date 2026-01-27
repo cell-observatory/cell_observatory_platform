@@ -83,7 +83,7 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/results/inference/${experiment_name}
   resume_checkpointdir: null
-  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb/TorchTrainer_2026-01-24_21-09-30/TorchTrainer_07c68_00000_0_2026-01-24_21-09-30/checkpoint_000289
+  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb/TorchTrainer_2026-01-24_21-09-30/TorchTrainer_07c68_00000_0_2026-01-24_21-09-30/checkpoint_000263
 
 # data
 datasets:
