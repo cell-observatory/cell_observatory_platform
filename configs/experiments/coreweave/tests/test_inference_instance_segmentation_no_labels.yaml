@@ -119,7 +119,6 @@ datasets:
     roi_list: [322, 333, 360, 352]
     tile_list: ["000x_003y_001z.zarr", "000x_001y_001z.zarr", "000x_001y_000z.zarr", "000x_005y_001z.zarr", "000x_002y_001z.zarr"]
     timepoint_list: [0]
-    timepoint_list: [0]
 
     cdf_threshold: null
     occupancy_threshold_filter_type: 'min_ch0'
