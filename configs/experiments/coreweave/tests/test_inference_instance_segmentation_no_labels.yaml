@@ -64,8 +64,13 @@ deepspeed:
 
 inference:
   roi_tile_list:
-  - [130, "000x_002y_000z.zarr"]
-  - [147, "000x_002y_000z.zarr"]
+  # - [130, "000x_002y_000z.zarr"]
+  # - [147, "000x_002y_000z.zarr"]
+  - [322, "000x_003y_001z.zarr"]
+  - [333, "000x_001y_001z.zarr"]
+  - [333, "000x_001y_000z.zarr"]
+  - [360, "000x_005y_001z.zarr"]
+  - [352, "000x_002y_001z.zarr"]
 
 # clusters
 clusters:
@@ -108,8 +113,12 @@ datasets:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
-    roi_list: [130, 147]
-    tile_list: ["000x_002y_000z.zarr"]
+    # roi_list: [130, 147]
+    # tile_list: ["000x_002y_000z.zarr"]
+
+    roi_list: [322, 333, 360, 352]
+    tile_list: ["000x_003y_001z.zarr", "000x_001y_001z.zarr", "000x_001y_000z.zarr", "000x_005y_001z.zarr", "000x_002y_001z.zarr"]
+    timepoint_list: [0]
     timepoint_list: [0]
 
     cdf_threshold: null
