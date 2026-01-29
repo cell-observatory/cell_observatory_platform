@@ -880,6 +880,221 @@ def build_plainDETR_Set_Loss(
     return criterion
 
 
+class Mask2FormerSetLoss(nn.Module):
+    """
+    This class computes the loss for DETR.
+    The process happens in two steps:
+        1) we compute hungarian assignment between ground truth boxes and the outputs of the model
+        2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
+    """
+
+    def __init__(
+        self, 
+        num_classes: int,
+        matcher: nn.Module,
+        loss_weight_dict: dict,
+        no_object_loss_weight: float,
+        losses: list[str],
+        num_points: int,
+        oversample_ratio: int,
+        importance_sample_ratio: float,
+    ):
+        """
+        Create the criterion.
+        Parameters:
+            num_classes: number of object categories, omitting the special no-object category
+            matcher: module able to compute a matching between targets and proposals
+            loss_weight_dict: dict containing as key the names of the losses and as values their relative weight.
+            no_object_loss_weight: relative classification weight applied to the no-object category
+            losses: list of all the losses to be applied. See get_loss for list of available losses.
+        """
+        super().__init__()
+        self.num_classes = num_classes
+        self.matcher = matcher
+        self.loss_weight_dict = loss_weight_dict
+        self.no_object_loss_weight = no_object_loss_weight
+        self.losses = losses
+        empty_weight = torch.ones(self.num_classes + 1)
+        empty_weight[-1] = self.no_object_loss_weight
+        self.register_buffer("empty_weight", empty_weight)
+
+        # pointwise mask loss parameters
+        self.num_points = num_points
+        self.oversample_ratio = oversample_ratio
+        self.importance_sample_ratio = importance_sample_ratio
+        
+        # Used to tell HungarianMatcher which costs to use
+        self.costs = ["cls", "mask"]        
+
+    def loss_labels(self, outputs, targets, indices, num_masks):
+        """Classification loss (NLL)
+        targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
+        """
+        # model predictions: (B, num_queries, num_classes)
+        source_logits = outputs["pred_logits"].float()
+
+        # idx is a tuple (batch_idx, src_idx), batch_idx is the index of the batch
+        # for a given set of matched source and target indices
+        # hence idx = (B, num_queries) where each element is batch idx, source query
+        query_indices = self._get_query_indices(indices)
+
+        # get the labels for all targets that were matched to the source indices
+        # indices is a list of tuples (src_idx, tgt_idx) where src_idx are the indices of
+        # the source boxes that were matched to the target boxes, and similar for tgt_idx
+        target_labels = torch.cat(
+            [
+                target["labels"][matched_target_idx]
+                for target, (_, matched_target_idx) in zip(targets, indices)
+            ]
+        ).to(source_logits.device)
+        # make tensor (B, num_queries) with values equal to num_classes for all elements
+        target_classes = torch.full(
+            source_logits.shape[:2], self.num_classes, dtype=torch.int64, device=source_logits.device
+        )
+        # for each (batch_idx, source_idx) tuple we set the corresponding target label
+        # in target_classes to the value of target_labels, thus target_classes
+        # is now of the form (batch_idx, num_queries) = matched target label
+        target_classes[query_indices] = target_labels
+
+        # compute cross entropy loss between source logits (B, num_queries, num_classes) and target_classes (B, num_queries)
+        loss_ce = F.cross_entropy(
+            source_logits.transpose(1, 2),
+            target_classes,
+            self.empty_weight.to(source_logits.dtype),
+        )
+        return {"loss_labels_ce": loss_ce}
+
+    def loss_masks(self, outputs, targets, indices, num_masks):
+        """
+        Compute mask loss: Focal Loss and Dice Loss.
+        """
+        query_indices = self._get_query_indices(indices)
+        target_class_indices = self._get_target_class_indices(indices)
+
+        source_masks = outputs["pred_masks"][query_indices]
+        masks = [target["masks"] for target in targets]
+
+        # TODO: use valid to mask invalid areas due to padding in loss
+        target_masks, valid = batch_tensors(masks)
+        target_masks = target_masks.to(source_masks)
+        target_masks = target_masks[target_class_indices]
+
+        # no need to upsample predictions as we are using normalized coordinates
+        # source/target masks: (N, 1, D, H, W)
+        source_masks = source_masks[:, None]
+        target_masks = target_masks[:, None]
+
+        # Motivated by PointRend & Implicit PointRend
+        # train with mask loss calculated on K randomly
+        # sampled points instead of whole mask
+        with torch.no_grad():
+            # sample point_coordinates
+            point_coords = get_uncertain_point_coords_with_randomness(
+                source_masks,
+                lambda logits: calculate_uncertainty(logits),
+                self.num_points,  # K
+                self.oversample_ratio,
+                # ratio of points that are sampled via importance sampling
+                self.importance_sample_ratio,
+            )
+            # samples from target mask at point_coords
+            point_labels = point_sample(
+                target_masks,
+                point_coords,
+                align_corners=False,
+            ).squeeze(1)
+
+        # samples from source mask at point_coords
+        point_logits = point_sample(
+            source_masks,
+            point_coords,
+            align_corners=False,
+        ).squeeze(1)
+
+        # compute losses: cross entropy classifcation loss and dice mask loss
+        losses = {
+            "loss_mask_ce": sigmoid_ce_loss(point_logits, point_labels, num_masks),
+            "loss_mask_dice": dice_loss(point_logits, point_labels, num_masks),
+        }
+
+        del source_masks, target_masks
+        return losses
+
+    def _get_query_indices(self, indices):
+        batch_indices = torch.cat(
+            [torch.full_like(source_idx, i) for i, (source_idx, target_idx) in enumerate(indices)]
+        )
+        source_indices = torch.cat([source_idx for (source_idx, target_idx) in indices])
+        return batch_indices, source_indices
+
+    def _get_target_class_indices(self, indices):
+        batch_indices = torch.cat(
+            [torch.full_like(target_idx, i) for i, (source_idx, target_idx) in enumerate(indices)]
+        )
+        target_indices = torch.cat([target_idx for (source_idx, target_idx) in indices])
+        return batch_indices, target_indices
+
+    def get_loss(self, loss, outputs, targets, indices, num_masks):
+        loss_map = {
+            'labels': self.loss_labels,
+            'masks': self.loss_masks,
+        }
+        assert loss in loss_map, f"do you really want to compute {loss} loss?"
+        return loss_map[loss](outputs, targets, indices, num_masks)
+
+    def forward(self, outputs, targets):
+        """This performs the loss computation.
+        Parameters:
+             outputs: dict of tensors, see the output specification of the model for the format
+             targets: list of dicts, such that len(targets) == batch_size.
+                      The expected keys in each dict depends on the losses applied, see each loss' doc
+        """
+        outputs_without_aux_data = {k: v for k, v in outputs.items() if k != "auxiliary_outputs"}
+
+        # use Hungarian matcher to compute the indices of the matched predictions and targets
+        matched_target_indices = self.matcher(outputs_without_aux_data, targets)
+
+        # compute number of target boxes accross all nodes for normalization
+        total_num_masks = sum(len(target["labels"]) for target in targets)
+        total_num_masks = torch.as_tensor(
+            [total_num_masks], dtype=torch.float, device=next(iter(outputs.values())).device
+        )
+
+        if is_torch_dist_initialized():
+            torch.distributed.all_reduce(total_num_masks)
+        average_num_masks_per_node = torch.clamp(total_num_masks / get_world_size(), min=1).item()
+
+        losses = {}
+        for loss in self.losses:
+            losses.update(self.get_loss(loss, outputs, targets, matched_target_indices, average_num_masks_per_node))
+
+        # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
+        if "auxiliary_outputs" in outputs:
+            for i, aux_outputs in enumerate(outputs["auxiliary_outputs"]):
+                # hungarian matcher to get indices of the matched auxiliary_outputs and targets
+                auxiliary_matched_target_indices = self.matcher(aux_outputs, targets)
+                for loss in self.losses:
+                    extra_losses = self.get_loss(loss, aux_outputs, targets, auxiliary_matched_target_indices, average_num_masks_per_node)
+                    extra_losses = {k + f"_{i}": v for k, v in extra_losses.items()}
+                    losses.update(extra_losses)
+
+        return losses
+
+    def __repr__(self):
+        head = "Criterion " + self.__class__.__name__
+        body = [
+            "matcher: {}".format(self.matcher.__repr__(_repr_indent=8)),
+            "losses: {}".format(self.losses),
+            "loss_weight_dict: {}".format(self.loss_weight_dict),
+            "num_classes: {}".format(self.num_classes),
+            "no_object_loss_weight: {}".format(self.no_object_loss_weight),
+            "num_points: {}".format(self.num_points),
+            "oversample_ratio: {}".format(self.oversample_ratio),
+            "importance_sample_ratio: {}".format(self.importance_sample_ratio),
+        ]
+        _repr_indent = 4
+        lines = [head] + [" " * _repr_indent + line for line in body]
+        return "\n".join(lines)
 class UnsupervisedMSELoss(nn.Module):
     def __init__(self):
         """
