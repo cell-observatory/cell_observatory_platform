@@ -400,7 +400,7 @@ class MaskDINOEncoder(nn.Module):
 class Mask2FormerPixelDecoder(nn.Module):
     def __init__(
         self,
-        input_shape: Dict[str, Tuple[int]],
+        input_shape_metadata: Dict[str, Dict[str, int]],
         transformer_in_features: List[str],
         total_num_feature_levels: int,
         target_min_stride: int,
@@ -420,7 +420,7 @@ class Mask2FormerPixelDecoder(nn.Module):
             raise ImportError("Please install the deformable attention module.")
 
         # determine shapes of input features
-        input_shapes = {k: v for k, v in input_shape.items() if k in transformer_in_features}
+        input_shapes = {k: v for k, v in input_shape_metadata.items() if k in transformer_in_features}
         # sort feature shapes from low to high resolution
         input_shapes_sorted = sorted(input_shapes.items(), key=lambda x: -x[1]["stride"])
 
@@ -430,9 +430,9 @@ class Mask2FormerPixelDecoder(nn.Module):
         self.num_feature_levels = len(self.feature_maps)
 
         # note that this is sorted high resolution -> low resolution order. important for FPN upsampling
-        input_shape = sorted(input_shape.items(), key=lambda x: x[1]["stride"])
+        input_shape_metadata_sorted = sorted(input_shape_metadata.items(), key=lambda x: x[1]["stride"])
         self.full_feature_map_set, _, self.full_feature_set_channels = zip(
-            *[(k, v["stride"], v["channels"]) for k, v in input_shape]
+            *[(k, v["stride"], v["channels"]) for k, v in input_shape_metadata_sorted]
         )
 
         self.conv_dim = conv_dim
@@ -552,7 +552,7 @@ class Mask2FormerPixelDecoder(nn.Module):
             features_list, masks, pos_embeddings_list
         )
 
-        tokens_per_level = [None] * self.transformer_num_feature_levels
+        tokens_per_level: list[int] = [None] * self.transformer_num_feature_levels
         for i in range(self.transformer_num_feature_levels):
             if i < self.transformer_num_feature_levels - 1:
                 tokens_per_level[i] = level_start_index[i + 1] - level_start_index[i]
