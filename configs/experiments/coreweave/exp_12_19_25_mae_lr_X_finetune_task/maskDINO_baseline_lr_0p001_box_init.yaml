@@ -116,6 +116,8 @@ datasets:
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
     dtype: ${dataset_dtype}
+    require_targets: true
+    expect_mask_channel: true
     buffer_dtype: ${storage_dtype}
     batch_size: ${clusters.batch_size_per_gpu}
     input_shape: ${datasets.input_shape}
