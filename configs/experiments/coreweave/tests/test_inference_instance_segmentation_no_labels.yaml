@@ -19,10 +19,10 @@ defaults:
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/maskdino/mae_large                # configs/optimizations/models/mae.yaml
+  - /optimizations/models/maskdino/mae_large # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
-  - /inference/inference_instance_segmentation               # configs/inference/inference_instance_segmentation.yaml
+  - /inference/inference_instance_segmentation # configs/inference/inference_instance_segmentation.yaml
   - _self_
 
 # experiment name (used for logging)
