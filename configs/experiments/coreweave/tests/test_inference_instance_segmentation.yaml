@@ -80,7 +80,7 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/results/inference/${experiment_name}
   resume_checkpointdir: null 
-  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb_box_init/TorchTrainer_2026-01-26_15-37-59/TorchTrainer_0cad7_00000_0_2026-01-26_15-37-59/checkpoint_000117
+  pretrained_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/instance_segmentation_maskDINO_jepa_masking_lat_0p7_op9_ax_0p7_op9_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb_box_init/TorchTrainer_2026-01-27_12-48-40/TorchTrainer_8f8d6_00000_0_2026-01-27_12-48-40/checkpoint_000175
 
 # data
 datasets:
@@ -121,6 +121,8 @@ datasets:
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
     dtype: ${dataset_dtype}
+    require_targets: true
+    expect_mask_channel: true
     buffer_dtype: ${storage_dtype}
     batch_size: ${clusters.batch_size_per_gpu}
     input_shape: ${datasets.input_shape}
