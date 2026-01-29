@@ -11,7 +11,7 @@ activation_checkpoint:
   mm_recompute_frac: 2
 
 torch_compile:
-  enable: true
+  enable: false
   modules:
     - ["backbone.backbone.encoder", "transformer_blocks"]
     # pixel decoder

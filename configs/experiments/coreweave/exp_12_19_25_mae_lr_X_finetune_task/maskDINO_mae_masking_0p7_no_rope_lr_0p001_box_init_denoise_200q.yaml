@@ -8,24 +8,24 @@ defaults:
   - /datasets/preprocessor/instance_segmentation_preprocessor # configs/datasets/preprocessor/instance_segmentation_preprocessor.yaml
   - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
   - /models/BUILD_maskDINO                  # configs/models/BUILD_maskdino.yaml
-  - /models/meta_arch/maskdino/mae_large_w_masks    # configs/models/maskdino/large.yaml
+  - /models/meta_arch/maskdino/mae_large_w_masks_denoise # configs/models/maskdino/large.yaml
   - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
   - /models/backbones/maskdino_backbone/maskdino_backbone   # configs/models/backbones/maskdino_backbone/maskdino_backbone.yaml
   - /models/heads/pixel_decoder/maskdino_encoder  # configs/models/heads/pixel_decoder/maskdino_encoder.yaml
-  - /models/heads/maskdino_decoder/maskdino_decoder_box_init # configs/models/heads/maskdino_decoder/maskdino_decoder.yaml
+  - /models/heads/maskdino_decoder/maskdino_decoder_denoise # configs/models/heads/maskdino_decoder/maskdino_decoder.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/maskdino/mae_large                # configs/optimizations/models/mae.yaml
+  - /optimizations/models/maskdino/mae_large # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb_box_init
+experiment_name: instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb_box_init_denoise
 wandb_project: finetuning_3d_v2
 
 backend: DEEPSPEED
@@ -80,9 +80,8 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: /workspace/CellObservatoryData/hph/pretrained_models/instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb_box_init/checkpoints
-  pretrained_checkpointdir: null
-  # pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200_no_rope/checkpoints
+  resume_checkpointdir: null
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_cdf_target_90_cdf_threshold_150_h200_no_rope/checkpoints
 
 # data
 datasets:
@@ -166,7 +165,7 @@ optimizations:
   models:
     maskdino:
       torch_compile:
-        enable: false
+        enable: true
 
 # hooks
 hooks:

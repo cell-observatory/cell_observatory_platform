@@ -9,7 +9,7 @@ activation_checkpoint:
   mm_recompute_frac: 2
 
 torch_compile:
-  enable: true
+  enable: false
   modules:
     - ["input_encoder.encoder", "transformer_blocks"]
     - ["target_predictor.encoder", "transformer_blocks"]
