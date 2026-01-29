@@ -18,7 +18,7 @@ defaults:
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
+  - /optimizations/models/plainDETR/mae_large # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
@@ -60,9 +60,9 @@ seed: 42
 # clusters
 clusters:
   # batch_size: 128 # total batch size (NO one2many)
-  batch_size: 12 # total batch size
+  batch_size: 96 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
+  gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
   mem_per_cpu: 16000 # ram per cpu core
   ray_queue_memory: 0.2
@@ -83,7 +83,7 @@ datasets:
   patch_shape: [16, 16, 16, null]
   occupancy_threshold: 0.9
 
-  split: 0.0
+  split: 0.1
   return_dataloader: true
   distributed_sampler: true
 
@@ -91,7 +91,7 @@ datasets:
   num_actors_min: 4
   num_actors_max: 12
 
-  max_hypercubes: 500
+  max_hypercubes: 2500
   # max_hypercubes: 2000000
   # max_hypercubes: 50000
   # max_hypercubes: 1000000
@@ -146,14 +146,14 @@ datasets:
 
 # schedulers
 schedulers:
-  epochs: 1
+  epochs: 2
   # epochs: 300
   # warmup: 30
   # cooldown: 15
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}
-  lr: 1e-4
+  lr: 1e-3
 
 # hooks
 hooks:
@@ -163,3 +163,12 @@ hooks:
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
   - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+    file_prefix: latest_model
+    backend: DEEPSPEED
+  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true

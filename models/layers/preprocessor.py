@@ -638,6 +638,8 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         bbox_data_format: Optional[str] = None,
         bbox_output_format: Optional[str] = None,
         debug_savepath: str = None,
+        expect_mask_channel: bool = True,
+        require_targets: bool = True,
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -657,6 +659,8 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         self.bbox_output_format = bbox_output_format
 
         self.debug_savepath = debug_savepath
+        self.require_targets = require_targets
+        self.expect_mask_channel = expect_mask_channel
 
     def _split_inputs_and_mask(self, inputs: torch.Tensor):
         """
@@ -704,7 +708,10 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         """
         inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
 
-        inputs_wo_mask, masks_labelmap = self._split_inputs_and_mask(inputs)
+        if self.expect_mask_channel:
+            inputs_wo_mask, _ = self._split_inputs_and_mask(inputs)
+        else:
+            inputs_wo_mask = inputs
 
         sample = {
             "data_tensor": inputs_wo_mask,
@@ -717,7 +724,18 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
 
         inputs = sample["data_tensor"]
         meta = sample["metainfo"]
-        targets = meta.pop("targets")
+        targets = meta.pop("targets", None)
+        if targets is None:
+            # Keep downstream contract: list[dict] length B (then _finalize wraps as [targets]).
+            B = inputs.shape[0]
+            targets = [
+                {
+                    "boxes": torch.zeros((0, 6), device=inputs.device, dtype=torch.float32),
+                    "mask_ids": torch.zeros((0,), device=inputs.device, dtype=torch.long),
+                    "labels": torch.zeros((0,), device=inputs.device, dtype=torch.long),
+                }
+                for _ in range(B)
+            ]
 
         return self._finalize(
             inputs=inputs,

@@ -130,7 +130,9 @@ def get_reference_points(shapes, valid_ratios, device):
         ref = torch.stack((ref_x, ref_y, ref_z), -1)  # [B, D*H*W, 3]
         reference_points_list.append(ref)
 
+    # reference_points: [B, \sum_l D_l*H_l*W_l, 3]
     reference_points = torch.cat(reference_points_list, 1)
+    # [B, 1, L, 3] * [B, \sum_l D_l*H_l*W_l, 3] -> [B, \sum_l D_l*H_l*W_l, L, 3]
     reference_points = reference_points[:, :, None] * valid_ratios[:, None]
     return reference_points
 

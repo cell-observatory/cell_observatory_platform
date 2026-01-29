@@ -94,7 +94,7 @@ class HungarianMatcher(nn.Module):
             predicted_logits = outputs["pred_logits"][batch_idx].sigmoid()
             targets_labels = targets[batch_idx]["labels"]
 
-            # focal loss (TODO: use existing helpers)
+            # focal loss
             negative_cost_classification = (
                 (1 - alpha) * (predicted_logits**gamma) * (-(1 - predicted_logits + 1e-8).log())
             )

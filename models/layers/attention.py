@@ -376,14 +376,14 @@ class CrossAttention(nn.Module):
         self.v_proj = nn.Linear(dim, dim, bias=True)
         self.o_proj = nn.Linear(dim, dim, bias=True)
 
-    def forward(self, query, feat):
+    def forward(self, query, keys, values):
         B, Nq, C = query.shape
-        Nk = feat.shape[1]
+        Nk = keys.shape[1]
         H = self.num_heads
         Hd = C // H
         q = self.q_proj(query).view(B, Nq, H, Hd).transpose(1, 2)
-        k = self.k_proj(feat).view(B, Nk, H, Hd).transpose(1, 2)
-        v = self.v_proj(feat).view(B, Nk, H, Hd).transpose(1, 2)
+        k = self.k_proj(keys).view(B, Nk, H, Hd).transpose(1, 2)
+        v = self.v_proj(values).view(B, Nk, H, Hd).transpose(1, 2)
 
         with torch.nn.attention.sdpa_kernel(
             [

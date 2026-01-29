@@ -151,7 +151,7 @@
 
 # upsampling
 
-CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_baseline_lr_0p001_h200.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_baseline_lr_0p001_h200.yaml"
 # CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_baseline_lr_0p01_h200.yaml"
 
 # TO RUN MAE
@@ -167,7 +167,95 @@ CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/upsample_baseline
 
 # detection
 
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p001.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p0001.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p0001_no_denoise.yaml"
 
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p001_denoise_200q.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p001_no_denoise.yaml"
+
+# TO RUN (x5)
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p0001_denoise_200q.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p0001_denoise_200q_2_classes.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p0001_no_denoise_2_classes.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p0001_no_denoise_no_aux_loss.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p0001_denoise_200q_no_aux_loss.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p0001_denoise_200q_no_aux_loss_h100.yaml"
+
+# ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+
+# denoise 200q + no aux loss e1-3, 1e-4
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p0001_denoise_200q_no_aux_loss.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p001_denoise_200q_no_aux_loss.yaml"
+
+# no denoise + no aux loss 1e-3
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p001_no_denoise_no_aux_loss.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p0001_denoise_400q_no_aux_loss.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p001_no_denoise_w_aux_loss.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p001_denoise_200q_w_aux_loss.yaml"
+
+# no denoise, aux loss 1e-2
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p01_no_denoise_w_aux_loss.yaml"
+
+# TO RUN:
+
+# denoise (1000q) + aux loss 1e-3
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/instance_segmentation_plainDETR_baseline_denoise_lr_0p001_denoise_1000q_w_aux_loss.yaml"
+
+# MAE, no denoise, aux loss 1e-3
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_mae_masking_0p9_denoise_lr_0p001_no_denoise_w_aux_loss.yaml"
+
+# JEPA, no denoise, aux loss 1e-3
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_jepa_masking_lat_0p7_op9_ax_0p7_op9_denoise_lr_0p001_no_denoise_w_aux_loss.yaml"
+
+# JEPA, no denoise, aux loss 5e-4
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_jepa_masking_lat_0p7_op9_ax_0p7_op9_denoise_lr_0p0005_no_denoise_w_aux_loss.yaml"
+
+# JEPA, no denoise, aux loss 1e-4
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_jepa_masking_lat_0p7_op9_ax_0p7_op9_denoise_lr_0p0001_no_denoise_w_aux_loss.yaml"
+
+# JEPA no denoise, aux loss 1e-5
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_jepa_masking_lat_0p7_op9_ax_0p7_op9_denoise_lr_0p00001_no_denoise_w_aux_loss.yaml"
+
+# =======
+
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200_w_hook.yaml"
+
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p8_0p9_ax_0p8_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200_w_hook.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p9_op9_ax_0p9_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200_w_hook.yaml"
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_1p0_1p0_ax_0p7_op7_opt_lamb_cdf_target_80_cdf_threshold_100_h200_w_hook.yaml"
+
+# CFG="experiments\coreweave\exp_12_28_25_jepa_lr_X_masking_ratio\lr_0p001_mask_lat_0p9_op9_ax_0p9_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200_w_hook_no_rope.yaml"
+
+# CFG="experiments/coreweave/exp_12_28_25_jepa_lr_X_masking_ratio/lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200_w_hook_no_rope.yaml"
+
+# CFG="experiments/coreweave/exp_12_15_25_mae_lr_X_masking_ratio_fourier_loss/0p0001_X_0p7_X_lamb_cdf_target_90_cdf_threshold_150_h200_no_rope.yaml"
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_jepa_masking_lat_0p7_op9_ax_0p7_op9_denoise_lr_0p001_no_denoise_w_aux_loss_no_rope.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_jepa_masking_lat_0p7_op9_ax_0p7_op9_denoise_lr_0p0001_no_denoise_w_aux_loss_no_rope.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/maskDINO_baseline_lr_0p001.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_jepa_masking_lat_0p7_op9_ax_0p7_op9_denoise_lr_0p01_no_denoise_w_aux_loss_no_rope.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_mae_masking_0p7_denoise_lr_0p001_no_denoise_w_aux_loss.yaml"
+
+CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/plainDETR_mae_masking_0p7_denoise_lr_0p001_denoise_w_aux_loss.yaml"
+
+# CFG="experiments/coreweave/exp_12_19_25_mae_lr_X_finetune_task/maskDINO_mae_masking_0p7_no_rope_lr_0p001.yaml"
+
+# ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ---- ----
+
+# inference
+
+# CFG="experiments/coreweave/tests/test_feature_viz_mae.yaml"
+# CFG="experiments/coreweave/tests/test_feature_viz_jepa.yaml"
 
 # --- Linux
 

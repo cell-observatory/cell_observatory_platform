@@ -91,12 +91,12 @@ datasets:
   num_actors_min: 4
   num_actors_max: 12
 
-  max_hypercubes: 500
+  # max_hypercubes: 500
   # max_hypercubes: 10000
   # max_hypercubes: 2000000
   # max_hypercubes: 50000
   # max_hypercubes: 1000000
-  # max_hypercubes: null
+  max_hypercubes: null
 
   use_cached_hypercubes_dataframe: true
   # hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
@@ -147,7 +147,7 @@ datasets:
 
 # schedulers
 schedulers:
-  epochs: 50
+  epochs: 100
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}

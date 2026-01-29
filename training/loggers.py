@@ -456,6 +456,7 @@ class WandBEventWriter(EventWriter):
         scalar_dict,
         scope: "Literal['step','epoch']" = "step",
     ):
+        # NOTE: this is an implicit rank 0 guard
         if self.run is None:
             return
         if not scalar_dict:

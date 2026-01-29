@@ -31,7 +31,8 @@ from cell_observatory_platform.training.helpers import (
     apply_compile,
     apply_activation_checkpointing,
     load_model_from_ckpt,
-    aggregate_microbatch_losses
+    aggregate_microbatch_losses,
+    get_model_optimizations_node
 )
 from cell_observatory_platform.training.hooks import HookBase
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
@@ -345,12 +346,13 @@ class EpochBasedTrainer(BaseTrainer):
 
         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
+        # FIXME: not always desirable to force load model weights from this checkpoint
         # initialize checkpoint manager
-        if os.environ.get("RESTART", "FALSE").upper() == "TRUE":
-            logger.info("RESTART flag detected. Resuming from latest checkpoint.")
-            with open_dict(cfg):
-                cfg.paths.resume_checkpointdir = Path(cfg.paths.outdir) / "checkpoints"
-                cfg.checkpoint.checkpoint_manager.resume_checkpointdir = cfg.paths.resume_checkpointdir
+        # if os.environ.get("RESTART", "FALSE").upper() == "TRUE":
+        #     logger.info("RESTART flag detected. Resuming from latest checkpoint.")
+        #     with open_dict(cfg):
+        #         cfg.paths.resume_checkpointdir = Path(cfg.paths.outdir) / "checkpoints"
+        #         cfg.checkpoint.checkpoint_manager.resume_checkpointdir = cfg.paths.resume_checkpointdir
 
         self.checkpoint_manager = instantiate(
             cfg.checkpoint.checkpoint_manager,
@@ -393,10 +395,13 @@ class EpochBasedTrainer(BaseTrainer):
         # activation checkpointing, and torch Compile 
         if cfg.optimizations is not None:
             enable_optimizations(cfg=cfg)
-        if cfg.optimizations.models.activation_checkpoint.enable:
-            apply_activation_checkpointing(cfg, model)
-        if cfg.optimizations.models.torch_compile.enable:
-            model = apply_compile(cfg, model)
+        opt_cfg = get_model_optimizations_node(cfg)
+        if opt_cfg.activation_checkpoint.enable:
+            logger.info("[Trainer] Applying activation checkpointing...")
+            apply_activation_checkpointing(opt_cfg, model)
+        if opt_cfg.torch_compile.enable:
+            logger.info("[Trainer] Applying torch.compile...")
+            model = apply_compile(opt_cfg, model)
 
         # initialize deepspeed
         self.model, self.optimizers, _, _ = initialize(
@@ -551,12 +556,21 @@ class EpochBasedTrainer(BaseTrainer):
         self.before_val_step()
 
         loss_dict, outputs = self.model(data_sample)
+        loss_dict_log = {
+            k: (v.detach().float().cpu().item() if torch.is_tensor(v) else v)
+            for k, v in loss_dict.items()
+        }
         self.evaluator.process(data_sample, outputs, loss_dict)
 
-        self.after_val_step(data_sample={"metainfo": data_sample.get("metainfo")}, outputs=None, loss_dict=None)
+        self.after_val_step(
+            data_sample={"metainfo": data_sample.get("metainfo")}, 
+            outputs=None, 
+            loss_dict=loss_dict_log
+        )
 
         outputs = None
         loss_dict = None
+        loss_dict_log = None
         data_sample = None
 
         self._val_iter += 1
@@ -753,10 +767,13 @@ class TestTrainer(BaseTrainer):
         # activation checkpointing, and torch Compile 
         if cfg.optimizations is not None:
             enable_optimizations(cfg=cfg)
-        if cfg.optimizations.models.activation_checkpoint.enable:
-            apply_activation_checkpointing(cfg, model)
-        if cfg.optimizations.models.torch_compile.enable:
-            model = apply_compile(cfg, model)
+        opt_cfg = get_model_optimizations_node(cfg)
+        if opt_cfg.activation_checkpoint.enable:
+            logger.info("[Trainer] Applying activation checkpointing...")
+            apply_activation_checkpointing(opt_cfg, model)
+        if opt_cfg.torch_compile.enable:
+            logger.info("[Trainer] Applying torch.compile...")
+            model = apply_compile(opt_cfg, model)
 
         # initialize deepspeed
         self.model, self.optimizers, _, _ = initialize(
@@ -864,10 +881,13 @@ class Inferencer(BaseTrainer):
         # activation checkpointing, and torch Compile 
         if cfg.optimizations is not None:
             enable_optimizations(cfg=cfg)
-        if cfg.optimizations.models.activation_checkpoint.enable:
-            apply_activation_checkpointing(cfg, model)
-        if cfg.optimizations.models.torch_compile.enable:
-            model = apply_compile(cfg, model)
+        opt_cfg = get_model_optimizations_node(cfg)
+        if opt_cfg.activation_checkpoint.enable:
+            logger.info("[Trainer] Applying activation checkpointing...")
+            apply_activation_checkpointing(opt_cfg, model)
+        if opt_cfg.torch_compile.enable:
+            logger.info("[Trainer] Applying torch.compile...")
+            model = apply_compile(opt_cfg, model)
 
         # initialize deepspeed
         self.model, self.optimizers, _, _ = initialize(

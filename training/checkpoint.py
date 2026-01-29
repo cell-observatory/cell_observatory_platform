@@ -148,35 +148,37 @@ class CheckpointManager:
 
             universal_checkpointdir = self.load_checkpointdir / f"{self.checkpoint_tag}_universal"
 
-            if universal_checkpointdir.exists() and any(universal_checkpointdir.iterdir()):
-                logger.info(
-                    f"Loading universal checkpoint from existing directory \
-                        {self.load_checkpointdir / f'{self.checkpoint_tag}_universal'}"
+            # NOTE: disabling reuse of existing universal checkpoints since this may lead to
+            #       to that the wrong (old) checkpoint being loaded if we need >1 restarts.
+            # if universal_checkpointdir.exists() and any(universal_checkpointdir.iterdir()):
+            #     logger.info(
+            #         f"Loading universal checkpoint from existing directory \
+            #             {self.load_checkpointdir / f'{self.checkpoint_tag}_universal'}"
+            #     )
+            #     ckpt_path, client_state = self._load_checkpoint(
+            #         tag=f"{self.checkpoint_tag}_universal", custom_load_fn=custom_load_fn
+            #     )
+
+            # else:
+
+            logger.info(
+                f"Converting ZeRO-0 checkpoint to universal format: \
+                {universal_checkpointdir}"
+                "NOTE: this will create a new checkpoint \
+                with the tag `{self.checkpoint_tag}_universal` in the same directory."
+            )
+
+            if is_main_process():
+                self._convert_zero_checkpoint_to_universal(
+                    src=self.load_checkpointdir / self.checkpoint_tag,
+                    dst=self.load_checkpointdir / f"{self.checkpoint_tag}_universal",
                 )
-                ckpt_path, client_state = self._load_checkpoint(
-                    tag=f"{self.checkpoint_tag}_universal", custom_load_fn=custom_load_fn
-                )
 
-            else:
+            barrier()
 
-                logger.info(
-                    f"Converting ZeRO-0 checkpoint to universal format: \
-                    {universal_checkpointdir}"
-                    "NOTE: this will create a new checkpoint \
-                    with the tag `{self.checkpoint_tag}_universal` in the same directory."
-                )
-
-                if is_main_process():
-                    self._convert_zero_checkpoint_to_universal(
-                        src=self.load_checkpointdir / self.checkpoint_tag,
-                        dst=self.load_checkpointdir / f"{self.checkpoint_tag}_universal",
-                    )
-
-                barrier()
-
-                ckpt_path, client_state = self._load_checkpoint(
-                    tag=f"{self.checkpoint_tag}_universal", custom_load_fn=custom_load_fn
-                )
+            ckpt_path, client_state = self._load_checkpoint(
+                tag=f"{self.checkpoint_tag}_universal", custom_load_fn=custom_load_fn
+            )
 
         # get target dtype if specified
         if self.load_dtype is not None:

@@ -157,10 +157,13 @@ class MaskDINO(nn.Module):
             outputs[key] for key in ("pred_logits", "pred_boxes", "pred_masks")
         ]
 
+        orig_image_sizes = [tuple(int(x) for x in orig_img_size.tolist()) for orig_img_size in data_sample["metainfo"]["orig_image_sizes"]]
+
         # upsample masks to original image size
         predicted_masks = F.interpolate(
             predicted_masks,
-            size=(data_sample["metainfo"]["image_sizes"][0]),
+            # see data/datasets/pretrain_dataset_ray.py for details on image_sizes
+            size=orig_image_sizes[0],
             mode="trilinear",
             align_corners=False,
         )
@@ -168,22 +171,13 @@ class MaskDINO(nn.Module):
         del outputs
 
         predictions = []
-        for predicted_label, predicted_mask, predicted_box, image_size_pad, orig_image_size in zip(
+        for predicted_label, predicted_mask, predicted_box, orig_image_size in zip(
             predicted_labels,
             predicted_masks,
             predicted_boxes,
-            data_sample["metainfo"]["image_sizes"],
-            data_sample["metainfo"]["orig_image_sizes"],
+            orig_image_sizes,
         ):
-            # padded size (divisible by 32)
-            depth, height, width = [
-                new_dim / image_dim_pad * orig_dim
-                for new_dim, image_dim_pad, orig_dim in zip(
-                    predicted_mask.shape[-3:],  # (new_d, new_h, new_w)
-                    image_size_pad,  # (orig_d, orig_h, orig_w)
-                    orig_image_size,  # (orig_d, orig_h, orig_w)
-                )
-            ]
+            depth, height, width = orig_image_size
             # scale postprocess boxes to original image size
             predicted_box = self.box_postprocess(predicted_box, depth, height, width)
 
@@ -206,13 +200,14 @@ class MaskDINO(nn.Module):
         predicted_masks = predicted_masks[topk_query_indices]
 
         instance_predictions = {}
-        # predicted masks pre-sigmoid
+        # predicted masks pre-sigmoid (0.5 threshold)
         instance_predictions["masks"] = (predicted_masks > 0).float()
         instance_predictions["boxes"] = predicted_boxes[topk_query_indices]
 
         # average mask confidence inside each mask
         predicted_masks_flattened = instance_predictions["masks"].flatten(1)
         predicted_masks_sigmoid_flattened = predicted_masks.sigmoid().flatten(1)
+        # keep probs only inside the predicted mask (all pixels > 0 times their prob)
         mask_confidence_score = (predicted_masks_sigmoid_flattened * predicted_masks_flattened).sum(1) / (
             predicted_masks_flattened.sum(1) + 1e-6
         )
