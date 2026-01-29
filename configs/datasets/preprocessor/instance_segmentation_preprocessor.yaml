@@ -32,5 +32,5 @@ bbox_data_format: zyxzyx
 bbox_output_format: cxcyczwhd
 
 # debug_savepath: null
-expect_mask_channel: ${datasets.collate_fn.expect_mask_channel}
-require_targets: ${datasets.collate_fn.require_targets}
+expect_mask_channel: true # ${datasets.collate_fn.expect_mask_channel}
+require_targets: true #${datasets.collate_fn.require_targets}

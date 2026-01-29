@@ -729,6 +729,32 @@ def _boxes_in_z_slice(boxes_xyzxyz: np.ndarray, z: int) -> np.ndarray:
     return b[keep]
 
 
+def _boxes_in_y_slice(boxes_xyzxyz: np.ndarray, y: int) -> np.ndarray:
+    """
+    Keep boxes whose y-extent intersects slice plane at (y + 0.5).
+    boxes are xyzxyz in local voxel coords.
+    """
+    b = np.asarray(boxes_xyzxyz, dtype=np.float32)
+    if b.size == 0:
+        return b.reshape(0, 6)
+    plane = float(y) + 0.5
+    keep = (plane >= b[:, 1]) & (plane < b[:, 4])
+    return b[keep]
+
+
+def _boxes_in_x_slice(boxes_xyzxyz: np.ndarray, x: int) -> np.ndarray:
+    """
+    Keep boxes whose x-extent intersects slice plane at (x + 0.5).
+    boxes are xyzxyz in local voxel coords.
+    """
+    b = np.asarray(boxes_xyzxyz, dtype=np.float32)
+    if b.size == 0:
+        return b.reshape(0, 6)
+    plane = float(x) + 0.5
+    keep = (plane >= b[:, 0]) & (plane < b[:, 3])
+    return b[keep]
+
+
 def _region_str(region: Optional[Dict[str, Any]]) -> str:
     """
     Human-readable crop descriptor for figure titles.
@@ -809,6 +835,9 @@ def save_instance_predictions(
     background_channel: int = 0,
     scale_gt_boxes: bool = True,
     input_format: Literal["ZYXC"] = "ZYXC",
+    ortho: bool = False,
+    # NOTE: unused for now
+    ortho_mode: Literal["center"] = "center",
 ):
     """
     For each record, for each (t,z):
@@ -919,82 +948,216 @@ def save_instance_predictions(
         out_pdf = save_dir / f"{ident}_instances.pdf"
         with PdfPages(out_pdf) as pdf:
             for t in tqdm(range(T), desc=f"{ident} T", unit="t"):
-                for z in tqdm(range(0, Z, max(1, int(z_step))), desc=f"{ident} Z", unit="z", leave=False):
+                # Ortho crosshair selection (currently center)
+                if ortho:
+                    y_line = Y // 2
+                    x_line = X // 2
 
-                    nrows = len(row_kinds)                    
-                    fig, ax = plt.subplots(nrows, 2, figsize=(12, 4.8 * nrows), squeeze=False)
+                    # Precompute ortho background planes for this t (background channel)
+                    bg_xz = _normalize_slice(
+                        img_tzyxc[t, :, y_line, :, background_channel],  # (Z,X)
+                        pmin=pmin, pmax=pmax
+                    )
+                    bg_yz = _normalize_slice(
+                        img_tzyxc[t, :, :, x_line, background_channel].transpose(1, 0),  # (Y,Z)
+                        pmin=pmin, pmax=pmax
+                    )
+
+                    def _draw_crosshair_xy(a):
+                        a.axhline(y_line, linewidth=1.0, alpha=0.85, color="yellow")
+                        a.axvline(x_line, linewidth=1.0, alpha=0.85, color="yellow")
+
+                    def _draw_crosshair_xz(a, z_cur: int):
+                        a.axhline(z_cur, linewidth=1.0, alpha=0.85, color="yellow")  # z is vertical
+                        a.axvline(x_line, linewidth=1.0, alpha=0.85, color="yellow")  # x is horizontal
+
+                    def _draw_crosshair_yz(a, z_cur: int):
+                        a.axhline(y_line, linewidth=1.0, alpha=0.85, color="yellow")  # y is vertical
+                        a.axvline(z_cur, linewidth=1.0, alpha=0.85, color="yellow")   # z is horizontal
+
+                for z in tqdm(range(0, Z, max(1, int(z_step))), desc=f"{ident} Z", unit="z", leave=False):
+                    # Build figure grid
+                    if ortho:
+                        nrows = 2 * len(row_kinds)
+                        ncols = 4
+                        fig_w = 24
+                        fig_h = 3.6 * nrows
+                    else:
+                        nrows = len(row_kinds)
+                        ncols = 2
+                        fig_w = 12
+                        fig_h = 4.8 * nrows
+
+                    fig, ax = plt.subplots(nrows, ncols, figsize=(fig_w, fig_h), squeeze=False)
 
                     # Page header: ident + crop info
                     fig.suptitle(f"T={t} Z={z}{region_s}", fontsize=12)
 
-                    # background slice
+                    # background slice (XY at this z)
                     bg = _normalize_slice(
                         img_tzyxc[t, z, :, :, background_channel],
                         pmin=pmin,
                         pmax=pmax,
                     )
 
-                    r = 0
+                    if ortho:
+                        def _axs(kind_idx: int, side: int):
+                            """
+                            Returns (xy, yz, xz, blank) axes for:
+                              side=0 (GT unit)  in cols [0,1]
+                              side=1 (Pred unit) in cols [2,3]
+                            Unit layout:
+                              [XY] [YZ]
+                              [XZ] [  ]
+                            """
+                            rr = 2 * kind_idx
+                            cc = 2 * side
+                            a_xy = ax[rr, cc]
+                            a_yz = ax[rr, cc + 1]
+                            a_xz = ax[rr + 1, cc]
+                            a_bl = ax[rr + 1, cc + 1]
+                            return a_xy, a_yz, a_xz, a_bl
+                    else:
+                        def _axs(kind_idx: int, side: int):
+                            return ax[kind_idx, side], None, None, None
 
-                    # --- Row: background ---
-                    for c in range(2):
-                        a = ax[r, c]
-                        a.imshow(bg, cmap="gray", interpolation="nearest")
-                        a.set_title(f"T={t} Z={z} | background C={background_channel}")
-                        a.axis("off")
-                    r += 1
+                    # --- Draw each row kind (bg / boxes / masks) ---
+                    for kind_idx, kind in enumerate(row_kinds):
+                        for side in (0, 1):
+                            a_xy, a_yz, a_xz, a_bl = _axs(kind_idx, side)
 
-                    # --- Row: boxes (optional) ---
-                    if has_boxes_row:
-                        # GT boxes
-                        a0 = ax[r, 0]
-                        a0.imshow(bg, cmap="gray", interpolation="nearest")
-                        for (x0, y0, z0, x1, y1, z1) in _boxes_in_z_slice(gt_xyzxyz, z=z):
-                            w = max(0.0, float(x1 - x0))
-                            h = max(0.0, float(y1 - y0))
-                            if w > 0 and h > 0:
-                                a0.add_patch(
-                                    Rectangle((float(x0), float(y0)), w, h, fill=False, linewidth=1.5, edgecolor="lime")
-                                )
-                        a0.set_title(f"T={t} Z={z} | GT boxes")
-                        a0.axis("off")
+                            # Base planes
+                            a_xy.imshow(bg, cmap="gray", interpolation="nearest")
+                            if ortho:
+                                a_yz.imshow(bg_yz, cmap="gray", interpolation="nearest", aspect="auto")
+                                a_xz.imshow(bg_xz, cmap="gray", interpolation="nearest", aspect="auto")
+                                _draw_crosshair_xy(a_xy)
+                                _draw_crosshair_yz(a_yz, z_cur=z)
+                                _draw_crosshair_xz(a_xz, z_cur=z)
+                                a_bl.axis("off")
 
-                        # Pred boxes
-                        a1 = ax[r, 1]
-                        a1.imshow(bg, cmap="gray", interpolation="nearest")
-                        for (x0, y0, z0, x1, y1, z1) in _boxes_in_z_slice(pr_xyzxyz, z=z):
-                            w = max(0.0, float(x1 - x0))
-                            h = max(0.0, float(y1 - y0))
-                            if w > 0 and h > 0:
-                                a1.add_patch(
-                                    Rectangle((float(x0), float(y0)), w, h, fill=False, linewidth=1.5, edgecolor="cyan")
-                                )
-                        a1.set_title(f"T={t} Z={z} | Pred boxes")
-                        a1.axis("off")
+                            # Choose which annotations to draw on this side
+                            if kind == "bg":
+                                if ortho:
+                                    a_xy.set_title(f"{'GT' if side==0 else 'Pred'} | BG XY (t={t}, z={z})")
+                                    a_yz.set_title(f"{'GT' if side==0 else 'Pred'} | BG YZ (x={x_line})")
+                                    a_xz.set_title(f"{'GT' if side==0 else 'Pred'} | BG XZ (y={y_line})")
+                                else:
+                                    a_xy.set_title(f"{'GT' if side==0 else 'Pred'} | BG (t={t}, z={z})")
 
-                        r += 1
+                            elif kind == "boxes":
+                                boxes = gt_xyzxyz if side == 0 else pr_xyzxyz
+                                col = "lime" if side == 0 else "cyan"
 
-                    # --- Row: masks (optional) ---
-                    if has_masks_row:
-                        # GT
-                        a0 = ax[r, 0]
-                        a0.imshow(bg, cmap="gray", interpolation="nearest")
-                        if gt_masks is not None and gt_masks.shape[0] > 0:
-                            gt_label, gt_cmap, gt_norm = _label_and_cmap_from_instance_masks(gt_masks[:, t, z])
-                            a0.imshow(gt_label, cmap=gt_cmap, norm=gt_norm, interpolation="nearest", alpha=0.45)
-                        a0.set_title(f"T={t} Z={z} | GT masks (all instances)")
-                        a0.axis("off")
+                                # XY @ z
+                                for (x0, y0, z0, x1, y1, z1) in _boxes_in_z_slice(boxes, z=z):
+                                    w = max(0.0, float(x1 - x0))
+                                    h = max(0.0, float(y1 - y0))
+                                    if w > 0 and h > 0:
+                                        a_xy.add_patch(
+                                            Rectangle(
+                                                (float(x0), float(y0)),
+                                                w,
+                                                h,
+                                                fill=False,
+                                                linewidth=1.5,
+                                                edgecolor=col,
+                                            )
+                                        )
 
-                        # Pred
-                        a1 = ax[r, 1]
-                        a1.imshow(bg, cmap="gray", interpolation="nearest")
-                        if pr_masks is not None and pr_masks.shape[0] > 0:
-                            pr_label, pr_cmap, pr_norm = _label_and_cmap_from_instance_masks(pr_masks[:, t, z])
-                            a1.imshow(pr_label, cmap=pr_cmap, norm=pr_norm, interpolation="nearest", alpha=0.45)
-                        a1.set_title(f"T={t} Z={z} | Pred masks (all instances)")
-                        a1.axis("off")
+                                if ortho:
+                                    # XZ @ y_line  (axes: x horiz, z vert)
+                                    for (x0, y0, z0, x1, y1, z1) in _boxes_in_y_slice(boxes, y=y_line):
+                                        w = max(0.0, float(x1 - x0))
+                                        h = max(0.0, float(z1 - z0))
+                                        if w > 0 and h > 0:
+                                            a_xz.add_patch(
+                                                Rectangle(
+                                                    (float(x0), float(z0)),
+                                                    w,
+                                                    h,
+                                                    fill=False,
+                                                    linewidth=1.5,
+                                                    edgecolor=col,
+                                                )
+                                            )
 
-                        r += 1
+                                    # YZ @ x_line  (axes: z horiz, y vert)
+                                    for (x0, y0, z0, x1, y1, z1) in _boxes_in_x_slice(boxes, x=x_line):
+                                        w = max(0.0, float(z1 - z0))
+                                        h = max(0.0, float(y1 - y0))
+                                        if w > 0 and h > 0:
+                                            a_yz.add_patch(
+                                                Rectangle(
+                                                    (float(z0), float(y0)),
+                                                    w,
+                                                    h,
+                                                    fill=False,
+                                                    linewidth=1.5,
+                                                    edgecolor=col,
+                                                )
+                                            )
+
+                                    a_xy.set_title(f"{'GT' if side==0 else 'Pred'} | Boxes XY (z={z})")
+                                    a_yz.set_title(f"{'GT' if side==0 else 'Pred'} | Boxes YZ (x={x_line})")
+                                    a_xz.set_title(f"{'GT' if side==0 else 'Pred'} | Boxes XZ (y={y_line})")
+                                else:
+                                    a_xy.set_title(f"{'GT' if side==0 else 'Pred'} | Boxes (t={t}, z={z})")
+
+                            elif kind == "masks":
+                                masks = gt_masks if side == 0 else pr_masks
+                                if masks is not None and masks.shape[0] > 0:
+                                    # XY @ z
+                                    lab_xy, cmap_xy, norm_xy = _label_and_cmap_from_instance_masks(masks[:, t, z])
+                                    a_xy.imshow(
+                                        lab_xy,
+                                        cmap=cmap_xy,
+                                        norm=norm_xy,
+                                        interpolation="nearest",
+                                        alpha=0.45,
+                                    )
+
+                                    if ortho:
+                                        # XZ @ y_line: (N,Z,X)
+                                        lab_xz, cmap_xz, norm_xz = _label_and_cmap_from_instance_masks(
+                                            masks[:, t, :, y_line, :]
+                                        )
+                                        a_xz.imshow(
+                                            lab_xz,
+                                            cmap=cmap_xz,
+                                            norm=norm_xz,
+                                            interpolation="nearest",
+                                            alpha=0.45,
+                                            aspect="auto",
+                                        )
+
+                                        # YZ @ x_line: (N,Z,Y) -> (N,Y,Z)
+                                        m_yz = masks[:, t, :, :, x_line].transpose(0, 2, 1)
+                                        lab_yz, cmap_yz, norm_yz = _label_and_cmap_from_instance_masks(m_yz)
+                                        a_yz.imshow(
+                                            lab_yz,
+                                            cmap=cmap_yz,
+                                            norm=norm_yz,
+                                            interpolation="nearest",
+                                            alpha=0.45,
+                                            aspect="auto",
+                                        )
+
+                                if ortho:
+                                    a_xy.set_title(f"{'GT' if side==0 else 'Pred'} | Masks XY (z={z})")
+                                    a_yz.set_title(f"{'GT' if side==0 else 'Pred'} | Masks YZ (x={x_line})")
+                                    a_xz.set_title(f"{'GT' if side==0 else 'Pred'} | Masks XZ (y={y_line})")
+                                else:
+                                    a_xy.set_title(f"{'GT' if side==0 else 'Pred'} | Masks (t={t}, z={z})")
+
+                            # Cosmetics
+                            a_xy.axis("off")
+                            if a_yz is not None:
+                                a_yz.axis("off")
+                            if a_xz is not None:
+                                a_xz.axis("off")
+                            if a_bl is not None:
+                                a_bl.axis("off")
 
                     fig.tight_layout(rect=[0, 0, 1, 0.96])
                     pdf.savefig(fig)

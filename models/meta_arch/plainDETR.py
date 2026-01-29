@@ -479,7 +479,7 @@ class PlainDETRReParam(PlainDETR):
         outputs = self._forward(samples)
         preds = self._predict(
             outputs,
-            target_sizes=samples["metainfo"]["image_sizes"],
+            target_sizes=samples["metainfo"]["image_sizes_padded"],
             original_target_sizes=samples["metainfo"]["orig_image_sizes"],
         )
         return preds

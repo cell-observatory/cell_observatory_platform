@@ -1272,6 +1272,7 @@ def get_image_sizes(
 
     Returns:
         image_sizes:        list[tuple], per-sample "current" sizes
+        image_sizes_padded: list[tuple], per-sample sizes including any padding
         orig_image_sizes:   list[tuple], per-sample original sizes (or image_sizes)
         padding_mask:       torch.BoolTensor of shape [B, Z, Y, X] or [B, Y, X]
                             True = padded voxel, False = valid voxel.
@@ -1287,19 +1288,7 @@ def get_image_sizes(
     else:
         raise ValueError(f"Unsupported input_format: {input_format}")
 
-    image_sizes: List[Tuple[int, ...]] = []
-    for i in range(batch_size):
-        spatial_dims = [int(metadata[f"{ax}_size"][i]) for ax in ax_names]
-        image_sizes.append(tuple(spatial_dims))
-
-    # use orig_* sizes only if *all* are present
-    if all(f"orig_{ax}_size" in metadata for ax in ax_names):
-        orig_image_sizes: List[Tuple[int, ...]] = []
-        for i in range(batch_size):
-            spatial_dims = [int(metadata[f"orig_{ax}_size"][i]) for ax in ax_names]
-            orig_image_sizes.append(tuple(spatial_dims))
-    else:
-        orig_image_sizes = image_sizes
+    # TODO: consider how to generalize to spacetime
 
     # Build a 3D padding mask [B, Z, Y, X] or [B, Y, X]
     # We only care about spatial volume axes for DETR-style masks.
@@ -1314,6 +1303,22 @@ def get_image_sizes(
     
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    image_sizes: List[Tuple[int, ...]] = []
+    for i in range(batch_size):
+        spatial_dims = [int(metadata[f"{ax}_size"][i]) for ax in ax_names]
+        image_sizes.append(tuple(spatial_dims))
+
+    image_sizes_padded: List[Tuple[int, ...]] = [spatial_shape] * batch_size
+
+    # use orig_* sizes only if *all* are present
+    if all(f"orig_{ax}_size" in metadata for ax in ax_names):
+        orig_image_sizes: List[Tuple[int, ...]] = []
+        for i in range(batch_size):
+            spatial_dims = [int(metadata[f"orig_{ax}_size"][i]) for ax in ax_names]
+            orig_image_sizes.append(tuple(spatial_dims))
+    else:
+        orig_image_sizes = image_sizes_padded
 
     padding_mask = torch.zeros(
         (batch_size, *spatial_shape),
@@ -1359,7 +1364,7 @@ def get_image_sizes(
         else:
             raise ValueError(f"Unsupported spatial_axes combination: {spatial_axes}")
 
-    return image_sizes, orig_image_sizes, padding_mask
+    return image_sizes, orig_image_sizes, image_sizes_padded, padding_mask
 
 
 def set_global_seed(seed: int):

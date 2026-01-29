@@ -1136,6 +1136,7 @@ class InferencerWorker:
             gt_boxes_format=self.gt_boxes_format,
             scale_gt_boxes=self.scale_gt_boxes,
             input_format=self.input_format,
+            ortho=True,
         )
 
     def finalize(self):

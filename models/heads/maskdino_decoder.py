@@ -237,16 +237,16 @@ class MaskDINODecoder(nn.Module):
         output_memory = output_memory.masked_fill(~output_proposals_valid, float(0))
         return output_memory, output_proposals
 
-    # FIXME: legacy code, should be rewritten
+    # FIXME: legacy code, should be rewritten for clarity once tested
     def generate_denoising_queries(self, targets, target_query_embeddings, reference_point_embeddings, batch_size):
         if self.training:
             labels_per_image = [
                 (torch.ones_like(target["labels"])).cuda() for target in targets
-            ]  # (bs, num_known_per_image)
+            ]
             label_indices_per_image = [
                 torch.nonzero(target) for target in labels_per_image
-            ]  # (bs, num_known_per_image)
-            num_labels_per_image = [sum(gt_labels) for gt_labels in labels_per_image]  # (bs, )
+            ]
+            num_labels_per_image = [sum(gt_labels) for gt_labels in labels_per_image]
 
             if max(num_labels_per_image) == 0:
                 return None, None, None, None
@@ -256,21 +256,22 @@ class MaskDINODecoder(nn.Module):
             # FIXME: may error if num_labels_per_image is very large
             denoise_queries_per_label = self.total_denosing_queries // (int(max(num_labels_per_image)))
 
+            if denoise_queries_per_label == 0:
+                return None, None, None, None
+
             # binary mask indicating which GT boxes/labels should be used for denoising (currently all 1s)
             # can be modified to selectively denosie some labels or boxes (hence the overcomplicated logic)
             bboxes_denoise_index_mask = labels_denoise_index_mask = torch.cat(
                 labels_per_image
-            )  # (total_num_labels, ) all 1s
+            )
             # retrieve labels and boxes
             labels = torch.cat([target["labels"] for target in targets])  # (total num labels)
             bboxes = torch.cat([target["boxes"] for target in targets])  # (total num bboxes)
 
-            # allows for assigning each DN query to the correct image
             # in the batch: [0] * num_labels_image1 + [1] * num_labels_image2 + ... => (num_targets, total_num_labels)
             batch_idx = torch.cat([torch.full_like(target["labels"], idx) for idx, target in enumerate(targets)])
 
-            # roundabout way to get the num of labels and bboxes to denoise (legacy code)
-            # shape: (total_num_objects_denoise,) = 2 x (total_num_labels)
+            # indices to denoise
             denoise_target_indices = torch.nonzero(bboxes_denoise_index_mask + labels_denoise_index_mask).view(-1)
 
             # generate denoise_queries_per_label num of queries for each denoise_item (copies to be populated)
@@ -297,6 +298,10 @@ class MaskDINODecoder(nn.Module):
                 # scatter new noisy labels to total_denoise_labels
                 total_denoise_labels.scatter_(0, flipped_indices, new_label_ids)
 
+                # NOTE: we shift the centers by half of the deltas
+                #       and we shift the deltas by deltas themselves
+                #       this is to ensure the perturbation is proportional to the box
+                #       so small boxes are not perturbed too much etc.
                 denoise_bbox_deltas = torch.zeros_like(total_denoise_bboxes_copy)
                 denoise_bbox_deltas[:, :3] = total_denoise_bboxes_copy[:, 3:] / 2  # shift amount of dw, dh, dd
                 denoise_bbox_deltas[:, 3:] = total_denoise_bboxes_copy[:, 3:]  # starting size w, h, d
@@ -310,16 +315,13 @@ class MaskDINODecoder(nn.Module):
                     min=0.0, max=1.0
                 )  # clamp new bbox coordinates to [0,1] range
 
-            # embed/encode noised labels and bboxes
             total_denoise_label_embeddings = self.label_embeddings(total_denoise_labels.long().cuda()).to(self.dtype)
             total_denoise_bboxes_encoded = inverse_sigmoid(total_denoise_bboxes_copy)
 
-            # pad all denoising queries to the same size
             max_labels_per_image = int(max(num_labels_per_image))
             max_query_pad_size = int(max_labels_per_image * denoise_queries_per_label)
 
             # pad the number of denoise queries (labels per image * num queries per label)
-            # per image to the same size
             denoise_labels_padded = torch.zeros(max_query_pad_size, self.hidden_dim, dtype=self.dtype).cuda()
             denoise_bboxes_padded = torch.zeros(max_query_pad_size, 6).cuda()
 
@@ -349,7 +351,7 @@ class MaskDINODecoder(nn.Module):
                 denoise_target_indices_map = torch.cat(
                     [torch.tensor(range(num_labels)) for num_labels in num_labels_per_image]
                 )
-                # each group (for replication i of denoise queries) is assigned a slot of size max_labels_per_image
+                # each group is assigned a slot of size max_labels_per_image
                 # hence shift the indices (element values) by i × max_labels_per_image
                 # thus to write to the correct row in the padded tensor we need to shift the indices by i * max_labels_per_image
                 # denoise_target_indices_map: (1, max_labels_per_image * queries_per_label)
@@ -364,11 +366,10 @@ class MaskDINODecoder(nn.Module):
             if len(denoise_query_batch_id) > 0:
                 # batch ids are of form [0, 0, 1, 1, 1, ...] x N copies for N denoising queries per label where element
                 # in batch_ids is of the form: [0] * num_labels_image1 + [1] * num_labels_image2 + ...
-                # denoise_target_indices_map is of form: [0,...,num_labels_image1-1, ..., max_labels_per_image,...] (see above)
                 # this way we assign the embeddings of the noisy labels and bboxes to position in our query matrices where
-                # previously we had vectors of zeros from denoise_labels_padded/denoise_bboxes_padded (its split into num_dn & num_queries)
+                # previously we had vectors of zeros from denoise_labels_padded/denoise_bboxes_padded
                 # indexing logic example:  0 * [0, ..., num_labels_image_0-1] matched with range([0, ..., num_labels_image_0-1])
-                # this way we index exactly as many elements as there exists for each batch element and insert noisy labels/bboxes
+                # NOTE: we repeat in label_queries: all_labels across batches for denoise query i -> all_labels for denoise query i+1 ...
                 label_queries[(denoise_query_batch_id.long(), denoise_target_indices_map)] = (
                     total_denoise_label_embeddings
                 )
@@ -383,6 +384,7 @@ class MaskDINODecoder(nn.Module):
             # NOTE: attention mask is defined her for one batch element
             attn_mask_size = max_query_pad_size + self.num_queries
             # first set all False => everyone can see everyone initially
+            # TRUE = mask TRUE = cannot attend
             attn_mask = torch.ones(attn_mask_size, attn_mask_size).cuda() < 0
 
             # the attention mask matrix is organized as follows:
@@ -473,7 +475,7 @@ class MaskDINODecoder(nn.Module):
         out["auxiliary_outputs"] = self._set_aux_loss(
             outputs_labels_denoise, outputs_mask_denoise, outputs_bboxes_denoise
         )
-        denoise_data["predicted_denoise_bboxes"] = out
+        denoise_data["predicted_denoise_outputs"] = out
         return outputs_labels, outputs_bboxes, outputs_mask
 
     def predict_bboxes(self, reference_pts_list, intermediates, initial_reference_pts=None):
@@ -635,7 +637,7 @@ class MaskDINODecoder(nn.Module):
                     # TODO: implement same safety check as in masks_to_boxes_v2
                     # refpoint_embeddings = BitMasks(flatten_mask > 0).get_bounding_boxes().tensor.to(device)
                     refpoint_embeddings = bitmask_to_boxes(flatten_mask > 0).to(device)
-                # elif self.initialize_box_type == "mask2box":  # faster
+                # elif self.initialize_box_type == "mask2box":
                 #     # returns: (N, 6)
                 #     refpoint_embeddings = masks_to_boxes_v2(flatten_mask > 0).to(device)
                 else:
@@ -664,8 +666,7 @@ class MaskDINODecoder(nn.Module):
             # (1, num_queries, 6) -> (bs, num_queries, 6)
             refpoint_embeddings = self.query_embeddings.weight[None].repeat(bs, 1, 1)
 
-        # if two_stage flag is False or if learned query embeddings are used, we use learned
-        # query embeddings
+        # if two_stage flag is False or if learned query embeddings are used, use learned query embeddings
         queries = queries_learned_topk if queries_learned_topk is not None else output_memory_topk
 
         # generate denoising queries if training and denoising queries flag is set

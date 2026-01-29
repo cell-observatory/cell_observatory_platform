@@ -433,7 +433,7 @@ class FinetuneCollatorActor:
                         }
                     )
 
-            image_sizes, orig_image_sizes, padding_mask = get_image_sizes(
+            image_sizes, orig_image_sizes, image_sizes_padded, padding_mask = get_image_sizes(
                 input_format=self.input_format,
                 input_shape=self.raw_input_shape,
                 batch_size=self.batch_size,
@@ -442,6 +442,7 @@ class FinetuneCollatorActor:
             )
             meta_cpu["image_sizes"] = torch.as_tensor(image_sizes)
             meta_cpu["orig_image_sizes"] = torch.as_tensor(orig_image_sizes)
+            meta_cpu["image_sizes_padded"] = torch.as_tensor(image_sizes_padded)
             meta_cpu["padding_mask"] = torch.as_tensor(padding_mask)
 
             sample_cpu = {
