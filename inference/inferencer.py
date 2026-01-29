@@ -1,19 +1,32 @@
-import logging
 import os
+import re
+import logging
+import functools
 from pathlib import Path
-from typing import Callable, Iterable, List, Literal, Optional, Tuple
+from typing import Callable, Iterable, List, Literal, Optional, Tuple, Any, Dict
 
-import connectorx as cx
-import numpy as np
-import pandas as pd
 import ray
 import torch
-from dotenv import load_dotenv
 from torch import distributed as dist
 
-from cell_observatory_platform.data.io import save_file
-from cell_observatory_platform.inference.utils import save_predictions, stable_key_owner, tile_hash
+import numpy as np
+import pandas as pd
+import connectorx as cx
+
+from omegaconf import OmegaConf
+from dotenv import load_dotenv
+
+from cell_observatory_platform.utils.common import ceil_div
+from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.utils.context import barrier, get_world_size, process_rank
+from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
+from cell_observatory_platform.inference.utils import (
+    save_predictions, 
+    stable_key_owner, 
+    tile_hash, 
+    save_feature_visualizations, 
+    save_instance_predictions
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +35,7 @@ logging.basicConfig(level=logging.INFO)
 class InferencerWorker:
     def __init__(
         self,
+        aggregate_mode: Literal["stitch_volume", "save_local"],
         task: str,
         outputs_metadata: dict,
         model: torch.nn.Module,
@@ -33,7 +47,8 @@ class InferencerWorker:
         save_as_volume: bool,
         z_step_pdf: int,
         input_format: str,
-        inference_mode: str,
+        input_shape: List[int],
+        patch_shape: List[Optional[int]],
         decoder_head_type: str,
         roi_tile_list: List[Tuple[int, str]],
         save_dir: Path | str,
@@ -48,7 +63,13 @@ class InferencerWorker:
         save_format: Literal["tiff", "zarr"] = "tiff",
         zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
         zarr_shard_shape: Optional[Tuple[int, ...]] = None,
-        auxiliary_outputs: Optional[List[Tuple[str, dict]]] = None,
+        auxiliary_outputs: Optional[Any] = None,
+        pmin: float = 1.0,
+        pmax: float = 99.0,
+        feature_viz_type: Optional[str] = None,
+        pred_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "xyzxyz",
+        gt_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "cxcyczwhd",
+        scale_gt_boxes: bool = True,
     ):
         self.database = database
         self.hypercubes_dataframe_path = Path(hypercubes_dataframe_path)
@@ -58,7 +79,30 @@ class InferencerWorker:
         self.timepoint_list = timepoint_list
 
         self.dtype = dtype
+        self.input_shape = input_shape
+        self.patch_shape = patch_shape
         self.input_format = input_format
+
+        temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
+            input_format=self.input_format, patch_shape=patch_shape
+        )
+        _, token_shape = calc_num_patches(
+            input_fmt=self.input_format,
+            input_shape=self.input_shape,
+            patch_shape=patch_shape,
+        )
+        self.pe_unpatchify = functools.partial(
+            PatchEmbedding.unpatchify,
+            temporal_patch_size=temporal_patch_size,
+            axial_patch_size=self.axial_patch_size,
+            lateral_patch_size=self.lateral_patch_size,
+            token_shape=token_shape,
+            input_format=self.input_format,
+        )
+        # NOTE: if input format does not contain 'T' we set patch size to 1
+        #       since buffers assume that the T-axis exists
+        self.temporal_patch_size = temporal_patch_size if temporal_patch_size else 1
+        self.token_shape = self._get_token_shape(token_shape, self.input_format)
 
         # roi_tile_list is a list of (roi_id, tile_name) tuples
         # to restrict inference to
@@ -69,13 +113,25 @@ class InferencerWorker:
         self.model = model
 
         self.task = task
-        self.inference_mode = inference_mode
+        self.aggregate_mode = aggregate_mode
+        if self.aggregate_mode == "save_local":
+            assert self.task in {"detection", "instance_segmentation", "semantic_segmentation"}, \
+                "save_local aggregate_mode only supported for detection and segmentation tasks"
 
+        self.stitch_volume = (self.aggregate_mode == "stitch_volume")
+
+        self.pmin = pmin
+        self.pmax = pmax
         self.z_step_pdf = z_step_pdf
         self.save_as_pdf = save_as_pdf
         self.save_as_volume = save_as_volume
 
         self.decoder_head_type = decoder_head_type
+        self.feature_viz_type = feature_viz_type
+
+        self.scale_gt_boxes = scale_gt_boxes
+        self.gt_boxes_format = gt_boxes_format
+        self.pred_boxes_format = pred_boxes_format
 
         self.inference_save_dir = save_dir
         self.inference_save_format = save_format
@@ -96,17 +152,37 @@ class InferencerWorker:
         # DictConfig -> plain dict[str, dict]
         self.outputs_metadata = {str(name): dict(meta) for name, meta in outputs_metadata.items()}
 
-        if auxiliary_outputs is not None:
-            self.auxiliary_outputs = {str(name): dict(meta) for name, meta in auxiliary_outputs.items()}
+        # Normalize auxiliary_outputs into dict[name -> spec]
+        if auxiliary_outputs is not None and not isinstance(auxiliary_outputs, (dict, list, tuple)):
+            # Hydra DictConfig/ListConfig -> plain container
+            auxiliary_outputs = OmegaConf.to_container(auxiliary_outputs, resolve=True)
+
+        if auxiliary_outputs:
+            if isinstance(auxiliary_outputs, dict):
+                self.auxiliary_outputs = {str(name): dict(spec) for name, spec in auxiliary_outputs.items()}
+            else:
+                aux: Dict[str, Dict[str, Any]] = {}
+                for item in auxiliary_outputs:
+                    if isinstance(item, (tuple, list)) and len(item) == 2:
+                        name, spec = item
+                        aux[str(name)] = dict(spec)
+                    else:
+                        # item is expected to be a mapping with "name"
+                        item = dict(item)
+                        aux[str(item["name"])] = item
+                self.auxiliary_outputs = aux
         else:
             self.auxiliary_outputs = {}
 
         self.save_auxiliary_outputs = bool(self.auxiliary_outputs)
 
+        # FIXME: enforce user naming main_output_name instead
         # main prediction output name; assume first key in outputs_metadata
         self.main_output_name = next(iter(self.outputs_metadata.keys()))
-        self.num_output_channels = self.outputs_metadata[self.main_output_name].get("num_output_channels")
-        assert self.num_output_channels is not None, "num_output_channels must be specified for main output"
+        self.num_output_channels = None
+        if self.stitch_volume:
+            self.num_output_channels = self.outputs_metadata[self.main_output_name].get("num_output_channels")
+            assert self.num_output_channels is not None, "num_output_channels must be specified for main output"
 
         # all data types we will aggregate/save:
         #   - main output (e.g. 'predictions')
@@ -114,12 +190,27 @@ class InferencerWorker:
         self.data_types = [self.main_output_name, *self.auxiliary_outputs.keys()]
 
         self.prediction_df = self._get_data_tiles_metadata()
-        self._build_state()
+        os.makedirs(self.inference_save_dir, exist_ok=True)
+
+        if self.stitch_volume:
+            self._build_state()
+        else:
+            # no stitch -> no tile buffers
+            self._tile_state, self._row_by_key, self._name_by_key = {}, {}, {}
+            self._key_by_rank = {}
+            self.rank, self.world_size = process_rank(), get_world_size()
 
         ray.logger.info(f"Inference Database: {self.prediction_df}")
         ray.logger.info(f"Data types to save: {self.data_types}")
         ray.logger.info(f"Auxiliary outputs: {self.auxiliary_outputs}")
         ray.logger.info(f"Main output metadata: {self.outputs_metadata}")
+        ray.logger.info(f"Aggregate mode: {self.aggregate_mode}")
+
+    def _get_token_shape(self, token_shape: Tuple[int, ...], input_format: str) -> Tuple[int, ...]:
+        if input_format == "ZYXC":
+            return token_shape[1:-1]  # drop T and C dimensions
+        else:
+            raise ValueError(f"Unsupported input format: {input_format}")
 
     def _get_data_tiles_metadata(self) -> pd.DataFrame:
         roi_csv = self.hypercubes_dataframe_path.with_name(f"{self.hypercubes_dataframe_path.stem}_rois.csv")
@@ -402,36 +493,66 @@ class InferencerWorker:
         return self.execute_query(f"SELECT COUNT(*) FROM {table_name};").iloc[0, 0]
 
     def _predict(self, batch_tensor: torch.Tensor, data_sample: dict) -> torch.Tensor:
-        if self.decoder_head_type == "mask2former":
-            if self.task != "semantic_segmentation":
-                raise NotImplementedError(f"Task {self.task} not implemented for Mask2Former sliding window inference.")
-            crop_out = self.model.predict(batch_tensor, rescale_to=batch_tensor.shape[2:])
-            mask_pred = crop_out["pred_masks"].sigmoid()
-            mask_cls = torch.softmax(crop_out["pred_logits"], dim=-1)[..., :-1]
-            pred_hypercubes = torch.einsum("bqc,bq...->bc...", mask_cls, mask_pred)
+        if self.task == "detection":
+            if self.decoder_head_type == "plaindetr":
+                preds = self.model.predict(data_sample)
+            else:
+                raise NotImplementedError(
+                    f"Decoder head type {self.decoder_head_type} not supported for detection sliding window inference."
+                )
 
-        elif self.decoder_head_type in {"vit", "linear"}:
+        elif self.task == "instance_segmentation":
+            if self.decoder_head_type == "maskdino":
+                preds = self.model.predict(data_sample)
+            else:
+                raise NotImplementedError(
+                    f"Decoder head type {self.decoder_head_type} not supported for instance segmentation sliding window inference."
+                )
+
+        elif self.task == "semantic_segmentation":
+            raise NotImplementedError("Semantic segmentation decoder head not yet supported for sliding window inference.")            
+
+        elif self.task == "dense_prediction":
             if self.task not in {"upsample_space", "upsample_time", "upsample_space_time", "channel_split"}:
                 raise NotImplementedError(
                     f"Task {self.task} not implemented for {self.decoder_head_type} sliding window inference."
                 )
             pred_hypercubes = self.model.predict(data_sample)
+            preds = {self.main_output_name: pred_hypercubes}
 
-        elif self.decoder_head_type == "maskdino":
-            raise NotImplementedError("MaskDINO decoder head not yet supported for sliding window inference.")
-
-        elif self.decoder_head_type == "dpt":
-            raise NotImplementedError("Dense Prediction Head not yet supported for sliding window inference.")
-
-        elif self.decoder_head_type == "pretrain":
+        elif self.task == "pretrain":
             pred_hypercubes = self.model.predict(data_sample)
+            preds = {self.main_output_name: pred_hypercubes}
+
+        elif self.task == "feature_extractor":
+            # NOTE: we expect patchified prediction tensors here
+            pred_hypercubes = self.model.forward_features(batch_tensor, masks=None)
+            
+            if self.input_format == "ZYXC":
+                B, N, C = pred_hypercubes.shape
+
+                # FIXME: this will break if the backbone does further downsampling
+                num = int(np.prod(self.token_shape))
+                # CLS token
+                if N == num + 1:
+                    pred_hypercubes = pred_hypercubes[:, 1:, :]
+                    N -= 1
+                if N != num:
+                    raise RuntimeError(f"forward_features returned N={N}, expected {num} (token_shape={self.token_shape})")
+
+                pred_hypercubes = pred_hypercubes.view(B, *self.token_shape, C)
+                pred_hypercubes = pred_hypercubes.unsqueeze(1)
+            else:
+                raise ValueError("Feature extractor only supports ZYXC input format for now.")
+
+            preds = {self.main_output_name: pred_hypercubes}
 
         else:
             raise NotImplementedError(
                 f"Decoder head type {self.decoder_head_type} not supported for sliding window inference."
             )
 
-        return pred_hypercubes
+        return preds
 
     def _build_state(self):
         self._tile_state, self._row_by_key, self._name_by_key = {}, {}, {}
@@ -480,15 +601,32 @@ class InferencerWorker:
             for dt in self.data_types:
                 if dt == self.main_output_name:
                     C = self.num_output_channels
+
+                    if self.task == "feature_extractor":
+                        # for feature visualization, output shape is feature grid
+                        # of tokens which are spatially smaller than the input tensor                        
+                        Tt = ceil_div(vol_T, self.temporal_patch_size)
+                        Zt = ceil_div(vol_Z, self.axial_patch_size)
+                        Yt = ceil_div(vol_Y, self.lateral_patch_size)
+                        Xt = ceil_div(vol_X, self.lateral_patch_size)
+                        out_shape = (Tt, Zt, Yt, Xt, C)
+                        tile_volume_dt = Tt * Zt * Yt * Xt
+
+                    else:
+                        out_shape = (*out_spatial_shape, C)
+                        tile_volume_dt = tile_volume
+
                 else:
                     meta = self.auxiliary_outputs.get(dt)
                     C = meta.get("num_output_channels")
                     assert C is not None, f"num_output_channels must be specified for auxiliary output {dt}"
+                    tile_volume_dt = tile_volume
+                    out_shape = (*out_spatial_shape, C)
 
-                st[f"shape_{dt}"] = (*out_spatial_shape, C)
+                st[f"shape_{dt}"] = out_shape
                 st[f"pred_{dt}"] = None
                 st[f"cnt_{dt}"] = None
-                st[f"remaining_{dt}"] = tile_volume
+                st[f"remaining_{dt}"] = tile_volume_dt
                 st[f"done_{dt}"] = False
 
             self._tile_state[key] = st
@@ -499,7 +637,7 @@ class InferencerWorker:
 
         os.makedirs(self.inference_save_dir, exist_ok=True)
 
-    def _build_pred_buckets(self, pred_hypercubes: torch.Tensor, meta: dict):
+    def _build_pred_buckets(self, pred_hypercubes: torch.Tensor, meta: dict, with_token_grid: bool):
         ws = get_world_size()
         pred_buckets = {r: [] for r in range(ws)}
         for b in range(pred_hypercubes.size(0)):
@@ -523,13 +661,24 @@ class InferencerWorker:
             patch = pred_hypercubes[b]
             if self.input_format == "ZYXC" and patch.ndim == 4:
                 patch = patch.unsqueeze(0)
+
+            if with_token_grid:
+                st, sz, sy, sx = self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size, self.lateral_patch_size
+                t0f, z0f, y0f, x0f = t0 // st, z0 // sz, y0 // sy, x0 // sx
+                Tf, Zf, Yf, Xf = patch.shape[:4]  # patch is [Tt, Zt, Yt, Xt, C]
+                coords = torch.tensor([t0f, t0f+Tf, z0f, z0f+Zf, y0f, y0f+Yf, x0f, x0f+Xf],
+                                    device=patch.device, dtype=torch.int32)
+            else:
+                coords = torch.tensor([t0, t1, z0, z1, y0, y1, x0, x1], device=patch.device, dtype=torch.int32)
+
             pred_buckets[owner_rank].append(
                 (
                     torch.tensor([roi, tile_hash(tile_nm)], device=patch.device, dtype=torch.long),
-                    torch.tensor([t0, t1, z0, z1, y0, y1, x0, x1], device=patch.device, dtype=torch.int32),
+                    coords,
                     patch,
                 )
             )
+
         return pred_buckets
 
     def _pack_for_alltoall(
@@ -668,8 +817,11 @@ class InferencerWorker:
 
             zeros_before = (cnt_view == 0).sum()
 
+            if pred_hypercube.dtype != pred_view.dtype:
+                pred_hypercube = pred_hypercube.to(pred_view.dtype)
+
             pred_view.add_(pred_hypercube)
-            cnt_view.add_(1)
+            cnt_view.add_(1.0)
 
             zeros_after = (cnt_view == 0).sum()
             filled = int((zeros_before - zeros_after).item())
@@ -704,10 +856,15 @@ class InferencerWorker:
 
         preds_dict = {}
         for dt in self.data_types:
-            preds = st[f"pred_{dt}"] / st[f"cnt_{dt}"].clamp_min(1)
+            p = st[f"pred_{dt}"]
+            c = st[f"cnt_{dt}"]
+
+            c.clamp_min_(1.0)
+            p.div_(c)
+            preds = p
 
             # Optional per-output activation from outputs_metadata
-            meta = self.outputs_metadata.get(dt, {})
+            meta = self.outputs_metadata.get(dt) or self.auxiliary_outputs.get(dt) or {}
             activation = meta.get("activation", None)
             if activation is not None:
                 preds = activation(preds)
@@ -717,24 +874,43 @@ class InferencerWorker:
 
             preds_dict[dt] = preds
 
-        save_predictions(
-            name=base_sample_name,
-            predictions=preds_dict,
-            save_dir=self.inference_save_dir,
-            save_as_volume=self.save_as_volume,
-            save_as_pdf=self.save_as_pdf,
-            z_step_pdf=self.z_step_pdf,
-            filetype=self.inference_save_format,
-            zarr_chunk_shape=self.inference_zarr_chunk_shape,
-            zarr_shard_shape=self.inference_zarr_shard_shape,
-        )
+        if self.task == "feature_extractor":
+            save_feature_visualizations(
+                name=base_sample_name,
+                predictions=preds_dict,
+                save_dir=self.inference_save_dir,
+                gt_key="data_tensor",
+                feat_key=self.main_output_name,
+                z_step_pdf=self.z_step_pdf,
+                pmin=self.pmin,
+                pmax=self.pmax,
+                fit="per_t",
+                sample_voxels=50_000,
+                viz=self.feature_viz_type,
+                stride_zyx=(self.axial_patch_size, self.lateral_patch_size, self.lateral_patch_size)
+            )
+            print(f"Finished saving feature visualizations for tile {name} (ROI {row.get('id', 'unknown')})")
+        else:
+            save_predictions(
+                name=base_sample_name,
+                predictions=preds_dict,
+                save_dir=self.inference_save_dir,
+                save_as_volume=self.save_as_volume,
+                save_as_pdf=self.save_as_pdf,
+                z_step_pdf=self.z_step_pdf,
+                filetype=self.inference_save_format,
+                zarr_chunk_shape=self.inference_zarr_chunk_shape,
+                zarr_shard_shape=self.inference_zarr_shard_shape,
+                pmin=self.pmin,
+                pmax=self.pmax,
+            )
 
-        print(f"Finished saving predictions for tile {name} (ROI {row.get('id', 'unknown')})")
-        print(
-            f"[finish_if_done] key={key}, base_sample_name={base_sample_name}, "
-            f"save_dir={self.inference_save_dir}, save_as_pdf={self.save_as_pdf}, "
-            f"save_as_volume={self.save_as_volume}"
-        )
+            print(f"Finished saving predictions for tile {name} (ROI {row.get('id', 'unknown')})")
+            print(
+                f"[finish_if_done] key={key}, base_sample_name={base_sample_name}, "
+                f"save_dir={self.inference_save_dir}, save_as_pdf={self.save_as_pdf}, "
+                f"save_as_volume={self.save_as_volume}"
+            )
 
         for dt in self.data_types:
             st[f"done_{dt}"] = True
@@ -745,34 +921,226 @@ class InferencerWorker:
         st = self._tile_state[key]
         if st[f"pred_{data_type}"] is None:
             st[f"pred_{data_type}"] = torch.zeros(st[f"shape_{data_type}"], dtype=self.dtype, device="cpu")
-            st[f"cnt_{data_type}"] = torch.zeros((*st[f"shape_{data_type}"][:-1], 1), dtype=torch.int32, device="cpu")
+            st[f"cnt_{data_type}"] = torch.zeros((*st[f"shape_{data_type}"][:-1], 1), dtype=torch.float16, device="cpu")
         return st[f"pred_{data_type}"], st[f"cnt_{data_type}"]
 
-    def predict(self, data_sample):
+    _PATH_TOKEN = re.compile(r"""
+        ([^.[]+)
+        (?:\[(\d+)\])?
+    """, re.X)
+
+    @staticmethod
+    def resolve_path(root: Any, path: str) -> Any:
+        """
+        Resolve 'path' against 'root'.
+        Supports dict keys, attributes, and list indices via '[i]' or bare '.i'.
+        Examples:
+        - "data_tensor"
+        - "metainfo.masks[0]"
+        - "metainfo.masks.0"   (treated like index 0)
+        """
+        cur = root
+        for part in path.split("."):
+            if part == "":
+                continue
+
+            # allow bare numeric segments as list indices (".0")
+            if part.isdigit():
+                cur = cur[int(part)]
+                continue
+
+            # support "key" and "key[i]"
+            m = InferencerWorker._PATH_TOKEN.fullmatch(part)
+            if not m:
+                raise KeyError(f"Bad path segment: {part!r} (full path: {path!r})")
+            key, idx = m.group(1), m.group(2)
+
+            # descend by key/attr
+            if isinstance(cur, dict):
+                cur = cur[key]
+            else:
+                cur = getattr(cur, key)
+
+            # optional index
+            if idx is not None:
+                cur = cur[int(idx)]
+
+        return cur
+
+    @staticmethod
+    def _iter_aux_specs(auxiliary_outputs: Any) -> Iterable[Tuple[str, Dict[str, Any]]]:
+        """
+        Yields (name, spec) pairs from either:
+        - list of {name, path, ...}
+        - dict name -> {path, ...}
+        """
+        if auxiliary_outputs is None:
+            return []
+        if isinstance(auxiliary_outputs, dict):
+            return auxiliary_outputs.items()
+        # assume list-like
+        return ((spec["name"], spec) for spec in auxiliary_outputs)
+
+    def _preprocess(self, data_sample: dict) -> dict:
+        """
+        Materialize + normalize all outputs that will be saved
+        """
+        specs: Dict[str, Dict[str, Any]] = {}
+
+        for name, meta in self.outputs_metadata.items():
+            m = dict(meta) if meta is not None else {}
+            specs[name] = m
+
+        for aux_name, spec in self.auxiliary_outputs.items():
+            s = dict(spec) if spec is not None else {}
+            specs[aux_name] = s
+
+        for name, spec in specs.items():
+            path = spec.get("path", name)
+
+            try:
+                x = self.resolve_path(data_sample, path)
+            except Exception:
+                continue  # predictions etc not in data_sample yet
+
+            if not isinstance(x, torch.Tensor):
+                raise TypeError(f"{name}: expected torch.Tensor at preprocessing, got {type(x)} (path={path!r})")
+
+            if bool(spec.get("patchified", False)):
+                x = self.pe_unpatchify(x, out_channels=spec.get("num_output_channels"))
+
+            data_sample[name] = x
+
+        return data_sample
+
+    def predict(self, data_sample: dict):
+        if self.aggregate_mode == "stitch_volume":
+            data_sample = self._preprocess(data_sample)
+
         X = data_sample["data_tensor"]
         metadata = data_sample["metainfo"]
 
-        # NOTE: this function is called within inference_context manager
-        #       see training/loops.py for details
-        pred_hypercubes = self._predict(X, data_sample)
+        preds = self._predict(X, data_sample)
 
-        buckets = self._build_pred_buckets(pred_hypercubes, metadata)
-        keys_recv, coords_recv, pred_hypercubes_recv = self._alltoall(
-            buckets, metadata, out_channels=self.num_output_channels
-        )
-        done_keys = self._apply_recv(keys_recv, coords_recv, pred_hypercubes_recv, data_type=self.main_output_name)
-
-        if self.save_auxiliary_outputs:
-            for aux_output, aux_metadata in self.auxiliary_outputs.items():
-                aux_pred_hypercubes = data_sample[aux_output]
-                # NOTE: might need to generalize _build_pred_buckets
-                aux_buckets = self._build_pred_buckets(aux_pred_hypercubes, metadata)
-                aux_keys_recv, aux_coords_recv, aux_pred_hypercubes_recv = self._alltoall(
-                    aux_buckets, metadata, out_channels=aux_metadata["num_output_channels"]
+        if self.aggregate_mode == "stitch_volume":
+            pred_hypercubes = preds[self.main_output_name]
+            if not isinstance(pred_hypercubes, torch.Tensor):
+                raise TypeError(
+                    f"stitch_volume requires Tensor preds[{self.main_output_name!r}], got {type(pred_hypercubes)}"
                 )
-                self._apply_recv(aux_keys_recv, aux_coords_recv, aux_pred_hypercubes_recv, data_type=aux_output)
+
+            buckets = self._build_pred_buckets(
+                pred_hypercubes,
+                metadata,
+                with_token_grid=(self.task == "feature_extractor"),
+            )
+            keys_recv, coords_recv, pred_hypercubes_recv = self._alltoall(
+                buckets, metadata, out_channels=self.num_output_channels
+            )
+            self._apply_recv(keys_recv, coords_recv, pred_hypercubes_recv, data_type=self.main_output_name)
+
+            if self.save_auxiliary_outputs:
+                for aux_name, spec in self._iter_aux_specs(self.auxiliary_outputs):
+                    out_ch = spec["num_output_channels"]
+                    aux_pred_hypercubes = data_sample[aux_name]
+                    aux_buckets = self._build_pred_buckets(aux_pred_hypercubes, metadata, with_token_grid=False)
+                    aux_keys_recv, aux_coords_recv, aux_pred_hypercubes_recv = self._alltoall(
+                        aux_buckets, metadata, out_channels=out_ch
+                    )
+                    self._apply_recv(aux_keys_recv, aux_coords_recv, aux_pred_hypercubes_recv, data_type=aux_name)
+
+        elif self.aggregate_mode == "save_local":
+            # targets may be absent in pure inference; normalize to per-record list[dict]
+            B = len(metadata["prepared_id"])
+            targets = metadata.get("targets", None)
+            if targets is None:
+                targets = [{} for _ in range(B)]
+            elif isinstance(targets, dict):
+                targets = [targets for _ in range(B)]
+            elif isinstance(targets, (list, tuple)) and len(targets) == 1 and isinstance(targets[0], (list, tuple)):
+                # common pattern: targets wrapped once
+                targets = targets[0]
+
+            self._save_local_records(
+                data_sample=data_sample,
+                preds=preds,
+                # FIXME: generalize
+                targets=targets,
+                metadata=metadata
+            )
+
+        else:
+            raise ValueError(f"Unknown aggregate_mode: {self.aggregate_mode}")
+
+    def _save_local_records(self, 
+                            data_sample: dict,
+                            preds: Dict[str, Any], 
+                            targets: List[Dict[str, Any]],
+                            metadata: dict
+    ):
+        """
+        No comms, no stitching: save/plot per-cube (per-rank local) records.
+        """
+        # determine batch size from metainfo
+        if "prepared_id" not in metadata:
+            raise KeyError("metainfo must contain 'prepared_id' for save_local mode")
+        B = len(metadata["prepared_id"])
+
+        rank_dir = Path(self.inference_save_dir) / f"rank{self.rank:03d}"
+        os.makedirs(rank_dir, exist_ok=True)
+
+        regions: List[Dict[str, Any]] = []
+        identifiers: List[str] = []
+
+        for b in range(B):
+            roi = int(metadata["prepared_id"][b])
+            tile_nm = str(metadata["tile_name"][b])
+
+            t0 = int(metadata["time_start"][b])
+            T = int(metadata["time_size"][b])
+            t1 = t0 + T
+
+            z0 = int(metadata["z_start"][b])
+            sz = int(metadata["z_size"][b])
+            z1 = z0 + sz
+            y0 = int(metadata["y_start"][b])
+            sy = int(metadata["y_size"][b])
+            y1 = y0 + sy
+            x0 = int(metadata["x_start"][b])
+            sx = int(metadata["x_size"][b])
+            x1 = x0 + sx
+
+            region = dict(
+                roi=roi,
+                tile_name=tile_nm,
+                coords=(t0, t1, z0, z1, y0, y1, x0, x1),
+                coord_frame="voxel",
+            )
+            ident = (
+                f"rank{self.rank:03d}_roi{roi}_{tile_nm}"
+                f"_t{t0}-{t1}_z{z0}-{z1}_y{y0}-{y1}_x{x0}-{x1}"
+            )
+
+            regions.append(region)
+            identifiers.append(ident)
+
+        save_instance_predictions(
+            # save_instance_predictions expects BTZYXC format
+            images=data_sample["data_tensor"].unsqueeze(1),
+            save_dir=rank_dir,
+            identifiers=identifiers,
+            preds=preds,
+            targets=targets,
+            regions=regions,
+            pred_boxes_format=self.pred_boxes_format,
+            gt_boxes_format=self.gt_boxes_format,
+            scale_gt_boxes=self.scale_gt_boxes,
+            input_format=self.input_format,
+            ortho=True,
+        )
 
     def finalize(self):
-        for key in list(self._tile_state.keys()):
-            self._finish_if_done(key, force=True)
+        if self.stitch_volume:
+            for key in list(self._tile_state.keys()):
+                self._finish_if_done(key, force=True)
         barrier()

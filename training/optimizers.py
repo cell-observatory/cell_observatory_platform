@@ -49,6 +49,17 @@ def get_optimizer(
             betas=tuple(config.optimizers.betas),
             eps=config.optimizers.eps,
         )
+    #NOTE: sometimes DeepSpeed's fused AdamW has issues, so we 
+    #      fall back to torch's implementation
+    elif optimizer == "adamw_torch":
+        opt = torch.optim.AdamW(
+            params,
+            lr=config.optimizers.lr,
+            weight_decay=config.optimizers.wd,
+            betas=tuple(config.optimizers.betas),
+            eps=config.optimizers.eps,
+            fused=True
+        )
     elif optimizer == "lamb":
         opt = FusedLamb(
             params,

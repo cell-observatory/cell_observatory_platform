@@ -9,6 +9,7 @@ from ray.train import report
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
 from cell_observatory_platform.utils.cleanup import unlink_shared_memory
+from cell_observatory_platform.data.dataloaders import get_dataloader
 
 
 def test_access_to_storage_server(config):
@@ -17,12 +18,10 @@ def test_access_to_storage_server(config):
 
 
 def _test_dataloader_ray_dist(config):
-    trainer_cls = get_class(config.trainer)
-    trainer = trainer_cls(config)
-
+    train_dataloader, val_dataloader, dataloader_config, _, _, _ = get_dataloader(config)
     expected_dims = len(list(config.datasets.input_shape)) + 1
 
-    for idx, data_sample in enumerate(trainer.train_dataloader):
+    for idx, data_sample in enumerate(train_dataloader):
         data_tensor = data_sample["data_tensor"]
 
         assert isinstance(data_tensor, torch.Tensor), "data_tensor should be a Torch tensor"

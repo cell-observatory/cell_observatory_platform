@@ -21,16 +21,7 @@ defaults:
 experiment_name: mae_large_128x256x256_300_epoch_lr_0p0001_mask_0p7_fourier_loss_opt_lamb
 wandb_project: testing
 
-# task
-task: pretrain_mae
-
-# Model type
-network: mae
-
 backend: DEEPSPEED
-
-# engine type
-engine: deepspeed
 
 # distributed framework
 distributed_framework: ray

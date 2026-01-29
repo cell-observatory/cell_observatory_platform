@@ -55,7 +55,8 @@ def mask_ids_to_masks(batch_size, spatial_shape, mask_ids_batch, masks, device):
 
 
 def delta2bbox(
-    proposals, deltas, max_shape=None, whd_ratio_clip=16 / 1000, clip_border=True, add_ctr_clamp=False, ctr_clamp=32
+    proposals, deltas, max_shape=None, whd_ratio_clip=16 / 1000, 
+    clip_border=True, add_ctr_clamp=False, ctr_clamp=32
 ):
     dxyz = deltas[..., :3]
     whd = deltas[..., 3:]
@@ -122,7 +123,8 @@ def convert_bbox_format(bboxes,
                         bbox_input_format, 
                         bbox_output_format, 
                         normalize: bool = False, 
-                        spatial_size: Optional[Sequence[float]] = None
+                        spatial_size: Optional[Sequence[float]] = None,
+                        scale_factors: Optional[Tensor] = None
 ) -> Tensor:
     """
     Convert bounding boxes from one format to another.
@@ -132,20 +134,33 @@ def convert_bbox_format(bboxes,
     bbox_output_format = bbox_output_format.lower()
 
     if bbox_input_format == bbox_output_format:
+        if scale_factors is not None:
+            bboxes = bboxes * scale_factors.to(bboxes.device)
         return bboxes
     if bbox_input_format == "cxcyczwhd" and bbox_output_format == "xyzxyz":
-        return box_cxcyczwhd_to_xyzxyz(bboxes)
+        boxes = box_cxcyczwhd_to_xyzxyz(bboxes)
+        if scale_factors is not None:
+            boxes = boxes * scale_factors.to(boxes.device)
+        return boxes
     elif bbox_input_format == "xyzxyz" and bbox_output_format == "cxcyczwhd":
-        return box_xyzxyz_to_cxcyczwhd(bboxes, normalize=normalize, spatial_size=spatial_size)
+        boxes = box_xyzxyz_to_cxcyczwhd(bboxes, normalize=normalize, spatial_size=spatial_size)
+        if scale_factors is not None:
+            boxes = boxes * scale_factors.to(boxes.device)
+        return boxes
     elif bbox_input_format == "zyxzyx" and bbox_output_format == "cxcyczwhd":
         # zyxzyx -> xyzxyz -> cxcyczwhd
-        bboxes = bboxes[:, [2, 1, 0, 5, 4, 3]]
-        return box_xyzxyz_to_cxcyczwhd(bboxes, normalize=normalize, spatial_size=spatial_size)
+        boxes = bboxes[:, [2, 1, 0, 5, 4, 3]]
+        boxes = box_xyzxyz_to_cxcyczwhd(boxes, normalize=normalize, spatial_size=spatial_size)
+        if scale_factors is not None:
+            boxes = boxes * scale_factors.to(boxes.device)
+        return boxes
     elif bbox_input_format == "cxcyczwhd" and bbox_output_format == "zyxzyx":
         # cxcyczwhd -> xyzxyz -> zyxzyx
-        bboxes = box_cxcyczwhd_to_xyzxyz(bboxes)
-        bboxes = bboxes[:, [2, 1, 0, 5, 4, 3]]
-        return bboxes
+        boxes = box_cxcyczwhd_to_xyzxyz(bboxes)
+        boxes = boxes[:, [2, 1, 0, 5, 4, 3]]
+        if scale_factors is not None:
+            boxes = boxes * scale_factors.to(boxes.device)
+        return boxes
     else:
         raise ValueError(f"Unsupported bbox format conversion from {bbox_input_format} to {bbox_output_format}")
 
@@ -271,7 +286,7 @@ def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
     Compute the bounding boxes around the provided masks.
     The masks should be in format [N, D, H, W] where N is
     the number of masks, (D, H, W) are the spatial dimensions.
-    Returns a [N, 6] tensors, with the boxes in xyxy format
+    Returns a [N, 6] tensors, with the boxes in xyzxyz format
     """
     if masks.numel() == 0:
         return torch.zeros((0, 6), device=masks.device)
@@ -369,6 +384,7 @@ def _upcast(t: Tensor) -> Tensor:
 
 def bitmask_to_boxes(masks: torch.Tensor) -> torch.Tensor:
     assert masks.dim() == 4, f"Expected (N, D, H, W), got {masks.shape}"
+    assert masks.dtype == torch.bool, f"Expected masks.dtype == torch.bool, got {masks.dtype}"
 
     N, D, H, W = masks.shape
     device = masks.device
@@ -376,19 +392,13 @@ def bitmask_to_boxes(masks: torch.Tensor) -> torch.Tensor:
     if N == 0:
         return masks.new_zeros((0, 6), dtype=torch.float32)
 
-    # Treat non-zero as foreground
-    if masks.dtype is torch.bool:
-        masks_bool = masks
-    else:
-        masks_bool = masks != 0
-
     boxes = torch.zeros((N, 6), dtype=torch.float32, device=device)
 
     # occupancy along each principal axis
     # shapes: (N, W), (N, H), (N, D)
-    x_any = masks_bool.any(dim=(1, 2))  # collapse D,H -> occupancy along X
-    y_any = masks_bool.any(dim=(1, 3))  # collapse D,W -> occupancy along Y
-    z_any = masks_bool.any(dim=(2, 3))  # collapse H,W -> occupancy along Z
+    x_any = masks.any(dim=(1, 2))  # collapse D,H -> occupancy along X
+    y_any = masks.any(dim=(1, 3))  # collapse D,W -> occupancy along Y
+    z_any = masks.any(dim=(2, 3))  # collapse H,W -> occupancy along Z
 
     for idx in range(N):
         xs = torch.where(x_any[idx])[0]

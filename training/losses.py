@@ -1,6 +1,7 @@
 import contextlib
 import copy
 import functools
+from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -234,6 +235,11 @@ class DETR_Set_Loss(nn.Module):
 
         self.with_segmentation = with_segmentation
 
+        if self.with_segmentation:
+            self.costs = ["cls", "box", "mask"]
+        else:
+            self.costs = ["cls", "box"]
+
         self.losses = losses
         self.loss_weight_dict = loss_weight_dict
         self.no_object_loss_weight = no_object_loss_weight
@@ -406,17 +412,17 @@ class DETR_Set_Loss(nn.Module):
         return losses
 
     def preprocess_masks(self, mask_dict):
-        predicted_denoise_bboxes, denoise_target_indices = (
-            mask_dict["predicted_denoise_bboxes"],
+        predicted_denoise_outputs, denoise_target_indices = (
+            mask_dict["predicted_denoise_outputs"],
             mask_dict["denoise_target_indices"],
         )
         max_query_pad_size, denoise_queries_per_label = (
             mask_dict["max_query_pad_size"],
             mask_dict["denoise_queries_per_label"],
         )
-        query_pad_size_per_label = max_query_pad_size // denoise_queries_per_label
+        max_num_labels = max_query_pad_size // denoise_queries_per_label
         num_targets = denoise_target_indices.numel()
-        return predicted_denoise_bboxes, num_targets, query_pad_size_per_label, denoise_queries_per_label
+        return predicted_denoise_outputs, num_targets, max_num_labels, denoise_queries_per_label
 
     def _get_query_indices(self, indices):
         batch_indices = torch.cat(
@@ -445,36 +451,30 @@ class DETR_Set_Loss(nn.Module):
 
         # compute loss for denoising and mask predictions
         if self.denoise and denoise_predictions is not None:
-            predicted_denoise_bboxes, num_targets, query_pad_size_per_label, denoise_queries_per_label = (
+            predicted_denoise_outputs, num_targets, max_num_labels, denoise_queries_per_label = (
                 self.preprocess_masks(denoise_predictions)
             )
             denoise_query_target_indices = []
             for target in targets:
                 # we have L target labels and for each label we create denoise_queries_per_label queries
                 # hence we have L * denoise_queries_per_label queries in total, here we get their indices
-                # however, in decoder each batch element has a different number of target labels, so we need to pad the indices
-                # to the max number of denoise queries per label, which is what we do
+                # however, in decoder each batch element has a different number of target labels, so we need to pad
                 target_labels = target["labels"]
                 if len(target_labels) > 0:
                     # (num_target_labels, ) = [0,1,...,num_target_labels-1]
                     target_label_indices = torch.arange(0, len(target_labels)).long().cuda()
                     # (1, num_target_labels) -> (denoise_queries_per_label, num_target_labels)
-                    # hence we get [[0, 1, ..., num_target_labels-1], ....]
                     target_label_indices = target_label_indices.unsqueeze(0).repeat(denoise_queries_per_label, 1)
-                    # (denoise_queries_per_label, num_target_labels) -> (denoise_queries_per_label * num_target_labels, )
+                    # (denoise_queries_per_label, num_target_labels) -> (denoise_queries_per_label * num_target_labels)
                     denoise_query_target_index = target_label_indices.flatten()
-                    # build output indices into the predicted denoise queries:
-                    # torch.arange(R) gives [0,1,...,R−1], shape: (denoise_queries_per_label,)
-                    # multiply by pad_size P to get [r*P, r*P, ..., r*P], start offset for each row of queries
-                    # unsqueeze -> (R,1), then broadcast-add t row r becomes [r*P + 0, r*P + 1, ..., r*P + (num_target_labels-1)]]
+                    # shifts the target_label_indices by multiples of max_num_labels to account for padding to max_num_labels
                     padded_denoise_query_target_index = (
-                        (torch.tensor(range(denoise_queries_per_label)) * query_pad_size_per_label)
+                        (torch.tensor(range(denoise_queries_per_label)) * max_num_labels)
                         .long()
                         .cuda()
                         .unsqueeze(1)
                     )
-                    # broadcast addition: (denoise_queries_per_label, 1) + (1, num_target_labels) -> (denoise_queries_per_label, num_target_labels)
-                    # each row r becomes [r*P + 0, r*P + 1, ..., r*P + (num_target_labels-1)]
+                    # pad target label indices
                     padded_denoise_query_target_index = padded_denoise_query_target_index + target_label_indices
                     padded_denoise_query_target_index = padded_denoise_query_target_index.flatten()
                 else:
@@ -482,7 +482,7 @@ class DETR_Set_Loss(nn.Module):
                 denoise_query_target_indices.append((padded_denoise_query_target_index, denoise_query_target_index))
 
         # use Hungarian matcher to compute the indices of the matched predictions and targets
-        matched_target_indices = self.matcher(outputs_without_aux_data, targets)
+        matched_target_indices = self.matcher(outputs_without_aux_data, targets, costs=self.costs)
 
         # compute number of target boxes accross all nodes for normalization
         total_num_masks = sum(len(target["labels"]) for target in targets)
@@ -492,11 +492,11 @@ class DETR_Set_Loss(nn.Module):
 
         if is_torch_dist_initialized():
             torch.distributed.all_reduce(total_num_masks)
-        average_num_masks_per_node = torch.clamp(total_num_masks / get_world_size(), min=1).item()
+        average_num_masks_per_device = torch.clamp(total_num_masks / get_world_size(), min=1).item()
 
         losses = {}
         for loss in self.losses:
-            losses.update(self.compute_loss(loss, outputs, targets, matched_target_indices, average_num_masks_per_node))
+            losses.update(self.compute_loss(loss, outputs, targets, matched_target_indices, average_num_masks_per_device))
 
         # compute denosing losses if denoise is enabled
         if self.denoise and denoise_predictions is not None:
@@ -505,10 +505,10 @@ class DETR_Set_Loss(nn.Module):
                 extra_losses.update(
                     self.compute_loss(
                         loss,
-                        predicted_denoise_bboxes,
+                        predicted_denoise_outputs,
                         targets,
                         denoise_query_target_indices,
-                        average_num_masks_per_node * denoise_queries_per_label,
+                        average_num_masks_per_device * denoise_queries_per_label,
                     )
                 )
             extra_losses = {k + f"_denoise": v for k, v in extra_losses.items()}
@@ -527,30 +527,33 @@ class DETR_Set_Loss(nn.Module):
             losses.update(extra_losses)
 
         # in case of auxiliary losses, we repeat loss computation with the output of intermediate layers
-        if "auxiliary_outputs" in outputs:
-            first_auxiliary_output_idx = 0 if "intermediate_outputs" in outputs else 1
+        # we do not do denoising for auxiliary outputs so we do not compute if not training
+        if "auxiliary_outputs" in outputs and self.training:
+            # skip the first auxiliary output (pre-decoder predictions using output_memory_topk OR learned queries)
+            # if "intermediates" not in outputs, i.e. if we did not do two-stage pipeline 
+            first_auxiliary_output_idx = 0 if "intermediates" in outputs else 1
             for i, auxiliary_output in enumerate(outputs["auxiliary_outputs"]):
                 # hungarian matcher to get indices of the matched auxiliary_outputs and targets
-                auxiliary_matched_target_indices = self.matcher(auxiliary_output, targets)
+                auxiliary_matched_target_indices = self.matcher(auxiliary_output, targets, costs=self.costs)
                 for loss in self.losses:
                     extra_losses = self.compute_loss(
-                        loss, auxiliary_output, targets, auxiliary_matched_target_indices, average_num_masks_per_node
+                        loss, auxiliary_output, targets, auxiliary_matched_target_indices, average_num_masks_per_device
                     )
                     extra_losses = {k + f"_{i}": v for k, v in extra_losses.items()}
                     losses.update(extra_losses)
 
                 if i >= first_auxiliary_output_idx:
                     if self.denoise and denoise_predictions is not None:
-                        auxiliary_predicted_denoise_bboxes = predicted_denoise_bboxes["auxiliary_outputs"][i]
+                        auxiliary_predicted_denoise_outputs = predicted_denoise_outputs["auxiliary_outputs"][i]
                         extra_losses = {}
                         for loss in self.denoise_losses:
                             extra_losses.update(
                                 self.compute_loss(
                                     loss,
-                                    auxiliary_predicted_denoise_bboxes,
+                                    auxiliary_predicted_denoise_outputs,
                                     targets,
                                     denoise_query_target_indices,
-                                    average_num_masks_per_node * denoise_queries_per_label,
+                                    average_num_masks_per_device * denoise_queries_per_label,
                                 )
                             )
                         extra_losses = {k + f"_denoise_{i}": v for k, v in extra_losses.items()}
@@ -567,12 +570,14 @@ class DETR_Set_Loss(nn.Module):
 
                         losses.update(extra_losses)
 
-        if "intermediate_outputs" in outputs:
-            intermediate_outputs = outputs["intermediate_outputs"]
-            intermediate_matched_target_indices = self.matcher(intermediate_outputs, targets)
+        # initial encoder predictions
+        if "intermediates" in outputs:
+            intermediate_outputs = outputs["intermediates"]
+            intermediate_matched_target_indices = self.matcher(intermediate_outputs, targets, costs=self.costs)
             for loss in self.losses:
                 extra_losses = self.compute_loss(
-                    loss, intermediate_outputs, targets, intermediate_matched_target_indices, average_num_masks_per_node
+                    loss, intermediate_outputs, targets, 
+                    intermediate_matched_target_indices, average_num_masks_per_device
                 )
                 extra_losses = {k + f"_intermediate": v for k, v in extra_losses.items()}
                 losses.update(extra_losses)
@@ -871,3 +876,278 @@ def build_plainDETR_Set_Loss(
     )
     criterion = PlainDETR_Set_Loss(**criterion_args)
     return criterion
+
+
+class Mask2FormerSetLoss(nn.Module):
+    """
+    This class computes the loss for DETR.
+    The process happens in two steps:
+        1) we compute hungarian assignment between ground truth boxes and the outputs of the model
+        2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
+    """
+
+    def __init__(
+        self, 
+        num_classes: int,
+        matcher: nn.Module,
+        loss_weight_dict: dict,
+        no_object_loss_weight: float,
+        losses: list[str],
+        num_points: int,
+        oversample_ratio: int,
+        importance_sample_ratio: float,
+    ):
+        """
+        Create the criterion.
+        Parameters:
+            num_classes: number of object categories, omitting the special no-object category
+            matcher: module able to compute a matching between targets and proposals
+            loss_weight_dict: dict containing as key the names of the losses and as values their relative weight.
+            no_object_loss_weight: relative classification weight applied to the no-object category
+            losses: list of all the losses to be applied. See get_loss for list of available losses.
+        """
+        super().__init__()
+        self.num_classes = num_classes
+        self.matcher = matcher
+        self.loss_weight_dict = loss_weight_dict
+        self.no_object_loss_weight = no_object_loss_weight
+        self.losses = losses
+        empty_weight = torch.ones(self.num_classes + 1)
+        empty_weight[-1] = self.no_object_loss_weight
+        self.register_buffer("empty_weight", empty_weight)
+
+        # pointwise mask loss parameters
+        self.num_points = num_points
+        self.oversample_ratio = oversample_ratio
+        self.importance_sample_ratio = importance_sample_ratio
+        
+        # Used to tell HungarianMatcher which costs to use
+        self.costs = ["cls", "mask"]        
+
+    def loss_labels(self, outputs, targets, indices, num_masks):
+        """Classification loss (NLL)
+        targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
+        """
+        # model predictions: (B, num_queries, num_classes)
+        source_logits = outputs["pred_logits"].float()
+
+        # idx is a tuple (batch_idx, src_idx), batch_idx is the index of the batch
+        # for a given set of matched source and target indices
+        # hence idx = (B, num_queries) where each element is batch idx, source query
+        query_indices = self._get_query_indices(indices)
+
+        # get the labels for all targets that were matched to the source indices
+        # indices is a list of tuples (src_idx, tgt_idx) where src_idx are the indices of
+        # the source boxes that were matched to the target boxes, and similar for tgt_idx
+        target_labels = torch.cat(
+            [
+                target["labels"][matched_target_idx]
+                for target, (_, matched_target_idx) in zip(targets, indices)
+            ]
+        ).to(source_logits.device)
+        # make tensor (B, num_queries) with values equal to num_classes for all elements
+        target_classes = torch.full(
+            source_logits.shape[:2], self.num_classes, dtype=torch.int64, device=source_logits.device
+        )
+        # for each (batch_idx, source_idx) tuple we set the corresponding target label
+        # in target_classes to the value of target_labels, thus target_classes
+        # is now of the form (batch_idx, num_queries) = matched target label
+        target_classes[query_indices] = target_labels
+
+        # compute cross entropy loss between source logits (B, num_queries, num_classes) and target_classes (B, num_queries)
+        loss_ce = F.cross_entropy(
+            source_logits.transpose(1, 2),
+            target_classes,
+            self.empty_weight.to(source_logits.dtype),
+        )
+        return {"loss_labels_ce": loss_ce}
+
+    def loss_masks(self, outputs, targets, indices, num_masks):
+        """
+        Compute mask loss: Focal Loss and Dice Loss.
+        """
+        query_indices = self._get_query_indices(indices)
+        target_class_indices = self._get_target_class_indices(indices)
+
+        source_masks = outputs["pred_masks"][query_indices]
+        masks = [target["masks"] for target in targets]
+
+        # TODO: use valid to mask invalid areas due to padding in loss
+        target_masks, valid = batch_tensors(masks)
+        target_masks = target_masks.to(source_masks)
+        target_masks = target_masks[target_class_indices]
+
+        # no need to upsample predictions as we are using normalized coordinates
+        # source/target masks: (N, 1, D, H, W)
+        source_masks = source_masks[:, None]
+        target_masks = target_masks[:, None]
+
+        # Motivated by PointRend & Implicit PointRend
+        # train with mask loss calculated on K randomly
+        # sampled points instead of whole mask
+        with torch.no_grad():
+            # sample point_coordinates
+            point_coords = get_uncertain_point_coords_with_randomness(
+                source_masks,
+                lambda logits: calculate_uncertainty(logits),
+                self.num_points,  # K
+                self.oversample_ratio,
+                # ratio of points that are sampled via importance sampling
+                self.importance_sample_ratio,
+            )
+            # samples from target mask at point_coords
+            point_labels = point_sample(
+                target_masks,
+                point_coords,
+                align_corners=False,
+            ).squeeze(1)
+
+        # samples from source mask at point_coords
+        point_logits = point_sample(
+            source_masks,
+            point_coords,
+            align_corners=False,
+        ).squeeze(1)
+
+        # compute losses: cross entropy classifcation loss and dice mask loss
+        losses = {
+            "loss_mask_ce": sigmoid_ce_loss(point_logits, point_labels, num_masks),
+            "loss_mask_dice": dice_loss(point_logits, point_labels, num_masks),
+        }
+
+        del source_masks, target_masks
+        return losses
+
+    def _get_query_indices(self, indices):
+        batch_indices = torch.cat(
+            [torch.full_like(source_idx, i) for i, (source_idx, target_idx) in enumerate(indices)]
+        )
+        source_indices = torch.cat([source_idx for (source_idx, target_idx) in indices])
+        return batch_indices, source_indices
+
+    def _get_target_class_indices(self, indices):
+        batch_indices = torch.cat(
+            [torch.full_like(target_idx, i) for i, (source_idx, target_idx) in enumerate(indices)]
+        )
+        target_indices = torch.cat([target_idx for (source_idx, target_idx) in indices])
+        return batch_indices, target_indices
+
+    def get_loss(self, loss, outputs, targets, indices, num_masks):
+        loss_map = {
+            'labels': self.loss_labels,
+            'masks': self.loss_masks,
+        }
+        assert loss in loss_map, f"do you really want to compute {loss} loss?"
+        return loss_map[loss](outputs, targets, indices, num_masks)
+
+    def forward(self, outputs, targets):
+        """This performs the loss computation.
+        Parameters:
+             outputs: dict of tensors, see the output specification of the model for the format
+             targets: list of dicts, such that len(targets) == batch_size.
+                      The expected keys in each dict depends on the losses applied, see each loss' doc
+        """
+        outputs_without_aux_data = {k: v for k, v in outputs.items() if k != "auxiliary_outputs"}
+
+        # use Hungarian matcher to compute the indices of the matched predictions and targets
+        matched_target_indices = self.matcher(outputs_without_aux_data, targets)
+
+        # compute number of target boxes accross all nodes for normalization
+        total_num_masks = sum(len(target["labels"]) for target in targets)
+        total_num_masks = torch.as_tensor(
+            [total_num_masks], dtype=torch.float, device=next(iter(outputs.values())).device
+        )
+
+        if is_torch_dist_initialized():
+            torch.distributed.all_reduce(total_num_masks)
+        average_num_masks_per_node = torch.clamp(total_num_masks / get_world_size(), min=1).item()
+
+        losses = {}
+        for loss in self.losses:
+            losses.update(self.get_loss(loss, outputs, targets, matched_target_indices, average_num_masks_per_node))
+
+        # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
+        if "auxiliary_outputs" in outputs:
+            for i, aux_outputs in enumerate(outputs["auxiliary_outputs"]):
+                # hungarian matcher to get indices of the matched auxiliary_outputs and targets
+                auxiliary_matched_target_indices = self.matcher(aux_outputs, targets)
+                for loss in self.losses:
+                    extra_losses = self.get_loss(loss, aux_outputs, targets, auxiliary_matched_target_indices, average_num_masks_per_node)
+                    extra_losses = {k + f"_{i}": v for k, v in extra_losses.items()}
+                    losses.update(extra_losses)
+
+        return losses
+
+    def __repr__(self):
+        head = "Criterion " + self.__class__.__name__
+        body = [
+            "matcher: {}".format(self.matcher.__repr__(_repr_indent=8)),
+            "losses: {}".format(self.losses),
+            "loss_weight_dict: {}".format(self.loss_weight_dict),
+            "num_classes: {}".format(self.num_classes),
+            "no_object_loss_weight: {}".format(self.no_object_loss_weight),
+            "num_points: {}".format(self.num_points),
+            "oversample_ratio: {}".format(self.oversample_ratio),
+            "importance_sample_ratio: {}".format(self.importance_sample_ratio),
+        ]
+        _repr_indent = 4
+        lines = [head] + [" " * _repr_indent + line for line in body]
+        return "\n".join(lines)
+class UnsupervisedMSELoss(nn.Module):
+    def __init__(self):
+        """
+        Computes the unsupervised MSE loss.
+        
+        "
+        (Unsupervised mean squared error). 
+        Given a noisy input signal y ∈ Rn and three noisy references a, b, c ∈ Rn 
+        the unsupervised mean squared error of a denoiser f is defined as: 
+        uMSE = (1/n) Σ (aᵢ - f(y)ᵢ)² - (bᵢ - cᵢ)² / 2
+        the uMSE is a consistent estimator of the MSE as long as 
+        (1) the noisy input and the noisy references are independent, 
+        (2) their means equal the corresponding entries of the ground-truth clean signal, 
+        (3) their higher-order moments are bounded. 
+        
+        These conditions are satisfied by most noise models of interest in signal
+        and image processing, such as Poisson shot noise or additive Gaussian noise. 
+        ", Marcos-Morales et al., 2023, p.4 https://doi.org/10.48550/arXiv.2210.05553
+        
+        """
+        super().__init__()
+
+    def forward(
+        self,
+        predictions: torch.Tensor,
+        targets: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        num_patches: int,
+        aux_loss_meta: dict | None = None,
+    ) -> tuple[torch.Tensor, dict | None]:
+        """
+        Args:
+            predictions: Predicted denoised signal f(y)
+            targets: Tuple of three noisy references (a, b, c) with same shape as predictions
+            num_patches: Number of patches (for normalization)
+            aux_loss_meta: Optional auxiliary loss metadata
+            
+        Returns:
+            loss: Scalar unsupervised MSE loss
+            aux_loss_meta: None (no auxiliary losses)
+        """
+        # Unpack the three noisy references a, b, c
+        a, b, c = targets # B, N, px_p_token
+        
+        # Compute MSE between reference a and predictions: (1/n) Σ (a_i - f(y)_i)²
+        mse_term = (a - predictions).pow(2)
+        
+        # Compute the correction term: (b_i - c_i)² / 2
+        correction_term = (b - c).pow(2) / 2
+        
+        
+        
+        # uMSE = (1/n) Σ (aᵢ - f(y)ᵢ)² - (bᵢ - cᵢ)² / 2
+        # mean over pixels, then mean over patches 
+        # (should be the same, but sticking to the convention established in 
+        # the L1/L2 losses above)
+        loss = (mse_term - correction_term).mean(dim=-1).sum() / num_patches
+        
+        return loss, None

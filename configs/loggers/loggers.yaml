@@ -21,13 +21,9 @@ event_writers:
       dir: ${loggers.logdir}
       name: ${experiment_name}
       tags: 
-        - pretrain
-        - ${network}
         - ${job_type}
         - ${trainer}
-        - ${engine}
         - ${quantization}
-        - ${task}
       # step to resume from if resuming a run 
       # (if id is set to an existing run)
       resume_from: null

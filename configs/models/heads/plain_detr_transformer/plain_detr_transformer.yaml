@@ -1,3 +1,38 @@
+# Transformer
+BUILD: cell_observatory_platform.models.heads.plain_detr_transformer.BUILD
+d_model: 384
+nheads: 8
+num_feature_levels: 1
+two_stage: true
+norm_type: pre_norm
+decoder_type: global_rpe_decomp
+proposal_feature_levels: 1
+proposal_in_stride: 16
+proposal_tgt_strides: [16] #[4, 8, 16]
+proposal_min_size: 50
+add_transformer_encoder: true
+dim_feedforward: 2048
+dropout: 0.0
+activation: relu
+normalize_before: true
+num_encoder_layers: 6
+global_decoder_args:
+  hidden_dim: 384
+  dropout: 0.0
+  proposal_in_stride: 16
+  norm_type: pre_norm
+  dim_feedforward: 2048
+  num_heads: 8
+  qkv_bias: true
+  qk_scale: null
+  attn_drop: 0.0
+  proj_drop: 0.0
+  dec_layers: 6
+  nheads: 8
+  look_forward_twice: true
+  rpe_hidden_dim: 512
+  rpe_type: linear
+  reparam: true
 # BUILD: cell_observatory_platform.models.heads.plain_detr_transformer.BUILD
 # d_model: 384
 # nheads: 8

@@ -14,6 +14,7 @@ Adapted from:
 # ------------------------------------------------------------------------
 """
 
+import functools
 from typing import List, Optional
 import functools
 
@@ -62,7 +63,6 @@ class PlainDETRBackbone(nn.Module):
             BUILD_ADAPTER = get_method(adapter_args["BUILD"])
             self.adapter = BUILD_ADAPTER(adapter_args)
         else:
-            # TODO: implement logic to handle positional encodings without adapter
             # raise NotImplementedError("Backbone adapter must be specified for PlainDETRBackbone.")
             self.with_backbone_adapter = False
 
@@ -91,7 +91,6 @@ class PlainDETRBackbone(nn.Module):
         self.out_channels = self.input_shape[-1]
         self.backbone_output_format = backbone_output_format
         self.backbone_returns_sequence = self.backbone_output_format == "sequence"
-        
     def forward(self, data_sample: dict) -> List[dict]:
         features = self.backbone.forward_features(data_sample["data_tensor"])
 

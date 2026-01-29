@@ -374,6 +374,10 @@ class MaskedAutoEncoder(nn.Module):
         predictions = self.masked_encoder.patch_embedding._unpatchify(x, out_channels=None)
         return predictions
 
+    def forward_features(self, inputs, masks=None, concat_masks=True):
+        x = self.masked_encoder.forward_features(inputs, masks=masks)
+        return x
+
 
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(MaskedAutoEncoder.__init__)

@@ -2,6 +2,7 @@ import functools
 import os
 import time
 from typing import Any, Dict, Optional, Tuple
+from dataclasses import dataclass, asdict, field
 
 import numpy as np
 import torch
@@ -243,7 +244,7 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         preprocess_t0 = time.time()
 
         inputs = data_sample["data_tensor"]
-        meta = data_sample.get("metainfo", {})
+        meta = data_sample["metainfo"]
 
         if inputs.dtype != self.dtype:
             inputs = inputs.to(self.dtype)
@@ -252,7 +253,7 @@ class BaseFinetunePreprocessor(RayPreprocessor):
 
         return inputs, meta, preprocess_t0, data_time_value
 
-    def _apply_transforms(self, data):
+    def _apply_transforms(self, data: torch.Tensor | dict) -> tuple[torch.Tensor | dict, float]:
         """
         Apply transforms to either:
           - a torch.Tensor (image only), or
@@ -279,7 +280,6 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         transform_time: float,
     ) -> dict:
         """Attach masking info and timing, returning the standard dict."""
-
         tokens_per_batch = inputs.shape[0] * self.seq_len
 
         if self.with_masking:
@@ -344,6 +344,100 @@ class BaseFinetunePreprocessor(RayPreprocessor):
 
 
 # --------------------------------------------------------------------------- #
+# Denoising task
+# --------------------------------------------------------------------------- #
+
+
+class DenoisingPreprocessor(BaseFinetunePreprocessor):
+    """
+    Task: denoising
+    - inputs: noisy image (in counts, uint16 range)
+    - targets: clean image (in counts, uint16 range)
+
+    args:
+    - denoising_type: str representing the type of denoising task to perform
+    - transforms_list: list of transforms to apply to the input data
+    
+    Current denoising tasks:
+    - microscopy: adds realistic sensor noise to the input data
+    
+    NOTE: Noise is added as a transform to the input data.
+    If there is added noise (e.g. sensor noise), it should be added to the transforms_list.
+
+    """
+    
+    def __init__(
+        self, 
+        denoising_type: str,
+        transforms_list: Optional[list] = None,
+        *args, **kwargs,
+    ):
+        if denoising_type not in ("microscopy",):
+            raise ValueError(f"Unknown denoising type: {denoising_type}")
+        if (transforms_list is None or len(transforms_list) == 0) and denoising_type == "microscopy":
+            raise ValueError("transforms_list must be provided with at least one transform for microscopy denoising")
+
+        super().__init__(*args, transforms_list=transforms_list, **kwargs)
+
+        self.denoising_type = denoising_type
+
+    def _split_inputs_and_mask(self, inputs: torch.Tensor):
+        """
+        inputs: (B, Z, Y, X, C_full)
+        returns:
+          inputs_wo_mask: (B, Z, Y, X, C_full-1)
+          masks_labelmap: (B, Z, Y, X)
+        """
+        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
+        B, Z, Y, X, C = inputs.shape
+
+        if C < 2:
+            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
+
+        # For zero-copy we *require* the mask to be the last channel
+        if self.mask_idx not in (-1, C - 1):
+            raise ValueError(
+                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+            )
+
+        masks = inputs[..., -1].clone()  # (B, Z, Y, X), view
+        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
+        
+        return inputs_wo_mask, masks
+
+    def forward(self, data_sample: dict, data_time: float) -> dict:
+        inputs, meta, preprocess_t0, data_time_value = self._common_pre(
+            data_sample=data_sample,
+            data_time=data_time,
+        )
+        inputs_wo_mask, masks_labelmap = self._split_inputs_and_mask(inputs)
+        sample = {
+            "data_tensor": inputs_wo_mask,
+            "metainfo": meta,
+        }
+
+        sample, transform_time = self._apply_transforms(sample)
+
+        # TODO: Consider refactoring this to support non-transformer-based decoders
+        # Patchify targets for transformer-based decoders
+        targets = self.pe_patchify(
+            meta["targets"][0], 
+            channels=self.channels,
+        )
+
+        # FIXME: Streamline this so that we either consistently pass data_sample 
+        # or its components (e.g. data_tensor, metainfo, targets, etc.)
+        return self._finalize(
+            inputs=sample["data_tensor"],
+            meta=sample["metainfo"],
+            targets=targets,
+            data_time=data_time_value,
+            preprocess_t0=preprocess_t0,
+            transform_time=transform_time,
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Channel-splitting task
 # --------------------------------------------------------------------------- #
 
@@ -357,13 +451,16 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
     """
 
     def forward(self, data_sample: dict, data_time: float) -> dict:
-        inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
+        inputs, meta, preprocess_t0, data_time_value = self._common_pre(
+            data_sample=data_sample,
+            data_time=data_time,
+        )
 
         if self.channel_idx is None:
             raise ValueError("Channel axis 'C' not present in input_format; cannot channel_split.")
 
         # FIXME: consider if this is the correct order of operations
-        inputs, transform_time = self._apply_transforms(inputs)
+        inputs, transform_time = self._apply_transforms(data=inputs)
 
         # targets are per-channel patches from original (transformed) input
         targets = self.pe_patchify(inputs, channels=self.channels)
@@ -376,7 +473,7 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
             meta=meta,
             targets=targets,
             data_time=data_time_value,
-            preprocess_t0=t0,
+            preprocess_t0=preprocess_t0,
             transform_time=transform_time,
         )
 
@@ -450,9 +547,12 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             self.na_masks = None
 
     def forward(self, data_sample: dict, data_time: float) -> dict:
-        inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
+        inputs, meta, preprocess_t0, data_time_value = self._common_pre(
+            data_sample=data_sample,
+            data_time=data_time,
+        )
 
-        inputs, transform_time = self._apply_transforms(inputs)
+        inputs, transform_time = self._apply_transforms(data=inputs)
 
         if self.mode in ("upsample_space", "upsample_spacetime"):
             # targets are HR patches
@@ -477,7 +577,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             )
             inputs = downsample(
                 na_mask=na_mask,
-                inputs=inputs,
+                inputs=data_sample["data_tensor"],
                 spatial_dims=self.spatial_dims,
             )
         elif self.mode == "upsample_time":
@@ -490,7 +590,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             meta=meta,
             targets=targets,
             data_time=data_time_value,
-            preprocess_t0=t0,
+            preprocess_t0=preprocess_t0,
             transform_time=transform_time,
         )
 
@@ -516,6 +616,473 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
           },
       - computed image_sizes / orig_image_sizes / padding_mask,
       - (optionally) applied Resize() to image + masks + boxes + padding_mask.
+
+    Here we only:
+      - run any remaining transforms (if configured) on the
+        {"data_tensor", "metainfo"} dict, and
+      - package everything into the final standard output format.
+    """
+
+    def __init__(
+        self,
+        *,
+        transforms_list: list | None,
+        with_masking: bool,
+        mask_generator,
+        patch_shape: tuple[int, int, int],
+        dtype: torch.dtype | str,
+        input_format: str,
+        input_shape: tuple[int, ...],
+        seed: int | None = None,
+        mask_idx: int = -1,
+        bbox_data_format: Optional[str] = None,
+        bbox_output_format: Optional[str] = None,
+        debug_savepath: str = None,
+        expect_mask_channel: bool = True,
+        require_targets: bool = True,
+    ):
+        super().__init__(
+            transforms_list=transforms_list,
+            with_masking=with_masking,
+            mask_generator=mask_generator,
+            patch_shape=patch_shape,
+            dtype=dtype,
+            input_format=input_format,
+            input_shape=input_shape,
+            seed=seed,
+            mask_idx=mask_idx,
+        )
+
+        if bbox_data_format is None or bbox_output_format is None:
+            raise ValueError("bbox_data_format and bbox_output_format must be specified for instance_segmentation.")
+        self.bbox_data_format = bbox_data_format
+        self.bbox_output_format = bbox_output_format
+
+        self.debug_savepath = debug_savepath
+        self.require_targets = require_targets
+        self.expect_mask_channel = expect_mask_channel
+
+    def _split_inputs_and_mask(self, inputs: torch.Tensor):
+        """
+        inputs: (B, Z, Y, X, C_full)
+        returns:
+          inputs_wo_mask: (B, Z, Y, X, C_full-1)
+          masks_labelmap: (B, Z, Y, X)
+        """
+        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
+        B, Z, Y, X, C = inputs.shape
+
+        if C < 2:
+            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
+
+        # For zero-copy we *require* the mask to be the last channel
+        if self.mask_idx not in (-1, C - 1):
+            raise ValueError(
+                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+            )
+
+        masks = inputs[..., -1]  # (B, Z, Y, X), view
+        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
+
+        return inputs_wo_mask, masks
+
+    def forward(self, data_sample: dict, data_time: float) -> dict:
+        """
+        Now expects `data_sample` coming from FinetuneCollatorActor, i.e.:
+
+          data_sample = {
+            "data_tensor": (B, Z, Y, X, C_no_mask)   # already resized if Resize was used
+            "metainfo": {
+                ...,
+                "image_sizes": (B, 3),
+                "orig_image_sizes": (B, 3),
+                "padding_mask": (B, Z, Y, X),
+                "targets": List[Dict[str, Tensor]],  # masks/boxes/mask_ids/labels
+            }
+          }
+
+        We only:
+          - ensure dtype,
+          - run any remaining transforms on the full dict (if configured),
+          - unpack targets and finalize.
+        """
+        inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
+
+        if self.expect_mask_channel:
+            inputs_wo_mask, _ = self._split_inputs_and_mask(inputs)
+        else:
+            inputs_wo_mask = inputs
+
+        sample = {
+            "data_tensor": inputs_wo_mask,
+            "metainfo": meta,
+        }
+        sample, transform_time = self._apply_transforms(sample)
+
+        if self.debug_savepath is not None:
+            self._debug_visualize_batch(sample)
+
+        inputs = sample["data_tensor"]
+        meta = sample["metainfo"]
+        targets = meta.pop("targets", None)
+        if targets is None:
+            # Keep downstream contract: list[dict] length B (then _finalize wraps as [targets]).
+            B = inputs.shape[0]
+            targets = [
+                {
+                    "boxes": torch.zeros((0, 6), device=inputs.device, dtype=torch.float32),
+                    "mask_ids": torch.zeros((0,), device=inputs.device, dtype=torch.long),
+                    "labels": torch.zeros((0,), device=inputs.device, dtype=torch.long),
+                }
+                for _ in range(B)
+            ]
+
+        return self._finalize(
+            inputs=inputs,
+            meta=meta,
+            targets=targets,
+            data_time=data_time_value,
+            preprocess_t0=t0,
+            transform_time=transform_time,
+        )
+
+    def _debug_visualize_batch(self, sample: dict) -> None:
+        """
+        Debug helper:
+        - plots middle Z slice of the first sample's image
+        - plots corresponding mask slice
+        - overlays all bboxes on the image slice
+        - prints full metainfo
+        - raises an error to stop training
+        """
+        import matplotlib.pyplot as plt
+
+        inputs = sample["data_tensor"]
+        meta = sample["metainfo"]
+        targets = meta["targets"]
+
+        vol = inputs[0]
+        if self.input_format == "ZYXC":
+            # vol: (Z, Y, X, C)
+            Z, Y, X, C = vol.shape
+            z_mid = Z // 2
+            img_slice = vol[z_mid, :, :, 0].float().detach().cpu().numpy()
+        else:
+            raise RuntimeError(f"Debug visualize only supports ZYXC/TZYXC, got {self.input_format}")
+
+        lo = float(np.percentile(img_slice, 1))
+        hi = float(np.percentile(img_slice, 99))
+
+        tgt0 = targets[0]
+        masks = tgt0["masks"]
+        boxes = tgt0["boxes"]
+
+        masks = masks.float().detach().cpu()
+        boxes = boxes.float().detach().cpu()
+
+        if masks.ndim == 4:
+            N_inst, Zm, Ym, Xm = masks.shape
+            z_mid_mask = min(z_mid, Zm - 1)
+            label_slice = torch.zeros((Ym, Xm), dtype=torch.int64)
+            for idx in range(N_inst):
+                label_slice[masks[idx, z_mid_mask] > 0.5] = idx + 1
+        else:
+            label_slice = None
+
+        # label_slice = None  # skipping mask slice for now
+
+        boxes_zyx = convert_bbox_format(boxes, self.bbox_output_format, "zyxzyx")
+
+        print("=== DEBUG metainfo ===")
+        print(meta)
+        print("[DEBUG] inputs min/max:", float(inputs.min()), float(inputs.max()))
+        # print("[DEBUG] masks sum:", float(masks.sum()))
+
+        # Plot image + boxes and mask slice
+        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+
+        # 1) image with bboxes
+        ax_img = axs[0]
+        ax_img.imshow(img_slice, cmap="gray", vmin=lo, vmax=hi)
+        for b in boxes_zyx:
+            z1, y1, x1, z2, y2, x2 = b.tolist()
+            z1 = int(round(z1))
+            z2 = int(round(z2))
+            if z1 <= z_mid <= z2:
+                rect = plt.Rectangle(
+                    (x1, y1),
+                    (x2 - x1),
+                    (y2 - y1),
+                    fill=False,
+                    edgecolor="r",
+                    linewidth=1,
+                )
+                ax_img.add_patch(rect)
+        ax_img.set_title("Image + bboxes")
+        ax_img.set_axis_off()
+
+        # 2) mask slice (labelmap)
+        ax_mask = axs[1]
+        if label_slice is not None:
+            ax_mask.imshow(label_slice.numpy(), interpolation="nearest")
+            ax_mask.set_title("Instance mask slice")
+        else:
+            ax_mask.imshow(img_slice, cmap="gray")
+            ax_mask.set_title("Mask slice (none)")
+        ax_mask.set_axis_off()
+
+        plt.tight_layout()
+        plt.savefig(self.debug_savepath)
+
+        raise RuntimeError("Debug visualization — stopping after first batch.")
+
+# --------------------------------------------------------------------------- #
+# Semantic Segmentation task
+# --------------------------------------------------------------------------- #
+
+
+class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
+    """
+    Task: semantic segmentation
+
+    Assumes upstream FinetuneCollatorActor has already:
+      - split off the mask channel (instance IDs),
+      - built binary masks and 3D bboxes from mask_bbox_dict,
+      - populated metainfo["targets"] with per-element dicts:
+          {
+            "masks": (N_inst, Z, Y, X),
+            "boxes": (N_inst, 6),
+            "mask_ids": (N_inst,),
+            "labels": (N_inst,)
+          },
+      - computed image_sizes / orig_image_sizes / padding_mask,
+      - (optionally) applied Resize() to image + masks + boxes + padding_mask.
+
+    Here we only:
+      - run any remaining transforms (if configured) on the
+        {"data_tensor", "metainfo"} dict, and
+      - package everything into the final standard output format.
+    """
+
+    def __init__(
+        self,
+        *,
+        transforms_list: list | None,
+        with_masking: bool,
+        mask_generator,
+        patch_shape: tuple[int, int, int],
+        dtype: torch.dtype | str,
+        input_format: str,
+        input_shape: tuple[int, ...],
+        seed: int | None = None,
+        mask_idx: int = -1,
+        bbox_data_format: Optional[str] = None,
+        bbox_output_format: Optional[str] = None,
+        debug_savepath: str = None,
+    ):
+        super().__init__(
+            transforms_list=transforms_list,
+            with_masking=with_masking,
+            mask_generator=mask_generator,
+            patch_shape=patch_shape,
+            dtype=dtype,
+            input_format=input_format,
+            input_shape=input_shape,
+            seed=seed,
+            mask_idx=mask_idx,
+        )
+
+        self.debug_savepath = debug_savepath
+
+    def _split_inputs_and_mask(self, inputs: torch.Tensor):
+        """
+        inputs: (B, Z, Y, X, C_full)
+        returns:
+          inputs_wo_mask: (B, Z, Y, X, C_full-1)
+          masks_labelmap: (B, Z, Y, X)
+        """
+        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
+        B, Z, Y, X, C = inputs.shape
+
+        if C < 2:
+            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
+
+        # For zero-copy we *require* the mask to be the last channel
+        if self.mask_idx not in (-1, C - 1):
+            raise ValueError(
+                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+            )
+
+        masks = inputs[..., -1]  # (B, Z, Y, X), view
+        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
+
+        return inputs_wo_mask, masks
+
+    def forward(self, data_sample: dict, data_time: float) -> dict:
+        """
+        Now expects `data_sample` coming from FinetuneCollatorActor, i.e.:
+
+          data_sample = {
+            "data_tensor": (B, Z, Y, X, C_no_mask)   # already resized if Resize was used
+            "metainfo": {
+                ...,
+                "image_sizes": (B, 3),
+                "orig_image_sizes": (B, 3),
+                "padding_mask": (B, Z, Y, X),
+                "targets": List[Dict[str, Tensor]],  # masks/boxes/mask_ids/labels
+            }
+          }
+
+        We only:
+          - ensure dtype,
+          - run any remaining transforms on the full dict (if configured),
+          - unpack targets and finalize.
+        """
+        inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
+
+        inputs_wo_mask, masks_labelmap = self._split_inputs_and_mask(inputs)
+
+        sample = {
+            "data_tensor": inputs_wo_mask,
+            "metainfo": meta,
+            "masks_labelmap": masks_labelmap, # This is used to generate the boundary masks
+        }
+        sample, transform_time = self._apply_transforms(sample)
+        
+        boundary_masks = sample["boundary_masks"]
+        boundary_masks = boundary_masks.unsqueeze(1) # [B, 1, D, H, W]
+        # we only have one target, the boundary mask
+        labels = torch.ones((boundary_masks.shape[0], 1), dtype=torch.int64) # [B, 1]
+        targets = []
+        for batch_idx in range(boundary_masks.shape[0]):
+            targets.append({
+                "masks": boundary_masks[batch_idx], # [1, D, H, W] bool
+                "labels": labels[batch_idx], # [1] int
+            })
+        meta["targets"] = targets # List[Dict[str, Tensor | Tuple]]
+        
+        if self.debug_savepath is not None:
+            self._debug_visualize_batch(sample)
+
+        inputs = sample["data_tensor"]
+        meta = sample["metainfo"]
+        
+        return self._finalize(
+            inputs=inputs,
+            meta=meta,
+            targets=targets,
+            data_time=data_time_value,
+            preprocess_t0=t0,
+            transform_time=transform_time,
+        )
+
+    def _debug_visualize_batch(self, sample: dict) -> None:
+        """
+        Debug helper:
+        - plots middle Z slice of the first sample's image
+        - plots corresponding mask slice
+        - overlays all bboxes on the image slice
+        - prints full metainfo
+        - raises an error to stop training
+        """
+        import matplotlib.pyplot as plt
+
+        inputs = sample["data_tensor"]
+        meta = sample["metainfo"]
+        targets = meta["targets"]
+
+        vol = inputs[0]
+        if self.input_format == "ZYXC":
+            # vol: (Z, Y, X, C)
+            Z, Y, X, C = vol.shape
+            z_mid = Z // 2
+            img_slice = vol[z_mid, :, :, 0].float().detach().cpu().numpy()
+        else:
+            raise RuntimeError(f"Debug visualize only supports ZYXC/TZYXC, got {self.input_format}")
+
+        lo = float(np.percentile(img_slice, 1))
+        hi = float(np.percentile(img_slice, 99))
+
+        tgt0 = targets[0]
+        masks = tgt0["masks"]
+        boxes = tgt0["boxes"]
+
+        masks = masks.float().detach().cpu()
+        boxes = boxes.float().detach().cpu()
+
+        if masks.ndim == 4:
+            N_inst, Zm, Ym, Xm = masks.shape
+            z_mid_mask = min(z_mid, Zm - 1)
+            label_slice = torch.zeros((Ym, Xm), dtype=torch.int64)
+            for idx in range(N_inst):
+                label_slice[masks[idx, z_mid_mask] > 0.5] = idx + 1
+        else:
+            label_slice = None
+
+        # label_slice = None  # skipping mask slice for now
+
+        boxes_zyx = convert_bbox_format(boxes, self.bbox_output_format, "zyxzyx")
+
+        print("=== DEBUG metainfo ===")
+        print(meta)
+        print("[DEBUG] inputs min/max:", float(inputs.min()), float(inputs.max()))
+        # print("[DEBUG] masks sum:", float(masks.sum()))
+
+        # Plot image + boxes and mask slice
+        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+
+        # 1) image with bboxes
+        ax_img = axs[0]
+        ax_img.imshow(img_slice, cmap="gray", vmin=lo, vmax=hi)
+        for b in boxes_zyx:
+            z1, y1, x1, z2, y2, x2 = b.tolist()
+            z1 = int(round(z1))
+            z2 = int(round(z2))
+            if z1 <= z_mid <= z2:
+                rect = plt.Rectangle(
+                    (x1, y1),
+                    (x2 - x1),
+                    (y2 - y1),
+                    fill=False,
+                    edgecolor="r",
+                    linewidth=1,
+                )
+                ax_img.add_patch(rect)
+        ax_img.set_title("Image + bboxes")
+        ax_img.set_axis_off()
+
+        # 2) mask slice (labelmap)
+        ax_mask = axs[1]
+        if label_slice is not None:
+            ax_mask.imshow(label_slice.numpy(), interpolation="nearest")
+            ax_mask.set_title("Instance mask slice")
+        else:
+            ax_mask.imshow(img_slice, cmap="gray")
+            ax_mask.set_title("Mask slice (none)")
+        ax_mask.set_axis_off()
+
+        plt.tight_layout()
+        plt.savefig(self.debug_savepath)
+
+        raise RuntimeError("Debug visualization — stopping after first batch.")
+
+# --------------------------------------------------------------------------- #
+# Object Detection task
+# --------------------------------------------------------------------------- #
+
+class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
+    """
+    Task: object detection
+
+    Assumes upstream FinetuneCollatorActor has already:
+      - built 3D bboxes,
+      - populated metainfo["targets"] with per-element dicts:
+          {
+            "boxes": (N_obj, 6),
+            "labels": (N_obj,)
+          },
+      - computed image_sizes / orig_image_sizes / padding_mask,
+      - (optionally) applied Resize() to image + boxes + padding_mask.
 
     Here we only:
       - run any remaining transforms (if configured) on the
@@ -632,7 +1199,6 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         """
         Debug helper:
         - plots middle Z slice of the first sample's image
-        - plots corresponding mask slice
         - overlays all bboxes on the image slice
         - prints full metainfo
         - raises an error to stop training
@@ -656,35 +1222,18 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         hi = float(np.percentile(img_slice, 99))
 
         tgt0 = targets[0]
-        masks = tgt0["masks"]
         boxes = tgt0["boxes"]
 
-        masks = masks.float().detach().cpu()
         boxes = boxes.float().detach().cpu()
-
-        if masks.ndim == 4:
-            N_inst, Zm, Ym, Xm = masks.shape
-            z_mid_mask = min(z_mid, Zm - 1)
-            label_slice = torch.zeros((Ym, Xm), dtype=torch.int64)
-            for idx in range(N_inst):
-                label_slice[masks[idx, z_mid_mask] > 0.5] = idx + 1
-        else:
-            label_slice = None
-
-        # label_slice = None  # skipping mask slice for now
 
         boxes_zyx = convert_bbox_format(boxes, self.bbox_output_format, "zyxzyx")
 
         print("=== DEBUG metainfo ===")
         print(meta)
         print("[DEBUG] inputs min/max:", float(inputs.min()), float(inputs.max()))
-        # print("[DEBUG] masks sum:", float(masks.sum()))
 
-        # Plot image + boxes and mask slice
-        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-
-        # 1) image with bboxes
-        ax_img = axs[0]
+        # Plot image + boxes
+        fig, ax_img = plt.subplots(1, 1, figsize=(10, 5))
         ax_img.imshow(img_slice, cmap="gray", vmin=lo, vmax=hi)
         for b in boxes_zyx:
             z1, y1, x1, z2, y2, x2 = b.tolist()
@@ -702,16 +1251,6 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
                 ax_img.add_patch(rect)
         ax_img.set_title("Image + bboxes")
         ax_img.set_axis_off()
-
-        # 2) mask slice (labelmap)
-        ax_mask = axs[1]
-        if label_slice is not None:
-            ax_mask.imshow(label_slice.numpy(), interpolation="nearest")
-            ax_mask.set_title("Instance mask slice")
-        else:
-            ax_mask.imshow(img_slice, cmap="gray")
-            ax_mask.set_title("Mask slice (none)")
-        ax_mask.set_axis_off()
 
         plt.tight_layout()
         plt.savefig(self.debug_savepath)

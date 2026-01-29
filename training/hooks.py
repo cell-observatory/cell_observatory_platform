@@ -714,7 +714,10 @@ class BestMetricSaver(HookBase):
                     "Make sure to set `val_metric` in the trainer config."
                 )
             latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
-            latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, device="cuda")).item()
+            latest_metric_val = gather_and_reduce(
+                torch.tensor(latest_metric_val_per_rank, device="cuda"), 
+                reduce_op="median"
+            ).item()
             self.trainer._curr_val_metric = latest_metric_val
             self.update_best_metrics(latest_metric_val)
 
@@ -732,7 +735,10 @@ class BestMetricSaver(HookBase):
                         "Make sure to set `val_metric` in the trainer config."
                     )
                 latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
-                latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, device="cuda")).item()
+                latest_metric_val = gather_and_reduce(
+                    torch.tensor(latest_metric_val_per_rank, device="cuda"),
+                    reduce_op="median"
+                ).item()
                 self.trainer._curr_val_metric = latest_metric_val
                 self.update_best_metrics(latest_metric_val)
 
@@ -741,7 +747,10 @@ class BestMetricSaver(HookBase):
         if self.metric_name not in test_scalars:
             raise ValueError(f"Metric {self.metric_name} not found in test logs. ")
         test_metric_val_per_rank, *_ = test_scalars[self.metric_name][-1]
-        test_metric_val = gather_and_reduce(torch.tensor(test_metric_val_per_rank, device="cuda")).item()
+        test_metric_val = gather_and_reduce(
+            torch.tensor(test_metric_val_per_rank, device="cuda"),
+            reduce_op="median"
+        ).item()
         self._update_best_metrics(test_metric_val)
 
 
@@ -931,7 +940,10 @@ class EarlyStopHook(HookBase):
             )
 
         latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
-        latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, device="cuda")).item()
+        latest_metric_val = gather_and_reduce(
+            torch.tensor(latest_metric_val_per_rank, device="cuda"),
+            reduce_op="median"
+        ).item()
 
         if math.isnan(latest_metric_val) or math.isinf(latest_metric_val):
             raise ValueError(f"Validation metric {self.metric_name} is NaN or Inf. ")
@@ -1036,6 +1048,7 @@ class FreeDeviceBufferHook(HookBase):
 
     def before_test(self):
         self.device_buffer = self.trainer.device_buffer
+        self.with_grad_accumulation = self.trainer.with_grad_accumulation
 
     def after_step(self, **kwargs):
         if not self.with_grad_accumulation:

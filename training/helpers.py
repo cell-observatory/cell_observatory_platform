@@ -7,7 +7,7 @@ import random
 from collections import defaultdict
 from operator import attrgetter
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union, Iterable
 
 import numpy as np
 import polars as pl
@@ -46,7 +46,7 @@ def record_dataset_len(config, num_train_rows: int, num_val_rows: int):
         }
 
 
-def _infer_steps_per_epoch(config, loader, type: str = "train"):
+def _infer_steps_per_epoch(config, type: str = "train"):
     if config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
         if type == "train":
             return config.runtime.get("train_steps_per_epoch")
@@ -54,23 +54,20 @@ def _infer_steps_per_epoch(config, loader, type: str = "train"):
             return config.runtime.get("val_steps_per_epoch")
     else:
         raise TypeError(
-            f"Cannot infer steps/epoch for loader type {type(loader)}. "
+            f"Cannot infer steps/epoch for loader. "
             f"Extend the _infer_steps_per_epoch function to handle this type."
         )
 
 
-def get_steps_per_epoch(train_dataloader, 
-                        val_dataloader, 
-                        config: DictConfig, 
-                        gradient_accumulation_steps: int = 1,
+def get_steps_per_epoch(
+    config: DictConfig, 
+    gradient_accumulation_steps: int = 1,
 ):
+    with_validation_loop = isinstance(config.datasets.split, float) and config.datasets.split > 0
     # TODO: double check correctness
-    steps_per_epoch = _infer_steps_per_epoch(config,
-                                             train_dataloader,
-                                             type="train")
+    steps_per_epoch = _infer_steps_per_epoch(config,type="train")
     val_steps_per_epoch = _infer_steps_per_epoch(config,
-                                                 val_dataloader, 
-                                                 type="val") if val_dataloader else None
+                                                 type="val") if with_validation_loop else None
     logger.info(
         f"Steps per epoch: {steps_per_epoch}, "
         f"Validation steps per epoch: {val_steps_per_epoch}"
@@ -81,9 +78,8 @@ def get_steps_per_epoch(train_dataloader,
             f"Steps per epoch is None or <= 0. Cannot proceed with training."
         )
     
-    if (val_steps_per_epoch is None or val_steps_per_epoch <= 0) and val_dataloader is not None:
-        raise ValueError("Validation Dataloader is provided but validation steps per epoch is None or <= 0."
-        )
+    if (val_steps_per_epoch is None or val_steps_per_epoch <= 0) and with_validation_loop:
+        raise ValueError("Validation Dataloader is provided but validation steps per epoch is None or <= 0.")
     
     if gradient_accumulation_steps > 1:
         if steps_per_epoch % gradient_accumulation_steps != 0:
@@ -456,6 +452,14 @@ def log_data_timings(
             for k, v in loss_dict.items()
             }
         )
+    elif type == "val":
+        trainer.event_recorder.put_scalars(
+            scope="step",
+            prefix="val_",
+            **{k: (v.item() if torch.is_tensor(v) else v)
+            for k, v in loss_dict.items()
+            }
+        )
 
 
 def get_input_data(inputs, device: Optional[torch.device] = 'cuda'):
@@ -502,7 +506,7 @@ def enable_optimizations(cfg: DictConfig):
 # https://github.com/pytorch/torchtitan/main/torchtitan/models/llama3/infra/parallelize.py
 def apply_activation_checkpointing(cfg: DictConfig, model: nn.Module):
     """Apply activation checkpointing to the model."""
-    num_blocks = apply_ac_over_discovered_stacks(cfg.optimizations.models.activation_checkpoint, model)
+    num_blocks = apply_ac_over_discovered_stacks(cfg.activation_checkpoint, model)
     logger.info(f"Applied activation checkpointing to {num_blocks} transformer blocks.")
 
 
@@ -549,30 +553,33 @@ def _as_stack(
 
 
 def yield_transformer_stacks(
-    cfg_modules: List[str],
-    block_names: str,
+    cfg_module_blocks: Sequence[Tuple[str, Union[str, Sequence[str]]]],
     model: nn.Module,
 ):
-    for module_fqn in cfg_modules:
+    for module_fqn, block_names in cfg_module_blocks:
         submod = attrgetter(module_fqn)(model)
-        stack_fqn, stack = _as_stack(
-            module_fqn, submod, block_names=block_names
-        )
-        yield (stack_fqn, stack)
+        # allow either a single block name or a list/tuple of block names per module
+        if isinstance(block_names, str):
+            block_names = [block_names]
+        for bn in block_names:
+            stack_fqn, stack = _as_stack(module_fqn, submod, block_names=bn)
+            yield (stack_fqn, stack)
     return
 
 
 def apply_ac_over_discovered_stacks(cfg, model: nn.Module):
     cfg_modules = cfg.get("modules", None)
-    block_names = cfg.get("block_names", None)
-    if cfg_modules is None or block_names is None:
-        raise ValueError(
-            "Activation checkpointing config must specify "
-            "'modules' and 'block_names' fields."
-        ) 
+    cfg_module_blocks: List[Tuple[str, Union[str, Sequence[str]]]] = []
+    for entry in cfg_modules:
+        if isinstance(entry, str) or not isinstance(entry, Sequence) or len(entry) != 2:
+            raise ValueError(
+                "Activation checkpointing 'modules' entries must be "
+                "(module_fqn, block_names_or_list)."
+            )
+        cfg_module_blocks.append((entry[0], entry[1]))
 
     wrapped = 0
-    for stack_fqn, stack in yield_transformer_stacks(cfg_modules, block_names, model):
+    for stack_fqn, stack in yield_transformer_stacks(cfg_module_blocks, model):
         for i, block in enumerate(stack):
             wrapped_block = _apply_ac_to_module(
                 module=block,
@@ -739,7 +746,7 @@ def _apply_ac_to_module(
 
 
 def apply_compile(cfg: DictConfig, model: nn.Module):
-    cfg_compile = cfg.optimizations.models.torch_compile
+    cfg_compile = cfg.torch_compile
     if cfg_compile.range == "full":
         logger.info("Applying torch.compile to the whole model.")
         model = torch.compile(
@@ -769,12 +776,26 @@ def _apply_compile_over_discovered_stacks(cfg, model: nn.Module):
     so the tree printer can show [TC].
     """
     cfg_modules = cfg.get("modules")
-    block_names = cfg.get("block_names")
 
     num_blocks_compiled = 0
     compiled_fqns = set()
 
-    for stack_fqn, stack in yield_transformer_stacks(cfg_modules, block_names, model):
+    if cfg_modules is None:
+        raise ValueError(
+            "torch_compile config must specify "
+            "'modules' (list[(module, block_names)])."
+        )
+
+    cfg_module_blocks: List[Tuple[str, Union[str, Sequence[str]]]] = []
+    for entry in cfg_modules:
+            if isinstance(entry, str) or not isinstance(entry, Sequence) or len(entry) != 2:
+                raise ValueError(
+                    "torch_compile 'modules' entries must be "
+                    "(module_fqn, block_names_or_list)."
+                )
+            cfg_module_blocks.append((entry[0], entry[1]))
+
+    for stack_fqn, stack in yield_transformer_stacks(cfg_module_blocks, model):
         for i, block in enumerate(stack):
             compiled = torch.compile(
                 block,
@@ -792,6 +813,65 @@ def _apply_compile_over_discovered_stacks(cfg, model: nn.Module):
     # stash a summary for the printer
     setattr(model, "_compiled_fqns", compiled_fqns)
     return num_blocks_compiled
+
+
+def get_model_optimizations_node(
+    cfg: Optional[DictConfig],
+    models_path: str = "optimizations.models",
+    leaf_keys: Iterable[str] = ("activation_checkpoint", "torch_compile"),
+    max_depth: int = 42,
+):
+    """
+    Return the DictConfig node that contains model-specific optimization settings,
+    even if cfg.optimizations.models is nested through multiple single-key dict layers.
+
+    It will:
+      1) Resolve cfg.<models_path>
+      2) If that node already contains any of `leaf_keys`, return it (legacy layout).
+      3) Otherwise, repeatedly "peel" one level deeper IF the node has exactly one
+         non-internal key, until it finds a node containing any of `leaf_keys`.
+      4) Raise if it encounters ambiguity (0 or >1 keys) before reaching a leaf.
+    """
+    if cfg is None:
+        return None
+
+    # Walk down dotted path to cfg.optimizations.models
+    node = cfg
+    for part in models_path.split("."):
+        if node is None or not hasattr(node, "get"):
+            return None
+        node = node.get(part, None)
+        if node is None:
+            return None
+
+    def has_leaf(n: DictConfig) -> bool:
+        return any(n.get(k, None) is not None for k in leaf_keys)
+
+    # If already at leaf (legacy), return immediately
+    if has_leaf(node):
+        return node
+
+    # Otherwise peel through single-key dict layers
+    cur = node
+    for _ in range(max_depth):
+        if cur is None or not hasattr(cur, "keys"):
+            return None
+
+        if has_leaf(cur):
+            return cur
+
+        keys = [k for k in cur.keys() if not str(k).startswith("_")]
+        if len(keys) != 1:
+            raise ValueError(
+                f"Expected exactly one key while peeling cfg.{models_path}, "
+                f"but got keys={keys}. (Reached node={cur})"
+            )
+        cur = cur[keys[0]]
+
+    raise ValueError(
+        f"Exceeded max_depth={max_depth} while peeling cfg.{models_path}. "
+        f"Likely a cycle or unexpected structure."
+    )
 
 
 # helpers for printing model structure with
@@ -1192,6 +1272,7 @@ def get_image_sizes(
 
     Returns:
         image_sizes:        list[tuple], per-sample "current" sizes
+        image_sizes_padded: list[tuple], per-sample sizes including any padding
         orig_image_sizes:   list[tuple], per-sample original sizes (or image_sizes)
         padding_mask:       torch.BoolTensor of shape [B, Z, Y, X] or [B, Y, X]
                             True = padded voxel, False = valid voxel.
@@ -1207,19 +1288,7 @@ def get_image_sizes(
     else:
         raise ValueError(f"Unsupported input_format: {input_format}")
 
-    image_sizes: List[Tuple[int, ...]] = []
-    for i in range(batch_size):
-        spatial_dims = [int(metadata[f"{ax}_size"][i]) for ax in ax_names]
-        image_sizes.append(tuple(spatial_dims))
-
-    # use orig_* sizes only if *all* are present
-    if all(f"orig_{ax}_size" in metadata for ax in ax_names):
-        orig_image_sizes: List[Tuple[int, ...]] = []
-        for i in range(batch_size):
-            spatial_dims = [int(metadata[f"orig_{ax}_size"][i]) for ax in ax_names]
-            orig_image_sizes.append(tuple(spatial_dims))
-    else:
-        orig_image_sizes = image_sizes
+    # TODO: consider how to generalize to spacetime
 
     # Build a 3D padding mask [B, Z, Y, X] or [B, Y, X]
     # We only care about spatial volume axes for DETR-style masks.
@@ -1234,6 +1303,22 @@ def get_image_sizes(
     
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    image_sizes: List[Tuple[int, ...]] = []
+    for i in range(batch_size):
+        spatial_dims = [int(metadata[f"{ax}_size"][i]) for ax in ax_names]
+        image_sizes.append(tuple(spatial_dims))
+
+    image_sizes_padded: List[Tuple[int, ...]] = [spatial_shape] * batch_size
+
+    # use orig_* sizes only if *all* are present
+    if all(f"orig_{ax}_size" in metadata for ax in ax_names):
+        orig_image_sizes: List[Tuple[int, ...]] = []
+        for i in range(batch_size):
+            spatial_dims = [int(metadata[f"orig_{ax}_size"][i]) for ax in ax_names]
+            orig_image_sizes.append(tuple(spatial_dims))
+    else:
+        orig_image_sizes = image_sizes_padded
 
     padding_mask = torch.zeros(
         (batch_size, *spatial_shape),
@@ -1279,7 +1364,7 @@ def get_image_sizes(
         else:
             raise ValueError(f"Unsupported spatial_axes combination: {spatial_axes}")
 
-    return image_sizes, orig_image_sizes, padding_mask
+    return image_sizes, orig_image_sizes, image_sizes_padded, padding_mask
 
 
 def set_global_seed(seed: int):

@@ -103,12 +103,16 @@ class FinetuneCollatorActor:
         bbox_output_format: str = "zyxzyx",
         transforms_list: Optional[List[DictConfig]] = None,
         use_masks: bool = False,
+        require_targets: bool = True,
+        expect_mask_channel: bool = True,
         with_resize: bool = False,
         debug: bool = False,
+        debug_device_idx: Optional[int] = None,
         normalize_bboxes: bool = False,
         async_device_copy: bool = False,
     ):
         self.columns = columns
+        self.debug_device_idx = debug_device_idx
 
         self.node_id = node_id
         self.local_rank = local_rank()
@@ -203,6 +207,8 @@ class FinetuneCollatorActor:
             )
 
         self.use_masks = use_masks
+        self.require_targets = require_targets
+        self.expect_mask_channel = expect_mask_channel
         self.normalize_bboxes = normalize_bboxes
 
         ray.logger.info(
@@ -239,8 +245,13 @@ class FinetuneCollatorActor:
 
     def _get_device_index(self) -> int:
         gpu_ids = ray.get_gpu_ids()
-        assert gpu_ids, "No GPUs assigned to this worker by Ray"
-        return int(gpu_ids[0])
+        if gpu_ids:
+            return int(gpu_ids[0])
+        # Fallback for debug mode (running outside Ray Train workers)
+        elif self.debug_device_idx is not None:
+            return self.debug_device_idx
+        else:
+            raise RuntimeError("No GPUs assigned to this worker by Ray")
 
     def __del__(self):
         try:
@@ -395,24 +406,41 @@ class FinetuneCollatorActor:
             )
 
             inputs_full = torch.from_numpy(h_view)
-            inputs, masks_labelmap = self._get_masks(inputs_full)
+            # In inference we may have no labelmap channel at all.
+            if self.expect_mask_channel:
+                inputs, masks_labelmap = self._get_masks(inputs_full)
+            else:
+                inputs, masks_labelmap = inputs_full, None
 
             meta_cpu: Dict[str, Any] = {}
             for k in self.columns:
                 if k in batch:
                     meta_cpu[k] = batch[k]
 
-            if "mask_bbox_dict" not in meta_cpu:
-                raise KeyError("FinetuneCollatorActor expects 'mask_bbox_dict' in columns.")
+            # Build targets only when requested (training). For inference, produce empty targets
+            # so downstream transforms that expect `metainfo["targets"]` still work.
+            if self.require_targets:
+                if "mask_bbox_dict" not in meta_cpu:
+                    raise KeyError("FinetuneCollatorActor expects 'mask_bbox_dict' in columns when require_targets=True.")
+                mask_bbox_dict_batch = list(meta_cpu["mask_bbox_dict"])
+                targets_cpu = self._build_targets(
+                    masks_labelmap=masks_labelmap,
+                    mask_bbox_dict_batch=mask_bbox_dict_batch,
+                )
+            else:
+                B = inputs.shape[0]
+                device = torch.device("cpu")
+                targets_cpu = []
+                for _ in range(B):
+                    targets_cpu.append(
+                        {
+                            "boxes": torch.zeros((0, 6), device=device, dtype=torch.float32),
+                            "mask_ids": torch.zeros((0,), device=device, dtype=torch.long),
+                            "labels": torch.zeros((0,), device=device, dtype=torch.long),
+                        }
+                    )
 
-            mask_bbox_dict_batch = list(meta_cpu["mask_bbox_dict"])
-
-            targets_cpu = self._build_targets(
-                masks_labelmap=masks_labelmap,
-                mask_bbox_dict_batch=mask_bbox_dict_batch,
-            )
-
-            image_sizes, orig_image_sizes, padding_mask = get_image_sizes(
+            image_sizes, orig_image_sizes, image_sizes_padded, padding_mask = get_image_sizes(
                 input_format=self.input_format,
                 input_shape=self.raw_input_shape,
                 batch_size=self.batch_size,
@@ -421,6 +449,7 @@ class FinetuneCollatorActor:
             )
             meta_cpu["image_sizes"] = torch.as_tensor(image_sizes)
             meta_cpu["orig_image_sizes"] = torch.as_tensor(orig_image_sizes)
+            meta_cpu["image_sizes_padded"] = torch.as_tensor(image_sizes_padded)
             meta_cpu["padding_mask"] = torch.as_tensor(padding_mask)
 
             sample_cpu = {
@@ -480,7 +509,7 @@ class FinetuneCollatorActor:
                 # that dst_device is owned by copy_stream
                 torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
                 dst_device.record_stream(self.copy_stream)
-
+            
             metainfo: Dict[str, Any] = {
                 "host_buffer_idx": host_buffer_idx,
                 "device_buffer_idx": device_buffer_idx,
@@ -545,8 +574,10 @@ class CollatorActor:
             "prepared_id",
         ],
         debug: bool = False,
+        debug_device_idx: Optional[int] = None,
     ):
         self.columns = columns
+        self.debug_device_idx = debug_device_idx
 
         self.node_id = node_id
         self.local_rank = local_rank()
@@ -637,8 +668,13 @@ class CollatorActor:
 
     def _get_device_index(self) -> int:
         gpu_ids = ray.get_gpu_ids()
-        assert gpu_ids, "No GPUs assigned to this worker by Ray"
-        return int(gpu_ids[0])
+        if gpu_ids:
+            return int(gpu_ids[0])
+        # Fallback for debug mode (running outside Ray Train workers)
+        elif self.debug_device_idx is not None:
+            return self.debug_device_idx
+        else:
+            raise RuntimeError("No GPUs assigned to this worker by Ray")
 
     def __del__(self):
         try:
@@ -1004,8 +1040,16 @@ def partition_indices_for_inference(
     return rows_per_rank
 
 
+def shuffle_table(table: pa.Table, seed: int) -> pa.Table:
+    n = table.num_rows
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n)
+    return table.take(pa.array(perm, type=pa.int64()))
+
+
 def get_dataset_ray(
     cfg: DictConfig,
+    seed: Optional[int],
     indices: Optional[List[int]],
     database: Optional[Any] = None,
     columns: list = [
@@ -1028,7 +1072,12 @@ def get_dataset_ray(
     ],
     dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
+    shuffle: bool = False,
+    drop_last: bool = True,
 ):
+    if seed is not None and not shuffle:
+        raise ValueError("Seed provided but shuffle is False.")
+
     if cfg.datasets.channels_subset is not None:
         # NOTE: this always works because dataset_layout_order is 1-1 matched
         num_channels = cfg.datasets.input_shape[cfg.dataset_layout_order.index("C")]
@@ -1066,7 +1115,7 @@ def get_dataset_ray(
             df=base_df,
             world_size=ws,
             batch_size=cfg.clusters.batch_size_per_gpu,
-            drop_last_policy=cfg.datasets.drop_last_policy,
+            drop_last_policy=drop_last,
             roi_col="prepared_id",
             tile_col="tile_name",
         )
@@ -1083,19 +1132,25 @@ def get_dataset_ray(
 
     else:
         table = pa.table(base_df)
-        dataset = ray.data.from_arrow(table)
-        dataset = dataset.split(n=ws, equal=True)[rk]
+        if shuffle:
+            table = shuffle_table(table, seed=seed)
+        
+        n = table.num_rows
+        n_shard = (n // ws) * ws
+        table = table.slice(0, n_shard)
 
-        ray.logger.info(f"Rank {rk} assigned dataframe: {dataset.to_pandas().head()}")
+        shard_len = n_shard // ws
+        local_table = table.slice(rk * shard_len, shard_len)
 
-        if cfg.datasets.drop_last_policy:
+        if drop_last:
             B = cfg.clusters.batch_size_per_gpu
-            n = dataset.count()
-            dataset = dataset.limit((n // B) * B)
-            dataset_len = dataset.count()
-        else:
-            dataset_len = dataset.count()
+            keep = (local_table.num_rows // B) * B
+            local_table = local_table.slice(0, keep)
 
+        dataset = ray.data.from_arrow(local_table)
+        dataset_len = local_table.num_rows
+
+    # NOTE: this is necessary to avoid slow startup
     dataset = dataset.repartition(target_num_rows_per_block=cfg.datasets.rows_per_block, shuffle=False)
 
     scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
@@ -1134,11 +1189,14 @@ def get_dataloader_ray(
     cfg: DictConfig,
     batch_size: int,
     collate_fn: Optional[Callable],
+    epoch: int = 0,
     drop_last: bool = True,
     database: Optional[Any] = None,
     dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
 ):
+    assert hasattr(cfg, "seed"), "cfg.seed is required for Ray Dataloader."
+
     if database is None:
         db = instantiate(cfg.datasets.databases)
     else:
@@ -1148,9 +1206,8 @@ def get_dataloader_ray(
     dataset_len = len(db.hypercubes_dataframe)
 
     if cfg.datasets.split is not None and 0.0 < float(cfg.datasets.split) < 1.0:
-        seed = cfg.get("seed", 42)
         g = torch.Generator()
-        g.manual_seed(int(seed))
+        g.manual_seed(int(cfg.seed))
 
         val_size = round(dataset_len * cfg.datasets.split)
         train_subset, val_subset = random_split(
@@ -1165,6 +1222,9 @@ def get_dataloader_ray(
             columns=list(cfg.datasets.columns),
             dp_degree=dp_degree,
             dp_rank=dp_rank,
+            seed=int(cfg.seed) + int(epoch),
+            shuffle=True,
+            drop_last=drop_last,
         )
         val_dataset, val_dataset_len = get_dataset_ray(
             cfg,
@@ -1173,6 +1233,9 @@ def get_dataloader_ray(
             columns=list(cfg.datasets.columns),
             dp_degree=dp_degree,
             dp_rank=dp_rank,
+            seed=None,
+            shuffle=False,
+            drop_last=drop_last,
         )
 
         record_dataset_len(cfg, train_dataset_len, val_dataset_len)
@@ -1187,7 +1250,9 @@ def get_dataloader_ray(
 
     else:
         train_dataset, train_dataset_len = get_dataset_ray(
-            cfg, indices=None, database=db, columns=list(cfg.datasets.columns), dp_degree=dp_degree, dp_rank=dp_rank
+            cfg, indices=None, database=db, columns=list(cfg.datasets.columns), 
+            dp_degree=dp_degree, dp_rank=dp_rank, 
+            seed=int(cfg.seed) + int(epoch), shuffle=True, drop_last=drop_last
         )
         record_dataset_len(cfg, train_dataset_len, 0)
 

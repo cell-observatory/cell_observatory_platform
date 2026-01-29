@@ -20,14 +20,7 @@ defaults:
 experiment_name: mae_large_128x256x256_test_interactive
 wandb_project: testing
 
-# task
-task: pretrain_mae
-
-# Model type
-network: mae
-
-# engine type
-engine: deepspeed
+backend: DEEPSPEED
 
 # distributed framework
 distributed_framework: ray

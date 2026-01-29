@@ -2,8 +2,12 @@ import pytest
 import torch
 
 from cell_observatory_platform.data.utils import resize_mask
+from cell_observatory_platform.data.transforms.noise import MixedPoissonGaussianNoise
+from cell_observatory_platform.data.transforms.make_targets import DeepCopyInputsAsTargets
+from cell_observatory_platform.data.transforms.psf import ConvolveWithPSF
 from cell_observatory_platform.models.layers.preprocessor import (
     ChannelSplitPreprocessor,
+    DenoisingPreprocessor,
     InstanceSegmentationPreprocessor,
     RayPreprocessor,
     UpsamplePreprocessor,
@@ -242,3 +246,324 @@ def test_resize_mask_broadcast_3d_with_time_and_channel():
     assert mask.shape[FMT_3D.index("Z")] == DEPTH
     assert mask.shape[FMT_3D.index("Y")] == HEIGHT
     assert mask.shape[FMT_3D.index("X")] == WIDTH
+
+
+# -------------------------
+# DenoisingPreprocessor tests
+# -------------------------
+
+
+def test_denoising_preprocessor_init():
+    """Test initialization with float and tuple parameters."""
+    # Float parameters
+    proc = DenoisingPreprocessor(
+        denoising_type="microscopy",
+        transforms_list=[
+            DeepCopyInputsAsTargets(),
+            ConvolveWithPSF(
+                psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
+                pad_type="zero",
+                input_format="ZYXC",
+                input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+                input_pixel_size_um=(1.0, 1.0, 1.0),
+                psf_format="ZYX",
+                psf_pixel_size_um=(1.0, 1.0, 1.0),
+            ), 
+            MixedPoissonGaussianNoise(
+                quantum_efficiency=0.82,
+                electrons_per_count=0.22,
+                sigma_background_noise=40.0,
+                mean_background_offset=100.0,
+                seed=42,
+                )
+        ],
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, 4),
+        with_masking=False,
+        mask_generator=None,
+        input_format="ZYXC",
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+    )
+    assert len(proc.transforms) == 3, "Expected three transforms: DeepCopyInputsAsTargets, ConvolveWithPSF, MixedPoissonGaussianNoise"
+    assert isinstance(proc.transforms[0], DeepCopyInputsAsTargets), "Expected first transform to be DeepCopyInputsAsTargets"
+    assert isinstance(proc.transforms[1], ConvolveWithPSF), "Expected second transform to be ConvolveWithPSF"
+    assert isinstance(proc.transforms[2], MixedPoissonGaussianNoise), "Expected third transform to be MixedPoissonGaussianNoise"
+    assert proc.transforms[2].quantum_efficiency == 0.82, "Expected quantum efficiency to be 0.82"
+    assert proc.transforms[2].electrons_per_count == 0.22, "Expected electrons per count to be 0.22"
+    assert proc.transforms[2].sigma_background_noise == 40.0, "Expected sigma background noise to be 40.0"
+    assert proc.transforms[2].mean_background_offset == 100.0, "Expected mean background offset to be 100.0"
+    assert proc.transforms[2].seed == 42, "Expected seed to be 42"
+
+def test_denoising_preprocessor_init_invalid_params():
+    """Test that invalid parameter values raise ValueError."""
+    with pytest.raises(ValueError, match="quantum_efficiency must be a float or tuple of two floats"):
+        DenoisingPreprocessor(
+            denoising_type="microscopy",
+            transforms_list=[
+                DeepCopyInputsAsTargets(), 
+                ConvolveWithPSF(
+                    psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
+                    pad_type="zero",
+                    input_format="ZYXC",
+                    input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+                    input_pixel_size_um=(1.0, 1.0, 1.0),
+                    psf_format="ZYX",
+                    psf_pixel_size_um=(1.0, 1.0, 1.0),
+                ), 
+                MixedPoissonGaussianNoise(
+                    quantum_efficiency="invalid",
+                    electrons_per_count=0.22,
+                    sigma_background_noise=40.0,
+                    mean_background_offset=100.0,
+                    seed=42,
+                )
+            ],
+            dtype=torch.float32,
+            patch_shape=(1, 4, 4, 4),
+            with_masking=False,
+            mask_generator=None,
+            input_format="ZYXC",
+            input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+        )
+
+
+def test_denoising_preprocessor_noise_addition():
+    """Test noise addition with float and tuple parameters."""
+    # Fixed parameters
+    proc = DenoisingPreprocessor(
+        denoising_type="microscopy",
+        transforms_list=[
+            DeepCopyInputsAsTargets(),
+            ConvolveWithPSF(
+                psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
+                pad_type="zero",
+                input_format="ZYXC",
+                input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+                input_pixel_size_um=(1.0, 1.0, 1.0),
+                psf_format="ZYX",
+                psf_pixel_size_um=(1.0, 1.0, 1.0),
+            ), 
+            MixedPoissonGaussianNoise(
+                quantum_efficiency=0.82,
+                electrons_per_count=0.22,
+                sigma_background_noise=40.0,
+                mean_background_offset=100.0,
+                seed=42,
+            )
+        ],
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, 4),
+        with_masking=False,
+        mask_generator=None,
+        input_format="ZYXC",
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+    )
+
+    inputs = torch.ones((BATCH, DEPTH, HEIGHT, WIDTH, CHANNELS), dtype=torch.float32) * 100.0
+    inputs_clone = inputs.clone()
+    inputs_clone = inputs_clone[..., :-1] # Remove mask channel
+    sample = {"data_tensor": inputs, "metainfo": {}}
+    noisy_inputs = proc(sample, data_time=0.0)["data_tensor"]
+    assert not torch.allclose(inputs_clone, noisy_inputs, atol=1e-6), "Noised inputs are the same as original inputs"
+    assert noisy_inputs.shape == inputs_clone.shape, "Noised inputs have different shape than original inputs"
+    assert torch.all(noisy_inputs >= 0), "Noised inputs are not in valid range [0, 65535]"
+
+    # Tuple parameters - check per-batch variation
+    proc = DenoisingPreprocessor(
+        denoising_type="microscopy",
+        transforms_list=[
+            DeepCopyInputsAsTargets(),
+            ConvolveWithPSF(
+                psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
+                pad_type="zero",
+                input_format="ZYXC",
+                input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+                input_pixel_size_um=(1.0, 1.0, 1.0),
+                psf_format="ZYX",
+                psf_pixel_size_um=(1.0, 1.0, 1.0),
+            ), 
+            MixedPoissonGaussianNoise(
+            quantum_efficiency=(0.7, 0.9),
+            electrons_per_count=(0.2, 0.3),
+            sigma_background_noise=(30, 50),
+            mean_background_offset=(80, 120),
+            seed=42,
+            ),
+        ],
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, 4),
+        with_masking=False,
+        mask_generator=None,
+        input_format="ZYXC",
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+    )
+
+    
+    inputs = torch.ones((BATCH, DEPTH, HEIGHT, WIDTH, CHANNELS), dtype=torch.float32) * 100.0
+    inputs_clone = inputs.clone()
+    inputs_clone = inputs_clone[..., :-1] # Remove mask channel
+    targets_expected = proc.pe_patchify(inputs_clone, channels = CHANNELS - 1)
+    sample = {"data_tensor": inputs, "metainfo": {}}
+    noisy_inputs = proc(sample, data_time=0.0)["data_tensor"]
+
+    # Different batch elements should have different noise patterns
+    batch_0_noise = noisy_inputs[0] - inputs_clone[0]
+    batch_1_noise = noisy_inputs[1] - inputs_clone[1]
+    assert not torch.allclose(batch_0_noise, batch_1_noise, atol=1e-6), "Different batch elements have the same noised output"
+
+
+def test_denoising_preprocessor_forward():
+    """Test forward pass produces noisy inputs and clean targets."""
+    proc = DenoisingPreprocessor(
+        denoising_type="microscopy",
+        transforms_list=[
+            DeepCopyInputsAsTargets(),
+            ConvolveWithPSF(
+                psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
+                pad_type="zero",
+                input_format="ZYXC",
+                input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+                input_pixel_size_um=(1.0, 1.0, 1.0),
+                psf_format="ZYX",
+                psf_pixel_size_um=(1.0, 1.0, 1.0),
+            ), 
+            MixedPoissonGaussianNoise(
+            quantum_efficiency=0.82,
+            electrons_per_count=0.22,
+            sigma_background_noise=40.0,
+            mean_background_offset=100.0,
+            seed=42,
+            ),
+        ],
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, 4),
+        with_masking=False,
+        mask_generator=None,
+        input_format="ZYXC",
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+    )
+
+    inputs = torch.ones((BATCH, DEPTH, HEIGHT, WIDTH, CHANNELS), dtype=torch.float32) * 100.0
+    inputs_clone = inputs.clone()
+    inputs_clone = inputs_clone[..., :-1] # Remove mask channel
+    expected_targets = proc.pe_patchify(inputs_clone, channels = CHANNELS - 1)
+    sample = {"data_tensor": inputs, "metainfo": {}}
+
+    output = proc(sample, data_time=0.1)
+
+    assert "data_tensor" in output and "metainfo" in output, "data_tensor and metainfo are not in output"
+    noisy_inputs = output["data_tensor"]
+    targets = output["metainfo"]["targets"][0]
+
+    assert not torch.allclose(inputs_clone, noisy_inputs, atol=1e-6), "Noised inputs are the same as original inputs"
+    assert noisy_inputs.shape == inputs_clone.shape, f"Noised inputs have unexpected shape: noisy_inputs.shape={noisy_inputs.shape}, inputs_clone.shape={inputs_clone.shape}"
+    assert targets.shape == expected_targets.shape, f"Targets have unexpected shape: targets.shape={targets.shape}, expected_targets.shape={expected_targets.shape}"
+    assert not torch.allclose(targets, proc.pe_patchify(noisy_inputs, channels = CHANNELS - 1), atol=1e-6), "Targets are the same as noised inputs"
+
+    meta = output["metainfo"]
+    assert isinstance(meta["preprocess_time"], float), "preprocess_time is not a float"
+    assert isinstance(meta["transform_time"], float), "transform_time is not a float"
+    assert meta["data_time"] == 0.1, "data_time was modified"
+
+
+def test_denoising_preprocessor_reproducibility():
+    """Test that same seed produces same noise, different seeds produce different noise."""
+    inputs = torch.ones((BATCH, DEPTH, HEIGHT, WIDTH, CHANNELS), dtype=torch.float32) * 100.0
+    sample1 = {"data_tensor": inputs.clone(), "metainfo": {}}
+    sample2 = {"data_tensor": inputs.clone(), "metainfo": {}}
+    sample3 = {"data_tensor": inputs.clone(), "metainfo": {}}
+
+    proc1 = DenoisingPreprocessor(
+        denoising_type="microscopy",
+        transforms_list=[
+            DeepCopyInputsAsTargets(),
+            ConvolveWithPSF(
+                psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
+                pad_type="zero",
+                input_format="ZYXC",
+                input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+                input_pixel_size_um=(1.0, 1.0, 1.0),
+                psf_format="ZYX",
+                psf_pixel_size_um=(1.0, 1.0, 1.0),
+            ), 
+            MixedPoissonGaussianNoise(
+                quantum_efficiency=0.82,
+                electrons_per_count=0.22,
+                sigma_background_noise=40.0,
+                mean_background_offset=100.0,
+                seed=42,
+            ),
+        ],
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, 4),
+        with_masking=False,
+        mask_generator=None,
+        input_format="ZYXC",
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+    )
+
+    proc2 = DenoisingPreprocessor(
+        denoising_type="microscopy",
+        transforms_list=[
+            DeepCopyInputsAsTargets(),
+            ConvolveWithPSF(
+                psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
+                pad_type="zero",
+                input_format="ZYXC",
+                input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+                input_pixel_size_um=(1.0, 1.0, 1.0),
+                psf_format="ZYX",
+                psf_pixel_size_um=(1.0, 1.0, 1.0),
+            ), 
+            MixedPoissonGaussianNoise(
+            quantum_efficiency=0.82,
+            electrons_per_count=0.22,
+            sigma_background_noise=40.0,
+            mean_background_offset=100.0,
+            seed=42,
+            ),
+        ],
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, 4),
+        with_masking=False,
+        mask_generator=None,
+        input_format="ZYXC",
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+    )
+
+    proc3 = DenoisingPreprocessor(
+        denoising_type="microscopy",
+        transforms_list=[
+            DeepCopyInputsAsTargets(),
+            ConvolveWithPSF(
+                psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
+                pad_type="zero",
+                input_format="ZYXC",
+                input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+                input_pixel_size_um=(1.0, 1.0, 1.0),
+                psf_format="ZYX",
+                psf_pixel_size_um=(1.0, 1.0, 1.0),
+            ), 
+            MixedPoissonGaussianNoise(
+            quantum_efficiency=0.82,
+            electrons_per_count=0.22,
+            sigma_background_noise=40.0,
+            mean_background_offset=100.0,
+            seed=123,
+        )],
+        dtype=torch.float32,
+        patch_shape=(1, 4, 4, 4),
+        with_masking=False,
+        mask_generator=None,
+        input_format="ZYXC",
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+    )
+
+    output1 = proc1(sample1, data_time=0.0)
+    output2 = proc2(sample2, data_time=0.0)
+    output3 = proc3(sample3, data_time=0.0)
+
+    # Same seed produces same results
+    assert torch.allclose(output1["data_tensor"], output2["data_tensor"], atol=1e-6), "Same seed produces different results"
+    # Different seed produces different results
+    assert not torch.allclose(output1["data_tensor"], output3["data_tensor"], atol=1e-6), "Different seed produces same results"

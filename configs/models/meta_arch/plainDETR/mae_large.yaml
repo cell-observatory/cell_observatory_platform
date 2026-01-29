@@ -13,7 +13,7 @@ transformer_args: ${models.heads.plain_detr_transformer}
 # Criterion
 criterion_args:
   BUILD: cell_observatory_platform.training.losses.build_plainDETR_Set_Loss
-  num_classes: 2
+  num_classes: 1
   weight_dict:
     loss_ce: 2.0
     loss_bbox: 5.0
@@ -30,15 +30,15 @@ criterion_args:
 
 # PlainDETR flags
 backbone_embed_dim: ${models.backbones.masked_encoder.embed_dim}
-num_classes: 2 # cell vs background
+num_classes: 1 # cell vs background
 num_feature_levels: 1
 with_box_refine: true
 two_stage: true
-aux_loss: false # for now disable aux loss
+aux_loss: true
 num_queries_one2one: 200
-num_queries_one2many: 0 # for now disable one2many
-k_one2many: null # 4 # for now disable one2many
+num_queries_one2many: 0 #0 # for now disable one2many
+k_one2many: null # null # 4 # for now disable one2many
 mixed_selection: true
 reparam: true
-lambda_one2many: null # 1.0
+lambda_one2many: null #null # 1.0
 normalize_pos_encodings: true
