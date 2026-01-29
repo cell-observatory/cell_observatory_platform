@@ -1,0 +1,27 @@
+BUILD: cell_observatory_platform.models.heads.pixel_decoders.Mask2FormerPixelDecoder.BUILD
+
+
+# Single feature map configuration for transformer backbone
+input_shape_metadata:  # Note: use input_shape, not input_shape_metadata
+  "1":
+    channels: ${models.backbones.masked_encoder.embed_dim}
+    stride: 16  # typical stride for ViT with patch_size=16
+
+# Only reference the single feature level
+transformer_in_features: ["1"]
+
+# We want to produce a feature map for the classification head
+total_num_feature_levels: 1
+
+# Must equal or be less than your single feature stride
+target_min_stride: 16
+
+transformer_encoder_dropout: 0.0
+transformer_encoder_num_heads: 8
+transformer_encoder_dim_feedforward: 1024
+transformer_encoder_layers: 6
+conv_dim: 256
+mask_dim: ${models.backbones.masked_encoder.embed_dim}
+norm: "GroupNorm"
+# dtype: ${quantization}
+use_deform_attention: false
