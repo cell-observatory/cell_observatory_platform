@@ -165,7 +165,8 @@ optimizations:
   models:
     maskdino:
       torch_compile:
-        enable: false
+        # IMPORTANT: if model was trained with torch_compile enabled, must enable here too
+        enable: true
 
 # hooks
 hooks:
