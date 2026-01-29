@@ -19,13 +19,13 @@ defaults:
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/maskdino/mae_large                # configs/optimizations/models/mae.yaml
+  - /optimizations/models/maskdino/mae_large # configs/optimizations/models/mae.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: instance_segmentation_maskDINO_jepa_masking_lat_0p7_op9_ax_0p7_op9_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb_box_init_denoise
+experiment_name: instance_segmentation_maskDINO_baseline_lr_0p001_opt_lamb_box_init_denoise_400q
 wandb_project: finetuning_3d_v2
 
 backend: DEEPSPEED
@@ -62,11 +62,6 @@ deepspeed:
   checkpoint:
     load_universal: true
 
-checkpoint:
-  checkpoint_manager:
-    ckpt_include_prefixes: [backbone] # only load masked_encoder weights from the pretrained model
-    ckpt_translate_map: {input_encoder: backbone.backbone}
-
 # clusters
 clusters:
   batch_size: 192 # total batch size
@@ -81,7 +76,7 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
   resume_checkpointdir: null
-  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/jepa_large_128x256x256_300_epoch_lr_0p001_mask_lat_0p7_op9_ax_0p7_op9_opt_lamb_cdf_target_80_cdf_threshold_100_h200_w_hook_no_rope/checkpoints
+  pretrained_checkpointdir: null
 
 # data
 datasets:
@@ -160,6 +155,12 @@ schedulers:
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}
   lr: 1e-3
+
+optimizations:
+  models:
+    maskdino:
+      torch_compile:
+        enable: false
 
 # hooks
 hooks:

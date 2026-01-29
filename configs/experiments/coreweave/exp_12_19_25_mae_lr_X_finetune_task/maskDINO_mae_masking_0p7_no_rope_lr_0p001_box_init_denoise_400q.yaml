@@ -25,7 +25,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb_box_init_denoise
+experiment_name: instance_segmentation_maskDINO_mae_masking_0p7_no_rope_128x256x512_300_epoch_lr_0p001_opt_lamb_box_init_denoise_400q
 wandb_project: finetuning_3d_v2
 
 backend: DEEPSPEED
@@ -62,10 +62,10 @@ deepspeed:
   checkpoint:
     load_universal: true
 
-# checkpoint:
-#   checkpoint_manager:
-#     ckpt_include_prefixes: [backbone] # only load masked_encoder weights from the pretrained model
-#     ckpt_translate_map: {masked_encoder: backbone.backbone}
+checkpoint:
+  checkpoint_manager:
+    ckpt_include_prefixes: [backbone] # only load masked_encoder weights from the pretrained model
+    ckpt_translate_map: {masked_encoder: backbone.backbone}
 
 # clusters
 clusters:
@@ -165,7 +165,7 @@ optimizations:
   models:
     maskdino:
       torch_compile:
-        enable: true
+        enable: false
 
 # hooks
 hooks:
