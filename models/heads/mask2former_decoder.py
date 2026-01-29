@@ -322,7 +322,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
         num_queries: int,
         decoder_nheads: int,
         dim_feedforward: int,
-        decoder_layers: int,
+        decoder_num_layers: int,
         decoder_pre_norm: bool,
         mask_dim: int,
         enforce_input_project: bool,
@@ -340,7 +340,7 @@ class MultiScaleMaskedTransformerDecoder(nn.Module):
 
         # transformer decoder
         self.num_heads = decoder_nheads
-        self.num_layers = decoder_layers
+        self.num_layers = decoder_num_layers
         self.transformer_self_attention_layers = nn.ModuleList()
         self.transformer_cross_attention_layers = nn.ModuleList()
         self.transformer_ffn_layers = nn.ModuleList()
