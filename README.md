@@ -201,26 +201,26 @@ defaults:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Ray Cluster                                     │
-│  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │                         manager.py                                      │ │
-│  │                    (SLURM / LSF / Local)                                │ │
-│  └─────────────────────────────────────────────────────────────────────────┘ │
-│                                    │                                         │
+│                              Ray Cluster                                    │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                         manager.py                                      ││
+│  │                    (SLURM / LSF / Local)                                ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+│                                    │                                        │
 │           ┌────────────────────────┼────────────────────────┐               │
 │           ▼                        ▼                        ▼               │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐         │
-│  │ EpochBased      │    │ ParallelEpoch   │    │   Inferencer    │         │
-│  │ Trainer         │    │ BasedTrainer    │    │                 │         │
-│  │ (DeepSpeed)     │    │ (TorchTitan)    │    │ (Distributed)   │         │
-│  └─────────────────┘    └─────────────────┘    └─────────────────┘         │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐          │
+│  │ EpochBased      │    │ ParallelEpoch   │    │   Inferencer    │          │
+│  │ Trainer         │    │ BasedTrainer    │    │                 │          │
+│  │ (DeepSpeed)     │    │ (TorchTitan)    │    │ (Distributed)   │          │
+│  └─────────────────┘    └─────────────────┘    └─────────────────┘          │
 │           │                        │                        │               │
 │           └────────────────────────┼────────────────────────┘               │
-│                                    ▼                                         │
-│  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │                      Ray Data Pipeline                                   │ │
-│  │  LoaderActor → SharedMemory → CollatorActor → DeviceBuffer → GPU        │ │
-│  └─────────────────────────────────────────────────────────────────────────┘ │
+│                                    ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                      Ray Data Pipeline                                  ││
+│  │  LoaderActor → SharedMemory → CollatorActor → DeviceBuffer → GPU        ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -229,7 +229,7 @@ defaults:
 The data pipeline is built on **Ray Data** with a custom queue-based system for high-throughput data loading:
 
 ```
-Database (Supabase/Local CSV) → LoaderActor → Host SharedMemory Buffer → CollatorActor → Device Buffer → Preprocessor → Model
+Database (Supabase/Local CSV) -> LoaderActor -> Host SharedMemory Buffer -> CollatorActor -> Device Buffer -> Preprocessor -> Model
 ```
 
 ## Databases
