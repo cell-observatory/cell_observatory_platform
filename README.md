@@ -269,11 +269,9 @@ Preprocessors provide a unified interface for task-specific data preparation:
 | `UpsamplePreprocessor` | Super-resolution | NA-mask downsampling for space/time upsampling |
 | `InstanceSegmentationPreprocessor` | Instance Seg | Mask/bbox extraction, target building |
 
-Transforms can be applied in either the **Collator** (CPU, during data loading) or the **Preprocessor** (GPU, before model forward).
-
 ## Transforms
 
-Available transforms in `data/transforms/`:
+Transforms can be applied in either the **Collator** (CPU, during data loading) or the **Preprocessor** (GPU, before model forward). Available transforms in `data/transforms/`:
 
 - **`Resize`**: Spatial resizing with mask/bbox scaling
 - **`Crop`**: Random and center cropping
@@ -285,7 +283,7 @@ Available transforms in `data/transforms/`:
 Generates patch-level masks for self-supervised learning with explicit time/space awareness:
 
 - `BLOCKED` / `BLOCKED_TIME_ONLY` / `BLOCKED_SPACE_ONLY`: Block-based masking
-- `RANDOM` / `RANDOM_SPACE_ONLY`: MAE-style noise→sort→split masking
+- `RANDOM` / `RANDOM_SPACE_ONLY`: MAE-style masking
 - `BLOCKED_PATTERNED`: Deterministic time downsampling patterns
 
 # Models
@@ -403,9 +401,9 @@ The `LocalEventWriter` saves metrics to CSV files for offline analysis.
 
 For advanced training loops (TorchTitan), the `MetricsProcessor` computes detailed performance metrics (**work in progress**):
 
-- **Throughput**: Tokens per second per device (TPS)
+- **Throughput**: Tokens per second (TPS)
 - **MFU**: Model FLOPS Utilization percentage
-- **TFLOPS**: Achieved teraflops
+- **TFLOPS**: Achieved TFLOPS
 - **Timing**: Forward/backward/optimizer step times (ms)
 - **Memory**: Peak active/reserved GPU memory, allocation retries, OOMs
 
@@ -420,7 +418,7 @@ The `InferencerWorker` provides distributed inference with two modes:
 Supported tasks:
 - `detection` (plainDETR)
 - `instance_segmentation` (MaskDINO)
-- `semantic_segmentation`
+- `semantic_segmentation` (mask2Former)
 - `dense_prediction` (upsampling, channel split)
 - `pretrain` (reconstruction)
 - `feature_extractor` (feature visualization)
