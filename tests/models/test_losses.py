@@ -394,7 +394,7 @@ def test_detr_set_loss_denoise_with_predictions(monkeypatch):
     dn_pred_masks = torch.randn(batch_size, num_dn_queries, D, H, W, device=device)
 
     denoise_predictions = {
-        "predicted_denoise_bboxes": {
+        "predicted_denoise_outputs": {
             "pred_logits": dn_pred_logits,
             "pred_boxes": dn_pred_boxes,
             "pred_masks": dn_pred_masks,
