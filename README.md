@@ -301,6 +301,7 @@ Generates patch-level masks for self-supervised learning with explicit time/spac
 |-------|----------|-------------|
 | **plainDETR** | `models/meta_arch/plainDETR.py` | 3D object detection  |
 | **MaskDINO** | `models/meta_arch/maskdino.py` | 3D instance segmentation |
+| **Mask2Former** |  | 3D semantic segmentation |
 
 ## Backbones
 
