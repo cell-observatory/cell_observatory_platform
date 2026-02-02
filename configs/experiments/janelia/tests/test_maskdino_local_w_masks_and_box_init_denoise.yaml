@@ -146,7 +146,7 @@ datasets:
 
 # schedulers
 schedulers:
-  epochs: 100
+  epochs: 2
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}

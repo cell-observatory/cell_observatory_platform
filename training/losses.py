@@ -21,6 +21,7 @@ from cell_observatory_platform.models.layers.utils import (
     batch_tensors,
     get_uncertain_point_coords_with_randomness,
     point_sample,
+    point_sample_labelmap_batched,
 )
 from cell_observatory_platform.models.ops.losses import (
     batch_dice_loss,
@@ -353,61 +354,128 @@ class DETR_Set_Loss(nn.Module):
         losses["loss_giou"] = loss_giou.sum() / num_boxes
 
         return losses
+        
+    # NOTE: Legacy binary mask-based sampling 
+    # def loss_masks(self, outputs, targets, indices, num_masks):
+    #     """
+    #     Compute mask loss: Focal Loss and Dice Loss.
+    #     """
+    #     query_indices = self._get_query_indices(indices)
+    #     target_class_indices = self._get_target_class_indices(indices)
+
+    #     source_masks = outputs["pred_masks"][query_indices]
+    #     masks = [target["masks"] for target in targets]
+
+    #     # TODO: use valid to mask invalid areas due to padding in loss
+    #     target_masks, valid = batch_tensors(masks)
+    #     target_masks = target_masks.to(source_masks)
+    #     target_masks = target_masks[target_class_indices]
+
+    #     # no need to upsample predictions as we are using normalized coordinates
+    #     # source/target masks: (N, 1, D, H, W)
+    #     source_masks = source_masks[:, None]
+    #     target_masks = target_masks[:, None]
+
+    #     # Motivated by PointRend & Implicit PointRend
+    #     # train with mask loss calculated on K randomly
+    #     # sampled points instead of whole mask
+    #     with torch.no_grad():
+    #         # sample point_coordinates
+    #         point_coords = get_uncertain_point_coords_with_randomness(
+    #             source_masks,
+    #             lambda logits: calculate_uncertainty(logits),
+    #             self.num_points,  # K
+    #             self.oversample_ratio,
+    #             # ratio of points that are sampled via importance sampling
+    #             self.importance_sample_ratio,
+    #         )
+    #         # samples from target mask at point_coords
+    #         point_labels = point_sample(
+    #             target_masks,
+    #             point_coords,
+    #             align_corners=False,
+    #         ).squeeze(1)
+
+    #     # samples from source mask at point_coords
+    #     point_logits = point_sample(
+    #         source_masks,
+    #         point_coords,
+    #         align_corners=False,
+    #     ).squeeze(1)
+
+    #     # compute losses: cross entropy classifcation loss and dice mask loss
+    #     losses = {
+    #         "loss_mask": sigmoid_ce_loss(point_logits, point_labels, num_masks),
+    #         "loss_dice": dice_loss(point_logits, point_labels, num_masks),
+    #     }
+
+    #     del source_masks, target_masks
+    #     return losses
 
     def loss_masks(self, outputs, targets, indices, num_masks):
         """
         Compute mask loss: Focal Loss and Dice Loss.
         """
         query_indices = self._get_query_indices(indices)
-        target_class_indices = self._get_target_class_indices(indices)
-
         source_masks = outputs["pred_masks"][query_indices]
-        masks = [target["masks"] for target in targets]
-
-        # TODO: use valid to mask invalid areas due to padding in loss
-        target_masks, valid = batch_tensors(masks)
-        target_masks = target_masks.to(source_masks)
-        target_masks = target_masks[target_class_indices]
-
-        # no need to upsample predictions as we are using normalized coordinates
-        # source/target masks: (N, 1, D, H, W)
+        
+        # source masks: (N, 1, D, H, W)
         source_masks = source_masks[:, None]
-        target_masks = target_masks[:, None]
 
-        # Motivated by PointRend & Implicit PointRend
-        # train with mask loss calculated on K randomly
-        # sampled points instead of whole mask
+        # NOTE: Efficient labelmap-based sampling (avoids materializing binary masks)
+        # Gather matched instance IDs (actual labelmap values, not indices)
+        batch_indices_list = []
+        instance_ids_list = []
+        for i, (src_idx, tgt_idx) in enumerate(indices):
+            if tgt_idx.numel() > 0:
+                # nr. of batch i elements in tgt_idx
+                batch_indices_list.append(torch.full_like(tgt_idx, i))
+                # labelmap values for each target in batch i
+                instance_ids_list.append(targets[i]["mask_ids"][tgt_idx])
+        
+        if not instance_ids_list:
+            # No matches - return zero loss
+            return {
+                "loss_mask": source_masks.new_tensor(0.0), 
+                "loss_dice": source_masks.new_tensor(0.0),
+            }
+        
+        # batch_indices: [N_total_targets], instance_ids: [N_total_targets]
+        batch_indices = torch.cat(batch_indices_list)
+        instance_ids = torch.cat(instance_ids_list)
+        # stack labelmaps into a single tensor of shape (B, Z, Y, X)
+        labelmap = torch.stack([target["label_map"] for target in targets])
+
         with torch.no_grad():
-            # sample point_coordinates
+            # point_coords: [N, num_points, 3] normalized coords in [0, 1]
             point_coords = get_uncertain_point_coords_with_randomness(
                 source_masks,
                 lambda logits: calculate_uncertainty(logits),
-                self.num_points,  # K
+                self.num_points,
                 self.oversample_ratio,
-                # ratio of points that are sampled via importance sampling
                 self.importance_sample_ratio,
             )
-            # samples from target mask at point_coords
-            point_labels = point_sample(
-                target_masks,
-                point_coords,
-                align_corners=False,
-            ).squeeze(1)
+            
+            # Sample binary labels from labelmap
+            point_labels = point_sample_labelmap_batched(
+                labelmap=labelmap,
+                point_coords=point_coords,
+                batch_indices=batch_indices,
+                instance_ids=instance_ids,
+            )
 
-        # samples from source mask at point_coords
         point_logits = point_sample(
             source_masks,
             point_coords,
             align_corners=False,
         ).squeeze(1)
-
-        # compute losses: cross entropy classifcation loss and dice mask loss
+        
         losses = {
             "loss_mask": sigmoid_ce_loss(point_logits, point_labels, num_masks),
             "loss_dice": dice_loss(point_logits, point_labels, num_masks),
         }
-
-        del source_masks, target_masks
+        
+        del source_masks
         return losses
 
     def preprocess_masks(self, mask_dict):

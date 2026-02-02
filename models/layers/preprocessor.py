@@ -619,8 +619,8 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         }
         sample, transform_time = self._apply_transforms(sample)
 
-        if self.debug_savepath is not None:
-            self._debug_visualize_batch(sample)
+        # if self.debug_savepath is not None:
+        #     self._debug_visualize_batch(sample)
 
         inputs = sample["data_tensor"]
         meta = sample["metainfo"]

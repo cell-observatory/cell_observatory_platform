@@ -1,6 +1,6 @@
 
 # Cell Observatory Platform
-**The Cell Observatory Platform** is a comprehensive framework for training and evaluating machine learning models on biological image and video datasets. Built with [PyTorch](https://pytorch.org/), accelerated and scaled with [Ray](https://www.ray.io/), model sharding using [DeepSpeed](https://www.deepspeed.ai/), and flexibly configured using [Hydra](https://hydra.cc/), it provides a modular architecture for easy customization and extension.
+**The Cell Observatory Platform** is a comprehensive framework for training and evaluating machine learning models on biological image and video datasets. Built with [PyTorch](https://pytorch.org/), orchestrated and scaled with [Ray](https://www.ray.io/), model sharding via [DeepSpeed](https://www.deepspeed.ai/) or native PyTorch parallelism ([TorchTitan](https://github.com/pytorch/torchtitan)), and flexibly configured using [Hydra](https://hydra.cc/), it provides a modular architecture for easy customization and extension.
 
 - [Cell Observatory Platform](#cell-observatory-platform)
 - [Installation](#installation)
@@ -15,27 +15,31 @@
   - [Building a new apptainer image with a different torch version](#building-a-new-apptainer-image-with-a-different-torch-version)
 - [Get started](#get-started)
   - [Local setup](#local-setup)
-    - [1. Update experiment name](#1-update-experiment-name)
-    - [2. Update your paths](#2-update-your-paths)
-    - [3. Edit resource requirements](#3-edit-resource-requirements)
-    - [4. Run local training job with `manager.py`](#4-run-local-training-job-with-managerpy)
-    - [5. Launch multiple training jobs or Ray Tune jobs with `manager.py`](#5-launch-multiple-training-jobs-or-ray-tune-jobs-with-managerpy)
   - [Cluster setup](#cluster-setup)
-    - [SLURM Setup](#slurm-setup)
-    - [LSF Setup](#lsf-setup)
-- [Configuration layout](#configuration-layout)
-  - [Model configurations](#model-configurations)
-    - [1. Select base configurations](#1-select-base-configurations)
-    - [2. Override only what you need](#2-override-only-what-you-need)
-  - [Adding new models](#adding-new-models)
+- [Architecture Overview](#architecture-overview)
 - [Data Pipeline](#data-pipeline)
-  - [Structures](#structures)
   - [Databases](#databases)
-  - [Datasets](#datasets)
+  - [Ray Dataloader](#ray-dataloader)
   - [Preprocessors](#preprocessors)
+  - [Transforms](#transforms)
   - [MaskGenerator](#maskgenerator)
-  - [Transformations](#transformations)
-  - [Evaluators](#evaluators)
+- [Models](#models)
+  - [Pretraining Models](#pretraining-models)
+  - [Detection \& Segmentation](#detection--segmentation)
+  - [Backbones](#backbones)
+  - [Layers](#layers)
+- [Training](#training)
+  - [EpochBasedTrainer (DeepSpeed)](#epochbasedtrainer-deepspeed)
+  - [ParallelEpochBasedTrainer (TorchTitan)](#parallelepochbasedtrainer-torchtitan)
+  - [Hooks](#hooks)
+- [Logging \& Experiment Tracking](#logging--experiment-tracking)
+  - [Event Recording](#event-recording)
+  - [W\&B Integration](#wb-integration)
+  - [Metrics Processing](#metrics-processing)
+- [Inference](#inference)
+- [Evaluation](#evaluation)
+- [Profiling](#profiling)
+- [Configuration layout](#configuration-layout)
 - [License](#license)
 
 
@@ -52,7 +56,7 @@ docker pull ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_
 git clone --recurse-submodules https://github.com/cell-observatory/cell_observatory_platform.git
 ```
 
-To later update to the latest, greatest
+To later update to the latest, greatest.
 ```shell
 git pull --recurse-submodules
 ```
@@ -63,7 +67,7 @@ git pull --recurse-submodules
 ## Setup Supabase and W&B accounts
 
 You will need to create a Supabase and W&B account to use the platform.
-Supabase can be found [Cell Observatory Database](https://supabase.com/dashboard/org/yrgvnbckfmhfyxgzzkqb), and W&B can be found [Cell Observatory Dashboard](https://wandb.ai/cell-observatory).
+Supabase can be found at [Cell Observatory Database](https://supabase.com/dashboard/org/yrgvnbckfmhfyxgzzkqb), and W&B can be found at [Cell Observatory Dashboard](https://wandb.ai/cell-observatory).
 
 Once you have created your Supabase and W&B accounts, you'll need to add your API keys in the environment variables as described below.
 
@@ -137,27 +141,11 @@ apptainer build --arch amd64 --nv --force develop_torch_25_08.sif apptainerfile.
 
 # Get started
 
-All jobs are launched through our `manager.py` script which
-facilitates cluster resource allocation and Ray cluster setup. 
-You may decide whether to run jobs locally or on a cluster by 
-setting the `launcher_type` variable in `configs/clusters/*.yaml`. 
-We show how to run jobs locally and on SLURM or LSF clusters below. 
-Other cluster configurations can be added by extending the `manager.py` 
-script and adding the necessary files in the `cluster` folder to support allocaing 
-cluster resources (see `cluster/ray_slurm_cluster.sh` and `cluster/ray_lsf_cluster.sh`
-for examples).
+All jobs are orchestrated on top of a **Ray cluster** and launched through our `manager.py` script, which facilitates cluster resource allocation and Ray cluster setup. You may decide whether to run jobs locally or on a cluster by setting the `launcher_type` variable in `configs/clusters/*.yaml`. We show how to run jobs locally and on SLURM or LSF clusters below.
 
 ## Local setup
 
-Example job configs are located in the `configs/experiments` folder. 
-For local jobs, you can use our existing `configs/paths/local.yaml` 
-and `configs/clusters/local.yaml` configurations. Then just edit the handful of lines below
-to specify your local directory structure and resource configuration before launching the job. 
-In general, if you want to extend existing functionality (to support a new 
-database type, cluster type, dataloader type, etc.), you just need to implement
-the necessary module (e.g. `data/databases/my_database.py`, `data/datasets/my_dataset.py`, `clusters/my_cluster.sh` to implement
-a new database, dataloader, or cluster configuration respectively), and add a new Hydra configuration file
-to specify under the `defaults` block in your run config.
+Example job configs are located in the `configs/experiments` folder. For local jobs, you can use our existing `configs/paths/local.yaml` and `configs/clusters/local.yaml` configurations.
 
 ### 1. Update experiment name
 ```yaml
@@ -168,7 +156,6 @@ wandb_project: test_cell_observatory_platform
 ### 2. Update your paths
 ```yaml
 paths:
-  # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_name}
   resume_checkpointdir: null 
   pretrained_checkpointdir: null
@@ -177,218 +164,307 @@ paths:
 ### 3. Edit resource requirements
 ```yaml
 clusters:
-  batch_size: 2 # total batch size
-  worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 4 # number of cpu cores per gpu
-  mem_per_cpu: 16000 # ram per cpu core
+  batch_size: 2
+  worker_nodes: 1
+  gpus_per_worker: 1
+  cpus_per_gpu: 4
+  mem_per_cpu: 16000
 ```
 
-### 4. Run local training job with `manager.py`
-Run the local job using the `manager.py` script, which will pick up the Hydra config and launch the Ray job:
-
+### 4. Run local training job
 ```bash
-# Set config and then run with `manager.py`:
-python cluster/manager.py --config-name=configs/test_pretrain_4d_mae_local.yaml
+python manager.py --config-name=configs/test_pretrain_4d_mae_local.yaml
 ```
 
-### 5. Launch multiple training jobs or Ray Tune jobs with `manager.py`
-To launch multiple training jobs with `manager.py`, set the `run_type` variable to `multi_run` and define a `runs` list of 
-training jobs you want to run (see `configs/benchmarks/abc/benchmark_training_4d.yaml` for an example). Note that each run config needs to specify a base configuration from which each job can override any parameters necessary. We also provide functionality to run jobs using Ray Tune's hyperparameter tuning functionality, in which case you should set `run_type` to `tune` and specify the parameters you want to sweep in the `tune` config module. For using Hydra's native sweep functionality or to run
-single jobs, set `run_type` to `single_run`. 
+### 5. Launch multiple training jobs or Ray Tune jobs
+To launch multiple training jobs, set `run_type` to `multi_run` and define a `runs` list. For Ray Tune hyperparameter sweeps, set `run_type` to `tune`.
 
 ## Cluster setup
 
-Running a job on a cluster is very similar to the local setup. 
-You need to override the `defaults` in your `my_run_config.yaml` file. 
-We recommend creating `clusters/my_cluster_configuration.yaml` and
-`path/my_path_configurations.yaml` to match your directory structure and
-resource/cluster configurations. We have some examples below for SLURM and 
-LSF in `configs/paths/*.yaml` and `configs/clusters/*.yaml`.
+Running a job on a cluster is very similar to the local setup. Override the `defaults` in your config file to match your cluster:
 
 ### SLURM Setup
 ```yaml
 defaults:
-  - clusters: abc_a100   # configs/clusters/abc_a100.yaml
-  - paths: abc           # configs/paths/abc.yaml
+  - clusters: abc_a100
+  - paths: abc
 ```
 
 ### LSF Setup
 ```yaml
 defaults:
-  - clusters: janelia_h100   # configs/clusters/janelia_h100.yaml
-  - paths: janelia      # configs/paths/janelia.yaml
+  - clusters: janelia_h100
+  - paths: janelia
 ```
+
+# Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Ray Cluster                                     │
+│  ┌─────────────────────────────────────────────────────────────────────────┐ │
+│  │                         manager.py                                      │ │
+│  │                    (SLURM / LSF / Local)                                │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+│                                    │                                         │
+│           ┌────────────────────────┼────────────────────────┐               │
+│           ▼                        ▼                        ▼               │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐         │
+│  │ EpochBased      │    │ ParallelEpoch   │    │   Inferencer    │         │
+│  │ Trainer         │    │ BasedTrainer    │    │                 │         │
+│  │ (DeepSpeed)     │    │ (TorchTitan)    │    │ (Distributed)   │         │
+│  └─────────────────┘    └─────────────────┘    └─────────────────┘         │
+│           │                        │                        │               │
+│           └────────────────────────┼────────────────────────┘               │
+│                                    ▼                                         │
+│  ┌─────────────────────────────────────────────────────────────────────────┐ │
+│  │                      Ray Data Pipeline                                   │ │
+│  │  LoaderActor → SharedMemory → CollatorActor → DeviceBuffer → GPU        │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+# Data Pipeline
+
+The data pipeline is built on **Ray Data** with a custom queue-based system for high-throughput data loading:
+
+```
+Database (Supabase/Local CSV) → LoaderActor → Host SharedMemory Buffer → CollatorActor → Device Buffer → Preprocessor → Model
+```
+
+## Databases
+
+**`ParentDatabase`** / **`SupabaseDatabase`**: Flexible database classes supporting both remote (Supabase/PostgreSQL) and local (cached CSV) data sources.
+
+- **Remote mode**: Queries Supabase via ConnectorX (Arrow path) for high-performance data fetching
+- **Local mode**: Loads from cached CSV + JSON config for offline/fast iteration
+- **Data filtering**: ROI/tile/HPF selection, occupancy thresholds, CDF thresholds, annotation filtering
+
+```python
+# Example database config
+datasets:
+  databases:
+    _target_: data.databases.supabase_database.SupabaseDatabase
+    use_cached_hypercubes_dataframe: true
+    hypercubes_dataframe_path: ${paths.data_path}/databases/hypercubes.csv
+    server_folder_path: /groups/betzig/data
+```
+
+## Ray Dataloader
+
+The Ray-based dataloader uses a multi-actor architecture for maximum throughput:
+
+**`LoaderActor`**: Reads hypercubes from Zarr via TensorStore into pinned shared memory buffers.
+
+**`CollatorActor`** / **`FinetuneCollatorActor`**: Transfers batches from host shared memory to GPU device buffers with optional transforms, mask extraction, and target building.
+
+## Preprocessors
+
+Preprocessors provide a unified interface for task-specific data preparation:
+
+| Preprocessor | Task | Description |
+|-------------|------|-------------|
+| `RayPreprocessor` | Pretraining | dtype normalization, masking, transforms |
+| `ChannelSplitPreprocessor` | Channel Split | Predicts per-channel from averaged input |
+| `UpsamplePreprocessor` | Super-resolution | NA-mask downsampling for space/time upsampling |
+| `InstanceSegmentationPreprocessor` | Instance Seg | Mask/bbox extraction, target building |
+
+Transforms can be applied in either the **Collator** (CPU, during data loading) or the **Preprocessor** (GPU, before model forward).
+
+## Transforms
+
+Available transforms in `data/transforms/`:
+
+- **`Resize`**: Spatial resizing with mask/bbox scaling
+- **`Crop`**: Random and center cropping
+- **`Normalize`**: Percentile-based normalization
+- **`ProbabilisticChoice`**: Randomly select between transform pipelines
+
+## MaskGenerator
+
+Generates patch-level masks for self-supervised learning with explicit time/space awareness:
+
+- `BLOCKED` / `BLOCKED_TIME_ONLY` / `BLOCKED_SPACE_ONLY`: Block-based masking
+- `RANDOM` / `RANDOM_SPACE_ONLY`: MAE-style noise→sort→split masking
+- `BLOCKED_PATTERNED`: Deterministic time downsampling patterns
+
+# Models
+
+## Pretraining Models
+
+| Model | Location | Description |
+|-------|----------|-------------|
+| **MAE** | `models/meta_arch/maskedautoencoder.py` | Masked Autoencoder for 3D/4D volumes |
+| **JEPA** | `models/meta_arch/jepa.py` | Joint-Embedding Predictive Architecture |
+
+## Detection & Segmentation
+
+| Model | Location | Description |
+|-------|----------|-------------|
+| **plainDETR** | `models/meta_arch/plainDETR.py` | 3D object detection  |
+| **MaskDINO** | `models/meta_arch/maskdino.py` | 3D instance segmentation |
+
+## Backbones
+
+- **ViT** (`models/backbones/vit.py`): Vision Transformer with RoPE/sincos positional encoding
+- **ConvNeXt** (`models/backbones/convnext.py`): ConvNeXt backbone
+- **MaskedEncoder** (`models/backbones/maskedencoder.py`): Encoder with masking support
+
+## Layers
+
+Key layer implementations:
+- **Attention**: Multi-head self-attention with flash attention support and deformable attention 
+- **Transformer**: Standard and deformable transformer blocks
+- **Patch Embeddings**: 3D/4D patch embedding with multiple layout support
+- **Positional Encoding**: Sinusoidal, learned, and RoPE encodings
+- **Matchers**: Hungarian matcher for detection/segmentation
+
+# Training
+
+## EpochBasedTrainer (DeepSpeed)
+
+Standard training loop with DeepSpeed ZeRO optimization:
+
+
+
+**Features:**
+- DeepSpeed ZeRO stages 1-3
+- Mixed precision (bf16/fp16)
+- Checkpoint saving/resuming
+- Hook-based extensibility
+
+## ParallelEpochBasedTrainer (TorchTitan)
+
+Advanced parallelism support via TorchTitan integration (**work in progress**):
+
+
+
+**Features:**
+- **TP** (Tensor Parallelism): Shards model tensor
+- **CP** (Context Parallelism): Shards sequence dimension
+- **FSDP** (Model and Data Parallelism): FSDP-based sharding
+- **Torch Compile** support
+- **Activation checkpointing**
+
+## Hooks
+
+The training loop is extensible via a priority-based hook system. Hooks can execute at various points: `before_train`, `before_epoch`, `before_step`, `after_backward`, `after_step`, `after_epoch`, `after_train`, and validation/test equivalents.
+
+| Hook | Purpose |
+|------|---------|
+| `IterationTimer` | Tracks step/epoch/validation timing, logs ETA |
+| `LRScheduler` | Executes LR scheduler steps, logs learning rate |
+| `WeightDecayScheduleHook` | Updates weight decay on schedule |
+| `PeriodicWriter` | Writes metrics to loggers at epoch end |
+| `PeriodicCheckpointer` | Saves checkpoints at configurable intervals |
+| `BestCheckpointer` | Reports best checkpoint to Ray for model selection |
+| `BestMetricSaver` | Tracks and updates best validation metric |
+| `TorchMemoryStats` | Logs CUDA memory usage (reserved/allocated) |
+| `TorchProfiler` | PyTorch profiler with TensorBoard traces and memory snapshots |
+| `NsysProfilerHook` | NVIDIA Nsight Systems profiling for GPU timeline analysis |
+| `EarlyStopHook` | Stops training if validation metric plateaus |
+| `EMASchedulerHook` | Updates EMA beta for target networks (JEPA) |
+| `FreeDeviceBufferHook` | Releases Ray device buffers to prevent deadlocks |
+| `AnomalyDetector` | Detects NaN/Inf losses with `torch.autograd.detect_anomaly` |
+| `GarbageCollectionHook` | Periodic synchronized GC to prevent memory fragmentation |
+| `MemoryDebugHook` | Detailed memory dumps (proc, CUDA, Ray, /dev/shm) |
+| `AdjustTimeoutHook` | Adjusts distributed timeout for long-running ops |
+
+# Logging & Experiment Tracking
+
+## Event Recording
+
+The `EventRecorder` is the central hub for collecting metrics during training. It supports step-scoped and epoch-scoped scalars with configurable reduction methods (mean, median, sum, min, max).
+
+```python
+# Record a scalar at step scope
+trainer.event_recorder.put_scalar("loss", loss_value, scope="step")
+
+# Record multiple scalars with a prefix
+trainer.event_recorder.put_scalars(scope="epoch", prefix="val_", accuracy=0.95, f1=0.92)
+```
+
+## W&B Integration
+
+The `WandBEventWriter` provides seamless Weights & Biases integration.
+
+
+
+**Features:**
+- Automatic login via `WANDB_API_KEY` from `.env`
+- Custom metric namespacing (`step/*`, `epoch/*`)
+- Tags and notes for experiment organization
+
+The `LocalEventWriter` saves metrics to CSV files for offline analysis.
+
+
+
+## Metrics Processing
+
+For advanced training loops (TorchTitan), the `MetricsProcessor` computes detailed performance metrics (**work in progress**):
+
+- **Throughput**: Tokens per second per device (TPS)
+- **MFU**: Model FLOPS Utilization percentage
+- **TFLOPS**: Achieved teraflops
+- **Timing**: Forward/backward/optimizer step times (ms)
+- **Memory**: Peak active/reserved GPU memory, allocation retries, OOMs
+
+# Inference
+
+The `InferencerWorker` provides distributed inference with two modes:
+
+**`stitch_volume`**: Reconstructs full volumes from hypercube predictions via all-to-all communication.
+
+**`save_local`**: Saves per-sample predictions locally (for detection/segmentation tasks).
+
+Supported tasks:
+- `detection` (plainDETR)
+- `instance_segmentation` (MaskDINO)
+- `semantic_segmentation`
+- `dense_prediction` (upsampling, channel split)
+- `pretrain` (reconstruction)
+- `feature_extractor` (feature visualization)
+
+
+
+# Profiling
+
+Multiple profiling tools are supported:
+
+| Profiler | Use Case |
+|----------|----------|
+| **pprof** (gperftools) | CPU profiling with `@pprof_func` / `@pprof_class` decorators |
+| **NVIDIA Nsys** | GPU timeline profiling via `NsysProfilerHook` |
+| **PyTorch Profiler** | Operator-level profiling via `TorchProfiler` hook |
+| **Memory Profiler** | PyTorch CUDA memory snapshots and `TorchMemoryStats` hook |
+| **Ray Profiler** | Ray actor/task profiling via `MemoryDebugHook` |
+
+
 
 # Configuration layout
 
 Here's what each configuration subdirectory handles:
 
-- **[`configs/models/`](configs/models)**
-  - Defines complete model specifications (e.g., `JEPA` and `MAE` model architectures).
-- **[`configs/hooks/`](configs/hooks)**
-  - Defines training hooks for logging, checkpointing, and other custom training behaviors.
-- **[`configs/datasets/`](configs/datasets)**
-  - Defines dataset classes and parameters.
-- **[`configs/losses/`](configs/losses)**
-  - Defines loss functions used in training.
-- **[`configs/transforms/`](configs/transforms)**
-  - Defines data augmentation and preprocessing pipelines and parameters.
-- **[`configs/optimizers/`](configs/optimizers)**
-  - Defines optimizer configurations (e.g., AdamW, SGD).
-- **[`configs/schedulers/`](configs/schedulers)**
-  - Defines learning rate schedulers (e.g., StepLR, CosineAnnealing).
-- **[`configs/checkpoint/`](configs/checkpoint)**
-  - Defines checkpointing configurations for saving and loading model states.
-- **[`configs/logging/`](configs/logging)**
-  - Defines logging configurations for training and evaluation metrics.
-- **[`configs/deepspeed/`](configs/deepspeed)**
-  - Defines DeepSpeed configurations for distributed training.
-- **[`configs/clusters/`](configs/clusters)**
-  - Defines cluster configurations for distributed training (e.g., Ray-on-SLURM).
-- **[`configs/loggers/`](configs/loggers)**
-  - Defines logging configurations for experiment tracking (e.g., WandB, TensorBoard).
-- **[`configs/trainer/`](configs/trainer)**
-  - Defines the training loop and configurations for training models.
-- **[`configs/evaluation/`](configs/evaluation)**
-  - Defines evaluation configurations for assessing model performance on validation/test datasets.
-- **[`configs/optimizations/`](configs/optimizations)**
-  - Defines configurations for enabling model performance optimization flags/functionality
-  (e.g. `torch.compile`, activation checkpointing, flags such as `PYTORCH_CUDA_ALLOC_CONF`).
-- **[`configs/benchmarks/`](configs/benchmarks)**
-  - Defines run configurations for benchmarking model throughput, data loading throughput, etc.
-- **[`configs/experiments/`](configs/experiments)**
-  - Defines run configurations for previous experiments we have run.
-- **[`configs/tune/`](configs/tune)**
-  - Defines Ray Tune configurations for running parameter sweeps.
-
-## Model configurations
-
-We use [Hydra](https://hydra.cc/) for managing experiment configurations. Hydra allows you to construct experiments by composing modular YAML files.
-
-### 1. Select base configurations
-
-Use the `defaults:` list to select the base YAML configurations for your experiment:
-
-```yaml
-defaults:
-  - models:           jepa
-  - datasets:         pretrain
-  - transforms:       transforms
-  - hooks:            hooks
-  - _self_            # load this file’s overrides last
-```
-
-### 2. Override only what you need
-
-Hydra handles overrides, allowing precise experiment adjustments. Scalars and lists are replaced outright, whereas dictionaries are merged recursively (only specified keys change).
-
-Example overrides in your main config file:
-
-```yaml
-clusters:
-  batch_size: 128 # total batch size
-
-datasets:
-  input_shape: [32, 128, 128, 128, 2]
-  patch_shape: [4, 16, 16, 16]
-  split: 0.1 # train/val split
-      
-models:
-  _target_: models.jepa.JEPA
-```
-
-
-## Adding new models
-
-Add a new YAML under the proper group, e.g. `configs/models/backbones/my_new_backbone.yaml`. To support a brand‑new model or dataset, just drop in your new small YAML and reference it in your `defaults:` block.
-
-```yaml
-defaults:
-  - models/backbones: my_new_backbone
-  - _self_
-```
-
-# Data Pipeline
-
-The end-to-end flow of our data pipeline is as follows: `Database (Supabase) -> index DataFrame -> dataset -> dataloader -> preprocessor -> model`.
-
-We first build a hypercubes table (CSV + JSON config) from Supabase, filter it (based on server path, ROI/tile/HPF, occupancy), and then choose one of three input stacks:
-
-  -  `PyTorch` (classic Dataset/DataLoader)
-
-  -  `DALI` (CPU external_source → GPU pipeline)
-
-  -  `Ray Data` (custom Datasource → streaming iterator)
-
-All three paths normalize batches to `{"data_tensor": <Tensor>, "metainfo": <dict>}` and then a `Preprocessor` enforces `dtype/device`, applies optional on-device transforms, and (optionally) generates masks for self-supervised training. 
-
-## Structures
-
-**`ImageList:`** A tensor container that holds images of varying sizes as a single padded tensor, storing original image sizes, layout information (`CZYX` vs `ZYXC` etc.), and providing methods for standardization and batch operations.
-
-**`BaseDataElement:`** A base class that provides dict-like and tensor-like operations for data containers, separating metainfo (image metadata) from data fields (annotations/predictions). 
-
-**`DataSample:`** Inherits from `BaseDataElement` that contains an `ImageList` object for data tensors and class methods `from_dict` and `to_dict` for serialization and deserialization.
-
-## Databases
-
-**`SupabaseDatabase:`**  Database class that constructs or queries a view of `TxZxYxXxC` hypercubes, fetches it via `ConnectorX` (Arrow path), and saves both a CSV of records and a JSON of configs. It supports:
-
-  - Server-aware existence filters (`/clusterfs`, `/groups`, `/aws`) and optional override of `server_folder`.
-
-  - Row limiting / ROI or tile selection / HPF filters and an occupancy filter (based on a minimum occupancy ratio) that parses per-channel occupancy data for each sample and drops low-occupancy samples.
-
-Users that want to implement their own database class only needs to implement (with corresponding `.yaml` files) a corresponding class to generate a local CSV record with file path information for your training samples.
-
-## Datasets
-
-Our `get_dataloader` method in `data/dataloaders.py` is the entrypoint that instantiates the selected dataset stack, optional transforms, and builds a dataloader. We have support for the following dataloaders:
-
-  -  `PyTorch`: `PreTrainDataset` implements a standard `DataLoader(..., num_workers, prefetch_factor, pin_memory, ...)`, and a user-defined collate function.
-
-  -  `DALI`: `PretrainDatasetDali` builds a `DALI` pipeline of the type `CPU external source -> GPU ops`, then a `DALIGenericIterator` provides data loading functionality.
-
-  -  `Ray`: `PretrainDatasourceRay` builds a Dataset from a custom `Datasource`, applies optional transforms, and creates an iterator with `_iter_batches`.
-
-## Preprocessors
-Our `Preprocessors` class provides a unified interface to standardize outputs from different data loader libraries and to perform any operations needed before the model step. We support the following `Preprocessors:`
-
-**`TorchPreprocessor`**
-
-Normalizes `PyTorch` batches to a common interface:
-
-  -  Stacks lists, validates dtype, optionally does checks for NaN/Inf.
-
-  -  If `with_masking`, calls `mask_generator(batch_size)` and adds
-  `masks`, `context_masks`, `target_masks`, `original_patch_indices`, `channels_to_mask` to the `data_sample` metainfo.
-
-**`DaliPreprocessor`**
-
-Similar to `TorchPreprocessor`, but input comes as a tuple from `DALIGenericIterator`; the tensor is already on GPU.
-
-**`RayPreprocessor`**
-
-Similar to `TorchPreprocessor`, also allows for applying transformations.
-
-## MaskGenerator
-Generates per-batch, patch-level masks for self-supervised learning over `3D/4D` inputs with explicit time and space awareness. We currently support the following mask generation modes:
-
-  - `BLOCKED` / `BLOCKED_TIME_ONLY` / `BLOCKED_SPACE_ONLY`: samples block sizes from specified scales, creates spatial/temporal blocks.
-
-  - `RANDOM` / `RANDOM_SPACE_ONLY`: MAE-style `noise -> sort -> split` mask creation pipeline that splits patch-level masks into `context` and `target` sets; in `SPACE_ONLY`, the same spatial mask is repeated across time.
-
-  - `BLOCKED_PATTERNED`: downsample time according to a provided pattern and build masks deterministically.
-
-The `MaskGenerator` object is owned by the `Preprocessor`; when `with_masking=True`, the preprocessor attaches all mask tensors into metainfo for the model step.
-
-## Transformations
-
-List of methods that return a transformed tensor. **Where to apply:** If the transform is cheap, you can attach it to the dataset by attaching the necessary config to `configs/datasets/my_dataset/transforms.yaml` (will be included inside `__getitem__` in `Torch` or in `get_dataset_ray` with `Ray Data`). If it is heavy, consider applying it on device in the `Preprocessor` to avoid extra CPU cost. For `DALI` both CPU and on device operations should be specified as part of the `DALI` pipeline.
-
-## Evaluators
-
-**`DatasetEvaluator:`** Abstract base class defining three key methods: `reset()` for initialization, `process()` for accumulating predictions during evaluation, and `evaluate()` for computing final metrics and returning results as dictionaries.
+- **[`configs/models/`](configs/models)** - Model architectures (MAE, JEPA, plainDETR, MaskDINO, backbones, heads)
+- **[`configs/datasets/`](configs/datasets)** - Dataset classes, databases, and preprocessor parameters
+- **[`configs/tasks/`](configs/tasks)** - Task-specific configs (channel_split, instance_segmentation, upsample_*)
+- **[`configs/optimizers/`](configs/optimizers)** - Optimizer configurations (AdamW, LAMB, Lion, Muon)
+- **[`configs/schedulers/`](configs/schedulers)** - Learning rate and weight decay schedulers
+- **[`configs/optimizations/`](configs/optimizations)** - Model optimizations (torch.compile, activation checkpointing)
+- **[`configs/hooks/`](configs/hooks)** - Training hooks configuration
+- **[`configs/checkpoint/`](configs/checkpoint)** - Checkpointing configurations
+- **[`configs/deepspeed/`](configs/deepspeed)** - DeepSpeed ZeRO configurations
+- **[`configs/parallelism/`](configs/parallelism)** - TorchTitan parallelism settings (TP, CP, PP, DP)
+- **[`configs/clusters/`](configs/clusters)** - Cluster configurations (SLURM, LSF, local)
+- **[`configs/paths/`](configs/paths)** - Path configurations for different environments (ABC, Janelia, CoreWeave)
+- **[`configs/loggers/`](configs/loggers)** - Logging configurations (WandB, Local CSV)
+- **[`configs/profiling/`](configs/profiling)** - Profiling configurations (pprof, nsys, torch profiler)
+- **[`configs/trainer/`](configs/trainer)** - Training loop configurations
+- **[`configs/evaluation/`](configs/evaluation)** - Evaluation configurations
+- **[`configs/inference/`](configs/inference)** - Inference and prediction configurations
+- **[`configs/tune/`](configs/tune)** - Ray Tune hyperparameter sweep configurations
+- **[`configs/benchmarks/`](configs/benchmarks)** - Benchmarking configurations for throughput testing
+- **[`configs/experiments/`](configs/experiments)** - Complete experiment configs and examples
 
 # License
 

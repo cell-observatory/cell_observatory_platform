@@ -60,10 +60,10 @@ seed: 42
 
 # clusters
 clusters:
-  batch_size: 3 # total batch size
+  batch_size: 1 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 12 # number of cpu cores per gpu
+  cpus_per_gpu: 24 # number of cpu cores per gpu
   mem_per_cpu: 16000 # ram per cpu core
   ray_queue_memory: 0.2
 
@@ -78,8 +78,8 @@ paths:
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-  train_shape: [128, 256, 512, 1]
-  input_shape: [128, 256, 512, 2]
+  train_shape: [128, 384, 1024, 1]
+  input_shape: [128, 384, 1024, 2]
   patch_shape: [16, 16, 16, null]
   occupancy_threshold: 0.9
 
@@ -87,19 +87,36 @@ datasets:
   return_dataloader: true
   distributed_sampler: true
 
-  buffer_capacity: 16
-  num_actors_min: 4
-  num_actors_max: 12
+  # buffer_capacity: 16
+  # num_actors_min: 4
+  # num_actors_max: 12
 
-  max_hypercubes: 200
+  buffer_capacity: 8
+  num_actors_min: 4
+  num_actors_max: 4
+
+  # max_hypercubes: 200
+  max_tiles: 10
   # max_hypercubes: 2000000
   # max_hypercubes: 50000
   # max_hypercubes: 1000000
   # max_hypercubes: null
 
   use_cached_hypercubes_dataframe: true
-  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+  # hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+  hypercubes_dataframe_path: /groups/betzig/betziglab/hph/cell_observatory_project/data/databases/prepared_tiles_view.csv
   # hypercubes_dataframe_path:  /clusterfs/nvme/segment_4d/databases/prepared_1_128_128_128_2_hypercube_view.csv
+
+  preprocessor:
+    transforms_list:
+      - _target_: cell_observatory_platform.data.transforms.crop.Crop3D
+        input_format: ZYXC
+        target_spatial_shape: [128, 384, 2048]
+        crop_dims: YX
+        crop_type: center
+        mode_probs: {"crop": 1.0}
+        bbox_format: zyxzyx
+        dtype: bfloat16
 
   databases:
     cdf_threshold: null
@@ -108,7 +125,7 @@ datasets:
     has_annotations: true
     server_folder_path: ${paths.server_folder_path}/synthetic
     # server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
-    with_hypercubes_dataframe: true
+    with_hypercubes_dataframe: false
     mask_channel: 1
 
   collate_fn:
@@ -124,10 +141,11 @@ datasets:
     transforms_list: null
     bbox_data_format: zyxzyx
     bbox_output_format: cxcyczwhd
-    with_resize: false
+    # with_resize: false
     debug: false
     normalize_bboxes: true
     async_device_copy: false
+    generate_binary_masks: false
     columns:
       - "x_start"
       - "y_start"

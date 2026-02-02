@@ -105,10 +105,13 @@ def make_config(
     with open_dict(config):
         if "models" not in config.optimizations:
             config.optimizations.models = {}
-        if "activation_checkpoint" not in config.optimizations.models:
-            config.optimizations.models.activation_checkpoint = {}
+        # NOTE: mae is arbitrary model name, we can use any model name here
+        if "mae" not in config.optimizations.models:
+            config.optimizations.models.mae = {}
+        if "activation_checkpoint" not in config.optimizations.models.mae:
+            config.optimizations.models.mae.activation_checkpoint = {}
 
-        ac_cfg = config.optimizations.models.activation_checkpoint
+        ac_cfg = config.optimizations.models.mae.activation_checkpoint
         ac_cfg.enabled = ac_enabled
         ac_cfg.mode = mode
         ac_cfg.selective_ac_option = selective_ac_option
