@@ -11,7 +11,7 @@ import torch.nn as nn
 from torch.nn.init import trunc_normal_
 
 
-def LinearProbe(nn.Module):
+class LinearProbe(nn.Module):
     def __init__(self, in_dim, output_dim):
         super().__init__()
         self.linear = nn.Linear(in_dim, output_dim)
