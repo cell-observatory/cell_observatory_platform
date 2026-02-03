@@ -1,5 +1,13 @@
-import numpy as np
+import os
 import pytest
+from pathlib import Path
+
+import numpy as np
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 import torch
 
 from cell_observatory_platform.models.layers.positional_encoding import (
@@ -291,3 +299,107 @@ def test_generate_grid_indices_shapes_all_formats():
     # TZYXC
     tt, tz, ty, tx = generate_grid_indices(3, 2, end_z=2, end_t=2, input_fmt="TZYXC")
     assert tt.numel() == 24 and tz.numel() == 24 and ty.numel() == 24 and tx.numel() == 24
+
+
+# ------------------------------------------------
+# Plotting Sanity Checks for Positional Encodings
+# ------------------------------------------------
+
+# ----------------------------
+# Plot helpers
+# ----------------------------
+
+def _get_outdir(tmp_path: Path) -> Path:
+    env = os.environ.get("POSENC_PLOT_DIR", "")
+    if env:
+        out = Path(env).expanduser().resolve()
+        out.mkdir(parents=True, exist_ok=True)
+        return out
+    return tmp_path
+
+def _savefig(outdir: Path, name: str) -> Path:
+    path = outdir / name
+    plt.tight_layout()
+    plt.savefig(path, dpi=150)
+    plt.close()
+    return path
+
+def plot_pe_heatmap(pe: np.ndarray, outdir: Path, name: str):
+    # pe: [L, D]
+    plt.figure(figsize=(7, 4))
+    plt.imshow(pe, aspect="auto", interpolation="nearest")
+    plt.xlabel("dim")
+    plt.ylabel("position")
+    plt.title("PE heatmap: PE[pos, dim]")
+    plt.colorbar()
+    return _savefig(outdir, name)
+
+def plot_pe_similarity(pe: np.ndarray, outdir: Path, name: str):
+    x = torch.from_numpy(pe).float()
+    x = x / (x.norm(dim=-1, keepdim=True) + 1e-8)
+    S = (x @ x.T).cpu().numpy()
+    plt.figure(figsize=(5, 5))
+    plt.imshow(S, aspect="auto", interpolation="nearest")
+    plt.title("Cosine similarity between positions")
+    plt.xlabel("j")
+    plt.ylabel("i")
+    plt.colorbar()
+    return _savefig(outdir, name)
+
+def plot_grid_channel(img2d: np.ndarray, outdir: Path, name: str, title: str):
+    plt.figure(figsize=(4, 4))
+    plt.imshow(img2d, interpolation="nearest")
+    plt.title(title)
+    plt.colorbar()
+    return _savefig(outdir, name)
+
+# ----------------------------
+# Tests: SinCos 3D
+# ----------------------------
+
+@pytest.mark.skip(reason="For debugging purposes only")
+def test_sincos_3d_plots(tmp_path):
+    outdir = _get_outdir(tmp_path)
+
+    D = 120
+    Z, Y, X = 6, 8, 10
+    pe = positional_encoding_3d(
+        embed_dim=D,
+        lateral_x_sequence_length=X,
+        lateral_y_sequence_length=Y,
+        axial_sequence_length=Z,
+        temporal_sequence_length=None,
+        cls_token=False,
+    )
+    assert pe.shape == (Z * Y * X, D)
+
+    # Per 2D z-slice: heatmap and cosine similarity over the (Y, X) positions at that z
+    pe_grid = pe.reshape(Z, Y, X, D)  # [Z, Y, X, D]
+    z_slices = [0, Z // 2, Z - 1] if Z >= 3 else list(range(Z))
+    for zi in z_slices:
+        pe_slice = pe_grid[zi].reshape(Y * X, D)  # [Y*X, D]
+        plot_pe_heatmap(pe_slice, outdir, f"sincos_3d_heatmap_z{zi}.png")
+        plot_pe_similarity(pe_slice, outdir, f"sincos_3d_similarity_z{zi}.png")
+
+# ----------------------------
+# Tests: SinCos 4D
+# ----------------------------
+
+@pytest.mark.skip(reason="For debugging purposes only")
+def test_sincos_4d_plots(tmp_path):
+    outdir = _get_outdir(tmp_path)
+
+    D = 128
+    T, Z, Y, X = 3, 4, 6, 5
+    pe = positional_encoding_4d(
+        embed_dim=D,
+        lateral_x_sequence_length=X,
+        lateral_y_sequence_length=Y,
+        axial_sequence_length=Z,
+        temporal_sequence_length=T,
+        cls_token=False,
+    )
+    assert pe.shape == (T * Z * Y * X, D)
+
+    plot_pe_heatmap(pe, outdir, "sincos_4d_heatmap_head.png")
+    plot_pe_similarity(pe, outdir, "sincos_4d_similarity.png")
