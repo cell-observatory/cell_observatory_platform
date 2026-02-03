@@ -11,6 +11,15 @@ import torch.nn as nn
 from torch.nn.init import trunc_normal_
 
 
+def LinearProbe(nn.Module):
+    def __init__(self, in_dim, output_dim):
+        super().__init__()
+        self.linear = nn.Linear(in_dim, output_dim)
+
+    def forward(self, x):
+        return self.linear(x)
+
+
 class LinearHead(nn.Module):
     def __init__(
         self,
@@ -93,7 +102,7 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
 
     sig = inspect.signature(LinearHead.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "type"}
 
     kwargs = {}
     for k, v in cfg.items():
@@ -111,4 +120,9 @@ def BUILD(cfg: Mapping[str, Any]) -> LinearHead:
       - in_dim / nlayers
       - input_dim / num_layers  (aliased to above)
     """
-    return LinearHead(**_extract_model_kwargs(cfg))
+    if cfg.type == "linear":
+        return LinearHead(**_extract_model_kwargs(cfg))
+    elif cfg.type == "linear_probe":
+        return LinearProbe(**_extract_model_kwargs(cfg))
+    else:
+        raise ValueError(f"Invalid type: {cfg.type}")

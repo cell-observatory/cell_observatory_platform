@@ -23,9 +23,6 @@ wandb_project: exp_01_30_26_ablation_pos_enc
 
 backend: DEEPSPEED
 
-# distributed framework
-distributed_framework: ray
-
 # run type
 run_type: single_run # single_run, multi_run, or tune
 

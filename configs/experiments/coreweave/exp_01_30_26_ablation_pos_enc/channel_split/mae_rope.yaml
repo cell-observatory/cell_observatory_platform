@@ -10,7 +10,7 @@ defaults:
 - /models/BUILD_AutoBench
 - /models/meta_arch/autobench/ChannelSplitAutoBench/mae_large
 - /models/backbones/masked_encoder/large
-- /models/heads/maskedpredictor/large
+- /models/heads/linear/linear_probe
 - /checkpoint/checkpoint
 - /loggers/loggers
 - /evaluation/base_evaluator
@@ -135,6 +135,7 @@ models:
           input_shape: ${datasets.input_shape}
           patch_shape: ${datasets.patch_shape}
           embed_dim: ${models.heads.maskedpredictor.embed_dim}
+        decoder_args: ${models.heads.linear}
 hooks:
   hooks_list:
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook

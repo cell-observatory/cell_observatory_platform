@@ -299,6 +299,33 @@ TASK_POS_ENCODING_PRESETS = {
 
 
 # -----------------------------
+# Head Presets
+# Maps head name -> defaults path and decoder_args ref (for autobench)
+# -----------------------------
+
+HEAD_PRESETS = {
+    "maskedpredictor": {
+        "defaults_path": "/models/heads/maskedpredictor/large",
+        "decoder_args_ref": "${models.heads.maskedpredictor}",
+    },
+    "linear": {
+        "defaults_path": "/models/heads/linear/linear",
+        "decoder_args_ref": "${models.heads.linear}",
+    },
+    "linear_probe": {
+        "defaults_path": "/models/heads/linear/linear_probe",
+        "decoder_args_ref": "${models.heads.linear}",
+    },
+}
+
+# Group -> dotted key for meta_arch decoder_args (autobench tasks only)
+GROUP_DECODER_ARGS_KEY = {
+    "channel_split": "models.meta_arch.autobench.ChannelSplitAutoBench.decoder_args",
+    "upsample_space": "models.meta_arch.autobench.UpsampleSpaceAutoBench.decoder_args",
+}
+
+
+# -----------------------------
 # Helpers
 # -----------------------------
 
@@ -549,6 +576,27 @@ def generate_from_recipe(recipe: Dict[str, Any], spec_dir: Path, out_root: Path)
         insert_defaults(defaults_list, user_defaults.get("before_checkpoint", []), insert_before="/checkpoint/checkpoint")
         insert_defaults(defaults_list, user_defaults.get("before_optimizations", []), insert_before="/optimizations/optimizations")
         insert_defaults(defaults_list, user_defaults.get("append", []), insert_before=None)
+
+        # 5) Head preset (if specified in recipe)
+        head_name = recipe.get("head")
+        if head_name is not None:
+            if head_name not in HEAD_PRESETS:
+                raise ValueError(
+                    f"Unknown head '{head_name}' in recipe for '{group}/{name}'. "
+                    f"Must be one of: {list(HEAD_PRESETS.keys())}"
+                )
+            head_preset = HEAD_PRESETS[head_name]
+            head_defaults_path = head_preset["defaults_path"]
+            # Remove any existing head default so the new head replaces it
+            head_paths = [p["defaults_path"] for p in HEAD_PRESETS.values()]
+            for hp in head_paths:
+                while hp in defaults_list:
+                    defaults_list.remove(hp)
+            insert_defaults(defaults_list, [head_defaults_path], insert_before="/checkpoint/checkpoint")
+            # Point meta_arch decoder_args at the chosen head
+            decoder_args_key = GROUP_DECODER_ARGS_KEY.get(group)
+            if decoder_args_key is not None:
+                set_by_dotted_path(cfg, decoder_args_key, head_preset["decoder_args_ref"])
 
         # --- base required lines
         # Ensure deepspeed checkpoint load_universal

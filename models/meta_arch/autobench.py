@@ -492,6 +492,7 @@ def BUILD(cfg: Mapping[str, Any]) -> AutoBench:
         abs_sincos_enc=model_cfg.get("abs_sincos_enc"),
         weight_init_type=model_cfg.get("weight_init_type"),
         with_auxiliary_loss=model_cfg.get("with_auxiliary_loss", False),
+        freeze_backbone=model_cfg.get("freeze_backbone", False),
     )
 
     if task == "channel_split":
