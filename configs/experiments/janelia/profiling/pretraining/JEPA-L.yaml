@@ -139,7 +139,6 @@ optimizers:
 hooks:
   hooks_list:
   - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
-  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
   - _target_: cell_observatory_platform.training.hooks.EMASchedulerHook
     ema_start: 0.998
