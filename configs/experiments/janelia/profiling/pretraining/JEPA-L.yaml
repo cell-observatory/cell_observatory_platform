@@ -138,7 +138,12 @@ optimizers:
 
 hooks:
   hooks_list:
+  - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
+  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+  - _target_: cell_observatory_platform.training.hooks.EMASchedulerHook
+    ema_start: 0.998
+    ema_end: 1.0
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
@@ -152,3 +157,9 @@ hooks:
     metric_name: ${evaluation.val_metric}
     compare_fn: ${evaluation.val_mode}
     eval_after_validation: true
+  - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
+    step_period: 5
+    epoch_period: 1
+    logdir: ${loggers.logdir}
+  - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+    output_dir: ${loggers.logdir}/profiler
