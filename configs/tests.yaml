@@ -55,8 +55,8 @@ seed: 42
 
 paths:
   # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null
+  outdir: ${paths.data_path}/pretrained_models/${wandb_project}/${experiment_name}
+  # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
   pretrained_checkpointdir: null
 
 clusters:
@@ -122,6 +122,7 @@ hooks:
     - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
     - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
       file_prefix: latest_model
+      backend: DEEPSPEED
     - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
       checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
     - _target_: cell_observatory_platform.training.hooks.TorchProfiler
