@@ -374,6 +374,9 @@ class JEPA(nn.Module):
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions
 
+    def forward_features(self, inputs, masks=None, concat_masks=True):
+        x = self.input_encoder.forward_features(inputs, masks=masks)
+        return x
 
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(JEPA.__init__)

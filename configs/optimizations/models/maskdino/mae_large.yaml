@@ -1,0 +1,25 @@
+activation_checkpoint:
+  enable: false
+  modules:
+    - ["backbone.backbone.encoder", "transformer_blocks"]
+    # pixel decoder
+    # - ["segmentation_head.pixel_decoder.transformer_encoder", "encoder_layers"]
+    # - ["segmentation_head.decoder.decoder", "decoder_layers"]
+  selective_ac_option: 2
+  per_op_sac_force_recompute_mm_shapes_by_fqns: null
+  mode: "selective"
+  mm_recompute_frac: 2
+
+torch_compile:
+  enable: false
+  modules:
+    - ["backbone.backbone.encoder", "transformer_blocks"]
+    # pixel decoder
+    - ["segmentation_head.pixel_decoder.transformer_encoder", "encoder_layers"]
+    - ["segmentation_head.decoder.decoder", "decoder_layers"]
+  range: block_based
+  mode: null
+  dynamic: false
+  blockbased_fullgraph: false
+  enable_compiled_autograd: false
+  backend: inductor

@@ -16,13 +16,15 @@ from typing import Any, Generic, Iterator, TypeVar
 
 import torch
 import torch.nn as nn
+from torch.optim import Optimizer, Muon
 from torch.distributed.checkpoint.state_dict import (
     get_optimizer_state_dict,
     set_optimizer_state_dict,
     StateDictOptions,
 )
 from torch.distributed.checkpoint.stateful import Stateful
-from torch.optim import Optimizer
+
+from timm.optim.lion import Lion
 
 from torchtitan.distributed import ParallelDims
 from torchtitan.components.ft import FTManager, has_torchft
@@ -44,8 +46,19 @@ def get_optimizer(
             params,
             lr=config.optimizers.lr,
             weight_decay=config.optimizers.wd,
-            betas=(0.9, 0.99),
-            eps=1e-08,
+            betas=tuple(config.optimizers.betas),
+            eps=config.optimizers.eps,
+        )
+    #NOTE: sometimes DeepSpeed's fused AdamW has issues, so we 
+    #      fall back to torch's implementation
+    elif optimizer == "adamw_torch":
+        opt = torch.optim.AdamW(
+            params,
+            lr=config.optimizers.lr,
+            weight_decay=config.optimizers.wd,
+            betas=tuple(config.optimizers.betas),
+            eps=config.optimizers.eps,
+            fused=True
         )
     elif optimizer == "lamb":
         opt = FusedLamb(
@@ -55,6 +68,22 @@ def get_optimizer(
             betas=(0.9, 0.99),
             eps=1e-08,
         )
+    elif optimizer == "lion":
+        opt = Lion(
+            params,
+            lr=config.optimizers.lr,
+            weight_decay=config.optimizers.wd,
+            betas=tuple(config.optimizers.betas),
+        )
+    # NOTE: not supported fully yet
+    # elif optimizer == "muon":
+    #     opt = Muon(
+    #         params,
+    #         lr=config.optimizers.lr,
+    #         weight_decay=config.optimizers.wd,
+    #         eps=config.optimizers.eps,
+    #         adjust_lr_fn=config.optimizers.get("adjust_lr_fn", None),
+    #     )
     else:
         raise ValueError(f"Optimizer {optimizer} not supported")
 

@@ -538,6 +538,8 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         bbox_data_format: Optional[str] = None,
         bbox_output_format: Optional[str] = None,
         debug_savepath: str = None,
+        expect_mask_channel: bool = True,
+        require_targets: bool = True,
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -557,6 +559,32 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         self.bbox_output_format = bbox_output_format
 
         self.debug_savepath = debug_savepath
+        self.require_targets = require_targets
+        self.expect_mask_channel = expect_mask_channel
+
+    def _split_inputs_and_mask(self, inputs: torch.Tensor):
+        """
+        inputs: (B, Z, Y, X, C_full)
+        returns:
+          inputs_wo_mask: (B, Z, Y, X, C_full-1)
+          masks_labelmap: (B, Z, Y, X)
+        """
+        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
+        B, Z, Y, X, C = inputs.shape
+
+        if C < 2:
+            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
+
+        # For zero-copy we *require* the mask to be the last channel
+        if self.mask_idx not in (-1, C - 1):
+            raise ValueError(
+                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+            )
+
+        masks = inputs[..., -1]  # (B, Z, Y, X), view
+        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
+
+        return inputs_wo_mask, masks
 
     def forward(self, data_sample: dict, data_time: float) -> dict:
         """
@@ -580,18 +608,34 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         """
         inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
 
+        if self.expect_mask_channel:
+            inputs_wo_mask, _ = self._split_inputs_and_mask(inputs)
+        else:
+            inputs_wo_mask = inputs
+
         sample = {
-            "data_tensor": inputs,
+            "data_tensor": inputs_wo_mask,
             "metainfo": meta,
         }
         sample, transform_time = self._apply_transforms(sample)
 
-        if self.debug_savepath is not None:
-            self._debug_visualize_batch(sample)
+        # if self.debug_savepath is not None:
+        #     self._debug_visualize_batch(sample)
 
         inputs = sample["data_tensor"]
         meta = sample["metainfo"]
-        targets = meta.pop("targets")
+        targets = meta.pop("targets", None)
+        if targets is None:
+            # Keep downstream contract: list[dict] length B (then _finalize wraps as [targets]).
+            B = inputs.shape[0]
+            targets = [
+                {
+                    "boxes": torch.zeros((0, 6), device=inputs.device, dtype=torch.float32),
+                    "mask_ids": torch.zeros((0,), device=inputs.device, dtype=torch.long),
+                    "labels": torch.zeros((0,), device=inputs.device, dtype=torch.long),
+                }
+                for _ in range(B)
+            ]
 
         return self._finalize(
             inputs=inputs,
@@ -630,22 +674,22 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         hi = float(np.percentile(img_slice, 99))
 
         tgt0 = targets[0]
-        # masks = tgt0["masks"]
+        masks = tgt0["masks"]
         boxes = tgt0["boxes"]
 
-        # masks = masks.float().detach().cpu()
+        masks = masks.float().detach().cpu()
         boxes = boxes.float().detach().cpu()
 
-        # if masks.ndim == 4:
-        #     N_inst, Zm, Ym, Xm = masks.shape
-        #     z_mid_mask = min(z_mid, Zm - 1)
-        #     label_slice = torch.zeros((Ym, Xm), dtype=torch.int64)
-        #     for idx in range(N_inst):
-        #         label_slice[masks[idx, z_mid_mask] > 0.5] = idx + 1
-        # else:
-        #     label_slice = None
+        if masks.ndim == 4:
+            N_inst, Zm, Ym, Xm = masks.shape
+            z_mid_mask = min(z_mid, Zm - 1)
+            label_slice = torch.zeros((Ym, Xm), dtype=torch.int64)
+            for idx in range(N_inst):
+                label_slice[masks[idx, z_mid_mask] > 0.5] = idx + 1
+        else:
+            label_slice = None
 
-        label_slice = None  # skipping mask slice for now
+        # label_slice = None  # skipping mask slice for now
 
         boxes_zyx = convert_bbox_format(boxes, self.bbox_output_format, "zyxzyx")
 

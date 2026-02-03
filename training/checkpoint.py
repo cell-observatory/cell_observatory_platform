@@ -29,14 +29,14 @@ class CheckpointManager:
         load_dtype: Optional[str] = None,
         resume_checkpointdir: Optional[Union[str, Path]] = None,
         pretrained_checkpointdir: Optional[Union[str, Path]] = None,
-        engine: Literal["deepspeed"] = "deepspeed",
+        backend: Literal["DEEPSPEED"] = "DEEPSPEED",
         checkpoint_tag: str = "best_model",
         use_custom_state_dict_filter: Optional[List[str]] = None,
         ckpt_include_prefixes: Optional[List[str]] = None,
         ckpt_translate_map: Optional[Dict[str, str]] = None,
     ):
         self.model = model
-        self.engine = engine
+        self.backend = backend.upper()
         self.save_period = save_period
         self.zero_stage = zero_stage
         self.load_dtype = load_dtype
@@ -86,11 +86,11 @@ class CheckpointManager:
         save_best_loss: Optional[float] = None,
     ):
         self.save_checkpointdir.mkdir(parents=True, exist_ok=True)
-        if self.engine == "deepspeed":
+        if self.backend == "DEEPSPEED":
             client_state = {"epoch": save_epoch, "iter": save_step, "best_loss": save_best_loss}
             self.model.save_checkpoint(self.save_checkpointdir, client_state=client_state, tag=prefix)
         else:
-            raise NotImplementedError("Saving checkpoints for " "other engines not implemented yet.")
+            raise NotImplementedError("Saving checkpoints for " "other backends not implemented yet.")
 
     def load(self):
         if self.resume_checkpointdir is not None:
@@ -111,7 +111,7 @@ class CheckpointManager:
 
         ckpt_zero_stage = self._get_zero_stage(os.path.join(self.load_checkpointdir, self.checkpoint_tag))
 
-        if self.use_custom_state_dict_filter is not None and self.engine == "deepspeed":
+        if self.use_custom_state_dict_filter is not None and self.backend == "DEEPSPEED":
             custom_load_fn = self.make_state_dict_filter_fn(
                 include_prefixes=self.ckpt_include_prefixes, translate_map=self.ckpt_translate_map
             )
@@ -148,35 +148,37 @@ class CheckpointManager:
 
             universal_checkpointdir = self.load_checkpointdir / f"{self.checkpoint_tag}_universal"
 
-            if universal_checkpointdir.exists() and any(universal_checkpointdir.iterdir()):
-                logger.info(
-                    f"Loading universal checkpoint from existing directory \
-                        {self.load_checkpointdir / f'{self.checkpoint_tag}_universal'}"
+            # NOTE: disabling reuse of existing universal checkpoints since this may lead to
+            #       to that the wrong (old) checkpoint being loaded if we need >1 restarts.
+            # if universal_checkpointdir.exists() and any(universal_checkpointdir.iterdir()):
+            #     logger.info(
+            #         f"Loading universal checkpoint from existing directory \
+            #             {self.load_checkpointdir / f'{self.checkpoint_tag}_universal'}"
+            #     )
+            #     ckpt_path, client_state = self._load_checkpoint(
+            #         tag=f"{self.checkpoint_tag}_universal", custom_load_fn=custom_load_fn
+            #     )
+
+            # else:
+
+            logger.info(
+                f"Converting ZeRO-0 checkpoint to universal format: \
+                {universal_checkpointdir}"
+                "NOTE: this will create a new checkpoint \
+                with the tag `{self.checkpoint_tag}_universal` in the same directory."
+            )
+
+            if is_main_process():
+                self._convert_zero_checkpoint_to_universal(
+                    src=self.load_checkpointdir / self.checkpoint_tag,
+                    dst=self.load_checkpointdir / f"{self.checkpoint_tag}_universal",
                 )
-                ckpt_path, client_state = self._load_checkpoint(
-                    tag=f"{self.checkpoint_tag}_universal", custom_load_fn=custom_load_fn
-                )
 
-            else:
+            barrier()
 
-                logger.info(
-                    f"Converting ZeRO-0 checkpoint to universal format: \
-                    {universal_checkpointdir}"
-                    "NOTE: this will create a new checkpoint \
-                    with the tag `{self.checkpoint_tag}_universal` in the same directory."
-                )
-
-                if is_main_process():
-                    self._convert_zero_checkpoint_to_universal(
-                        src=self.load_checkpointdir / self.checkpoint_tag,
-                        dst=self.load_checkpointdir / f"{self.checkpoint_tag}_universal",
-                    )
-
-                barrier()
-
-                ckpt_path, client_state = self._load_checkpoint(
-                    tag=f"{self.checkpoint_tag}_universal", custom_load_fn=custom_load_fn
-                )
+            ckpt_path, client_state = self._load_checkpoint(
+                tag=f"{self.checkpoint_tag}_universal", custom_load_fn=custom_load_fn
+            )
 
         # get target dtype if specified
         if self.load_dtype is not None:
@@ -200,6 +202,7 @@ class CheckpointManager:
 
         # ensure prefix matches destination
         dst_module = getattr(self.model, "module", self.model)
+        dst_module = getattr(dst_module, "_orig_mod", dst_module)
         if self.use_custom_state_dict_filter:
             custom_load_fn = self.make_state_dict_filter_fn(
                 include_prefixes=self.ckpt_include_prefixes, translate_map=self.ckpt_translate_map
@@ -207,11 +210,12 @@ class CheckpointManager:
             custom_load_fn(src, dst_module)
         else:
             src = self._prefix_aware_load_state_dict(src, dst_module)
+            src = self._strip_torch_compile_state_dict(src)
             missing, unexpected = dst_module.load_state_dict(src, strict=False)
             if missing:
-                logger.info("[CheckpointManager] (torch) missing keys: %s", list(missing)[:20])
+                logger.info("[CheckpointManager] (torch) missing keys: %s", list(missing))
             if unexpected:
-                logger.info("[CheckpointManager] (torch) unexpected keys: %s", list(unexpected)[:20])
+                logger.info("[CheckpointManager] (torch) unexpected keys: %s", list(unexpected))
 
         # optional dtype cast
         if self.load_dtype is not None:
@@ -247,24 +251,21 @@ class CheckpointManager:
         include_prefixes = list(include_prefixes) if include_prefixes else None
         translate_map = dict(translate_map) if translate_map else {}
 
-        def _translate_key(k: str):
-            if k in translate_map:
-                return translate_map[k]
-            if k.startswith("module."):
-                core = k[len("module.") :]
-                if core in translate_map:
-                    mapped = translate_map[core]
-                    return f"module.{mapped}" if not mapped.startswith("module.") else mapped
-            else:
-                with_mod = f"module.{k}"
-                if with_mod in translate_map:
-                    mapped = translate_map[with_mod]
-                    return mapped[len("module.") :] if mapped.startswith("module.") else mapped
+        def _translate_key(k: str) -> str:
+            # prefix-based rename: old.* -> new.*
+            for old, new in translate_map.items():
+                if k == old:
+                    return new
+                if k.startswith(old + "."):
+                    return new + k[len(old):]  # keeps the dot + suffix
             return k
 
         def custom_load_fn(src: Dict[str, torch.Tensor], dst: torch.nn.Module):
+            # if dst is compiled, load into the original module
+            dst = getattr(dst, "_orig_mod", dst)
             dst_state_dict = dst.state_dict()
             src_state_dict = self._prefix_aware_load_state_dict(src, dst)
+            src_state_dict = self._strip_torch_compile_state_dict(src_state_dict)
 
             # apply key translations
             if translate_map:
@@ -291,6 +292,13 @@ class CheckpointManager:
                 else:
                     dropped.append((k, tuple(v.shape), tuple(dst_t.shape) if dst_t is not None else None))
 
+            # NOTE: helpful debug logging
+            # ray.logger.warning(
+            #     "[CheckpointManager] Src state dict keys: {} | Dst state dict keys: {}",
+            #     src_state_dict.keys(),
+            #     dst_state_dict.keys(),
+            # )
+
             missing, unexpected = dst.load_state_dict(keep, strict=False)
 
             if dropped:
@@ -301,12 +309,44 @@ class CheckpointManager:
                 )
             if missing:
                 ray.logger.info(
-                    "[CheckpointManager] Model missing keys after load (left at init): %s", list(missing)[:20]
+                    "[CheckpointManager] Model missing keys after load (left at init): %s", list(missing)
                 )
             if unexpected:
-                ray.logger.info("[CheckpointManager] Unexpected keys ignored: %s", list(unexpected)[:20])
+                ray.logger.info("[CheckpointManager] Unexpected keys ignored: %s", list(unexpected))
+
+            ray.logger.warning(
+                    "[CheckpointManager] Kept %d tensors:\n%s",
+                    len(keep),
+                    "\n".join([f"  - {k}: {tuple(v.shape)}" for (k, v) in keep.items()]),
+            )
 
         return custom_load_fn
+    
+    @staticmethod
+    def _strip_torch_compile_state_dict(sd: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        torch.compile may wrap modules and produce keys containing '_orig_mod'.
+        Normalize keys so compiled and uncompiled checkpoints can load interchangeably.
+        """
+        out = OrderedDict()
+        for k, v in sd.items():
+            nk = k
+
+            # common forms:
+            #   "_orig_mod.xxx"
+            #   "module._orig_mod.xxx"
+            #   "xxx._orig_mod.yyy"
+            if nk.startswith("module._orig_mod."):
+                nk = "module." + nk[len("module._orig_mod."):]
+            if nk.startswith("_orig_mod."):
+                nk = nk[len("_orig_mod."):]
+
+            # remove any nested occurrences
+            while "._orig_mod." in nk:
+                nk = nk.replace("._orig_mod.", ".")
+
+            out[nk] = v
+        return out
 
     def _get_zero_stage(self, ckpt_dir: Union[str, Path]) -> int:
         """Return ZeRO stage (0-3) from any DeepSpeed checkpoint tag folder."""

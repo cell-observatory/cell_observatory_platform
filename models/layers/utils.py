@@ -130,7 +130,9 @@ def get_reference_points(shapes, valid_ratios, device):
         ref = torch.stack((ref_x, ref_y, ref_z), -1)  # [B, D*H*W, 3]
         reference_points_list.append(ref)
 
+    # reference_points: [B, \sum_l D_l*H_l*W_l, 3]
     reference_points = torch.cat(reference_points_list, 1)
+    # [B, 1, L, 3] * [B, \sum_l D_l*H_l*W_l, 3] -> [B, \sum_l D_l*H_l*W_l, L, 3]
     reference_points = reference_points[:, :, None] * valid_ratios[:, None]
     return reference_points
 
@@ -244,6 +246,91 @@ def get_uncertain_point_coords_with_randomness(
     return point_coords
 
 
+def point_sample_labelmap_batched(
+    labelmap: torch.Tensor,      # [B, Z, Y, X] integer instance labelmap
+    point_coords: torch.Tensor,  # [N, K, 3] normalized coords in [0, 1]
+    batch_indices: torch.Tensor, # [N] which batch each query belongs to
+    instance_ids: torch.Tensor,  # [N] actual labelmap instance IDs to match
+    align_corners: bool = False,
+) -> torch.Tensor:               # [N, K] binary labels (float)
+    """
+    Sample binary mask labels directly from an integer labelmap.
+    Uses direct integer indexing instead of grid_sample to avoid
+    materializing [N, Z, Y, X] intermediate tensors.
+    """
+    # NOTE: CUDA only supports int32 for indexing
+    if labelmap.dtype in (torch.uint8, torch.uint16, torch.int8, torch.int16):
+        labelmap = labelmap.to(torch.int32)
+    N, K, _ = point_coords.shape
+    B, Z, Y, X = labelmap.shape
+    device = labelmap.device
+    
+    # Convert normalized coords [0,1] to integer indices
+    # point_coords[:, :, 0] is z, [:, :, 1] is y, [:, :, 2] is x
+    if align_corners:
+        z_idx = (point_coords[:, :, 0] * (Z - 1)).round().long().clamp(0, Z - 1)
+        y_idx = (point_coords[:, :, 1] * (Y - 1)).round().long().clamp(0, Y - 1)
+        x_idx = (point_coords[:, :, 2] * (X - 1)).round().long().clamp(0, X - 1)
+    else:
+        z_idx = (point_coords[:, :, 0] * Z).floor().long().clamp(0, Z - 1)
+        y_idx = (point_coords[:, :, 1] * Y).floor().long().clamp(0, Y - 1)
+        x_idx = (point_coords[:, :, 2] * X).floor().long().clamp(0, X - 1)
+    
+    # Expand batch_indices to [N, K]
+    b_idx = batch_indices.view(N, 1).expand(N, K)
+    
+    # Direct 4D indexing: labelmap[b, z, y, x] -> [N, K]
+    sampled = labelmap[b_idx, z_idx, y_idx, x_idx]  # [N, K] integers
+    
+    # Compare with instance IDs
+    instance_ids_expanded = instance_ids.view(N, 1).expand(N, K)
+    binary_labels = (sampled == instance_ids_expanded).float()
+    
+    return binary_labels
+
+
+def point_sample_labelmap(
+    labelmap_single: torch.Tensor,  # [Z, Y, X] single batch labelmap
+    point_coords: torch.Tensor,     # [1, K, 3] or [K, 3] shared coords
+    instance_ids: torch.Tensor,     # [M] instance IDs for M targets
+    align_corners: bool = False,
+) -> torch.Tensor:                  # [M, K] binary target masks at points
+    """
+    For matcher: sample target masks for all instances at shared point coords.
+    """
+    # NOTE: CUDA only supports int32 for indexing
+    if labelmap_single.dtype in (torch.uint8, torch.uint16, torch.int8, torch.int16):
+        labelmap_single = labelmap_single.to(torch.int32)
+    
+    Z, Y, X = labelmap_single.shape
+    M = instance_ids.shape[0]
+    
+    # Handle both [1, K, 3] and [K, 3] input
+    if point_coords.dim() == 3:
+        point_coords = point_coords.squeeze(0)  # [K, 3]
+    K = point_coords.shape[0]
+    
+    # Convert normalized coords to integer indices
+    if align_corners:
+        z_idx = (point_coords[:, 0] * (Z - 1)).round().long().clamp(0, Z - 1)
+        y_idx = (point_coords[:, 1] * (Y - 1)).round().long().clamp(0, Y - 1)
+        x_idx = (point_coords[:, 2] * (X - 1)).round().long().clamp(0, X - 1)
+    else:
+        z_idx = (point_coords[:, 0] * Z).floor().long().clamp(0, Z - 1)
+        y_idx = (point_coords[:, 1] * Y).floor().long().clamp(0, Y - 1)
+        x_idx = (point_coords[:, 2] * X).floor().long().clamp(0, X - 1)
+    
+    # Sample labelmap at K points: [K]
+    sampled = labelmap_single[z_idx, y_idx, x_idx]  # [K]
+    
+    # Broadcast compare: [M, 1] == [1, K] -> [M, K]
+    instance_ids_col = instance_ids.view(M, 1)
+    sampled_row = sampled.view(1, K)
+    binary_targets = (sampled_row == instance_ids_col).float()
+    
+    return binary_targets
+
+
 def _max_by_axis(img_list):
     maxes = img_list[0]
     for sublist in img_list[1:]:
@@ -307,7 +394,7 @@ def compute_unmasked_ratio(mask):
     valid_ratio_h = valid_H.float() / H
     valid_ratio_w = valid_W.float() / W
 
-    valid_ratio = torch.stack([valid_ratio_d, valid_ratio_w, valid_ratio_h], -1)  # [B, 3]
+    valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h, valid_ratio_d], -1)  # [B, 3]
     return valid_ratio
 
 

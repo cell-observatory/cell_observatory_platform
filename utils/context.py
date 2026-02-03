@@ -154,17 +154,42 @@ def barrier(device_ids: Optional[int] = None) -> None:
     return
 
 
-def gather_and_reduce(tensor: torch.Tensor, reduce_op: str = 'mean'):
+def gather_and_reduce(tensor: torch.Tensor, reduce_op: str = "mean"):
     if not is_torch_dist_initialized():
         return tensor.clone()
 
-    if reduce_op.upper() not in OpMap.__members__:
+    op = reduce_op.lower()
+    world = get_world_size()
+
+    # Don't mutate caller's tensor
+    t = tensor.clone()
+
+    if op == "median":
+        # Elementwise median across ranks:
+        # gather tensors of identical shape from every rank
+        gathered = [torch.empty_like(t) for _ in range(world)]
+        dist.all_gather(gathered, t.contiguous())
+
+        stacked = torch.stack(gathered, dim=0)
+
+        # sort along rank-dim and take median (avg of two middles if even world)
+        sorted_vals, _ = stacked.sort(dim=0)
+        mid = world // 2
+        if world % 2 == 1:
+            med = sorted_vals[mid]
+        else:
+            med = (sorted_vals[mid - 1] + sorted_vals[mid]) / 2.0
+        return med
+
+    # All-reduce ops (sum/min/max/etc.)
+    if op.upper() not in OpMap.__members__:
         raise ValueError(f"Unsupported op: {reduce_op}")
 
-    dist.all_reduce(tensor, op=OpMap[reduce_op.upper()].value)
-    if reduce_op == "mean":
-        tensor /= get_world_size()
-    return tensor
+    dist.all_reduce(t, op=OpMap[op.upper()].value)
+
+    if op == "mean":
+        t /= world
+    return t
 
 
 @contextmanager

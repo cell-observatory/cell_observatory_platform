@@ -88,7 +88,9 @@ def test_hungarian_matcher_with_mask_cost():
         labels = torch.randint(0, num_classes, (n_tgt,), device=device)
         masks = torch.randn(n_tgt, D, H, W, device=device)
         boxes = _random_boxes(n_tgt, device)
-        targets.append({"labels": labels, "masks": masks, "boxes": boxes})
+        mask_ids = torch.arange(1, n_tgt + 1, device=device)
+        label_map = torch.zeros(D, H, W, dtype=torch.long, device=device)
+        targets.append({"labels": labels, "masks": masks, "boxes": boxes, "mask_ids": mask_ids, "label_map": label_map})
 
     outputs = {
         "pred_logits": pred_logits,
@@ -137,7 +139,9 @@ def test_hungarian_matcher_full_costs():
         labels = torch.randint(0, num_classes, (n_tgt,), device=device)
         masks = torch.randn(n_tgt, D, H, W, device=device)
         boxes = _random_boxes(n_tgt, device)
-        targets.append({"labels": labels, "masks": masks, "boxes": boxes})
+        mask_ids = torch.arange(1, n_tgt + 1, device=device)
+        label_map = torch.zeros(D, H, W, dtype=torch.long, device=device)
+        targets.append({"labels": labels, "masks": masks, "boxes": boxes, "mask_ids": mask_ids, "label_map": label_map})
 
     outputs = {
         "pred_logits": pred_logits,

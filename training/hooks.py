@@ -4,13 +4,15 @@ https://github.com/facebookresearch/detectron2/blob/main/detectron2/engine/hooks
 https://github.com/open-mmlab/mmengine/tree/main/mmengine/hooks
 """
 
+import os
+import sys
+import gc
+import time
+import socket
 import datetime
 import logging
 import math
 import operator
-import os
-import sys
-import time
 from collections import Counter
 from enum import Enum
 from pathlib import Path
@@ -22,6 +24,18 @@ from ray.train import Checkpoint, report
 from torch.profiler import ProfilerActivity
 from torchtitan.distributed import utils as dist_utils
 
+from cell_observatory_platform.utils.memory import (
+    read_proc_meminfo,
+    statvfs_usage,
+    # top_dir_entries_by_size,
+    torch_cuda_summary,
+    process_summary,
+    top_processes_rss,
+    ray_resources_summary,
+    now_iso,
+    bytes_gb,
+    ray_memory_summary,
+)
 from cell_observatory_platform.training.helpers import log_data_timings
 from cell_observatory_platform.training.loggers import EventWriter
 from cell_observatory_platform.utils.context import gather_and_reduce, is_main_process, process_rank
@@ -201,13 +215,14 @@ class LRScheduler(HookBase):
     def before_train(self):
         self.optimizers = self.trainer.optimizers
         self.schedulers = self.trainer.schedulers
-        self.update_type = self.trainer.schedulers.update_type
 
         if self.backend == "TORCHTITAN":
             self.multi_model_opt = True
+            self.update_type = "step"
             assert hasattr(self.schedulers, "schedulers"), "When using multiple optimizers, schedulers should exist."
         elif self.backend == "DEEPSPEED":
             self.multi_model_opt = False
+            self.update_type = self.trainer.schedulers.update_type
         else:
             raise NotImplementedError(f"Backend {self.backend} not supported.")
 
@@ -244,7 +259,12 @@ class LRScheduler(HookBase):
         if self.update_type == "epoch":
             self.schedulers.step(epoch=self.trainer._epoch)
         elif self.update_type == "step":
-            self.schedulers.step(self.trainer._iter)
+            if self.backend == "TORCHTITAN":
+                self.schedulers.step()
+            elif self.backend == "DEEPSPEED":
+                self.schedulers.step(self.trainer._iter)
+            else:
+                raise NotImplementedError(f"{self.backend=} is not supported")
         else:
             raise NotImplementedError(f"{self.update_type=} is not supported")
 
@@ -494,7 +514,7 @@ class PeriodicCheckpointer(HookBase):
     Checkpointing, executed every ``period`` epoch and after the last epoch.
     """
 
-    def __init__(self, file_prefix="latest_model", backend: str = "TORCHTITAN"):
+    def __init__(self, file_prefix="latest_model", backend: str = "DEEPSPEED"):
         super().__init__()
         self.backend = backend.upper()
         self.file_prefix = file_prefix
@@ -502,6 +522,10 @@ class PeriodicCheckpointer(HookBase):
     def before_train(self):
         if self.backend == "DEEPSPEED":
             self.period = self.trainer.checkpoint_manager.save_period
+        elif self.backend == "TORCHTITAN":
+            self.period = self.trainer.checkpoint_save_period
+        else:
+            raise NotImplementedError(f"Backend {self.backend} not supported.")
 
     def after_epoch(self):
         """
@@ -543,13 +567,19 @@ class PeriodicCheckpointer(HookBase):
 
 
 class BestCheckpointer(HookBase):
-    def __init__(self, checkpointdir: Union[str, Path]):
+    def __init__(self, checkpointdir: Union[str, Path], backend: str = "DEEPSPEED"):
         super().__init__()
         # NOTE: period is same as in PeriodicCheckpointer
         self.checkpoint_dir = Path(checkpointdir)
+        self.backend = backend.upper()
 
     def before_train(self):
-        self.period = self.trainer.checkpoint_manager.save_period
+        if self.backend == "DEEPSPEED":
+            self.period = self.trainer.checkpoint_manager.save_period
+        elif self.backend == "TORCHTITAN":
+            self.period = self.trainer.checkpoiunt_save_period
+        else:
+            raise NotImplementedError(f"Backend {self.backend} not supported.")
 
     def after_validation(self):
         if (self.trainer._epoch + 1) % self.period == 0:
@@ -684,7 +714,10 @@ class BestMetricSaver(HookBase):
                     "Make sure to set `val_metric` in the trainer config."
                 )
             latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
-            latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, device="cuda")).item()
+            latest_metric_val = gather_and_reduce(
+                torch.tensor(latest_metric_val_per_rank, device="cuda"), 
+                reduce_op="median"
+            ).item()
             self.trainer._curr_val_metric = latest_metric_val
             self.update_best_metrics(latest_metric_val)
 
@@ -702,7 +735,10 @@ class BestMetricSaver(HookBase):
                         "Make sure to set `val_metric` in the trainer config."
                     )
                 latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
-                latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, device="cuda")).item()
+                latest_metric_val = gather_and_reduce(
+                    torch.tensor(latest_metric_val_per_rank, device="cuda"),
+                    reduce_op="median"
+                ).item()
                 self.trainer._curr_val_metric = latest_metric_val
                 self.update_best_metrics(latest_metric_val)
 
@@ -711,7 +747,10 @@ class BestMetricSaver(HookBase):
         if self.metric_name not in test_scalars:
             raise ValueError(f"Metric {self.metric_name} not found in test logs. ")
         test_metric_val_per_rank, *_ = test_scalars[self.metric_name][-1]
-        test_metric_val = gather_and_reduce(torch.tensor(test_metric_val_per_rank, device="cuda")).item()
+        test_metric_val = gather_and_reduce(
+            torch.tensor(test_metric_val_per_rank, device="cuda"),
+            reduce_op="median"
+        ).item()
         self._update_best_metrics(test_metric_val)
 
 
@@ -901,7 +940,10 @@ class EarlyStopHook(HookBase):
             )
 
         latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
-        latest_metric_val = gather_and_reduce(torch.tensor(latest_metric_val_per_rank, device="cuda")).item()
+        latest_metric_val = gather_and_reduce(
+            torch.tensor(latest_metric_val_per_rank, device="cuda"),
+            reduce_op="median"
+        ).item()
 
         if math.isnan(latest_metric_val) or math.isinf(latest_metric_val):
             raise ValueError(f"Validation metric {self.metric_name} is NaN or Inf. ")
@@ -1006,6 +1048,7 @@ class FreeDeviceBufferHook(HookBase):
 
     def before_test(self):
         self.device_buffer = self.trainer.device_buffer
+        self.with_grad_accumulation = self.trainer.with_grad_accumulation
 
     def after_step(self, **kwargs):
         if not self.with_grad_accumulation:
@@ -1044,3 +1087,231 @@ class AdjustTimeoutHook(HookBase):
                 timeout=datetime.timedelta(seconds=self.train_timeout_seconds),
                 world_mesh=self.world_mesh,
             )
+
+
+class MemoryDebugHook(HookBase):
+    PRIORITY = HOOK_PRIORITY.VERY_LOW
+
+    def __init__(
+        self,
+        log_path: str,
+        shm_top_n: int = 30,
+        include_top_processes: bool = True,
+        include_ray: bool = True,
+        include_cuda: bool = True,
+        dump_before_train: bool = True,
+        dump_after_train: bool = True,
+        dump_after_validation: bool = False,
+    ):
+        super().__init__()
+        self.log_path = log_path
+
+        self.shm_top_n = shm_top_n
+
+        self.include_top_processes = include_top_processes
+        self.include_ray = include_ray
+        self.include_cuda = include_cuda
+
+        self.dump_before_train = dump_before_train
+        self.dump_after_train = dump_after_train
+        self.dump_after_validation = dump_after_validation
+
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+
+    def before_train(self):
+        if not self.dump_before_train:
+            return
+        if not is_main_process():
+            return
+        self.dump(step=getattr(self.trainer, "_iter", None), tag=f"before_train epoch={self.trainer._epoch}")
+
+    def after_epoch(self):
+        if not is_main_process():
+            return
+        self.dump(step=self.trainer._iter, tag=f"after_epoch epoch={self.trainer._epoch}")
+
+    def after_validation(self):
+        if not self.dump_after_validation:
+            return
+        if not is_main_process():
+            return
+        self.dump(step=self.trainer._iter, tag=f"after_validation epoch={self.trainer._epoch}")
+
+    def after_train(self):
+        if not self.dump_after_train:
+            return
+        if not is_main_process():
+            return
+        self.dump(step=getattr(self.trainer, "_iter", None), tag=f"after_train epoch={self.trainer._epoch}")
+
+    def dump(self, step: Optional[int] = None, tag: str = "") -> None:
+        host = socket.gethostname()
+
+        keys = [
+            "MemTotal", "MemFree", "MemAvailable",
+            "Buffers", "Cached", "Shmem",
+            "Slab", "SReclaimable",
+            "Unevictable", "Mlocked",
+            "SwapTotal", "SwapFree",
+        ]
+        mi = read_proc_meminfo(keys)
+
+        shm_total, shm_used, shm_free = statvfs_usage("/dev/shm")
+        # shm_top = top_dir_entries_by_size("/dev/shm", n=self.shm_top_n)
+
+        parts = []
+        parts.append(
+            f"===== MEM SNAPSHOT { now_iso() } host={host} pid={os.getpid()} rank={0} "
+            f"step={step} tag={tag} ====="
+        )
+
+        parts.append("[process]")
+        parts.append(process_summary())
+
+        parts.append("\n[/proc/meminfo]")
+        for k in keys:
+            if k in mi:
+                parts.append(f"{k:>12}: {bytes_gb(mi[k])}")
+            else:
+                parts.append(f"{k:>12}: NA")
+
+        parts.append("\n[/dev/shm]")
+        parts.append(f"total={bytes_gb(shm_total)} used={bytes_gb(shm_used)} free={bytes_gb(shm_free)}")
+        # parts.append("\n[/dev/shm top entries by size]")
+        # parts.append(shm_top)
+
+        if self.include_ray:
+            parts.append("\n[ray resources]")
+            parts.append(ray_resources_summary())
+
+            parts.append("\n[ray object store / memory summary]")
+            if self.trainer._epoch > 40 and self.trainer._epoch % 50 == 0:
+                parts.append(ray_memory_summary(stats_only=False))
+            else:
+                parts.append(ray_memory_summary(stats_only=True))
+
+        if self.include_top_processes:
+            parts.append("\n[top processes by RSS]")
+            parts.append(top_processes_rss(n=15))
+
+        if self.include_cuda:
+            parts.append("\n[torch cuda]")
+            parts.append(torch_cuda_summary())
+
+        parts.append("\n")
+
+        blob = "\n".join(parts)
+
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write(blob)
+            if not blob.endswith("\n"):
+                f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+
+class GarbageCollectionHook(HookBase):
+    """
+    GC control Hook.
+    - Disables Python's automatic GC (optional)
+    - Forces periodic gc.collect() in sync across ranks
+    - Optional debug: runs extra GC and warns about tensor cycles (rank0 only)
+    """
+
+    PRIORITY = HOOK_PRIORITY.VERY_LOW
+
+    def __init__(
+        self,
+        gc_freq: int = 1000,
+        debug: bool = False,
+        disable_auto_gc: bool = True,
+        generation: int = 1,
+        run_on: Literal["step", "epoch"] = "step",
+        only_rank0: bool = False,
+        initial_collect: bool = True,
+        reenable_on_end: bool = False,
+    ):
+        super().__init__()
+        assert gc_freq > 0, "gc_freq must be a positive integer"
+        assert generation in (0, 1, 2), "generation must be 0, 1, or 2"
+        assert run_on in ("step", "epoch"), "run_on must be 'step' or 'epoch'"
+
+        self.gc_freq = int(gc_freq)
+        self.debug = bool(debug)
+        self.disable_auto_gc = bool(disable_auto_gc)
+        self.generation = int(generation)
+        self.run_on = run_on
+        self.only_rank0 = bool(only_rank0)
+        self.initial_collect = bool(initial_collect)
+        self.reenable_on_end = bool(reenable_on_end)
+
+        self._auto_gc_was_enabled: Optional[bool] = None
+
+    def _should_run_this_rank(self) -> bool:
+        if not self.only_rank0:
+            return True
+        return is_main_process()
+
+    @staticmethod
+    def collect(reason: str, generation: int = 1):
+        begin = time.monotonic()
+        gc.collect(generation)
+        logger.info("[GC] %s took %.2f seconds", reason, time.monotonic() - begin)
+
+    def before_train(self):
+        if not self._should_run_this_rank():
+            return
+
+        self._auto_gc_was_enabled = gc.isenabled()
+        if self.disable_auto_gc:
+            gc.disable()
+
+        if self.initial_collect:
+            self.collect("Initial GC collection", generation=self.generation)
+
+        if self.debug:
+            try:
+                from torch.utils.viz._cycles import warn_tensor_cycles
+
+                if is_main_process():
+                    warn_tensor_cycles()
+            except Exception as e:
+                logger.info("[GC] warn_tensor_cycles unavailable (%s)", e)
+
+    def after_step(self, *args, **kwargs):
+        if self.run_on != "step":
+            return
+        if not self._should_run_this_rank():
+            return
+
+        step_count = int(getattr(self.trainer, "_iter", 0)) + 1
+
+        if self.debug:
+            self.collect("Force GC to perform collection to obtain debug information", generation=2)
+            gc.collect()
+            return
+
+        if step_count > 1 and (step_count % self.gc_freq == 0):
+            self.collect("Performing periodic GC collection", generation=self.generation)
+
+    def after_epoch(self, *args, **kwargs):
+        if self.run_on != "epoch":
+            return
+        if not self._should_run_this_rank():
+            return
+
+        epoch_count = int(getattr(self.trainer, "_epoch", 0)) + 1
+
+        if self.debug:
+            self.collect("Force GC (epoch) to perform collection to obtain debug information", generation=2)
+            gc.collect()
+            return
+
+        if epoch_count > 0 and (epoch_count % self.gc_freq == 0):
+            self.collect("Performing periodic GC (epoch) collection", generation=self.generation)
+
+    def after_train(self):
+        if not self._should_run_this_rank():
+            return
+        if self.reenable_on_end and self._auto_gc_was_enabled:
+            gc.enable()

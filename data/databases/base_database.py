@@ -1,10 +1,12 @@
 import logging
+import os
 import sys
 import time
 from abc import abstractmethod
+from functools import partial
 from pathlib import Path
 from sqlite3 import NotSupportedError
-from typing import Any, Dict, Iterable, Literal, Optional, Sequence
+from typing import Any, Dict, Iterable, Literal, Optional, Sequence, Union
 from warnings import filters
 
 import connectorx as cx
@@ -12,8 +14,14 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import ujson
+from dotenv import load_dotenv
 
-from cell_observatory_platform.data.io import load_hypercubes_dataframe, load_tiles_dataframe
+from cell_observatory_platform.data.io import (
+    add_has_annotations_column,
+    create_channel_metadata_columns,
+    load_hypercubes_dataframe,
+    load_tiles_dataframe,
+)
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -41,10 +49,15 @@ class ParentDatabase:
         max_partitions: Optional[int] = 10,
         server_folder_path: Optional[Path | str] = None,
         occupancy_threshold: Optional[float] = None,
-        occupancy_threshold_filter_type: str = "min_all",
-        base_cube_size: Optional[int] = 128,
+        occupancy_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
+        cdf_threshold: Optional[float] = 150,
+        cdf_target: Literal["80", "90", "95", "99"] = "90",
+        cdf_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
+        base_cube_size_x: Optional[int] = 128,
+        base_cube_size_y: Optional[int] = 128,
+        base_cube_size_z: Optional[int] = 128,
         valid_z_sizes: Optional[Sequence[int]] = [128],
-        valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384, 512],
+        valid_y_sizes: Optional[Sequence[int]] = [128, 256, 384, 512, 1024],
         valid_x_sizes: Optional[Sequence[int]] = [128, 256, 384, 512, 640, 896, 1024, 2048],
         synthetic_only: bool = False,
         has_annotations: bool = False,
@@ -116,6 +129,10 @@ class ParentDatabase:
         self.occupancy_threshold = occupancy_threshold
         self.occupancy_threshold_filter_type = occupancy_threshold_filter_type
 
+        self.cdf_threshold = cdf_threshold
+        self.cdf_target = cdf_target
+        self.cdf_threshold_filter_type = cdf_threshold_filter_type
+
         self.mask_channel = mask_channel
         self.synthetic_only = synthetic_only
         self.has_annotations = has_annotations
@@ -123,7 +140,10 @@ class ParentDatabase:
 
         self.with_hypercubes_dataframe = with_hypercubes_dataframe
 
-        self.base_cube_size = base_cube_size
+        self.base_cube_size_x = base_cube_size_x
+        self.base_cube_size_y = base_cube_size_y
+        self.base_cube_size_z = base_cube_size_z
+
         self.num_timepoints, z_slices, y_slices, x_slices = self._get_slices_from_layout_order(
             input_format=self.dataset_layout_order, input_shape=self.input_shape
         )
@@ -145,9 +165,9 @@ class ParentDatabase:
                 self.x_slices = x_slices
 
             if (
-                self.z_slices != self.base_cube_size
-                or self.y_slices != self.base_cube_size
-                or self.x_slices != self.base_cube_size
+                self.z_slices != self.base_cube_size_z
+                or self.y_slices != self.base_cube_size_y
+                or self.x_slices != self.base_cube_size_x
             ):
                 self.max_hypercubes = max_hypercubes
                 if max_hypercubes is None:
@@ -155,9 +175,9 @@ class ParentDatabase:
                 else:
                     self.max_hypercubes_128 = (
                         max_hypercubes
-                        * (self.z_slices // self.base_cube_size)
-                        * (self.y_slices // self.base_cube_size)
-                        * (self.x_slices // self.base_cube_size)
+                        * (self.z_slices // self.base_cube_size_z)
+                        * (self.y_slices // self.base_cube_size_y)
+                        * (self.x_slices // self.base_cube_size_x)
                     )
                     print(
                         f"Requesting {self.max_hypercubes_128 - max_hypercubes} extra hypercubes \
@@ -198,8 +218,6 @@ class ParentDatabase:
                 roi_list=self.roi_list,
                 tile_list=self.tile_list,
                 timepoint_list=self.timepoint_list,
-                occupancy_threshold=self.occupancy_threshold,
-                occupancy_threshold_filter_type=self.occupancy_threshold_filter_type,
                 synthetic_only=self.synthetic_only,
                 has_annotations=self.has_annotations,
             )
@@ -214,7 +232,6 @@ class ParentDatabase:
                 roi_list=self.roi_list,
                 tile_list=self.tile_list,
                 timepoint_list=self.timepoint_list,
-                occupancy_threshold=self.occupancy_threshold,
                 synthetic_only=self.synthetic_only,
                 has_annotations=self.has_annotations,
             )
@@ -225,15 +242,13 @@ class ParentDatabase:
             self.hypercubes_dataframe["server_folder"] = self.server_folder_path
 
         if (
-            self.z_slices != self.base_cube_size
-            or self.y_slices != self.base_cube_size
-            or self.x_slices != self.base_cube_size
+            self.z_slices != self.base_cube_size_z
+            or self.y_slices != self.base_cube_size_y
+            or self.x_slices != self.base_cube_size_x
         ):
-            print(
-                f"Size of volume axes not equal to base cube size of {self.base_cube_size}, aggregating hypercubes..."
-            )
+            print(f"Size of volume axes not equal to base cube size, aggregating hypercubes...")
         else:
-            print(f"Volume axes equal base cube size {self.base_cube_size}, running metadata aggregation only...")
+            print(f"Volume axes equal base cube size, running metadata aggregation only...")
 
         self.aggregate_hypercubes(
             z_slices=self.z_slices,
@@ -248,6 +263,27 @@ class ParentDatabase:
             )
             print("Overriding values in the dataframe")
             self.hypercubes_dataframe["time_size"] = self.num_timepoints
+
+        # NOTE: as we scale to billions of hypercubes, these filters may become a bottleneck again
+        #        so we may need to optimize them further by pre-computation or distributed processing
+        t0 = time.perf_counter()
+        self.hypercubes_dataframe = self._apply_occupancy_threshold(
+            df=self.hypercubes_dataframe,
+            occupancy_threshold=self.occupancy_threshold,
+            occupancy_threshold_filter_type=self.occupancy_threshold_filter_type,
+        )
+        t1 = time.perf_counter()
+        logger.info(f"Applied OCC filters in {t1 - t0:.2f} s; shape={self.hypercubes_dataframe.shape}")
+
+        t0 = time.perf_counter()
+        self.hypercubes_dataframe = self._apply_cdf_threshold(
+            df=self.hypercubes_dataframe,
+            cdf_threshold=self.cdf_threshold,
+            cdf_target=self.cdf_target,
+            cdf_threshold_filter_type=self.cdf_threshold_filter_type,
+        )
+        t1 = time.perf_counter()
+        logger.info(f"Applied CDF filters in {t1 - t0:.2f} s; shape={self.hypercubes_dataframe.shape}")
 
         # NOTE: may be reset below in check_hypercube_sizes
         self.hypercubes_dataframe["z_size"] = self.z_slices
@@ -267,18 +303,13 @@ class ParentDatabase:
         )
 
         # NOTE: important to maintain order before downstream processing/splitting
-        self.hypercubes_dataframe = (
-            self.hypercubes_dataframe
-            .sort_values(
-                ["prepared_id", "tile_name",
-                "z_start", "y_start", "x_start", "time_start"]
-            )
-            .reset_index(drop=True)
-        )
+        self.hypercubes_dataframe = self.hypercubes_dataframe.sort_values(
+            ["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_start"]
+        ).reset_index(drop=True)
 
         if self.max_hypercubes is not None:
             self.hypercubes_dataframe = self.hypercubes_dataframe.head(self.max_hypercubes)
-        
+
         print(f"Final length of hypercubes dataframe: {len(self.hypercubes_dataframe)}")
         return self.hypercubes_dataframe
 
@@ -319,6 +350,28 @@ class ParentDatabase:
         if self.server_folder_path is not None:
             self.hypercubes_dataframe["server_folder"] = self.server_folder_path
 
+       # Extract mask_bbox_dict from metadata_tile_json if present
+        if "metadata_tile_json" in self.hypercubes_dataframe.columns and self.mask_channel is not None:
+            def _extract_mask_bbox_dict(metadata_json_str):
+                if metadata_json_str is None:
+                    raise ValueError(f"metadata_tile_json is None but mask_channel={self.mask_channel} is set")
+                try:
+                    if isinstance(metadata_json_str, str):
+                        metadata = ujson.loads(metadata_json_str)
+                    else:
+                        metadata = metadata_json_str
+                    channel_data = metadata.get(str(self.mask_channel))
+                    if channel_data is None:
+                        raise ValueError(f"Channel '{self.mask_channel}' not found in metadata_tile_json")
+                    mask_bbox = channel_data.get("mask_bbox_dict")
+                    if mask_bbox is None:
+                        raise ValueError(f"mask_bbox_dict not found in channel '{self.mask_channel}' of metadata_tile_json")
+                    return ujson.dumps(mask_bbox)
+                except (ujson.JSONDecodeError, ValueError) as e:
+                    raise ValueError(f"Failed to extract mask_bbox_dict from metadata_tile_json: {e}")
+            
+            self.hypercubes_dataframe["mask_bbox_dict"] = self.hypercubes_dataframe["metadata_tile_json"].apply(_extract_mask_bbox_dict)
+
         # handle time granularity: expand time_size into per-timepoint rows
         self.hypercubes_dataframe = self._expand_tiles_timepoints_df(self.hypercubes_dataframe)
 
@@ -329,6 +382,50 @@ class ParentDatabase:
 
         print(f"Final length of tiles dataframe: {len(self.hypercubes_dataframe)}")
         return self.hypercubes_dataframe
+
+    def _apply_occupancy_threshold(
+        self,
+        df: pd.DataFrame,
+        occupancy_threshold: Optional[float] = None,
+        occupancy_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
+    ) -> pd.DataFrame:
+        t = 0.0 if occupancy_threshold is None else float(occupancy_threshold)
+
+        if occupancy_threshold_filter_type == "min_all":
+            df = df[(df["min_occupancy_ratios_ch_0"] >= t) & (df["min_occupancy_ratios_ch_1"] >= t)]
+
+        elif occupancy_threshold_filter_type == "min_ch0":
+            df = df[df["min_occupancy_ratios_ch_0"] >= t]
+
+        elif occupancy_threshold_filter_type == "min_ch1":
+            df = df[df["min_occupancy_ratios_ch_1"] >= t]
+
+        else:
+            raise ValueError(occupancy_threshold_filter_type)
+
+        return df
+
+    def _apply_cdf_threshold(
+        self,
+        df: pd.DataFrame,
+        cdf_threshold: Optional[float] = 150,
+        cdf_target: Literal["80", "90", "95", "99"] = "90",
+        cdf_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
+    ) -> pd.DataFrame:
+        t = 0.0 if cdf_threshold is None else float(cdf_threshold)
+
+        if cdf_threshold_filter_type == "min_all":
+            df = df[(df[f"cdf_{cdf_target}_ch_0"] >= t) & (df[f"cdf_{cdf_target}_ch_1"] >= t)]
+
+        elif cdf_threshold_filter_type == "min_ch0":
+            df = df[df[f"cdf_{cdf_target}_ch_0"] >= t]
+
+        elif cdf_threshold_filter_type == "min_ch1":
+            df = df[df[f"cdf_{cdf_target}_ch_1"] >= t]
+
+        else:
+            raise ValueError(cdf_threshold_filter_type)
+        return df
 
     def get_tiles(
         self,
@@ -371,6 +468,9 @@ class ParentDatabase:
             "exists_aws",
             "is_synthetic",
         ]
+
+        if has_annotations:
+            base_cols.append("metadata_tile_json")
 
         query = f"""
             SELECT
@@ -563,7 +663,10 @@ class ParentDatabase:
         if self.server_folder_path is None or str(self.server_folder_path).startswith("/clusterfs"):
             filters = f"WHERE {table_name_shortcut}.exists = TRUE"
         elif str(self.server_folder_path).startswith("/groups"):
-            filters = f"WHERE {table_name_shortcut}.exists_prfs = TRUE"
+            # NOTE: database is currently not updated to reflect storage server status
+            #       remove this once the database is updated
+            filters = f"WHERE {table_name_shortcut}.exists = TRUE"
+            # filters = f"WHERE {table_name_shortcut}.exists_prfs = TRUE"
         elif str(self.server_folder_path).startswith("/aws") or str(self.server_folder_path).startswith(
             "/workspace/CellObservatoryData"
         ):
@@ -582,12 +685,19 @@ class ParentDatabase:
         filters = f"WHERE {table_name_shortcut}.is_synthetic = FALSE"
         return filters
 
-    def _has_annotations_filter(self, table_name_shortcut) -> str:
-        filters = (
-            " AND EXISTS ( SELECT 1 "
-            f"FROM jsonb_each({table_name_shortcut}.pc_metadata_json::jsonb) AS e(k, v) "
-            "WHERE (v -> 'mask_bbox_dict') IS NOT NULL AND (v -> 'mask_bbox_dict')::jsonb <> '{}'::jsonb)"
-        )
+    def _has_annotations_filter(self, table_name_shortcut, tile_view: bool = False) -> str:
+        if tile_view:
+            filters = (
+                " AND EXISTS ( SELECT 1 "
+                f"FROM jsonb_each({table_name_shortcut}.metadata_tile_json::jsonb) AS e(k, v) "
+                "WHERE (v -> 'mask_bbox_dict') IS NOT NULL AND (v -> 'mask_bbox_dict')::jsonb <> '{}'::jsonb)"
+            )
+        else:
+            filters = (
+                " AND EXISTS ( SELECT 1 "
+                f"FROM jsonb_each({table_name_shortcut}.pc_metadata_json::jsonb) AS e(k, v) "
+                "WHERE (v -> 'mask_bbox_dict') IS NOT NULL AND (v -> 'mask_bbox_dict')::jsonb <> '{}'::jsonb)"
+            )
         return filters
 
     def _filters_to_string(
@@ -612,7 +722,8 @@ class ParentDatabase:
             filters += self._real_filter(table_name_shortcut).replace("WHERE", " AND ")
 
         if has_annotations:
-            filters += self._has_annotations_filter(table_name_shortcut)
+            tile_view = table_name_shortcut == "ptv"
+            filters += self._has_annotations_filter(table_name_shortcut, tile_view)
 
         if roi_list is not None or tile_list is not None or timepoint_list is not None:
             filters += self._choose_filter(
@@ -642,7 +753,6 @@ class ParentDatabase:
         roi_list: Optional[Sequence[int]] = None,
         tile_list: Optional[Sequence[str]] = None,
         timepoint_list: Optional[Iterable[int]] = None,
-        occupancy_threshold: Optional[float] = None,
         synthetic_only: bool = False,
         has_annotations: bool = False,
     ) -> list[str]:
@@ -696,7 +806,6 @@ class ParentDatabase:
                     {', '.join([f'{table_name_shortcut}.{col}' for col in column_names])}
                 FROM {table_name} {table_name_shortcut}
                 {filters} 
-                ORDER BY first_pc_id DESC
                 {limit}
             """
         ]
@@ -934,7 +1043,6 @@ class ParentDatabase:
         tile_list: Optional[Sequence[str]] = None,
         timepoint_list: Optional[Iterable[int]] = None,
         hypercubes_dataframe_path: Optional[Path] = None,
-        occupancy_threshold: Optional[float] = None,
         synthetic_only: bool = False,
         has_annotations: bool = False,
     ) -> pd.DataFrame:
@@ -955,7 +1063,6 @@ class ParentDatabase:
                 roi_list=roi_list,
                 tile_list=tile_list,
                 timepoint_list=timepoint_list,
-                occupancy_threshold=occupancy_threshold,
                 synthetic_only=synthetic_only,
                 has_annotations=has_annotations,
             )
@@ -979,7 +1086,6 @@ class ParentDatabase:
                 roi_list=roi_list,
                 tile_list=tile_list,
                 timepoint_list=timepoint_list,
-                occupancy_threshold=occupancy_threshold,
                 synthetic_only=synthetic_only,
                 has_annotations=has_annotations,
             )
@@ -1000,10 +1106,6 @@ class ParentDatabase:
                 f"`time_sizes` for all rows in the dataframe should be {self.num_timepoints}. Found: {table['time_size'].unique()}"
             )
             table["time_size"] = self.num_timepoints
-
-        # FIXME: is this the best default for has_annotations?
-        if "has_annotations" not in table.columns:
-            table["has_annotations"] = True if has_annotations else False
 
         num_rows, num_cols = table.shape
         print(f"\nRetrieved {num_rows} rows. \t Retrieved {num_cols} columns.")
@@ -1035,7 +1137,14 @@ class ParentDatabase:
         print(f"\nUpdated {num_rows} rows using {filters=}.")
         return table
 
-    def _aggregate(self, df_pd, group_cols, z_slices=128, y_slices=128, x_slices=128):
+    def _aggregate(
+        self,
+        df_pd,
+        group_cols: Iterable = ["time_start", "z_start", "y_start", "x_start", "prepared_id", "tile_name"],
+        z_slices=128,
+        y_slices=128,
+        x_slices=128,
+    ):
 
         df = pl.from_pandas(df_pd)
 
@@ -1237,6 +1346,26 @@ class ParentDatabase:
                         return None
                     return ujson.dumps(hist)
 
+                def _get_cdf(ch_meta_str, ch_id=ch, percentile="90.0"):
+                    if ch_meta_str is None:
+                        return None
+                    if isinstance(ch_meta_str, str):
+                        try:
+                            ch_meta = ujson.loads(ch_meta_str)
+                        except Exception:
+                            return None
+                    elif isinstance(ch_meta_str, dict):
+                        ch_meta = ch_meta_str
+                    else:
+                        return None
+
+                    hist = ch_meta.get("histogram")
+
+                    if hist is not None:
+                        return hist.get(percentile, None)
+                    else:
+                        return None
+
                 def _get_mask_bbox_dict(row, ch_id=ch):
                     ch_meta_val = row[f"pc_metadata_json_ch_{ch}"]
                     if ch_meta_val is None:
@@ -1296,8 +1425,21 @@ class ParentDatabase:
                         pl.struct([f"pc_metadata_json_ch_{ch}", "cube_z_start", "cube_y_start", "cube_x_start"])
                         .map_elements(_get_mask_bbox_dict, return_dtype=pl.Utf8)
                         .alias(f"mask_bbox_dict_ch_{ch}"),
+                        pl.col(f"pc_metadata_json_ch_{ch}")
+                        .map_elements(partial(_get_cdf, percentile="80.0"), return_dtype=pl.UInt32)
+                        .alias(f"cdf_80_ch_{ch}"),
+                        pl.col(f"pc_metadata_json_ch_{ch}")
+                        .map_elements(partial(_get_cdf, percentile="90.0"), return_dtype=pl.UInt32)
+                        .alias(f"cdf_90_ch_{ch}"),
+                        pl.col(f"pc_metadata_json_ch_{ch}")
+                        .map_elements(partial(_get_cdf, percentile="95.0"), return_dtype=pl.UInt32)
+                        .alias(f"cdf_95_ch_{ch}"),
+                        pl.col(f"pc_metadata_json_ch_{ch}")
+                        .map_elements(partial(_get_cdf, percentile="99.0"), return_dtype=pl.UInt32)
+                        .alias(f"cdf_99_ch_{ch}"),
                     ]
                 )
+
         else:
             _channel_ids = []
             df = df.with_columns(pl.lit(None).alias("_pc_metadata_parsed"))
@@ -1411,6 +1553,10 @@ class ParentDatabase:
             pl.col("exists").max(),
             pl.col("exists_prfs").max(),
             pl.col("exists_aws").max(),
+            pl.col("cdf_80_ch_0").min(),
+            pl.col("cdf_90_ch_0").min(),
+            pl.col("cdf_95_ch_0").min(),
+            pl.col("cdf_99_ch_0").min(),
         ]
 
         # Only aggregate JSON columns if they actually exist
@@ -1452,6 +1598,13 @@ class ParentDatabase:
                     *(f"__mask_bbox_dict_list_ch_{ch}" for ch in _channel_ids),
                 ]
             )
+        )
+
+        out = out.with_columns(
+            pl.col("occupancy_ratios_ch_0").cast(pl.List(pl.Float64)).list.min().alias("min_occupancy_ratios_ch_0"),
+            pl.col("occupancy_ratios_ch_0").cast(pl.List(pl.Float64)).list.mean().alias("mean_occupancy_ratios_ch_0"),
+            pl.col("occupancy_ratios_ch_1").cast(pl.List(pl.Float64)).list.min().alias("min_occupancy_ratios_ch_1"),
+            pl.col("occupancy_ratios_ch_1").cast(pl.List(pl.Float64)).list.mean().alias("mean_occupancy_ratios_ch_1"),
         )
 
         # shift bbox back to local coordinates
@@ -1601,3 +1754,88 @@ class ParentDatabase:
 
         work = work[valid_mask].reset_index(drop=True)
         return work
+
+
+def get_prepared_rois_csv(
+    dotenv_path: str,
+    roi_csv_path: Union[str, Path],
+    force: bool = True,
+    protocol: str = "binary",
+    statement_timeout_ms: int = 600_000,
+    index: bool = True,
+    with_staging: bool = False,
+) -> Path:
+    load_dotenv(dotenv_path, verbose=True)
+
+    if with_staging:
+        database_url = os.environ.get("SUPABASE_STAGING_URI")
+    else:
+        database_url = os.environ.get("SUPABASE_PROD_URI")
+
+    if database_url is None:
+        raise ValueError("SUPABASE_PROD_URI environment variable not set")
+
+    PREPARED_ROIS_QUERY = """
+    SELECT id,
+        x_start, y_start, z_start,
+        z_end, y_end, x_end,
+        time_size, channel_size, is_synthetic
+    FROM prepared
+    """
+
+    RENAME_MAP = {
+        "id": "prepared_id",
+        "z_end": "tile_z_end",
+        "y_end": "tile_y_end",
+        "x_end": "tile_x_end",
+        "z_start": "tile_z_start",
+        "y_start": "tile_y_start",
+        "x_start": "tile_x_start",
+        "time_size": "tile_time_size",
+        "channel_size": "tile_channel_size",
+    }
+
+    roi_csv = Path(roi_csv_path)
+    roi_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    if roi_csv.exists() and not force:
+        raise FileExistsError(f"{roi_csv} already exists (force=False).")
+
+    def execute_query(
+        database_url: str,
+        query: str | list[str],
+        protocol: str = "binary",
+        statement_timeout_ms: int = 600_000,
+        retries: int = 3,
+    ) -> pd.DataFrame:
+        conn = f"{database_url}?options=-c%20statement_timeout%3D{statement_timeout_ms}"
+
+        last_err: Exception | None = None
+        for i in range(retries):
+            try:
+                t0 = time.perf_counter()
+                result = cx.read_sql(conn=conn, query=query, protocol=protocol, return_type="arrow")
+                df = result.to_pandas(split_blocks=False, date_as_object=False)
+                t1 = time.perf_counter()
+                logger.info(f"Took {t1 - t0:.2f}s to fetch dataframe with shape {df.shape}")
+                return df
+            except Exception as e:
+                last_err = e
+                logger.warning(f"Attempt {i + 1} failed with error: {e}. Retrying...")
+
+        logger.error(f"Failed to execute query: {query}")
+        raise RuntimeError(f"Failed to execute query after {retries} attempts") from last_err
+
+    df = execute_query(
+        database_url,
+        PREPARED_ROIS_QUERY,
+        protocol=protocol,
+        statement_timeout_ms=statement_timeout_ms,
+    ).rename(columns=RENAME_MAP)
+
+    tmp = roi_csv.with_suffix(roi_csv.suffix + ".tmp")
+    df.to_csv(tmp, index=index, header=True)
+    os.replace(tmp, roi_csv)
+
+    print(f"Saved roi dataframe to {roi_csv}")
+    return roi_csv

@@ -1,0 +1,14 @@
+schedule: warmup_decay_cooldown_min
+decay_type: cosine
+
+epochs: 300
+warmup: 30
+cooldown: 15
+
+cos_min_ratio: 0.5
+warmup_min_ratio: 0.0001
+
+wd_scheduler:
+  enabled: false
+  final_wd: 0.0
+  ref_wd: ${optimizers.wd}

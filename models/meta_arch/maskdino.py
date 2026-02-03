@@ -25,19 +25,15 @@ class MaskDINO(nn.Module):
         num_queries: int,
         instance_segmentation_flag: bool,
         topk_per_image: int,
-        adapter: Optional[nn.Module] = None,
         focus_on_boxes: bool = False,
     ):
         super().__init__()
 
         self.backbone = backbone
         self.segmentation_head = segmentation_head
+        
         self.matcher = matcher
         self.criterion = criterion
-
-        self.with_adapter = adapter is not None
-        if self.with_adapter:
-            self.adapter = adapter
 
         self.num_queries = num_queries
         self.topk_per_image = topk_per_image
@@ -131,11 +127,7 @@ class MaskDINO(nn.Module):
         return weight_dict
 
     def forward(self, data_sample: dict):
-        features = self.backbone.forward_features(data_sample["data_tensor"])
-        if self.with_adapter:
-            features_dict = self.adapter(data_sample["data_tensor"], features)
-        else:
-            features_dict = features
+        features_dict = self.backbone(data_sample)
 
         outputs, denoise_predictions = self.segmentation_head(
             features_dict, targets=data_sample["metainfo"]["targets"][0]
@@ -144,33 +136,34 @@ class MaskDINO(nn.Module):
         # bipartite matching-based loss
         losses = self.criterion(outputs, data_sample["metainfo"]["targets"][0], denoise_predictions)
 
-        for loss in list(losses.keys()):
-            if loss in self.criterion.loss_weight_dict:
-                losses[loss] *= self.criterion.loss_weight_dict[loss]
-            else:
-                # remove this loss if not specified in loss_weight_dict
-                losses.pop(loss)
+        # for loss in list(losses.keys()):
+        #     if loss in self.criterion.loss_weight_dict:
+        #         losses[loss] *= self.criterion.loss_weight_dict[loss]
+        #     else:
+        #         # remove this loss if not specified in loss_weight_dict
+        #         losses.pop(loss)
 
-        losses["step_loss"] = sum(losses.values())
+        losses["step_loss"] = sum(
+            losses[k] * self.criterion.loss_weight_dict[k] for k in losses.keys() if k in self.criterion.loss_weight_dict
+        )
 
         return losses, outputs
 
     def predict(self, data_sample: dict):
-        features = self.backbone.forward_features(data_sample["data_tensor"])
-        if self.with_adapter:
-            features_dict = self.adapter(data_sample["data_tensor"], features)
-        else:
-            features_dict = features
+        features_dict = self.backbone(data_sample)
 
         outputs, _ = self.segmentation_head(features_dict, targets=None)
         predicted_labels, predicted_boxes, predicted_masks = [
             outputs[key] for key in ("pred_logits", "pred_boxes", "pred_masks")
         ]
 
+        orig_image_sizes = [tuple(int(x) for x in orig_img_size.tolist()) for orig_img_size in data_sample["metainfo"]["orig_image_sizes"]]
+
         # upsample masks to original image size
         predicted_masks = F.interpolate(
             predicted_masks,
-            size=(data_sample["metainfo"]["image_sizes"][0]),
+            # see data/datasets/pretrain_dataset_ray.py for details on image_sizes
+            size=orig_image_sizes[0],
             mode="trilinear",
             align_corners=False,
         )
@@ -178,22 +171,13 @@ class MaskDINO(nn.Module):
         del outputs
 
         predictions = []
-        for predicted_label, predicted_mask, predicted_box, image_size_pad, orig_image_size in zip(
+        for predicted_label, predicted_mask, predicted_box, orig_image_size in zip(
             predicted_labels,
             predicted_masks,
             predicted_boxes,
-            data_sample["metainfo"]["image_sizes"],
-            data_sample["metainfo"]["orig_image_sizes"],
+            orig_image_sizes,
         ):
-            # padded size (divisible by 32)
-            depth, height, width = [
-                new_dim / image_dim_pad * orig_dim
-                for new_dim, image_dim_pad, orig_dim in zip(
-                    predicted_mask.shape[-3:],  # (new_d, new_h, new_w)
-                    image_size_pad,  # (orig_d, orig_h, orig_w)
-                    orig_image_size,  # (orig_d, orig_h, orig_w)
-                )
-            ]
+            depth, height, width = orig_image_size
             # scale postprocess boxes to original image size
             predicted_box = self.box_postprocess(predicted_box, depth, height, width)
 
@@ -216,13 +200,14 @@ class MaskDINO(nn.Module):
         predicted_masks = predicted_masks[topk_query_indices]
 
         instance_predictions = {}
-        # predicted masks pre-sigmoid
+        # predicted masks pre-sigmoid (0.5 threshold)
         instance_predictions["masks"] = (predicted_masks > 0).float()
         instance_predictions["boxes"] = predicted_boxes[topk_query_indices]
 
         # average mask confidence inside each mask
         predicted_masks_flattened = instance_predictions["masks"].flatten(1)
         predicted_masks_sigmoid_flattened = predicted_masks.sigmoid().flatten(1)
+        # keep probs only inside the predicted mask (all pixels > 0 times their prob)
         mask_confidence_score = (predicted_masks_sigmoid_flattened * predicted_masks_flattened).sum(1) / (
             predicted_masks_flattened.sum(1) + 1e-6
         )
@@ -284,33 +269,29 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
     # 1) Backbone
     # ----------------------------------------------------
 
-    backbone_cfg = model_cfg["backbone_args"]
-    BUILD_BACKBONE = get_method(backbone_cfg["BUILD"])
-    backbone = BUILD_BACKBONE(backbone_cfg)
-
-    # ----------------------------------------------------
-    # 2) Optional backbone adapter
-    # ----------------------------------------------------
+    bw_cfg = model_cfg["backbone_wrapper_args"]
+    build_backbone_wrapper = get_method(bw_cfg.BUILD)
 
     adapter_cfg = model_cfg.get("adapter_args", None)
     if adapter_cfg is not None:
-        BUILD_ADAPTER = adapter_cfg["BUILD"]
-        adapter = BUILD_ADAPTER(adapter_cfg)
+        backbone = build_backbone_wrapper(bw_cfg, adapter_cfg)
     else:
-        adapter = None
+        backbone = build_backbone_wrapper(bw_cfg, None)
 
     # ----------------------------------------------------
     # 3) Pixel decoder (MaskDINOEncoder)
     # ----------------------------------------------------
 
-    pixel_decoder_cfg: Mapping[str, Any] = model_cfg["pixel_decoder_args"]
+    pixel_decoder_cfg = model_cfg["pixel_decoder_args"]
+    # TODO: move to BUILD function for MaskDINOEncoder
     pixel_decoder = MaskDINOEncoder(**_extract_kwargs(pixel_decoder_cfg))
 
     # ----------------------------------------------------
     # 4) Transformer decoder (MaskDINODecoder)
     # ----------------------------------------------------
 
-    decoder_cfg: Mapping[str, Any] = model_cfg["decoder_args"]
+    decoder_cfg = model_cfg["decoder_args"]
+    # TODO: move to BUILD function for MaskDINODecoder
     decoder = MaskDINODecoder(**_extract_kwargs(decoder_cfg))
 
     num_classes = decoder_cfg["num_classes"]
@@ -332,14 +313,15 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
     # 6) Matcher
     # ----------------------------------------------------
 
-    matcher_cfg: Mapping[str, Any] = model_cfg["matcher_args"]
+    matcher_cfg = model_cfg["matcher_args"]
+    # TODO: move to BUILD function for HungarianMatcher
     matcher = HungarianMatcher(**_extract_kwargs(matcher_cfg))
 
     # ----------------------------------------------------
     # 7) Criterion: adjust loss weights, then build DETR_Set_Loss
     # ----------------------------------------------------
 
-    criterion_cfg: Mapping[str, Any] = model_cfg["criterion_args"]
+    criterion_cfg = model_cfg["criterion_args"]
 
     base_loss_weight_dict = criterion_cfg["loss_weight_dict"]
     denoise = criterion_cfg["denoise"]
@@ -353,6 +335,7 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
         decoder_num_layers=decoder_num_layers,
     )
 
+    # TODO: move into BUILD function for DETR_Set_Loss
     criterion = DETR_Set_Loss(
         num_classes=criterion_cfg["num_classes"],
         matcher=matcher,
@@ -385,6 +368,5 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
         num_queries=num_queries,
         instance_segmentation_flag=instance_segmentation_flag,
         topk_per_image=topk_per_image,
-        adapter=adapter,
         focus_on_boxes=focus_on_boxes,
     )

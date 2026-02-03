@@ -25,7 +25,7 @@ from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, 
 from cell_observatory_platform.data.io import read_zarr
 from cell_observatory_platform.data.structures import convert_bbox_format, mask_ids_to_masks
 from cell_observatory_platform.inference.utils import tile_owner
-from cell_observatory_platform.training.helpers import get_data_dim, get_image_sizes, record_dataset_len
+from cell_observatory_platform.training.helpers import get_data_dim, get_image_sizes, record_dataset_len, df_signature_polars
 from cell_observatory_platform.utils.context import (
     bind_current_process_to_node,
     get_world_size,
@@ -103,8 +103,13 @@ class FinetuneCollatorActor:
         bbox_output_format: str = "zyxzyx",
         transforms_list: Optional[List[DictConfig]] = None,
         use_masks: bool = False,
-        with_resize: bool = False,
+        generate_binary_masks: bool = False,
+        require_targets: bool = True,
+        expect_mask_channel: bool = True,
+        # with_resize: bool = False,
         debug: bool = False,
+        normalize_bboxes: bool = False,
+        async_device_copy: bool = False,
     ):
         self.columns = columns
 
@@ -114,7 +119,8 @@ class FinetuneCollatorActor:
 
         self.batch_size = batch_size
         # shape for the device buffer (after resize, without mask channel)
-        self.input_shape = self._get_input_shape(input_shape, input_format)
+        self.input_shape = tuple(input_shape)
+        self.spatial_shape = self._get_spatial_shape(self.input_shape, input_format)
         self.device_buffer_capacity = device_buffer_capacity
 
         self.input_format = input_format.upper()
@@ -188,18 +194,23 @@ class FinetuneCollatorActor:
                 # already an instantiated callable object
                 self.transforms.append(t)
 
-        self.with_resize = with_resize
-        if self.with_resize:
-            ray.logger.info(f"FinetuneCollatorActor on rank {self.global_rank} using Resize transform")
-            # CPU-side pinned resize buffer: shape matches final GPU input
-            # input_shape is (Z_new, Y_new, X_new, C_no_mask)
-            self.resize_buffer = torch.empty(
-                (self.batch_size, *self.input_shape),
-                dtype=self.out_dtype,
-                pin_memory=True,
-            )
+        # TODO: deprecate
+        # self.with_resize = with_resize
+        # if self.with_resize:
+        #     ray.logger.info(f"FinetuneCollatorActor on rank {self.global_rank} using Resize transform")
+        #     # CPU-side pinned resize buffer: shape matches final GPU input
+        #     # input_shape is (Z_new, Y_new, X_new, C_no_mask)
+        #     self.resize_buffer = torch.empty(
+        #         (self.batch_size, *self.input_shape),
+        #         dtype=self.out_dtype,
+        #         pin_memory=True,
+        #     )
 
         self.use_masks = use_masks
+        self.generate_binary_masks = generate_binary_masks
+        self.require_targets = require_targets
+        self.expect_mask_channel = expect_mask_channel
+        self.normalize_bboxes = normalize_bboxes
 
         ray.logger.info(
             f"FinetuneCollatorActor on rank {self.global_rank} and Numa Node {self.numa_node} "
@@ -214,8 +225,17 @@ class FinetuneCollatorActor:
         )
 
         self.debug = debug
+        self.async_device_copy = async_device_copy
+
+    def _get_spatial_shape(self, input_shape: tuple, input_format: str) -> tuple:
+        input_format = input_format.upper()
+        if input_format == "ZYXC":
+            return input_shape[:-1]
+        else:
+            raise NotImplementedError(f"Unsupported input_format: {input_format}")
 
     def _get_input_shape(self, input_shape: tuple, input_format: str) -> tuple:
+        # TODO: generalize this beyond last channel mask removal
         input_format = input_format.upper()
         if input_format == "ZYXC":
             # remove mask channel: (Z, Y, X, C_full) -> (Z, Y, X, C_full-1)
@@ -238,7 +258,7 @@ class FinetuneCollatorActor:
         except Exception:
             pass
 
-    def _split_inputs_and_masks(self, inputs: torch.Tensor):
+    def _get_masks(self, inputs: torch.Tensor):
         """
         inputs: (B, Z, Y, X, C_full)
         returns:
@@ -257,10 +277,8 @@ class FinetuneCollatorActor:
                 f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
             )
 
-        masks = inputs[..., -1]  # (B, Z, Y, X), view
-        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
-
-        return inputs_wo_mask, masks
+        masks = inputs[..., -1].clone()  # (B, Z, Y, X), view
+        return inputs, masks
 
     def _build_targets(
         self,
@@ -317,37 +335,43 @@ class FinetuneCollatorActor:
             else:
                 bboxes_batch.append(torch.zeros((0, 6), device=device, dtype=torch.float32))
 
-        if self.use_masks:
-            binary_masks_batch = mask_ids_to_masks(
-                batch_size=B,
-                spatial_shape=spatial_shape,
-                mask_ids_batch=mask_ids_batch,
-                masks=masks_labelmap,
-                device=device,
-            )
+        if self.use_masks and self.generate_binary_masks:
+                binary_masks_batch = mask_ids_to_masks(
+                    batch_size=B,
+                    spatial_shape=spatial_shape,
+                    mask_ids_batch=mask_ids_batch,
+                    masks=masks_labelmap,
+                    device=device,
+                )
         else:
             binary_masks_batch = [None] * B
 
         if self.bbox_data_format != self.bbox_output_format:
             bboxes_batch = [
-                convert_bbox_format(b, self.bbox_data_format, self.bbox_output_format) for b in bboxes_batch
+                convert_bbox_format(b, 
+                    self.bbox_data_format, 
+                    self.bbox_output_format, 
+                    self.normalize_bboxes, 
+                    # spatial shape is (Z, Y, X), need (X, Y, Z)
+                    self.spatial_shape[::-1]) for b in bboxes_batch
             ]
 
         targets: List[Dict[str, Any]] = []
-        for ids, bm, boxes in zip(mask_ids_batch, binary_masks_batch, bboxes_batch):
+        for b, (ids, bm, boxes) in enumerate(zip(mask_ids_batch, binary_masks_batch, bboxes_batch)):
             mask_ids_tensor = torch.as_tensor(ids, device=device, dtype=torch.long)
             labels = torch.zeros(len(ids), device=device, dtype=torch.long)
-
             t: Dict[str, Any] = {
                 "boxes": boxes,
                 "mask_ids": mask_ids_tensor,
                 "labels": labels,
             }
-            if self.use_masks and bm is not None:
-                t["masks"] = bm
-
+            if self.use_masks:
+                if self.generate_binary_masks:
+                    t["masks"] = bm
+                else:
+                    t["label_map"] = masks_labelmap[b]
             targets.append(t)
-
+        
         return targets
 
     def _copy_h2d(self, dst: torch.Tensor, src: torch.Tensor):
@@ -379,24 +403,41 @@ class FinetuneCollatorActor:
             )
 
             inputs_full = torch.from_numpy(h_view)
-            inputs_no_mask, masks_labelmap = self._split_inputs_and_masks(inputs_full)
+            # In inference we may have no labelmap channel at all.
+            if self.expect_mask_channel:
+                inputs, masks_labelmap = self._get_masks(inputs_full)
+            else:
+                inputs, masks_labelmap = inputs_full, None
 
             meta_cpu: Dict[str, Any] = {}
             for k in self.columns:
                 if k in batch:
                     meta_cpu[k] = batch[k]
 
-            if "mask_bbox_dict" not in meta_cpu:
-                raise KeyError("FinetuneCollatorActor expects 'mask_bbox_dict' in columns.")
+            # Build targets only when requested (training). For inference, produce empty targets
+            # so downstream transforms that expect `metainfo["targets"]` still work.
+            if self.require_targets:
+                if "mask_bbox_dict" not in meta_cpu:
+                    raise KeyError("FinetuneCollatorActor expects 'mask_bbox_dict' in columns when require_targets=True.")
+                mask_bbox_dict_batch = list(meta_cpu["mask_bbox_dict"])
+                targets_cpu = self._build_targets(
+                    masks_labelmap=masks_labelmap,
+                    mask_bbox_dict_batch=mask_bbox_dict_batch,
+                )
+            else:
+                B = inputs.shape[0]
+                device = torch.device("cpu")
+                targets_cpu = []
+                for _ in range(B):
+                    targets_cpu.append(
+                        {
+                            "boxes": torch.zeros((0, 6), device=device, dtype=torch.float32),
+                            "mask_ids": torch.zeros((0,), device=device, dtype=torch.long),
+                            "labels": torch.zeros((0,), device=device, dtype=torch.long),
+                        }
+                    )
 
-            mask_bbox_dict_batch = list(meta_cpu["mask_bbox_dict"])
-
-            targets_cpu = self._build_targets(
-                masks_labelmap=masks_labelmap,
-                mask_bbox_dict_batch=mask_bbox_dict_batch,
-            )
-
-            image_sizes, orig_image_sizes, padding_mask = get_image_sizes(
+            image_sizes, orig_image_sizes, image_sizes_padded, padding_mask = get_image_sizes(
                 input_format=self.input_format,
                 input_shape=self.raw_input_shape,
                 batch_size=self.batch_size,
@@ -405,25 +446,26 @@ class FinetuneCollatorActor:
             )
             meta_cpu["image_sizes"] = torch.as_tensor(image_sizes)
             meta_cpu["orig_image_sizes"] = torch.as_tensor(orig_image_sizes)
+            meta_cpu["image_sizes_padded"] = torch.as_tensor(image_sizes_padded)
             meta_cpu["padding_mask"] = torch.as_tensor(padding_mask)
 
             sample_cpu = {
-                "data_tensor": inputs_no_mask,
+                "data_tensor": inputs,
                 "metainfo": {
                     **meta_cpu,
                     "targets": targets_cpu,
-                    "resize_buffer": self.resize_buffer if self.with_resize else None,
+                    # "resize_buffer": self.resize_buffer if self.with_resize else None,
                 },
             }
 
             if self.transforms:
                 for t in self.transforms:
                     sample_cpu = t(sample_cpu)
-                inputs_resized = sample_cpu["data_tensor"]
-                metainfo_resized = sample_cpu["metainfo"]
+                inputs_transformed = sample_cpu["data_tensor"]
+                metainfo_transformed = sample_cpu["metainfo"]
             else:
-                inputs_resized = inputs_no_mask
-                metainfo_resized = {
+                inputs_transformed = inputs
+                metainfo_transformed = {
                     **meta_cpu,
                     "targets": targets_cpu,
                 }
@@ -432,33 +474,45 @@ class FinetuneCollatorActor:
             dst_device = self.device_buffer.device_buffers[device_buffer_idx]
 
             with torch.cuda.stream(self.copy_stream):
-                self._copy_h2d(dst=dst_device, src=inputs_resized)
+                self._copy_h2d(dst=dst_device, src=inputs_transformed)
 
-                def _release_buffer_on_done(stream, error_status, user_data):
-                    actor_reference = user_data["actor"]
-                    hb_idx = user_data["host_buffer_idx"]
-                    try:
-                        actor_reference.put_free.remote(hb_idx)
-                    except Exception as e:
-                        logger.exception(f"put_free failed for {hb_idx}: {e}")
+                if self.async_device_copy:
 
-                with self.cp_stream:
-                    self.cp_stream.add_callback(
-                        _release_buffer_on_done,
-                        {
-                            "actor": self.host_buffer_actor,
-                            "host_buffer_idx": host_buffer_idx,
-                        },
-                    )
+                    def _release_buffer_on_done(stream, error_status, user_data):
+                        actor_reference = user_data["actor"]
+                        hb_idx = user_data["host_buffer_idx"]
+                        try:
+                            actor_reference.put_free.remote(hb_idx)
+                        except Exception as e:
+                            logger.exception(f"put_free failed for {hb_idx}: {e}")
 
-            torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
-            dst_device.record_stream(self.copy_stream)
+                    with self.cp_stream:
+                        self.cp_stream.add_callback(
+                            _release_buffer_on_done,
+                            {
+                                "actor": self.host_buffer_actor,
+                                "host_buffer_idx": host_buffer_idx,
+                            },
+                        )
 
+            if not self.async_device_copy:
+                # Force the copy to complete
+                torch.cuda.synchronize(self.device)
+                # Synchronously free host slot
+                ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+
+            else:
+                # tells caching allocator & scheduler on training stream
+                # that dst_device is owned by copy_stream
+                torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
+                dst_device.record_stream(self.copy_stream)
+
+            # NOTE: could probably be one recursive function that handles all tensors
             metainfo: Dict[str, Any] = {
                 "host_buffer_idx": host_buffer_idx,
                 "device_buffer_idx": device_buffer_idx,
             }
-            for k, v in metainfo_resized.items():
+            for k, v in metainfo_transformed.items():
                 if k in ("targets", "resize_buffer"):
                     continue
                 if torch.is_tensor(v):
@@ -467,7 +521,7 @@ class FinetuneCollatorActor:
                     metainfo[k] = v
 
             targets_gpu: List[Dict[str, Any]] = []
-            for tgt in metainfo_resized["targets"]:
+            for tgt in metainfo_transformed["targets"]:
                 t_out: Dict[str, Any] = {}
                 for tk, tv in tgt.items():
                     if torch.is_tensor(tv):
@@ -478,7 +532,10 @@ class FinetuneCollatorActor:
             metainfo["targets"] = targets_gpu
 
             if self.debug:
-                ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+                # NOTE: for testing only, put_free(idx) otherwise called by hooks in
+                #       training loop, see training/hooks.py:FreeDeviceBufferHook
+                if self.async_device_copy:
+                    ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
                 self.device_buffer.put_free(device_buffer_idx)
 
             return {"data_tensor": dst_device, "metainfo": metainfo}
@@ -678,10 +735,10 @@ class CollatorActor:
                 ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
 
             else:
-                dst_device.record_stream(self.copy_stream)
                 # tells caching allocator & scheduler on training stream
                 # that dst_device is owned by copy_stream
                 torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
+                dst_device.record_stream(self.copy_stream)
                 if self.callback_strategy == "queue":
                     self._pending_frees.put((event, host_buffer_idx))
 
@@ -914,7 +971,7 @@ def set_data_context(cfg: DictConfig):
     ctx.use_arrow_tensor_v2 = cfg.datasets.use_arrow_tensor_v2
     ctx.execution_options.locality_with_output = cfg.datasets.locality_with_output
     ctx._enable_actor_pool_on_exit_hook = True
-    ctx.execution_options.preserve_order = cfg.datasets.preserve_order
+    # ctx.execution_options.preserve_order = cfg.datasets.preserve_order
 
 
 def get_context_spec(cfg: DictConfig) -> Dict[str, Any]:
@@ -974,8 +1031,16 @@ def partition_indices_for_inference(
     return rows_per_rank
 
 
+def shuffle_table(table: pa.Table, seed: int) -> pa.Table:
+    n = table.num_rows
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n)
+    return table.take(pa.array(perm, type=pa.int64()))
+
+
 def get_dataset_ray(
     cfg: DictConfig,
+    seed: Optional[int],
     indices: Optional[List[int]],
     database: Optional[Any] = None,
     columns: list = [
@@ -998,7 +1063,12 @@ def get_dataset_ray(
     ],
     dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
+    shuffle: bool = False,
+    drop_last: bool = True,
 ):
+    if seed is not None and not shuffle:
+        raise ValueError("Seed provided but shuffle is False.")
+
     if cfg.datasets.channels_subset is not None:
         # NOTE: this always works because dataset_layout_order is 1-1 matched
         num_channels = cfg.datasets.input_shape[cfg.dataset_layout_order.index("C")]
@@ -1022,7 +1092,8 @@ def get_dataset_ray(
     ).reset_index(drop=True)
 
     # TODO: consider checking dataframe consistency before sharding
-    # local_db_hash = df_signature_polars(base_df)
+    local_db_hash = df_signature_polars(base_df)
+    print(f"Dataset dataframe signature hash on rank {process_rank()}: {local_db_hash}")
     # assert_same_db_hash_across_ranks(local_db_hash)
 
     if dp_degree is not None and dp_rank is not None:
@@ -1035,7 +1106,7 @@ def get_dataset_ray(
             df=base_df,
             world_size=ws,
             batch_size=cfg.clusters.batch_size_per_gpu,
-            drop_last_policy=cfg.datasets.drop_last_policy,
+            drop_last_policy=drop_last,
             roi_col="prepared_id",
             tile_col="tile_name",
         )
@@ -1052,19 +1123,25 @@ def get_dataset_ray(
 
     else:
         table = pa.table(base_df)
-        dataset = ray.data.from_arrow(table)
-        dataset = dataset.split(n=ws, equal=True)[rk]
+        if shuffle:
+            table = shuffle_table(table, seed=seed)
+        
+        n = table.num_rows
+        n_shard = (n // ws) * ws
+        table = table.slice(0, n_shard)
 
-        ray.logger.info(f"Rank {rk} assigned dataframe: {dataset.to_pandas().head()}")
+        shard_len = n_shard // ws
+        local_table = table.slice(rk * shard_len, shard_len)
 
-        if cfg.datasets.drop_last_policy:
+        if drop_last:
             B = cfg.clusters.batch_size_per_gpu
-            n = dataset.count()
-            dataset = dataset.limit((n // B) * B)
-            dataset_len = dataset.count()
-        else:
-            dataset_len = dataset.count()
+            keep = (local_table.num_rows // B) * B
+            local_table = local_table.slice(0, keep)
 
+        dataset = ray.data.from_arrow(local_table)
+        dataset_len = local_table.num_rows
+
+    # NOTE: this is necessary to avoid slow startup
     dataset = dataset.repartition(target_num_rows_per_block=cfg.datasets.rows_per_block, shuffle=False)
 
     scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
@@ -1103,11 +1180,14 @@ def get_dataloader_ray(
     cfg: DictConfig,
     batch_size: int,
     collate_fn: Optional[Callable],
+    epoch: int = 0,
     drop_last: bool = True,
     database: Optional[Any] = None,
     dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
 ):
+    assert hasattr(cfg, "seed"), "cfg.seed is required for Ray Dataloader."
+
     if database is None:
         db = instantiate(cfg.datasets.databases)
     else:
@@ -1117,9 +1197,8 @@ def get_dataloader_ray(
     dataset_len = len(db.hypercubes_dataframe)
 
     if cfg.datasets.split is not None and 0.0 < float(cfg.datasets.split) < 1.0:
-        seed = cfg.get("seed", 42)
         g = torch.Generator()
-        g.manual_seed(int(seed))
+        g.manual_seed(int(cfg.seed))
 
         val_size = round(dataset_len * cfg.datasets.split)
         train_subset, val_subset = random_split(
@@ -1134,6 +1213,9 @@ def get_dataloader_ray(
             columns=list(cfg.datasets.columns),
             dp_degree=dp_degree,
             dp_rank=dp_rank,
+            seed=int(cfg.seed) + int(epoch),
+            shuffle=True,
+            drop_last=drop_last,
         )
         val_dataset, val_dataset_len = get_dataset_ray(
             cfg,
@@ -1142,6 +1224,9 @@ def get_dataloader_ray(
             columns=list(cfg.datasets.columns),
             dp_degree=dp_degree,
             dp_rank=dp_rank,
+            seed=None,
+            shuffle=False,
+            drop_last=drop_last,
         )
 
         record_dataset_len(cfg, train_dataset_len, val_dataset_len)
@@ -1156,7 +1241,9 @@ def get_dataloader_ray(
 
     else:
         train_dataset, train_dataset_len = get_dataset_ray(
-            cfg, indices=None, database=db, columns=list(cfg.datasets.columns), dp_degree=dp_degree, dp_rank=dp_rank
+            cfg, indices=None, database=db, columns=list(cfg.datasets.columns), 
+            dp_degree=dp_degree, dp_rank=dp_rank, 
+            seed=int(cfg.seed) + int(epoch), shuffle=True, drop_last=drop_last
         )
         record_dataset_len(cfg, train_dataset_len, 0)
 

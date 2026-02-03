@@ -11,8 +11,9 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.mlp import MLP
+from cell_observatory_platform.models.layers.utils import inverse_sigmoid
+from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
 from cell_observatory_platform.models.layers.attention import CrossAttention, FlashDeformAttn3D
 
@@ -217,6 +218,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
             target_cross_attn = self.cross_attention(
                 self.with_pos_embeddings(target, target_query_pos_embeddings).transpose(0, 1),  # (bs, num_queries, embed_dim)
                 self.with_pos_embeddings(memory, memory_pos_embeddings).transpose(0, 1),  # (bs, num_tokens, embed_dim)
+                memory.transpose(0, 1),  # (bs, num_tokens, embed_dim)
                 # TODO: support memory_key_padding_mask
                 # memory_key_padding_mask,
             ).transpose(0, 1)
@@ -236,7 +238,7 @@ class TransformerDecoder(nn.Module):
         num_layers,
         norm=None,
         return_intermediates=True,
-        embed_dim=256,
+        embed_dim=384,
         query_dim=4,
         modulate_dhw_attn=True,
         num_feature_levels=1,
@@ -284,7 +286,7 @@ class TransformerDecoder(nn.Module):
             self.decoder_layers = []
 
         self.norm = norm
-        self.bbox_regressor = None
+        # HACK: bbox regressor is defined in the MaskDINODecoder class
         self.class_predictor = None
         self.deformable_decoder = deformable_decoder
 
@@ -331,14 +333,14 @@ class TransformerDecoder(nn.Module):
 
     def forward(
         self,
-        target,
-        memory,
+        target, # (num_queries, bs, embed_dim)
+        memory, # (SUM{dxhxw}, bs, embed_dim)
         target_mask: Optional[Tensor] = None,
         memory_mask: Optional[Tensor] = None,
         target_key_padding_mask: Optional[Tensor] = None,
         memory_key_padding_mask: Optional[Tensor] = None,
         pos_embeddings: Optional[Tensor] = None,
-        reference_points: Optional[Tensor] = None,  # num_queries, bs, 3
+        reference_points: Optional[Tensor] = None,  # num_queries, bs, 6
         # for memory
         level_start_index: Optional[Tensor] = None,  # num_levels
         shapes: Optional[Tensor] = None,  # bs, num_levels, 3
@@ -346,6 +348,7 @@ class TransformerDecoder(nn.Module):
         valid_ratios: Optional[Tensor] = None,
     ):
         intermediates = []
+        # NOTE: reference points assumed to be in unsigmoid range
         reference_points = reference_points.sigmoid().to(target.device)  # (num_queries, bs, 3/6) scaled to [0, 1]
         reference_points_list = [reference_points]
 
@@ -357,7 +360,7 @@ class TransformerDecoder(nn.Module):
 
             # scale the reference points per feature level using valid_ratios
             # this way attention doesn’t sample into padded regions
-            # (num_queries, bs, 1, ref_dim) * (1, bs, nlevel, ref_dim) broadcast-multiply
+            # (num_queries, bs, 1, 6) * (1, bs, nlevel, 6) broadcast-multiply (mult. by 2 for x,y,z and w,h,d)
             # returns: (num_queries, bs, n_levels, query_dim)
             # result: for each query and each level, get scaled reference points based on valid ratio
             reference_points_per_level = reference_points[:, :, None] * torch.cat([valid_ratios] * 2, dim=-1)[None, :]
@@ -366,6 +369,7 @@ class TransformerDecoder(nn.Module):
             # MLP(query_dim//3*embed_dim,embed_dim,embed_dim,2) returns: (num_queries, bs, embed_dim)
             query_pos_embeddings = self.ref_point_head(query_sine_embeddings)
 
+            # returns decoder output: (num_queries, bs, embed_dim)
             decoder_output = decoder_layer(
                 # for target
                 target=target,
@@ -384,18 +388,16 @@ class TransformerDecoder(nn.Module):
                 cross_attention_mask=memory_mask,
             )
 
-            # NOTE: not used in MaskDINO implementation
-            # iterative reference point update
-            # predict deltas from decoder output and update reference points accordingly
-            # if self.bbox_embed is not None:
-            #     reference_points_pre_sigmoid = inverse_sigmoid(reference_points)
-            #     deltas = self.bbox_embed[layer_id](output).to(device)
-            #     reference_points_updated = (deltas + reference_points_pre_sigmoid).sigmoid()
-            #     reference_points = reference_points_updated.detach()
-            #     reference_points_list.append(reference_points_updated)
+            if self.bbox_embed is not None:
+                reference_points_pre_sigmoid = inverse_sigmoid(reference_points)
+                deltas = self.bbox_embed[layer_id](decoder_output).to(target.device)
+                reference_points_updated = (deltas + reference_points_pre_sigmoid).sigmoid()
+                reference_points = reference_points_updated.detach()
+                reference_points_list.append(reference_points_updated)
 
             intermediates.append(self.norm(decoder_output))
 
+        # NOTE: returns batch_size, queries ordering
         return [
             [intermediate.transpose(0, 1) for intermediate in intermediates],
             [reference_point_element.transpose(0, 1) for reference_point_element in reference_points_list],

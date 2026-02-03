@@ -8,7 +8,7 @@ defaults:
 # mainly used by other configs but determined here for ease of access
 batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
 input_shape: [16, 128, 128, 128, 2]
-train_shape: [16, 128, 128, 128, 2]
+train_shape: ${datasets.input_shape}
 patch_shape: [4, 16, 16, 16]
 
 max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
@@ -29,6 +29,8 @@ columns: [
 ]
 
 occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
+cdf_threshold: 150 # to filter our hypercubes with less than this CDF threshold
+cdf_target: 90 # to filter our hypercubes with less than this CDF target
 
 use_cached_hypercubes_dataframe: false # whether to use the cached hypercubes dataframe
 hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv # path to the hypercubes dataframe (path/to/repo/databases/default_hypercubes_dataframe.csv)

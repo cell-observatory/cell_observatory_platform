@@ -179,7 +179,7 @@ def test_maskdino_encoder_forward_features_shapes_cuda(add_extra_levels):
     else:
         assert all_maps[-1].shape == (B, conv_dim, *res5)
 
-    Dc, Hc, Wc = all_maps[-1].shape[-3:]
+    Dc, Hc, Wc = all_maps[0].shape[-3:]
     assert mask_feats.shape == (B, mask_dim, Dc, Hc, Wc)
     assert mask_feats.is_cuda
 

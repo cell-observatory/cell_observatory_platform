@@ -4,22 +4,22 @@ with_masking: false
 mask_generator: null
 dtype: ${quantization}
 
-transforms_list:
-  # 1) Resize to Z=128, Y=256, X=512
-  - _target_: cell_observatory_platform.data.transforms.resize.Resize
-    input_format: ${dataset_layout_order}          # e.g. "ZYXC"
-    target_spatial_shape: [128, 256, 512]         # (Z, Y, X)
-    mode: trilinear
-    align_corners: false
-    dtype: ${quantization}
-    bbox_format: ${datasets.preprocessor.bbox_output_format}
-    crop_to_meta_spatial: true
+# transforms_list:
+#   # 1) Resize to Z=128, Y=256, X=512
+#   - _target_: cell_observatory_platform.data.transforms.resize.Resize
+#     input_format: ${dataset_layout_order}          # e.g. "ZYXC"
+#     target_spatial_shape: [128, 256, 512]         # (Z, Y, X)
+#     mode: trilinear
+#     align_corners: false
+#     dtype: ${quantization}
+#     bbox_format: ${datasets.preprocessor.bbox_output_format}
+#     crop_to_meta_spatial: true
 
-  # 2) Normalize after resize
-  - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
-    input_layout:
-      _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
-      value: ${dataset_layout_order}
+#   # 2) Normalize after resize
+#   - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+#     input_layout:
+#       _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+#       value: ${dataset_layout_order}
 
 patch_shape: ${datasets.patch_shape}
 input_format: ${dataset_layout_order}
@@ -32,3 +32,5 @@ bbox_data_format: zyxzyx
 bbox_output_format: cxcyczwhd
 
 # debug_savepath: null
+expect_mask_channel: true # ${datasets.collate_fn.expect_mask_channel}
+require_targets: true #${datasets.collate_fn.require_targets}

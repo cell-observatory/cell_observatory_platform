@@ -1,0 +1,75 @@
+# ----- Fault tolerance / TorchFT -----
+fault_tolerance:
+  enable: false
+  process_group: nccl
+  process_group_timeout_ms: 10000
+  replica_id: 0
+  group_size: 0
+  min_replica_size: 1
+  semi_sync_method: null
+
+# ----- GC settings -----
+gc:
+  gc_freq: 50
+  gc_debug: false
+
+# ----- Core training + parallel degrees -----
+training:
+  debug: false               # set true for deterministic mode, extra checks
+  deterministic: false       # set true for deterministic mode
+  max_norm: 1.0              # grad clipping
+  enable_cpu_offload: false
+
+  # loss parallel
+  disable_loss_parallel: true   # allow loss-parallel path
+
+  # dtypes
+  dtype: float32
+  mixed_precision_param: bfloat16
+  mixed_precision_reduce: float32
+
+  # NEED TO MAINTAIN INVARIANT:
+  # dp_replicate * dp_shard * cp * tp * pp == world_size
+
+  # degrees
+  data_parallel_shard_degree: -1      # FSDP shard degree
+  data_parallel_replicate_degree: 1  # replicated DP
+
+  context_parallel_degree: 1          # CP
+  tensor_parallel_degree: 1          # TP
+  pipeline_parallel_degree: 1        # no PP
+  expert_parallel_degree: 1          # no MoE
+  expert_tensor_parallel_degree: 1
+
+  pipeline_parallel_schedule: "1F1B"
+  pipeline_parallel_microbatch_size: 1
+
+  context_parallel_rotate_method: allgather
+
+  fsdp_reshard_after_forward: default
+
+  enable_async_tp: false
+
+# ----- Distributed comm settings -----
+comm:
+  mode: default
+  init_timeout_seconds: 300
+  train_timeout_seconds: 600
+  trace_buf_size: 0
+  save_traces_folder: null
+  save_traces_file_prefix: null
+  dump_base_folder: ${paths.outdir}/comm_traces
+
+# ----- Profiling settings -----
+profiling:
+  memory_estimation:
+    enable: false
+    disable_fake_mode: false
+
+# ----- Debug settings -----
+debug:
+  debug: false
+  seed: 42
+  deterministic: false
+  deterministic_warn_only: true
+  moe_force_load_balance: false

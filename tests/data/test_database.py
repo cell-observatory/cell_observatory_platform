@@ -1,7 +1,9 @@
+import json
 import warnings
 from pathlib import Path
 from pprint import pprint
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
@@ -218,9 +220,47 @@ def test_hypercubes_hpf_filter(database):
     assert (table["z_size"] == 128).all(), "All cube sizes should be 128"
     assert (table["y_size"] == 128).all(), "All cube sizes should be 128"
     assert (table["x_size"] == 128).all(), "All cube sizes should be 128"
-    assert table["hpf"].isin(hpf_list).all(), f"Only hpf in {hpf_list} should be returned"
     assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
+    assert table["hpf"].isin(hpf_list).all(), f"Only hpf in {hpf_list} should be returned"
+
+
+def test_hypercubes_occ_filter(database):
+    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, max_hypercubes=100)
+    print(database.last_query)
+    table = database._aggregate(table)
+    table = database._apply_occupancy_threshold(
+        table, occupancy_threshold=0.9, occupancy_threshold_filter_type="min_ch0"
+    )
+
+    print(table)
+    print(table.columns)
+    print(table["min_occupancy_ratios_ch_0"])
+
+    assert (table["channel_size"] == 2).all(), "All channel sizes should be 2"
+    assert (table["time_size"] == 16).all(), "All time sizes should be 16"
+    assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+    assert (table["min_occupancy_ratios_ch_0"] >= 0.9).all(), f"Only occupancy_threshold >= 0.9 should be returned"
+
+
+def test_hypercubes_cdf_filter(database):
+    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, max_hypercubes=100)
+    print(database.last_query)
+    table = database._aggregate(table)
+    table = database._apply_cdf_threshold(
+        table, cdf_threshold=150, cdf_target="90", cdf_threshold_filter_type="min_ch0"
+    )
+
+    print(table)
+    print(table.columns)
+    print(table["cdf_90_ch_0"])
+
+    assert (table["channel_size"] == 2).all(), "All channel sizes should be 2"
+    assert (table["time_size"] == 16).all(), "All time sizes should be 16"
+    assert table.shape[0] <= 100, "Only 100 hypercubes should be returned"
+    assert table.shape[0] > 0, f"Zero hypercubes were returned"
+    assert (table["cdf_90_ch_0"] >= 150).all(), f"Only cdf_90 >= 150 should be returned"
 
 
 @pytest.mark.skip("Supabase times out for this test.")
@@ -453,7 +493,7 @@ def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
     config.datasets.databases.input_shape = (16, z_slices, y_slices, x_slices, 2)
     num_timepoints = 16
     config.datasets.databases.dataset_layout_order = "TZYXC"
-    config.datasets.databases.max_hypercubes = 10000
+    config.datasets.databases.max_hypercubes = 100000
     config.datasets.databases.max_rois = None
     config.datasets.databases.max_tiles = None
     config.datasets.databases.hpf_list = None
@@ -472,6 +512,47 @@ def test_csv_dataframe(config, database_type, z_slices, y_slices, x_slices):
     table = database.hypercubes_dataframe
     print(table)
     # database.save_hypercubes_dataframe(hypercubes_dataframe_path=Path(config.paths.server_folder_path) / 'databases' / "prepared_16_128_128_128_2_hypercube_view.csv")
+
+    print(table.columns)
+
+    # fig, (ax, ax2) = plt.subplots(ncols=2, figsize=(12, 6), sharey=True)
+    # ax.hist(table["cdf_99_ch_0"].dropna(), bins=50, alpha=0.6, label="CDF-99")
+    # ax.hist(table["cdf_95_ch_0"].dropna(), bins=50, alpha=0.6, label="CDF-95")
+    # ax.hist(table["cdf_90_ch_0"].dropna(), bins=50, alpha=0.6, label="CDF-90")
+    # ax.hist(table["cdf_80_ch_0"].dropna(), bins=50, alpha=0.6, label="CDF-80")
+    # ax2.hist(table["min_occupancy_ratios_ch_0"].dropna(), bins=50, label="OCC")
+
+    # cdf_threshold, occ_threshold = 150, 0.9
+    # ax.axvline(x=cdf_threshold, color=f"r", linestyle="--", label="CDF threshold")
+    # for i, col in enumerate(["cdf_80_ch_0", "cdf_90_ch_0", "cdf_95_ch_0", "cdf_99_ch_0"]):
+    #     fraction_above_threshold = (table[col].dropna() >= cdf_threshold).sum() / table.shape[0]
+    #     ax.annotate(
+    #         f"{fraction_above_threshold:.2%} of {col} >= {cdf_threshold}",
+    #         xy=(cdf_threshold + 500, ax.get_ylim()[1] * 0.9 - i * ax.get_ylim()[1] * 0.25),
+    #         color=f"C{i}",
+    #         fontsize=10,
+    #         ha="left",
+    #     )
+
+    # ax2.axvline(x=occ_threshold, color=f"r", linestyle="--", label="OCC threshold")
+    # fraction_above_threshold = (table["min_occupancy_ratios_ch_0"].dropna() >= occ_threshold).sum() / table.shape[0]
+    # ax2.annotate(
+    #     f"{fraction_above_threshold:.2%} of min_occupancy_ratios_ch_0 >= {occ_threshold}",
+    #     xy=(occ_threshold - 0.05, ax.get_ylim()[1] * 0.9),
+    #     fontsize=10,
+    #     color="r",
+    #     ha="right",
+    # )
+
+    # ax.set_yscale("log")
+    # ax2.set_yscale("log")
+    # ax.set_xlabel("Camera counts")
+    # ax2.set_xlabel("OCC ratios")
+    # ax.set_ylabel("Frequency")
+    # ax2.set_ylabel("Frequency")
+
+    # plt.tight_layout()
+    # plt.savefig(f"cdf_histograms_t{num_timepoints}_z{z_slices}_y{y_slices}_x{x_slices}.png", dpi=300)
 
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
     assert table["first_pc_id"].unique().all(), f"`first_pc_id` should have unique values"
