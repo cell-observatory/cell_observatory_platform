@@ -161,5 +161,3 @@ hooks:
     step_period: 5
     epoch_period: 1
     logdir: ${loggers.logdir}
-  - _target_: cell_observatory_platform.training.hooks.TorchProfiler
-    output_dir: ${loggers.logdir}/profiler
