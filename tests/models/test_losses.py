@@ -210,7 +210,9 @@ def test_detr_set_loss_basic(monkeypatch):
         labels = torch.randint(0, num_classes, (3,), device=device)
         boxes = torch.rand(3, 6, device=device)
         masks = torch.randint(0, 2, (3, D, H, W), device=device, dtype=torch.float32)
-        targets.append({"labels": labels, "boxes": boxes, "masks": masks})
+        mask_ids = torch.arange(1, 4, device=device)
+        label_map = torch.zeros(D, H, W, dtype=torch.long, device=device)
+        targets.append({"labels": labels, "boxes": boxes, "masks": masks, "mask_ids": mask_ids, "label_map": label_map})
 
     losses = criterion(outputs, targets)
 
@@ -319,7 +321,9 @@ def test_detr_set_loss_denoise_without_predictions(monkeypatch):
     labels = torch.randint(0, num_classes, (2,), device=device)
     boxes = torch.rand(2, 6, device=device)
     masks = torch.randint(0, 2, (2, D, H, W), device=device, dtype=torch.float32)
-    targets = [{"labels": labels, "boxes": boxes, "masks": masks}]
+    mask_ids = torch.arange(1, 3, device=device)
+    label_map = torch.zeros(D, H, W, dtype=torch.long, device=device)
+    targets = [{"labels": labels, "boxes": boxes, "masks": masks, "mask_ids": mask_ids, "label_map": label_map}]
 
     losses = criterion(outputs, targets, denoise_predictions=None)
 
@@ -381,7 +385,9 @@ def test_detr_set_loss_denoise_with_predictions(monkeypatch):
     labels = torch.randint(0, num_classes, (2,), device=device)
     boxes = torch.rand(2, 6, device=device)
     masks = torch.randint(0, 2, (2, D, H, W), device=device, dtype=torch.float32)
-    targets = [{"labels": labels, "boxes": boxes, "masks": masks}]
+    mask_ids = torch.arange(1, 3, device=device)
+    label_map = torch.zeros(D, H, W, dtype=torch.long, device=device)
+    targets = [{"labels": labels, "boxes": boxes, "masks": masks, "mask_ids": mask_ids, "label_map": label_map}]
 
     # Construct synthetic denoise_predictions that match the expected structure
     denoise_queries_per_label = 2
