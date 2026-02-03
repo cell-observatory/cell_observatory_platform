@@ -118,8 +118,8 @@ def make_config(
         ac_cfg.per_op_sac_force_recompute_mm_shapes_by_fqns = fqn_filters
         ac_cfg.mm_recompute_frac = mm_recompute_frac
 
-        ac_cfg.modules = ["encoder"]
-        ac_cfg.block_names = "layers"
+        ac_cfg.modules = [("encoder", "layers")]
+        config.activation_checkpoint = ac_cfg
 
     return config
 
