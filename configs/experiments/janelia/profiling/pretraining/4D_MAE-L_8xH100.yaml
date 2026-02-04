@@ -46,7 +46,7 @@ dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, fl
 storage_dtype: uint16 # data type for storage
 
 # dataset layout in the zarr files
-dataset_layout_order: ZYXC
+dataset_layout_order: TZYXC
 
 seed: 42
 
