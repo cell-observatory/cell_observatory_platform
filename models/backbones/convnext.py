@@ -52,8 +52,8 @@ Creative Commons may be contacted at creativecommons.org.
 
 import logging
 import sys
-from typing import Literal
-
+from typing import Literal, Optional
+from omegaconf import DictConfig, OmegaConf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -179,7 +179,8 @@ class ConvNeXtV2(nn.Module):
         depths=(3, 3, 9, 3),
         dims=(96, 192, 384, 768),
         drop_path_rate=.1,
-        head_init_scale=1.
+        head_init_scale=1.,
+        return_stage_features: bool = False,
     ):
         assert input_fmt not in ['TZYXC', 'TZXYC'], NotImplementedError(f'Input format {input_fmt} is not supported.')
 
@@ -203,14 +204,14 @@ class ConvNeXtV2(nn.Module):
 
         self.downsample_layers = nn.ModuleList()  # stem and 3 intermediate downsampling conv layers
         stem = nn.Sequential(
-            nn.Conv3d(self.in_chans, self.dims[0], kernel_size=(1, 4, 4), stride=(1, 4, 4)),
+            nn.Conv3d(self.in_chans, self.dims[0], kernel_size=(4, 4, 4), stride=(4, 4, 4)),
             LayerNorm(self.dims[0], eps=1e-6, data_format="channels_first")
         )
         self.downsample_layers.append(stem)
         for i in range(3):
             downsample_layer = nn.Sequential(
                     LayerNorm(self.dims[i], eps=1e-6, data_format="channels_first"),
-                    nn.Conv3d(self.dims[i], self.dims[i+1], kernel_size=(1, 2, 2), stride=(1, 2, 2)),
+                    nn.Conv3d(self.dims[i], self.dims[i+1], kernel_size=(2, 2, 2), stride=(2, 2, 2)),
             )
             self.downsample_layers.append(downsample_layer)
 
@@ -228,12 +229,22 @@ class ConvNeXtV2(nn.Module):
         self.regressor = nn.Linear(self.dims[-1], self.modes)
         self.regressor.weight.data.mul_(head_init_scale)
         self.regressor.bias.data.mul_(head_init_scale)
+        
+        self.return_stage_features = return_stage_features
 
     def forward_features(self, x):
-        for i in range(4):
-            x = self.downsample_layers[i](x)
-            x = self.stages[i](x)
-        return self.norm(x.mean([-3, -2, -1]))  # global average pooling, (N, C, Z, Y, X) -> (N, C)
+        if self.return_stage_features:
+            stage_features = []
+            for i in range(4):
+                x = self.downsample_layers[i](x)
+                x = self.stages[i](x)
+                stage_features.append(x)
+            return stage_features
+        else:
+            for i in range(4):
+                x = self.downsample_layers[i](x)
+                x = self.stages[i](x)
+            return self.norm(x.mean([-3, -2, -1]))  # global average pooling, (N, C, Z, Y, X) -> (N, C)
 
     def forward(self, data_sample: dict):
         x, meta = data_sample['data_tensor'], data_sample['metainfo']
@@ -242,3 +253,18 @@ class ConvNeXtV2(nn.Module):
         x = self.forward_features(x)
         x = self.regressor(x)
         return x
+
+
+def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> nn.Module:
+    if adapter_args is not None:
+        raise NotImplementedError("Adapter is not supported for ConvNeXtV2.")
+    else:
+        if "BUILD" in backbone_wrapper_args:
+            backbone_wrapper_args = dict(backbone_wrapper_args)
+            backbone_wrapper_args.pop("BUILD")
+        if isinstance(backbone_wrapper_args, DictConfig):
+            resolved = OmegaConf.to_container(backbone_wrapper_args, resolve=True)
+            if isinstance(resolved, dict):
+                backbone_wrapper_args = resolved
+        logger.info(f"Building ConvNeXtV2 with args: {backbone_wrapper_args}")
+        return ConvNeXtV2(**backbone_wrapper_args)
