@@ -12,5 +12,5 @@ loss_fn: l2_masked
 
 backbone_args: ${models.backbones.masked_encoder}
 
-# decoder_args: ${models.heads.linear}
-decoder_args: ${models.heads.maskedpredictor}
+decoder_args: ${models.heads.linear}
+# decoder_args: ${models.heads.maskedpredictor}
