@@ -32,6 +32,46 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
+def _reduce_mask2former_queries_to_semantic_map(
+    pred_masks: torch.Tensor,
+    pred_logits: torch.Tensor,
+    num_classes: int = 1,
+    topk_per_image: int = 1,
+) -> torch.Tensor:
+    """
+    Convert Mask2Former query-based outputs to a single dense semantic map.
+    
+    Args:
+        pred_masks: [B, num_queries, D, H, W] - mask logits (already at target resolution)
+        pred_logits: [B, num_queries, num_classes + 1] - classification logits (index 0 = no-object)
+        num_classes: Number of foreground classes (default: 1 for binary segmentation)
+    
+    Returns:
+        semantic_map: [B, D, H, W, 1] - channels-last dense semantic map
+    """
+    if num_classes != 1:
+        raise NotImplementedError("Only binary segmentation is supported for now")
+    B, num_queries, D, H, W = pred_masks.shape
+    
+    # Get foreground probabilities per query
+    # pred_logits: [B, Q, num_classes + 1], index 0 is no-object
+    probs = pred_logits.softmax(-1)[..., 1]  # [B, Q] - foreground probability per query
+    # Get top k queries by foreground probability
+    topk_indices = probs.topk(k=topk_per_image, dim=1).indices  # [B, K]
+    topk_probs = probs.gather(1, topk_indices)  # [B, K]
+    # Get masks for top k queries: gather output shape = index shape, so expand index to [B, K, D, H, W]
+    topk_indices_expanded = topk_indices.view(B, topk_per_image, 1, 1, 1).expand(B, topk_per_image, D, H, W)
+    topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
+    # Convert mask logits to probabilities
+    topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
+    # Weight masks by foreground probability and sum over top k queries
+    # topk_probs: [B, K] -> [B, K, 1, 1, 1] for broadcasting
+    semantic = (topk_probs.view(B, topk_per_image, 1, 1, 1) * topk_masks).sum(1, keepdim=True)  # [B, 1, D, H, W]
+    # Permute to channels-last: [B, D, H, W, 1]
+    semantic = semantic.permute(0, 2, 3, 4, 1)  # [B, D, H, W, 1]
+    return semantic
+
+
 class InferencerWorker:
     def __init__(
         self,
@@ -66,6 +106,7 @@ class InferencerWorker:
         auxiliary_outputs: Optional[Any] = None,
         pmin: float = 1.0,
         pmax: float = 99.0,
+        mip_depth: int = 20,
         feature_viz_type: Optional[str] = None,
         pred_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "xyzxyz",
         gt_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "cxcyczwhd",
@@ -122,6 +163,7 @@ class InferencerWorker:
 
         self.pmin = pmin
         self.pmax = pmax
+        self.mip_depth = mip_depth
         self.z_step_pdf = z_step_pdf
         self.save_as_pdf = save_as_pdf
         self.save_as_volume = save_as_volume
@@ -510,7 +552,29 @@ class InferencerWorker:
                 )
 
         elif self.task == "semantic_segmentation":
-            raise NotImplementedError("Semantic segmentation decoder head not yet supported for sliding window inference.")            
+            if self.decoder_head_type == "mask2former":
+                # Call model.predict() which already upsamples pred_masks to input resolution
+                outputs = self.model.predict(data_sample)
+                
+                # Extract pred_masks and pred_logits from outputs
+                pred_masks = outputs["pred_masks"]  # [B, num_queries, D, H, W]
+                pred_logits = outputs["pred_logits"]  # [B, num_queries, num_classes + 1]
+                
+                # Get num_classes from model or infer from pred_logits shape
+                num_classes = pred_logits.shape[-1] - 1  # subtract no-object class
+                
+                # Convert query-based outputs to dense semantic map
+                semantic_map = _reduce_mask2former_queries_to_semantic_map(
+                    pred_masks=pred_masks,
+                    pred_logits=pred_logits,
+                    num_classes=num_classes,
+                )  # [B, D, H, W, 1]
+                
+                preds = {self.main_output_name: semantic_map}
+            else:
+                raise NotImplementedError(
+                    f"Decoder head type {self.decoder_head_type} not supported for semantic segmentation sliding window inference."
+                )            
 
         elif self.task == "dense_prediction":
             if self.task not in {"upsample_space", "upsample_time", "upsample_space_time", "channel_split"}:
@@ -1124,20 +1188,123 @@ class InferencerWorker:
             regions.append(region)
             identifiers.append(ident)
 
-        save_instance_predictions(
-            # save_instance_predictions expects BTZYXC format
-            images=data_sample["data_tensor"].unsqueeze(1),
-            save_dir=rank_dir,
-            identifiers=identifiers,
-            preds=preds,
-            targets=targets,
-            regions=regions,
-            pred_boxes_format=self.pred_boxes_format,
-            gt_boxes_format=self.gt_boxes_format,
-            scale_gt_boxes=self.scale_gt_boxes,
-            input_format=self.input_format,
-            ortho=True,
-        )
+        if self.task == "semantic_segmentation":
+            # For semantic segmentation, use save_predictions with dense volumes
+            # Process each batch element separately
+            for b in range(B):
+                preds_dict = {}
+                
+                # Add main output: convert to TZYXC format if needed
+                main_pred = preds[self.main_output_name][b]  # [Z, Y, X, 1] or [D, H, W, 1]
+                if main_pred.ndim == 4:
+                    # Already channels-last [Z, Y, X, 1], add T dimension
+                    main_pred = main_pred.unsqueeze(0)  # [1, Z, Y, X, 1]
+                preds_dict[self.main_output_name] = main_pred
+
+                # Add auxiliary outputs (e.g., data_tensor for comparison)
+                for aux_name, spec in self.auxiliary_outputs.items():
+                    path = spec.get("path", aux_name)
+                    try:
+                        aux_value = self.resolve_path(data_sample, path)
+                        if isinstance(aux_value, torch.Tensor):
+                            # Slice batch dimension and ensure TZYXC format
+                            aux_slice = aux_value[b]  # [Z, Y, X, C] or similar
+                            if aux_slice.ndim == 4:
+                                # Add T dimension if needed
+                                aux_slice = aux_slice.unsqueeze(0)  # [1, Z, Y, X, C]
+                            preds_dict[aux_name] = aux_slice
+                    except Exception:
+                        # Skip if path doesn't exist in data_sample
+                        continue
+                # Add ground truth labels if available
+                gt_semantic = None
+                # Try to get ground truth from targets parameter first
+                if b < len(targets) and targets[b]:
+                    target_dict = targets[b]
+                    if isinstance(target_dict, dict) and "masks" in target_dict:
+                        gt_masks = target_dict["masks"]
+                        # Convert boolean masks to float for visualization
+                        if gt_masks.dtype == torch.bool:
+                            gt_masks = gt_masks.float()
+                        if isinstance(gt_masks, torch.Tensor):
+                            # Handle different mask formats
+                            if gt_masks.ndim == 3:
+                                # Single semantic map: [Z, Y, X]
+                                gt_semantic = gt_masks.unsqueeze(-1)  # [Z, Y, X, 1]
+                            elif gt_masks.ndim == 4:
+                                # Multiple instance masks: [num_instances, Z, Y, X]
+                                # Aggregate to single semantic map by summing (or use max)
+                                gt_semantic = gt_masks.sum(dim=0, keepdim=False)  # [Z, Y, X]
+                                gt_semantic = gt_semantic.unsqueeze(-1)  # [Z, Y, X, 1]
+                                # Normalize to [0, 1] range for visualization
+                                if gt_semantic.max() > 1.0:
+                                    gt_semantic = gt_semantic.clamp(0, 1)
+                
+                # Fallback: try to get from data_sample metainfo directly
+                if gt_semantic is None:
+                    try:
+                        metainfo_targets = data_sample.get("metainfo", {}).get("targets", None)
+                        if metainfo_targets is not None:
+                            # Handle list of targets (one per batch element)
+                            if isinstance(metainfo_targets, (list, tuple)) and len(metainfo_targets) > 0:
+                                target_item = metainfo_targets[0] if b == 0 else (metainfo_targets[b] if b < len(metainfo_targets) else None)
+                                if target_item is not None and isinstance(target_item, dict) and "masks" in target_item:
+                                    gt_masks = target_item["masks"]
+                                    if isinstance(gt_masks, torch.Tensor):
+                                        if gt_masks.ndim == 3:
+                                            gt_semantic = gt_masks.unsqueeze(-1)  # [Z, Y, X, 1]
+                                        elif gt_masks.ndim == 4:
+                                            gt_semantic = gt_masks.sum(dim=0, keepdim=False).unsqueeze(-1)  # [Z, Y, X, 1]
+                                            if gt_semantic.max() > 1.0:
+                                                gt_semantic = gt_semantic.clamp(0, 1)
+                                            if gt_semantic.dtype == torch.bool:
+                                                gt_semantic = gt_semantic.float()
+                    except Exception:
+                        # Skip if extraction fails
+                        print(f"Error extracting ground truth from data_sample: {b} of {B}")
+                        continue
+                
+                # Add ground truth to predictions dict if found
+                if gt_semantic is not None:
+                    # Convert boolean masks to float for visualization
+                    if gt_semantic.dtype == torch.bool:
+                        gt_semantic = gt_semantic.float()
+                    # Ensure TZYXC format
+                    if gt_semantic.ndim == 4:
+                        gt_semantic = gt_semantic.unsqueeze(0)  # [1, Z, Y, X, 1]
+                    preds_dict["ground_truth"] = gt_semantic
+                
+                # Save predictions for this batch element
+                save_predictions(
+                    name=identifiers[b],
+                    predictions=preds_dict,
+                    save_dir=rank_dir,
+                    save_as_volume=self.save_as_volume,
+                    save_as_pdf=self.save_as_pdf,
+                    z_step_pdf=self.z_step_pdf,
+                    filetype=self.inference_save_format,
+                    zarr_chunk_shape=self.inference_zarr_chunk_shape,
+                    zarr_shard_shape=self.inference_zarr_shard_shape,
+                    pmin=self.pmin,
+                    pmax=self.pmax,
+                    mip_depth=self.mip_depth,
+                )
+        else:
+            # For instance_segmentation and detection, use save_instance_predictions
+            save_instance_predictions(
+                # save_instance_predictions expects BTZYXC format
+                images=data_sample["data_tensor"].unsqueeze(1),
+                save_dir=rank_dir,
+                identifiers=identifiers,
+                preds=preds,
+                targets=targets,
+                regions=regions,
+                pred_boxes_format=self.pred_boxes_format,
+                gt_boxes_format=self.gt_boxes_format,
+                scale_gt_boxes=self.scale_gt_boxes,
+                input_format=self.input_format,
+                ortho=True,
+            )
 
     def finalize(self):
         if self.stitch_volume:

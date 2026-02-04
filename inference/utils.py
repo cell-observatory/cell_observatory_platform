@@ -181,7 +181,12 @@ def preds_dict_to_pdf(
                         if c < C:
                             img = mip[..., c]
                             img_norm = _normalize_slice(img, pmin=pmin, pmax=pmax)
-                            ax.imshow(img_norm, cmap="gray", interpolation="nearest")
+                            # Use different colormap for ground truth labels
+                            if "ground_truth" in name.lower() or "labels" in name.lower():
+                                cmap = "viridis"  # Distinct colormap for ground truth
+                            else:
+                                cmap = "gray"  # Default grayscale for predictions/data
+                            ax.imshow(img_norm, cmap=cmap, interpolation="nearest")
                             ax.set_title(f"{name} | T={t}  Z∈[{z0},{z1})  C={c}")
                             ax.axis("off")
                         else:
@@ -625,6 +630,7 @@ def save_predictions(
     pmax: float = 99.0,
     zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
     zarr_shard_shape: Optional[Tuple[int, ...]] = None,
+    mip_depth: int = 20,
 ):
     """
     Central helper for saving predictions.
@@ -667,6 +673,7 @@ def save_predictions(
                 z_step=z_step_pdf,
                 pmin=pmin,
                 pmax=pmax,
+                mip_depth=mip_depth,
             )
 
         # Separate volumes per output type
