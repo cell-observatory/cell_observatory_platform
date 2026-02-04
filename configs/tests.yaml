@@ -2,10 +2,10 @@ defaults:
   - /clusters/local # configs/clusters/local.yaml
   - /paths/local # configs/paths/local.yaml
   - /datasets/pretrain_dataset_ray # configs/datasets/pretrain_dataset_ray.yaml
-  - /models/BUILD_MAE # configs/models/BUILD_MAE.yaml
-  - /models/meta_arch/mae/large # configs/models/meta_arch/mae/tiny.yaml
+  - /models/BUILD_JEPA # configs/models/BUILD_JEPA.yaml
+  - /models/meta_arch/jepa/large # configs/models/meta_arch/jepa/large.yaml
   - /optimizations/optimizations # configs/optimizations/optimizations.yaml
-  - /optimizations/models/mae/large # configs/optimizations/models/mae.yaml
+  - /optimizations/models/jepa/large # configs/optimizations/models/jepa.yaml
   - /hooks/hooks_with_weight_decay # configs/hooks/hooks_with_weight_decay.yaml
   - /checkpoint/checkpoint # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers # configs/loggers/loggers.yaml
@@ -69,7 +69,7 @@ clusters:
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-  input_shape: [16, 128, 128, 128, 2] # NOTE: important that this matches database hypercube shape
+  input_shape: [16, 128, 256, 256, 2] # NOTE: important that this matches database hypercube shape
   patch_shape: [4, 16, 16, 16]
 
   split: 0.1
@@ -87,7 +87,7 @@ datasets:
   exec_pipelined: true
 
   occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
-  cdf_threshold: 0 # to filter our hypercubes with less than this CDF threshold
+  cdf_threshold: 150 # to filter our hypercubes with less than this CDF threshold
   cdf_target: 90 # to filter our hypercubes with less than this CDF target
 
 evaluation:
