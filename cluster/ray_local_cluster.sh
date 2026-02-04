@@ -50,7 +50,7 @@ export cluster_address
 apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind /dev/shm:/dev/shm \
     --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
     -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir -q $object_store_memory &
-sleep 10
+sleep 60
 
 check_headnode="apptainer exec --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray status --address $head_node_ip:$port"
 while ! $check_headnode; do

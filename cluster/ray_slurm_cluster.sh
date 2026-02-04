@@ -113,7 +113,7 @@ do_cleanup() {
         wait "$pid" || true
     done
 
-    sleep 90
+    sleep 120
 
     echo "Shutting down the job"
     scancel "$SLURM_JOB_ID"
@@ -129,7 +129,7 @@ srun -n1 -N1 -w $head_node "
 " &
 head_bg_pid=$!
 
-sleep 10
+sleep 60
 check_headnode="apptainer exec --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray status --address $head_node_ip:$port"
 while ! $check_headnode; do
     echo "Waiting for head node..."

@@ -114,7 +114,7 @@ if [ "$RANK" -eq 0 ]; then
         -i \"$head_node_ip\" -p \"$port\" -d \"$dashboard_port\" \
         -c \"${head_cpus}\" -g \"${head_gpus}\" -t \"$TMPDIR\" -o \"$outdir\"  -q \"${object_store_memory}\"" &
 
-    sleep 10
+    sleep 60
 
     bash -lc "bash /work/cell_observatory_platform/cluster/ray_check_status_runai.sh -a \"$cluster_address\" -r 1"
     rc=$?
