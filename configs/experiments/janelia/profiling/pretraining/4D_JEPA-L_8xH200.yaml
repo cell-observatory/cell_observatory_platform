@@ -55,7 +55,7 @@ seed: 42
 # --------------------------------------------------------------------------------
 
 clusters:
-  batch_size: 160  # (20 per h200) total batch size
+  batch_size: 128  # (16 per h200) total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
