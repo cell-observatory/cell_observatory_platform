@@ -2,23 +2,23 @@
 defaults:
   - /paths/janelia                      
   - /hydra/overrides                    
-  - /clusters/janelia_h200                     
+  - /clusters/janelia_h200                       
   - /datasets/pretrain_dataset_ray      
-  - /models/meta_arch/mae/large        
-  - /models/BUILD_MAE     
+  - /models/meta_arch/jepa/large        
+  - /models/BUILD_JEPA     
   - /optimizations/optimizations        
-  - /optimizations/models/mae/large    
+  - /optimizations/models/jepa/large    
   - /checkpoint/checkpoint 
   - /loggers/loggers                    
   - /evaluation/base_evaluator          
   - /deepspeed/zero2                    
-  - /optimizers/lamb_mae               
+  - /optimizers/lamb_jepa               
   - /schedulers/test_warmup_cosine_decay   
   - /profiling/profiling
   - _self_
 
 # experiment name (used for logging)
-experiment_name: pretraining/3D_MAE-L_8xH200
+experiment_name: pretraining/3D_JEPA-L_16xH200
 wandb_project: profiling
 
 backend: DEEPSPEED
@@ -54,8 +54,8 @@ seed: 42
 # --------------------------------------------------------------------------------
 
 clusters:
-  batch_size: 768  # (96 per h200) total batch size
-  worker_nodes: 1 # number of worker nodes
+  batch_size: 3072  # (192 per h200) total batch size
+  worker_nodes: 2 # number of worker nodes
   gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
   mem_per_cpu: 40000 # ram per cpu core
@@ -115,30 +115,22 @@ datasets:
         patch_shape: ${datasets.patch_shape}
         input_format: ${dataset_layout_order}
 
-        mask_mode:
-          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
-          value: "random"
+        lateral_mask_scale: [0.7, 0.9]
+        axial_mask_scale: [0.7, 0.9]
+        aspect_ratio_scale_hw: [0.75, 1.5]
+        num_blocks: 2
 
-        random_masking_ratio: 0.75
+        channels_to_mask: null
+        time_downsample_pattern: null
+        mask_mode: 
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "blocked"
 
 models:
   meta_arch:
-    mae:
-      abs_sincos_enc: false
-      rope_pos_enc: true
-      rope_random_rotation_per_head: true
-      rope_mixed: false
-      rope_theta: 100.0
-      with_auxiliary_loss: true
-      loss_fn:
-        loss_type: "fourier_loss"
-        alpha: 0.001
-        fft_loss: "l1_masked"
-        spatial_loss: "l2_masked"
-        input_fmt: ${dataset_layout_order}
-        input_shape: ${datasets.input_shape}
-        patch_shape: ${datasets.patch_shape}
-        embed_dim: ${models.meta_arch.mae.embed_dim}
+    jepa:
+      abs_sincos_enc: true
+
 
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
@@ -148,6 +140,9 @@ hooks:
   hooks_list:
   - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+  - _target_: cell_observatory_platform.training.hooks.EMASchedulerHook
+    ema_start: 0.998
+    ema_end: 1.0
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
