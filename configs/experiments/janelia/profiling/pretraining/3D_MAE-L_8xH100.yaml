@@ -64,7 +64,7 @@ clusters:
 
 paths:
   # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  outdir: ${paths.data_path}/pretrained_models/${experiment_folder}/${experiment_name}
   # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
   resume_checkpointdir: null
   pretrained_checkpointdir: null
