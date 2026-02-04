@@ -1,18 +1,15 @@
 BUILD: cell_observatory_platform.models.meta_arch.mask2former.BUILD
 
 # Backbone config (MAE)
-# TODO: Add ResNet backbone
 backbone_wrapper_args: ${models.backbones.mask2former_backbone}
 
 # Backbone adapter
-# adapter_args: ${models.adapters}
-
-adapter_args: null
+adapter_args: ${models.adapters}
 
 # Pixel decoder (Mask2FormerPixelDecoder)
 pixel_decoder_args: ${models.heads.pixel_decoder}
 
-# Query decoder (MultiScaleMaskedTransformerDecoder)
+# Query decoder (Mask2FormerTransformerDecoder)
 decoder_args: ${models.heads.mask2former_decoder}
 
 # Matcher
@@ -30,17 +27,12 @@ criterion_args:
   loss_weight_dict:
     loss_labels_ce: 2.0 # This is the classification loss
     loss_mask_dice: 5.0
-    loss_mask_ce: 5.0
+    loss_mask_ce: 10.0
   no_object_loss_weight: 0.1
   losses: ["labels", "masks"]
   num_points: 20000
   oversample_ratio: 3.0
   importance_sample_ratio: 0.75
-
-# Training flags (passed directly into MaskDINO ctor)
-instance_segmentation_flag: true
-topk_per_image: 100
-focus_on_boxes: false
 
 # How to pick number of points?
 # Find the mask logit resolution loss samples from.
