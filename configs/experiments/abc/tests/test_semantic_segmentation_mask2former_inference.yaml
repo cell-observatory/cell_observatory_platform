@@ -22,11 +22,14 @@ defaults:
   - /optimizations/models/mask2former/base                # configs/optimizations/models/mask2former/base.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
+  - /inference/inference_semantic_segmentation_mask2former               # configs/inference/inference_semantic_segmentation_mask2former.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: test_semantic_segmentation_mask2former_vitdet_0204
+experiment_name: test_semantic_segmentation_mask2former_inference_vitdet_0203_no_permute
 wandb_project: testing
+
+# debug_mode: true
 
 backend: DEEPSPEED
 
@@ -34,10 +37,10 @@ backend: DEEPSPEED
 run_type: single_run # single_run, multi_run, or tune
 
 # job type
-job_type: train # train or test
+job_type: predict # train or test
 
 # trainer type
-trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+trainer: cell_observatory_platform.training.loops.Inferencer
 
 # loop per worker script
 loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
@@ -58,31 +61,29 @@ seed: 42
 # overrides
 # --------------------------------------------------------------------------------
 
-# # # clusters config for debugging on single GPU
-# clusters:
-#   batch_size: 8 # total batch size (batch size per gpu * total gpus)
-#   worker_nodes: 1 # number of worker nodes
-#   gpus_per_worker: 1 # number of gpus per worker node
-#   cpus_per_gpu: 16 # number of cpu cores per gpu
-#   mem_per_cpu: 21000 # ram per cpu core
-#   ray_queue_memory: 0.2
+deepspeed:
+  checkpoint:
+    load_universal: true
 
+inference:
+  roi_tile_list:
+  - [653, "000x_002y_001z.zarr"]
 
 # clusters
 clusters:
-  batch_size: 32 # total batch size (batch size per gpu * total gpus)
+  batch_size: 1 # total batch size
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 4 # number of gpus per worker node
-  cpus_per_gpu: 4 # number of cpu cores per gpu
-  mem_per_cpu: 21000 # ram per cpu core
+  gpus_per_worker: 1 # number of gpus per worker node
+  cpus_per_gpu: 12 # number of cpu cores per gpu
+  mem_per_cpu: 16000 # ram per cpu core
   ray_queue_memory: 0.2
 
 #paths:
 paths:
   # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  resume_checkpointdir: null
-  pretrained_checkpointdir: null
+  outdir: ${paths.data_path}/results/inference/${experiment_name}
+  resume_checkpointdir: null 
+  pretrained_checkpointdir: /clusterfs/nvme/martinalvarez/segment_3d/pretrained_models/test_semantic_segmentation_mask2former_vitdet_0203/checkpoints
 
 # data
 datasets:
@@ -101,20 +102,19 @@ datasets:
   num_actors_min: 4
   num_actors_max: 12
 
-  # max_hypercubes: 50
-  max_hypercubes: 256
-  # max_hypercubes: 1000
-  # max_hypercubes: 10000
-  # max_hypercubes: 2000000
-  # max_hypercubes: 50000
-  # max_hypercubes: 1000000
-  # max_hypercubes: null
 
   use_cached_hypercubes_dataframe: true
   # hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
   hypercubes_dataframe_path:  /clusterfs/nvme/segment_4d/databases/prepared_1_128_128_128_2_hypercube_view.csv
 
   databases:
+    max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
+    max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
+
+    roi_list: [653]
+    tile_list: ["000x_002y_001z.zarr"]
+    timepoint_list: [0]
+
     cdf_threshold: null
     occupancy_threshold_filter_type: 'min_ch0'
     synthetic_only: true
@@ -160,50 +160,13 @@ datasets:
 
 # schedulers
 schedulers:
-  epochs: 50
-
-optimizers:
-  wd: ${eval:'${optimizers.lr} * 0.1'}
-  lr: 1e-3
+  epochs: 1
 
 # hooks
 hooks:
   hooks_list:
-    # general hooks
-    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-    - _target_: cell_observatory_platform.training.hooks.LRScheduler
-      backend: DEEPSPEED
-    - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
-    - _target_: cell_observatory_platform.training.hooks.IterationTimer
-    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-
-    # checkpointing
-    - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-      file_prefix: latest_model
-    - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-      checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-    - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
-      step_period: 1
-      epoch_period: 1
-      logdir: ${loggers.logdir}
-    - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
-      metric_name: ${evaluation.val_metric}
-      compare_fn: ${evaluation.val_mode}
-      eval_after_validation: true
-
-    # # profiling
-
-    # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
-    #   output_dir: ${paths.outdir}/profiler
-    #   schedule:
-    #     skip_first: 10
-    #     warmup: 1
-    #     active: 2
-    #     repeat: 1
-    #     wait: 1
-    #   activities:
-    #     - CUDA
-    #     - CPU
-    #   save_tensorboard: true
-    #   shutdown_after_profile: true
-    #   save_memory_trace: true
+  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+  - _target_: cell_observatory_platform.training.hooks.LRScheduler
+    backend: DEEPSPEED
+  - _target_: cell_observatory_platform.training.hooks.IterationTimer
+  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
