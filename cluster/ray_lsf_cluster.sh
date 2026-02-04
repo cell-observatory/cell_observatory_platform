@@ -118,7 +118,7 @@ do_cleanup() {
         wait "$pid" || true
     done
 
-    sleep 90
+    sleep 120
 
     echo "Shutting down the job"
     bkill $LSB_JOBID
@@ -134,7 +134,7 @@ blaunch -z $head_node "
 " &
 head_bg_pid=$!
 
-sleep 10
+sleep 60
 
 apptainer exec --userns --nv \
     --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
