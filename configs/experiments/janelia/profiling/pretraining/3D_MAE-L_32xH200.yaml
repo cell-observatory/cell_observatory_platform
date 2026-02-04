@@ -18,6 +18,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
+experiment_folder: pretraining
 experiment_name: 3D_MAE-L_32xH200
 wandb_project: profiling
 
@@ -63,8 +64,8 @@ clusters:
 
 paths:
   # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
+  outdir: ${paths.data_path}/pretrained_models/${experiment_folder}/${experiment_name}
+  # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_folder}/${experiment_name}/checkpoints
   resume_checkpointdir: null
   pretrained_checkpointdir: null
 
