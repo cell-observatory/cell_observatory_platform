@@ -1,3 +1,4 @@
+import os
 from typing import Any, Dict, List, Literal, Mapping, Optional
 
 import torch
@@ -23,8 +24,6 @@ class Mask2Former(nn.Module):
         segmentation_head: Mask2FormerHead,
         matcher: Mask2FormerHungarianMatcher,
         criterion: Mask2FormerSetLoss,
-        num_queries: int,
-        topk_per_image: int,
     ):
         super().__init__()
 
@@ -32,8 +31,6 @@ class Mask2Former(nn.Module):
         self.segmentation_head = segmentation_head
         self.matcher = matcher
         self.criterion = criterion
-        self.num_queries = num_queries
-        self.topk_per_image = topk_per_image
         
     def init_model_weights(self, buffer_device: str | None = None):
         # TODO: move model inits back into each model class
@@ -63,6 +60,19 @@ class Mask2Former(nn.Module):
         )
 
         return losses, outputs
+
+    def predict(self, data_sample: dict, rescale_size: Optional[tuple] = None):
+        """
+        Forward pass with pred_masks interpolated to target resolution (e.g. original input size).
+        Use this for inference/eval when you need masks at 128×256×512 or other full resolution.
+        """
+        features_dict = self.backbone(data_sample)
+        if rescale_size is None:
+            # Default: original input spatial shape (Z, Y, X)
+            t = data_sample["data_tensor"]
+            rescale_size = tuple(t.shape[1:4])  # channels-last: (Z, Y, X)
+        outputs = self.segmentation_head.predict(features_dict, rescale_size=rescale_size)
+        return outputs
     
     
     @staticmethod
@@ -151,7 +161,6 @@ def BUILD(cfg: Mapping[str, Any]) -> Mask2Former:
     predictor = MultiScaleMaskedTransformerDecoder(**_extract_kwargs(decoder_cfg))
 
     num_classes = decoder_cfg["num_classes"]
-    num_queries = decoder_cfg["num_queries"]
     decoder_num_layers = decoder_cfg["decoder_num_layers"]
 
     # ----------------------------------------------------
@@ -201,13 +210,9 @@ def BUILD(cfg: Mapping[str, Any]) -> Mask2Former:
     # 8) Final Mask2Former module
     # ----------------------------------------------------
 
-    topk_per_image = model_cfg["topk_per_image"]
-
     return Mask2Former(
         backbone=backbone,
         segmentation_head=segmentation_head,
         matcher=matcher,
         criterion=criterion,
-        num_queries=num_queries,
-        topk_per_image=topk_per_image,
     )

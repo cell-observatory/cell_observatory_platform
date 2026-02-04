@@ -15,10 +15,8 @@ Adapted from:
 """
 
 from typing import List, Optional
-import functools
 
 import torch
-import torch.nn.functional as F
 from hydra.utils import get_method
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
@@ -30,17 +28,17 @@ from cell_observatory_platform.models.layers.patch_embeddings import calc_num_pa
 class Mask2FormerBackbone(nn.Module):
     def __init__(
         self,
+        input_shape: List[int],
+        patch_shape: List[int],
+        input_format: str,
         backbone_args: dict,
-        adapter_args: Optional[dict],
+        backbone_output_format: str,
         backbone_embed_dims: List[int],
         train_backbone: bool,
-        blocks_to_train: Optional[List[str]] = None,
         use_layernorm: bool = True,
+        adapter_args: Optional[dict] = None,
         adapter_out_layers: Optional[List[int]] = None,
-        backbone_output_format: str = "feature_map",
-        input_shape: Optional[List[int]] = [128, 256, 512, 2],
-        patch_shape: Optional[List[int]] = [16, 16, 16, None],
-        input_format: Optional[str] = "ZYXC",
+        blocks_to_train: Optional[List[str]] = None,
     ):
         super().__init__()
 
@@ -79,7 +77,7 @@ class Mask2FormerBackbone(nn.Module):
         _, token_shape = calc_num_patches(
             input_fmt=self.input_format,
             input_shape=self.input_shape,
-            patch_shape=patch_shape,
+            patch_shape=tuple(self.patch_shape),
         )
         if self.input_format == "ZYXC":
             t, z, y, x, c = token_shape
@@ -108,6 +106,7 @@ class Mask2FormerBackbone(nn.Module):
 
     def _to_feature_dict(self, feats: List[torch.Tensor]):
         # Ensure finest->coarsest mapping for keys "1","2","3","4",...
+        # (invariant to backbone return order)
         feats = [f for f in feats if f is not None]
         assert self.input_format == "ZYXC", f"Expected input_format 'ZYXC', got {self.input_format}"
         assert all(f.dim() == 5 for f in feats), f"Expected 5D feature maps [B,C,D,H,W], got {[f.shape for f in feats]}"
@@ -115,12 +114,13 @@ class Mask2FormerBackbone(nn.Module):
         return {str(i + 1): f for i, f in enumerate(feats)}
 
     def forward(self, data_sample: dict):
-        feats = self.backbone.forward_features(data_sample["data_tensor"])
+        feats = self.backbone.forward_features(data_sample["data_tensor"])        
 
         adapter_keys = None
         if self.with_backbone_adapter:
             feats_dict = self.adapter(data_sample["data_tensor"], feats)
             feats_dict = {str(k): v for k, v in feats_dict.items()}  # ensure string keys
+            # NOTE: assumes string integer keys ("0", "1", "2", "3", ...)
             adapter_keys = sorted(feats_dict.keys(), key=lambda s: int(s))
             feats_list = [feats_dict[k] for k in adapter_keys]
         else:
@@ -142,7 +142,7 @@ class Mask2FormerBackbone(nn.Module):
                 adapter_keys = [adapter_keys[i] for i in self.adapter_out_layers]
 
         if adapter_keys is not None:
-            # keep adapter’s semantic keys ("1","2","3","4" etc)
+            # keep adapter's semantic keys ("1","2","3","4" etc)
             return {k: v for k, v in zip(adapter_keys, feats_list)}
         else:
             return self._to_feature_dict(feats_list)
