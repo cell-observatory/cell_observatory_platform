@@ -1,0 +1,35 @@
+BUILD: cell_observatory_platform.models.heads.pixel_decoders.Mask2FormerPixelDecoder.BUILD
+
+# ConvNext dims go from high to low resolution
+input_shape_metadata:
+  "1":
+    channels: ${models.backbones.convnext.dims[0]}
+    stride: 4
+  "2":
+    channels: ${models.backbones.convnext.dims[1]}
+    stride: 8
+  "3":
+    channels: ${models.backbones.convnext.dims[2]}
+    stride: 16
+  "4":
+    channels: ${models.backbones.convnext.dims[3]}
+    stride: 32
+
+# Only reference the single feature level
+transformer_in_features: ["1", "2", "3", "4"]
+
+# We want to produce a feature map for the transformer decoder
+total_num_feature_levels: 3
+
+# Must equal or be less than your single feature stride
+target_min_stride: 4
+
+transformer_encoder_dropout: 0.0
+transformer_encoder_num_heads: 8
+transformer_encoder_dim_feedforward: 1024
+transformer_encoder_layers: 6
+conv_dim: 256
+mask_dim: ${models.backbones.convnext.dims[0]}
+norm: "GroupNorm"
+# dtype: ${quantization}
+use_deform_attention: false

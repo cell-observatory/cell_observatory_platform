@@ -1,0 +1,46 @@
+BUILD: cell_observatory_platform.models.meta_arch.mask2former.BUILD
+
+# Backbone wrapper config
+# Meta Architectures each have their own backbone wrapper for a specific backbone model
+backbone_wrapper_args: ${models.backbones.mask2former_backbone}
+
+# Backbone adapter
+# adapter_args: ${models.adapters}
+
+adapter_args: null
+
+# Pixel decoder (Mask2FormerPixelDecoder)
+pixel_decoder_args: ${models.heads.pixel_decoder}
+
+# Query decoder (MultiScaleMaskedTransformerDecoder)
+decoder_args: ${models.heads.mask2former_decoder}
+
+# Matcher
+matcher_args:
+  BUILD: cell_observatory_platform.models.utils.matchers.HungarianMatcher.BUILD
+  cost_classification: 1.0 # 4.0
+  cost_mask: 20 # 5.0
+  cost_mask_dice: 1 # 5.0
+  num_points: 20000
+
+# Criterion
+criterion_args:
+  BUILD: cell_observatory_platform.training.losses.Mask2FormerSetLoss.BUILD
+  num_classes: 1
+  loss_weight_dict:
+    loss_labels_ce: 2.0 # This is the classification loss
+    # loss_mask_dice: 5.0
+    loss_mask_ce: 5.0
+  no_object_loss_weight: 0.1
+  losses: ["labels", "masks"]
+  num_points: 20000
+  oversample_ratio: 3.0
+  importance_sample_ratio: 0.75
+
+# How to pick number of points?
+# Find the mask logit resolution loss samples from.
+# E.g., for volume 128×256×512, at stride 4, that is 32×64×128 = 262,144 candidate voxels.
+# Sample ~5–20% of that grid:
+# 5% → ~13k
+# 10% → ~26k
+# 20% → ~52k
