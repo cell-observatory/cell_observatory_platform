@@ -18,7 +18,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: pretraining/4D_MAE-L_8xH100
+experiment_name: 4D_MAE-L_8xH100
 wandb_project: profiling
 
 backend: DEEPSPEED
