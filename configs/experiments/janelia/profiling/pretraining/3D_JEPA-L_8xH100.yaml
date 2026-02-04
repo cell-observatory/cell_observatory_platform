@@ -18,7 +18,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: pretrain_jepa_h100
+experiment_name: pretraining/JEPA-L_8xH100
 wandb_project: profiling
 
 backend: DEEPSPEED
