@@ -126,14 +126,14 @@ def test_decoder_forward_end_to_end_shapes(
     out = dec(x, mask_features)
 
     # final predictions
-    assert "pred_logits" in out and "pred_masks" in out and "aux_outputs" in out
+    assert "pred_logits" in out and "pred_masks" in out and "auxiliary_outputs" in out
     assert out["pred_logits"].shape == (B, num_queries, num_classes + 1)
     assert out["pred_masks"].shape == (B, num_queries, Dm, Hm, Wm)
 
     # aux outputs: num_layers entries, each with same shapes
-    assert isinstance(out["aux_outputs"], list)
-    assert len(out["aux_outputs"]) == num_layers
-    for aux in out["aux_outputs"]:
+    assert isinstance(out["auxiliary_outputs"], list)
+    assert len(out["auxiliary_outputs"]) == num_layers
+    for aux in out["auxiliary_outputs"]:
         if dec.mask_classification:
             assert aux["pred_logits"].shape == (B, num_queries, num_classes + 1)
         assert aux["pred_masks"].shape == (B, num_queries, Dm, Hm, Wm)

@@ -87,7 +87,7 @@ def test_mask2former_head_forward_shapes_cuda():
     out = head(features)
 
     assert isinstance(out, dict)
-    assert "pred_logits" in out and "pred_masks" in out and "aux_outputs" in out
+    assert "pred_logits" in out and "pred_masks" in out and "auxiliary_outputs" in out
 
     # logits: [B, Q, num_classes+1]
     assert out["pred_logits"].shape == (B, num_queries, num_classes + 1)
@@ -97,7 +97,7 @@ def test_mask2former_head_forward_shapes_cuda():
     assert out["pred_masks"].shape == (B, num_queries, *res4)
     assert out["pred_masks"].is_cuda
 
-    aux = out["aux_outputs"]
+    aux = out["auxiliary_outputs"]
     assert isinstance(aux, list)
     assert len(aux) == decoder_layers
     for a in aux:
