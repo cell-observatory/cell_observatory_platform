@@ -714,7 +714,7 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
             inputs_wo_mask = inputs
 
         sample = {
-            "data_tensor": inputs_wo_mask,
+            "data_tensor": inputs_wo_mask_wo_mask,
             "metainfo": meta,
         }
         sample, transform_time = self._apply_transforms(sample)

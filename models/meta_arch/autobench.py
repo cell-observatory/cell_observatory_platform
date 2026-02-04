@@ -43,7 +43,6 @@ class AutoBench(nn.Module, ABC):
 
     def __init__(
         self,
-        *,
         backbone_args: Any,
         decoder_args: Any,
         task: Literal[
@@ -60,6 +59,7 @@ class AutoBench(nn.Module, ABC):
         abs_sincos_enc: bool = False,
         weight_init_type: str = "mae",
         with_auxiliary_loss: bool = False,
+        freeze_backbone: bool = False,
     ):
         super().__init__()
         self.backbone_args = backbone_args
@@ -79,6 +79,15 @@ class AutoBench(nn.Module, ABC):
         # Will be set in subclasses
         self.backbone: Optional[nn.Module] = None
         self.decoder: Optional[nn.Module] = None
+
+        self.freeze_backbone = freeze_backbone
+
+    def _freeze_backbone(self):
+        """
+        Freeze the backbone parameters.
+        """
+        for param in self.backbone.parameters():
+            param.requires_grad = False
 
     @abstractmethod
     def forward(self, data_sample: dict):
@@ -247,6 +256,9 @@ class ChannelSplitAutoBench(AutoBench):
             raise ValueError(f"ChannelSplitAutoBench expects input_fmt to end with 'C', got {self.input_fmt}")
         self.output_channels = self.input_shape[-1]
 
+        if self.freeze_backbone:
+            self._freeze_backbone()
+
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
         targets = meta.get("targets", [None])[0]
@@ -303,6 +315,9 @@ class UpsampleTimeAutoBench(AutoBench):
         build_decoder = get_method(decoder_args.BUILD)
         self.backbone = build_backbone(backbone_args)
         self.decoder = build_decoder(decoder_args)
+
+        if self.freeze_backbone:
+            self._freeze_backbone()
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
@@ -364,6 +379,9 @@ class UpsampleSpaceAutoBench(AutoBench):
         self.backbone = build_backbone(backbone_args)
         self.decoder = build_decoder(decoder_args)
 
+        if self.freeze_backbone:
+            self._freeze_backbone()
+
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
         targets = meta.get("targets", [None])[0]
@@ -415,6 +433,9 @@ class UpsampleSpaceTimeAutoBench(AutoBench):
         build_decoder = get_method(decoder_args.BUILD)
         self.backbone = build_backbone(backbone_args)
         self.decoder = build_decoder(decoder_args)
+
+        if self.freeze_backbone:
+            self._freeze_backbone()
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
@@ -528,6 +549,7 @@ def BUILD(cfg: Mapping[str, Any]) -> AutoBench:
         abs_sincos_enc=model_cfg.get("abs_sincos_enc"),
         weight_init_type=model_cfg.get("weight_init_type"),
         with_auxiliary_loss=model_cfg.get("with_auxiliary_loss", False),
+        freeze_backbone=model_cfg.get("freeze_backbone", False),
     )
 
     if task == "denoising":

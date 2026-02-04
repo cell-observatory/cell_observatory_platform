@@ -180,9 +180,6 @@ class MaskDINODecoder(nn.Module):
         # IMPORTANT: share bbox regressor with decoder
         self.decoder.bbox_embed = self.bbox_regressor
 
-        # IMPORTANT: share bbox regressor with decoder
-        self.decoder.bbox_embed = self.bbox_regressor
-
     @staticmethod
     def gen_encoder_output_proposals(memory, memory_padding_mask, shapes):
         N, S, C = memory.shape
@@ -637,12 +634,12 @@ class MaskDINODecoder(nn.Module):
 
                 # NOTE: both methods return boxes in (x_min, y_min, z_min, x_max, y_max, z_max) format
                 if self.initialize_box_type == "bitmask":  # slower, but more accurate
-                    # TODO: implement same safety check as in masks_to_boxes_v2
+                    # NOTE: WARNING - VERY SLOW!
                     # refpoint_embeddings = BitMasks(flatten_mask > 0).get_bounding_boxes().tensor.to(device)
                     refpoint_embeddings = bitmask_to_boxes(flatten_mask > 0).to(device)
-                # elif self.initialize_box_type == "mask2box":
-                #     # returns: (N, 6)
-                #     refpoint_embeddings = masks_to_boxes_v2(flatten_mask > 0).to(device)
+                elif self.initialize_box_type == "mask2box":
+                    # NOTE: MUCH FASTER!
+                    refpoint_embeddings = masks_to_boxes_v2(flatten_mask > 0).to(device)
                 else:
                     assert NotImplementedError, "Unknown box initialization type: {}".format(self.initialize_box_type)
 

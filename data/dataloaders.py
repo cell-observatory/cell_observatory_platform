@@ -83,10 +83,11 @@ def get_dataloader(
                 f"[DATALOADERS] (max tile sizes: z={max_z}, y={max_y}, x={max_x})"
             )
 
-            if config.datasets.collate_fn.with_resize:
-                collator_input_shape = list(config.datasets.input_shape)
-            else:
-                collator_input_shape = list(buffer_input_shape)
+            # TODO: deprecate resize flag in collate_fn
+            # if config.datasets.collate_fn.with_resize:
+            #     collator_input_shape = list(config.datasets.input_shape)
+            # else:
+            collator_input_shape = list(buffer_input_shape)
         else:
             collator_input_shape = list(config.datasets.input_shape)
 

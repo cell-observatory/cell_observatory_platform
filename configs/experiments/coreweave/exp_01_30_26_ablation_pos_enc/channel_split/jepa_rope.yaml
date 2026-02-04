@@ -1,0 +1,160 @@
+# @package _global_
+defaults:
+- /tasks/channel_split
+- /paths/coreweave
+- /hydra/overrides
+- /clusters/coreweave_h200
+- /datasets/pretrain_dataset_ray
+- /datasets/preprocessor/channel_split_preprocessor
+- /datasets/masking/mask_generator
+- /models/BUILD_AutoBench
+- /models/meta_arch/autobench/ChannelSplitAutoBench/jepa_large
+- /models/backbones/masked_encoder/large
+- /models/heads/linear/linear_probe
+- /checkpoint/checkpoint
+- /loggers/loggers
+- /evaluation/base_evaluator
+- /deepspeed/zero2
+- /optimizers/lamb
+- /schedulers/warmup_cosine_decay
+- /optimizations/models/autobench/ChannelSplitAutoBench/mae_large
+- /optimizations/optimizations
+- /profiling/profiling
+- _self_
+experiment_name: jepa_rope_channel_split
+wandb_project: exp_01_30_26_ablation_pos_enc
+backend: DEEPSPEED
+run_type: single_run
+job_type: train
+trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+quantization: bfloat16
+dataset_dtype: float16
+storage_dtype: uint16
+dataset_layout_order: ZYXC
+seed: 42
+deepspeed:
+  checkpoint:
+    load_universal: true
+clusters:
+  batch_size: 768
+  worker_nodes: 2
+  gpus_per_worker: 8
+  cpus_per_gpu: 12
+  mem_per_cpu: 40000
+  ray_queue_memory: 0.2
+paths:
+  outdir: ${paths.data_path}/finetuned_models/exp_01_30_26_ablation_pos_enc/${experiment_name}
+  resume_checkpointdir: null
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/exp_01_30_26_ablation_pos_enc/jepa_rope/checkpoints
+datasets:
+  batch_size: ${clusters.batch_size_per_gpu}
+  input_shape:
+  - 128
+  - 256
+  - 256
+  - 2
+  train_shape:
+  - 128
+  - 256
+  - 256
+  - 1
+  patch_shape:
+  - 16
+  - 16
+  - 16
+  - null
+  occupancy_threshold: 0.9
+  split: 0.1
+  return_dataloader: true
+  distributed_sampler: true
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+  max_hypercubes: 1000000
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+  databases:
+    occupancy_threshold_filter_type: min_ch0
+    cdf_target: 90
+    cdf_threshold: 150
+    synthetic_only: false
+    has_annotations: false
+    with_hypercubes_dataframe: true
+    mask_channel: null
+  columns:
+  - x_start
+  - y_start
+  - z_start
+  - time_start
+  - channel_size
+  - z_size
+  - y_size
+  - x_size
+  - time_size
+  - server_folder
+  - output_folder
+  - tile_name
+  - prepared_id
+  preserve_order: false
+  callback_strategy: grpc
+  async_device_copy: false
+schedulers:
+  epochs: 50
+  warmup: 10
+  cooldown: 5
+optimizers:
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-3
+models:
+  backbones:
+    masked_encoder:
+      abs_sincos_enc: false
+      rope_pos_enc: true
+      rope_random_rotation_per_head: true
+      rope_mixed: false
+      rope_theta: 100.0
+  heads:
+    maskedpredictor:
+      abs_sincos_enc: false
+      rope_pos_enc: true
+      rope_random_rotation_per_head: true
+      rope_mixed: false
+      rope_theta: 100.0
+  meta_arch:
+    autobench:
+      ChannelSplitAutoBench:
+        freeze_backbone: true
+        with_auxiliary_loss: true
+        loss_fn:
+          loss_type: fourier_loss
+          alpha: 0.001
+          fft_loss: l1_masked
+          spatial_loss: l2_masked
+          input_fmt: ${dataset_layout_order}
+          input_shape: ${datasets.input_shape}
+          patch_shape: ${datasets.patch_shape}
+          embed_dim: ${models.heads.maskedpredictor.embed_dim}
+        decoder_args: ${models.heads.linear}
+hooks:
+  hooks_list:
+  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+  - _target_: cell_observatory_platform.training.hooks.LRScheduler
+    backend: DEEPSPEED
+  - _target_: cell_observatory_platform.training.hooks.IterationTimer
+  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+    file_prefix: latest_model
+    backend: DEEPSPEED
+  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true
+checkpoint:
+  checkpoint_manager:
+    ckpt_include_prefixes:
+    - backbone
+    ckpt_translate_map:
+      input_encoder: backbone

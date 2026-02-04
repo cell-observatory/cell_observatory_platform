@@ -1,0 +1,6 @@
+BUILD: cell_observatory_platform.models.heads.linear_head.BUILD
+
+type: linear_probe
+
+in_dim: null
+output_dim: null

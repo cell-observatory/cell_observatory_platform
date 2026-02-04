@@ -10,7 +10,7 @@ from torch import nn
 from torch.amp import autocast
 
 from cell_observatory_platform.data.structures import bbox2delta, box_cxcyczwhd_to_xyzxyz, generalized_box_iou
-from cell_observatory_platform.models.layers.utils import point_sample
+from cell_observatory_platform.models.layers.utils import point_sample, point_sample_labelmap
 from cell_observatory_platform.models.ops.losses import batch_dice_loss, batch_sigmoid_ce_loss
 
 
@@ -109,32 +109,60 @@ class HungarianMatcher(nn.Module):
             # but approximate it as: 1 - prob[target class]
             # since constants don't change optimization, we set cost_class = -out_prob[:, target_labels]
             if "mask" in costs and self.num_points > 0:
-                # predicted_masks/target_masks: [num_queries, 1, D_pred, H_pred, W_pred]
                 predicted_masks = outputs["pred_masks"][batch_idx].unsqueeze(1)
-                # NOTE: gt masks are already padded when preparing targets
-                target_masks = (targets[batch_idx]["masks"].unsqueeze(1)).to(predicted_masks)
-
-                # all masks share the same set of points for efficient matching
-                # point_ccords: (1, num_points, 3)
+                
+                # NOTE: Efficient labelmap-based sampling (avoids materializing binary masks)
+                instance_ids = targets[batch_idx]["mask_ids"]
+                label_map = targets[batch_idx]["label_map"]
+                
                 point_coords = torch.rand(1, self.num_points, 3, device=predicted_masks.device)
-                # target_masks: (num_target_masks, num_points)
-                target_masks = point_sample(
-                    target_masks,
-                    # repeat point_coords for each target mask in the batch
-                    point_coords.repeat(target_masks.shape[0], 1, 1),
-                    align_corners=False,
-                ).squeeze(1)
-                predicted_masks = point_sample(
+                
+                # predicted_sampled: [N, num_points]
+                predicted_sampled = point_sample(
                     predicted_masks,
                     point_coords.repeat(predicted_masks.shape[0], 1, 1),
                     align_corners=False,
                 ).squeeze(1)
-
+                
+                # target_sampled: [N, num_points]
+                target_sampled = point_sample_labelmap(
+                    label_map,
+                    point_coords,
+                    instance_ids,
+                )
+                
                 with autocast(enabled=False, device_type="cuda"):
-                    predicted_masks, target_masks = predicted_masks.float(), target_masks.float()
-                    # returns: (N, 0) if we have N predictions or (0, M) if we have M targets
-                    cost_mask = batch_sigmoid_ce_loss(predicted_masks, target_masks)
-                    cost_mask_dice = batch_dice_loss(predicted_masks, target_masks)
+                    predicted_sampled = predicted_sampled.float()
+                    target_sampled = target_sampled.float()
+                    cost_mask = batch_sigmoid_ce_loss(predicted_sampled, target_sampled)
+                    cost_mask_dice = batch_dice_loss(predicted_sampled, target_sampled)
+
+                # =============================================================
+                # NOTE: Legacy binary mask-based sampling 
+                # =============================================================                
+                # # predicted_masks/target_masks: [num_queries, 1, D_pred, H_pred, W_pred]
+                # # NOTE: gt masks are already padded when preparing targets
+                # target_masks = (targets[batch_idx]["masks"].unsqueeze(1)).to(predicted_masks)
+                # # all masks share the same set of points for efficient matching
+                # # point_ccords: (1, num_points, 3)
+                # point_coords = torch.rand(1, self.num_points, 3, device=predicted_masks.device)
+                # # target_masks: (num_target_masks, num_points)
+                # target_masks = point_sample(
+                #     target_masks,
+                #     # repeat point_coords for each target mask in the batch
+                #     point_coords.repeat(target_masks.shape[0], 1, 1),
+                #     align_corners=False,
+                # ).squeeze(1)
+                # predicted_masks = point_sample(
+                #     predicted_masks,
+                #     point_coords.repeat(predicted_masks.shape[0], 1, 1),
+                #     align_corners=False,
+                # ).squeeze(1)
+                # with autocast(enabled=False, device_type="cuda"):
+                #     predicted_masks, target_masks = predicted_masks.float(), target_masks.float()
+                #     # returns: (N, 0) if we have N predictions or (0, M) if we have M targets
+                #     cost_mask = batch_sigmoid_ce_loss(predicted_masks, target_masks)
+                #     cost_mask_dice = batch_dice_loss(predicted_masks, target_masks)                    
 
             else:
                 cost_mask = torch.tensor(0).to(predicted_bboxes)
@@ -149,6 +177,8 @@ class HungarianMatcher(nn.Module):
             )
             # C: (num_queries, num_target_boxes)
             C = C.reshape(num_queries, -1).cpu()
+            # TODO: migrate to different linear_sum_assignment implementation that 
+            # does not require the cpu-only version
             matched_masks.append(linear_sum_assignment(C))
 
         return [

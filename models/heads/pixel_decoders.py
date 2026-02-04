@@ -171,6 +171,7 @@ class MSDeformAttnTransformerEncoder(nn.Module):
         # feature: [bs, c, d, h, w]
         feature_shapes = [feature.shape[2:] for feature in features]
         # feature_shapes: [num_levels, 3], with each row = (D, H, W)
+        # NOTE: forces GPU-to-CPU sync and is hence very bad for performance, should fix
         feature_shapes = torch.as_tensor(feature_shapes, dtype=torch.long, device=features[0].device)
         # [D1*H1*W1, ..., Dn*Hn*Wn] -> [0, D1*H1*W1, D1*H1*W1 + D2*H2*W2, ...]
         level_start_index = torch.cat((feature_shapes.new_zeros((1,)), feature_shapes.prod(1).cumsum(0)[:-1]))

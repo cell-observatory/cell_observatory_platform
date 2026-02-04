@@ -288,6 +288,7 @@ def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
     the number of masks, (D, H, W) are the spatial dimensions.
     Returns a [N, 6] tensors, with the boxes in xyzxyz format
     """
+    assert masks.dim() == 4, f"Expected (N, D, H, W), got {masks.shape}"
     if masks.numel() == 0:
         return torch.zeros((0, 6), device=masks.device)
 
@@ -298,20 +299,20 @@ def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
     x = torch.arange(0, w, dtype=torch.float, device=masks.device)
     z, y, x = torch.meshgrid(z, y, x, indexing="ij")
 
-    x_mask = masks * x.unsqueeze(0)
+    x_mask = masks * x.unsqueeze(0) # [N, D, H, W] * [1, D, H, W] -> [N, D, H, W]
     x_max = x_mask.flatten(1).max(-1)[0]
 
-    y_mask = masks * y.unsqueeze(0)
+    y_mask = masks * y.unsqueeze(0) # [N, D, H, W] * [1, D, H, W] -> [N, D, H, W]
     y_max = y_mask.flatten(1).max(-1)[0]
 
-    z_mask = masks * z.unsqueeze(0)
+    z_mask = masks * z.unsqueeze(0) # [N, D, H, W] * [1, D, H, W] -> [N, D, H, W]
     z_max = z_mask.flatten(1).max(-1)[0]
 
     x_min = x_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
     y_min = y_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
     z_min = z_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
 
-    mask = torch.stack([x_min, y_min, z_min, x_max, y_max, z_max], 1).to(masks.device, torch.float)
+    mask = torch.stack([x_min, y_min, z_min, x_max + 1, y_max + 1, z_max + 1], 1)
     invalid_mask = (torch.isinf(x_min)) | (torch.isinf(y_min)) | (torch.isinf(z_min))
     mask[invalid_mask] = 0
     return mask

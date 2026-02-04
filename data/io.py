@@ -406,12 +406,18 @@ def add_has_annotations_column(df: pl.DataFrame) -> pl.DataFrame:
     """
     if "has_annotations" in df.columns:
         return df
-    if "pc_metadata_json" not in df.columns:
+    if "pc_metadata_json" not in df.columns and "metadata_tile_json" not in df.columns:
         return df.with_columns(pl.lit(False).alias("has_annotations"))
-    has_key = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"', literal=False)
-    empty_obj = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
-    expr = pl.col("pc_metadata_json").is_not_null() & has_key & (~empty_obj)
-    return df.with_columns(expr.alias("has_annotations"))
+    if "pc_metadata_json" in df.columns:
+        has_key = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"', literal=False)
+        empty_obj = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
+        expr = pl.col("pc_metadata_json").is_not_null() & has_key & (~empty_obj)
+        return df.with_columns(expr.alias("has_annotations"))
+    if "metadata_tile_json" in df.columns:
+        has_key = pl.col("metadata_tile_json").str.contains(r'"mask_bbox_dict"', literal=False)
+        empty_obj = pl.col("metadata_tile_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
+        expr = pl.col("metadata_tile_json").is_not_null() & has_key & (~empty_obj)
+        return df.with_columns(expr.alias("has_annotations"))
 
 
 # FIXME: current nomenclature for metadata may be improved
@@ -457,6 +463,8 @@ def load_hypercubes_dataframe(
     t1 = time.perf_counter()
     logger.info(f"Loaded hypercubes dataframe in {t1 - t0:.2f} s; shape={df.shape}")
 
+    # NOTE: database is currently not updated to reflect storage server status
+    #       remove this once the database is updated
     # df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
     df = add_has_annotations_column(df)
 
@@ -512,7 +520,9 @@ def load_tiles_dataframe(
     t1 = time.perf_counter()
     logger.info(f"Loaded tiles dataframe in {t1 - t0:.2f} s; shape={df.shape}")
 
-    df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
+    # NOTE: database is currently not updated to reflect storage server status
+    #       remove this once the database is updated
+    # df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
     df = add_has_annotations_column(df)
 
     if synthetic_only and "is_synthetic" in df.columns:
