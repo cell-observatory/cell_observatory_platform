@@ -2,24 +2,24 @@
 defaults:
   - /paths/janelia                      
   - /hydra/overrides                    
-  - /clusters/janelia_h200                     
+  - /clusters/janelia_h200                       
   - /datasets/pretrain_dataset_ray      
-  - /models/meta_arch/mae/huge        
-  - /models/BUILD_MAE     
+  - /models/meta_arch/jepa/base        
+  - /models/BUILD_JEPA     
   - /optimizations/optimizations        
-  - /optimizations/models/mae/huge    
+  - /optimizations/models/jepa/base    
   - /checkpoint/checkpoint 
   - /loggers/loggers                    
   - /evaluation/base_evaluator          
   - /deepspeed/zero2                    
-  - /optimizers/lamb_mae               
+  - /optimizers/lamb_jepa               
   - /schedulers/test_warmup_cosine_decay   
   - /profiling/profiling
   - _self_
 
 # experiment name (used for logging)
 experiment_folder: pretraining
-experiment_name: 3D_MAE-H_8xH200
+experiment_name: 3D_JEPA-B_8xH200
 wandb_project: profiling
 
 backend: DEEPSPEED
@@ -55,7 +55,7 @@ seed: 42
 # --------------------------------------------------------------------------------
 
 clusters:
-  batch_size: 576  # (72 per h200) total batch size
+  batch_size: 2048  # (256 per h200) total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 8 # number of gpus per worker node
   cpus_per_gpu: 12 # number of cpu cores per gpu
@@ -65,7 +65,7 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/pretrained_models/${experiment_folder}/${experiment_name}
-  # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_folder}/${experiment_name}/checkpoints
+  # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
   resume_checkpointdir: null
   pretrained_checkpointdir: null
 
@@ -116,30 +116,22 @@ datasets:
         patch_shape: ${datasets.patch_shape}
         input_format: ${dataset_layout_order}
 
-        mask_mode:
-          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
-          value: "random"
+        lateral_mask_scale: [0.7, 0.9]
+        axial_mask_scale: [0.7, 0.9]
+        aspect_ratio_scale_hw: [0.75, 1.5]
+        num_blocks: 2
 
-        random_masking_ratio: 0.75
+        channels_to_mask: null
+        time_downsample_pattern: null
+        mask_mode: 
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "blocked"
 
 models:
   meta_arch:
-    mae:
-      abs_sincos_enc: false
-      rope_pos_enc: true
-      rope_random_rotation_per_head: true
-      rope_mixed: false
-      rope_theta: 100.0
-      with_auxiliary_loss: true
-      loss_fn:
-        loss_type: "fourier_loss"
-        alpha: 0.001
-        fft_loss: "l1_masked"
-        spatial_loss: "l2_masked"
-        input_fmt: ${dataset_layout_order}
-        input_shape: ${datasets.input_shape}
-        patch_shape: ${datasets.patch_shape}
-        embed_dim: ${models.meta_arch.mae.embed_dim}
+    jepa:
+      abs_sincos_enc: true
+
 
 optimizers:
   wd:  ${eval:'${optimizers.lr} * 0.1'}
@@ -149,6 +141,9 @@ hooks:
   hooks_list:
   - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+  - _target_: cell_observatory_platform.training.hooks.EMASchedulerHook
+    ema_start: 0.998
+    ema_end: 1.0
   - _target_: cell_observatory_platform.training.hooks.LRScheduler
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
