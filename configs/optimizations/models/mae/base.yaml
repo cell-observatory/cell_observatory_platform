@@ -1,0 +1,21 @@
+activation_checkpoint:
+  enable: false
+  modules:
+    - ["masked_encoder.encoder", "transformer_blocks"]
+    - ["masked_decoder.encoder", "transformer_blocks"]
+  selective_ac_option: 2
+  per_op_sac_force_recompute_mm_shapes_by_fqns: null
+  mode: "selective"
+  mm_recompute_frac: 2
+
+torch_compile:
+  enable: false
+  modules:
+    - ["masked_encoder.encoder", "transformer_blocks"]
+    - ["masked_decoder.encoder", "transformer_blocks"]
+  range: block_based
+  mode: null
+  dynamic: false
+  blockbased_fullgraph: false
+  enable_compiled_autograd: false
+  backend: inductor
