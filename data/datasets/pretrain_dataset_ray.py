@@ -108,6 +108,7 @@ class FinetuneCollatorActor:
         expect_mask_channel: bool = True,
         # with_resize: bool = False,
         debug: bool = False,
+        debug_device_idx: Optional[int] = None,
         normalize_bboxes: bool = False,
         async_device_copy: bool = False,
     ):
