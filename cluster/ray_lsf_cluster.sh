@@ -81,6 +81,7 @@ do_cleanup() {
             fi
             # fallback: run cleanup ourselves
             python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+            bash /workspace/cell_observatory_platform/cluster/clean_shm.sh || true
             ray stop --force >/dev/null 2>&1 || true
             '
     " >/dev/null 2>&1 &
@@ -106,6 +107,7 @@ do_cleanup() {
                     fi
                     # fallback: run cleanup ourselves
                     python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+                    bash /workspace/cell_observatory_platform/cluster/clean_shm.sh || true
                     ray stop --force >/dev/null 2>&1 || true
                 '
             " >/dev/null 2>&1 &
