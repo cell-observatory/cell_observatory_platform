@@ -10,6 +10,7 @@ export NCCL_SHM_DISABLE=0
 export NCCL_DEBUG_SUBSYS=GRAPH
 export RAY_DEDUP_LOGS=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export USER_POSTEXEC=/workspace/cell_observatory_platform/cluster/clean_shm.sh
 
 
 # parse args from `args_parser.sh` getopts
