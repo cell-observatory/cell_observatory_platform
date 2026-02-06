@@ -450,7 +450,8 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         sjob_worker_nodes.append(f"{q(ray_wrap)}")
 
         print("Submitting lsf job with configuration:")
-        cmd = " ".join(sjob_worker_nodes)
+        cleanup = f"setenv USER_POSTEXEC {cfg.paths.repo_path}/cluster/clean_shm.sh ;"
+        cmd = cleanup + " ".join(sjob_worker_nodes)
         print(cmd)
         subprocess.run(cmd, shell=True, check=True)
 
