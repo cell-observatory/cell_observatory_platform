@@ -162,6 +162,7 @@ fi
 # trap 'do_cleanup' EXIT
 trap 'do_cleanup; exit 130' INT # SIGINT
 trap 'do_cleanup; exit 143' TERM # SIGTERM like bkill
+trap 'do_cleanup; exit 140' TERM # TERM_RUNLIMIT 
 
 # CHECK CLUSTER STATUS
 srun -n1 -N1 -w $head_node " 

@@ -180,13 +180,7 @@ fi
 # trap 'do_cleanup' EXIT
 trap 'do_cleanup; exit 130' INT # SIGINT
 trap 'do_cleanup; exit 143' TERM # SIGTERM like bkill
-
-# CHECK CLUSTER STATUS
-############################## RUN WORKLOAD
-
-# trap 'do_cleanup' EXIT
-trap 'do_cleanup; exit 130' INT # SIGINT
-trap 'do_cleanup; exit 143' TERM # SIGTERM like bkill
+trap 'do_cleanup; exit 140' TERM # TERM_RUNLIMIT 
 
 # CHECK CLUSTER STATUS
 blaunch -z $head_node " 
