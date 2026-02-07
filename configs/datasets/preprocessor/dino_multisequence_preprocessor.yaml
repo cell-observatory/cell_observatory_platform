@@ -1,0 +1,24 @@
+_target_: cell_observatory_platform.models.layers.preprocessor.MultiSequenceRayPreprocessor
+
+local_batch_size: ${clusters.batch_size_per_gpu}
+global_batch_size: ${clusters.batch_size}
+dtype: ${quantization}
+
+input_metadict:
+  global_crops:
+    input_format: ${dataset_layout_order}
+    input_shape: [64, 128, 128, 2]
+    patch_shape: ${datasets.patch_shape}
+    dtype: ${quantization}
+    with_masking: true
+  local_crops:
+    input_format: ${dataset_layout_order}
+    input_shape: [32, 64, 64, 2]
+    patch_shape: ${datasets.patch_shape}
+    dtype: ${quantization}
+    with_masking: false
+
+transforms_metadict: ${datasets.transforms}
+
+mask_generators:
+  global_crops: ${datasets.masking.dino_ibot_mask_generator}

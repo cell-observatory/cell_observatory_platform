@@ -32,7 +32,7 @@ class Encoder(nn.Module):
         mlp_layer: Union[nn.Module, Literal["Mlp", "SwiGLU"]] = "SwiGLU",
         rope_pos_enc: bool = True,
         rope_random_rotation_per_head: bool = True,
-        rope_mixed: bool = True,
+        rope_type: Literal["mixed", "axial", "custom"] = "axial",
         rope_theta: float = 10.0,
         input_fmt: str = "TZYXC",
         input_shape: tuple = (16, 128, 128, 128, 2),
@@ -77,7 +77,7 @@ class Encoder(nn.Module):
                     mlp_layer=self.mlp_layer,
                     rope_pos_enc=rope_pos_enc,
                     rope_random_rotation_per_head=rope_random_rotation_per_head,
-                    rope_mixed=rope_mixed,
+                    rope_type=rope_type,
                     rope_theta=rope_theta,
                     input_fmt=input_fmt,
                     input_shape=input_shape,
@@ -105,10 +105,10 @@ class Encoder(nn.Module):
     def get_head_dims(self):
         return self.embed_dim // self.num_heads
 
-    def forward(self, x, masks=None):
+    def forward(self, x, masks=None, pos_enc=None):
         outs = []
         for i, t in enumerate(self.transformer_blocks):
-            x = t(x, masks=masks, return_attention=False)
+            x = t(x, masks=masks, pos_enc=pos_enc)
             if self.out_layers is not None and i in self.out_layers:
                 outs.append(x)
 

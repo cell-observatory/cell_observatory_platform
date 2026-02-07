@@ -1,11 +1,13 @@
 import logging
 import math
 import sys
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Literal
 
 import numpy as np
+
 import torch
 import torch.nn as nn
+from torch import Tensor
 import torch.nn.functional as F
 
 from cell_observatory_platform.models.layers import patch_embeddings
@@ -471,6 +473,9 @@ class PositionalEmbeddingSinCos(nn.Module):
             pos_d = torch.stack((pos_d[:, :, 0::2].sin(), pos_d[:, :, 1::2].cos()), dim=3).flatten(-2)
 
             pos = torch.cat((pos_z, pos_y, pos_x, pos_w, pos_h, pos_d), dim=2)
+            # TODO: decide on alternative order of dimensions
+            # pos = torch.cat((pos_z, pos_y, pos_x, pos_d, pos_h, pos_w), dim=2)
+            # pos = torch.cat((pos_x, pos_y, pos_z, pos_w, pos_h, pos_d), dim=2)
 
             remainder = 6 * F - 6 * Fe
             if remainder > 0:
@@ -515,7 +520,7 @@ class PositionalEmbeddingSinCos(nn.Module):
         pos_y = y_embed[:, :, :, :, None] / dim_t
         pos_z = z_embed[:, :, :, :, None] / dim_t
 
-        # (N,D,H,W,num_pos_feats/2,2) [sin, cos] pairs of positional theta values
+        # (N, D, H, W, 2, Fe/2) [sin, cos] pairs of positional theta values
         # for each (N, D, H, W) position -> (N, D, H, W, num_pos_feats)
         pos_x = torch.stack((pos_x[:, :, :, :, 0::2].sin(), pos_x[:, :, :, :, 1::2].cos()), dim=4).flatten(4)
         pos_y = torch.stack((pos_y[:, :, :, :, 0::2].sin(), pos_y[:, :, :, :, 1::2].cos()), dim=4).flatten(4)
@@ -607,7 +612,7 @@ def generate_frequency_spectrum(
             for k in range(3):
                 # broadcast: [3,1] * [1,J] -> [3,J]
                 blocks.append(Q[:, [k]] @ mag[None, :])
-            # blocks: [3, 3, J] -> freqs: [3, num_heads, dim//6*3]
+            # blocks: [3, J] -> freqs: [3, num_heads, dim//6]
             freqs[:, h, :] = torch.cat(blocks, dim=-1)
 
     elif input_fmt == "TZYXC":
@@ -642,6 +647,41 @@ def generate_frequency_spectrum(
         raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
 
     return freqs.to(dtype=dtype, device=device)
+
+
+def generate_custom_freqs(
+    dim: int,
+    num_heads: int,
+    theta: float = 10.0,
+    input_fmt: str = "TZYXC",
+    device: str = "cuda",
+    dtype: torch.dtype = torch.bfloat16,
+    min_period: int | None = None,
+    max_period: int | None = None,
+):
+    if theta is not None:
+        if input_fmt == "TZYXC":
+            periods = theta ** (
+                2 * torch.arange(dim // 8, device=device, dtype=dtype) / (dim // 4)
+            )  # [D//8]
+        elif input_fmt == "ZYXC":
+            periods = theta ** (
+                2 * torch.arange(dim // 6, device=device, dtype=dtype) / (dim // 3)
+            )  # [D//6]
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
+    else:
+        base = max_period / min_period
+        if input_fmt == "TZYXC":
+            exponents = torch.linspace(0, 1, dim // 8, device=device, dtype=dtype)  # [D//8] range [0, 1]
+        elif input_fmt == "ZYXC":
+            exponents = torch.linspace(0, 1, dim // 6, device=device, dtype=dtype)  # [D//6] range [0, 1]
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
+        periods = base**exponents  # range [1, max_period / min_period]
+        periods = periods / base  # range [min_period / max_period, 1]
+        periods = periods * max_period  # range [min_period, max_period]
+    return periods
 
 
 def generate_grid_indices(
@@ -741,6 +781,56 @@ def compute_mixed_cis(
             freqs_cis = torch.polar(ones, phases)
 
         return freqs_cis
+
+
+def make_axial_rope_freqs(
+    input_fmt: str,
+    input_shape: tuple,
+    patch_shape: tuple,
+    dim: int,
+    theta: float = 100.0,
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    """Compute axial RoPE frequencies for a given input geometry.
+
+    This is a top-level helper that should be called once by top-level modules
+    (ViT, MaskedEncoder, MaskedPredictor, etc.) and stored as a buffer.
+
+    Args:
+        input_fmt: e.g. ``"TZYXC"``, ``"ZYXC"``, ``"TYXC"``.
+        input_shape: full input tensor shape matching *input_fmt*.
+        patch_shape: patch sizes matching the spatial/temporal axes.
+        dim: per-head dimension (``embed_dim // num_heads``).
+        theta: RoPE base frequency.
+        device: target device (defaults to CPU).
+
+    Returns:
+        Complex-valued tensor of shape ``(N_patches, dim // 2)`` (the
+        exact last-dim width depends on *input_fmt*).
+    """
+    if device is None:
+        device = torch.device("cpu")
+
+    temporal_patch_size, axial_patch_size, lateral_patch_size = get_patch_sizes(
+        input_format=input_fmt, patch_shape=patch_shape
+    )
+
+    end_x = input_shape[input_fmt.index("X")] // lateral_patch_size
+    end_y = input_shape[input_fmt.index("Y")] // lateral_patch_size
+
+    end_z = (input_shape[input_fmt.index("Z")] // axial_patch_size) if "Z" in input_fmt else None
+    end_t = (input_shape[input_fmt.index("T")] // temporal_patch_size) if "T" in input_fmt else None
+
+    return compute_axial_cis(
+        dim=dim,
+        end_x=end_x,
+        end_y=end_y,
+        end_z=end_z,
+        end_t=end_t,
+        input_fmt=input_fmt,
+        theta=theta,
+        device=device,
+    )
 
 
 def compute_axial_cis(
@@ -849,7 +939,18 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     return freqs_cis.view(*shape)
 
 
-def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor):
+def apply_rope(xq: torch.Tensor, xk: torch.Tensor, pos_enc: torch.Tensor, rope_type: Literal["mixed", "axial", "custom"]):
+    if rope_type == "mixed":
+        return apply_rope_v1(xq, xk, pos_enc)
+    elif rope_type == "axial":
+        return apply_rope_v1(xq, xk, pos_enc)
+    elif rope_type == "custom":
+        return apply_rope_v2(xq, xk, pos_enc)
+    else:
+        raise ValueError(f"Unknown rope type: {rope_type}")
+
+
+def apply_rope_v1(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor):
     # xq: [B,H,N,D]
     Jf = freqs_cis.shape[-1]
     De = Jf * 2
@@ -882,3 +983,296 @@ def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor
         xk_out = xk_rot
 
     return xq_out.type_as(xq).to(xq.device), xk_out.type_as(xk).to(xk.device)
+
+
+def apply_rope_v2(q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tensor]:
+    # All operations will use the dtype of rope, the output is cast back to the dtype of q and k
+    q_dtype = q.dtype
+    k_dtype = k.dtype
+    sin, cos = rope
+    rope_dtype = sin.dtype
+    q = q.to(dtype=rope_dtype)
+    k = k.to(dtype=rope_dtype)
+    N = q.shape[-2]
+    prefix = N - sin.shape[-2]
+    assert prefix >= 0
+    q_prefix = q[:, :, :prefix, :]
+    q = apply_rope_half(q[:, :, prefix:, :], sin, cos)  # [B, head, hw, D//head]
+    q = torch.cat((q_prefix, q), dim=-2)  # [B, head, N, D//head]
+    k_prefix = k[:, :, :prefix, :]
+    k = apply_rope_half(k[:, :, prefix:, :], sin, cos)  # [B, head, hw, D//head]
+    k = torch.cat((k_prefix, k), dim=-2)  # [B, head, N, D//head]
+    q = q.to(dtype=q_dtype)
+    k = k.to(dtype=k_dtype)
+    return q, k
+
+
+# Helper functions for RoPE:
+def rope_rotate_half(x: Tensor) -> Tensor:
+    # x:   [ x0  x1  x2  x3  x4  x5]
+    # out: [-x3 -x4 -x5  x0  x1  x2]
+    x1, x2 = x.chunk(2, dim=-1)
+    return torch.cat([-x2, x1], dim=-1)
+
+
+def apply_rope_half(x: Tensor, sin: Tensor, cos: Tensor) -> Tensor:
+    # x:   [..., D], eg [x0,     x1,   x2,   x3,   x4,   x5]
+    # sin: [..., D], eg [sin0, sin1, sin2, sin0, sin1, sin2]
+    # cos: [..., D], eg [cos0, cos1, cos2, cos0, cos1, cos2]
+    return (x * cos) + (rope_rotate_half(x) * sin)
+
+
+def _maybe_index_rope(rope: tuple[Tensor, Tensor] | None, indices: Tensor) -> tuple[Tensor, Tensor] | None:
+    if rope is None:
+        return None
+
+    sin, cos = rope
+    assert sin.ndim == cos.ndim
+    if sin.ndim == 4:
+        # If the rope embedding has a batch dimension (is different for each batch element), index into it
+        return sin[indices], cos[indices]  # [batch, heads, patches, embed_dim]
+    else:
+        # No batch dimension, do not index
+        return sin, cos  # [heads, patches, embed_dim] or [patches, embed_dim]
+
+
+# --- --- CUSTOM ROPE Class --- --
+
+
+# RoPE positional embedding with no mixing of coordinates (axial) and no learnable weights
+# Supports two parametrizations of the rope parameters: either using `base` or `min_period` and `max_period`.
+class RopePositionEmbedding(nn.Module):
+    def __init__(
+        self,
+        input_fmt: str,
+        embed_dim: int,
+        num_heads: int,
+        theta: float | None = 100.0,
+        min_period: float | None = None,
+        max_period: float | None = None,
+        normalize_coords: Literal["min", "max", "separate"] = "separate",
+        shift_coords: float | None = None,
+        jitter_coords: float | None = None,
+        rescale_coords: float | None = None,
+        dtype: torch.dtype | None = None,
+        device: torch.device | None = None,
+    ):
+        super().__init__()
+
+        self.input_fmt = input_fmt
+        if self.input_fmt == "TZYXC":
+            ndim = 4
+        elif self.input_fmt == "ZYXC":
+            ndim = 3
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")    
+
+        assert embed_dim % (2 * ndim * num_heads) == 0        
+        
+        both_periods = min_period is not None and max_period is not None
+        if (theta is None and not both_periods) or (theta is not None and both_periods):
+            raise ValueError("Either `base` or `min_period`+`max_period` must be provided.")
+
+        self.theta = theta
+        self.min_period = min_period
+        self.max_period = max_period
+
+        self.num_heads = num_heads
+        D_head = embed_dim // num_heads        
+        self.D_head = D_head
+        
+        self.normalize_coords = normalize_coords
+        self.shift_coords = shift_coords
+        self.jitter_coords = jitter_coords
+        self.rescale_coords = rescale_coords
+
+        self.device = device
+        self.dtype = dtype  # Don't rely on self.periods.dtype
+        P = self.D_head // (2 * ndim)
+        # Needs persistent=True because we do teacher.load_state_dict(student.state_dict()) to initialize the teacher
+        self.register_buffer("periods", torch.empty(P, device=device, dtype=dtype), persistent=True)
+        self._init_weights()
+
+    def _init_weights(self):
+        self.periods.data = generate_custom_freqs(
+            dim=self.D_head,
+            input_fmt=self.input_fmt,
+            num_heads=self.num_heads,
+            theta=self.theta,
+            min_period=self.min_period,
+            max_period=self.max_period,
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+    def _max_dim(self, shape: tuple[int, int]) -> int:
+        if self.input_fmt == "TZYXC":
+            T, Z, Y, X = shape
+            max_dim = max(T, Z, Y, X)
+            return max_dim
+        elif self.input_fmt == "ZYXC":
+            Z, Y, X = shape
+            max_dim = max(Z, Y, X)
+            return max_dim
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+
+    def _min_dim(self, shape: tuple[int, int]) -> int:
+        if self.input_fmt == "TZYXC":
+            T, Z, Y, X = shape
+            min_dim = min(T, Z, Y, X)
+            return min_dim
+        elif self.input_fmt == "ZYXC":
+            Z, Y, X = shape
+            min_dim = min(Z, Y, X)
+            return min_dim
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+
+    def _get_coords_separate(self, shape: tuple[int, int], dd: dict) -> tuple[Tensor, Tensor]:
+        if self.input_fmt == "TZYXC":
+            T, Z, Y, X = shape
+            coords_t = torch.arange(0.5, T, **dd) / T  # [T]
+            coords_z = torch.arange(0.5, Z, **dd) / Z  # [Z]
+            coords_y = torch.arange(0.5, Y, **dd) / Y  # [Y]
+            coords_x = torch.arange(0.5, X, **dd) / X  # [X]
+            return coords_t, coords_z, coords_y, coords_x
+        elif self.input_fmt == "ZYXC":
+            Z, Y, X = shape
+            coords_z = torch.arange(0.5, Z, **dd) / Z  # [Z]
+            coords_y = torch.arange(0.5, Y, **dd) / Y  # [Y]
+            coords_x = torch.arange(0.5, X, **dd) / X  # [X]
+            return coords_z, coords_y, coords_x
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+
+    def _get_coords_max(self, shape: tuple[int, int], dd: dict) -> tuple[Tensor, Tensor]:
+        if self.input_fmt == "TZYXC":
+            T, Z, Y, X = shape
+            max_dim = self._max_dim(shape)
+            coords_t = torch.arange(0.5, T, **dd) / max_dim  # [T]
+            coords_z = torch.arange(0.5, Z, **dd) / max_dim  # [Z]
+            coords_y = torch.arange(0.5, Y, **dd) / max_dim  # [Y]
+            coords_x = torch.arange(0.5, X, **dd) / max_dim  # [X]
+            return coords_t, coords_z, coords_y, coords_x
+        elif self.input_fmt == "ZYXC":
+            Z, Y, X = shape
+            max_dim = self._max_dim(shape)
+            coords_z = torch.arange(0.5, Z, **dd) / max_dim  # [Z]
+            coords_y = torch.arange(0.5, Y, **dd) / max_dim  # [Y]
+            coords_x = torch.arange(0.5, X, **dd) / max_dim  # [X]
+            return coords_z, coords_y, coords_x
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+
+    def _get_coords_min(self, shape: tuple[int, int], dd: dict) -> tuple[Tensor, Tensor]:
+        if self.input_fmt == "TZYXC":
+            min_dim = self._min_dim(shape)
+            T, Z, Y, X = shape
+            coords_t = torch.arange(0.5, T, **dd) / min_dim  # [T]
+            coords_z = torch.arange(0.5, Z, **dd) / min_dim  # [Z]
+            coords_y = torch.arange(0.5, Y, **dd) / min_dim  # [Y]
+            coords_x = torch.arange(0.5, X, **dd) / min_dim  # [X]
+            return coords_t, coords_z, coords_y, coords_x
+        elif self.input_fmt == "ZYXC":
+            min_dim = self._min_dim(shape)
+            Z, Y, X = shape
+            coords_z = torch.arange(0.5, Z, **dd) / min_dim  # [Z]
+            coords_y = torch.arange(0.5, Y, **dd) / min_dim  # [Y]
+            coords_x = torch.arange(0.5, X, **dd) / min_dim  # [X]
+            return coords_z, coords_y, coords_x
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+
+    def _generate_coords(self, coords_per_dim: tuple[int, int]) -> tuple[Tensor, Tensor]:
+        if self.input_fmt == "TZYXC":
+            coords_t, coords_z, coords_y, coords_x = coords_per_dim
+            coords = torch.stack(torch.meshgrid(coords_t, coords_z, coords_y, coords_x, indexing="ij"), dim=-1)  # [T, Z, Y, X, 4]
+            coords = coords.flatten(0, 3)  # [T*Z*Y*X, 4]
+            coords = 2.0 * coords - 1.0  # Shift range [0, 1] to [-1, +1]
+            return coords
+        elif self.input_fmt == "ZYXC":
+            coords_z, coords_y, coords_x = coords_per_dim
+            coords = torch.stack(torch.meshgrid(coords_z, coords_y, coords_x, indexing="ij"), dim=-1)  # [Z, Y, X, 3]
+            coords = coords.flatten(0, 2)  # [Z*Y*X, 3]
+            coords = 2.0 * coords - 1.0  # Shift range [0, 1] to [-1, +1]
+            return coords
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+
+    def _shift_coords(self, coords: Tensor, dd: dict) -> Tensor:
+        if self.input_fmt == "TZYXC":
+            shift_tzyx = torch.empty(4, **dd).uniform_(-self.shift_coords, self.shift_coords)
+            coords += shift_tzyx[None, :]
+        elif self.input_fmt == "ZYXC":
+            shift_zyx = torch.empty(3, **dd).uniform_(-self.shift_coords, self.shift_coords)
+            coords += shift_zyx[None, :]
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+        return coords
+    
+    def _jitter_coords(self, coords: Tensor, dd: dict) -> Tensor:
+        jitter_max = np.log(self.jitter_coords)
+        jitter_min = -jitter_max
+        if self.input_fmt == "TZYXC":
+            jitter_tzyx = torch.empty(4, **dd).uniform_(jitter_min, jitter_max).exp()
+            coords *= jitter_tzyx[None, :]
+        elif self.input_fmt == "ZYXC":
+            jitter_zyx = torch.empty(3, **dd).uniform_(jitter_min, jitter_max).exp()
+            coords *= jitter_zyx[None, :]
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+        return coords
+
+    def _rescale_coords(self, coords: Tensor, dd: dict) -> Tensor:
+        rescale_max = np.log(self.rescale_coords)
+        rescale_min = -rescale_max
+        rescale = torch.empty(1, **dd).uniform_(rescale_min, rescale_max).exp()
+        coords *= rescale
+        return coords
+
+    def forward(self, shape: tuple[int, int]) -> tuple[Tensor, Tensor]:
+        dd = {"device": self.periods.device, "dtype": self.dtype}
+
+        # Prepare coords in range [-1, +1]
+        if self.normalize_coords == "max":
+            coords_per_dim = self._get_coords_max(shape, dd=dd)
+        elif self.normalize_coords == "min":
+            coords_per_dim = self._get_coords_min(shape, dd=dd)
+        elif self.normalize_coords == "separate":
+            coords_per_dim = self._get_coords_separate(shape, dd=dd)
+        else:
+            raise ValueError(f"Unknown normalize_coords: {self.normalize_coords}")
+
+        coords = self._generate_coords(coords_per_dim)
+
+        # Shift coords by adding a uniform value in [-shift, shift]
+        if self.training and self.shift_coords is not None:
+            coords = self._shift_coords(coords, dd=dd)
+
+        # Jitter coords by multiplying the range [-1, 1] by a log-uniform value in [1/jitter, jitter]
+        if self.training and self.jitter_coords is not None:
+            coords = self._jitter_coords(coords, dd=dd)
+
+        # Rescale coords by multiplying the range [-1, 1] by a log-uniform value in [1/rescale, rescale]
+        if self.training and self.rescale_coords is not None:
+            coords = self._rescale_coords(coords, dd=dd)
+
+        ndim = coords.shape[1]
+        P = self.periods.numel()
+        # phases is D_head//2, and then tile(2) -> D_head
+        if self.D_head != 2 * ndim * P:
+            raise ValueError(
+                f"Bad RoPE dims: D_head={self.D_head}, ndim={ndim}, periods={P}. "
+                f"Need D_head == 2*ndim*periods == {2*ndim*P}."
+            )
+
+        # coords: [N,ndim] -> [N, ndim, 1], periods: [P] -> [1, 1, P] -> [N, ndim, P]
+        # where P=D_head // (2 * ndim)
+        phases = (2.0 * math.pi) * coords[:, :, None] / self.periods[None, None, :]
+        phases = phases.flatten(1, 2)  # [N, D_head//2]
+
+        angles = phases.repeat(1, 2)  # tile(2) -> [N, D_head]
+        cos = torch.cos(angles).to(dtype=coords.dtype, device=coords.device)
+        sin = torch.sin(angles).to(dtype=coords.dtype, device=coords.device)
+        return sin, cos

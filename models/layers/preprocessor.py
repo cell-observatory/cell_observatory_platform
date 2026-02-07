@@ -1,12 +1,15 @@
-import functools
 import os
 import time
-from typing import Any, Dict, Optional, Tuple
+import functools
+from typing import Any, Dict, Optional, Tuple, List, Callable, Mapping, Union
 
 import numpy as np
+
 import torch
-from hydra.utils import get_method, instantiate
+
 from omegaconf import DictConfig
+from dataclasses import dataclass
+from hydra.utils import get_method, instantiate
 
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
 from cell_observatory_platform.data.io import read_file
@@ -74,7 +77,7 @@ class RayPreprocessor(torch.nn.Module):
         seq_len = int(self.num_patches * (1 - masking_ratio))
         return seq_len
 
-    def forward(self, data_sample: dict, data_time: float) -> dict:
+    def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         """
         Preprocess the input data sample to maintain uniform data
         layout accross data loaders.
@@ -138,6 +141,329 @@ class RayPreprocessor(torch.nn.Module):
                     **meta,
                 },
             }
+
+
+@dataclass(frozen=True)
+class InputDataStreamSpec:
+    """
+    Per-dataset stream metadata needed to compute patch/token info and dtype casting.
+    This is used to normalize the input data streams and ensure they are compatible with the preprocessor.
+    """
+    input_format: str
+    input_shape: Tuple[int, ...]
+    patch_shape: Tuple[int, ...]
+    dtype: Union[str, torch.dtype] = "bfloat16"
+    with_masking: bool = False
+
+
+def _instantiate_transform_list(transforms_list: Optional[List[Any]]) -> List[Callable]:
+    out: List[Callable] = []
+    for t in transforms_list or []:
+        if isinstance(t, DictConfig):
+            out.append(instantiate(t))
+        elif isinstance(t, str):
+            out.append(get_method(t))
+        else:
+            out.append(t)
+    return out
+
+
+class MultiSequenceRayPreprocessor(torch.nn.Module):
+    """
+    Batch preprocessor for multiple dataset streams 
+    (e.g., DINO global/local crops, or multiple datasets with different shapes).
+
+    Output:
+      {
+        "data_tensors": {name: tensor, ...},
+        "metainfo": {
+            ... original meta ...,
+            "dataset_stream_metainfo": {
+                name: {
+                    "input_format": ...,
+                    "input_shape": ...,
+                    "patch_shape": ...,
+                    "transform_time": float,
+                    "masking_time": float,
+                    # masking outputs if enabled:
+                    "masks": [Tensor] (optional),
+                    "context_masks": [Tensor] (optional),
+                    "target_masks": [Tensor] (optional),
+                    "original_patch_indices": [Tensor] (optional),
+                    "channels_to_mask": [Any] (optional),
+                    "patches_used": [Tensor] (optional),
+                },
+            },
+            "preprocess_time": float,
+            "data_time": float,
+        }
+      }
+    """
+
+    def __init__(
+        self,
+        local_batch_size: int,
+        global_batch_size: int,
+        input_metadict: Mapping[str, Union[InputDataStreamSpec, Mapping[str, Any]]],
+        transforms_metadict: Optional[Mapping[str, Optional[List[Any]]]] = None,
+        mask_generators: Optional[Mapping[str, Any]] = None,
+        dtype: torch.dtype | str = "bfloat16",
+    ):
+        super().__init__()
+
+        # TODO: decide if this should be property of Preprocessor or DataLoader
+        self.local_batch_size = local_batch_size
+        self.global_batch_size = global_batch_size
+
+        self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+
+        data_streams: Dict[str, InputDataStreamSpec] = {}
+        for name, spec in input_metadict.items():
+            if isinstance(spec, InputDataStreamSpec):
+                data_streams[name] = spec
+            else:
+                data_streams[name] = InputDataStreamSpec(**dict(spec))
+        self.data_streams = data_streams
+
+        # Per-dataset stream transforms
+        self.transforms: Dict[str, List[Callable]] = {}
+        transforms_metadict = transforms_metadict or {}
+        for name in self.data_streams.keys():
+            self.transforms[name] = _instantiate_transform_list(transforms_metadict.get(name, None))
+        # NOTE: for single dataset stream, we use the BASE transforms pipeline to create the dataset stream tensors
+        #       for example, see multicrop augmentation for dino
+        self.transforms["BASE"] = _instantiate_transform_list(transforms_metadict.get("BASE", None))
+
+        # Per-dataset stream mask generators
+        self.mask_generators = dict(mask_generators or {})
+
+    def _apply_dataset_stream_transforms(
+        self,
+        name: str,
+        x: torch.Tensor,
+        meta: Dict[str, Any],
+    ) -> Tuple[torch.Tensor, Dict[str, Any], float]:
+        """
+        Apply transforms for a given dataset stream.
+        """
+        t0 = time.time()
+        data_dict: Dict[str, Any] = {"data_tensor": x, "metainfo": meta}
+
+        for tr in self.transforms.get(name, []):
+            out = tr(data_dict)
+            if isinstance(out, torch.Tensor):
+                data_dict["data_tensor"] = out
+            elif isinstance(out, dict):
+                if "data_tensor" not in out:
+                    raise KeyError(f"Transform for dataset stream={name!r} returned dict without 'data_tensor'.")
+                data_dict = out
+                data_dict.setdefault("metainfo", {})
+            else:
+                raise TypeError(
+                    f"Transform for dataset stream={name!r} must return Tensor or dict; got {type(out)}."
+                )
+
+        return data_dict["data_tensor"], data_dict.get("metainfo", {}), (time.time() - t0)
+
+    def _apply_dataset_stream_masking(
+        self,
+        name: str,
+        x: torch.Tensor,
+    ) -> Tuple[Dict[str, Any], float]:
+        """
+        Calls the dataset stream's mask generator if enabled.
+
+        Supports two return conventions from the mask generator:
+          - JEPA/MAE modes: returns a 6-tuple
+            (masks, context_masks, target_masks, original_patch_indices,
+             channels_to_mask, patches_used)
+          - DINO/iBOT mode: returns a dict
+            {collated_masks, mask_indices_list, masks_weight,
+             upperbound, n_masked_patches}
+
+        In both cases, the result is normalized into a flat dict (mask_kwargs)
+        whose entries are merged into the stream's metainfo.
+        """
+        spec = self.data_streams[name]
+        if not spec.with_masking:
+            return {}, -1.0
+
+        mask_gen = self.mask_generators.get(name, None)
+        if mask_gen is None:
+            raise ValueError(f"with_masking=True for stream={name!r} but no mask generator was provided.")
+
+        B = x.shape[0]
+        mt0 = time.time()
+        mask_result = mask_gen(B)
+        masking_time = time.time() - mt0
+
+        # Normalize the mask generator result into a generic dict
+        if isinstance(mask_result, dict):
+            # DINO/iBOT mode -- already a dict, pass through as-is
+            mask_kwargs = mask_result
+        elif isinstance(mask_result, tuple):
+            # Legacy JEPA/MAE mode -- unpack 6-tuple into dict
+            (
+                masks,
+                context_masks,
+                target_masks,
+                original_patch_indices,
+                channels_to_mask,
+                patches_used,
+            ) = mask_result
+
+            mask_kwargs: Dict[str, Any] = {}
+            if masks is not None:
+                mask_kwargs["masks"] = [masks]
+            if context_masks is not None:
+                mask_kwargs["context_masks"] = [context_masks]
+            if target_masks is not None:
+                mask_kwargs["target_masks"] = [target_masks]
+            if original_patch_indices is not None:
+                mask_kwargs["original_patch_indices"] = [original_patch_indices]
+            if channels_to_mask is not None:
+                mask_kwargs["channels_to_mask"] = [channels_to_mask]
+            if patches_used is not None:
+                mask_kwargs["patches_used"] = [patches_used]
+        else:
+            raise TypeError(
+                f"Mask generator for stream={name!r} returned unexpected type: {type(mask_result)}. "
+                f"Expected dict (DINO/iBOT) or tuple (JEPA/MAE)."
+            )
+
+        return mask_kwargs, masking_time
+
+    def forward(self, data_sample: Any, data_time: float, idx: int):
+        preprocess_t0 = time.time()
+
+        if isinstance(data_sample, dict):
+            # TODO: dataset, dataloader, and database stack currently does not support this branch properly
+            if "data_tensors" in data_sample and isinstance(data_sample["data_tensors"], dict):
+                input_mode = "multi_dataset_streams"
+                # NOTE: we match the tensor and metadict names to the outputs of the base transforms
+                # in the single_dataset_stream mode
+                dataset_streams_tensors = data_sample["data_tensors"]
+                dataset_streams_meta = data_sample.get("metainfo", {})
+            elif "data_tensor" in data_sample and torch.is_tensor(data_sample["data_tensor"]):
+                input_mode = "single_dataset_stream"
+                in_tensors = data_sample["data_tensor"]
+                input_dataset_stream_metainfo = data_sample.get("metainfo", {})
+            else:
+                raise KeyError(
+                    "MultiSequenceRayPreprocessor expects either:\n"
+                    "  - {'data_tensors': {name: tensor, ...}, 'metainfo': {...}}  OR\n"
+                    "  - {'data_tensor': tensor, 'metainfo': {...}}  OR\n"
+                )
+        else:
+            raise TypeError(f"data_sample must be a dict; got {type(data_sample)}")
+
+           # Preserve collator/dataloader metainfo (e.g. device_buffer_idx, host_buffer_idx) for hooks
+        if input_mode == "single_dataset_stream":
+            original_metainfo = dict(input_dataset_stream_metainfo)
+        else:
+            original_metainfo = dict(data_sample.get("metainfo", {}))
+
+        # If we have 1 dataset stream, apply base transforms to generate a dict-of-tensors
+        if input_mode == "single_dataset_stream":
+            if not torch.is_tensor(in_tensors):
+                raise TypeError(f"data_tensor must be a torch.Tensor; got {type(in_tensors)}")
+
+            base_dtype = TORCH_DTYPES[self.dtype].value if isinstance(self.dtype, str) else self.dtype
+            if in_tensors.dtype != base_dtype:
+                in_tensors = in_tensors.to(base_dtype)
+
+            base_transforms = self.transforms.get("BASE", [])
+            assert base_transforms, "single_dataset_stream mode requires a BASE transforms pipeline."
+
+            data_dict: Dict[str, Any] = {"data_tensor": in_tensors, "metainfo": dict(input_dataset_stream_metainfo)}
+            t_base0 = time.time()
+            for tr in base_transforms:
+                data_dict = tr(data_dict)
+
+            base_transform_time = time.time() - t_base0
+
+            # Interpret output as dataset streams
+            if "data_tensor" in data_dict and isinstance(data_dict["data_tensor"], dict):
+                dataset_streams_tensors = data_dict["data_tensor"]
+                dataset_streams_meta = data_dict.get("metainfo", {})
+            else:
+                raise KeyError(
+                    "Base transforms pipeline must create streams by returning:\n"
+                    "  - {'data_tensors': {name: tensor, ...}, 'metainfo': ...} "
+                    f"Got keys={list(data_dict.keys())} and data_tensor type={type(data_dict.get('data_tensor', None))}."
+                )
+        else:
+            base_transform_time = 0.0
+
+        if not isinstance(dataset_streams_tensors, dict):
+            raise TypeError(f"Expected dict-of-tensors, got {type(dataset_streams_tensors)}")
+
+        expected_dataset_streams = set(self.data_streams.keys())
+        dataset_streams_tensors_keys = set(dataset_streams_tensors.keys())
+        assert dataset_streams_tensors_keys == expected_dataset_streams, (
+            "Dataset streams produced by data ingestion pipeline don't match data_streams.\n"
+            f"produced={sorted(dataset_streams_tensors_keys)}\n"
+            f"expected={sorted(expected_dataset_streams)}"
+        )
+
+        # Apply per-dataset stream transforms
+        transform_time_by_dataset_stream: Dict[str, float] = {}
+
+        for name in dataset_streams_tensors.keys():
+            x = dataset_streams_tensors[name]
+            if not torch.is_tensor(x):
+                raise TypeError(f"Produced dataset stream tensor {name!r} is not a tensor; got {type(x)}")
+
+            dataset_stream_meta = dataset_streams_meta[name]
+
+            # apply dataset stream-specific transforms (if any)
+            x, dataset_stream_meta, t_dataset_stream = self._apply_dataset_stream_transforms(name=name, x=x, meta=dataset_stream_meta)
+
+            dataset_streams_tensors[name] = x
+            dataset_streams_meta[name] = dataset_stream_meta
+            transform_time_by_dataset_stream[name] = float(base_transform_time + t_dataset_stream)
+
+        # Apply per-dataset stream dtype conversion + (optional) masking
+        dataset_stream_metainfo: Dict[str, Dict[str, Any]] = {}
+
+        for name, x in dataset_streams_tensors.items():
+            if not torch.is_tensor(x):
+                raise TypeError(f"Produced stream {name!r} is not a tensor; got {type(x)}")
+
+            spec = self.data_streams[name]
+
+            # Cast to per-dataset stream dtype if we have a spec
+            target_dtype = TORCH_DTYPES[spec.dtype].value if isinstance(spec.dtype, str) else spec.dtype
+            if x.dtype != target_dtype:
+                x = x.to(target_dtype)
+
+            if spec.with_masking:
+                mask_meta, masking_time = self._apply_dataset_stream_masking(name=name, x=x)
+            else:
+                mask_meta = {}
+                masking_time = -1.0
+            
+            dataset_stream_metainfo[name] = {
+                "input_format": spec.input_format,
+                "input_shape": spec.input_shape,
+                "patch_shape": spec.patch_shape,
+                "transform_time": float(transform_time_by_dataset_stream[name]),
+                "masking_time": float(masking_time),
+                **mask_meta,
+                **dataset_streams_meta[name],
+            }
+
+        out_meta = original_metainfo
+
+        out_meta["dataset_stream_metainfo"] = dataset_stream_metainfo
+        out_meta["preprocess_time"] = float(time.time() - preprocess_t0)
+        out_meta["data_time"] = float(data_time)
+
+        out_meta["idx"] = idx
+        out_meta["local_batch_size"] = self.local_batch_size
+        out_meta["global_batch_size"] = self.global_batch_size
+
+        return {"data_tensors": dataset_streams_tensors, "metainfo": out_meta}
 
 
 # --------------------------------------------------------------------------- #
@@ -356,7 +682,7 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
     - model input: channel-averaged single-channel image
     """
 
-    def forward(self, data_sample: dict, data_time: float) -> dict:
+    def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
 
         if self.channel_idx is None:
@@ -586,7 +912,7 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
 
         return inputs_wo_mask, masks
 
-    def forward(self, data_sample: dict, data_time: float) -> dict:
+    def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         """
         Now expects `data_sample` coming from FinetuneCollatorActor, i.e.:
 

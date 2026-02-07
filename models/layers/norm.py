@@ -1,5 +1,10 @@
-import logging
+"""
+Adapted from:
+https://github.com/facebookresearch/dinov3/main/dinov3/layers/rms_norm.py
+"""
+
 import sys
+import logging
 from typing import Literal, Union
 
 import torch.nn as nn
@@ -39,3 +44,21 @@ class LayerNorm3D(nn.Module):
         x = self.ln(x)
         x = x.permute(0, 4, 1, 2, 3)
         return x
+
+
+# TODO: consider following DINOv3 implementation of RMSNorm
+# class RMSNorm(nn.Module):
+#     def __init__(self, dim: int, eps: float = 1e-5):
+#         super().__init__()
+#         self.weight = nn.Parameter(torch.ones(dim))
+#         self.eps = eps
+
+#     def reset_parameters(self) -> None:
+#         nn.init.constant_(self.weight, 1)
+
+#     def _norm(self, x: Tensor) -> Tensor:
+#         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+
+#     def forward(self, x: Tensor) -> Tensor:
+#         output = self._norm(x.float()).type_as(x)
+#         return output * self.weight

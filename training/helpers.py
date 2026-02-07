@@ -1583,3 +1583,28 @@ def assert_same_db_hash_across_ranks(local_hash: int, group=None):
             f"[RANK {dist.get_rank()}] Database hash mismatch across ranks "
             f"(xor != 0) - shards / filters not identical!"
         )
+
+
+def named_replace(
+    fn: Callable,
+    module: nn.Module,
+    name: str = "",
+    depth_first: bool = True,
+    include_root: bool = False,
+) -> nn.Module:
+    if not depth_first and include_root:
+        module = fn(module=module, name=name)
+    for child_name_o, child_module in list(module.named_children()):
+        child_name = ".".join((name, child_name_o)) if name else child_name_o
+        new_child = named_replace(
+            fn=fn,
+            module=child_module,
+            name=child_name,
+            depth_first=depth_first,
+            include_root=True,
+        )
+        setattr(module, child_name_o, new_child)
+
+    if depth_first and include_root:
+        module = fn(module=module, name=name)
+    return module

@@ -1,0 +1,33 @@
+input_format: ${dataset_layout_order}
+input_shape: ${datasets.train_shape}
+patch_shape: ${datasets.patch_shape}
+
+embed_dim: 960 # should be multiple of 2 * ndim * num_heads
+depth: 24
+num_heads: 16
+ffn_ratio: 4.0
+
+qkv_bias: true
+drop_path_rate: 0.3
+layerscale_init: 1.0e-05
+norm_layer: LayerNorm
+qk_norm: false
+ffn_layer: Mlp_ListFwdMixin
+ffn_bias: true
+proj_bias: true
+
+n_storage_tokens: 0
+mask_k_bias: false
+untie_cls_and_patch_norms: false
+untie_global_and_local_cls_norm: false
+
+# RoPE position embedding
+rope_type: custom
+pos_embed_rope_base: 100.0
+pos_embed_rope_min_period: null
+pos_embed_rope_max_period: null
+pos_embed_rope_normalize_coords: separate
+pos_embed_rope_shift_coords: null
+pos_embed_rope_jitter_coords: null
+pos_embed_rope_rescale_coords: null
+pos_embed_rope_dtype: bf16

@@ -101,9 +101,11 @@ class PatchEmbedding(nn.Module):
         channels=1,
     ):
         super().__init__()
-        self.input_shape = input_shape
-        self.input_fmt = input_fmt
 
+        self.input_fmt = input_fmt
+        self.input_shape = input_shape
+        self.patch_shape = patch_shape
+        
         self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
             input_format=input_fmt,
             patch_shape=patch_shape
@@ -152,17 +154,29 @@ class PatchEmbedding(nn.Module):
             pixels_per_patch *= self.lateral_patch_size
         return pixels_per_patch
     
-    def _patchify(self, inputs, reshape=True):
-        return self.patchify(inputs, 
-                             reshape=reshape, 
-                             temporal_patch_size=self.temporal_patch_size,
-                             axial_patch_size=self.axial_patch_size,
-                             lateral_patch_size=self.lateral_patch_size,
-                             token_shape=self.token_shape,
-                             channels=self.channels,
-                             num_patches=self.num_patches,
-                             pixels_per_patch=self.pixels_per_patch,
-                             input_format=self.input_fmt)
+    def _patchify(self, inputs, reshape=True, shape=None):
+        # support variable size input, e.g. multiresolution inputs
+        if shape is not None:
+            num_patches, token_shape = calc_num_patches(
+                input_fmt=self.input_fmt,
+                input_shape=tuple(shape),
+                patch_shape=self.patch_shape,
+            )
+        else:
+            num_patches, token_shape = self.num_patches, self.token_shape
+   
+        return self.patchify(
+            inputs,
+            reshape=reshape,
+            temporal_patch_size=self.temporal_patch_size,
+            axial_patch_size=self.axial_patch_size,
+            lateral_patch_size=self.lateral_patch_size,
+            token_shape=token_shape,
+            channels=self.channels,
+            num_patches=num_patches,
+            pixels_per_patch=self.pixels_per_patch,
+            input_format=self.input_fmt,
+        )
 
     @staticmethod
     def patchify(inputs,  
@@ -330,9 +344,15 @@ class PatchEmbedding(nn.Module):
         else:
             raise NotImplementedError(f"input_fmt not supported: {input_format}")
 
-    def forward(self, inputs, return_patches=False, is_patches: bool = False):
+    def forward(
+        self, 
+        inputs, 
+        return_patches=False, 
+        is_patches: bool = False,
+        shape=None,
+    ):
         if not is_patches:
-            patches = self._patchify(inputs)
+            patches = self._patchify(inputs, shape=shape)
         else:
             patches = inputs
         

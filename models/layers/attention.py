@@ -1,26 +1,29 @@
-import logging
-import math
 import sys
+import math
+import logging
 import warnings
+
 from functools import partial
-from typing import Optional
+from typing import Optional, Literal, List
 
 import torch
 import torch.nn as nn
+from torch import Tensor
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.init import constant_, xavier_uniform_
 
 from cell_observatory_platform.data.masking.mask_generator import apply_masks_rope
 from cell_observatory_platform.models.layers.positional_encoding import (
-    apply_rotary_emb,
+    apply_rope,
     compute_axial_cis,
     compute_mixed_cis,
     generate_frequency_spectrum,
     generate_grid_indices,
 )
-from cell_observatory_platform.models.ops.flash_deform_attn import FlashDeformAttnFunction, _is_power_of_2
 from cell_observatory_platform.training.helpers import get_patch_sizes
+from cell_observatory_platform.models.layers.utils import cat_keep_shapes, uncat_with_shapes
+from cell_observatory_platform.models.ops.flash_deform_attn import FlashDeformAttnFunction, _is_power_of_2
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -59,7 +62,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, masks=None, return_attention=False):
+    def forward(self, x, masks=None, pos_enc=None):
         B, L, C = x.shape
         # NOTE: Use -1 instead of `n_heads` to infer the actual
         #       local heads from sizes of xq, xk, and xv as TP
@@ -88,14 +91,42 @@ class Attention(nn.Module):
             att = self.att_drop(att)
             x = att @ v
 
-        if return_attention:
-            return att
+        x = x.transpose(1, 2).reshape(B, L, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
 
-        else:
-            x = x.transpose(1, 2).reshape(B, L, C)
-            x = self.proj(x)
-            x = self.proj_drop(x)
-            return x
+
+# reference: https://github.com/facebookresearch/dinov3/dinov3/layers/attention.py
+class LinearKMaskedBias(nn.Linear):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        o = self.out_features
+        assert o % 3 == 0
+        if self.bias is not None:
+            self.register_buffer("bias_mask", torch.full_like(self.bias, fill_value=math.nan))
+
+    def forward(self, input: Tensor) -> Tensor:
+        masked_bias = self.bias * self.bias_mask.to(self.bias.dtype) if self.bias is not None else None
+        return F.linear(input, self.weight, masked_bias)
+
+
+class LinearMaskedBias(nn.Linear):
+    """
+    Like nn.Linear, but multiplies bias by a fixed mask before adding.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.bias is not None:
+            self.register_buffer(
+                "bias_mask",
+                torch.full_like(self.bias, fill_value=math.nan),
+            )
+
+    def forward(self, input: Tensor) -> Tensor:
+        if self.bias is None:
+            return F.linear(input, self.weight, None)
+        return F.linear(input, self.weight, self.bias * self.bias_mask.to(self.bias.dtype))
 
 
 class RopeAttention(nn.Module):
@@ -110,13 +141,14 @@ class RopeAttention(nn.Module):
         proj_drop: float = 0.0,
         norm_layer: nn.Module = partial(nn.LayerNorm, eps=1e-5),
         random_rotation_per_head: bool = True,
-        rope_mixed: bool = True,
+        rope_type: Literal["mixed", "axial", "custom"] = "axial",
         rope_theta: float = 10.0,
         input_fmt: str = "TZXYC",
         input_shape: tuple = (16, 128, 128, 128, 2),
         patch_shape: tuple = (4, 16, 16, 16),
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
+        ffn_mask_k_bias: bool = False,
     ) -> None:
         super().__init__()
 
@@ -137,9 +169,14 @@ class RopeAttention(nn.Module):
         self.input_shape = input_shape
         self.patch_shape = patch_shape
 
-        self.wq = nn.Linear(dim, dim, bias=qkv_bias)
-        self.wk = nn.Linear(dim, dim, bias=qkv_bias)
-        self.wv = nn.Linear(dim, dim, bias=qkv_bias)
+        if ffn_mask_k_bias:
+            self.wq = nn.Linear(dim, dim, bias=qkv_bias)
+            self.wk = LinearMaskedBias(dim, dim, bias=qkv_bias)
+            self.wv = nn.Linear(dim, dim, bias=qkv_bias)
+        else:
+            self.wq = nn.Linear(dim, dim, bias=qkv_bias)
+            self.wk = nn.Linear(dim, dim, bias=qkv_bias)
+            self.wv = nn.Linear(dim, dim, bias=qkv_bias)
 
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
@@ -148,19 +185,17 @@ class RopeAttention(nn.Module):
         self.proj = nn.Linear(dim, dim, bias=proj_bias)
         self.proj_drop = nn.Dropout(proj_drop)
 
-        self.rope_mixed = rope_mixed
+        self.rope_type = rope_type
+        assert self.rope_type in ["mixed", "axial", "custom"], "Invalid rope_type"
         self.rope_theta = rope_theta
         self.random_rotation_per_head = random_rotation_per_head
 
         self._rope_inited = False
         # placeholders; real init will happen later
-        if self.rope_mixed:
+        if self.rope_type == "mixed":
             freq_shape = self._get_freqs_shape()
             freqs_meta = torch.empty(freq_shape, dtype=dtype)
             self.freqs = nn.Parameter(freqs_meta, requires_grad=True)
-            self.grid_indices = (None, None, None, None)
-        else:
-            self.register_buffer("freqs_cis", None, persistent=True)
             self.grid_indices = (None, None, None, None)
 
     def _get_freqs_shape(self) -> torch.Size:
@@ -187,7 +222,7 @@ class RopeAttention(nn.Module):
             input_format=self.input_fmt, patch_shape=self.patch_shape
         )
 
-        if self.rope_mixed:
+        if self.rope_type == "mixed":
             self.compute_cis = partial(compute_mixed_cis, input_fmt=self.input_fmt)
 
             # learnable frequency spectrum but initialized with
@@ -265,55 +300,14 @@ class RopeAttention(nn.Module):
             else:
                 raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
 
-        else:
-            end_x = self.input_shape[self.input_fmt.index("X")] // lateral_patch_size
-            end_y = self.input_shape[self.input_fmt.index("Y")] // lateral_patch_size
-            end_x = self.input_shape[self.input_fmt.index("X")] // lateral_patch_size
-            end_y = self.input_shape[self.input_fmt.index("Y")] // lateral_patch_size
-
-            if "Z" in self.input_fmt:
-                end_z = self.input_shape[self.input_fmt.index("Z")] // axial_patch_size
-                end_z = self.input_shape[self.input_fmt.index("Z")] // axial_patch_size
-            else:
-                end_z = None
-
-            if "T" in self.input_fmt:
-                end_t = self.input_shape[self.input_fmt.index("T")] // temporal_patch_size
-                end_t = self.input_shape[self.input_fmt.index("T")] // temporal_patch_size
-            else:
-                end_t = None
-
-            freqs_cis = compute_axial_cis(
-                theta=self.rope_theta,
-                dim=self.dim // self.num_heads,
-                end_x=end_x,
-                end_y=end_y,
-                end_z=end_z,
-                end_t=end_t,
-                input_fmt=self.input_fmt,
-                device=device,
-            )
-            self.register_buffer("freqs_cis", freqs_cis)
-
         self._rope_inited = True
 
-    def forward(self, x, masks=None, return_attention=False):
-        if not self._rope_inited:
+    def compute_attention(self, q: Tensor, k: Tensor, v: Tensor, masks=None, pos_enc=None) -> Tensor:
+        if not self._rope_inited and self.rope_type == "mixed":
             raise RuntimeError("RopeAttention.init_rope_parameters() must be called before forward.")
 
-        B, L, C = x.shape
-        # NOTE: Use -1 instead of `n_heads` to infer the actual
-        #       local heads from sizes of xq, xk, and xv as TP
-        #       may have sharded them after the above linear ops.
-        q = self.wq(x).view(B, L, -1, self.head_dim).transpose(1, 2)
-        k = self.wk(x).view(B, L, -1, self.head_dim).transpose(1, 2)
-        v = self.wv(x).view(B, L, -1, self.head_dim).transpose(1, 2)
-
-        q = self.q_norm(q)
-        k = self.k_norm(k)
-
         # apply rotary position embedding
-        if self.rope_mixed:
+        if self.rope_type == "mixed":
             if masks is not None:
                 t_t, t_z, t_y, t_x = apply_masks_rope(self.grid_indices, masks, type="mixed")
             else:
@@ -322,7 +316,7 @@ class RopeAttention(nn.Module):
             # compute learnable frequencies
             # works no matter what input_fmt is since unused t_* are None
             freqs_cis = self.compute_cis(
-                freqs=self.freqs.to(x.device),
+                freqs=self.freqs.to(q.device),
                 # num_heads=self.num_heads,
                 t_t=t_t,
                 t_z=t_z,
@@ -331,18 +325,27 @@ class RopeAttention(nn.Module):
                 input_fmt=self.input_fmt,
             )
 
-        else:
-            # axial RoPE does not use learnable frequencies
-            if masks is not None:
-                freqs_cis = apply_masks_rope(self.freqs_cis, masks, type="axial")
-            else:
-                freqs_cis = self.freqs_cis
+            q_rope, k_rope = apply_rope(q, k, pos_enc=freqs_cis, rope_type="mixed")
 
-        q_rope, k_rope = apply_rotary_emb(q, k, freqs_cis=freqs_cis)
+        elif self.rope_type == "axial":
+            # axial RoPE: freqs_cis is passed in via pos_enc from the top-level module
+            assert pos_enc is not None, (
+                "rope_type='axial' requires pos_enc (freqs_cis) to be passed from the top-level module"
+            )
+            if masks is not None:
+                freqs_cis = apply_masks_rope(pos_enc, masks, type="axial")
+            else:
+                freqs_cis = pos_enc
+
+            q_rope, k_rope = apply_rope(q, k, pos_enc=freqs_cis, rope_type="axial")
+
+        else:
+            q_rope, k_rope = apply_rope(q, k, pos_enc=pos_enc, rope_type="custom")
 
         try:
             # priority: flash > efficient > math
-            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]):
+            # TODO: consider adding back SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
                 x = F.scaled_dot_product_attention(
                     q_rope,
                     k_rope,
@@ -357,14 +360,144 @@ class RopeAttention(nn.Module):
             att = self.att_drop(att)
             x = att @ v
 
-        if return_attention:
-            return att
+        return x
 
-        else:
-            x = x.transpose(1, 2).reshape(B, L, C)
-            x = self.proj(x)
-            x = self.proj_drop(x)
-            return x
+    def forward_list(self, x_list, masks=None, pos_enc=None) -> List[Tensor]:
+        if masks is None:
+            masks = [None] * len(x_list)
+        if pos_enc is None:
+            pos_enc = [None] * len(x_list)
+        assert len(x_list) == len(masks) == len(pos_enc), "x_list, masks, and pos_enc must have the same length"
+
+        x_flat, shapes, num_tokens = cat_keep_shapes(x_list)
+
+        q_flat = self.wq(x_flat)  # (T_total, C)
+        k_flat = self.wk(x_flat)
+        v_flat = self.wv(x_flat)
+
+        q_list = uncat_with_shapes(q_flat, shapes, num_tokens)
+        k_list = uncat_with_shapes(k_flat, shapes, num_tokens)
+        v_list = uncat_with_shapes(v_flat, shapes, num_tokens)
+
+        att_out = []
+        for q, k, v, pos_enc_i, mask_i in zip(q_list, k_list, v_list, pos_enc, masks):
+            B, L, C = q.shape
+            q = q.view(B, L, -1, self.head_dim).transpose(1, 2)
+            k = k.view(B, L, -1, self.head_dim).transpose(1, 2)
+            v = v.view(B, L, -1, self.head_dim).transpose(1, 2)
+            q = self.q_norm(q)
+            k = self.k_norm(k)
+            out = self.compute_attention(q, k, v, masks=mask_i, pos_enc=pos_enc_i)  # (B, H, L, D)
+            out = out.transpose(1, 2).reshape(B, L, -1)             # (B, L, C)
+            att_out.append(out)
+        
+        x_flat, shapes, num_tokens = cat_keep_shapes(att_out)
+        x_flat = self.proj(x_flat)
+        x_flat = self.proj_drop(x_flat)
+        return uncat_with_shapes(x_flat, shapes, num_tokens)
+
+    def forward(self, x, masks=None, pos_enc=None):
+        B, L, C = x.shape
+
+        # TODO: evaluate impact of using fused qkv linear ops vs not
+        # NOTE: Use -1 instead of `n_heads` to infer the actual
+        #       local heads from sizes of xq, xk, and xv as TP
+        #       may have sharded them after the above linear ops.
+        q = self.wq(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+        k = self.wk(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+        v = self.wv(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
+        x = self.compute_attention(q, k, v, masks=masks, pos_enc=pos_enc)
+        x = x.transpose(1, 2).reshape(B, L, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+    # def compute_attention(self, qkv: Tensor, attn_bias=None, rope=None) -> Tensor:
+    #     assert attn_bias is None
+    #     B, N, _ = qkv.shape
+    #     C = self.qkv.in_features
+
+    #     qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
+    #     q, k, v = torch.unbind(qkv, 2)
+    #     q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
+    #     if rope is not None:
+    #         q, k = self.apply_rope(q, k, rope)
+    #     x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+    #     x = x.transpose(1, 2)
+    #     return x.reshape([B, N, C])
+
+    # def forward(self, x, masks=None, return_attention=False):
+    #     if not self._rope_inited:
+    #         raise RuntimeError("RopeAttention.init_rope_parameters() must be called before forward.")
+
+    #     B, L, C = x.shape
+    #     # NOTE: Use -1 instead of `n_heads` to infer the actual
+    #     #       local heads from sizes of xq, xk, and xv as TP
+    #     #       may have sharded them after the above linear ops.
+    #     q = self.wq(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+    #     k = self.wk(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+    #     v = self.wv(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+
+    #     q = self.q_norm(q)
+    #     k = self.k_norm(k)
+
+    #     # apply rotary position embedding
+    #     if self.rope_mixed:
+    #         if masks is not None:
+    #             t_t, t_z, t_y, t_x = apply_masks_rope(self.grid_indices, masks, type="mixed")
+    #         else:
+    #             t_t, t_z, t_y, t_x = self.grid_indices
+
+    #         # compute learnable frequencies
+    #         # works no matter what input_fmt is since unused t_* are None
+    #         freqs_cis = self.compute_cis(
+    #             freqs=self.freqs.to(x.device),
+    #             # num_heads=self.num_heads,
+    #             t_t=t_t,
+    #             t_z=t_z,
+    #             t_y=t_y,
+    #             t_x=t_x,
+    #             input_fmt=self.input_fmt,
+    #         )
+
+    #     else:
+    #         # axial RoPE does not use learnable frequencies
+    #         if masks is not None:
+    #             freqs_cis = apply_masks_rope(self.freqs_cis, masks, type="axial")
+    #         else:
+    #             freqs_cis = self.freqs_cis
+
+    #     q_rope, k_rope = apply_rotary_emb(q, k, freqs_cis=freqs_cis)
+
+    #     try:
+    #         # priority: flash > efficient > math
+    #         with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]):
+    #             x = F.scaled_dot_product_attention(
+    #                 q_rope,
+    #                 k_rope,
+    #                 v,
+    #                 dropout_p=self.att_drop.p if self.training else 0.0,
+    #             )
+
+    #     except NotImplementedError:
+    #         q_rope = q_rope * self.scale
+    #         att = q_rope @ k_rope.transpose(-2, -1)
+    #         att = att.softmax(dim=-1)
+    #         att = self.att_drop(att)
+    #         x = att @ v
+
+    #     if return_attention:
+    #         return att
+
+    #     else:
+    #         x = x.transpose(1, 2).reshape(B, L, C)
+    #         x = self.proj(x)
+    #         x = self.proj_drop(x)
+    #         return x
 
 
 class CrossAttention(nn.Module):

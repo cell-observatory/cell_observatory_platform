@@ -1,0 +1,15 @@
+dino_ibot_mask_generator:
+  _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+  layout: ${datasets.dataset.input_layout}
+  input_shape: [64, 128, 128, 2]
+  patch_shape: ${datasets.patch_shape}
+  input_format: ${dataset_layout_order}
+  lateral_mask_scale: 0.5
+  axial_mask_scale: 0.5
+  aspect_ratio_scale_hw: [0.75, 1.5]
+  num_blocks: 2
+  mask_ratio_range: [0.1, 0.5]
+  mask_probability: 0.5
+  mask_mode:
+    _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+    value: "dino_ibot"

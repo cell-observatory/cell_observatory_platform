@@ -7,12 +7,12 @@ import torch.nn as nn
 from timm.layers import AttentionPoolLatent
 from timm.models.vision_transformer import global_pool_nlc
 
-from cell_observatory_platform.models.backbones.encoder import Encoder
-from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.mlp import get_mlp
 from cell_observatory_platform.models.layers.norm import get_norm
+from cell_observatory_platform.models.backbones.encoder import Encoder
+from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
-from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding
+from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding, make_axial_rope_freqs
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ class ViT(nn.Module):
         abs_sincos_enc: bool = False,
         rope_pos_enc: bool = True,
         rope_random_rotation_per_head: bool = True,
-        rope_mixed: bool = True,
+        rope_type: Literal["mixed", "axial", "custom"] = "axial",
         rope_theta: float = 10.0,
         mlp_wide_silu: bool = False,
         dtype: torch.dtype = torch.bfloat16,
@@ -169,7 +169,7 @@ class ViT(nn.Module):
         # positional encoding parameters
         self.abs_sincos_enc = abs_sincos_enc
         self.rope_pos_enc = rope_pos_enc
-        self.rope_mixed = rope_mixed
+        self.rope_type = rope_type
         self.rope_theta = rope_theta
         self.wide_silu = mlp_wide_silu
         self.rope_random_rotation_per_head = rope_random_rotation_per_head
@@ -183,6 +183,18 @@ class ViT(nn.Module):
                 channels=self.in_chans,
                 cls_token=False,
             )
+        # precompute axial RoPE frequencies once and store as buffer
+        if self.rope_pos_enc and self.rope_type == "axial":
+            freqs_cis = make_axial_rope_freqs(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                dim=self.embed_dim // self.num_heads,
+                theta=self.rope_theta,
+            )
+            self.register_buffer("freqs_cis", freqs_cis)
+        else:
+            self.freqs_cis = None
 
         self.encoder = Encoder(
             embed_dim=self.embed_dim,
@@ -199,7 +211,7 @@ class ViT(nn.Module):
             init_std=self.init_std,
             rope_pos_enc=rope_pos_enc,
             rope_random_rotation_per_head=rope_random_rotation_per_head,
-            rope_mixed=rope_mixed,
+            rope_type=rope_type,
             rope_theta=rope_theta,
             input_fmt=input_fmt,
             input_shape=input_shape,
@@ -269,6 +281,6 @@ class ViT(nn.Module):
         if self.abs_sincos_enc:
             x += self.pos_embedding(inputs)
 
-        x = self.encoder(x)
+        x = self.encoder(x, pos_enc=self.freqs_cis)
         x = self.forward_head(x)
         return x

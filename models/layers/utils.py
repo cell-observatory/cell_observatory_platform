@@ -3,13 +3,35 @@ Adapted from:
 https://github.com/facebookresearch/detectron2/blob/536dc9d527074e3b15df5f6677ffe1f4e104a4ab/projects/PointRend/point_rend/point_features.py#L63
 https://github.com/facebookresearch/detectron2/blob/536dc9d527074e3b15df5f6677ffe1f4e104a4ab/detectron2/layers/wrappers.py#L65
 https://github.com/IDEA-Research/MaskDINO/blob/3831d8514a3728535ace8d4ecc7d28044c42dd14/maskdino/utils/misc.py#L49
+https://github.com/facebookresearch/dinov3/dinov3/utils/utils.py
 """
 
-from typing import List
+from typing import List, Tuple
 
 import torch
 import torch.nn as nn
+from torch import Tensor
 from torch.nn import functional as F
+
+
+def cat_keep_shapes(x_list: List[Tensor]) -> Tuple[Tensor, List[Tuple[int]], List[int]]:
+    # [B_i, N_i, C_i] -> [(B_i, N_i, C_i), (B_2, N_2, C_2), ...]
+    shapes = [x.shape for x in x_list]
+    # [B_i, N_i, C_i] -> [B_i*N_i]
+    num_tokens = [x.select(dim=-1, index=0).numel() for x in x_list]
+    # (B_i, N_i, C_i) ->  (B_i*N_i, C_i) -> [SUM_i (B_i*N_i), C_i]
+    flattened = torch.cat([x.flatten(0, -2) for x in x_list])
+    return flattened, shapes, num_tokens
+
+
+def uncat_with_shapes(flattened: Tensor, shapes: List[Tuple[int]], num_tokens: List[int]) -> List[Tensor]:
+    # flattened -> [(B_i*N_i, C_i), (B_2*N_2, C_2), ...]
+    outputs_splitted = torch.split_with_sizes(flattened, num_tokens, dim=0)
+    # [(B_i, N_i, C_i), (B_2, N_2, C_2), ...] -> [(B_i, N_i, C_*), (B_2, N_2, C_*), ...]
+    shapes_adjusted = [shape[:-1] + torch.Size([flattened.shape[-1]]) for shape in shapes]
+    # [(B_i*N_i, C_*), (B_2*N_2, C_*), ...] -> [(B_i, N_i, C_*), (B_2, N_2, C_*), ...]
+    outputs_reshaped = [o.reshape(shape) for o, shape in zip(outputs_splitted, shapes_adjusted)]
+    return outputs_reshaped
 
 
 def inverse_sigmoid(x, eps=1e-5):

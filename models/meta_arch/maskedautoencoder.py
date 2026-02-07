@@ -150,7 +150,7 @@ class MaskedAutoEncoder(nn.Module):
         abs_sincos_enc: bool = False,
         rope_pos_enc: bool = True,
         rope_random_rotation_per_head: bool = True,
-        rope_mixed: bool = True,
+        rope_type: Literal["mixed", "axial", "custom"] = "axial",
         rope_theta: float = 10.0,
         weight_init_type: str = "mae",
         mlp_wide_silu: bool = False,
@@ -204,7 +204,7 @@ class MaskedAutoEncoder(nn.Module):
         # positional encoding parameters
         self.abs_sincos_enc = abs_sincos_enc
         self.rope_pos_enc = rope_pos_enc
-        self.rope_mixed = rope_mixed
+        self.rope_type = rope_type
         self.rope_theta = rope_theta
         self.wide_silu = mlp_wide_silu
         self.rope_random_rotation_per_head = rope_random_rotation_per_head
@@ -229,7 +229,7 @@ class MaskedAutoEncoder(nn.Module):
             abs_sincos_enc=self.abs_sincos_enc,
             rope_pos_enc=self.rope_pos_enc,
             rope_random_rotation_per_head=self.rope_random_rotation_per_head,
-            rope_mixed=self.rope_mixed,
+            rope_type=self.rope_type,
             rope_theta=self.rope_theta,
             mlp_wide_silu=mlp_wide_silu,
             dtype=self.dtype,
@@ -257,7 +257,7 @@ class MaskedAutoEncoder(nn.Module):
             abs_sincos_enc=self.abs_sincos_enc,
             rope_pos_enc=self.rope_pos_enc,
             rope_random_rotation_per_head=self.rope_random_rotation_per_head,
-            rope_mixed=self.rope_mixed,
+            rope_type=self.rope_type,
             rope_theta=self.rope_theta,
             mlp_wide_silu=mlp_wide_silu,
             dtype=self.dtype,
