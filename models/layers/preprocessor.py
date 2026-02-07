@@ -955,15 +955,20 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         }
         sample, transform_time = self._apply_transforms(sample)
         
-        boundary_masks = sample["boundary_masks"]
-        boundary_masks = boundary_masks.unsqueeze(1) # [B, 1, D, H, W]
-        # we only have one target, the boundary mask
-        labels = torch.ones((boundary_masks.shape[0], 1), dtype=torch.int64) # [B, 1]
+        semantic_masks = []
+        if "boundary_masks" in sample:
+            semantic_masks.append(sample["boundary_masks"])
+        if "forground_masks" in sample:
+            semantic_masks.append(sample["forground_masks"])
+        semantic_masks = torch.stack(semantic_masks, dim=1)  # [B, N_masks, D, H, W]
+        labels = torch.arange(
+            semantic_masks.shape[1], dtype=torch.int64, device=semantic_masks.device
+        )  # [N_masks]
         targets = []
-        for batch_idx in range(boundary_masks.shape[0]):
+        for batch_idx in range(semantic_masks.shape[0]):
             targets.append({
-                "masks": boundary_masks[batch_idx], # [1, D, H, W] bool
-                "labels": labels[batch_idx], # [1] int
+                "masks": semantic_masks[batch_idx],  # [N_masks, D, H, W]
+                "labels": labels.clone(),  # [N_masks]
             })
         meta["targets"] = targets # List[Dict[str, Tensor | Tuple]]
         
@@ -986,8 +991,7 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         """
         Debug helper:
         - plots middle Z slice of the first sample's image
-        - plots corresponding mask slice
-        - overlays all bboxes on the image slice
+        - plots corresponding semantic mask slice
         - prints full metainfo
         - raises an error to stop training
         """
@@ -1010,11 +1014,7 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         hi = float(np.percentile(img_slice, 99))
 
         tgt0 = targets[0]
-        masks = tgt0["masks"]
-        boxes = tgt0["boxes"]
-
-        masks = masks.float().detach().cpu()
-        boxes = boxes.float().detach().cpu()
+        masks = tgt0["masks"].float().detach().cpu()
 
         if masks.ndim == 4:
             N_inst, Zm, Ym, Xm = masks.shape
@@ -1025,43 +1025,22 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         else:
             label_slice = None
 
-        # label_slice = None  # skipping mask slice for now
-
-        boxes_zyx = convert_bbox_format(boxes, self.bbox_output_format, "zyxzyx")
-
         print("=== DEBUG metainfo ===")
         print(meta)
         print("[DEBUG] inputs min/max:", float(inputs.min()), float(inputs.max()))
-        # print("[DEBUG] masks sum:", float(masks.sum()))
 
-        # Plot image + boxes and mask slice
+        # Plot image and semantic mask slice
         fig, axs = plt.subplots(1, 2, figsize=(10, 5))
 
-        # 1) image with bboxes
         ax_img = axs[0]
         ax_img.imshow(img_slice, cmap="gray", vmin=lo, vmax=hi)
-        for b in boxes_zyx:
-            z1, y1, x1, z2, y2, x2 = b.tolist()
-            z1 = int(round(z1))
-            z2 = int(round(z2))
-            if z1 <= z_mid <= z2:
-                rect = plt.Rectangle(
-                    (x1, y1),
-                    (x2 - x1),
-                    (y2 - y1),
-                    fill=False,
-                    edgecolor="r",
-                    linewidth=1,
-                )
-                ax_img.add_patch(rect)
-        ax_img.set_title("Image + bboxes")
+        ax_img.set_title("Image")
         ax_img.set_axis_off()
 
-        # 2) mask slice (labelmap)
         ax_mask = axs[1]
         if label_slice is not None:
             ax_mask.imshow(label_slice.numpy(), interpolation="nearest")
-            ax_mask.set_title("Instance mask slice")
+            ax_mask.set_title("Semantic mask slice")
         else:
             ax_mask.imshow(img_slice, cmap="gray")
             ax_mask.set_title("Mask slice (none)")
