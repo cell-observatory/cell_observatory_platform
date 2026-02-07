@@ -106,7 +106,7 @@ datasets:
     synthetic_only: false
     has_annotations: false
     with_hypercubes_dataframe: true
-    mask_channel: null
+    mask_channel_idx: null
     cdf_threshold: null
 
   columns: [ 'x_start', 'y_start', 'z_start', 'time_start',

@@ -121,7 +121,7 @@ datasets:
     synthetic_only: false
     has_annotations: false
     with_hypercubes_dataframe: true
-    mask_channel: null
+    mask_channel_idx: null
 
 # schedulers
 schedulers:

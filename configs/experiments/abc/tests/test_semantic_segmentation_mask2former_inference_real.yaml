@@ -71,9 +71,9 @@ inference:
     # - [147, "000x_002y_000z.zarr"]
     - [322, "000x_003y_001z.zarr"]
     - [333, "000x_001y_001z.zarr"]
-    - [333, "000x_001y_000z.zarr"]
-    - [360, "000x_005y_001z.zarr"]
-    - [352, "000x_002y_001z.zarr"]
+    # - [333, "000x_001y_000z.zarr"]
+    # - [360, "000x_005y_001z.zarr"]
+    # - [352, "000x_002y_001z.zarr"]
 
 # clusters
 clusters:
@@ -98,6 +98,8 @@ datasets:
   train_shape: [128, 256, 512, 1]
   input_shape: [128, 256, 512, 1]
   patch_shape: [16, 16, 16, null]
+  mask_channel_idx: null # Real data does not have a mask channel
+
   occupancy_threshold: 0.9
 
   split: 0.0
@@ -118,8 +120,19 @@ datasets:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
-    roi_list: [322, 333, 360, 352]
-    tile_list: ["000x_003y_001z.zarr", "000x_001y_001z.zarr", "000x_001y_000z.zarr", "000x_005y_001z.zarr", "000x_002y_001z.zarr"]
+    roi_list: [
+      322,
+      333,
+      # 360,
+      # 352
+      ]
+    tile_list: [
+      "000x_003y_001z.zarr",
+      "000x_001y_001z.zarr",
+      # "000x_001y_000z.zarr",
+      # "000x_005y_001z.zarr",
+      # "000x_002y_001z.zarr"
+      ]
     timepoint_list: [0]
 
     cdf_threshold: null
@@ -127,14 +140,10 @@ datasets:
     synthetic_only: false
     has_annotations: false
     # server_folder_path: ${paths.server_folder_path}/synthetic
-    server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
+    # server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
     with_hypercubes_dataframe: true
-    mask_channel: null
+    mask_channel_idx: null
   
-  preprocessor:
-    expect_mask_channel: ${datasets.collate_fn.expect_mask_channel}
-    require_targets: ${datasets.collate_fn.require_targets}
-
   columns:
     - "x_start"
     - "y_start"
@@ -154,7 +163,7 @@ datasets:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
     dtype: ${dataset_dtype}
     require_targets: false
-    expect_mask_channel: false
+    mask_channel_idx: ${datasets.mask_channel_idx}
     buffer_dtype: ${storage_dtype}
     batch_size: ${clusters.batch_size_per_gpu}
     input_shape: ${datasets.input_shape}
@@ -165,7 +174,6 @@ datasets:
     transforms_list: null
     bbox_data_format: zyxzyx
     bbox_output_format: cxcyczwhd
-    with_resize: false
     debug: false
     debug_device_idx: 0
     normalize_bboxes: true
