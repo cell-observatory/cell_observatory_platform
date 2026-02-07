@@ -98,14 +98,13 @@ class FinetuneCollatorActor:
             "mask_bbox_dict",
         ],
         input_format: Literal["ZYXC", "TZYXC"] = "ZYXC",
-        mask_idx: int = -1,
+        mask_channel_idx: int = -1,
         bbox_data_format: str = "zyxzyx",
         bbox_output_format: str = "zyxzyx",
         transforms_list: Optional[List[DictConfig]] = None,
         use_masks: bool = False,
         generate_binary_masks: bool = False,
         require_targets: bool = True,
-        expect_mask_channel: bool = True,
         # with_resize: bool = False,
         debug: bool = False,
         debug_device_idx: Optional[int] = None,
@@ -129,7 +128,7 @@ class FinetuneCollatorActor:
         if self.input_format != "ZYXC":
             raise NotImplementedError(f"FinetuneCollatorActor currently assumes ZYXC, got {self.input_format}")
 
-        self.mask_idx = mask_idx
+        self.mask_channel_idx = mask_channel_idx
         self.bbox_data_format = bbox_data_format
         self.bbox_output_format = bbox_output_format
 
@@ -211,7 +210,6 @@ class FinetuneCollatorActor:
         self.use_masks = use_masks
         self.generate_binary_masks = generate_binary_masks
         self.require_targets = require_targets
-        self.expect_mask_channel = expect_mask_channel
         self.normalize_bboxes = normalize_bboxes
 
         ray.logger.info(
@@ -279,9 +277,9 @@ class FinetuneCollatorActor:
             raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
 
         # For zero-copy we *require* the mask to be the last channel
-        if self.mask_idx not in (-1, C - 1):
+        if self.mask_channel_idx not in (-1, C - 1):
             raise ValueError(
-                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+                f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
             )
 
         masks = inputs[..., -1].clone()  # (B, Z, Y, X), view
@@ -411,7 +409,7 @@ class FinetuneCollatorActor:
 
             inputs_full = torch.from_numpy(h_view)
             # In inference we may have no labelmap channel at all.
-            if self.expect_mask_channel:
+            if self.mask_channel_idx is not None:
                 inputs, masks_labelmap = self._get_masks(inputs_full)
             else:
                 inputs, masks_labelmap = inputs_full, None

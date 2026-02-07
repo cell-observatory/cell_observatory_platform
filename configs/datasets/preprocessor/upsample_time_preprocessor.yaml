@@ -14,9 +14,9 @@ transforms_list:
 patch_shape: ${datasets.patch_shape}
 input_format: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
+mask_channel_idx: ${datasets.mask_channel_idx}
 
 seed: ${seed}
 ideal_psf_path: "/groups/betzig/betziglab/hph/cell_observatory_project/data/1.tif"
 na_mask_thresholds: [0.7, 0.8, 0.9]
 resize_na_masks: true
-mask_idx: -1

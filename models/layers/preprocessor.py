@@ -157,8 +157,8 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         dtype: torch.dtype | str,
         input_format: str,
         input_shape: tuple[int, ...],
+        mask_channel_idx: int | None,
         seed: int | None = None,
-        mask_idx: int = -1,
     ):
         super().__init__(
             dtype=dtype,
@@ -182,7 +182,7 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         self.y_idx = self.axis_index.get("Y", None)
         self.x_idx = self.axis_index.get("X", None)
 
-        self.mask_idx = mask_idx
+        self.mask_channel_idx = mask_channel_idx
 
         # spatial dims for downsample task
         self.spatial_dims = tuple(i for ax, i in self.axis_index.items() if ax in ("Z", "Y", "X"))
@@ -395,9 +395,9 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
             raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
 
         # For zero-copy we *require* the mask to be the last channel
-        if self.mask_idx not in (-1, C - 1):
+        if self.mask_channel_idx not in (-1, C - 1):
             raise ValueError(
-                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+                f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
             )
 
         masks = inputs[..., -1].clone()  # (B, Z, Y, X), view
@@ -507,7 +507,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
         ideal_psf_path: str | None = None,
         na_mask_thresholds: list[float] | None = None,
         resize_na_masks: bool = True,
-        mask_idx: int = -1,
+        mask_channel_idx: int = -1,
         mode: str = "upsample_space",
     ):
         super().__init__(
@@ -519,7 +519,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             input_format=input_format,
             input_shape=input_shape,
             seed=seed,
-            mask_idx=mask_idx,
+            mask_channel_idx=mask_channel_idx,
         )
 
         if mode not in ("upsample_space", "upsample_spacetime", "upsample_time"):
@@ -634,11 +634,10 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         input_format: str,
         input_shape: tuple[int, ...],
         seed: int | None = None,
-        mask_idx: int = -1,
+        mask_channel_idx: int = -1,
         bbox_data_format: Optional[str] = None,
         bbox_output_format: Optional[str] = None,
         debug_savepath: str = None,
-        expect_mask_channel: bool = True,
         require_targets: bool = True,
     ):
         super().__init__(
@@ -650,7 +649,7 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
             input_format=input_format,
             input_shape=input_shape,
             seed=seed,
-            mask_idx=mask_idx,
+            mask_channel_idx=mask_channel_idx,
         )
 
         if bbox_data_format is None or bbox_output_format is None:
@@ -660,7 +659,6 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
 
         self.debug_savepath = debug_savepath
         self.require_targets = require_targets
-        self.expect_mask_channel = expect_mask_channel
 
     def _split_inputs_and_mask(self, inputs: torch.Tensor):
         """
@@ -676,9 +674,9 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
             raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
 
         # For zero-copy we *require* the mask to be the last channel
-        if self.mask_idx not in (-1, C - 1):
+        if self.mask_channel_idx not in (-1, C - 1):
             raise ValueError(
-                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+                f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
             )
 
         masks = inputs[..., -1]  # (B, Z, Y, X), view
@@ -708,7 +706,7 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         """
         inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
 
-        if self.expect_mask_channel:
+        if self.mask_channel_idx is not None:
             inputs_wo_mask, _ = self._split_inputs_and_mask(inputs)
         else:
             inputs_wo_mask = inputs
@@ -875,7 +873,7 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         input_format: str,
         input_shape: tuple[int, ...],
         seed: int | None = None,
-        mask_idx: int = -1,
+        mask_channel_idx: int = 1,
         bbox_data_format: Optional[str] = None,
         bbox_output_format: Optional[str] = None,
         debug_savepath: str = None,
@@ -889,7 +887,7 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
             input_format=input_format,
             input_shape=input_shape,
             seed=seed,
-            mask_idx=mask_idx,
+            mask_channel_idx=mask_channel_idx,
         )
 
         self.debug_savepath = debug_savepath
@@ -904,13 +902,21 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
         B, Z, Y, X, C = inputs.shape
 
+        if self.mask_channel_idx is None:
+            masks = torch.zeros(
+                (B, Z, Y, X),
+                dtype=torch.bool, 
+                device=inputs.device
+                )
+            return inputs, masks
+
         if C < 2:
             raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
 
         # For zero-copy we *require* the mask to be the last channel
-        if self.mask_idx not in (-1, C - 1):
+        if self.mask_channel_idx not in (-1, C - 1):
             raise ValueError(
-                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+                f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
             )
 
         masks = inputs[..., -1]  # (B, Z, Y, X), view
@@ -1101,7 +1107,7 @@ class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
         input_format: str,
         input_shape: tuple[int, ...],
         seed: int | None = None,
-        mask_idx: int = -1,
+        mask_channel_idx: int = -1,
         bbox_data_format: Optional[str] = None,
         bbox_output_format: Optional[str] = None,
         debug_savepath: str = None,
@@ -1115,7 +1121,7 @@ class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
             input_format=input_format,
             input_shape=input_shape,
             seed=seed,
-            mask_idx=mask_idx,
+            mask_channel_idx=mask_channel_idx,
         )
 
         if bbox_data_format is None or bbox_output_format is None:
@@ -1139,9 +1145,9 @@ class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
             raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
 
         # For zero-copy we *require* the mask to be the last channel
-        if self.mask_idx not in (-1, C - 1):
+        if self.mask_channel_idx not in (-1, C - 1):
             raise ValueError(
-                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+                f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
             )
 
         masks = inputs[..., -1]  # (B, Z, Y, X), view
