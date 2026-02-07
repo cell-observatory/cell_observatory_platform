@@ -1025,25 +1025,43 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         else:
             label_slice = None
 
+        # Masks labelmap (raw instance IDs from input); (B, Z, Y, X)
+        if "masks_labelmap" in sample:
+            ml = sample["masks_labelmap"]
+            Zm_ml = ml.shape[1]
+            z_mid_ml = min(z_mid, Zm_ml - 1)
+            masks_labelmap_slice = ml[0, z_mid_ml].float().detach().cpu().numpy()
+        else:
+            masks_labelmap_slice = None
+
         print("=== DEBUG metainfo ===")
         print(meta)
         print("[DEBUG] inputs min/max:", float(inputs.min()), float(inputs.max()))
 
-        # Plot image and semantic mask slice
-        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+        # Plot image, masks labelmap, and semantic mask slice
+        fig, axs = plt.subplots(1, 3, figsize=(15, 5))
 
         ax_img = axs[0]
         ax_img.imshow(img_slice, cmap="gray", vmin=lo, vmax=hi)
         ax_img.set_title("Image")
         ax_img.set_axis_off()
 
-        ax_mask = axs[1]
+        ax_labelmap = axs[1]
+        if masks_labelmap_slice is not None:
+            ax_labelmap.imshow(masks_labelmap_slice, interpolation="nearest")
+            ax_labelmap.set_title("Masks labelmap")
+        else:
+            ax_labelmap.imshow(np.zeros_like(label_slice, dtype=np.int64), cmap="gray")
+            ax_labelmap.set_title("Masks labelmap (none)")
+        ax_labelmap.set_axis_off()
+
+        ax_mask = axs[2]
         if label_slice is not None:
             ax_mask.imshow(label_slice.numpy(), interpolation="nearest")
             ax_mask.set_title("Semantic mask slice")
         else:
             ax_mask.imshow(img_slice, cmap="gray")
-            ax_mask.set_title("Mask slice (none)")
+            ax_mask.set_title("Semantic mask slice (none)")
         ax_mask.set_axis_off()
 
         plt.tight_layout()
