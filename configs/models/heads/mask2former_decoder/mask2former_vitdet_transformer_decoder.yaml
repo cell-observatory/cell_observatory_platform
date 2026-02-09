@@ -3,7 +3,7 @@ BUILD: cell_observatory_platform.models.heads.mask2former_decoder.MultiScaleMask
 input_dim: 3
 in_channels: 256
 mask_classification: true
-num_classes: 1
+num_classes: 2
 hidden_dim: 256
 num_queries: 100
 decoder_nheads: 8

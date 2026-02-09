@@ -23,7 +23,7 @@ matcher_args:
 # Criterion
 criterion_args:
   BUILD: cell_observatory_platform.training.losses.Mask2FormerSetLoss.BUILD
-  num_classes: 1
+  num_classes: 2
   loss_weight_dict:
     loss_labels_ce: 2.0 # This is the classification loss
     loss_mask_dice: 5.0

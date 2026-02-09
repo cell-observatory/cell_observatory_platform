@@ -19,6 +19,10 @@ transforms_list:
   - _target_: cell_observatory_platform.data.transforms.make_targets.InstanceToBoundaryMask
     connectivity: 1
 
+  # 2) Convert instance labels to foreground masks
+  - _target_: cell_observatory_platform.data.transforms.make_targets.ForegroundMasks
+    remove_boundary: true
+
   # 2) Normalize after transforms
   - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
     input_layout:

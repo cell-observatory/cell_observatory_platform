@@ -28,7 +28,7 @@ total_num_feature_levels: 3
 # This is used to determine how many extra FPN levels to append to the feature pyramid.
 # The number of extra FPN levels needed to go from the finest feature map stride in the
 # transformer feature maps (determined by transformer_in_features) to the target minimum stride.
-target_min_stride: 8
+target_min_stride: 4
 
 # Transformer encoder args
 transformer_encoder_dropout: 0.0
