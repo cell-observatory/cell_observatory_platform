@@ -958,8 +958,8 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         semantic_masks = []
         if "boundary_masks" in sample:
             semantic_masks.append(sample["boundary_masks"])
-        if "forground_masks" in sample:
-            semantic_masks.append(sample["forground_masks"])
+        if "foreground_masks" in sample:
+            semantic_masks.append(sample["foreground_masks"])
         semantic_masks = torch.stack(semantic_masks, dim=1)  # [B, N_masks, D, H, W]
         labels = torch.arange(
             semantic_masks.shape[1], dtype=torch.int64, device=semantic_masks.device

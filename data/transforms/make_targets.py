@@ -90,31 +90,31 @@ class InstanceToBoundaryMask:
         return boundary
 
 
-class ForgroundMasks:
+class ForegroundMasks:
     def __init__(self, remove_boundary: bool = True):
         self.remove_boundary = remove_boundary
 
     def __call__(self, data: dict | torch.Tensor) -> dict | torch.Tensor:
         if isinstance(data, dict):
             if "masks_labelmap" not in data:
-                raise KeyError("ForgroundMasks expects 'masks_labelmap' in dict.")
+                raise KeyError("ForegroundMasks expects 'masks_labelmap' in dict.")
             if self.remove_boundary:
                 if "boundary_masks" not in data:
-                    raise KeyError("ForgroundMasks expects 'boundary_masks' in dict.")
-                forground_masks = self._forground_masks(data["masks_labelmap"], data["boundary_masks"])
+                    raise KeyError("ForegroundMasks expects 'boundary_masks' in dict.")
+                foreground_masks = self._foreground_masks(data["masks_labelmap"], data["boundary_masks"])
             else:
-                forground_masks = self._forground_masks(data["masks_labelmap"])
-            data["forground_masks"] = forground_masks
+                foreground_masks = self._foreground_masks(data["masks_labelmap"])
+            data["foreground_masks"] = foreground_masks
             return data
         elif isinstance(data, torch.Tensor):
             if self.remove_boundary:
-                raise ValueError("ForgroundMasks does not support tensor input if remove_boundary=True. Use dict input containing key 'boundary_masks' instead.")
+                raise ValueError("ForegroundMasks does not support tensor input if remove_boundary=True. Use dict input containing key 'boundary_masks' instead.")
             else:
-                self._forground_masks(data)
+                self._foreground_masks(data)
         else:
-            raise ValueError(f"ForgroundWithoutBoundaryMask expects dict or torch.Tensor, got {type(data)}")
+            raise ValueError(f"ForegroundWithoutBoundaryMask expects dict or torch.Tensor, got {type(data)}")
         
-    def _forground_masks(self, labels: torch.Tensor, boundary_masks: torch.Tensor | None = None) -> torch.Tensor:
+    def _foreground_masks(self, labels: torch.Tensor, boundary_masks: torch.Tensor | None = None) -> torch.Tensor:
         """
         labels: (B,D,H,W) int (instance/semantic labels; background can be 0).
         boundary_masks: (B,D,H,W) bool (boundary masks).
@@ -126,11 +126,11 @@ class ForgroundMasks:
         B, D, H, W = labels.shape
         x = labels
 
-        forground_masks = torch.zeros((B, D, H, W), dtype=torch.bool, device=x.device)
+        foreground_masks = torch.zeros((B, D, H, W), dtype=torch.bool, device=x.device)
         
         if boundary_masks is not None:
-            forground_masks = (x != 0) & ~boundary_masks
+            foreground_masks = (x != 0) & ~boundary_masks
         else:
-            forground_masks = (x != 0)
+            foreground_masks = (x != 0)
 
-        return forground_masks
+        return foreground_masks
