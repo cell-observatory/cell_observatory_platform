@@ -25,8 +25,8 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: test_semantic_segmentation_mask2former_vitdet_0204
 wandb_project: testing
+experiment_name: test_twoclass_semantic_segmentation_mask2former_vitdet_pred_stride_4_transformer_in_features_1_2_3_queries_100
 
 backend: DEEPSPEED
 
@@ -58,6 +58,15 @@ seed: 42
 # overrides
 # --------------------------------------------------------------------------------
 
+# Two semantic classes (decoder and criterion must match)
+models:
+  meta_arch:
+    mask2former:
+      decoder_args:
+        num_classes: 2
+      criterion_args:
+        num_classes: 2
+
 # # # clusters config for debugging on single GPU
 # clusters:
 #   batch_size: 8 # total batch size (batch size per gpu * total gpus)
@@ -70,7 +79,7 @@ seed: 42
 
 # clusters
 clusters:
-  batch_size: 32 # total batch size (batch size per gpu * total gpus)
+  batch_size: 40 # total batch size (batch size per gpu * total gpus)
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 4 # number of gpus per worker node
   cpus_per_gpu: 4 # number of cpu cores per gpu
@@ -86,6 +95,9 @@ paths:
 
 # data
 datasets:
+  # # Preprocessor (instantiated as cfg.datasets.preprocessor)
+  # preprocessor:
+  #   debug_savepath: /clusterfs/nvme/martinalvarez/GitHub/scratch/semantic_preprocessor_viz/test_semantic_segmentation_preprocessor.png
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   train_shape: [128, 256, 512, 1]
@@ -102,8 +114,8 @@ datasets:
   num_actors_max: 12
 
   # max_hypercubes: 50
-  max_hypercubes: 256
-  # max_hypercubes: 1000
+  # max_hypercubes: 256
+  max_hypercubes: 1000
   # max_hypercubes: 10000
   # max_hypercubes: 2000000
   # max_hypercubes: 50000
@@ -137,7 +149,6 @@ datasets:
     transforms_list: null
     bbox_data_format: zyxzyx
     bbox_output_format: cxcyczwhd
-    with_resize: false
     debug: false
     debug_device_idx: 0
     normalize_bboxes: true
@@ -192,7 +203,6 @@ hooks:
       eval_after_validation: true
 
     # # profiling
-
     # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
     #   output_dir: ${paths.outdir}/profiler
     #   schedule:
