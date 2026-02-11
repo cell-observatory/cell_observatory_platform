@@ -1,3 +1,4 @@
+import pandas as pd
 import matplotlib
 import matplotlib.ticker as ticker
 from matplotlib import pyplot as plt
@@ -16,7 +17,9 @@ from pathlib import Path
 import numpy as np
 import seaborn as sns
 
-from cell_observatory_platform.utils.common import savesvg
+from typing import Union
+
+from utils.common import savesvg
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -25,20 +28,22 @@ logger = logging.getLogger(__name__)
 def days_to_formatter(days, pos):
 
     if days >= 365:
-        years = np.ceil(days / 365)
-        return f"{years:.0f}y"
+        years = np.round(days / 365, 1)
+        return f"{years:.1f}y"
     elif days >= 1:
         return f"{days:.0f}d"
     elif days >= 1 / 24:
-        hours = np.ceil(days * 24)
-        return f"{hours:.0f}h"
+        hours = np.round(days * 24, 1)
+        return f"{hours:.1f}h"
     elif days >= 1 / (24 * 60):
-        minutes = np.ceil(days * 24 * 60)
-        return f"{minutes:.0f}m"
+        minutes = np.round(days * 24 * 60, 1)
+        return f"{minutes:.1f}m"
+    elif days >= 1 / (24 * 60 * 60):
+        seconds = np.round(days * 24 * 60 * 60, 1)
+        return f"{seconds:.1f}s"
     else:
-        seconds = np.ceil(days * 24 * 60 * 60)
-        return f"{seconds:.0f}s"
-
+        milliseconds = np.round(days * 24 * 60 * 60 * 1000, 1)
+        return f"{milliseconds:.1f}ms"
 
 def savesvg(
     fig: plt.Figure,
@@ -807,3 +812,391 @@ def plot_gpt_vit(outdir):
         plt.savefig(f"{outdir}/gpt_vit_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
         plt.savefig(f"{outdir}/gpt_vit_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
         savesvg(fig, f"{outdir}/gpt_vit_{background}.svg")
+
+
+def plot_gpu_scaling(data, outdir):
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
+
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12, 
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        
+        df = data.copy()
+        df["model_params"] = np.round(df["model_params"]/1e6, 0).astype(int) 
+        df.query("model_params == 628 or model_params == 319", inplace=True)
+        
+        for m in df["main_module_0_name"].unique():
+            df.loc[df["main_module_0_name"] == m, "scaling_ratio"] = df.loc[df["main_module_0_name"] == m, "epoch_time"] / df.loc[df["main_module_0_name"] == m, "epoch_time"].max()
+        
+        print(df[["index", "training_gpus", "epoch_time", "main_module_0_name", "model_params", "scaling_ratio"]])
+
+        g = sns.lineplot(
+            data=df,
+            x="training_gpus",
+            y="epoch_time",
+            hue="main_module_0_name",
+            style="main_module_0_name",
+            legend=True,
+            markers=True,
+            palette="muted",
+            markeredgecolor="dimgrey" if background == "default" else "lightgrey",
+            markeredgewidth=0.5,
+            ax=ax
+        )
+        
+        ax.set_ylabel("Pretraining runtime per epoch (seconds)")
+        ax.set_xlabel("Number of GPUs")
+
+        ax.set_ylim(50, 2.5*60)
+        ax.set_xlim(7, 33)
+        ax.set_xticks([8, 16, 24, 32])
+        
+        ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
+        ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
+        
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+
+        legend_handles, _ = g.get_legend_handles_labels()
+        labels = ["JEPA (628M)", "MAE (319M)"]
+        ax.legend(legend_handles, labels, loc="upper right", ncol=1, title="", frameon=False)
+                    
+        plt.savefig(f"{outdir}/gpu_scaling_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/gpu_scaling_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/gpu_scaling_{background}.svg")
+
+
+def plot_model_scaling(data, outdir):
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
+
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12, 
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        
+        df = data.copy()
+        df.query("training_gpus == 8", inplace=True)
+        df["epoch_time_per_token"] = df["epoch_time"] / df["tokens_per_epoch"]
+        
+        for dataset_size, label in zip([1e5, 1e6, 1e7, 1e8], ["100K", "1M", "10M", "100M"]):
+            df[f"epoch_time_{label}"] = dataset_size * df["epoch_time_per_token"] / (3600 * 24)
+        
+        print(df[[
+            "index",  
+            "model_params", 
+            # "batch_size_per_gpu",
+            # "batch_size",
+            # "tokens_per_epoch", 
+            # "steps_per_epoch",
+            "epoch_time", 
+            "epoch_time_100K", 
+            "epoch_time_1M", 
+            "epoch_time_10M", 
+            "epoch_time_100M"
+        ]])
+        
+        for ii, (ll, offset) in enumerate(
+            zip(
+                ["100K", "1M", "10M", "100M"],
+                [0, 0, 0.15, 0.3],
+            )
+        ):
+            if ii == 0:
+                axis = ax
+            else:
+                axis = ax.twinx()
+                axis.spines["right"].set_position(("axes", 1 + offset))
+
+            
+            g = sns.lineplot(
+                data=df,
+                x="model_params",
+                y=f"epoch_time_{ll}",
+                hue="main_module_0_name",
+                style="main_module_0_name",
+                legend=True,
+                markers=True,
+                palette="muted",
+                markeredgecolor="dimgrey" if background == "default" else "lightgrey",
+                markeredgewidth=0.5,
+                ax=axis
+            )
+            
+            axis.patch.set_visible(False)
+            plt.setp(axis.spines.values(), visible=False)
+            axis.spines["right"].set_visible(True)
+            axis.spines["left"].set_visible(True)
+            axis.spines["bottom"].set_visible(True)
+            
+            axis.set_ylabel(ll)
+            if ll is not None and ii != 0:
+                axis.yaxis.set_label_coords(1 + offset, 1.07)
+                
+            axis.set_xscale("log")
+            axis.set_yscale("log")
+            formatter = ticker.FuncFormatter(days_to_formatter)
+            axis.yaxis.set_major_formatter(formatter)
+            axis.yaxis.set_minor_formatter(formatter)
+            axis.set_ylim(1e-3 * 10**ii, 1e-2 * 10**ii)
+            axis.set_xlim(1e8, 1e10)
+            
+            legend_handles, _ = g.get_legend_handles_labels()
+            labels = [
+                "JEPA (256, 256 ,128, 2)", 
+                "MAE (256, 256, 128, 2)",
+            ]
+            axis.legend(legend_handles, labels, loc="upper left", ncol=1, title="", frameon=False)
+        
+        ax.set_ylabel("Pretraining runtime per epoch")
+        ax.set_xlabel("Model parameters")
+        
+        ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
+        ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
+                    
+        plt.savefig(f"{outdir}/model_scaling_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/model_scaling_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/model_scaling_{background}.svg")
+
+
+def plot_utilization(data, outdir):
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
+
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12, 
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
+        fig, ax = plt.subplots(figsize=(8, 8))
+        
+        df = data.copy()
+        df.query("training_gpus == 8", inplace=True)
+        gpu = df["gpu"].unique()[0]
+        
+        df = pd.melt(
+            df, id_vars=["index", "model_params", "main_module_0_name"], 
+            value_vars=[f"q75_utilization_per_gpu", f"max_vram_percent_per_gpu"], 
+            var_name="metric", 
+            value_name="value"
+        )
+        print(df)
+        
+        g = sns.relplot(
+            data=df,
+            x="model_params",
+            y="value",
+            hue="main_module_0_name",
+            col="metric",
+            kind="line",
+            markers=True,
+            palette="muted",
+            legend=True,
+            ax=ax
+        )
+        
+        g.set_titles("")
+        g.set_ylabels("")
+        g.set_xlabels("Model parameters", clear_inner=False)
+        g.set(xlim=(1e8, 2.2e9), ylim=(85, 100))
+        
+        labels = [
+            "JEPA (256, 256 ,128, 2)", 
+            "MAE (256, 256, 128, 2)",
+        ]
+        sns.move_legend(g, labels=labels, loc="upper left", ncol=2, frameon=False, title="")
+        
+        for i, ax in enumerate(g.axes.flat):
+            
+            ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
+            ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
+            ax.spines['right'].set_visible(False)
+            ax.spines['top'].set_visible(False)
+
+            if i == 0:
+                ax.set_title(f"{gpu} utilization (75th percentile)")
+            elif i == 1:
+                ax.set_title(f"{gpu} VRAM usage (Max)")
+                    
+        plt.savefig(f"{outdir}/utilization_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/utilization_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/utilization_{background}.svg")
+        
+        
+def plot_flops(data, outdir):
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
+
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12, 
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
+        fig, ax = plt.subplots(figsize=(8, 8))
+        
+        df = data.copy()
+        df.query("training_gpus == 8", inplace=True)
+        gpu = df["gpu"].unique()[0]
+        
+        df = pd.melt(
+            df, id_vars=["index", "model_params", "main_module_0_name"], 
+            value_vars=[f"fwd_flop_per_second_per_gpu", f"bwd_flop_per_second_per_gpu"], 
+            var_name="metric", 
+            value_name="value"
+        )
+        print(df)
+        
+        g = sns.relplot(
+            data=df,
+            x="model_params",
+            y="value",
+            hue="main_module_0_name",
+            col="metric",
+            kind="line",
+            markers=True,
+            palette="muted",
+            legend=True,
+            ax=ax
+        )
+        
+        g.set_titles("")
+        g.set_ylabels("")
+        g.set_xlabels("Model parameters", clear_inner=False)
+        g.set(xlim=(1e8, 2.2e9), ylim=(None, None))
+        
+        labels = [
+            "JEPA (256, 256 ,128, 2)", 
+            "MAE (256, 256, 128, 2)",
+        ]
+        sns.move_legend(g, labels=labels, loc="upper left", ncol=2, frameon=False, title="")
+        
+        for i, ax in enumerate(g.axes.flat):
+            
+            ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
+            ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
+            ax.spines['right'].set_visible(False)
+            ax.spines['top'].set_visible(False)
+
+            if i == 0:
+                ax.set_title(f"Forward FLOPS ({gpu})")
+            elif i == 1:
+                ax.set_title(f"Backward FLOPS ({gpu})")
+            elif i == 2:
+                ax.set_title(f"Total FLOPS ({gpu})")
+                    
+        plt.savefig(f"{outdir}/flops_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/flops_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/flops_{background}.svg")
+        
+        
+def plot_data_scaling(data, outdir):
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
+
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12, 
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
+        fig, ax = plt.subplots(figsize=(8, 8))
+        
+        df = data.copy()
+        df.query("training_gpus == 8", inplace=True)
+        gpu = df["gpu"].unique()[0]
+
+        print(df[[
+            "index", 
+            "model_params", 
+            "batch_size", 
+            "batch_size_per_gpu", 
+            "tokens_per_second", 
+            "tokens_per_second_per_gpu", 
+            "gib_per_second", 
+            "gib_per_second_per_gpu",
+            "main_module_0_name"
+        ]])
+        
+        g = sns.lineplot(
+            data=df,
+            x="model_params",
+            y="gib_per_second_per_gpu",
+            hue="main_module_0_name",
+            style="main_module_0_name",
+            legend=True,
+            markers=True,
+            palette="muted",
+            markeredgecolor="dimgrey" if background == "default" else "lightgrey",
+            markeredgewidth=0.5,
+            ax=ax
+        )
+
+        ax.set_xscale("log")
+        ax.set_ylabel(f"GiB/s ({gpu})")
+        ax.set_xlabel("Model parameters")
+        ax.set_ylim(0, 6)
+        ax.set_xlim(1e8, 1e10)
+        
+        ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
+        ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
+        
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+
+        legend_handles, _ = g.get_legend_handles_labels()
+        labels = [
+            "JEPA (256, 256 ,128, 2)", 
+            "MAE (256, 256, 128, 2)",
+        ]
+        ax.legend(legend_handles, labels, loc="lower left", ncol=1, title="", frameon=False)
+
+        plt.savefig(f"{outdir}/data_scaling_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/data_scaling_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/data_scaling_{background}.svg")
