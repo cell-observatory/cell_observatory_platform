@@ -1,22 +1,19 @@
-import pandas as pd
+
 import matplotlib
 import matplotlib.ticker as ticker
 from matplotlib import pyplot as plt
-
 matplotlib.use("Agg")
 
 import warnings
-
 warnings.filterwarnings("ignore")
 
 import logging
 import re
 import sys
 from pathlib import Path
-
+import pandas as pd
 import numpy as np
 import seaborn as sns
-
 from typing import Union
 
 from utils.common import savesvg
@@ -44,34 +41,6 @@ def days_to_formatter(days, pos):
     else:
         milliseconds = np.round(days * 24 * 60 * 60 * 1000, 1)
         return f"{milliseconds:.1f}ms"
-
-def savesvg(
-    fig: plt.Figure,
-    savepath: Union[Path, str],
-    top: float = 0.9,
-    bottom: float = 0.1,
-    left: float = 0.1,
-    right: float = 0.9,
-    hspace: float = 0.35,
-    wspace: float = 0.1,
-):
-
-    plt.subplots_adjust(top=top, bottom=bottom, left=left, right=right, hspace=hspace, wspace=wspace)
-    plt.savefig(savepath, bbox_inches="tight", dpi=300, pad_inches=0.25)
-
-    if Path(savepath).suffix == ".svg":
-        # Read in the file
-        with open(savepath, "r", encoding="utf-8") as f:
-            filedata = f.read()
-
-        # Replace the target string
-        filedata = re.sub('height="[0-9]+(\.[0-9]+)pt"', "", filedata)
-        filedata = re.sub('width="[0-9]+(\.[0-9]+)pt"', "", filedata)
-
-        # Write the file out again
-        with open(savepath, "w", encoding="utf-8") as f:
-            f.write(filedata)
-
 
 def plot_parameter_scaling(
     df,
@@ -815,6 +784,17 @@ def plot_gpt_vit(outdir):
 
 
 def plot_gpu_scaling(data, outdir):
+            
+    df = data.copy()
+    df["model_params"] = np.round(df["model_params"]/1e6, 0).astype(int) 
+    df.query("model_params == 628 or model_params == 319", inplace=True)
+    gpu_type = df["gpu"].unique()[0]
+    
+    for m in df["main_module_0_name"].unique():
+        df.loc[df["main_module_0_name"] == m, "scaling_ratio"] = df.loc[df["main_module_0_name"] == m, "epoch_time"] / df.loc[df["main_module_0_name"] == m, "epoch_time"].max()
+    
+    print(df[["index", "training_gpus", "epoch_time", "main_module_0_name", "model_params", "scaling_ratio"]])
+
     for background in ["default", "dark_background"]:
         plt.style.use(background)
 
@@ -834,15 +814,6 @@ def plot_gpu_scaling(data, outdir):
 
         fig, ax = plt.subplots(figsize=(8, 8))
         
-        df = data.copy()
-        df["model_params"] = np.round(df["model_params"]/1e6, 0).astype(int) 
-        df.query("model_params == 628 or model_params == 319", inplace=True)
-        
-        for m in df["main_module_0_name"].unique():
-            df.loc[df["main_module_0_name"] == m, "scaling_ratio"] = df.loc[df["main_module_0_name"] == m, "epoch_time"] / df.loc[df["main_module_0_name"] == m, "epoch_time"].max()
-        
-        print(df[["index", "training_gpus", "epoch_time", "main_module_0_name", "model_params", "scaling_ratio"]])
-
         g = sns.lineplot(
             data=df,
             x="training_gpus",
@@ -857,7 +828,7 @@ def plot_gpu_scaling(data, outdir):
             ax=ax
         )
         
-        ax.set_ylabel("Pretraining runtime per epoch (seconds)")
+        ax.set_ylabel(f"Pretraining {gpu_type} time per epoch (seconds)")
         ax.set_xlabel("Number of GPUs")
 
         ax.set_ylim(50, 2.5*60)
@@ -880,6 +851,28 @@ def plot_gpu_scaling(data, outdir):
 
 
 def plot_model_scaling(data, outdir):
+    df = data.copy()
+    df.query("training_gpus == 8", inplace=True)
+    df["epoch_time_per_token_per_gpu"] = df["epoch_time"] / df["tokens_per_epoch"] * df["training_gpus"] # seconds per token per gpu
+    gpu_type = df["gpu"].unique()[0]
+
+    for dataset_size, label in zip([1e5, 1e6, 1e7, 1e8], ["100K", "1M", "10M", "100M"]):
+        df[f"epoch_time_{label}"] = dataset_size * df["epoch_time_per_token_per_gpu"] / (3600 * 24)
+    
+    print(df[[
+        "index",  
+        "model_params", 
+        # "batch_size_per_gpu",
+        # "batch_size",
+        # "tokens_per_epoch", 
+        # "steps_per_epoch",
+        "epoch_time", 
+        "epoch_time_100K", 
+        "epoch_time_1M", 
+        "epoch_time_10M", 
+        "epoch_time_100M"
+    ]])
+        
     for background in ["default", "dark_background"]:
         plt.style.use(background)
 
@@ -898,27 +891,6 @@ def plot_model_scaling(data, outdir):
         )
 
         fig, ax = plt.subplots(figsize=(8, 8))
-        
-        df = data.copy()
-        df.query("training_gpus == 8", inplace=True)
-        df["epoch_time_per_token"] = df["epoch_time"] / df["tokens_per_epoch"]
-        
-        for dataset_size, label in zip([1e5, 1e6, 1e7, 1e8], ["100K", "1M", "10M", "100M"]):
-            df[f"epoch_time_{label}"] = dataset_size * df["epoch_time_per_token"] / (3600 * 24)
-        
-        print(df[[
-            "index",  
-            "model_params", 
-            # "batch_size_per_gpu",
-            # "batch_size",
-            # "tokens_per_epoch", 
-            # "steps_per_epoch",
-            "epoch_time", 
-            "epoch_time_100K", 
-            "epoch_time_1M", 
-            "epoch_time_10M", 
-            "epoch_time_100M"
-        ]])
         
         for ii, (ll, offset) in enumerate(
             zip(
@@ -947,6 +919,22 @@ def plot_model_scaling(data, outdir):
                 ax=axis
             )
             
+            # for i, m in enumerate(df["main_module_0_name"].unique()):
+            #     df_m = df.query("main_module_0_name == @m")
+            #     sns.regplot(
+            #         data=df_m,
+            #         x="model_params",
+            #         y=f"epoch_time_{ll}",
+            #         fit_reg=True,
+            #         ci=None,
+            #         order=1,
+            #         color=sns.color_palette("muted")[i],
+            #         label=m,
+            #         scatter=False,
+            #         truncate=True,
+            #         ax=axis,
+            #     )
+            
             axis.patch.set_visible(False)
             plt.setp(axis.spines.values(), visible=False)
             axis.spines["right"].set_visible(True)
@@ -962,7 +950,8 @@ def plot_model_scaling(data, outdir):
             formatter = ticker.FuncFormatter(days_to_formatter)
             axis.yaxis.set_major_formatter(formatter)
             axis.yaxis.set_minor_formatter(formatter)
-            axis.set_ylim(1e-3 * 10**ii, 1e-2 * 10**ii)
+            axis.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=[0.25, 0.5, 0.75]))
+            axis.set_ylim(1e-3 * 10**ii, 1e-0 * 10**ii)
             axis.set_xlim(1e8, 1e10)
             
             legend_handles, _ = g.get_legend_handles_labels()
@@ -972,7 +961,7 @@ def plot_model_scaling(data, outdir):
             ]
             axis.legend(legend_handles, labels, loc="upper left", ncol=1, title="", frameon=False)
         
-        ax.set_ylabel("Pretraining runtime per epoch")
+        ax.set_ylabel(f"Pretraining {gpu_type} time per epoch")
         ax.set_xlabel("Model parameters")
         
         ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
@@ -984,6 +973,19 @@ def plot_model_scaling(data, outdir):
 
 
 def plot_utilization(data, outdir):
+            
+    df = data.copy()
+    df.query("training_gpus == 8", inplace=True)
+    gpu = df["gpu"].unique()[0]
+    
+    df = pd.melt(
+        df, id_vars=["index", "model_params", "main_module_0_name"], 
+        value_vars=[f"q75_utilization_per_gpu", f"max_vram_percent_per_gpu"], 
+        var_name="metric", 
+        value_name="value"
+    )
+    print(df)
+        
     for background in ["default", "dark_background"]:
         plt.style.use(background)
 
@@ -1001,19 +1003,7 @@ def plot_utilization(data, outdir):
             }
         )
         fig, ax = plt.subplots(figsize=(8, 8))
-        
-        df = data.copy()
-        df.query("training_gpus == 8", inplace=True)
-        gpu = df["gpu"].unique()[0]
-        
-        df = pd.melt(
-            df, id_vars=["index", "model_params", "main_module_0_name"], 
-            value_vars=[f"q75_utilization_per_gpu", f"max_vram_percent_per_gpu"], 
-            var_name="metric", 
-            value_name="value"
-        )
-        print(df)
-        
+
         g = sns.relplot(
             data=df,
             x="model_params",
@@ -1056,6 +1046,19 @@ def plot_utilization(data, outdir):
         
         
 def plot_flops(data, outdir):
+            
+    df = data.copy()
+    df.query("training_gpus == 8", inplace=True)
+    gpu = df["gpu"].unique()[0]
+    
+    df = pd.melt(
+        df, id_vars=["index", "model_params", "main_module_0_name"], 
+        value_vars=[f"fwd_flop_per_second_per_gpu", f"bwd_flop_per_second_per_gpu"], 
+        var_name="metric", 
+        value_name="value"
+    )
+    print(df)
+        
     for background in ["default", "dark_background"]:
         plt.style.use(background)
 
@@ -1073,19 +1076,7 @@ def plot_flops(data, outdir):
             }
         )
         fig, ax = plt.subplots(figsize=(8, 8))
-        
-        df = data.copy()
-        df.query("training_gpus == 8", inplace=True)
-        gpu = df["gpu"].unique()[0]
-        
-        df = pd.melt(
-            df, id_vars=["index", "model_params", "main_module_0_name"], 
-            value_vars=[f"fwd_flop_per_second_per_gpu", f"bwd_flop_per_second_per_gpu"], 
-            var_name="metric", 
-            value_name="value"
-        )
-        print(df)
-        
+
         g = sns.relplot(
             data=df,
             x="model_params",
@@ -1130,6 +1121,22 @@ def plot_flops(data, outdir):
         
         
 def plot_data_scaling(data, outdir):
+    df = data.copy()
+    df.query("training_gpus == 8", inplace=True)
+    gpu = df["gpu"].unique()[0]
+
+    print(df[[
+        "index", 
+        "model_params", 
+        "batch_size", 
+        "batch_size_per_gpu", 
+        "tokens_per_second", 
+        "tokens_per_second_per_gpu", 
+        "gib_per_second", 
+        "gib_per_second_per_gpu",
+        "main_module_0_name"
+    ]])
+        
     for background in ["default", "dark_background"]:
         plt.style.use(background)
 
@@ -1147,22 +1154,6 @@ def plot_data_scaling(data, outdir):
             }
         )
         fig, ax = plt.subplots(figsize=(8, 8))
-        
-        df = data.copy()
-        df.query("training_gpus == 8", inplace=True)
-        gpu = df["gpu"].unique()[0]
-
-        print(df[[
-            "index", 
-            "model_params", 
-            "batch_size", 
-            "batch_size_per_gpu", 
-            "tokens_per_second", 
-            "tokens_per_second_per_gpu", 
-            "gib_per_second", 
-            "gib_per_second_per_gpu",
-            "main_module_0_name"
-        ]])
         
         g = sns.lineplot(
             data=df,

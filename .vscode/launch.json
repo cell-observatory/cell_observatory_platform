@@ -1393,9 +1393,9 @@
       "program": "scaling/monitor.py",
       "args": [
         "--datadir",
-        "/groups/betzig/betziglab/thayer/pretrained_models/pretraining",
+        "/groups/betzig/betziglab/thayer/pretrained_models/pretraining/3d",
         "--outdir",
-        "/groups/betzig/betziglab/thayer/pretrained_models/pretraining",
+        "/groups/betzig/betziglab/thayer/pretrained_models/pretraining/3d",
         "--pretraining_token_shape",
         "128-256-256-2",
         "--pretraining_token_channel_dtype",
