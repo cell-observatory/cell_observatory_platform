@@ -249,7 +249,7 @@ def parse_wandb_hardware_log(wandb_filepath: Path):
         hardware_log = ujson.load(f)
         
     return {
-        "gpu": hardware_log["gpu"],
+        "gpu": hardware_log["gpu"].replace("NVIDIA ", ""),
         "gpu_count": hardware_log["gpu_count"],
         "physical_cpu_cores": hardware_log["cpu_count"],
         "logical_cpu_cores": hardware_log["cpu_count_logical"],
