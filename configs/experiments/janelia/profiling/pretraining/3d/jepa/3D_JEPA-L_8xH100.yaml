@@ -18,7 +18,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_folder: pretraining
+experiment_folder: pretraining/3d
 experiment_name: 3D_JEPA-L_8xH100
 wandb_project: profiling
 
