@@ -2,19 +2,22 @@
 import matplotlib
 import matplotlib.ticker as ticker
 from matplotlib import pyplot as plt
+
 matplotlib.use("Agg")
 
 import warnings
+
 warnings.filterwarnings("ignore")
 
 import logging
 import re
 import sys
 from pathlib import Path
-import pandas as pd
-import numpy as np
-import seaborn as sns
 from typing import Union
+
+import numpy as np
+import pandas as pd
+import seaborn as sns
 
 from utils.common import savesvg
 
@@ -63,9 +66,9 @@ def plot_parameter_scaling(
         "Patch (x, y, z, t, c)",
         "(16, 16, 16, 2, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
     published_models_legend=[
         "Data (x, y, c)",
@@ -73,9 +76,9 @@ def plot_parameter_scaling(
         "Patch (x, y, c)",
         "(16, 16, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
 ):
     for background in ["default", "dark_background"]:
@@ -217,7 +220,7 @@ def plot_data_parameter_scaling(
     y="training_gflops_per_volume",
     ylabel="Training GFLOPs per volume",
     ytwin1="training_time_per_volume",
-    ytwinlabel1="Training H100 seconds per volume",
+    ytwinlabel1="Training GPU seconds per volume",
     ytwin2=None,
     ytwinlabel2=None,
     ytwin3=None,
@@ -239,9 +242,9 @@ def plot_data_parameter_scaling(
         "Patch (x, y, z, t, c)",
         "(16, 16, 16, 2, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
     published_models_legend=[
         "Data (x, y, c)",
@@ -249,10 +252,11 @@ def plot_data_parameter_scaling(
         "Patch (x, y, c)",
         "(16, 16, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
+    gpu="H200",
 ):
     for background in ["default", "dark_background"]:
         plt.style.use(background)
@@ -310,6 +314,7 @@ def plot_data_parameter_scaling(
                         ax=axis,
                         legend=True,
                         markers=True,
+                        marker='o',
                         palette="Greens",
                         markeredgecolor="dimgrey" if background == "default" else "lightgrey",
                         markeredgewidth=0.5,
@@ -326,6 +331,7 @@ def plot_data_parameter_scaling(
                         ax=axis,
                         legend=True,
                         markers=True,
+                        marker='o',
                         palette=palette,
                         markeredgecolor="dimgrey" if background == "default" else "lightgrey",
                         markeredgewidth=0.5,
@@ -360,7 +366,7 @@ def plot_data_parameter_scaling(
                 else:
                     axis.legend(legend_handles, legend, loc="upper left", ncol=1, title="", frameon=False)
 
-                if y == "training_time" or y.startswith("training_h100_days"):
+                if y == "training_time" or y.startswith("training_gpu_days"):
                     formatter = ticker.FuncFormatter(days_to_formatter)
                     axis.yaxis.set_major_formatter(formatter)
                     axis.yaxis.set_minor_formatter(formatter)
@@ -438,22 +444,23 @@ def plot_individual_parameters(
         "Patch (x, y, z, t, c)",
         "(16, 16, 16, 2, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
+    gpu="H200",
 ):
-    df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
+    df["number_gpu_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
     df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
-    df["training_h100_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
+    df["training_gpu_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
     df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
 
     fois = {
         f"training_gflops_per_volume": f"Training GFLOPs per volume",
-        f"training_time_per_volume": f"Training H100 seconds per volume",
+        f"training_time_per_volume": f"Training {gpu} seconds per volume",
         f"number_h100_for_batch": f"Minimum number of H100s needed for a batch ({batch_size})",
         f"cost_h100_for_batch": f"Cost of H100s needed for a batch ({batch_size}, $37,500 each)",
-        f"training_h100_hours_per_step": f"Training H100 hours per batch ({batch_size})",
+        f"training_gpu_hours_per_step": f"Training {gpu} hours per batch ({batch_size})",
     }
     for y, ylabel in fois.items():
         plot_parameter_scaling(
@@ -467,16 +474,16 @@ def plot_individual_parameters(
         )
 
     fois = {
-        f"training_h100_days_per_epoch": f"Training H100 time per epoch",
-        f"training_h100_cost_per_epoch": f"H100 compute cost per epoch ($6/hr)",
+        f"training_gpu_days_per_epoch": f"Training {gpu} time per epoch",
+        f"training_gpu_cost_per_epoch": f"H100 compute cost per epoch ($6/hr)",
         f"training_tflops_per_epoch": f"Training Tera-FLOPs (TFLOPs) per epoch",
     }
 
     for dataset_size in [1000000, 1281167, 14197122, 10000000, 100000000, 303000000, 1000000000]:
-        df["training_h100_days_per_epoch"] = dataset_size * df["training_time_per_volume"] / 3600 / 24
-        df["multigpu_training_days_per_epoch"] = df["training_h100_days_per_epoch"] / df["number_h100_for_batch"]
-        df["multigpu_256_training_days_per_epoch"] = df["training_h100_days_per_epoch"] / 256
-        df[f"training_h100_cost_per_epoch"] = df[f"training_h100_days_per_epoch"] * 24 * cost_h100_per_hr
+        df["training_gpu_days_per_epoch"] = dataset_size * df["training_time_per_volume"] / 3600 / 24
+        df["multigpu_training_days_per_epoch"] = df["training_gpu_days_per_epoch"] / df["number_h100_for_batch"]
+        df["multigpu_256_training_days_per_epoch"] = df["training_gpu_days_per_epoch"] / 256
+        df[f"training_gpu_cost_per_epoch"] = df[f"training_gpu_days_per_epoch"] * 24 * cost_h100_per_hr
         df[f"training_tflops_per_epoch"] = dataset_size * df["training_tflops_per_volume"]
 
         for y, ylabel in fois.items():
@@ -503,15 +510,16 @@ def plot_published_models(
         "Patch (x, y, c)",
         "(16, 16, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
+    gpu="H200",
 ):
     batch_size = 4096
     df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
     df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
-    df["training_h100_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
+    df["training_gpu_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
     df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
 
     cols = list(models["S"].keys())
@@ -529,7 +537,7 @@ def plot_published_models(
     fois = {
         f"dataset_size": f"Training dataset size (millions of volumes)",
         f"training_volumes": f"Training volumes seen (billions)",
-        f"training_time": f"Training H100 time",
+        f"training_time": f"Training {gpu} time",
         f"training_compute": f"Training TFLOPs",
         f"training_cost": f"Training cost",
     }
@@ -787,7 +795,10 @@ def plot_gpu_scaling(data, outdir):
             
     df = data.copy()
     df["model_params"] = np.round(df["model_params"]/1e6, 0).astype(int) 
-    df.query("model_params == 628 or model_params == 319", inplace=True)
+    
+    if "3d" in str(outdir):
+        df.query("model_params == 628 or model_params == 319", inplace=True)
+        
     gpu_type = df["gpu"].unique()[0]
     
     for m in df["main_module_0_name"].unique():
@@ -828,7 +839,7 @@ def plot_gpu_scaling(data, outdir):
             ax=ax
         )
         
-        ax.set_ylabel(f"Pretraining {gpu_type} time per epoch (seconds)")
+        ax.set_ylabel(f"Self-supervised pretraining {gpu_type} time per epoch (seconds)")
         ax.set_xlabel("Number of GPUs")
 
         ax.set_ylim(50, 2.5*60)
@@ -945,6 +956,11 @@ def plot_model_scaling(data, outdir):
             if ll is not None and ii != 0:
                 axis.yaxis.set_label_coords(1 + offset, 1.07)
                 
+            if ii == 0:
+                axis.annotate(
+                    ll, xy=(0, 1.03), xycoords="axes fraction", clip_on=False, ha="center", rotation=90
+                )
+                
             axis.set_xscale("log")
             axis.set_yscale("log")
             formatter = ticker.FuncFormatter(days_to_formatter)
@@ -961,7 +977,7 @@ def plot_model_scaling(data, outdir):
             ]
             axis.legend(legend_handles, labels, loc="upper left", ncol=1, title="", frameon=False)
         
-        ax.set_ylabel(f"Pretraining {gpu_type} time per epoch")
+        ax.set_ylabel(f"Self-supervised pretraining {gpu_type} time per epoch")
         ax.set_xlabel("Model parameters")
         
         ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
