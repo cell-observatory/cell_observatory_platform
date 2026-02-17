@@ -365,19 +365,19 @@ def get_flop_per_second_per_gpu(flops_profiler: dict):
     unit, value = log["unit"], log["value"]
     return convert_to_flops(unit, value)
 
-def get_pretraining_token_size(pretraining_token_shape: dict, pretraining_token_channel_dtype: str):
-    if pretraining_token_channel_dtype == "fp16":
-        return np.prod(list(pretraining_token_shape.values())) * 2 / 1024**3 # GiB
-    elif pretraining_token_channel_dtype == "fp32":
-        return np.prod(list(pretraining_token_shape.values())) * 4 / 1024**3 # GiB
+def get_pretraining_token_size(token_shape: dict, token_channel_dtype: str):
+    if token_channel_dtype == "fp16":
+        return np.prod(list(token_shape.values())) * 2 / 1024**3 # GiB
+    elif token_channel_dtype == "fp32":
+        return np.prod(list(token_shape.values())) * 4 / 1024**3 # GiB
     else:
-        raise ValueError(f"Unknown channel dtype: {pretraining_token_channel_dtype}")
+        raise ValueError(f"Unknown channel dtype: {token_channel_dtype}")
 
 def get_utilization(
     datadir: Path, 
     wandb_project: str = "profiling",
-    pretraining_token_shape: dict = {'t': 128, 'z': 256, 'y': 256, 'x': 2}, 
-    pretraining_token_channel_dtype: str = "fp16",
+    token_shape: dict = {'t': 128, 'z': 256, 'y': 256, 'x': 2}, 
+    token_channel_dtype: str = "fp16",
     outdir: Path = Path("../utilization/data"),
 ):
     models = {}
@@ -403,7 +403,7 @@ def get_utilization(
             # pprint(flops_profiler)
             # pprint(top_modules)
         
-        token_size = get_pretraining_token_size(pretraining_token_shape, pretraining_token_channel_dtype)
+        token_size = get_pretraining_token_size(token_shape, token_channel_dtype)
         hardware_specs = parse_wandb_hardware_log(wandb_logdir.rglob("wandb-metadata.json").__next__())
         
         print(f"Looking for wandb logs for {model_dir.name}")
@@ -506,6 +506,7 @@ def get_utilization(
             "max_ram_utilization": max_ram_utilization,
             "max_cpu_threads": max_cpu_threads,
             "gib_per_epoch": gib_per_epoch,
+            "token_shape": token_shape,
             **hardware_specs
         }
         

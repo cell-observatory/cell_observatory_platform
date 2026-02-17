@@ -41,11 +41,11 @@ def parse_args(args):
     )
 
     parser.add_argument(
-        "--pretraining_token_shape", default="16-128-256-256-2", type=str, help='image/video shape for pretraining data'
+        "--token_shape", default="16-128-256-256-2", type=str, help='image/video shape for pretraining data'
     )
 
     parser.add_argument(
-        "--pretraining_token_channel_dtype", default="fp16", type=str, help='channel dtype for pretraining data'
+        "--token_channel_dtype", default="fp16", type=str, help='channel dtype for pretraining data'
     )
     
     parser.add_argument(
@@ -62,9 +62,9 @@ def main(args=None):
     args.outdir = args.outdir 
     args.outdir.mkdir(parents=True, exist_ok=True)
     
-    args.pretraining_token_shape = {
-        o: int(i) for o, i in zip(args.order.split('-'), args.pretraining_token_shape.split('-'))
-    } if isinstance(args.pretraining_token_shape, str) else args.pretraining_token_shape
+    args.token_shape = {
+        o: int(i) for o, i in zip(args.order.split('-'), args.token_shape.split('-'))
+    } if isinstance(args.token_shape, str) else args.token_shape
 
     
     logger.info(f"Getting utilization from {args.datadir}...")
@@ -73,8 +73,8 @@ def main(args=None):
         datadir=args.datadir,
         outdir=args.outdir,
         wandb_project=args.wandb_project,
-        pretraining_token_shape=args.pretraining_token_shape,
-        pretraining_token_channel_dtype=args.pretraining_token_channel_dtype,
+        token_shape=args.token_shape,
+        token_channel_dtype=args.token_channel_dtype,
     )
     vis.plot_gpu_scaling(df, args.outdir)
     vis.plot_model_scaling(df, args.outdir)

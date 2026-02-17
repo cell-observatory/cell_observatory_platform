@@ -1396,12 +1396,14 @@
         "/groups/betzig/betziglab/thayer/pretrained_models/pretraining/3d",
         "--outdir",
         "/groups/betzig/betziglab/thayer/pretrained_models/pretraining/3d",
-        "--pretraining_token_shape",
+        "--token_shape",
         "128-256-256-2",
-        "--pretraining_token_channel_dtype",
+        "--order",
+        "z-y-x-c",
+        "--token_channel_dtype",
         "fp16",
         "--wandb_project",
-        "profiling",
+        "profiling"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
@@ -1420,12 +1422,14 @@
         "/groups/betzig/betziglab/thayer/pretrained_models/pretraining/4d",
         "--outdir",
         "/groups/betzig/betziglab/thayer/pretrained_models/pretraining/4d",
-        "--pretraining_token_shape",
+        "--token_shape",
         "16-128-256-256-2",
-        "--pretraining_token_channel_dtype",
+        "--order",
+        "t-z-y-x-c",
+        "--token_channel_dtype",
         "fp16",
         "--wandb_project",
-        "profiling",
+        "profiling"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
@@ -1451,7 +1455,7 @@
         "--dtype",
         "float16",
         "--gpu",
-        "H200",
+        "H200"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
@@ -1477,7 +1481,7 @@
         "--dtype",
         "float16",
         "--gpu",
-        "H200",
+        "H200"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
@@ -1503,7 +1507,7 @@
         "--dtype",
         "float16",
         "--gpu",
-        "H200",
+        "H200"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
@@ -1529,7 +1533,7 @@
         "--dtype",
         "float16",
         "--gpu",
-        "H200",
+        "H200"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
@@ -1537,6 +1541,6 @@
         "PYTHONUNBUFFERED": "1"
       },
       "justMyCode": false
-    },
+    }
   ]
 }
