@@ -203,6 +203,6 @@ python -m forecast \
 scaling/data/{arch}/size-{t}-{z}-{y}-{x}-{c}/patch-{pt}-{pz}-{py}-{px}-{pc}/
   ├── summary/
   │   └── {encoder|decoder|autoencoder}/
-  │       ├── training_h100_days_per_epoch_{dataset_size}_{default|dark_background}.{pdf,png,svg}
+  │       ├── training_gpu_days_per_epoch_{dataset_size}_{default|dark_background}.{pdf,png,svg}
   └── {arch}_{mfu}_mfu.csv  # aggregated metrics for mfu∈{0.3,0.6,0.9}
 ```
