@@ -138,7 +138,7 @@ def plot_parameter_scaling(
                 markeredgewidth=0.5,
             )
 
-        d = data[(data["data"] == "2D(rgb)") & (data["px"] == 16) & (data["mfu"] == 0.3)]
+        d = data[(data["data"] == "2D(rgb)") & (data["px"] == 16) & (data["mfu"] == 0.5)]
 
         for line in range(0, d.shape[0]):
             xx = d[x][line]
@@ -377,7 +377,7 @@ def plot_data_parameter_scaling(
                 yscalelabel, xy=(0, 1.03), xycoords="axes fraction", clip_on=False, ha="center", rotation=90
             )
 
-        d = data[(data["data"] == f"2D({rgb})") & (data["px"] == patch_size) & (data["mfu"] == 0.3)]
+        d = data[(data["data"] == f"2D({rgb})") & (data["px"] == patch_size) & (data["mfu"] == 0.5)]
 
         for line in range(0, d.shape[0]):
             xx = d[x][line]
@@ -864,11 +864,12 @@ def plot_gpu_scaling(data, outdir):
 def plot_model_scaling(data, outdir):
     df = data.copy()
     df.query("training_gpus == 8", inplace=True)
-    df["epoch_time_per_token_per_gpu"] = df["epoch_time"] / df["tokens_per_epoch"] * df["training_gpus"] # seconds per token per gpu
+    df["epoch_time_per_gpu_per_token"] = df["epoch_time"] / df["tokens_per_epoch"] * df["training_gpus"] # seconds per token per gpu
     gpu_type = df["gpu"].unique()[0]
+    token_shape = df["token_shape"].iloc[0]
 
     for dataset_size, label in zip([1e5, 1e6, 1e7, 1e8], ["100K", "1M", "10M", "100M"]):
-        df[f"epoch_time_{label}"] = dataset_size * df["epoch_time_per_token_per_gpu"] / (3600 * 24)
+        df[f"epoch_time_per_gpu_{label}"] = dataset_size * df["epoch_time_per_gpu_per_token"] / (3600 * 24)
     
     print(df[[
         "index",  
@@ -878,10 +879,10 @@ def plot_model_scaling(data, outdir):
         # "tokens_per_epoch", 
         # "steps_per_epoch",
         "epoch_time", 
-        "epoch_time_100K", 
-        "epoch_time_1M", 
-        "epoch_time_10M", 
-        "epoch_time_100M"
+        "epoch_time_per_gpu_100K", 
+        "epoch_time_per_gpu_1M", 
+        "epoch_time_per_gpu_10M", 
+        "epoch_time_per_gpu_100M"
     ]])
         
     for background in ["default", "dark_background"]:
@@ -919,7 +920,7 @@ def plot_model_scaling(data, outdir):
             g = sns.lineplot(
                 data=df,
                 x="model_params",
-                y=f"epoch_time_{ll}",
+                y=f"epoch_time_per_gpu_{ll}",
                 hue="main_module_0_name",
                 style="main_module_0_name",
                 legend=True,
@@ -935,7 +936,7 @@ def plot_model_scaling(data, outdir):
             #     sns.regplot(
             #         data=df_m,
             #         x="model_params",
-            #         y=f"epoch_time_{ll}",
+            #         y=f"epoch_time_per_gpu_{ll}",
             #         fit_reg=True,
             #         ci=None,
             #         order=1,
@@ -967,14 +968,23 @@ def plot_model_scaling(data, outdir):
             axis.yaxis.set_major_formatter(formatter)
             axis.yaxis.set_minor_formatter(formatter)
             axis.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=[0.25, 0.5, 0.75]))
-            axis.set_ylim(1e-3 * 10**ii, 1e-0 * 10**ii)
+            
             axis.set_xlim(1e8, 1e10)
             
             legend_handles, _ = g.get_legend_handles_labels()
-            labels = [
-                "JEPA (256, 256 ,128, 2)", 
-                "MAE (256, 256, 128, 2)",
-            ]
+            if "3d" in str(outdir):
+                labels = [
+                    f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})", 
+                    f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})",
+                ]
+                axis.set_ylim(1e-3 * 10**ii, 1e-0 * 10**ii)
+            else:
+                labels = [
+                    f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})", 
+                    f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})",
+                ]
+                axis.set_ylim(1e-2 * 10**ii, 10 * 10**ii)
+                
             axis.legend(legend_handles, labels, loc="upper left", ncol=1, title="", frameon=False)
         
         ax.set_ylabel(f"Self-supervised pretraining {gpu_type} time per epoch")
@@ -993,7 +1003,8 @@ def plot_utilization(data, outdir):
     df = data.copy()
     df.query("training_gpus == 8", inplace=True)
     gpu = df["gpu"].unique()[0]
-    
+    token_shape = df["token_shape"].iloc[0]
+        
     df = pd.melt(
         df, id_vars=["index", "model_params", "main_module_0_name"], 
         value_vars=[f"q75_utilization_per_gpu", f"max_vram_percent_per_gpu"], 
@@ -1038,10 +1049,17 @@ def plot_utilization(data, outdir):
         g.set_xlabels("Model parameters", clear_inner=False)
         g.set(xlim=(1e8, 2.2e9), ylim=(85, 100))
         
-        labels = [
-            "JEPA (256, 256 ,128, 2)", 
-            "MAE (256, 256, 128, 2)",
-        ]
+        if "3d" in str(outdir):
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})",
+            ]
+        else:
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})",
+            ]
+            
         sns.move_legend(g, labels=labels, loc="upper left", ncol=2, frameon=False, title="")
         
         for i, ax in enumerate(g.axes.flat):
@@ -1066,6 +1084,7 @@ def plot_flops(data, outdir):
     df = data.copy()
     df.query("training_gpus == 8", inplace=True)
     gpu = df["gpu"].unique()[0]
+    token_shape = df["token_shape"].iloc[0]
     
     df = pd.melt(
         df, id_vars=["index", "model_params", "main_module_0_name"], 
@@ -1111,10 +1130,17 @@ def plot_flops(data, outdir):
         g.set_xlabels("Model parameters", clear_inner=False)
         g.set(xlim=(1e8, 2.2e9), ylim=(None, None))
         
-        labels = [
-            "JEPA (256, 256 ,128, 2)", 
-            "MAE (256, 256, 128, 2)",
-        ]
+        if "3d" in str(outdir):
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})",
+            ]
+        else:
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})",
+            ]
+            
         sns.move_legend(g, labels=labels, loc="upper left", ncol=2, frameon=False, title="")
         
         for i, ax in enumerate(g.axes.flat):
@@ -1140,7 +1166,8 @@ def plot_data_scaling(data, outdir):
     df = data.copy()
     df.query("training_gpus == 8", inplace=True)
     gpu = df["gpu"].unique()[0]
-
+    token_shape = df["token_shape"].iloc[0]
+    
     print(df[[
         "index", 
         "model_params", 
@@ -1198,10 +1225,17 @@ def plot_data_scaling(data, outdir):
         ax.spines['top'].set_visible(False)
 
         legend_handles, _ = g.get_legend_handles_labels()
-        labels = [
-            "JEPA (256, 256 ,128, 2)", 
-            "MAE (256, 256, 128, 2)",
-        ]
+        
+        if "3d" in str(outdir):
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})",
+            ]
+        else:
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})",
+            ]
         ax.legend(legend_handles, labels, loc="lower left", ncol=1, title="", frameon=False)
 
         plt.savefig(f"{outdir}/data_scaling_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
