@@ -8,10 +8,15 @@ https://github.com/facebookresearch/dinov3/dinov3/utils/utils.py
 
 from typing import List, Tuple
 
+import numpy as np
+from scipy.ndimage import distance_transform_edt
+
 import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
+
+from cell_observatory_platform.data.structures import masks_to_boxes_v2
 
 
 def cat_keep_shapes(x_list: List[Tensor]) -> Tuple[Tensor, List[Tuple[int]], List[int]]:
@@ -426,3 +431,288 @@ def c2_xavier_fill(module: nn.Module) -> None:
     nn.init.kaiming_uniform_(module.weight, a=1)
     if module.bias is not None:
         nn.init.constant_(module.bias, 0)
+
+
+def concat_points(old_point_inputs, new_points, new_labels):
+    """Add new points and labels to previous point inputs (add at the end)."""
+    if old_point_inputs is None:
+        points, labels = new_points, new_labels
+    else:
+        points = torch.cat([old_point_inputs["point_coords"], new_points], dim=1)
+        labels = torch.cat([old_point_inputs["point_labels"], new_labels], dim=1)
+
+    return {"point_coords": points, "point_labels": labels}
+
+
+def sample_box_points(
+    input_fmt: str,
+    masks: torch.Tensor,
+    noise: float = 0.1,  # SAM default
+    noise_bound: int = 20,  # SAM default
+    top_left_label: int = 2,
+    bottom_right_label: int = 3,
+) -> Tuple[np.array, np.array]:
+    """
+    Sample a noised version of the corners of a given `bbox`
+
+    Inputs:
+    - input_fmt: input format, e.g. "ZYXC"
+    - masks: [B, 1, D, H, W] masks, dtype=torch.Tensor
+    - noise: noise as a fraction of box depth, width and height, dtype=float
+    - noise_bound: maximum amount of noise (in pure pixels), dtype=int
+
+    Returns:
+    - box_coords: [B, num_pt, 3], contains (z, y, x) coordinates of box corners, dtype=torch.float
+    - box_labels: [B, num_pt], label 2 is reserverd for top left and 3 for bottom right corners, dtype=torch.int32
+    """
+    if input_fmt == "ZYXC":
+        device = masks.device
+        # box_coords: [B, 6] for masks: [N, D, H, W]
+        box_coords = masks_to_boxes_v2(masks.squeeze(1))
+        B, _, D, H, W = masks.shape
+        # box_labels: [B, 2]
+        box_labels = torch.tensor(
+            [top_left_label, bottom_right_label], dtype=torch.int, device=device
+        ).repeat(B)
+        if noise > 0.0:
+            if not isinstance(noise_bound, torch.Tensor):
+                noise_bound = torch.tensor(noise_bound, device=device)
+            # bbox_w: [B, 1], bbox_h: [B, 1], bbox_d: [B, 1]
+            bbox_w = box_coords[..., 2] - box_coords[..., 0]
+            bbox_h = box_coords[..., 3] - box_coords[..., 1]
+            bbox_d = box_coords[..., 4] - box_coords[..., 2]
+            max_dx = torch.min(bbox_w * noise, noise_bound)
+            max_dy = torch.min(bbox_h * noise, noise_bound)
+            max_dz = torch.min(bbox_d * noise, noise_bound)
+            # bbox_noise: [B, 6] in range [-1, 1]
+            box_noise = 2 * torch.rand(B, 1, 6, device=device) - 1
+            box_noise = box_noise * torch.stack((max_dx, max_dy, max_dz, max_dx, max_dy, max_dz), dim=-1)
+
+            box_coords = box_coords + box_noise
+            img_bounds = (
+                torch.tensor([W, H, D, W, H, D], device=device) - 1
+            )  # uncentered pixel coords
+            box_coords.clamp_(torch.zeros_like(img_bounds), img_bounds)  # In place clamping
+
+        box_coords = box_coords.reshape(-1, 2, 3)  # always 2 points (top left and bottom right)
+        box_labels = box_labels.reshape(-1, 2)  # always 2 labels (top left and bottom right)
+    else:
+        raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
+
+    return box_coords, box_labels
+
+
+def sample_random_points_from_errors(input_fmt: str, gt_masks, pred_masks, num_pt=1):
+    """
+    Sample `num_pt` random points (along with their labels) independently from the error regions.
+
+    Inputs:
+    - input_fmt: input format, e.g. "ZYXC"
+    - gt_masks: [B, 1, D, H, W] masks, dtype=torch.bool
+    - pred_masks: [B, 1, D, H, W] masks, dtype=torch.bool or None
+    - num_pt: int, number of points to sample independently for each of the B error maps
+
+    Outputs:
+    - points: [B, num_pt, 3], dtype=torch.float, contains (x, y, z) coordinates of each sampled point
+    - labels: [B, num_pt], dtype=torch.int32, where 1 means positive clicks and 0 means
+      negative clicks
+    """
+    if input_fmt == "ZYXC":
+        if pred_masks is None:  # if pred_masks is not provided, treat it as empty
+            pred_masks = torch.zeros_like(gt_masks)
+        assert gt_masks.dtype == torch.bool and gt_masks.size(1) == 1, f"Expected (B, 1, D, H, W), got {gt_masks.shape}"
+        assert pred_masks.dtype == torch.bool and pred_masks.shape == gt_masks.shape, f"Expected (B, 1, D, H, W), got {pred_masks.shape}"
+        assert num_pt >= 0, f"num_pt must be >= 0, got {num_pt}"
+
+        B, _, D_im, H_im, W_im = gt_masks.shape
+        device = gt_masks.device
+
+        # false positive region, a new point sampled in this region should have
+        # negative label to correct the FP error
+        fp_masks = ~gt_masks & pred_masks
+        # false negative region, a new point sampled in this region should have
+        # positive label to correct the FN error
+        fn_masks = gt_masks & ~pred_masks
+        # whether the prediction completely match the ground-truth on each mask
+        # all_correct: [B, 1]
+        all_correct = torch.all((gt_masks == pred_masks).flatten(2), dim=2)
+        # all_correct: [B, 1, 1, 1, 1]
+        all_correct = all_correct[..., None, None, None]
+
+        # channel 0 is FP map, while channel 1 is FN map
+        pts_noise = torch.rand(B, num_pt, D_im, H_im, W_im, 2, device=device)
+        # sample a negative new click from FP region or a positive new click
+        # from FN region, depend on where the maximum falls,
+        # and in case the predictions are all correct (no FP or FN), we just
+        # sample a negative click from the background region
+        # sample negative click in FP region OR if all correct and background
+        pts_noise[..., 0] *= fp_masks | (all_correct & ~gt_masks)
+        # sample positive click in FN region
+        pts_noise[..., 1] *= fn_masks
+        # pts_idx: [B, num_pt]
+        pts_idx = pts_noise.flatten(2).argmax(dim=2)
+        # labels: [B, num_pt]
+        labels = (pts_idx % 2).to(torch.int32)
+        pts_x = pts_idx % W_im
+        pts_y = (pts_idx // W_im) % H_im
+        pts_z = pts_idx // (W_im * H_im)
+        points = torch.stack([pts_x, pts_y, pts_z], dim=2).to(torch.float)
+    else:
+        raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
+    return points, labels
+
+
+def sample_one_point_from_error_center(input_fmt: str, gt_masks, pred_masks, padding=True):
+    """
+    Sample 1 random point (along with its label) from the center of each error region,
+    that is, the point with the largest distance to the boundary of each error region.
+    This is the RITM sampling method from https://github.com/saic-vul/ritm_interactive_segmentation/blob/master/isegm/inference/clicker.py
+
+    Inputs:
+    - input_fmt: input format, e.g. "ZYXC"
+    - gt_masks: [B, 1, D, H, W] masks, dtype=torch.bool
+    - pred_masks: [B, 1, D, H, W] masks, dtype=torch.bool or None
+    - padding: if True, pad with boundary of 1 px for distance transform
+
+    Outputs:
+    - points: [B, 1, 3], dtype=torch.float, contains (x, y, z) coordinates of each sampled point
+    - labels: [B, 1], dtype=torch.int32, where 1 means positive clicks and 0 means negative clicks
+    """
+    if pred_masks is None:
+        pred_masks = torch.zeros_like(gt_masks)
+    assert gt_masks.dtype == torch.bool and gt_masks.size(1) == 1, f"Expected (B, 1, D, H, W), got {gt_masks.shape}"
+    assert pred_masks.dtype == torch.bool and pred_masks.shape == gt_masks.shape, f"Expected (B, 1, D, H, W), got {pred_masks.shape}"
+
+    if input_fmt == "ZYXC":
+        B, _, D_im, H_im, W_im = gt_masks.shape
+        device = gt_masks.device
+
+        # false positive region, a new point sampled in this region should have
+        # negative label to correct the FP error
+        fp_masks = ~gt_masks & pred_masks
+        # false negative region, a new point sampled in this region should have
+        # positive label to correct the FN error
+        fn_masks = gt_masks & ~pred_masks
+
+        all_correct = torch.all((gt_masks == pred_masks).flatten(2), dim=2)  # [B,1]
+        all_correct = all_correct[:, 0]  # [B]
+
+        fp_np = fp_masks.cpu().numpy()
+        fn_np = fn_masks.cpu().numpy()
+        bg_np = (~gt_masks).cpu().numpy()  # background for fallback
+
+        points = torch.zeros(B, 1, 3, dtype=torch.float)
+        labels = torch.zeros(B, 1, dtype=torch.int32)  # default negative
+
+        for b in range(B):
+            if bool(all_correct[b]):
+                # --- fallback: sample a negative click from background (~gt) ---
+                bg = bg_np[b, 0]  # [D,H,W] bool
+                bg_flat = bg.reshape(-1)
+                idxs = np.flatnonzero(bg_flat)
+                pt_idx = int(np.random.choice(idxs))
+                x = pt_idx % W_im
+                y = (pt_idx // W_im) % H_im
+                z = pt_idx // (H_im * W_im)
+
+                points[b, 0] = torch.tensor([x, y, z], dtype=torch.float)
+                labels[b, 0] = 0
+                continue
+
+            # --- normal case: pick the deepest voxel in FN or FP by 3D EDT ---
+            fn = fn_np[b, 0]  # [D,H,W] bool
+            fp = fp_np[b, 0]  # [D,H,W] bool
+
+            if padding:
+                fn_pad = np.pad(fn, ((1, 1), (1, 1), (1, 1)), mode="constant")
+                fp_pad = np.pad(fp, ((1, 1), (1, 1), (1, 1)), mode="constant")
+            else:
+                fn_pad, fp_pad = fn, fp
+
+            fn_dt = distance_transform_edt(fn_pad.astype(np.uint8))
+            fp_dt = distance_transform_edt(fp_pad.astype(np.uint8))
+
+            if padding:
+                fn_dt = fn_dt[1:-1, 1:-1, 1:-1]
+                fp_dt = fp_dt[1:-1, 1:-1, 1:-1]
+
+            fn_flat = fn_dt.reshape(-1)
+            fp_flat = fp_dt.reshape(-1)
+
+            fn_argmax = int(np.argmax(fn_flat))
+            fp_argmax = int(np.argmax(fp_flat))
+
+            fn_max = float(fn_flat[fn_argmax])
+            fp_max = float(fp_flat[fp_argmax])
+
+            # choose whether we correct FN (positive click) or FP (negative click)
+            is_positive = fn_max > fp_max
+            pt_idx = fn_argmax if is_positive else fp_argmax
+
+            x = pt_idx % W_im
+            y = (pt_idx // W_im) % H_im
+            z = pt_idx // (H_im * W_im)
+
+            points[b, 0] = torch.tensor([x, y, z], dtype=torch.float)
+            labels[b, 0] = int(is_positive)
+
+    else:
+        raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
+
+    points = points.to(device)
+    labels = labels.to(device)
+    return points, labels
+
+
+def get_next_point(input_fmt: str, gt_masks, pred_masks, method):
+    if method == "uniform":
+        return sample_random_points_from_errors(input_fmt, gt_masks, pred_masks)
+    elif method == "center":
+        return sample_one_point_from_error_center(input_fmt, gt_masks, pred_masks)
+    else:
+        raise ValueError(f"unknown sampling method {method}")
+
+
+def select_closest_cond_frames(frame_idx, cond_frame_outputs, max_cond_frame_num):
+    """
+    Select up to `max_cond_frame_num` conditioning frames from `cond_frame_outputs`
+    that are temporally closest to the current frame at `frame_idx`. Here, we take
+    - a) the closest conditioning frame before `frame_idx` (if any);
+    - b) the closest conditioning frame after `frame_idx` (if any);
+    - c) any other temporally closest conditioning frames until reaching a total
+         of `max_cond_frame_num` conditioning frames.
+
+    Outputs:
+    - selected_outputs: selected items (keys & values) from `cond_frame_outputs`.
+    - unselected_outputs: items (keys & values) not selected in `cond_frame_outputs`.
+    """
+    if max_cond_frame_num == -1 or len(cond_frame_outputs) <= max_cond_frame_num:
+        selected_outputs = cond_frame_outputs
+        unselected_outputs = {}
+    else:
+        assert max_cond_frame_num >= 2, "we should allow using 2+ conditioning frames"
+        selected_outputs = {}
+
+        # the closest conditioning frame before `frame_idx` (if any)
+        idx_before = max((t for t in cond_frame_outputs if t < frame_idx), default=None)
+        if idx_before is not None:
+            selected_outputs[idx_before] = cond_frame_outputs[idx_before]
+
+        # the closest conditioning frame after `frame_idx` (if any)
+        idx_after = min((t for t in cond_frame_outputs if t >= frame_idx), default=None)
+        if idx_after is not None:
+            selected_outputs[idx_after] = cond_frame_outputs[idx_after]
+
+        # add other temporally closest conditioning frames until reaching a total
+        # of `max_cond_frame_num` conditioning frames.
+        num_remain = max_cond_frame_num - len(selected_outputs)
+        inds_remain = sorted(
+            (t for t in cond_frame_outputs if t not in selected_outputs),
+            key=lambda x: abs(x - frame_idx),
+        )[:num_remain]
+        selected_outputs.update((t, cond_frame_outputs[t]) for t in inds_remain)
+        unselected_outputs = {
+            t: v for t, v in cond_frame_outputs.items() if t not in selected_outputs
+        }
+
+    return selected_outputs, unselected_outputs

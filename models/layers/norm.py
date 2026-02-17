@@ -46,6 +46,21 @@ class LayerNorm3D(nn.Module):
         return x
 
 
+class LayerNorm4D(nn.Module):
+    def __init__(self, normalized_shape, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.ln = norm_layer(normalized_shape) if norm_layer is not None else nn.Identity()
+
+    def forward(self, x):
+        """
+        x: N C T D H W
+        """
+        x = x.permute(0, 2, 3, 4, 5, 1)
+        x = self.ln(x)
+        x = x.permute(0, 5, 1, 2, 3, 4)
+        return x
+
+
 # TODO: consider following DINOv3 implementation of RMSNorm
 # class RMSNorm(nn.Module):
 #     def __init__(self, dim: int, eps: float = 1e-5):

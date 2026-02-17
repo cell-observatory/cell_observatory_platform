@@ -1061,3 +1061,214 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         plt.savefig(self.debug_savepath)
 
         raise RuntimeError("Debug visualization — stopping after first batch.")
+
+
+# --------------------------------------------------------------------------- #
+# Video Segmentation / Tracking task
+# --------------------------------------------------------------------------- #
+
+
+class PromptBasedVideoPreprocessor(BaseFinetunePreprocessor):
+    """
+    Preprocessor for prompt-based video segmentation/tracking.
+    Transforms collator output from BTZYXC format into expected views:
+      - Flat image batch: (B*T, C_img, Z, Y, X) channels-first, mask channel stripped
+      - Per-frame binary masks indexed by frame (stage_id)
+      - Flat object-to-image index maps for tracking loop
+    """
+
+    def __init__(
+        self,
+        transforms_list: list | None,
+        with_masking: bool,
+        mask_generator,
+        patch_shape: tuple[int, int, int],
+        dtype: torch.dtype | str,
+        input_format: str,
+        input_shape: tuple[int, ...],
+        seed: int | None = None,
+        mask_idx: int = -1,
+        expect_mask_channel: bool = True,
+        max_masks: int | None = None,
+    ):
+        super().__init__(
+            transforms_list=transforms_list,
+            with_masking=with_masking,
+            mask_generator=mask_generator,
+            patch_shape=patch_shape,
+            dtype=dtype,
+            input_format=input_format,
+            input_shape=input_shape,
+            seed=seed,
+            mask_idx=mask_idx,
+        )
+        if "T" not in self.input_format:
+            raise ValueError(
+                f"SAM2VideoPreprocessor requires temporal dimension 'T' in input_format, "
+                f"got {self.input_format!r}"
+            )
+        self.expect_mask_channel = expect_mask_channel
+        self.max_masks = max_masks
+
+    # ------------------------------------------------------------------ #
+    # Image transformations
+    # ------------------------------------------------------------------ #
+
+    def _strip_mask_channel(
+        self, inputs: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """
+        inputs:  (B, T, Z, Y, X, C)
+        returns: images (B, T, Z, Y, X, C-1), mask_labelmap (B, T, Z, Y, X) or None
+        """
+        # TODO: generalize
+        if not self.expect_mask_channel:
+            return inputs, None
+        images = inputs[..., :-1]             # (B, T, Z, Y, X, C-1)
+        mask_labelmap = inputs[..., -1]       # (B, T, Z, Y, X)
+        return images, mask_labelmap
+
+    @staticmethod
+    def _build_flat_img_batch(images: torch.Tensor) -> torch.Tensor:
+        """(B, T, Z, Y, X, C) -> (T, B, C, Z, Y, X)"""
+        B, T, Z, Y, X, C = images.shape
+        images = images.permute(1, 0, 5, 2, 3, 4).contiguous()
+        return images.reshape(T * B, C, Z, Y, X)
+
+    # ------------------------------------------------------------------ #
+    # Mask & index transformations
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _build_data_views(
+        targets: list[dict],
+        num_frames: int,
+        num_videos: int,
+        device: torch.device,
+    ) -> dict:
+        """
+        Build per-frame masks + flat object-to-image indices from per-batch targets.
+        Returns dict ready to stash in data_sample["metainfo"]["data_views"].
+        """
+        B = num_videos
+        T = num_frames
+
+        # Accumulate per (frame t, video b) so we can cap/pad per flat index b*T+t
+        masks_per_frame: list[list[torch.Tensor]] = [
+            [torch.zeros(0, *self.input_shape, dtype=torch.bool, device=device) for _ in range(B)]
+            for _ in range(T)
+        ]
+        flat_idx_per_frame: list[list[torch.Tensor]] = [
+            [torch.zeros(0, dtype=torch.int32, device=device) for _ in range(B)]
+            for _ in range(T)
+        ]
+
+        for b, tgt in enumerate(targets):
+            inst_masks = tgt.get("masks", None)
+            if inst_masks is None or inst_masks.numel() == 0:
+                continue
+
+            assert inst_masks.ndim == 5, (
+                f"Expected masks shape (N,T,Z,Y,X) got {inst_masks.shape}"
+            )
+            N_inst = inst_masks.shape[0]
+
+            for t in range(T):
+                masks_per_frame[t][b] = inst_masks[:, t].bool()  # (N_inst, Z, Y, X)
+                flat_idx_per_frame[t][b] = torch.full(
+                    (N_inst,), b * T + t,
+                    dtype=torch.int32, device=device,
+                )
+
+        # Build out_masks / out_img_ids: per-frame
+        out_masks: list[torch.Tensor] = []
+        out_img_ids: list[torch.Tensor] = []
+
+        for t in range(T):
+            if self.max_masks is not None:
+                # Each unique (b*T+t) gets exactly max_masks slots
+                seg_masks: list[torch.Tensor] = []
+                seg_ids: list[torch.Tensor] = []
+                for b in range(B):
+                    m = masks_per_frame[t][b]
+                    ids = flat_idx_per_frame[t][b]
+                    N_bt = m.shape[0]
+                    flat_id = b * T + t
+                    if N_bt > self.max_masks:
+                        seg_masks.append(m[:self.max_masks])
+                        seg_ids.append(ids[:self.max_masks])
+                    elif N_bt < self.max_masks:
+                        pad_n = self.max_masks - N_bt
+                        seg_masks.append(
+                            torch.cat(
+                                [m, m.new_zeros(pad_n, *m.shape[1:], dtype=torch.bool)],
+                                dim=0,
+                            )
+                        )
+                        seg_ids.append(
+                            torch.cat(
+                                [ids, ids.new_full((pad_n,), flat_id)],
+                                dim=0,
+                            )
+                        )
+                    else:
+                        seg_masks.append(m)
+                        seg_ids.append(ids)
+                out_masks.append(torch.cat(seg_masks, dim=0))
+                out_img_ids.append(torch.cat(seg_ids, dim=0))
+            else: 
+                raise ValueError("No Max masks setting is currently not supported")
+
+        return {
+            "num_frames": T,
+            "num_videos": B,
+            "masks": out_masks,         # list[T] of (N_obj, Z, Y, X)
+            "img_ids": out_img_ids,     # list[T] of (N_obj,) — flat index into data_tensor
+        }
+
+    # ------------------------------------------------------------------ #
+    # forward
+    # ------------------------------------------------------------------ #
+
+    def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
+        preprocess_t0 = time.time()
+
+        inputs = data_sample["data_tensor"]
+        meta = data_sample.get("metainfo", {})
+
+        if inputs.dtype != self.dtype:
+            inputs = inputs.to(self.dtype)
+
+        # --- strip mask channel -------------------------------------------------
+        images, _mask_labelmap = self._strip_mask_channel(inputs)
+
+        # --- apply any configured transforms ------------------------------------
+        sample = {"data_tensor": images, "metainfo": meta}
+        sample, transform_time = self._apply_transforms(sample)
+        images = sample["data_tensor"]
+        meta = sample["metainfo"]
+
+        B, T = images.shape[0], images.shape[1]
+
+        # --- flatten to (T*B, C, Z, Y, X) ---------------------
+        flat_img_batch = self._build_flat_img_batch(images)
+
+        # --- build per-frame masks & index maps ----------------------------
+        targets = meta.pop("targets", [])
+        data_views = self._build_data_views(
+            targets=targets,
+            num_frames=T,
+            num_videos=B,
+            device=flat_img_batch.device,
+        )
+
+        return {
+            "data_tensor": flat_img_batch,
+            "metainfo": {
+                **meta,
+                "targets": data_views,
+                "preprocess_time": time.time() - preprocess_t0,
+                "data_time": data_time,
+                "transform_time": transform_time,
+            },
+        }

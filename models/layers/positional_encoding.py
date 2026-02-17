@@ -1,6 +1,6 @@
-import logging
-import math
 import sys
+import math
+import logging
 from typing import Optional, Tuple, Literal
 
 import numpy as np
@@ -833,6 +833,36 @@ def make_axial_rope_freqs(
     )
 
 
+def make_cross_rope_pos_enc_qk(
+    freqs_cis_q: Tensor,
+    num_k_content: int,
+    cross_rope_type: Literal["k_repeat_q"] = "k_repeat_q",
+) -> Tuple[Tensor, Tensor]:
+    """Build (pos_enc_q, pos_enc_k) for cross-attention RoPE.
+
+    Args:
+        freqs_cis_q: RoPE frequencies for Q side, shape (Nq, J).
+        num_k_content: Number of K positions that receive RoPE (excludes prefix).
+        cross_rope_type: Strategy for K encoding. Only "k_repeat_q" supported:
+            K gets the same grid as Q repeated along the sequence dimension.
+
+    Returns:
+        (pos_enc_q, pos_enc_k) with pos_enc_k having sequence length num_k_content.
+    """
+    if cross_rope_type != "k_repeat_q":
+        raise ValueError(f"Unsupported cross_rope_type: {cross_rope_type}")
+    Nq = freqs_cis_q.shape[0]
+    pos_enc_q = freqs_cis_q
+    if num_k_content < Nq or num_k_content % Nq != 0:
+        raise ValueError(
+            f"cross_rope_type='k_repeat_q' requires num_k_content ({num_k_content}) "
+            f"to be a positive multiple of freqs_cis_q length ({Nq})"
+        )
+    r = num_k_content // Nq
+    pos_enc_k = freqs_cis_q.repeat(r, 1)
+    return pos_enc_q, pos_enc_k
+
+
 def compute_axial_cis(
     dim: int,
     end_x: int,
@@ -939,7 +969,17 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     return freqs_cis.view(*shape)
 
 
-def apply_rope(xq: torch.Tensor, xk: torch.Tensor, pos_enc: torch.Tensor, rope_type: Literal["mixed", "axial", "custom"]):
+def apply_rope(
+    xq: torch.Tensor,
+    xk: torch.Tensor,
+    pos_enc: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
+    rope_type: Literal["mixed", "axial", "custom"],
+):
+    if isinstance(pos_enc, (tuple, list)) and len(pos_enc) == 2:
+        pos_enc_q, pos_enc_k = pos_enc
+        q_rope, _ = apply_rope(xq, xk, pos_enc_q, rope_type)
+        _, k_rope = apply_rope(xq, xk, pos_enc_k, rope_type)
+        return q_rope, k_rope
     if rope_type == "mixed":
         return apply_rope_v1(xq, xk, pos_enc)
     elif rope_type == "axial":
@@ -994,6 +1034,7 @@ def apply_rope_v2(q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) ->
     q = q.to(dtype=rope_dtype)
     k = k.to(dtype=rope_dtype)
     N = q.shape[-2]
+    # NOTE: assumption is that register/class tokens etc are at beginning of sequence
     prefix = N - sin.shape[-2]
     assert prefix >= 0
     q_prefix = q[:, :, :prefix, :]
@@ -1276,3 +1317,75 @@ class RopePositionEmbedding(nn.Module):
         cos = torch.cos(angles).to(dtype=coords.dtype, device=coords.device)
         sin = torch.sin(angles).to(dtype=coords.dtype, device=coords.device)
         return sin, cos
+
+
+# --- --- PositionalEncodingRandom (SAM-style) --- ---
+
+class PositionEmbeddingRandom(nn.Module):
+    """
+    Positional encoding using random spatial frequencies.
+    """
+
+    def __init__(
+        self, 
+        input_fmt: str,
+        num_pos_feats: int = 64, 
+        scale: Optional[float] = None
+    ) -> None:
+        super().__init__()
+
+        self.input_fmt = input_fmt
+
+        if scale is None or scale <= 0.0:
+            scale = 1.0
+        if input_fmt == "ZYXC":
+            ndim = 3
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
+
+        self.register_buffer(
+            "positional_encoding_gaussian_matrix",
+            scale * torch.randn((ndim, num_pos_feats)),
+        )
+
+    def _pe_encoding(self, coords: torch.Tensor) -> torch.Tensor:
+        """Positionally encode points that are normalized to [0,1]."""
+        # assuming coords are in [0, 1]^2 square and have d_1 x ... x d_n x 2 shape
+        coords = 2 * coords - 1
+        coords = coords @ self.positional_encoding_gaussian_matrix
+        coords = 2 * np.pi * coords
+        # outputs d_1 x ... x d_n x C shape
+        return torch.cat([torch.sin(coords), torch.cos(coords)], dim=-1)
+
+    def forward(self, size: Tuple[int, int]) -> torch.Tensor:
+        """Generate positional encoding for a grid of the specified size."""
+        if self.input_fmt == "ZYXC":
+            assert len(size) == 3, "Size must be (Z, Y, X)"
+            Z, Y, X = size
+            device: Any = self.positional_encoding_gaussian_matrix.device
+            grid = torch.ones((Z, Y, X), device=device, dtype=torch.float32)
+            z_embed = grid.cumsum(dim=0) - 0.5
+            y_embed = grid.cumsum(dim=1) - 0.5
+            x_embed = grid.cumsum(dim=2) - 0.5
+            z_embed = z_embed / Z
+            y_embed = y_embed / Y
+            x_embed = x_embed / X
+            pe = self._pe_encoding(torch.stack([z_embed, y_embed, x_embed], dim=-1))
+            return pe.permute(3, 0, 1, 2)  # C x Z x Y x X
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+
+    def forward_with_coords(
+        self, coords_input: torch.Tensor, image_size: Tuple[int, int]
+    ) -> torch.Tensor:
+        """Positionally encode points that are not normalized to [0,1]."""
+        coords = coords_input.clone()
+        if self.input_fmt == "ZYXC":
+            assert len(image_size) == 3, "Image size must be (Z, Y, X)"
+            Z, Y, X = image_size
+            coords[:, :, 0] = coords[:, :, 0] / Z
+            coords[:, :, 1] = coords[:, :, 1] / Y
+            coords[:, :, 2] = coords[:, :, 2] / X
+        else:
+            raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+        return self._pe_encoding(coords.to(torch.float))  # B x N x C

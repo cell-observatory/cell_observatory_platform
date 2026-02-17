@@ -1,0 +1,186 @@
+import functools
+from typing import List, Optional
+
+import torch
+from torch import nn
+import torch.nn.functional as F
+
+from hydra.utils import get_method
+
+from cell_observatory_platform.models.layers.norm import LayerNorm3D, LayerNorm4D
+from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
+from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
+
+
+class SAMBackbone(nn.Module):
+    def __init__(
+        self,
+        backbone_args: dict,
+        adapter_args: Optional[dict],
+        backbone_embed_dims: List[int],
+        train_backbone: bool,
+        blocks_to_train: Optional[List[str]] = None,
+        use_layernorm: bool = True,
+        adapter_out_layers: Optional[List[int]] = None,
+        backbone_output_format: str = "feature_map",
+        input_shape: Optional[List[int]] = [1, 128, 256, 512, 2],
+        patch_shape: Optional[List[int]] = [1, 16, 32, 32, None],
+        input_format: Optional[str] = "TZYXC",
+        position_encoding_type: Optional[str] = "sincos",
+        pos_encoding_temperature: Optional[int] = 10000,
+        pos_encoding_normalize: Optional[bool] = False,
+    ):
+        super().__init__()
+
+        BUILD_BACKBONE = get_method(backbone_args["BUILD"])
+        self.backbone = BUILD_BACKBONE(backbone_args)
+
+        self.backbone_embed_dims = backbone_embed_dims
+
+        assert position_encoding_type is not None, "position_encoding_type must be specified"
+        self.position_encoding_type = position_encoding_type
+        if self.position_encoding_type == "sincos":
+            self.position_encoding = PositionalEmbeddingSinCos(
+                num_pos_feats=backbone_embed_dims[-1],
+                temperature=pos_encoding_temperature,
+                normalize=pos_encoding_normalize,
+                scale=None,
+            )
+        else:
+            raise NotImplementedError(f"Position encoding type {self.position_encoding_type} not supported yet.")
+
+        self.blocks_to_train = blocks_to_train
+
+        for _, (name, parameter) in enumerate(self.backbone.named_parameters()):
+            train_condition = any(f".{b}." in name for b in self.blocks_to_train) if self.blocks_to_train else True
+            if (not train_backbone) or "mask_token" in name or (not train_condition):
+                parameter.requires_grad_(False)
+
+        self.use_layernorm = use_layernorm
+        if self.use_layernorm:
+            if self.input_format == "TZYXC":
+                self.layer_norms = nn.ModuleList([LayerNorm3D(embed_dim) for embed_dim in backbone_embed_dims])
+            else:
+                raise NotImplementedError(f"Input format {self.input_format} not supported yet.")
+
+        if adapter_args is not None:
+            self.with_backbone_adapter = True
+            BUILD_ADAPTER = get_method(adapter_args["BUILD"])
+            self.adapter = BUILD_ADAPTER(adapter_args)
+        else:
+            # TODO: implement logic to handle positional encodings without adapter
+            self.with_backbone_adapter = False
+
+        self.adapter_out_layers = adapter_out_layers
+
+        if len(backbone_embed_dims) > 1:
+            self.multi_scale_features = True
+        else:
+            self.multi_scale_features = False
+
+        self.input_shape = input_shape
+        self.patch_shape = patch_shape
+        self.input_format = input_format
+        _, token_shape = calc_num_patches(
+            input_fmt=self.input_format,
+            input_shape=self.input_shape,
+            patch_shape=patch_shape,
+        )
+        if self.input_format == "TZYXC":
+            t, z, y, x, c = token_shape
+            # input data is 4D but SAM models flatten B,T 
+            self.token_shape = [z, y, x]
+        else:
+            raise NotImplementedError(f"Input format {self.input_format} not supported yet.")
+
+        assert self.input_format[-1] == "C", "The last dimension of input_format must be 'C'."
+        self.out_channels = self.input_shape[-1]
+        self.backbone_output_format = backbone_output_format
+        self.backbone_returns_sequence = self.backbone_output_format == "sequence"
+        
+    def _unpatchify_if_sequence(self, feats: List[torch.Tensor]) -> List[torch.Tensor]:
+        # feats: list of either [B, N, C] or [B, C, D, H, W]
+        if not self.backbone_returns_sequence:
+            return feats
+
+        out = []
+        for feat in feats:
+            if feat.dim() == 3:  # [B, N, C]
+                B, N, C = feat.shape
+                out.append(feat.transpose(1, 2).reshape(B, C, *self.token_shape))
+            else:
+                out.append(feat)
+        return out
+
+    def _make_backbone_output(self, feats: List[torch.Tensor]) -> dict:
+        """
+        Build the standard output dict expected by sam.py:
+        {"backbone_fpn": [feat, ...], "vision_pos_enc": [pe, ...]}.
+        """
+        feats = [f for f in feats if f is not None]
+        assert self.input_format == "TZYXC", f"Expected input_format 'TZYXC', got {self.input_format}"
+        assert all(f.dim() == 5 for f in feats), (
+            f"Expected 5D feature maps [B,C,D,H,W], got {[f.shape for f in feats]}"
+        )
+        # Sort finest (largest spatial) to coarsest
+        feats = sorted(
+            feats,
+            key=lambda t: t.shape[-3] * t.shape[-2] * t.shape[-1],
+            reverse=True,
+        )
+        position_encodings = [self.position_encoding(f) for f in feats]
+        return {
+            "backbone_fpn": feats,
+            "vision_pos_enc": position_encodings,
+        }
+
+    def forward(self, data_sample: dict):
+        feats = self.backbone.forward_features(data_sample["data_tensor"])
+
+        adapter_keys = None
+        # NOTE: SAM2 uses FPN neck to extract features from multi-scale backbone
+        #       if we use simple ViT backbone, opt for VitDET style adapter instead
+        if self.with_backbone_adapter:
+            feats_dict = self.adapter(data_sample["data_tensor"], feats)
+            feats_dict = {str(k): v for k, v in feats_dict.items()}  # ensure string keys
+            adapter_keys = sorted(feats_dict.keys(), key=lambda s: int(s))
+            feats_list = [feats_dict[k] for k in adapter_keys]
+        else:
+            if isinstance(feats, (list, tuple)):
+                feats_list = list(feats)
+            else:
+                feats_list = [feats]
+
+        feats_list = self._unpatchify_if_sequence(feats_list)
+        if self.use_layernorm:
+            assert len(self.layer_norms) == len(feats_list), (
+                f"layer_norms ({len(self.layer_norms)}) != feats_list ({len(feats_list)})"
+            )
+            feats_list = [ln(f).contiguous() for ln, f in zip(self.layer_norms, feats_list)]
+
+        if self.adapter_out_layers is not None:
+            feats_list = [feats_list[i] for i in self.adapter_out_layers]
+
+        return self._make_backbone_output(feats_list)
+
+
+def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> nn.Module:
+    out_layers = backbone_wrapper_args.get("out_layers", None)
+    if out_layers is not None:
+        backbone_wrapper_args["backbone_args"]["out_layers"] = out_layers
+
+    model = SAMBackbone(
+        backbone_args=backbone_wrapper_args["backbone_args"],
+        adapter_args=adapter_args,
+        backbone_embed_dims=backbone_wrapper_args["backbone_embed_dims"],
+        train_backbone=backbone_wrapper_args["train_backbone"],
+        blocks_to_train=backbone_wrapper_args.get("blocks_to_train"),
+        use_layernorm=backbone_wrapper_args.get("use_layernorm", True),
+        adapter_out_layers=backbone_wrapper_args.get("adapter_out_layers"),
+        backbone_output_format=backbone_wrapper_args.get("backbone_output_format"),
+        input_shape=backbone_wrapper_args.get("input_shape"),
+        input_format=backbone_wrapper_args.get("input_format"),
+        patch_shape=backbone_wrapper_args.get("patch_shape"),
+        position_encoding_type=backbone_wrapper_args.get("position_encoding_type"),
+    )
+    return model

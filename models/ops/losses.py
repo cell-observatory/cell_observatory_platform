@@ -3,7 +3,14 @@ from torch import nn
 import torch.nn.functional as F
 
 
-def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: float = 2):
+def sigmoid_focal_loss(
+    inputs, 
+    targets, 
+    num_boxes, 
+    alpha: float = 0.25, 
+    gamma: float = 2,
+    loss_on_multimask: bool = False
+):
     """
     Loss used in RetinaNet for dense detection: https://arxiv.org/abs/1708.02002.
 
@@ -36,13 +43,22 @@ def sigmoid_focal_loss(inputs, targets, num_boxes, alpha: float = 0.25, gamma: f
         alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
         loss = alpha_t * loss
 
-    return loss.mean(1).sum() / num_boxes
+    if loss_on_multimask:
+        # loss: [N, M, ...spatial...]
+        assert loss.dim() >= 4, f"Expected loss shape (N, M, ...spatial...), got {loss.shape}"
+        return loss.flatten(2).mean(-1) / num_boxes   # [N, M]
+    else:
+        # loss: [N, ...spatial...] or [N, 1, ...]
+        # average over all non-batch dims, then sum over batch
+        return loss.flatten(1).mean(-1).sum() / num_boxes
 
 
 def dice_loss(
         inputs: torch.Tensor,
         targets: torch.Tensor,
         num_masks: float,
+        input_fmt="ZYXC",
+        loss_on_multimask=False
     ):
     """
     Compute the DICE loss, similar to generalized IOU for masks.
@@ -58,15 +74,71 @@ def dice_loss(
     # dice_coeff = 2 x (object overlap) / (sum of pixels in both masks)
     # hence loss is smaller for larger overlap / IOU
     inputs = inputs.sigmoid()
-    # masks: (N, D, H, W) -> (N, D*H*W)
-    inputs = inputs.flatten(1)
-    targets = targets.flatten(1)
-    # (N,D*H*W)x(N,D*H*W)->(N,D*H*W)->(N,) 
-    numerator = 2 * (inputs * targets).sum(-1)
-    # (N,) + (N,) -> (N,)
-    denominator = inputs.sum(-1) + targets.sum(-1)
-    loss = 1 - (numerator + 1) / (denominator + 1)
-    return loss.sum() / num_masks
+    if loss_on_multimask:
+        if input_fmt == "ZYXC":
+            # inputs/targets: [N, M, ...spatial...]
+            assert inputs.dim() >= 4 and targets.shape == inputs.shape
+            inputs_f = inputs.flatten(2)
+            targets_f = targets.flatten(2)
+            numerator = 2 * (inputs_f * targets_f).sum(-1)          # [N, M]
+            denominator = inputs_f.sum(-1) + targets_f.sum(-1)      # [N, M]
+            loss = 1 - (numerator + 1) / (denominator + 1)          # [N, M]
+            return loss / num_masks 
+        else:
+            raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
+    else:
+        # masks: (N, D, H, W) -> (N, D*H*W)
+        inputs = inputs.flatten(1)
+        targets = targets.flatten(1)
+        # (N,D*H*W)x(N,D*H*W)->(N,D*H*W)->(N,) 
+        numerator = 2 * (inputs * targets).sum(-1)
+        # (N,) + (N,) -> (N,)
+        denominator = inputs.sum(-1) + targets.sum(-1)
+        loss = 1 - (numerator + 1) / (denominator + 1)
+        return loss.sum() / num_masks
+
+
+def iou_loss(
+    inputs, 
+    targets, 
+    pred_ious, 
+    num_objects, 
+    loss_on_multimask=False, 
+    use_l1_loss=False,
+    input_fmt="ZYXC",
+):
+    """
+    Args:
+        inputs: A float tensor of arbitrary shape.
+                The predictions for each example.
+        targets: A float tensor with the same shape as inputs. Stores the binary
+                 classification label for each element in inputs
+                (0 for the negative class and 1 for the positive class).
+        pred_ious: A float tensor containing the predicted IoUs scores per mask
+        num_objects: Number of objects in the batch
+        loss_on_multimask: True if multimask prediction is enabled
+        use_l1_loss: Whether to use L1 loss is used instead of MSE loss
+    Returns:
+        IoU loss tensor
+    """
+    if input_fmt == "ZYXC":
+        assert inputs.dim() == 5 and targets.dim() == 5
+        # (N, M, Z, Y, X) -> (N, M, Z*Y*X)
+        pred_mask = inputs.flatten(2) > 0
+        gt_mask = targets.flatten(2) > 0
+        area_i = torch.sum(pred_mask & gt_mask, dim=-1).float()
+        area_u = torch.sum(pred_mask | gt_mask, dim=-1).float()
+        actual_ious = area_i / torch.clamp(area_u, min=1.0)
+
+        if use_l1_loss:
+            loss = F.l1_loss(pred_ious, actual_ious, reduction="none")
+        else:
+            loss = F.mse_loss(pred_ious, actual_ious, reduction="none")
+        if loss_on_multimask:
+            return loss / num_objects
+    else:
+        raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
+    return loss.sum() / num_objects
 
 
 def sigmoid_ce_loss(

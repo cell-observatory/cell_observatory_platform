@@ -37,15 +37,27 @@ def get_mlp(ff: Union[Module, Literal["Mlp", "SwiGLU", "Mlp_ListFwdMixin", "SwiG
 
 
 class MLP(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
+    def __init__(
+        self, 
+        input_dim, 
+        hidden_dim, 
+        output_dim, 
+        num_layers, 
+        activation: nn.Module = nn.ReLU,
+        sigmoid_output: bool = False,
+    ):
         super().__init__()
         self.num_layers = num_layers
         h = [hidden_dim] * (num_layers - 1)
         self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
+        self.activation = activation()
+        self.sigmoid_output = sigmoid_output
 
     def forward(self, x):
         for i, layer in enumerate(self.layers):
-            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+            x = self.activation(layer(x)) if i < self.num_layers - 1 else layer(x)
+        if self.sigmoid_output:
+            x = F.sigmoid(x)
         return x
 
 
