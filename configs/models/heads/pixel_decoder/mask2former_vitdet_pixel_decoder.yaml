@@ -31,7 +31,7 @@ total_num_feature_levels: 3
 target_min_stride: 4
 
 # Transformer encoder args
-transformer_encoder_dropout: 0.0
+transformer_encoder_dropout: 0.1
 transformer_encoder_num_heads: 8
 transformer_encoder_dim_feedforward: 1024
 transformer_encoder_layers: 6
