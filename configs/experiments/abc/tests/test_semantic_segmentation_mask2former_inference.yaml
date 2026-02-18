@@ -26,7 +26,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: test_semantic_segmentation_mask2former_inference_vitdet_0203_no_permute
+experiment_name: inference_twoclass_semantic_segmentation_mask2former_vitdet_pred_stride_4_transformer_in_features_1_2_3_queries_20
 wandb_project: testing
 
 # debug_mode: true
@@ -61,6 +61,15 @@ seed: 42
 # overrides
 # --------------------------------------------------------------------------------
 
+# Two semantic classes (must match trained model)
+models:
+  meta_arch:
+    mask2former:
+      decoder_args:
+        num_classes: 2
+      criterion_args:
+        num_classes: 2
+
 deepspeed:
   checkpoint:
     load_universal: true
@@ -74,8 +83,8 @@ clusters:
   batch_size: 1 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 12 # number of cpu cores per gpu
-  mem_per_cpu: 16000 # ram per cpu core
+  cpus_per_gpu: 4 # number of cpu cores per gpu
+  mem_per_cpu: 31000 # ram per cpu core
   ray_queue_memory: 0.2
 
 #paths:
@@ -83,7 +92,7 @@ paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/results/inference/${experiment_name}
   resume_checkpointdir: null 
-  pretrained_checkpointdir: /clusterfs/nvme/martinalvarez/segment_3d/pretrained_models/test_semantic_segmentation_mask2former_vitdet_0203/checkpoints
+  pretrained_checkpointdir: /clusterfs/nvme/martinalvarez/segment_3d/pretrained_models/test_twoclass_semantic_segmentation_mask2former_vitdet_pred_stride_4_transformer_in_features_1_2_3_queries_20/checkpoints
 
 # data
 datasets:
@@ -137,7 +146,7 @@ datasets:
     transforms_list: null
     bbox_data_format: zyxzyx
     bbox_output_format: cxcyczwhd
-    with_resize: false
+    mask_channel_idx: ${datasets.mask_channel_idx}
     debug: false
     debug_device_idx: 0
     normalize_bboxes: true
