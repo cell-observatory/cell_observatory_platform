@@ -25,7 +25,8 @@ from cell_observatory_platform.inference.utils import (
     stable_key_owner, 
     tile_hash, 
     save_feature_visualizations, 
-    save_instance_predictions
+    save_instance_predictions,
+    save_semantic_predictions,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,37 +40,65 @@ def _reduce_mask2former_queries_to_semantic_map(
     topk_per_image: int = 1,
 ) -> torch.Tensor:
     """
-    Convert Mask2Former query-based outputs to a single dense semantic map.
-    
+    Convert Mask2Former query-based outputs to a dense semantic map.
+
     Args:
         pred_masks: [B, num_queries, D, H, W] - mask logits (already at target resolution)
-        pred_logits: [B, num_queries, num_classes + 1] - classification logits (index 0 = no-object)
+        pred_logits: [B, num_queries, num_classes + 1] - indices 0..num_classes-1 = semantic classes, last = no-object
         num_classes: Number of foreground classes (default: 1 for binary segmentation)
-    
+        topk_per_image: Number of top queries to use per image (for num_classes=1 case)
+
     Returns:
-        semantic_map: [B, D, H, W, 1] - channels-last dense semantic map
+        semantic_map: [B, D, H, W, num_classes] - channels-last dense semantic map (per-class)
     """
-    if num_classes != 1:
-        raise NotImplementedError("Only binary segmentation is supported for now")
     B, num_queries, D, H, W = pred_masks.shape
-    
-    # Get foreground probabilities per query
-    # pred_logits: [B, Q, num_classes + 1], index 0 is no-object
-    probs = pred_logits.softmax(-1)[..., 1]  # [B, Q] - foreground probability per query
-    # Get top k queries by foreground probability
-    topk_indices = probs.topk(k=topk_per_image, dim=1).indices  # [B, K]
-    topk_probs = probs.gather(1, topk_indices)  # [B, K]
-    # Get masks for top k queries: gather output shape = index shape, so expand index to [B, K, D, H, W]
-    topk_indices_expanded = topk_indices.view(B, topk_per_image, 1, 1, 1).expand(B, topk_per_image, D, H, W)
-    topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
-    # Convert mask logits to probabilities
-    topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
-    # Weight masks by foreground probability and sum over top k queries
-    # topk_probs: [B, K] -> [B, K, 1, 1, 1] for broadcasting
-    semantic = (topk_probs.view(B, topk_per_image, 1, 1, 1) * topk_masks).sum(1, keepdim=True)  # [B, 1, D, H, W]
-    # Permute to channels-last: [B, D, H, W, 1]
-    semantic = semantic.permute(0, 2, 3, 4, 1)  # [B, D, H, W, 1]
-    return semantic
+
+    if num_classes == 1:
+        # Binary segmentation: single semantic class at index 0, no-object at index 1
+        probs = pred_logits.softmax(-1)[..., 0]  # [B, Q] - class 0 (foreground) probability per query
+        # Get top k queries by foreground probability
+        topk_indices = probs.topk(k=topk_per_image, dim=1).indices  # [B, K]
+        topk_probs = probs.gather(1, topk_indices)  # [B, K]
+        # Get masks for top k queries: gather output shape = index shape, so expand index to [B, K, D, H, W]
+        topk_indices_expanded = topk_indices.view(B, topk_per_image, 1, 1, 1).expand(B, topk_per_image, D, H, W)
+        topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
+        # Convert mask logits to probabilities
+        topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
+        # Weight masks by foreground probability and sum over top k queries
+        # topk_probs: [B, K] -> [B, K, 1, 1, 1] for broadcasting
+        semantic = (topk_probs.view(B, topk_per_image, 1, 1, 1) * topk_masks).sum(1, keepdim=True)  # [B, 1, D, H, W]
+        # Permute to channels-last: [B, D, H, W, 1]
+        semantic = semantic.permute(0, 2, 3, 4, 1)  # [B, D, H, W, 1]
+        return semantic
+    else:
+        # Multi-class segmentation: produce per-class maps
+        # pred_logits: [B, Q, num_classes + 1]; indices 0..num_classes-1 = semantic classes, last index = no-object (DETR/Mask2Former convention, see losses.py empty_weight[-1])
+        class_probs = pred_logits.softmax(-1)[..., :-1]  # [B, Q, num_classes] - keep all semantic classes, drop no-object
+        
+        # For each class, combine masks from queries assigned to that class
+        semantic_per_class = []
+        for c in range(num_classes):
+            # Get probability of class c for each query: [B, Q]
+            class_c_probs = class_probs[..., c]  # [B, Q]
+            
+            # Get top k queries for this class
+            topk_indices = class_c_probs.topk(k=min(topk_per_image, num_queries), dim=1).indices  # [B, K]
+            topk_probs = class_c_probs.gather(1, topk_indices)  # [B, K]
+            
+            # Get masks for top k queries
+            topk_indices_expanded = topk_indices.view(B, -1, 1, 1, 1).expand(B, -1, D, H, W)
+            topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
+            topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
+            
+            # Weight by class probability and combine (max aggregation for cleaner maps)
+            # Use max instead of sum to avoid over-saturation
+            weighted_masks = topk_probs.view(B, -1, 1, 1, 1) * topk_masks  # [B, K, D, H, W]
+            class_map = weighted_masks.max(dim=1)[0]  # [B, D, H, W] - max over queries
+            semantic_per_class.append(class_map)
+        
+        # Stack along channel dimension: [B, D, H, W, num_classes]
+        semantic = torch.stack(semantic_per_class, dim=-1)  # [B, D, H, W, num_classes]
+        return semantic
 
 
 class InferencerWorker:
@@ -568,7 +597,7 @@ class InferencerWorker:
                     pred_masks=pred_masks,
                     pred_logits=pred_logits,
                     num_classes=num_classes,
-                )  # [B, D, H, W, 1]
+                )  # [B, D, H, W, num_classes] or [B, D, H, W, 1] for binary
                 
                 preds = {self.main_output_name: semantic_map}
             else:
@@ -1189,105 +1218,36 @@ class InferencerWorker:
             identifiers.append(ident)
 
         if self.task == "semantic_segmentation":
-            # For semantic segmentation, use save_predictions with dense volumes
+            # For semantic segmentation, use dedicated save_semantic_predictions utility
             # Process each batch element separately
             for b in range(B):
-                preds_dict = {}
+                main_pred = preds[self.main_output_name][b]  # [Z, Y, X, C] or [D, H, W, C]
+                image = data_sample["data_tensor"][b]  # [Z, Y, X, C] or [D, H, W, C]
                 
-                # Add main output: convert to TZYXC format if needed
-                main_pred = preds[self.main_output_name][b]  # [Z, Y, X, 1] or [D, H, W, 1]
-                if main_pred.ndim == 4:
-                    # Already channels-last [Z, Y, X, 1], add T dimension
-                    main_pred = main_pred.unsqueeze(0)  # [1, Z, Y, X, 1]
-                preds_dict[self.main_output_name] = main_pred
-
-                # Add auxiliary outputs (e.g., data_tensor for comparison)
-                for aux_name, spec in self.auxiliary_outputs.items():
-                    path = spec.get("path", aux_name)
-                    try:
-                        aux_value = self.resolve_path(data_sample, path)
-                        if isinstance(aux_value, torch.Tensor):
-                            # Slice batch dimension and ensure TZYXC format
-                            aux_slice = aux_value[b]  # [Z, Y, X, C] or similar
-                            if aux_slice.ndim == 4:
-                                # Add T dimension if needed
-                                aux_slice = aux_slice.unsqueeze(0)  # [1, Z, Y, X, C]
-                            preds_dict[aux_name] = aux_slice
-                    except Exception:
-                        # Skip if path doesn't exist in data_sample
-                        continue
-                # Add ground truth labels if available
-                gt_semantic = None
-                # Try to get ground truth from targets parameter first
-                if b < len(targets) and targets[b]:
-                    target_dict = targets[b]
-                    if isinstance(target_dict, dict) and "masks" in target_dict:
-                        gt_masks = target_dict["masks"]
-                        # Convert boolean masks to float for visualization
-                        if gt_masks.dtype == torch.bool:
-                            gt_masks = gt_masks.float()
-                        if isinstance(gt_masks, torch.Tensor):
-                            # Handle different mask formats
-                            if gt_masks.ndim == 3:
-                                # Single semantic map: [Z, Y, X]
-                                gt_semantic = gt_masks.unsqueeze(-1)  # [Z, Y, X, 1]
-                            elif gt_masks.ndim == 4:
-                                # Multiple instance masks: [num_instances, Z, Y, X]
-                                # Aggregate to single semantic map by summing (or use max)
-                                gt_semantic = gt_masks.sum(dim=0, keepdim=False)  # [Z, Y, X]
-                                gt_semantic = gt_semantic.unsqueeze(-1)  # [Z, Y, X, 1]
-                                # Normalize to [0, 1] range for visualization
-                                if gt_semantic.max() > 1.0:
-                                    gt_semantic = gt_semantic.clamp(0, 1)
-                
-                # Fallback: try to get from data_sample metainfo directly
-                if gt_semantic is None:
-                    try:
-                        metainfo_targets = data_sample.get("metainfo", {}).get("targets", None)
-                        if metainfo_targets is not None:
-                            # Handle list of targets (one per batch element)
-                            if isinstance(metainfo_targets, (list, tuple)) and len(metainfo_targets) > 0:
-                                target_item = metainfo_targets[0] if b == 0 else (metainfo_targets[b] if b < len(metainfo_targets) else None)
-                                if target_item is not None and isinstance(target_item, dict) and "masks" in target_item:
-                                    gt_masks = target_item["masks"]
-                                    if isinstance(gt_masks, torch.Tensor):
-                                        if gt_masks.ndim == 3:
-                                            gt_semantic = gt_masks.unsqueeze(-1)  # [Z, Y, X, 1]
-                                        elif gt_masks.ndim == 4:
-                                            gt_semantic = gt_masks.sum(dim=0, keepdim=False).unsqueeze(-1)  # [Z, Y, X, 1]
-                                            if gt_semantic.max() > 1.0:
-                                                gt_semantic = gt_semantic.clamp(0, 1)
-                                            if gt_semantic.dtype == torch.bool:
-                                                gt_semantic = gt_semantic.float()
-                    except Exception:
-                        # Skip if extraction fails
-                        print(f"Error extracting ground truth from data_sample: {b} of {B}")
-                        continue
-                
-                # Add ground truth to predictions dict if found
-                if gt_semantic is not None:
-                    # Convert boolean masks to float for visualization
-                    if gt_semantic.dtype == torch.bool:
-                        gt_semantic = gt_semantic.float()
-                    # Ensure TZYXC format
-                    if gt_semantic.ndim == 4:
-                        gt_semantic = gt_semantic.unsqueeze(0)  # [1, Z, Y, X, 1]
-                    preds_dict["ground_truth"] = gt_semantic
-                
-                # Save predictions for this batch element
-                save_predictions(
+                save_semantic_predictions(
                     name=identifiers[b],
-                    predictions=preds_dict,
+                    pred_semantic=main_pred,
+                    image=image,
                     save_dir=rank_dir,
                     save_as_volume=self.save_as_volume,
                     save_as_pdf=self.save_as_pdf,
                     z_step_pdf=self.z_step_pdf,
                     filetype=self.inference_save_format,
+                    num_classes=None,  # Will be inferred from shape or metadata
+                    outputs_metadata=self.outputs_metadata,
+                    gt_semantic=None,  # Will be extracted from targets/data_sample
+                    targets=targets,
+                    data_sample=data_sample,
+                    batch_idx=b,
+                    auxiliary_outputs=self.auxiliary_outputs,
+                    resolve_path_func=self.resolve_path,
                     zarr_chunk_shape=self.inference_zarr_chunk_shape,
                     zarr_shard_shape=self.inference_zarr_shard_shape,
                     pmin=self.pmin,
                     pmax=self.pmax,
                     mip_depth=self.mip_depth,
+                    class_names=None,  # Could be passed from config in future
+                    main_output_name=self.main_output_name,
                 )
         else:
             # For instance_segmentation and detection, use save_instance_predictions

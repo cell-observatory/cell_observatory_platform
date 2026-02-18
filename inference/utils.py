@@ -1,7 +1,7 @@
 from tqdm import tqdm
 import hashlib
 from pathlib import Path
-from typing import Literal, Optional, Tuple, Union, Dict, Sequence, Any
+from typing import Literal, Optional, Tuple, Union, Dict, Sequence, Any, Callable
 
 import torch
 import numpy as np
@@ -46,6 +46,11 @@ def _normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
     out = (img2d - lo) / (hi - lo)
     return np.clip(out, 0, 1)
 
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    """Convert logits to probabilities; safe for large values."""
+    x = np.asarray(x, dtype=np.float64)
+    return (1.0 / (1.0 + np.exp(-np.clip(x, -20, 20)))).astype(np.float32)
 
 def _ensure_numpy(preds: ArrayLike):
     """Convert to numpy array if needed."""
@@ -1171,3 +1176,369 @@ def save_instance_predictions(
                     plt.close(fig)
 
         print(f"[save_instance_predictions] wrote {out_pdf}")
+        
+
+
+def visualize_semantic_labels(
+    image: ArrayLike,
+    pred_semantic: ArrayLike,
+    gt_semantic: ArrayLike | None,
+    num_classes: int,
+    out_path: Path | str,
+    *,
+    class_names: Sequence[str] | None = None,
+    z_step: int = 15,
+    pmin: float = 1.0,
+    pmax: float = 99.0,
+    mip_depth: int = 20,
+    pred_is_probabilities: bool = False,
+) -> None:
+    """
+    Visualize semantic segmentation labels with per-class columns.
+
+    Prediction: if pred_is_probabilities is False (default), values are treated as logits
+    and sigmoid is applied; if True, values are already in [0, 1] and only clipped.
+    GT is clipped to [0, 1]. Only the image column uses percentile normalization (raw image data).
+
+    Layout: Image | Pred_class_0 | ... | Pred_class_K | GT_class_0 | ... | GT_class_K
+
+    Args:
+        image: TZYXC or ZYXC array - real input image
+        pred_semantic: TZYXC or ZYXC with C in {1, num_classes} - per-class predictions (logits or probs)
+        gt_semantic: TZYXC/ZYXC with C in {1, num_classes}, or ZYX (class index), or None
+        num_classes: Number of semantic classes
+        out_path: Output PDF path
+        class_names: Optional list of class names (length num_classes)
+        z_step: Step size for z-slices
+        pmin: Percentile for image normalization (lower bound)
+        pmax: Percentile for image normalization (upper bound)
+        mip_depth: Depth for max-intensity projection
+        pred_is_probabilities: If True, pred_semantic is already in [0, 1]; only clip. If False, apply sigmoid.
+    """
+    # Normalize inputs to TZYXC
+    image_tzyxc = _ensure_numpy_tzyxc(image)
+    pred_tzyxc = _ensure_numpy_tzyxc(pred_semantic)
+    
+    T, Z, Y, X, C_img = image_tzyxc.shape
+    T_pred, Z_pred, Y_pred, X_pred, C_pred = pred_tzyxc.shape
+    
+    # Validate spatial dimensions match
+    if (T, Z, Y, X) != (T_pred, Z_pred, Y_pred, X_pred):
+        raise ValueError(
+            f"Image and prediction must have same T,Z,Y,X. "
+            f"Got image {(T,Z,Y,X)} vs pred {(T_pred,Z_pred,Y_pred,X_pred)}"
+        )
+    
+    # Handle pred_semantic channels
+    if C_pred == 1:
+        # Single channel: expand to num_classes (only first class has data)
+        pred_expanded = np.zeros((T, Z, Y, X, num_classes), dtype=pred_tzyxc.dtype)
+        pred_expanded[..., 0] = pred_tzyxc[..., 0]
+        pred_tzyxc = pred_expanded
+    elif C_pred == num_classes:
+        # Already per-class format
+        pass
+    else:
+        raise ValueError(
+            f"pred_semantic must have C=1 or C=num_classes={num_classes}, got C={C_pred}"
+        )
+
+    # Convert to display range: sigmoid if logits, else clip (already probabilities)
+    if pred_is_probabilities:
+        pred_tzyxc = np.clip(pred_tzyxc.astype(np.float64), 0, 1).astype(np.float32)
+    else:
+        pred_tzyxc = _sigmoid(pred_tzyxc)
+    
+    # Handle gt_semantic
+    if gt_semantic is not None:
+        gt_arr = _ensure_numpy(gt_semantic)
+        
+        if gt_arr.ndim == 3:
+            # ZYX class index -> one-hot encode
+            Z_gt, Y_gt, X_gt = gt_arr.shape
+            if (Z, Y, X) != (Z_gt, Y_gt, X_gt):
+                raise ValueError(
+                    f"GT spatial dims {(Z_gt,Y_gt,X_gt)} don't match image {(Z,Y,X)}"
+                )
+            # One-hot encode: [Z,Y,X] -> [Z,Y,X,num_classes]
+            gt_onehot = np.zeros((Z, Y, X, num_classes), dtype=np.float32)
+            for c in range(num_classes):
+                gt_onehot[..., c] = (gt_arr == c).astype(np.float32)
+            # Add T dimension
+            gt_tzyxc = gt_onehot[None, ...]  # [1, Z, Y, X, num_classes]
+        else:
+            gt_tzyxc = _ensure_numpy_tzyxc(gt_semantic)
+            T_gt, Z_gt, Y_gt, X_gt, C_gt = gt_tzyxc.shape
+            
+            if (T, Z, Y, X) != (T_gt, Z_gt, Y_gt, X_gt):
+                raise ValueError(
+                    f"GT spatial dims {(T_gt,Z_gt,Y_gt,X_gt)} don't match image {(T,Z,Y,X)}"
+                )
+            
+            if C_gt == 1:
+                # Single channel: expand to num_classes
+                gt_expanded = np.zeros((T, Z, Y, X, num_classes), dtype=gt_tzyxc.dtype)
+                gt_expanded[..., 0] = gt_tzyxc[..., 0]
+                gt_tzyxc = gt_expanded
+            elif C_gt != num_classes:
+                raise ValueError(
+                    f"GT must have C=1 or C=num_classes={num_classes}, got C={C_gt}"
+                )
+    else:
+        # No GT: create zeros with same shape as pred
+        gt_tzyxc = np.zeros((T, Z, Y, X, num_classes), dtype=np.float32)
+    
+    # Prepare class names
+    if class_names is None:
+        class_names = [f"class_{c}" for c in range(num_classes)]
+    elif len(class_names) != num_classes:
+        raise ValueError(
+            f"class_names length {len(class_names)} != num_classes {num_classes}"
+        )
+    
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Layout: Image | Pred_c0 | ... | Pred_cK | GT_c0 | ... | GT_cK
+    num_cols = 1 + num_classes + num_classes  # Image + pred classes + GT classes
+    
+    with PdfPages(out_path) as pdf:
+        for t in range(T):
+            for z0 in range(0, Z, z_step):
+                z1 = min(z0 + mip_depth, Z)
+                if z1 <= z0:
+                    continue
+                
+                fig, axes_row = plt.subplots(
+                    1,
+                    num_cols,
+                    figsize=(5 * num_cols, 5),
+                    squeeze=False,
+                )
+                axes_row = axes_row[0, :]
+                
+                # Column 0: Image
+                img_block = image_tzyxc[t, z0:z1]  # [z_block, Y, X, C_img]
+                img_mip = img_block.max(axis=0)  # [Y, X, C_img]
+                # Use first channel or mean across channels
+                if C_img == 1:
+                    img_2d = img_mip[..., 0]
+                else:
+                    img_2d = img_mip.mean(axis=-1)
+                img_norm = _normalize_slice(img_2d, pmin=pmin, pmax=pmax)
+                axes_row[0].imshow(img_norm, cmap="gray", interpolation="nearest")
+                axes_row[0].set_title(f"Image | T={t}  Z∈[{z0},{z1})")
+                axes_row[0].axis("off")
+                
+                # Columns 1 to num_classes: Pred per class (sigmoid already applied; clip to [0,1], no min-max)
+                for c in range(num_classes):
+                    col_idx = 1 + c
+                    pred_block = pred_tzyxc[t, z0:z1, ..., c]  # [z_block, Y, X]
+                    pred_mip = pred_block.max(axis=0)  # [Y, X]
+                    pred_display = np.clip(pred_mip, 0, 1).astype(np.float32)
+                    axes_row[col_idx].imshow(pred_display, cmap="viridis", interpolation="nearest")
+                    axes_row[col_idx].set_title(f"Pred {class_names[c]}")
+                    axes_row[col_idx].axis("off")
+                
+                # Columns num_classes+1 to 2*num_classes: GT per class (clip to [0,1], no min-max)
+                for c in range(num_classes):
+                    col_idx = 1 + num_classes + c
+                    gt_block = gt_tzyxc[t, z0:z1, ..., c]  # [z_block, Y, X]
+                    gt_mip = gt_block.max(axis=0)  # [Y, X]
+                    gt_display = np.clip(gt_mip, 0, 1).astype(np.float32)
+                    axes_row[col_idx].imshow(gt_display, cmap="viridis", interpolation="nearest")
+                    axes_row[col_idx].set_title(f"GT {class_names[c]}")
+                    axes_row[col_idx].axis("off")
+                
+                fig.tight_layout()
+                pdf.savefig(fig)
+                plt.close(fig)
+
+
+
+def save_semantic_predictions(
+    name: str,
+    pred_semantic: ArrayLike,
+    image: ArrayLike,
+    save_dir: Path | str,
+    save_as_volume: bool,
+    save_as_pdf: bool,
+    z_step_pdf: int,
+    filetype: Literal["tiff", "zarr"],
+    num_classes: int | None = None,
+    outputs_metadata: dict | None = None,
+    gt_semantic: ArrayLike | None = None,
+    targets: list[dict] | None = None,
+    data_sample: dict | None = None,
+    batch_idx: int = 0,
+    auxiliary_outputs: dict | None = None,
+    resolve_path_func: Callable[[dict, str], Any] | None = None,
+    zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
+    zarr_shard_shape: Optional[Tuple[int, ...]] = None,
+    pmin: float = 1.0,
+    pmax: float = 99.0,
+    mip_depth: int = 20,
+    class_names: Sequence[str] | None = None,
+    main_output_name: str = "predictions",
+) -> None:
+    """
+    Save semantic segmentation predictions with dedicated visualization.
+    
+    Handles:
+    - Extracting and normalizing predictions
+    - Extracting ground truth from various sources
+    - Determining num_classes
+    - Saving volumes (TIFF/Zarr) if requested
+    - Saving semantic visualization PDF if requested
+    
+    Args:
+        name: Identifier for this prediction
+        pred_semantic: Prediction tensor [Z, Y, X, C] or [T, Z, Y, X, C]
+        image: Input image tensor [Z, Y, X, C] or [T, Z, Y, X, C]
+        save_dir: Directory to save outputs
+        save_as_volume: Whether to save volume files
+        save_as_pdf: Whether to save PDF visualization
+        z_step_pdf: Step size for z-slices in PDF
+        filetype: Volume file format ("tiff" or "zarr")
+        num_classes: Number of semantic classes (inferred if None)
+        outputs_metadata: Metadata dict for inferring num_classes
+        gt_semantic: Ground truth tensor (optional, extracted from targets/data_sample if None)
+        targets: List of target dicts (one per batch element)
+        data_sample: Data sample dict for extracting GT and auxiliary outputs
+        batch_idx: Batch index for extracting from targets/data_sample
+        auxiliary_outputs: Dict of auxiliary output specs to include in volume saves
+        resolve_path_func: Function to resolve paths in data_sample (e.g., inferencer.resolve_path)
+        zarr_chunk_shape: Chunk shape for Zarr files
+        zarr_shard_shape: Shard shape for Zarr files
+        pmin: Percentile for normalization (lower bound)
+        pmax: Percentile for normalization (upper bound)
+        mip_depth: Depth for max-intensity projection
+        class_names: Optional list of class names for visualization
+        main_output_name: Key name for main prediction in preds_dict (default: "predictions")
+    """
+    import torch
+    
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Normalize pred_semantic to TZYXC
+    pred_tensor = torch.as_tensor(pred_semantic) if isinstance(pred_semantic, (np.ndarray, list)) else pred_semantic
+    if pred_tensor.ndim == 4:
+        pred_tensor = pred_tensor.unsqueeze(0)  # [1, Z, Y, X, C]
+    pred_np = _ensure_numpy(pred_tensor)
+    
+    # Infer num_classes from prediction shape or metadata
+    _, _, _, _, C_pred = pred_np.shape
+    if num_classes is None:
+        num_classes = C_pred if C_pred > 1 else 1
+        # Fallback to outputs_metadata if shape doesn't give us num_classes
+        if num_classes == 1 and outputs_metadata:
+            main_output_name = next(iter(outputs_metadata.keys())) if outputs_metadata else None
+            if main_output_name and outputs_metadata.get(main_output_name, {}).get("num_output_channels"):
+                num_classes = outputs_metadata[main_output_name]["num_output_channels"]
+    
+    # Normalize image to TZYXC
+    image_tensor = torch.as_tensor(image) if isinstance(image, (np.ndarray, list)) else image
+    if image_tensor.ndim == 4:
+        image_tensor = image_tensor.unsqueeze(0)  # [1, Z, Y, X, C]
+    image_np = _ensure_numpy(image_tensor)
+    
+    # Extract ground truth if not provided
+    # SemanticSegmentationPreprocessor stores targets[b]["masks"] as (N_masks, D, H, W) and "labels" as (N_masks,);
+    # see preprocessor.py: semantic_masks[batch_idx] -> [N_masks, D, H, W] with D,H,W = Z,Y,X.
+    gt_semantic_np = None
+    if gt_semantic is None:
+        def _masks_to_zyxc(masks: torch.Tensor) -> torch.Tensor | None:
+            if masks.dtype == torch.bool:
+                masks = masks.float()
+            if masks.ndim == 3:
+                return masks  # [Z, Y, X] single channel
+            if masks.ndim == 4:
+                # Preprocessor format: (N_masks, D, H, W) -> (D, H, W, N_masks) = (Z, Y, X, C)
+                return masks.permute(1, 2, 3, 0)
+            return None
+
+        if targets and batch_idx < len(targets) and targets[batch_idx]:
+            target_dict = targets[batch_idx]
+            if isinstance(target_dict, dict) and "masks" in target_dict and isinstance(target_dict["masks"], torch.Tensor):
+                gt_semantic = _masks_to_zyxc(target_dict["masks"])
+
+        if gt_semantic is None and data_sample:
+            try:
+                metainfo_targets = data_sample.get("metainfo", {}).get("targets", None)
+                if isinstance(metainfo_targets, (list, tuple)) and len(metainfo_targets) > 0 and batch_idx < len(metainfo_targets):
+                    target_item = metainfo_targets[batch_idx]
+                    if isinstance(target_item, dict) and "masks" in target_item and isinstance(target_item["masks"], torch.Tensor):
+                        gt_semantic = _masks_to_zyxc(target_item["masks"])
+            except Exception:
+                pass
+
+    if gt_semantic is not None:
+        gt_semantic = _ensure_numpy(gt_semantic)
+        gt_semantic_np = gt_semantic
+    
+    # Build preds_dict for volume saving
+    preds_dict = {}
+    preds_dict[main_output_name] = pred_np
+    
+    # Add auxiliary outputs if provided
+    if auxiliary_outputs and data_sample and resolve_path_func:
+        for aux_name, spec in auxiliary_outputs.items():
+            path = spec.get("path", aux_name)
+            try:
+                aux_value = resolve_path_func(data_sample, path)
+                if isinstance(aux_value, torch.Tensor):
+                    aux_slice = aux_value[batch_idx]  # [Z, Y, X, C] or similar
+                    if aux_slice.ndim == 4:
+                        aux_slice = aux_slice.unsqueeze(0)  # [1, Z, Y, X, C]
+                    preds_dict[aux_name] = _ensure_numpy(aux_slice)
+            except Exception:
+                continue
+    
+    # Add ground truth to preds_dict for volume saving
+    if gt_semantic_np is not None:
+        if gt_semantic_np.ndim == 3:
+            gt_for_dict = gt_semantic_np[..., None]  # [Z, Y, X, 1]
+        elif gt_semantic_np.ndim == 4:
+            gt_for_dict = gt_semantic_np
+        else:
+            gt_for_dict = None
+        
+        if gt_for_dict is not None:
+            if gt_for_dict.ndim == 4:
+                gt_for_dict = gt_for_dict[None, ...]  # [1, Z, Y, X, C]
+            preds_dict["ground_truth"] = gt_for_dict
+    
+    # Save volume files (TIFF/Zarr) if requested
+    if save_as_volume:
+        save_predictions(
+            name=name,
+            predictions=preds_dict,
+            save_dir=save_dir,
+            save_as_volume=True,
+            save_as_pdf=False,  # Use dedicated semantic visualization for PDF
+            z_step_pdf=z_step_pdf,
+            filetype=filetype,
+            zarr_chunk_shape=zarr_chunk_shape,
+            zarr_shard_shape=zarr_shard_shape,
+            pmin=pmin,
+            pmax=pmax,
+            mip_depth=mip_depth,
+        )
+    
+    # Save semantic visualization PDF if requested (pred_np is already probabilities from reducer)
+    if save_as_pdf:
+        visualize_semantic_labels(
+            image=image_np,
+            pred_semantic=pred_np,
+            gt_semantic=gt_semantic_np,
+            num_classes=num_classes,
+            out_path=save_dir / f"pred_{name}_semantic_MIP.pdf",
+            class_names=class_names,
+            z_step=z_step_pdf,
+            pmin=pmin,
+            pmax=pmax,
+            mip_depth=mip_depth,
+            pred_is_probabilities=True,
+        )
+
