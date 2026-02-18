@@ -1,3 +1,4 @@
+from typing import Tuple
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -162,3 +163,50 @@ def calculate_uncertainty(logits):
     assert logits.shape[1] == 1
     gt_class_logits = logits.clone()
     return -(torch.abs(gt_class_logits))
+
+
+def unsupervised_mse_loss(
+        predictions: torch.Tensor,
+        targets: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        num_patches: int,
+    ) -> torch.Tensor:
+        """
+        Computes the unsupervised MSE loss.
+
+        Args:
+            predictions: Predicted denoised signal f(y)
+            targets: Tuple of three noisy references (a, b, c) with same shape as predictions
+            num_patches: Number of patches (for normalization)
+            
+        Returns:
+            loss: Scalar unsupervised MSE loss
+
+        "
+        (Unsupervised mean squared error). 
+        Given a noisy input signal y ∈ Rn and three noisy references a, b, c ∈ Rn 
+        the unsupervised mean squared error of a denoiser f is defined as: 
+        uMSE = (1/n) Σ (aᵢ - f(y)ᵢ)² - (bᵢ - cᵢ)² / 2
+        the uMSE is a consistent estimator of the MSE as long as 
+        (1) the noisy input and the noisy references are independent, 
+        (2) their means equal the corresponding entries of the ground-truth clean signal, 
+        (3) their higher-order moments are bounded. 
+        
+        These conditions are satisfied by most noise models of interest in signal
+        and image processing, such as Poisson shot noise or additive Gaussian noise. 
+        ", Marcos-Morales et al., 2023, p.4 https://doi.org/10.48550/arXiv.2210.05553
+        """
+        # Unpack the three noisy references a, b, c
+        a, b, c = targets # B, N, px_p_token
+        
+        # Compute MSE between reference a and predictions: (1/n) Σ (a_i - f(y)_i)²
+        mse_term = (a - predictions).pow(2)
+        
+        # Compute the correction term: (b_i - c_i)² / 2
+        correction_term = (b - c).pow(2) / 2
+                
+        # uMSE = (1/n) Σ (aᵢ - f(y)ᵢ)² - (bᵢ - cᵢ)² / 2
+        # mean over pixels, then mean over patches 
+        # (should be the same, but sticking to the convention established in 
+        # the L1/L2 losses above)
+        return (mse_term - correction_term).mean(dim=-1).sum() / num_patches
+    
