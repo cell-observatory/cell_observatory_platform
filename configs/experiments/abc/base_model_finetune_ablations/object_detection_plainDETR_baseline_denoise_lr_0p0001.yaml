@@ -18,7 +18,7 @@ defaults:
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
+  - /optimizations/models/plainDETR/mae_large           # configs/optimizations/models/mae/large.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
@@ -60,6 +60,10 @@ seed: 42
 # overrides
 # --------------------------------------------------------------------------------
 
+# deepspeed:
+#   checkpoint:
+#     load_universal: true
+
 # # # clusters config for debugging on single GPU
 # clusters:
 #   batch_size: 8 # total batch size (batch size per gpu * total gpus)
@@ -72,11 +76,11 @@ seed: 42
 
 # clusters
 clusters:
-  batch_size: 32 # total batch size (batch size per gpu * total gpus)
+  batch_size: 40 # total batch size (batch size per gpu * total gpus)
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 4 # number of gpus per worker node
   cpus_per_gpu: 4 # number of cpu cores per gpu
-  mem_per_cpu: 21000 # ram per cpu core
+  mem_per_cpu: 31000 # ram per cpu core
   ray_queue_memory: 0.2
 
 #paths:
@@ -103,7 +107,7 @@ datasets:
   num_actors_min: 4
   num_actors_max: 12
 
-  max_hypercubes: 500
+  max_hypercubes: 4000
   # max_hypercubes: 2000000
   # max_hypercubes: 50000
   # max_hypercubes: 1000000
@@ -136,7 +140,7 @@ datasets:
     transforms_list: null
     bbox_data_format: zyxzyx
     bbox_output_format: cxcyczwhd
-    with_resize: false
+    # with_resize: false # deprecated
     debug: false
     async_device_copy: false
     normalize_bboxes: false
@@ -194,11 +198,11 @@ hooks:
     - _target_: cell_observatory_platform.training.hooks.TorchProfiler
       output_dir: ${paths.outdir}/profiler
       schedule:
-        skip_first: 1000
-        warmup: 100
-        active: 10
-        repeat: 2
-        wait: 10
+        skip_first: 200
+        wait: 0
+        warmup: 50
+        active: 25
+        repeat: 1
       activities:
         - CUDA
         - CPU
