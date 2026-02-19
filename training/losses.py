@@ -15,6 +15,7 @@ from cell_observatory_platform.data.structures import (
     box_cxcyczwhd_to_xyzxyz,
     box_xyzxyz_to_cxcyczwhd,
     generalized_box_iou,
+    generalized_box_iou_diag,
 )
 from cell_observatory_platform.models.layers.matchers import build_plain_detr_matcher
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
@@ -352,8 +353,9 @@ class DETR_Set_Loss(nn.Module):
         # 4. compute GIOU = IoU−|C∖(A∪B)||C| where C is the convex hull
         # generalized_box_iou call returns an MxM matrix comparing every source against every target
         # we hence take the diagonal to get the IoU for each matched pair
-        loss_giou = 1 - torch.diag(
-            generalized_box_iou(box_cxcyczwhd_to_xyzxyz(source_boxes), box_cxcyczwhd_to_xyzxyz(target_boxes))
+        loss_giou = 1 - generalized_box_iou_diag(
+            box_cxcyczwhd_to_xyzxyz(source_boxes),
+            box_cxcyczwhd_to_xyzxyz(target_boxes),
         )
         losses["loss_giou"] = loss_giou.sum() / num_boxes
 
@@ -765,11 +767,9 @@ class PlainDETR_Set_Loss(nn.Module):
 
         losses = {}
         losses["loss_bbox"] = loss_bbox.sum() / num_boxes
-        loss_giou = 1 - torch.diag(
-            generalized_box_iou(
-                box_cxcyczwhd_to_xyzxyz(src_boxes),
-                box_cxcyczwhd_to_xyzxyz(target_boxes),
-            )
+        loss_giou = 1 - generalized_box_iou_diag(
+            box_cxcyczwhd_to_xyzxyz(src_boxes),
+            box_cxcyczwhd_to_xyzxyz(target_boxes)
         )
         losses["loss_giou"] = loss_giou.sum() / num_boxes
         return losses
