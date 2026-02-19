@@ -450,13 +450,15 @@ def get_utilization(
         tokens_per_epoch = batch_size_per_gpu * training_gpus * steps_per_epoch
         gib_per_epoch = tokens_per_epoch * token_size / 1024**3
         
+        model_params = get_model_params(flops_profiler)
+        
         models[model_dir.name] = {
             "training_gpus": training_gpus,
             "batch_size_per_gpu": batch_size_per_gpu,
             "model_parallel_size": int(flops_profiler["model_parallel_size"]),
             "batch_size": training_gpus * batch_size_per_gpu,
             "steps_per_epoch": steps_per_epoch,
-            "model_params": get_model_params(flops_profiler),
+            "model_params": model_params,
             "epoch_time": epoch_logbook["epoch_time_median"].mean(),
             "epoch_data_time": epoch_logbook["data_time_median"].mean(),
             "epoch_masking_time": epoch_logbook["masking_time_median"].mean(),
@@ -516,6 +518,7 @@ def get_utilization(
             models[model_dir.name][f"main_module_{depth}_MACs"] = top_modules[depth]["MACs"]
             models[model_dir.name][f"main_module_{depth}_fwd_latency"] = top_modules[depth]["fwd_latency"]
         
+        models[model_dir.name]["trainable_model_params"] = model_params // 2 if "JEPA" in top_modules[0]["name"] else model_params
         
     models = pd.DataFrame.from_dict(models, orient="index").reset_index(drop=False)
     print(models)

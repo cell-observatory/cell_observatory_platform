@@ -794,17 +794,17 @@ def plot_gpt_vit(outdir):
 def plot_gpu_scaling(data, outdir):
             
     df = data.copy()
-    df["model_params"] = np.round(df["model_params"]/1e6, 0).astype(int) 
+    df["trainable_model_params"] = np.round(df["trainable_model_params"]/1e6, 0).astype(int) 
     
     if "3d" in str(outdir):
-        df.query("model_params == 628 or model_params == 319", inplace=True)
+        df.query("trainable_model_params == 314 or trainable_model_params == 319", inplace=True)
         
     gpu_type = df["gpu"].unique()[0]
     
     for m in df["main_module_0_name"].unique():
         df.loc[df["main_module_0_name"] == m, "scaling_ratio"] = df.loc[df["main_module_0_name"] == m, "epoch_time"] / df.loc[df["main_module_0_name"] == m, "epoch_time"].max()
     
-    print(df[["index", "training_gpus", "epoch_time", "main_module_0_name", "model_params", "scaling_ratio"]])
+    print(df[["index", "training_gpus", "epoch_time", "main_module_0_name", "trainable_model_params", "scaling_ratio"]])
 
     for background in ["default", "dark_background"]:
         plt.style.use(background)
@@ -873,7 +873,8 @@ def plot_model_scaling(data, outdir):
     
     print(df[[
         "index",  
-        "model_params", 
+        # "model_params", 
+        "trainable_model_params",
         # "batch_size_per_gpu",
         # "batch_size",
         # "tokens_per_epoch", 
@@ -919,7 +920,7 @@ def plot_model_scaling(data, outdir):
             
             g = sns.lineplot(
                 data=df,
-                x="model_params",
+                x="trainable_model_params",
                 y=f"epoch_time_per_gpu_{ll}",
                 hue="main_module_0_name",
                 style="main_module_0_name",
@@ -935,7 +936,7 @@ def plot_model_scaling(data, outdir):
             #     df_m = df.query("main_module_0_name == @m")
             #     sns.regplot(
             #         data=df_m,
-            #         x="model_params",
+            #         x="trainable_model_params",
             #         y=f"epoch_time_per_gpu_{ll}",
             #         fit_reg=True,
             #         ci=None,
@@ -969,7 +970,7 @@ def plot_model_scaling(data, outdir):
             axis.yaxis.set_minor_formatter(formatter)
             axis.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=[0.25, 0.5, 0.75]))
             
-            axis.set_xlim(1e8, 1e10)
+            axis.set_xlim(1e8, 2e9)
             
             legend_handles, _ = g.get_legend_handles_labels()
             if "3d" in str(outdir):
@@ -988,7 +989,7 @@ def plot_model_scaling(data, outdir):
             axis.legend(legend_handles, labels, loc="upper left", ncol=1, title="", frameon=False)
         
         ax.set_ylabel(f"Self-supervised pretraining {gpu_type} time per epoch")
-        ax.set_xlabel("Model parameters")
+        ax.set_xlabel("Trainable model parameters")
         
         ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
         ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
@@ -1006,7 +1007,7 @@ def plot_utilization(data, outdir):
     token_shape = df["token_shape"].iloc[0]
         
     df = pd.melt(
-        df, id_vars=["index", "model_params", "main_module_0_name"], 
+        df, id_vars=["index", "trainable_model_params", "main_module_0_name"], 
         value_vars=[f"q75_utilization_per_gpu", f"max_vram_percent_per_gpu"], 
         var_name="metric", 
         value_name="value"
@@ -1033,7 +1034,7 @@ def plot_utilization(data, outdir):
 
         g = sns.relplot(
             data=df,
-            x="model_params",
+            x="trainable_model_params",
             y="value",
             hue="main_module_0_name",
             col="metric",
@@ -1046,7 +1047,7 @@ def plot_utilization(data, outdir):
         
         g.set_titles("")
         g.set_ylabels("")
-        g.set_xlabels("Model parameters", clear_inner=False)
+        g.set_xlabels("Trainable model parameters", clear_inner=False)
         g.set(xlim=(1e8, 2.2e9), ylim=(85, 100))
         
         if "3d" in str(outdir):
@@ -1087,7 +1088,7 @@ def plot_flops(data, outdir):
     token_shape = df["token_shape"].iloc[0]
     
     df = pd.melt(
-        df, id_vars=["index", "model_params", "main_module_0_name"], 
+        df, id_vars=["index", "trainable_model_params", "main_module_0_name"], 
         value_vars=[f"fwd_flop_per_second_per_gpu", f"bwd_flop_per_second_per_gpu"], 
         var_name="metric", 
         value_name="value"
@@ -1114,7 +1115,7 @@ def plot_flops(data, outdir):
 
         g = sns.relplot(
             data=df,
-            x="model_params",
+            x="trainable_model_params",
             y="value",
             hue="main_module_0_name",
             col="metric",
@@ -1127,7 +1128,7 @@ def plot_flops(data, outdir):
         
         g.set_titles("")
         g.set_ylabels("")
-        g.set_xlabels("Model parameters", clear_inner=False)
+        g.set_xlabels("Trainable model parameters", clear_inner=False)
         g.set(xlim=(1e8, 2.2e9), ylim=(None, None))
         
         if "3d" in str(outdir):
@@ -1170,7 +1171,7 @@ def plot_data_scaling(data, outdir):
     
     print(df[[
         "index", 
-        "model_params", 
+        "trainable_model_params", 
         "batch_size", 
         "batch_size_per_gpu", 
         "tokens_per_second", 
@@ -1200,7 +1201,7 @@ def plot_data_scaling(data, outdir):
         
         g = sns.lineplot(
             data=df,
-            x="model_params",
+            x="trainable_model_params",
             y="gib_per_second_per_gpu",
             hue="main_module_0_name",
             style="main_module_0_name",
@@ -1214,9 +1215,9 @@ def plot_data_scaling(data, outdir):
 
         ax.set_xscale("log")
         ax.set_ylabel(f"GiB/s ({gpu})")
-        ax.set_xlabel("Model parameters")
+        ax.set_xlabel("Trainable model parameters")
         ax.set_ylim(0, 6)
-        ax.set_xlim(1e8, 1e10)
+        ax.set_xlim(1e8, 2e9)
         
         ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
         ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
