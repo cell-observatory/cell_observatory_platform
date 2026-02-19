@@ -113,6 +113,8 @@ class SAM2Base(torch.nn.Module):
         use_mlp_for_obj_ptr_proj: bool = False,
         # add no obj embedding to spatial frames
         no_obj_embed_spatial: bool = False,
+        # disable memory encoder
+        disable_memory_encoder: bool = False,
     ):
         super().__init__()
 
@@ -239,6 +241,9 @@ class SAM2Base(torch.nn.Module):
             self.obj_ptr_tpos_proj = torch.nn.Identity()
 
         self.max_cond_frames_in_attn = max_cond_frames_in_attn
+
+        # disable memory encoder
+        self.disable_memory_encoder = disable_memory_encoder
 
     @property
     def device(self):
@@ -1253,6 +1258,8 @@ class SAM2(SAM2Base):
         num_frames = backbone_out["num_frames"]
         init_cond_frames = backbone_out["init_cond_frames"]
         frames_to_add_correction_pt = backbone_out["frames_to_add_correction_pt"]
+
+        run_mem_encoder = not (self.disable_memory_encoder and num_frames == 1)
         
         # first process all the initial conditioning frames to encode them as memory,
         # and then conditioning on them to track the remaining frames
@@ -1295,6 +1302,7 @@ class SAM2(SAM2Base):
                 frames_to_add_correction_pt=frames_to_add_correction_pt,
                 output_dict=output_dict,
                 num_frames=num_frames,
+                run_mem_encoder=run_mem_encoder,
             )
             # Append the output, depending on whether it's a conditioning frame
             add_output_as_cond_frame = stage_id in init_cond_frames or (

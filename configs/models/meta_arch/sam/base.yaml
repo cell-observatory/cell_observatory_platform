@@ -74,6 +74,7 @@ criterion_args:
   supervise_all_iou: false
   iou_use_l1_loss: false
   pred_obj_scores: false
+  activation_checkpoint: true
 
 # SAM2 scalar / flags (passed to SAM2 ctor)
 input_fmt: ${dataset_layout_order}

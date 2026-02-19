@@ -130,3 +130,17 @@ hooks:
       backend: DEEPSPEED
     - _target_: cell_observatory_platform.training.hooks.IterationTimer
     - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+    - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+      output_dir: ${paths.outdir}/profiler
+      schedule:
+        # skip_first: 10
+        warmup: 20
+        active: 2
+        repeat: 1
+        wait: 1
+      activities:
+        - CUDA
+        - CPU
+      save_tensorboard: true
+      shutdown_after_profile: true
+      save_memory_trace: true
