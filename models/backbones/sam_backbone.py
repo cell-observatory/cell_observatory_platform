@@ -29,8 +29,15 @@ class SAMBackbone(nn.Module):
         position_encoding_type: Optional[str] = "sincos",
         pos_encoding_temperature: Optional[int] = 10000,
         pos_encoding_normalize: Optional[bool] = False,
+        use_sam_channel_projection: bool = False,
+        backbone_native_channels: Optional[int] = None,
     ):
         super().__init__()
+
+        self.input_format = input_format
+        self.use_sam_channel_projection = use_sam_channel_projection
+        if use_sam_channel_projection:
+            assert backbone_native_channels is not None, "backbone_native_channels required when use_sam_channel_projection=True"
 
         BUILD_BACKBONE = get_method(backbone_args["BUILD"])
         self.backbone = BUILD_BACKBONE(backbone_args)
@@ -40,11 +47,17 @@ class SAMBackbone(nn.Module):
         assert position_encoding_type is not None, "position_encoding_type must be specified"
         self.position_encoding_type = position_encoding_type
         if self.position_encoding_type == "sincos":
+            # assert backbone_embed_dims[-1] % 3 == 0, (
+            #     f"backbone_embed_dims[-1]={backbone_embed_dims[-1]} must be divisible by 3 "
+            #     "for 3D sincos positional encoding (Z/Y/X split)."
+            # )
             self.position_encoding = PositionalEmbeddingSinCos(
-                num_pos_feats=backbone_embed_dims[-1],
+                # NOTE: split the embedding dim into 3 for each spatial dimension
+                num_pos_feats=backbone_embed_dims[-1] // 3,
                 temperature=pos_encoding_temperature,
                 normalize=pos_encoding_normalize,
                 scale=None,
+                output_dim=backbone_embed_dims[-1],
             )
         else:
             raise NotImplementedError(f"Position encoding type {self.position_encoding_type} not supported yet.")
@@ -59,9 +72,23 @@ class SAMBackbone(nn.Module):
         self.use_layernorm = use_layernorm
         if self.use_layernorm:
             if self.input_format == "TZYXC":
-                self.layer_norms = nn.ModuleList([LayerNorm3D(embed_dim) for embed_dim in backbone_embed_dims])
+                ln_dim = backbone_native_channels if use_sam_channel_projection else None
+                self.layer_norms = nn.ModuleList([
+                    LayerNorm3D(ln_dim or embed_dim) for embed_dim in backbone_embed_dims
+                ])
             else:
                 raise NotImplementedError(f"Input format {self.input_format} not supported yet.")
+
+        if use_sam_channel_projection and self.input_format == "TZYXC":
+            out_dim = backbone_embed_dims[-1]
+            self.sam_channel_projection = nn.Sequential(
+                nn.Conv3d(backbone_native_channels, out_dim, kernel_size=1),
+                LayerNorm3D(out_dim),
+                nn.Conv3d(out_dim, out_dim, kernel_size=3, padding=1),
+                LayerNorm3D(out_dim),
+            )
+        else:
+            self.sam_channel_projection = None
 
         if adapter_args is not None:
             self.with_backbone_adapter = True
@@ -80,7 +107,6 @@ class SAMBackbone(nn.Module):
 
         self.input_shape = input_shape
         self.patch_shape = patch_shape
-        self.input_format = input_format
         _, token_shape = calc_num_patches(
             input_fmt=self.input_format,
             input_shape=self.input_shape,
@@ -161,6 +187,9 @@ class SAMBackbone(nn.Module):
         if self.adapter_out_layers is not None:
             feats_list = [feats_list[i] for i in self.adapter_out_layers]
 
+        if self.sam_channel_projection is not None:
+            feats_list = [self.sam_channel_projection(f).contiguous() for f in feats_list]
+
         return self._make_backbone_output(feats_list)
 
 
@@ -182,5 +211,7 @@ def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> n
         input_format=backbone_wrapper_args.get("input_format"),
         patch_shape=backbone_wrapper_args.get("patch_shape"),
         position_encoding_type=backbone_wrapper_args.get("position_encoding_type"),
+        use_sam_channel_projection=backbone_wrapper_args.get("use_sam_channel_projection", False),
+        backbone_native_channels=backbone_wrapper_args.get("backbone_native_channels"),
     )
     return model

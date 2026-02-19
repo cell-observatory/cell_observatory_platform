@@ -408,18 +408,24 @@ class PosEmbedding(nn.Module):
         return self.pos_embed
 
 
+# TODO: generalize to N-D
 class PositionalEmbeddingSinCos(nn.Module):
     """
     Adapted from:
     https://github.com/IDEA-Research/MaskDINO/main/maskdino/modeling/pixel_decoder/position_encoding.py
     """
 
-    def __init__(self, num_pos_feats, temperature=10000, normalize=False, scale=None):
+    def __init__(self, num_pos_feats, temperature=10000, normalize=False, scale=None, output_dim=None):
         super().__init__()
 
         self.num_pos_feats = num_pos_feats
+        # assert num_pos_feats % 2 == 0, (
+        #     f"num_pos_feats={num_pos_feats} must be even (for sin/cos pairs). "
+        #     "The upstream embed_dim passed as num_pos_feats * 3 must be divisible by 6 in ZYX."
+        # )
         self.temperature = temperature
         self.normalize = normalize
+        self.output_dim = output_dim
 
         if scale is not None and normalize is False:
             raise ValueError("normalize should be True if scale is passed")
@@ -488,6 +494,10 @@ class PositionalEmbeddingSinCos(nn.Module):
         if pos.dtype != out_dtype:
             pos = pos.to(out_dtype)
 
+        if self.output_dim is not None:
+            d = pos.size(-1)
+            if d < self.output_dim:
+                pos = torch.cat([pos, pos.new_zeros(pos.shape[0], pos.shape[1], self.output_dim - d)], dim=-1)
         return pos
 
     def _forward_image(self, x, shape, mask=None):
@@ -535,6 +545,10 @@ class PositionalEmbeddingSinCos(nn.Module):
         if pos.dtype != out_dtype:
             pos = pos.to(out_dtype)
 
+        if self.output_dim is not None:
+            d = pos.size(1)
+            if d < self.output_dim:
+                pos = torch.cat([pos, pos.new_zeros(N, self.output_dim - d, D, H, W)], dim=1)
         return pos
 
     def forward(self, x, mask=None):
@@ -975,10 +989,11 @@ def apply_rope(
     pos_enc: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
     rope_type: Literal["mixed", "axial", "custom"],
 ):
+    # FIXME: remove inefficient recursive call
     if isinstance(pos_enc, (tuple, list)) and len(pos_enc) == 2:
         pos_enc_q, pos_enc_k = pos_enc
-        q_rope, _ = apply_rope(xq, xk, pos_enc_q, rope_type)
-        _, k_rope = apply_rope(xq, xk, pos_enc_k, rope_type)
+        q_rope = xq if pos_enc_q is None else apply_rope(xq, xk, pos_enc_q, rope_type)[0]
+        k_rope = xk if pos_enc_k is None else apply_rope(xq, xk, pos_enc_k, rope_type)[1]
         return q_rope, k_rope
     if rope_type == "mixed":
         return apply_rope_v1(xq, xk, pos_enc)
@@ -1321,6 +1336,8 @@ class RopePositionEmbedding(nn.Module):
 
 # --- --- PositionalEncodingRandom (SAM-style) --- ---
 
+
+# TODO: generalize to N-D
 class PositionEmbeddingRandom(nn.Module):
     """
     Positional encoding using random spatial frequencies.
@@ -1330,18 +1347,28 @@ class PositionEmbeddingRandom(nn.Module):
         self, 
         input_fmt: str,
         num_pos_feats: int = 64, 
-        scale: Optional[float] = None
+        scale: Optional[float] = None,
+        time_separable: bool = True,
     ) -> None:
         super().__init__()
 
+        # FIXME: for now SAM2-style prompt-based models use same code path as 3D models.
+        #       If new 4D models need support for PositionEmbeddingRandom, the current
+        #       will need to be refactored.
         self.input_fmt = input_fmt
+        self.time_separable = time_separable
 
         if scale is None or scale <= 0.0:
             scale = 1.0
-        if input_fmt == "ZYXC":
+        if time_separable:
+            if self.input_fmt == "TZYXC":
+                ndim = 3
+            else:
+                raise NotImplementedError(f"Unknown input_fmt={self.input_fmt}")
+        elif self.input_fmt == "ZYXC":
             ndim = 3
         else:
-            raise NotImplementedError(f"Unknown input_fmt={input_fmt}")
+            raise NotImplementedError(f"Unknown combination of input_fmt={input_fmt} and time_separable={time_separable}")
 
         self.register_buffer(
             "positional_encoding_gaussian_matrix",
@@ -1352,14 +1379,15 @@ class PositionEmbeddingRandom(nn.Module):
         """Positionally encode points that are normalized to [0,1]."""
         # assuming coords are in [0, 1]^2 square and have d_1 x ... x d_n x 2 shape
         coords = 2 * coords - 1
-        coords = coords @ self.positional_encoding_gaussian_matrix
+        dtype = self.positional_encoding_gaussian_matrix.dtype
+        coords = (coords.to(dtype) @ self.positional_encoding_gaussian_matrix)
         coords = 2 * np.pi * coords
         # outputs d_1 x ... x d_n x C shape
         return torch.cat([torch.sin(coords), torch.cos(coords)], dim=-1)
 
     def forward(self, size: Tuple[int, int]) -> torch.Tensor:
         """Generate positional encoding for a grid of the specified size."""
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "ZYXC" or (self.input_fmt == "TZYXC" and self.time_separable):
             assert len(size) == 3, "Size must be (Z, Y, X)"
             Z, Y, X = size
             device: Any = self.positional_encoding_gaussian_matrix.device
@@ -1380,7 +1408,7 @@ class PositionEmbeddingRandom(nn.Module):
     ) -> torch.Tensor:
         """Positionally encode points that are not normalized to [0,1]."""
         coords = coords_input.clone()
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "ZYXC" or (self.input_fmt == "TZYXC" and self.time_separable):
             assert len(image_size) == 3, "Image size must be (Z, Y, X)"
             Z, Y, X = image_size
             coords[:, :, 0] = coords[:, :, 0] / Z

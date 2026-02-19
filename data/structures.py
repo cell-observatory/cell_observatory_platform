@@ -7,23 +7,9 @@ from torch import Tensor
 from cell_observatory_platform.models.ops.roi_align_nd import RoIAlign3DFunction
 
 
-def mask_ids_to_masks(batch_size, spatial_shape, mask_ids_batch, masks, device):
+def mask_ids_to_masks(batch_size, spatiotemporal_shape, mask_ids_batch, masks, device):
     """
     Convert per-sample mask IDs to per-sample binary masks.
-
-    Args:
-        batch_size (int): Number of samples in the batch.
-        spatial_shape (tuple): Shape of the spatial dimensions.
-        mask_ids_batch (list[list[int]]): For each sample in the batch, a list of instance IDs.
-        masks (torch.Tensor): Tensor containing instance-ID maps.
-                              Shape: [B, *spatial] or [*spatial] (then B assumed 1).
-        input_format (str): Input format string (e.g. "TZYXC"). Used for sanity checks.
-        input_shape (tuple): Shape of the input (no batch), matching input_format.
-        device (torch.device): Device for output tensors.
-
-    Returns:
-        list[torch.Tensor]: For each sample b, a tensor of shape
-                            [NUM_INST_b, *spatial], dtype=bool.
     """
     masks = masks.to(device)
 
@@ -37,9 +23,9 @@ def mask_ids_to_masks(batch_size, spatial_shape, mask_ids_batch, masks, device):
         m = masks[b]
 
         if len(instance_ids) == 0:
-            # No instances: return empty [0, *spatial]
+            # No instances: return empty [0, *spatiotemporal]
             empty = torch.zeros(
-                (0,) + spatial_shape,
+                (0,) + spatiotemporal_shape,
                 dtype=torch.bool,
                 device=device,
             )
@@ -48,7 +34,7 @@ def mask_ids_to_masks(batch_size, spatial_shape, mask_ids_batch, masks, device):
 
         ids_tensor = torch.as_tensor(instance_ids, device=device, dtype=m.dtype)
         view_shape = (len(instance_ids),) + (1,) * m.dim()  # [N_inst, 1, 1, ...]
-        binary_masks = m.unsqueeze(0) == ids_tensor.view(view_shape)  # [N_inst, *spatial]
+        binary_masks = m.unsqueeze(0) == ids_tensor.view(view_shape)  # [N_inst, *spatiotemporal]
         binary_masks_batch.append(binary_masks.to(torch.bool))
 
     return binary_masks_batch

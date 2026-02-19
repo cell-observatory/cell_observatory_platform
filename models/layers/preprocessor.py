@@ -1068,7 +1068,7 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
 # --------------------------------------------------------------------------- #
 
 
-class PromptBasedVideoPreprocessor(BaseFinetunePreprocessor):
+class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
     """
     Preprocessor for prompt-based video segmentation/tracking.
     Transforms collator output from BTZYXC format into expected views:
@@ -1090,6 +1090,7 @@ class PromptBasedVideoPreprocessor(BaseFinetunePreprocessor):
         mask_idx: int = -1,
         expect_mask_channel: bool = True,
         max_masks: int | None = None,
+        require_targets: bool = True,
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -1139,8 +1140,8 @@ class PromptBasedVideoPreprocessor(BaseFinetunePreprocessor):
     # Mask & index transformations
     # ------------------------------------------------------------------ #
 
-    @staticmethod
     def _build_data_views(
+        self,
         targets: list[dict],
         num_frames: int,
         num_videos: int,
@@ -1155,7 +1156,7 @@ class PromptBasedVideoPreprocessor(BaseFinetunePreprocessor):
 
         # Accumulate per (frame t, video b) so we can cap/pad per flat index b*T+t
         masks_per_frame: list[list[torch.Tensor]] = [
-            [torch.zeros(0, *self.input_shape, dtype=torch.bool, device=device) for _ in range(B)]
+            [torch.zeros(0, *self.spatial_shape, dtype=torch.bool, device=device) for _ in range(B)]
             for _ in range(T)
         ]
         flat_idx_per_frame: list[list[torch.Tensor]] = [

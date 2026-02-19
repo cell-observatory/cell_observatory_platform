@@ -1288,60 +1288,60 @@ def get_image_sizes(
     else:
         raise ValueError(f"Unsupported input_format: {input_format}")
 
-    # TODO: consider how to generalize to spacetime
-
-    # Build a 3D padding mask [B, Z, Y, X] or [B, Y, X]
-    # We only care about spatial volume axes for DETR-style masks.
-    spatial_axes = [ax for ax in ("Z", "Y", "X") if ax in input_format]
+    spatiotemporal_axes = [ax for ax in ("T", "Z", "Y", "X") if ax in input_format]
 
     # map axis -> full size from input_shape
     axis_to_size = dict(zip(input_format, input_shape))
-    full_sizes = {ax: int(axis_to_size[ax]) for ax in spatial_axes}
+    full_sizes = {ax: int(axis_to_size[ax]) for ax in spatiotemporal_axes}
 
-    # spatial mask shape (Z, Y, X) or (Y, X)
-    spatial_shape = tuple(full_sizes[ax] for ax in spatial_axes)
+    # spatial mask shape
+    spatiotemporal_shape = tuple(full_sizes[ax] for ax in spatiotemporal_axes)
     
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     image_sizes: List[Tuple[int, ...]] = []
     for i in range(batch_size):
-        spatial_dims = [int(metadata[f"{ax}_size"][i]) for ax in ax_names]
-        image_sizes.append(tuple(spatial_dims))
+        spatiotemporal_dims = [int(metadata[f"{ax}_size"][i]) for ax in ax_names]
+        image_sizes.append(tuple(spatiotemporal_dims))
 
-    image_sizes_padded: List[Tuple[int, ...]] = [spatial_shape] * batch_size
+    image_sizes_padded: List[Tuple[int, ...]] = [spatiotemporal_shape] * batch_size
 
     # use orig_* sizes only if *all* are present
     if all(f"orig_{ax}_size" in metadata for ax in ax_names):
         orig_image_sizes: List[Tuple[int, ...]] = []
         for i in range(batch_size):
-            spatial_dims = [int(metadata[f"orig_{ax}_size"][i]) for ax in ax_names]
-            orig_image_sizes.append(tuple(spatial_dims))
+            spatiotemporal_dims = [int(metadata[f"orig_{ax}_size"][i]) for ax in ax_names]
+            orig_image_sizes.append(tuple(spatiotemporal_dims))
     else:
         orig_image_sizes = image_sizes_padded
 
     padding_mask = torch.zeros(
-        (batch_size, *spatial_shape),
+        (batch_size, *spatiotemporal_shape),
         dtype=torch.bool,
         device=device,
     )
 
     # metadata keys for sizes: z_size, y_size, x_size
-    size_keys = {ax: f"{ax.lower()}_size" for ax in spatial_axes}
+    size_keys = {ax: f"{ax.lower()}_size" for ax in ax_names}
+    
+    # Map lowercase ax_names to uppercase axis names for consistency
+    ax_to_upper = {"time": "T", "z": "Z", "y": "Y", "x": "X", "channel": "C"}
 
     for b in range(batch_size):
         # actual sizes along each spatial axis (default: full size if missing)
         actual = {}
-        for ax in spatial_axes:
+        for ax in ax_names:
             key = size_keys[ax]
+            ax_upper = ax_to_upper[ax]
             if key in metadata:
-                actual[ax] = int(metadata[key][b])
+                actual[ax_upper] = int(metadata[key][b])
             else:
-                actual[ax] = full_sizes[ax]
+                actual[ax_upper] = full_sizes[ax_upper]
 
         # Mark padded voxels as True
         # We want: padded if index >= actual[ax] along ANY spatial axis.
-        if spatial_axes == ["Z", "Y", "X"]:
+        if spatiotemporal_axes == ["Z", "Y", "X"]:
             Z_full, Y_full, X_full = full_sizes["Z"], full_sizes["Y"], full_sizes["X"]
             z_lim, y_lim, x_lim = actual["Z"], actual["Y"], actual["X"]
 
@@ -1352,17 +1352,21 @@ def get_image_sizes(
             if x_lim < X_full:
                 padding_mask[b, :, :, x_lim:] = True
 
-        elif spatial_axes == ["Y", "X"]:
-            Y_full, X_full = full_sizes["Y"], full_sizes["X"]
-            y_lim, x_lim = actual["Y"], actual["X"]
+        elif spatiotemporal_axes == ["T", "Z", "Y", "X"]:
+            T_full, Z_full, Y_full, X_full = full_sizes["T"], full_sizes["Z"], full_sizes["Y"], full_sizes["X"]
+            t_lim, z_lim, y_lim, x_lim = actual["T"], actual["Z"], actual["Y"], actual["X"]
 
+            if t_lim < T_full:
+                padding_mask[b, t_lim:, :, :, :] = True
+            if z_lim < Z_full:
+                padding_mask[b, :, z_lim:, :, :] = True
             if y_lim < Y_full:
-                padding_mask[b, y_lim:, :] = True
+                padding_mask[b, :, :, y_lim:, :] = True
             if x_lim < X_full:
-                padding_mask[b, :, x_lim:] = True
+                padding_mask[b, :, :, :, x_lim:] = True
 
         else:
-            raise ValueError(f"Unsupported spatial_axes combination: {spatial_axes}")
+            raise ValueError(f"Unsupported spatiotemporal_axes combination: {spatiotemporal_axes}")
 
     return image_sizes, orig_image_sizes, image_sizes_padded, padding_mask
 

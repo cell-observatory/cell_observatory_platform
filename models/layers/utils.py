@@ -447,6 +447,7 @@ def concat_points(old_point_inputs, new_points, new_labels):
 def sample_box_points(
     input_fmt: str,
     masks: torch.Tensor,
+    time_separable: bool = True,
     noise: float = 0.1,  # SAM default
     noise_bound: int = 20,  # SAM default
     top_left_label: int = 2,
@@ -465,7 +466,7 @@ def sample_box_points(
     - box_coords: [B, num_pt, 3], contains (z, y, x) coordinates of box corners, dtype=torch.float
     - box_labels: [B, num_pt], label 2 is reserverd for top left and 3 for bottom right corners, dtype=torch.int32
     """
-    if input_fmt == "ZYXC":
+    if input_fmt == "ZYXC" or (input_fmt == "TZYXC" and time_separable):
         device = masks.device
         # box_coords: [B, 6] for masks: [N, D, H, W]
         box_coords = masks_to_boxes_v2(masks.squeeze(1))
@@ -477,10 +478,11 @@ def sample_box_points(
         if noise > 0.0:
             if not isinstance(noise_bound, torch.Tensor):
                 noise_bound = torch.tensor(noise_bound, device=device)
+            # NOTE: masks_to_boxes_v2 returns x1, y1, z1, x2, y2, z2 format
             # bbox_w: [B, 1], bbox_h: [B, 1], bbox_d: [B, 1]
-            bbox_w = box_coords[..., 2] - box_coords[..., 0]
-            bbox_h = box_coords[..., 3] - box_coords[..., 1]
-            bbox_d = box_coords[..., 4] - box_coords[..., 2]
+            bbox_w = box_coords[..., 3] - box_coords[..., 0]
+            bbox_h = box_coords[..., 4] - box_coords[..., 1]
+            bbox_d = box_coords[..., 5] - box_coords[..., 2]
             max_dx = torch.min(bbox_w * noise, noise_bound)
             max_dy = torch.min(bbox_h * noise, noise_bound)
             max_dz = torch.min(bbox_d * noise, noise_bound)
@@ -502,7 +504,13 @@ def sample_box_points(
     return box_coords, box_labels
 
 
-def sample_random_points_from_errors(input_fmt: str, gt_masks, pred_masks, num_pt=1):
+def sample_random_points_from_errors(
+        input_fmt: str,
+        gt_masks: torch.Tensor,
+        pred_masks: torch.Tensor,
+        time_separable: bool = True,
+        num_pt: int = 1,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Sample `num_pt` random points (along with their labels) independently from the error regions.
 
@@ -517,7 +525,7 @@ def sample_random_points_from_errors(input_fmt: str, gt_masks, pred_masks, num_p
     - labels: [B, num_pt], dtype=torch.int32, where 1 means positive clicks and 0 means
       negative clicks
     """
-    if input_fmt == "ZYXC":
+    if input_fmt == "ZYXC" or (input_fmt == "TZYXC" and time_separable):
         if pred_masks is None:  # if pred_masks is not provided, treat it as empty
             pred_masks = torch.zeros_like(gt_masks)
         assert gt_masks.dtype == torch.bool and gt_masks.size(1) == 1, f"Expected (B, 1, D, H, W), got {gt_masks.shape}"
@@ -553,6 +561,7 @@ def sample_random_points_from_errors(input_fmt: str, gt_masks, pred_masks, num_p
         pts_idx = pts_noise.flatten(2).argmax(dim=2)
         # labels: [B, num_pt]
         labels = (pts_idx % 2).to(torch.int32)
+        pts_idx = pts_idx // 2
         pts_x = pts_idx % W_im
         pts_y = (pts_idx // W_im) % H_im
         pts_z = pts_idx // (W_im * H_im)
@@ -562,7 +571,13 @@ def sample_random_points_from_errors(input_fmt: str, gt_masks, pred_masks, num_p
     return points, labels
 
 
-def sample_one_point_from_error_center(input_fmt: str, gt_masks, pred_masks, padding=True):
+def sample_one_point_from_error_center(
+        input_fmt: str,
+        gt_masks: torch.Tensor,
+        pred_masks: torch.Tensor,
+        time_separable: bool = True,
+        padding: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Sample 1 random point (along with its label) from the center of each error region,
     that is, the point with the largest distance to the boundary of each error region.
@@ -583,7 +598,7 @@ def sample_one_point_from_error_center(input_fmt: str, gt_masks, pred_masks, pad
     assert gt_masks.dtype == torch.bool and gt_masks.size(1) == 1, f"Expected (B, 1, D, H, W), got {gt_masks.shape}"
     assert pred_masks.dtype == torch.bool and pred_masks.shape == gt_masks.shape, f"Expected (B, 1, D, H, W), got {pred_masks.shape}"
 
-    if input_fmt == "ZYXC":
+    if input_fmt == "ZYXC" or (input_fmt == "TZYXC" and time_separable):
         B, _, D_im, H_im, W_im = gt_masks.shape
         device = gt_masks.device
 
@@ -664,11 +679,17 @@ def sample_one_point_from_error_center(input_fmt: str, gt_masks, pred_masks, pad
     return points, labels
 
 
-def get_next_point(input_fmt: str, gt_masks, pred_masks, method):
+def get_next_point(
+    input_fmt: str,
+    gt_masks: torch.Tensor,
+    pred_masks: torch.Tensor,
+    method: str,
+    time_separable: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     if method == "uniform":
-        return sample_random_points_from_errors(input_fmt, gt_masks, pred_masks)
+        return sample_random_points_from_errors(input_fmt, gt_masks, pred_masks, time_separable)
     elif method == "center":
-        return sample_one_point_from_error_center(input_fmt, gt_masks, pred_masks)
+        return sample_one_point_from_error_center(input_fmt, gt_masks, pred_masks, time_separable)
     else:
         raise ValueError(f"unknown sampling method {method}")
 

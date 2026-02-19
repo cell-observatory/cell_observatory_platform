@@ -9,7 +9,7 @@ import torch
 from torch import nn
 
 from cell_observatory_platform.models.layers.mlp import MLP
-from cell_observatory_platform.models.layers.norm import LayerNorm3d
+from cell_observatory_platform.models.layers.norm import LayerNorm3D
 from cell_observatory_platform.models.heads.sam_decoder import TwoWayTransformer
 
 
@@ -68,13 +68,13 @@ class MaskDecoder(nn.Module):
         self.use_multimask_token_for_obj_ptr = use_multimask_token_for_obj_ptr
 
         self.mask_downsample_factor = mask_downsample_factor
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             assert mask_downsample_factor == 4, "Mask downsample factor must be 4."
             self.output_upscaling = nn.Sequential(
                 nn.ConvTranspose3d(
                     transformer_dim, transformer_dim // 4, kernel_size=(2, 2, 2), stride=(2, 2, 2)
                 ),
-                LayerNorm3d(transformer_dim // 4),
+                LayerNorm3D(transformer_dim // 4),
                 activation(),
                 nn.ConvTranspose3d(
                     transformer_dim // 4, transformer_dim // 8, kernel_size=(2, 2, 2), stride=(2, 2, 2)
@@ -86,7 +86,7 @@ class MaskDecoder(nn.Module):
 
         self.use_high_res_features = use_high_res_features
         if use_high_res_features:
-            if self.input_fmt == "ZYXC":
+            if self.input_fmt == "TZYXC":
                 self.conv_s0 = nn.Conv3d(
                     transformer_dim, transformer_dim // 8, kernel_size=1, stride=1
                 )
@@ -154,7 +154,7 @@ class MaskDecoder(nn.Module):
         # Select the correct mask or masks for output
         if multimask_output:
             # multiple masks output
-            if self.input_fmt == "ZYXC":
+            if self.input_fmt == "TZYXC":
                 masks = masks[:, 1:, :, :, :]
             else:
                 raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -164,7 +164,7 @@ class MaskDecoder(nn.Module):
             masks, iou_pred = self._dynamic_multimask_via_stability(masks, iou_pred)
         else:
             # single mask output
-            if self.input_fmt == "ZYXC":
+            if self.input_fmt == "TZYXC":
                 masks = masks[:, 0:1, :, :, :]
             else:
                 raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -228,10 +228,13 @@ class MaskDecoder(nn.Module):
         ), "image_pe should have size 1 in batch dim (from `get_dense_pe()`)"
         pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
         
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             b, c, z, y, x = src.shape
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        pos_src = pos_src.to(src.dtype)
+        tokens = tokens.to(src.dtype)
 
         # Run the transformer
         hs, src = self.transformer(src, pos_src, tokens)
@@ -239,7 +242,7 @@ class MaskDecoder(nn.Module):
         mask_tokens_out = hs[:, s + 1 : (s + 1 + self.num_mask_tokens), :]
 
         # Upscale mask embeddings and predict masks using the mask tokens
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             # NOTE: src: [B, N, C] -> [B, C, Z, Y, X]
             src = src.transpose(1, 2).view(b, c, z, y, x)
         else:
@@ -258,7 +261,7 @@ class MaskDecoder(nn.Module):
                 self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :])
             )
         hyper_in = torch.stack(hyper_in_list, dim=1)
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             b, c, z, y, x = upscaled_embedding.shape
             masks = (hyper_in @ upscaled_embedding.view(b, c, z * y * x)).view(b, -1, z, y, x)
         else:
@@ -281,7 +284,7 @@ class MaskDecoder(nn.Module):
         lower thresholds.
         """
         # mask_logits: [B, N, ...] -> [B, N, total_num_pixels]
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             mask_logits = mask_logits.flatten(-3)
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -321,7 +324,7 @@ class MaskDecoder(nn.Module):
         is_stable = stability_scores >= self.dynamic_multimask_stability_thresh
 
         # Dynamically fall back to best multimask output upon low stability scores.
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             # NOTE: mask_logits_out: [B, 1, Z, Y, X]
             mask_logits_out = torch.where(
                 is_stable[..., None, None, None].expand_as(singlemask_logits),

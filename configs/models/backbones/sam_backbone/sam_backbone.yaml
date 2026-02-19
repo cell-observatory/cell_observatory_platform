@@ -1,0 +1,18 @@
+BUILD: cell_observatory_platform.models.backbones.sam_backbone.BUILD
+
+# When use_sam_channel_projection: true, backbone_embed_dims is projector output (e.g. 384)
+backbone_embed_dims:
+  - ${models.meta_arch.sam.sam_embed_dim}
+backbone_native_channels: ${models.backbones.masked_encoder.embed_dim}
+use_sam_channel_projection: true
+train_backbone: true
+use_layernorm: true
+blocks_to_train: null
+out_layers: null
+adapter_out_layers: null
+backbone_args: ${models.backbones.masked_encoder}
+backbone_output_format: sequence
+input_shape: ${datasets.train_shape}
+patch_shape: ${datasets.patch_shape}
+input_format: ${dataset_layout_order}
+position_encoding_type: sincos

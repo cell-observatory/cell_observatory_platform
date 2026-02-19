@@ -11,7 +11,7 @@ import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
 
-from cell_observatory_platform.models.layers.attention import Attention
+from cell_observatory_platform.models.layers.attention import CrossAttention
 from cell_observatory_platform.models.layers.attention import TwoWayAttentionBlock
 
 
@@ -25,7 +25,7 @@ class TwoWayTransformer(nn.Module):
         mlp_dim: int,
         activation: Type[nn.Module] = nn.ReLU,
         attention_downsample_rate: int = 2,
-        input_fmt: str = "ZYXC",
+        input_fmt: str = "TZYXC",
     ) -> None:
         """
         A transformer decoder that attends to an input image using
@@ -45,9 +45,10 @@ class TwoWayTransformer(nn.Module):
         self.input_fmt = input_fmt
         
         self.depth = depth
-        self.embedding_dim = embedding_dim
-        self.num_heads = num_heads
         self.mlp_dim = mlp_dim
+        self.num_heads = num_heads
+        self.embedding_dim = embedding_dim
+        
         self.layers = nn.ModuleList()
 
         for i in range(depth):
@@ -62,7 +63,7 @@ class TwoWayTransformer(nn.Module):
                 )
             )
 
-        self.final_attn_token_to_image = Attention(
+        self.final_attn_token_to_image = CrossAttention(
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
         )
         self.norm_final_attn = nn.LayerNorm(embedding_dim)
@@ -82,7 +83,7 @@ class TwoWayTransformer(nn.Module):
             Must have shape [B, N_points, embedding_dim] for any N_points.
         """
         # BxCxHxW -> BxHWxC == B x N_image_tokens x C
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             b, c, z, y, x = image_embedding.shape
             # NOTE: image_embedding: [B, C, Z, Y, X] -> [B, Z * Y * X, C]
             image_embedding = image_embedding.flatten(2).permute(0, 2, 1)
@@ -107,7 +108,7 @@ class TwoWayTransformer(nn.Module):
         # Apply the final attention layer from the points to the image
         q = queries + point_embedding
         k = keys + image_pe
-        attn_out = self.final_attn_token_to_image(q=q, k=k, v=keys)
+        attn_out = self.final_attn_token_to_image(q, k, keys)
         queries = queries + attn_out
         queries = self.norm_final_attn(queries)
 

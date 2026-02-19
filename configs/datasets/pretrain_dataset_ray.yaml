@@ -1,8 +1,8 @@
 defaults:
-  - databases: base_database      # Loads configs/datasets/databases/base_database.yaml
-  - masking: mask_generator           # Loads configs/datasets/masking/mask_generator.yaml
-  - transforms: ray_transforms        # Loads configs/datasets/transforms/ray_transforms.yaml
-  - preprocessor: ray_preprocessor    # Loads configs/datasets/preprocessor/ray_preprocessor.yaml
+  # - databases: base_database      # Loads configs/datasets/databases/base_database.yaml
+  # - masking: mask_generator           # Loads configs/datasets/masking/mask_generator.yaml
+  # - transforms: ray_transforms        # Loads configs/datasets/transforms/ray_transforms.yaml
+  # - preprocessor: ray_preprocessor    # Loads configs/datasets/preprocessor/ray_preprocessor.yaml
   - _self_
 
 # mainly used by other configs but determined here for ease of access

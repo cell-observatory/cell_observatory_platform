@@ -4,7 +4,7 @@ import logging
 import warnings
 
 from functools import partial
-from typing import Optional, Literal, List, Tuple, Union
+from typing import Optional, Literal, List, Tuple, Union, Type
 
 import torch
 import torch.nn as nn
@@ -43,14 +43,8 @@ class Attention(nn.Module):
         att_drop: float = 0.0,
         proj_drop: float = 0.0,
         norm_layer: nn.Module = partial(nn.LayerNorm, eps=1e-5),
-        # NOTE: non-standard but for SAM2 they require these fields
-        kv_in_dim: int = None,
-        downsample_rate: int = 1,
     ) -> None:
         super().__init__()
-
-        self.kv_in_dim = kv_in_dim if kv_in_dim is not None else dim
-        dim = dim // downsample_rate
 
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
 
@@ -62,8 +56,8 @@ class Attention(nn.Module):
         self.scale = self.head_dim**-0.5
 
         self.wq = nn.Linear(dim, dim, bias=qkv_bias)
-        self.wk = nn.Linear(self.kv_in_dim, dim, bias=qkv_bias)
-        self.wv = nn.Linear(self.kv_in_dim, dim, bias=qkv_bias)
+        self.wk = nn.Linear(dim, dim, bias=qkv_bias)
+        self.wv = nn.Linear(dim, dim, bias=qkv_bias)
 
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
         self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
@@ -512,33 +506,67 @@ class RopeAttention(nn.Module):
 
 
 class CrossAttention(nn.Module):
-    def __init__(self, dim, num_heads):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        qkv_bias: bool = True,
+        qk_norm: bool = False,
+        att_drop: float = 0.0,
+        proj_drop: float = 0.0,
+        norm_layer: nn.Module = partial(nn.LayerNorm, eps=1e-5),
+        # NOTE: non-standard but for SAM2 they require these fields
+        kv_in_dim: Optional[int] = None,
+        downsample_rate: int = 1,
+    ) -> None:
         super().__init__()
+
+        self.kv_in_dim = kv_in_dim if kv_in_dim is not None else dim
+        q_dim = dim // downsample_rate
+
+        assert q_dim % num_heads == 0, "dim // downsample_rate should be divisible by num_heads"
+        if qk_norm:
+            assert norm_layer is not None, "norm_layer must be provided if qk_norm is True"
+
         self.num_heads = num_heads
-        self.q_proj = nn.Linear(dim, dim, bias=True)
-        self.k_proj = nn.Linear(dim, dim, bias=True)
-        self.v_proj = nn.Linear(dim, dim, bias=True)
-        self.o_proj = nn.Linear(dim, dim, bias=True)
+        self.head_dim = q_dim // num_heads
+        self.scale = self.head_dim**-0.5
+        self._query_dim = dim
+
+        self.q_proj = nn.Linear(dim, q_dim, bias=qkv_bias)
+        self.k_proj = nn.Linear(self.kv_in_dim, q_dim, bias=qkv_bias)
+        self.v_proj = nn.Linear(self.kv_in_dim, q_dim, bias=qkv_bias)
+        self.o_proj = nn.Linear(q_dim, dim, bias=qkv_bias)
+
+        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.att_drop = nn.Dropout(att_drop)
+        self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, query, keys, values):
-        B, Nq, C = query.shape
+        B, Nq, _ = query.shape
         Nk = keys.shape[1]
         H = self.num_heads
-        Hd = C // H
+        Hd = self.head_dim
         q = self.q_proj(query).view(B, Nq, H, Hd).transpose(1, 2)
         k = self.k_proj(keys).view(B, Nk, H, Hd).transpose(1, 2)
         v = self.v_proj(values).view(B, Nk, H, Hd).transpose(1, 2)
 
-        with torch.nn.attention.sdpa_kernel(
-            [
-                torch.nn.attention.SDPBackend.FLASH_ATTENTION,
-                torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
-                torch.nn.attention.SDPBackend.MATH,
-            ]
-        ):
-            out = torch.nn.functional.scaled_dot_product_attention(q, k, v)
-        out = out.transpose(1, 2).contiguous().view(B, Nq, C)
-        return self.o_proj(out)
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]):
+            out = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                dropout_p=self.att_drop.p if self.training else 0.0,
+            )
+
+        out = out.transpose(1, 2).contiguous().view(B, Nq, -1)
+        out = self.o_proj(out)
+        out = self.proj_drop(out)
+        return out
 
 
 def _apply_cross_rope(
@@ -648,7 +676,10 @@ class RopeCrossAttention(RopeAttention):
             if isinstance(pos_enc, (tuple, list)) and len(pos_enc) == 2:
                 pos_enc_q, pos_enc_k = pos_enc
                 if masks is not None:
-                    freqs_cis = (apply_masks_rope(pos_enc_q, masks, type="axial"), apply_masks_rope(pos_enc_k, masks, type="axial"))
+                    freqs_cis = (
+                        apply_masks_rope(pos_enc_q, masks, type="axial"),
+                        apply_masks_rope(pos_enc_k, masks, type="axial") if pos_enc_k is not None else None,
+                    )
                 else:
                     freqs_cis = (pos_enc_q, pos_enc_k)
             else:
@@ -924,12 +955,12 @@ class TwoWayAttentionBlock(nn.Module):
         """
         super().__init__()
 
-        # FIXME: wrong API call
-        self.self_attn = Attention(embedding_dim, num_heads, downsample_rate=attention_downsample_rate)
+        self.self_attn = CrossAttention(
+            embedding_dim, num_heads, downsample_rate=attention_downsample_rate
+        )
         self.norm1 = nn.LayerNorm(embedding_dim)
 
-        # FIXME: use cross attention module
-        self.cross_attn_token_to_image = Attention(
+        self.cross_attn_token_to_image = CrossAttention(
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
         )
         self.norm2 = nn.LayerNorm(embedding_dim)
@@ -944,8 +975,7 @@ class TwoWayAttentionBlock(nn.Module):
         self.norm3 = nn.LayerNorm(embedding_dim)
 
         self.norm4 = nn.LayerNorm(embedding_dim)
-        # FIXME: use cross attention module
-        self.cross_attn_image_to_token = Attention(
+        self.cross_attn_image_to_token = CrossAttention(
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
         )
 
@@ -956,17 +986,17 @@ class TwoWayAttentionBlock(nn.Module):
     ) -> Tuple[Tensor, Tensor]:
         # Self attention block
         if self.skip_first_layer_pe:
-            queries = self.self_attn(q=queries, k=queries, v=queries)
+            queries = self.self_attn(queries, queries, queries)
         else:
             q = queries + query_pe
-            attn_out = self.self_attn(q=q, k=q, v=queries)
+            attn_out = self.self_attn(q, q, queries)
             queries = queries + attn_out
         queries = self.norm1(queries)
 
         # Cross attention block, tokens attending to image embedding
         q = queries + query_pe
         k = keys + key_pe
-        attn_out = self.cross_attn_token_to_image(q=q, k=k, v=keys)
+        attn_out = self.cross_attn_token_to_image(q, k, keys)
         queries = queries + attn_out
         queries = self.norm2(queries)
 
@@ -978,7 +1008,7 @@ class TwoWayAttentionBlock(nn.Module):
         # Cross attention block, image embedding attending to tokens
         q = queries + query_pe
         k = keys + key_pe
-        attn_out = self.cross_attn_image_to_token(q=k, k=q, v=queries)
+        attn_out = self.cross_attn_image_to_token(k, q, queries)
         keys = keys + attn_out
         keys = self.norm4(keys)
 
@@ -1019,7 +1049,7 @@ class MemoryAttentionLayer(nn.Module):
         self.dropout3 = nn.Dropout(dropout)
 
         self.activation_str = activation
-        self.activation = get_activation_fn(activation)
+        self.activation = get_activation(activation)()
 
         # Where to add pos enc
         self.pos_enc_at_attn = pos_enc_at_attn
@@ -1030,7 +1060,7 @@ class MemoryAttentionLayer(nn.Module):
         # Self-Attention
         tgt2 = self.norm1(tgt)
         q = k = tgt2 + query_pos if self.pos_enc_at_attn else tgt2
-        tgt2 = self.self_attn(q, k, v=tgt2)
+        tgt2 = self.self_attn(q, k, tgt2)
         tgt = tgt + self.dropout1(tgt2)
         return tgt
 
@@ -1099,7 +1129,7 @@ class MemoryAttention(nn.Module):
         pos_enc_at_cross_attn_keys: bool = True,
         batch_first: bool = True,
         # Axial RoPE for cross-attention (same as make_axial_rope_freqs)
-        input_fmt: str = "ZYXC",
+        input_fmt: str = "TZYXC",
         input_shape: tuple = (128, 128, 128, 2),
         patch_shape: tuple = (16, 16, 16),
         rope_theta: float = 10.0,
@@ -1132,9 +1162,9 @@ class MemoryAttention(nn.Module):
 
         self.layers = nn.ModuleList()
         for _ in range(num_layers):
-            self_attn = Attention(
-                dim=d_model,
-                num_heads=num_heads,
+            self_attn = CrossAttention(
+                d_model,
+                num_heads,
                 downsample_rate=self_attn_downsample_rate,
             )
             cross_attn = RopeCrossAttention(
@@ -1199,9 +1229,13 @@ class MemoryAttention(nn.Module):
         pos_enc = None
         if isinstance(self.layers[0].cross_attn_image, RopeCrossAttention) and num_k_content > 0:
             freqs = self.freqs_cis_q.to(curr.device)
-            pos_enc = make_cross_rope_pos_enc_qk(
-                freqs, num_k_content, cross_rope_type="k_repeat_q"
-            )
+            if num_k_content == 1:
+                # No-memory dummy token: Q gets RoPE, K gets no pos encoding
+                pos_enc = (freqs, None)
+            else:
+                pos_enc = make_cross_rope_pos_enc_qk(
+                    freqs, num_k_content, cross_rope_type="k_repeat_q"
+                )
 
         for layer in self.layers:
             kwds = {

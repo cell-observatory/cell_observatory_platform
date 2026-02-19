@@ -8,7 +8,7 @@ from typing import Optional, Tuple, Type, List
 import torch
 from torch import nn
 
-from cell_observatory_platform.models.layers.norm import LayerNorm3d
+from cell_observatory_platform.models.layers.norm import LayerNorm3D
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
 from cell_observatory_platform.models.layers.positional_encoding import PositionEmbeddingRandom
 
@@ -21,7 +21,7 @@ class PromptEncoder(nn.Module):
         mask_downsample_factor: int,
         input_shape: Optional[List[int]] = [128, 256, 512, 2],
         patch_shape: Optional[List[int]] = [16, 32, 32, None],
-        input_format: Optional[str] = "ZYXC",        
+        input_format: Optional[str] = "TZYXC",        
         activation: Type[nn.Module] = nn.GELU,
     ) -> None:
         """
@@ -39,15 +39,21 @@ class PromptEncoder(nn.Module):
             input_shape=self.input_shape,
             patch_shape=patch_shape,
         )
-        if self.input_format == "ZYXC":
+        if self.input_format == "TZYXC":
             t, z, y, x, c = self.token_shape
             self.token_shape = [z, y, x]
         else:
             raise NotImplementedError(f"Input format {self.input_format} not supported yet.")
 
-        # NOTE: embed_dim-dim positional encodings per axis
-        num_pos_feats = embed_dim // 3
-        self.pe_layer = PositionEmbeddingRandom(input_fmt=self.input_format, num_pos_feats=num_pos_feats)
+        assert embed_dim % 2 == 0, (
+            f"embed_dim={embed_dim} must be even for PositionEmbeddingRandom (sin/cos)."
+        )
+        num_pos_feats = embed_dim // 2
+        self.pe_layer = PositionEmbeddingRandom(
+            input_fmt=self.input_format,
+            num_pos_feats=num_pos_feats, 
+            time_separable=True
+        )
 
         self.num_point_embeddings: int = 4  # pos/neg point + 2 box corners
         point_embeddings = [
@@ -56,8 +62,9 @@ class PromptEncoder(nn.Module):
         self.point_embeddings = nn.ModuleList(point_embeddings)
         self.not_a_point_embed = nn.Embedding(1, embed_dim)
 
-        if self.input_format == "ZYXC":
-            Z, Y, X, C = self.input_shape
+        if self.input_format == "TZYXC":
+            T, Z, Y, X, C = self.input_shape
+            self.spatial_shape = (Z, Y, X)
             self.mask_input_size = (
                 Z // mask_downsample_factor,
                 Y // mask_downsample_factor,
@@ -66,10 +73,10 @@ class PromptEncoder(nn.Module):
             assert mask_downsample_factor == 4, "Mask downsample factor must be 4."
             self.mask_downscaling = nn.Sequential(
                 nn.Conv3d(1, mask_in_chans // 4, kernel_size=(2, 2, 2), stride=(2, 2, 2)),
-                LayerNorm3d(mask_in_chans // 4),
+                LayerNorm3D(mask_in_chans // 4),
                 activation(),
                 nn.Conv3d(mask_in_chans // 4, mask_in_chans, kernel_size=(2, 2, 2), stride=(2, 2, 2)),
-                LayerNorm3d(mask_in_chans),
+                LayerNorm3D(mask_in_chans),
                 activation(),
                 nn.Conv3d(mask_in_chans, embed_dim, kernel_size=(1, 1, 1)),
             )
@@ -98,7 +105,7 @@ class PromptEncoder(nn.Module):
             points = torch.cat([points, padding_point], dim=1)
             labels = torch.cat([labels, padding_label], dim=1)
         point_embedding = self.pe_layer.forward_with_coords(
-            points, self.input_shape[:3]
+            points, self.spatial_shape
         )
 
         point_embedding = torch.where(
@@ -131,11 +138,11 @@ class PromptEncoder(nn.Module):
     def _embed_boxes(self, boxes: torch.Tensor) -> torch.Tensor:
         """Embeds box prompts."""
         boxes = boxes + 0.5  # Shift to center of pixel
-        if self.input_format == "ZYXC":
+        if self.input_format == "TZYXC":
             # boxes: [B, 6] -> [B, 2, 3] where coords[:, 0, :] = (x0, y0, z0)
             coords = boxes.reshape(-1, 2, 3)
             corner_embedding = self.pe_layer.forward_with_coords(
-                coords, self.input_shape[:3]
+                coords, self.spatial_shape
             )
             corner_embedding[:, 0, :] += self.point_embeddings[2].weight
             corner_embedding[:, 1, :] += self.point_embeddings[3].weight
@@ -200,7 +207,7 @@ class PromptEncoder(nn.Module):
         if masks is not None:
             dense_embeddings = self._embed_masks(masks)
         else:
-            if self.input_format == "ZYXC":
+            if self.input_format == "TZYXC":
                 dense_embeddings = self.no_mask_embed.weight.reshape(1, -1, 1, 1, 1).expand(
                     bs, -1, *self.token_shape
                 )

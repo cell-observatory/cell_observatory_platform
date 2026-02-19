@@ -10,8 +10,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from cell_observatory_platform.models.layers.norm import LayerNorm3d
-from cell_observatory_platform.models.layers.utils import DropPath, get_clones
+from timm.models.layers import DropPath
+from cell_observatory_platform.training.helpers import get_clones
+from cell_observatory_platform.models.layers.norm import LayerNorm3D
 
 
 class MaskDownSampler(nn.Module):
@@ -40,11 +41,12 @@ class MaskDownSampler(nn.Module):
         num_layers = int(math.log2(total_stride) // math.log2(stride))
         assert stride**num_layers == total_stride, "Total stride must be a power of stride."
         
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             self.encoder = nn.Sequential()
             mask_in_chans, mask_out_chans = 1, 1
             for _ in range(num_layers):
-                mask_out_chans = mask_in_chans * (stride**2)
+                # NOTE: channel scaling proportional to volume scaling
+                mask_out_chans = mask_in_chans * (stride**3)
                 self.encoder.append(
                     nn.Conv3d(
                         mask_in_chans,
@@ -54,7 +56,7 @@ class MaskDownSampler(nn.Module):
                         padding=padding,
                     )
                 )
-                self.encoder.append(LayerNorm3d(mask_out_chans))
+                self.encoder.append(LayerNorm3D(mask_out_chans))
                 self.encoder.append(activation())
                 mask_in_chans = mask_out_chans
 
@@ -92,7 +94,7 @@ class CXBlock(nn.Module):
         super().__init__()
         self.input_fmt = input_fmt
         
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             self.dwconv = nn.Conv3d(
                 dim,
                 dim,
@@ -100,7 +102,7 @@ class CXBlock(nn.Module):
                 padding=padding,
                 groups=dim if use_dwconv else 1,
             )  # depthwise conv
-            self.norm = LayerNorm3d(dim, eps=1e-6)
+            self.norm = LayerNorm3D(dim) # eps=1e-6
             self.pwconv1 = nn.Linear(
                 dim, 4 * dim
             )  # pointwise/1x1 convs, implemented with linear layers
@@ -119,7 +121,7 @@ class CXBlock(nn.Module):
         input = x
         x = self.dwconv(x)
         x = self.norm(x)
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             x = x.permute(0, 2, 3, 4, 1)
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -128,7 +130,7 @@ class CXBlock(nn.Module):
         x = self.pwconv2(x)
         if self.gamma is not None:
             x = self.gamma * x
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             x = x.permute(0, 4, 1, 2, 3)
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -152,7 +154,7 @@ class Fuser(nn.Module):
 
         if input_projection:
             assert dim is not None, "dim must be provided if input_projection is True."
-            if self.input_fmt == "ZYXC":
+            if self.input_fmt == "TZYXC":
                 self.proj = nn.Conv3d(dim, dim, kernel_size=1)
             else:
                 raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
@@ -204,7 +206,7 @@ class MemoryEncoder(nn.Module):
             activation=mask_activation,
         )
 
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             self.pix_feat_proj = nn.Conv3d(in_dim, in_dim, kernel_size=1)
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -230,7 +232,7 @@ class MemoryEncoder(nn.Module):
 
         self.out_proj = nn.Identity()
         if out_dim != in_dim:
-            if self.input_fmt == "ZYXC":
+            if self.input_fmt == "TZYXC":
                 self.out_proj = nn.Conv3d(in_dim, out_dim, kernel_size=1)
             else:
                 raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -246,6 +248,7 @@ class MemoryEncoder(nn.Module):
         if not skip_mask_sigmoid:
             masks = F.sigmoid(masks)
         masks = self.mask_downsampler(masks)
+        masks = masks.to(pix_feat.dtype)
 
         ## Fuse pix_feats and downsampled masks
         pix_feat = pix_feat.to(masks.device)

@@ -19,10 +19,10 @@ from torch.nn.init import trunc_normal_
 
 from cell_observatory_platform.models.layers.mlp import MLP
 from cell_observatory_platform.models.heads.sam_head import MaskDecoder
-from cell_observatory_platform.models.layers.attention import MemoryAttention
 from cell_observatory_platform.models.layers.memory_encoders import MemoryEncoder
 from cell_observatory_platform.models.layers.prompt_encoders import PromptEncoder
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
+from cell_observatory_platform.models.layers.attention import MemoryAttention, RopeAttention
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
 from cell_observatory_platform.models.layers.utils import (
     select_closest_cond_frames,
@@ -124,7 +124,7 @@ class SAM2Base(torch.nn.Module):
             input_shape=self.input_shape,
             patch_shape=patch_shape,
         )
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             t, z, y, x, c = token_shape
             self.token_shape = [z, y, x]
         else:
@@ -144,7 +144,7 @@ class SAM2Base(torch.nn.Module):
             # A conv layer to downsample the mask prompt to stride 4 (the same stride as
             # low-res SAM mask logits) and to change its scales from 0~1 to SAM logit scale,
             # so that it can be fed into the SAM mask decoder to generate a pointer.
-            if self.input_fmt == "ZYXC":
+            if self.input_fmt == "TZYXC":
                 self.mask_downsample = torch.nn.Conv3d(1, 1, kernel_size=4, stride=4)
             else:
                 raise ValueError(f"Input format {self.input_fmt} not supported yet.")
@@ -248,6 +248,10 @@ class SAM2Base(torch.nn.Module):
     def forward(self, data_sample: dict):
         raise NotImplementedError
 
+    @abstractmethod
+    def init_model_weights(self, buffer_device: str | None = None):
+        raise NotImplementedError
+
     def _forward_sam_heads(
         self,
         backbone_features,
@@ -297,7 +301,7 @@ class SAM2Base(torch.nn.Module):
         """
         B = backbone_features.size(0)
         device = backbone_features.device
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             D, H, W = self.token_shape
             assert backbone_features.size(1) == self.sam_prompt_embed_dim
             assert backbone_features.size(2) == D and backbone_features.size(3) == H and backbone_features.size(4) == W
@@ -318,7 +322,7 @@ class SAM2Base(torch.nn.Module):
         if mask_inputs is not None:
             # If mask_inputs is provided, downsize it into low-res mask input if needed
             # and feed it as a dense mask prompt into the SAM mask encoder
-            if self.input_fmt == "ZYXC":
+            if self.input_fmt == "TZYXC":
                 # mask_inputs: [B, 1, D, H, W]
                 assert len(mask_inputs.shape) == 5 and mask_inputs.shape[:2] == (B, 1)
                 if mask_inputs.shape[-3:] != self.sam_prompt_encoder.mask_input_size:
@@ -360,7 +364,7 @@ class SAM2Base(torch.nn.Module):
         if self.pred_obj_scores:
             is_obj_appearing = object_score_logits > 0
 
-            if self.input_fmt == "ZYXC":
+            if self.input_fmt == "TZYXC":
                 # Mask used for spatial memories is always a *hard* choice between obj and no obj,
                 # consistent with the actual mask prediction
                 low_res_multimasks = torch.where(
@@ -371,11 +375,11 @@ class SAM2Base(torch.nn.Module):
             else:
                 raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             high_res_multimasks = F.interpolate(
                 low_res_multimasks,
                 # TODO: less restrictive to upsample based on real image size
-                size=tuple(self.input_shape[:3]),
+                size=tuple(self.input_shape[1:4]),
                 mode="trilinear",
                 align_corners=False,
             )
@@ -426,7 +430,7 @@ class SAM2Base(torch.nn.Module):
         out_scale, out_bias = 20.0, -10.0  # sigmoid(-10.0)=4.5398e-05
         mask_inputs_float = mask_inputs.float()
         high_res_masks = mask_inputs_float * out_scale + out_bias
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             low_res_masks = F.interpolate(
                 high_res_masks,
                 size=(
@@ -496,7 +500,7 @@ class SAM2Base(torch.nn.Module):
 
         feature_maps = backbone_out["backbone_fpn"][-self.num_feature_levels :]
         vision_pos_embeds = backbone_out["vision_pos_enc"][-self.num_feature_levels :]
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             feat_sizes = [(x.shape[-3], x.shape[-2], x.shape[-1]) for x in vision_pos_embeds]
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -506,7 +510,7 @@ class SAM2Base(torch.nn.Module):
 
         return backbone_out, vision_feats, vision_pos_embeds, feat_sizes
 
-    def _get_1d_sine_pe(self, pos_inds, dim, temperature=10000):
+    def _get_1d_sine_pe(self, pos_inds, dim, temperature=10000, out_dtype=None):
         """
         Get 1D sine positional embedding as in the original Transformer paper.
         """
@@ -516,7 +520,7 @@ class SAM2Base(torch.nn.Module):
 
         pos_embed = pos_inds.unsqueeze(-1) / dim_t
         pos_embed = torch.cat([pos_embed.sin(), pos_embed.cos()], dim=-1)
-        return pos_embed
+        return pos_embed.to(out_dtype)
 
     def _prepare_memory_conditioned_features(
         self,
@@ -532,7 +536,7 @@ class SAM2Base(torch.nn.Module):
         """Fuse the current frame's visual feature map with previous memory."""
         B = current_vision_feats[-1].size(1)  # batch size on this frame
         C = self.hidden_dim
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             D, H, W = feat_sizes[-1]
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -541,7 +545,7 @@ class SAM2Base(torch.nn.Module):
         # The case of `self.num_maskmem == 0` below is primarily used for reproducing SAM on images.
         # In this case, we skip the fusion with any memory.
         if self.num_maskmem == 0:  # Disable memory and skip fusion
-            if self.input_fmt == "ZYXC":
+            if self.input_fmt == "TZYXC":
                 pix_feat = current_vision_feats[-1].permute(1, 2, 0).view(B, C, D, H, W)
             else:
                 raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -663,8 +667,8 @@ class SAM2Base(torch.nn.Module):
                         obj_pos = torch.tensor(pos_list).to(
                             device=device, non_blocking=True
                         )
-                        obj_pos = self._get_1d_sine_pe(obj_pos / t_diff_max, dim=tpos_dim)
-                        obj_pos = self.obj_ptr_tpos_proj(obj_pos)
+                        obj_pos = self._get_1d_sine_pe(obj_pos / t_diff_max, dim=tpos_dim, out_dtype=current_vision_feats[-1].dtype)
+                        obj_pos = self.obj_ptr_tpos_proj(obj_pos.to(base_dtype))
                         obj_pos = obj_pos.unsqueeze(1).expand(-1, B, self.mem_dim)
                     else:
                         obj_pos = obj_ptrs.new_zeros(len(pos_list), B, self.mem_dim)
@@ -685,7 +689,7 @@ class SAM2Base(torch.nn.Module):
             if self.directly_add_no_mem_embed:
                 # directly add no-mem embedding (instead of using the transformer encoder)
                 pix_feat_with_mem = current_vision_feats[-1] + self.no_mem_embed
-                if self.input_fmt == "ZYXC":
+                if self.input_fmt == "TZYXC":
                     pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, D, H, W)
                 else:
                     raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -706,7 +710,7 @@ class SAM2Base(torch.nn.Module):
             memory_pos=memory_pos_embed,
             num_obj_ptr_tokens=num_obj_ptr_tokens,
         )
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             pix_feat_with_mem = pix_feat_with_mem.permute(1, 2, 0).view(B, C, D, H, W)
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -723,7 +727,7 @@ class SAM2Base(torch.nn.Module):
         """Encode the current image and its prediction into a memory feature."""
         B = current_vision_feats[-1].size(1)  # batch size on this frame
         C = self.hidden_dim
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             D, H, W = feat_sizes[-1]  # top-level (lowest-resolution) feature size
             # top-level feature, (D*H*W)BC => BCDHW
             pix_feat = current_vision_feats[-1].permute(1, 2, 0).view(B, C, D, H, W)
@@ -761,7 +765,7 @@ class SAM2Base(torch.nn.Module):
         # is predicted to be occluded (i.e. no object is appearing in the frame)
         if self.no_obj_embed_spatial is not None:
             is_obj_appearing = (object_score_logits > 0).float()
-            if self.input_fmt == "ZYXC":
+            if self.input_fmt == "TZYXC":
                 maskmem_features += (
                     1 - is_obj_appearing[..., None, None, None]
                 ) * self.no_obj_embed_spatial[..., None, None, None].expand(
@@ -948,7 +952,7 @@ class SAM2Base(torch.nn.Module):
         # "max_obj_inds": object index of the object with the highest score at each location
         max_obj_inds = torch.argmax(pred_masks, dim=0, keepdim=True)
         # "batch_obj_inds": object index of each object slice (along dim 0) in `pred_masks`]
-        if self.input_fmt == "ZYXC":
+        if self.input_fmt == "TZYXC":
             batch_obj_inds = torch.arange(batch_size, device=device)[:, None, None, None, None]
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
@@ -1054,6 +1058,11 @@ class SAM2(SAM2Base):
         if freeze_image_encoder:
             for p in self.image_encoder.parameters():
                 p.requires_grad = False
+
+    def init_model_weights(self, buffer_device: str | None = None):
+        for mod in self.modules():
+            if isinstance(mod, RopeAttention):
+                mod.init_rope_parameters(device=buffer_device)
 
     def forward(self, data_sample: dict):
         if self.training or not self.forward_backbone_per_frame_for_eval:
@@ -1186,6 +1195,7 @@ class SAM2(SAM2Base):
                 if use_box_input:
                     points, labels = sample_box_points(
                         input_fmt=self.input_fmt,
+                        time_separable=True,
                         masks=gt_masks_per_frame[t],
                     )
                 else:
@@ -1193,6 +1203,7 @@ class SAM2(SAM2Base):
                     # ground-truth mask; we may sample more correction points on the fly)
                     points, labels = get_next_point(
                         input_fmt=self.input_fmt,
+                        time_separable=True,
                         gt_masks=gt_masks_per_frame[t],
                         pred_masks=None,
                         method=(
@@ -1443,6 +1454,7 @@ class SAM2(SAM2Base):
             pred_for_new_pt = None if sample_from_gt else (high_res_masks > 0)
             new_points, new_labels = get_next_point(
                 input_fmt=self.input_fmt,
+                time_separable=True,
                 gt_masks=gt_masks,
                 pred_masks=pred_for_new_pt,
                 method="uniform" if self.training else self.pt_sampling_for_eval,
@@ -1515,6 +1527,8 @@ _COMPONENT_CFG_KEYS = frozenset({
     "memory_encoder_args",
     "prompt_encoder_args",
     "mask_decoder_args",
+    "criterion_args",
+    "sam_embed_dim",
     "BUILD",
     "_target_",
 })
@@ -1568,9 +1582,15 @@ def BUILD(cfg: Mapping[str, Any]) -> SAM2:
     # ------------------------------------------------------------------
     mem_enc_cfg = model_cfg["memory_encoder_args"]
     mem_enc_kwargs = _extract_kwargs(mem_enc_cfg)
+    out_dim = mem_enc_kwargs.get("out_dim")
+    assert out_dim % 3 == 0, (
+        f"memory_encoder out_dim={out_dim} must be divisible by 3 "
+        "for 3D sincos positional encoding (Z/Y/X split)."
+    )
     # Build the positional encoding required by MemoryEncoder
     mem_pos_enc = PositionalEmbeddingSinCos(
-        num_pos_feats=mem_enc_kwargs.get("out_dim"),
+        # NOTE: split the embedding dim into 3 for each spatial dimension
+        num_pos_feats=mem_enc_kwargs.get("out_dim") // 3,
     )
     memory_encoder = MemoryEncoder(
         position_encoding=mem_pos_enc,

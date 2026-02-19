@@ -35,6 +35,7 @@ from cell_observatory_platform.models.ops.losses import (
     dice_loss,
     sigmoid_ce_loss,
     sigmoid_focal_loss,
+    iou_loss
 )
 from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.utils.context import get_world_size, is_torch_dist_initialized, process_rank
@@ -1361,6 +1362,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         assert "loss_mask" in self.weight_dict, "loss_mask must be in weight_dict"
         assert "loss_dice" in self.weight_dict, "loss_dice must be in weight_dict"
         assert "loss_iou" in self.weight_dict, "loss_iou must be in weight_dict"
+        assert "loss_class" in self.weight_dict, "loss_class must be in weight_dict"
 
         if "loss_class" not in self.weight_dict:
             self.weight_dict["loss_class"] = 0.0
@@ -1403,12 +1405,14 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         with the lowest focal+dice loss between predicted mask and ground-truth.
         If `supervise_all_iou` is True, we backpropagate ious losses for all predicted masks.
         """
-        target_masks = targets.unsqueeze(1).float()
-        if self.input_fmt == "ZYXC":
+        src_masks_list = outputs["multistep_pred_multimasks_high_res"]
+        pred_dtype = src_masks_list[0].dtype
+        pred_device = src_masks_list[0].device
+        target_masks = targets.unsqueeze(1).to(device=pred_device, dtype=pred_dtype)
+        if self.input_fmt == "TZYXC":
             assert target_masks.dim() == 5, f"Expected target_masks shape (N, 1, Z, Y, X), got {target_masks.shape}"
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
-        src_masks_list = outputs["multistep_pred_multimasks_high_res"]
         ious_list = outputs["multistep_pred_ious"]
         object_score_logits_list = outputs["multistep_object_score_logits"]
 
@@ -1426,6 +1430,8 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
                 losses, src_masks, target_masks, ious, num_objects, object_score_logits
             )
         losses[self.core_loss_key] = self.reduce_loss(losses)
+        # Cast step_loss to prediction dtype so backward matches model
+        losses[self.core_loss_key] = losses[self.core_loss_key].to(src_masks_list[0].dtype)
         return losses
 
     def _update_losses(
@@ -1458,7 +1464,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             # target_obj: (N, 1) bool tensor indicating whether object is present
             target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[
                 ..., None
-            ].float()
+            ].to(dtype=loss_multimask.dtype, device=loss_multimask.device)
             loss_class = sigmoid_focal_loss(
                 object_score_logits,
                 target_obj,

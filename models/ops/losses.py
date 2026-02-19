@@ -57,7 +57,6 @@ def dice_loss(
         inputs: torch.Tensor,
         targets: torch.Tensor,
         num_masks: float,
-        input_fmt="ZYXC",
         loss_on_multimask=False
     ):
     """
@@ -75,17 +74,15 @@ def dice_loss(
     # hence loss is smaller for larger overlap / IOU
     inputs = inputs.sigmoid()
     if loss_on_multimask:
-        if input_fmt == "ZYXC":
-            # inputs/targets: [N, M, ...spatial...]
-            assert inputs.dim() >= 4 and targets.shape == inputs.shape
-            inputs_f = inputs.flatten(2)
-            targets_f = targets.flatten(2)
-            numerator = 2 * (inputs_f * targets_f).sum(-1)          # [N, M]
-            denominator = inputs_f.sum(-1) + targets_f.sum(-1)      # [N, M]
-            loss = 1 - (numerator + 1) / (denominator + 1)          # [N, M]
-            return loss / num_masks 
-        else:
-            raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
+        # inputs/targets: [N, M, ...spatial...]
+        assert targets.shape == inputs.shape, \
+            f"Expected targets.shape == inputs.shape, got {targets.shape} and {inputs.shape}"
+        inputs_f = inputs.flatten(2)
+        targets_f = targets.flatten(2)
+        numerator = 2 * (inputs_f * targets_f).sum(-1)          # [N, M]
+        denominator = inputs_f.sum(-1) + targets_f.sum(-1)      # [N, M]
+        loss = 1 - (numerator + 1) / (denominator + 1)          # [N, M]
+        return loss / num_masks 
     else:
         # masks: (N, D, H, W) -> (N, D*H*W)
         inputs = inputs.flatten(1)
@@ -105,7 +102,6 @@ def iou_loss(
     num_objects, 
     loss_on_multimask=False, 
     use_l1_loss=False,
-    input_fmt="ZYXC",
 ):
     """
     Args:
@@ -121,23 +117,19 @@ def iou_loss(
     Returns:
         IoU loss tensor
     """
-    if input_fmt == "ZYXC":
-        assert inputs.dim() == 5 and targets.dim() == 5
-        # (N, M, Z, Y, X) -> (N, M, Z*Y*X)
-        pred_mask = inputs.flatten(2) > 0
-        gt_mask = targets.flatten(2) > 0
-        area_i = torch.sum(pred_mask & gt_mask, dim=-1).float()
-        area_u = torch.sum(pred_mask | gt_mask, dim=-1).float()
-        actual_ious = area_i / torch.clamp(area_u, min=1.0)
+    # inputs (in 3D): (N, M, Z, Y, X) -> (N, M, Z*Y*X)
+    pred_mask = inputs.flatten(2) > 0
+    gt_mask = targets.flatten(2) > 0
+    area_i = torch.sum(pred_mask & gt_mask, dim=-1).to(inputs.dtype)
+    area_u = torch.sum(pred_mask | gt_mask, dim=-1).to(inputs.dtype)
+    actual_ious = area_i / torch.clamp(area_u, min=1.0)
 
-        if use_l1_loss:
-            loss = F.l1_loss(pred_ious, actual_ious, reduction="none")
-        else:
-            loss = F.mse_loss(pred_ious, actual_ious, reduction="none")
-        if loss_on_multimask:
-            return loss / num_objects
+    if use_l1_loss:
+        loss = F.l1_loss(pred_ious, actual_ious, reduction="none")
     else:
-        raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
+        loss = F.mse_loss(pred_ious, actual_ious, reduction="none")
+    if loss_on_multimask:
+        return loss / num_objects
     return loss.sum() / num_objects
 
 
