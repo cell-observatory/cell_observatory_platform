@@ -536,7 +536,7 @@ class EpochBasedTrainer(BaseTrainer):
                 end = time.perf_counter()
                 for idx, data_sample in enumerate(val_dataloader):
                     data_time = time.perf_counter() - end
-                    data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
+                    data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time, idx=idx)
                     # run one step with the fetched data sample
                     self.run_validation_step(idx, data_sample)
                     end = time.perf_counter()

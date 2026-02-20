@@ -19,6 +19,7 @@ from torch.nn.init import trunc_normal_
 
 from cell_observatory_platform.models.layers.mlp import MLP
 from cell_observatory_platform.models.heads.sam_head import MaskDecoder
+from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.memory_encoders import MemoryEncoder
 from cell_observatory_platform.models.layers.prompt_encoders import PromptEncoder
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
@@ -317,7 +318,8 @@ class SAM2Base(torch.nn.Module):
         if point_inputs is not None:
             sam_point_coords = point_inputs["point_coords"]
             sam_point_labels = point_inputs["point_labels"]
-            assert sam_point_coords.size(0) == B and sam_point_labels.size(0) == B
+            assert sam_point_coords.size(0) == B and sam_point_labels.size(0) == B, \
+                f"sam_point_coords.size(0) = {sam_point_coords.size(0)}, sam_point_labels.size(0) = {sam_point_labels.size(0)}"
         else:
             # If no points are provide, pad with an empty point (with label -1)
             sam_point_coords = torch.zeros(B, 1, 3, device=device)
@@ -1595,6 +1597,9 @@ def BUILD(cfg: Mapping[str, Any]) -> SAM2:
         f"memory_encoder out_dim={out_dim} must be divisible by 3 "
         "for 3D sincos positional encoding (Z/Y/X split)."
     )
+    # Resolve activation string to class for MaskDownSampler
+    mask_act_str = mem_enc_kwargs.pop("mask_activation", "GELU")
+    mem_enc_kwargs["mask_activation"] = get_activation(mask_act_str)
     # Build the positional encoding required by MemoryEncoder
     mem_pos_enc = PositionalEmbeddingSinCos(
         # NOTE: split the embedding dim into 3 for each spatial dimension
@@ -1609,6 +1614,9 @@ def BUILD(cfg: Mapping[str, Any]) -> SAM2:
     # 4) SAM prompt encoder (PromptEncoder)
     # ------------------------------------------------------------------
     prompt_enc_cfg = dict(model_cfg.get("prompt_encoder_args"))
+    # Resolve activation string to class
+    act_str = prompt_enc_cfg.pop("activation", "GELU")
+    prompt_enc_cfg["activation"] = get_activation(act_str)
     sam_prompt_encoder = PromptEncoder(
         embed_dim=prompt_enc_cfg.pop("embed_dim"),
         mask_in_chans=prompt_enc_cfg.pop("mask_in_chans"),
@@ -1623,6 +1631,9 @@ def BUILD(cfg: Mapping[str, Any]) -> SAM2:
     # 5) SAM mask decoder (MaskDecoder)
     # ------------------------------------------------------------------
     mask_dec_cfg = dict(model_cfg.get("mask_decoder_args"))
+    # Resolve activation strings to classes
+    transformer_act_str = mask_dec_cfg.pop("transformer_activation", "relu")
+    act_str = mask_dec_cfg.pop("activation", "gelu")
     sam_mask_decoder = MaskDecoder(
         input_fmt=model_cfg["input_fmt"],
         mask_downsample_factor=model_cfg.get("mask_downsample_factor"),
@@ -1633,6 +1644,8 @@ def BUILD(cfg: Mapping[str, Any]) -> SAM2:
         num_multimask_outputs=mask_dec_cfg.pop("num_multimask_outputs"),
         iou_head_depth=mask_dec_cfg.pop("iou_head_depth"),
         iou_head_hidden_dim=mask_dec_cfg.pop("iou_head_hidden_dim"),
+        transformer_activation=get_activation(transformer_act_str),
+        activation=get_activation(act_str),
         use_high_res_features=model_cfg.get("use_high_res_features_in_sam"),
         iou_prediction_use_sigmoid=model_cfg.get("iou_prediction_use_sigmoid"),
         pred_obj_scores=model_cfg.get("pred_obj_scores"),
@@ -1640,7 +1653,7 @@ def BUILD(cfg: Mapping[str, Any]) -> SAM2:
         use_multimask_token_for_obj_ptr=model_cfg.get(
             "use_multimask_token_for_obj_ptr"
         ),
-        **mask_dec_cfg, 
+        **mask_dec_cfg,
     )
 
     # ------------------------------------------------------------------

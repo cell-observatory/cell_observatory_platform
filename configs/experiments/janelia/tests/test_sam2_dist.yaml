@@ -3,7 +3,7 @@ defaults:
   - /tasks/instance_segmentation
   - /paths/janelia
   - /hydra/overrides
-  - /clusters/local
+  - /clusters/janelia_h100
   - /datasets/databases/base_database
   - /datasets/pretrain_dataset_ray
   - /datasets/preprocessor/sam2video_preprocessor
@@ -23,7 +23,7 @@ defaults:
   - /profiling/profiling
   - _self_
 
-experiment_name: sam2_baseline_test
+experiment_name: sam2_baseline_128x256x512_150_epoch_lr_0p001_opt_adamw
 wandb_project: testing
 
 backend: DEEPSPEED
@@ -40,9 +40,9 @@ dataset_layout_order: TZYXC
 seed: 42
 
 clusters:
-  batch_size: 1
-  worker_nodes: 1
-  gpus_per_worker: 1
+  batch_size: 40
+  worker_nodes: 5
+  gpus_per_worker: 8
   cpus_per_gpu: 12
   mem_per_cpu: 40000
   ray_queue_memory: 0.2
@@ -66,8 +66,7 @@ datasets:
   buffer_capacity: 16
   num_actors_min: 4
   num_actors_max: 12
-  # max_hypercubes: null
-  max_hypercubes: 100
+  max_hypercubes: null
 
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: /groups/betzig/betziglab/CellObservatoryData/databases/prepared_1_128_128_128_2_hypercube_view.csv
@@ -119,9 +118,9 @@ datasets:
       - "mask_bbox_dict"
 
 schedulers:
-  epochs: 1
-  # warmup: 30
-  # cooldown: 5
+  epochs: 150
+  warmup: 30
+  cooldown: 5
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}
@@ -135,15 +134,15 @@ hooks:
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
   - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  # - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-  #   file_prefix: latest_model
-  #   backend: DEEPSPEED
-  # - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-  #   checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  # - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
-  #   metric_name: ${evaluation.val_metric}
-  #   compare_fn: ${evaluation.val_mode}
-  #   eval_after_validation: true
+  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+    file_prefix: latest_model
+    backend: DEEPSPEED
+  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true
 
     # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
     #   output_dir: ${paths.outdir}/profiler
