@@ -600,6 +600,11 @@ class InferencerWorker:
                 )  # [B, D, H, W, num_classes] or [B, D, H, W, 1] for binary
                 
                 preds = {self.main_output_name: semantic_map}
+            elif self.decoder_head_type == "unet":
+                # UNet.predict returns (B, num_classes, D, H, W); inferencer expects channels-last
+                outputs = self.model.predict(data_sample)
+                pred_masks = outputs["pred_masks"]
+                preds = {self.main_output_name: pred_masks}
             else:
                 raise NotImplementedError(
                     f"Decoder head type {self.decoder_head_type} not supported for semantic segmentation sliding window inference."

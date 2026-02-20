@@ -1,0 +1,25 @@
+activation_checkpoint:
+  enable: false
+  modules:
+  # FIXME: Fix this when we have a proper encoder/decoder structure
+    - ["backbone.backbone.encoder", "transformer_blocks"]
+    # - ["transformer.decoder", "layers"]
+    # - ["transformer.encoder", "layers"]
+  selective_ac_option: 2
+  per_op_sac_force_recompute_mm_shapes_by_fqns: null
+  mode: "selective"
+  mm_recompute_frac: 2
+
+torch_compile:
+  enable: false
+  modules:
+  # FIXME: Fix this when we have a proper encoder/decoder structure
+    - ["backbone.backbone.encoder", "transformer_blocks"]
+    # - ["transformer.decoder", "layers"]
+    # - ["transformer.encoder", "layers"]
+  range: block_based
+  mode: null
+  dynamic: false
+  blockbased_fullgraph: false
+  enable_compiled_autograd: false
+  backend: inductor
