@@ -23,6 +23,11 @@ class Unet(nn.Module):
         self.backbone = backbone
         self.criterion = criterion
 
+    def init_model_weights(self, buffer_device: str | None = None):
+        # FIXME: Implement this
+        # MedNeXt/ConvNeXt backbones use default PyTorch init; no special handling needed
+        pass
+
     def forward(self, data_sample: dict):
         features = self.backbone(data_sample) # (B, N_classes, spatial)
         losses = self.criterion(features, data_sample["metainfo"]["targets"][0])
@@ -32,6 +37,13 @@ class Unet(nn.Module):
             if k in self.criterion.loss_weight_dict
         )
         return losses, features # FIXME: features here is just the predicted masks
+    
+    def predict(self, data_sample: dict):
+        features = self.backbone(data_sample) # (B, N_classes, spatial)
+        # NOTE: we permute channels back because we need to return the 
+        # predicted masks in the same format as the data sample (B, Z, Y, X, C)
+        features["pred_masks"] = features["pred_masks"].permute(0, 2, 3, 4, 1) # (B, Z, Y, X, N_classes)
+        return features # FIXME: features here is just the predicted masks
     
     
 def _extract_kwargs(cfg: Mapping[str, Any], extra_ignores: Optional[List[str]] = None) -> Dict[str, Any]:

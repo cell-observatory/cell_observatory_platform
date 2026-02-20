@@ -1195,11 +1195,12 @@ class MultiLabelBinaryPredictionLoss(nn.Module):
         """
         Compute binary mask prediction losses.
         """
+        B = len(targets)
+        N_classes = targets[0]["masks"].shape[0]
 
         source_masks = outputs["pred_masks"] # B, N_classes, spatial
         masks = [target["masks"] for target in targets]
-        target_masks = torch.cat(masks, dim=0) # B, N_classes, spatial
-        B, N_classes, _ = target_masks.shape
+        target_masks = torch.stack(masks, dim=0).to(source_masks) # B, N_classes, spatial
         assert N_classes == self.num_classes, f"Expected {self.num_classes} classes, got {N_classes}"
 
         # Flatten masks along the batch and class dimensions to (B*N_classes, D, H, W)
@@ -1249,8 +1250,8 @@ class MultiLabelBinaryPredictionLoss(nn.Module):
         losses = self.loss_binary_predictions(outputs_without_aux_data, targets)
         
         if "auxiliary_outputs" in outputs:
-            for i, aux_outputs in enumerate(outputs["auxiliary_outputs"]):
-                aux_losses = self.loss_binary_predictions(aux_outputs, targets)
+            for i, aux_output in enumerate(outputs["auxiliary_outputs"]):
+                aux_losses = self.loss_binary_predictions({"pred_masks": aux_output}, targets)
                 # NOTE: In the paper they downweight lower resolution features like this. 
                 # They actually make it so that they all sum to 1.
                 # Here we just downweight them by 0.5**i without normalizing.

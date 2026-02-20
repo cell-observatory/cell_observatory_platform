@@ -1,17 +1,17 @@
 BUILD: cell_observatory_platform.models.backbones.mednext.BUILD
 
-input_shape: ${datasets.input_shape}
+input_shape: ${datasets.train_shape}
 input_format: ${dataset_layout_order}
-n_channels: 96
+n_channels: 64
 n_classes: 2
 exp_r: 4
-kernel_size: 5
+kernel_size: 3
 enc_kernel_size: null
 dec_kernel_size: null
 deep_supervision: True
 do_res: True
 do_res_up_down: True
-checkpoint_style: null
+checkpoint_style: outside_block
 block_counts: [3,4,8,8,8,8,8,4,3]
 norm_type: group
 dim: 3d

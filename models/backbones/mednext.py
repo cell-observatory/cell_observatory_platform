@@ -133,7 +133,7 @@ class MedNeXtBlock(nn.Module):
             x1 = self.grn_gamma * (x1 * nx) + self.grn_beta + x1
         x1 = self.conv3(x1)
         if self.do_res:
-            x1 = x + x1  
+            x1 = x + x1
         return x1
 
 
@@ -148,7 +148,7 @@ class MedNeXtDownBlock(MedNeXtBlock):
         do_res: bool | int = False,
         norm_type: str = 'group',
         dim: str = '3d',
-        grn: bool = True                                 # 3D Global Response Normalization as seen in MedNeXtV2 paper
+        grn: bool = True # 3D Global Response Normalization as seen in MedNeXtV2 paper
     ):
 
         super().__init__(
@@ -156,7 +156,7 @@ class MedNeXtDownBlock(MedNeXtBlock):
             out_channels,
             exp_r,
             kernel_size,
-            do_res=do_res,
+            do_res=False,   # parent residual incompatible with stride=2; DownBlock uses res_conv
             norm_type=norm_type,
             dim=dim,
             grn=grn
@@ -215,7 +215,7 @@ class MedNeXtUpBlock(MedNeXtBlock):
             out_channels,
             exp_r,
             kernel_size,
-            do_res=do_res,
+            do_res=False,   # parent residual incompatible with stride=2; UpBlock uses res_conv
             norm_type=norm_type,
             dim=dim,
             grn=grn
@@ -584,8 +584,9 @@ class MedNeXt(nn.Module):
 
         self.out_0 = OutBlock(in_channels=n_channels, n_classes=n_classes, dim=dim)
 
-        # Used to fix PyTorch checkpointing bug
-        self.dummy_tensor = nn.Parameter(torch.tensor([1.]), requires_grad=True)  
+        # Used to fix PyTorch checkpointing bug (buffer not param to avoid DeepSpeed ZeRO
+        # reducing None gradients; see https://discuss.pytorch.org/t/checkpoint-with-no-grad-requiring-inputs-problem/19117/9)
+        self.register_buffer("dummy_tensor", torch.tensor([1.0])) # TODO: Consider adding use_reentrant=False to checkpoint()
 
         if deep_supervision:
             self.out_1 = OutBlock(in_channels=n_channels*2, n_classes=n_classes, dim=dim)
@@ -692,8 +693,9 @@ class MedNeXt(nn.Module):
 
             x_up_0 = self.up_0(x)
             dec_x = x_res_0 + x_up_0 
+            del x_res_0, x_up_0
             x = self.dec_block_0(dec_x)
-            del x_res_0, x_up_0, dec_x
+            del dec_x
 
             x = self.out_0(x)
 
@@ -707,7 +709,7 @@ class MedNeXt(nn.Module):
 
         x = torch.permute(x, (0, -1, 1, 2, 3))  # (B, Z, Y, X, C) -> (B, C, Z, Y, X)
         features = self.forward_features(x)
-        # TODO: Split off the decoder into a separate module -- this is an initial implementation
+        # TODO: Split off the decoder into a separate module
         # NOTE: We don't permute channels back because the loss expects (B, N_classes, spatial)
         return features
 
