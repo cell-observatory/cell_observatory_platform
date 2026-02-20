@@ -30,26 +30,20 @@ def sigmoid_focal_loss(
     """
     prob = inputs.sigmoid()
     ce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
-    # p_t is large for hard examples where the model mispredicts
-    # i.e. prob is close to 0 for targets=1 or close to 1 for targets=0
-    # the degree of loss modulation is controlled by gamma 
     p_t = prob * targets + (1 - prob) * (1 - targets)
     loss = ce_loss * ((1 - p_t) ** gamma)
 
     if alpha >= 0:
-        # upweight/downweight positive vs negative examples
-        # if alpha is close to 1, the loss will be more focused 
-        # on positive examples and vice versa
         alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
         loss = alpha_t * loss
 
     if loss_on_multimask:
-        # loss: [N, M, ...spatial...]
-        assert loss.dim() >= 4, f"Expected loss shape (N, M, ...spatial...), got {loss.shape}"
-        return loss.flatten(2).mean(-1) / num_boxes   # [N, M]
+        # supports:
+        #   dense:  [N, M, Z, Y, X] (dim=5)
+        #   points: [N, M, P]       (dim=3)
+        assert loss.dim() >= 3, f"Expected loss shape (N, M, ...), got {loss.shape}"
+        return loss.flatten(2).mean(-1) / num_boxes  # [N, M]
     else:
-        # loss: [N, ...spatial...] or [N, 1, ...]
-        # average over all non-batch dims, then sum over batch
         return loss.flatten(1).mean(-1).sum() / num_boxes
 
 

@@ -1340,6 +1340,16 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         focal_gamma_obj_score=0.0,
         focal_alpha_obj_score=-1,
         activation_checkpoint=False,
+        use_point_sampling=False,
+        # How to pick number of points?
+        # Find the mask logit resolution loss samples from.
+        # E.g., for volume 128×256×512, at stride 4, that is 32×64×128 = 262,144 candidate voxels.
+        # 5% => ~13k
+        # 10% => ~26k
+        # 20% => ~52k
+        num_points=20000,
+        oversample_ratio=3,
+        importance_sample_ratio=0.75,
     ):
         """
         Computes the multi-step multi-mask and IoU losses.
@@ -1377,7 +1387,12 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
 
         self.core_loss_key = "step_loss"
 
+        # optimizations
         self.activation_checkpoint = activation_checkpoint
+        self.use_point_sampling = use_point_sampling
+        self.num_points = num_points
+        self.oversample_ratio = oversample_ratio
+        self.importance_sample_ratio = importance_sample_ratio
 
     def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
         assert len(outs_batch) == len(targets_batch), "outs_batch and targets_batch must have the same length"
@@ -1399,6 +1414,41 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
                 losses[k] += v
 
         return losses
+
+    @torch.no_grad()
+    def _sample_points_and_labels(
+        self,
+        src_masks: torch.Tensor,      # [N, M, Z, Y, X] logits
+        target_masks: torch.Tensor,   # [N, 1, Z, Y, X] float/bool
+    ):
+        """
+        Returns:
+        point_coords_flat: [N*M, P, 3]  (coords per predicted mask)
+        point_labels:      [N, M, P]    (GT sampled at those coords)
+        """
+        N, M, Z, Y, X = src_masks.shape
+        P = self.num_points
+        if P <= 0:
+            raise ValueError("num_points must be > 0 when use_point_sampling=True")
+
+        # coords are per (N*M) predicted mask
+        src_flat = src_masks.detach().reshape(N * M, 1, Z, Y, X)
+        point_coords_flat = get_uncertain_point_coords_with_randomness(
+            src_flat,
+            lambda logits: calculate_uncertainty(logits),
+            P,
+            self.oversample_ratio,
+            self.importance_sample_ratio,
+        )  # [N*M, P, 3]
+
+        # Sample GT labels in ONE call per object by stacking coords along the point dimension:
+        # [N*M, P, 3] -> [N, M*P, 3]
+        point_coords_obj = point_coords_flat.view(N, M * P, 3)
+        gt = target_masks  # [N,1,Z,Y,X]
+        point_labels_obj = point_sample(gt, point_coords_obj, align_corners=False).squeeze(1)  # [N, M*P]
+        point_labels = point_labels_obj.view(N, M, P)  # [N, M, P]
+
+        return point_coords_flat, point_labels
 
     def _forward(self, outputs: Dict, targets: torch.Tensor, num_objects):
         """
@@ -1449,7 +1499,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
 
         pred_dtype = src_masks_list[0].dtype
         pred_device = src_masks_list[0].device
-        target_masks = targets.unsqueeze(1).to(device=pred_device, dtype=pred_dtype)
+        target_masks = targets.unsqueeze(1).to(device=pred_device, dtype=pred_dtype)  # [N,1,Z,Y,X]
 
         # weights tensor for dot product
         w = target_masks.new_tensor([
@@ -1459,27 +1509,111 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             float(self.weight_dict.get("loss_class", 0.0)),
         ])
 
-        total = target_masks.new_zeros(()) # scalar, with grad
-        comp_sum_detached = target_masks.new_zeros(4) # for logging only
+        total = target_masks.new_zeros(())
+        comp_sum_detached = target_masks.new_zeros(4)
 
         for src_masks, pred_ious, obj_logits in zip(src_masks_list, ious_list, object_score_logits_list):
-            comps = checkpoint(
-                self._step_loss_components,
-                src_masks, pred_ious, obj_logits, target_masks, num_objects,
-                use_reentrant=False,
-                preserve_rng_state=False,
-            )  # comps: [4]
+            if self.use_point_sampling:
+                with torch.no_grad():
+                    point_coords_flat, point_labels = self._sample_points_and_labels(src_masks, target_masks)
+
+                comps = checkpoint(
+                    self._step_loss_components_points,
+                    src_masks, pred_ious, obj_logits, target_masks, num_objects,
+                    point_coords_flat, point_labels,
+                    use_reentrant=False,
+                    preserve_rng_state=False,  # safe: no randomness inside checkpointed fn
+                )
+            else:
+                comps = checkpoint(
+                    self._step_loss_components,
+                    src_masks, pred_ious, obj_logits, target_masks, num_objects,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
 
             total = total + (comps * w).sum()
             comp_sum_detached = comp_sum_detached + comps.detach()
 
         out = {self.core_loss_key: total.to(pred_dtype)}
-        # provide debug scalars (detached, so no graph retention)
         out["loss_mask"]  = comp_sum_detached[0]
         out["loss_dice"]  = comp_sum_detached[1]
         out["loss_iou"]   = comp_sum_detached[2]
         out["loss_class"] = comp_sum_detached[3]
         return out
+
+    def _step_loss_components_points(
+        self,
+        src_masks,            # [N, M, Z, Y, X]
+        pred_ious,            # [N, M]
+        object_score_logits,  # [N, 1] or [N]
+        target_masks_base,    # [N, 1, Z, Y, X]
+        num_objects,          # 0-dim cuda float
+        point_coords_flat,    # [N*M, P, 3]
+        point_labels,         # [N, M, P]
+    ):
+        N, M, Z, Y, X = src_masks.shape
+        P = point_labels.shape[-1]
+
+        src_flat = src_masks.reshape(N * M, 1, Z, Y, X)
+        point_logits_flat = point_sample(src_flat, point_coords_flat, align_corners=False).squeeze(1)  # [N*M,P]
+        point_logits = point_logits_flat.view(N, M, P)  # [N,M,P]
+
+        loss_multimask = sigmoid_focal_loss(
+            point_logits, point_labels, num_objects,
+            alpha=self.focal_alpha, gamma=self.focal_gamma,
+            loss_on_multimask=True,
+        )
+        loss_multidice = dice_loss(
+            point_logits, point_labels, num_objects,
+            loss_on_multimask=True,
+        )
+
+        # obj score loss
+        if not self.pred_obj_scores:
+            loss_class = loss_multimask.new_zeros(())
+            target_obj = loss_multimask.new_ones((loss_multimask.shape[0], 1))
+        else:
+            target_obj = torch.any((target_masks_base[:, 0] > 0).flatten(1), dim=-1)[..., None].to(
+                dtype=loss_multimask.dtype, device=loss_multimask.device
+            )
+            loss_class = sigmoid_focal_loss(
+                object_score_logits, target_obj, num_objects,
+                alpha=self.focal_alpha_obj_score, gamma=self.focal_gamma_obj_score,
+            )
+
+        # dense IoU
+        target_masks_iou = target_masks_base.expand_as(src_masks)
+        loss_multiiou = iou_loss(
+            src_masks, target_masks_iou, pred_ious, num_objects,
+            loss_on_multimask=True, use_l1_loss=self.iou_use_l1_loss,
+        )
+
+        # best-mask selection unchanged
+        if loss_multimask.size(1) > 1:
+            combo = (
+                loss_multimask * float(self.weight_dict["loss_mask"])
+                + loss_multidice * float(self.weight_dict["loss_dice"])
+            )
+            best = torch.argmin(combo, dim=-1)  # [N]
+            b = torch.arange(combo.size(0), device=combo.device)
+
+            loss_mask = loss_multimask[b, best].unsqueeze(1)
+            loss_dice = loss_multidice[b, best].unsqueeze(1)
+            if self.supervise_all_iou:
+                loss_iou = loss_multiiou.mean(dim=-1).unsqueeze(1)
+            else:
+                loss_iou = loss_multiiou[b, best].unsqueeze(1)
+        else:
+            loss_mask = loss_multimask
+            loss_dice = loss_multidice
+            loss_iou  = loss_multiiou
+
+        loss_mask = (loss_mask * target_obj).sum()
+        loss_dice = (loss_dice * target_obj).sum()
+        loss_iou  = (loss_iou  * target_obj).sum()
+
+        return torch.stack([loss_mask, loss_dice, loss_iou, loss_class])
 
     def _step_loss_components(
         self,
@@ -1503,8 +1637,8 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         )
 
         if not self.pred_obj_scores:
-            loss_class = loss_multimask.new_zeros(())  # scalar
-            target_obj = loss_multimask.new_ones((loss_multimask.shape[0], 1))  # [N,1]
+            loss_class = loss_multimask.new_zeros(())
+            target_obj = loss_multimask.new_ones((loss_multimask.shape[0], 1))
         else:
             target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[..., None].to(
                 dtype=loss_multimask.dtype, device=loss_multimask.device
@@ -1512,7 +1646,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             loss_class = sigmoid_focal_loss(
                 object_score_logits, target_obj, num_objects,
                 alpha=self.focal_alpha_obj_score, gamma=self.focal_gamma_obj_score,
-            )  # scalar
+            )
 
         # [N, M]
         loss_multiiou = iou_loss(
@@ -1549,51 +1683,55 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
     def _update_losses(
         self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
     ):
-        target_masks = target_masks.expand_as(src_masks)
-        # get focal, dice and iou loss on all output masks in a prediction step
-        loss_multimask = sigmoid_focal_loss(
-            src_masks,
-            target_masks,
-            num_objects,
-            alpha=self.focal_alpha,
-            gamma=self.focal_gamma,
-            loss_on_multimask=True,
-        )
-        loss_multidice = dice_loss(
-            src_masks, target_masks, num_objects, loss_on_multimask=True
-        )
-        if not self.pred_obj_scores:
-            # loss_class = torch.tensor(
-            #     0.0, dtype=loss_multimask.dtype, device=loss_multimask.device
-            # )
-            loss_class = loss_multimask.new_zeros(())
-            # target_obj = torch.ones(
-            #     loss_multimask.shape[0],
-            #     1,
-            #     dtype=loss_multimask.dtype,
-            #     device=loss_multimask.device,
-            # )
-            target_obj = loss_multimask.new_ones((loss_multimask.shape[0], 1))
+        # target_masks is [N,1,Z,Y,X]
+        target_masks_base = target_masks
+
+        if self.use_point_sampling:
+            # coords/labels are no_grad and depend on src_masks.detach()
+            point_coords_flat, point_labels = self._sample_points_and_labels(src_masks, target_masks_base)
+
+            N, M, Z, Y, X = src_masks.shape
+            src_flat = src_masks.reshape(N * M, 1, Z, Y, X)
+            point_logits_flat = point_sample(src_flat, point_coords_flat, align_corners=False).squeeze(1)  # [N*M,P]
+            point_logits = point_logits_flat.view(N, M, -1)  # [N,M,P]
+
+            loss_multimask = sigmoid_focal_loss(
+                point_logits, point_labels, num_objects,
+                alpha=self.focal_alpha, gamma=self.focal_gamma,
+                loss_on_multimask=True,
+            )
+            loss_multidice = dice_loss(
+                point_logits, point_labels, num_objects,
+                loss_on_multimask=True,
+            )
         else:
-            # target_obj: (N, 1) bool tensor indicating whether object is present
-            target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[
-                ..., None
-            ].to(dtype=loss_multimask.dtype, device=loss_multimask.device)
-            loss_class = sigmoid_focal_loss(
-                object_score_logits,
-                target_obj,
-                num_objects,
-                alpha=self.focal_alpha_obj_score,
-                gamma=self.focal_gamma_obj_score,
+            target_masks = target_masks_base.expand_as(src_masks)  # [N,M,Z,Y,X]
+            loss_multimask = sigmoid_focal_loss(
+                src_masks, target_masks, num_objects,
+                alpha=self.focal_alpha, gamma=self.focal_gamma,
+                loss_on_multimask=True,
+            )
+            loss_multidice = dice_loss(
+                src_masks, target_masks, num_objects,
+                loss_on_multimask=True,
             )
 
+        if not self.pred_obj_scores:
+            loss_class = loss_multimask.new_zeros(())
+            target_obj = loss_multimask.new_ones((loss_multimask.shape[0], 1))
+        else:
+            target_obj = torch.any((target_masks_base[:, 0] > 0).flatten(1), dim=-1)[..., None].to(
+                dtype=loss_multimask.dtype, device=loss_multimask.device
+            )
+            loss_class = sigmoid_focal_loss(
+                object_score_logits, target_obj, num_objects,
+                alpha=self.focal_alpha_obj_score, gamma=self.focal_gamma_obj_score,
+            )
+
+        target_masks_iou = target_masks_base.expand_as(src_masks)
         loss_multiiou = iou_loss(
-            src_masks,
-            target_masks,
-            ious,
-            num_objects,
-            loss_on_multimask=True,
-            use_l1_loss=self.iou_use_l1_loss,
+            src_masks, target_masks_iou, ious, num_objects,
+            loss_on_multimask=True, use_l1_loss=self.iou_use_l1_loss,
         )
         assert loss_multimask.dim() == 2, f"Expected loss_multimask shape (N, M), got {loss_multimask.shape}"
         assert loss_multidice.dim() == 2, f"Expected loss_multidice shape (N, M), got {loss_multidice.shape}"

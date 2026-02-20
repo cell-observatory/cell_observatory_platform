@@ -75,6 +75,10 @@ criterion_args:
   iou_use_l1_loss: false
   pred_obj_scores: false
   activation_checkpoint: true
+  use_point_sampling: false
+  num_points: 20000
+  oversample_ratio: 3
+  importance_sample_ratio: 0.75
 
 # SAM2 scalar / flags (passed to SAM2 ctor)
 input_fmt: ${dataset_layout_order}
