@@ -12,8 +12,22 @@
 
 # USAGE: bash /work/cell_observatory_platform/scripts/utils/inference.sh
 
-export PYTHONPATH="/work:/work/cell_observatory_platform"
+CFG="experiments/abc/tests/test_semantic_segmentation_mask2former_inference.yaml"
 
-CFG="experiments/coreweave/tests/exp_11_13_25_test_inference.yaml"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+MANAGER_PY="$REPO_ROOT/cell_observatory_platform/manager.py"
+if command -v cygpath >/dev/null 2>&1; then
+  MANAGER_PY="$(cygpath -u "$MANAGER_PY")"
+fi
 
-python3 /work/cell_observatory_platform/manager.py --config-name=${CFG}
+export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/cell_observatory_platform"
+
+
+if command -v uv >/dev/null 2>&1; then
+  exec uv run python "$MANAGER_PY" --config-name="$CFG"
+elif command -v python3 >/dev/null 2>&1; then
+  exec python3 "$MANAGER_PY" --config-name="$CFG"
+else
+  exec python "$MANAGER_PY" --config-name="$CFG"
+fi
