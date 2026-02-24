@@ -94,7 +94,7 @@ def test_mask2former_head_forward_shapes_cuda():
     assert out["pred_logits"].is_cuda
 
     # masks: [B, Q, D, H, W] -> finest level (res1)
-    assert out["pred_masks"].shape == (B, num_queries, *res4)
+    assert out["pred_masks"].shape == (B, num_queries, *res1)
     assert out["pred_masks"].is_cuda
 
     aux = out["auxiliary_outputs"]
@@ -102,5 +102,5 @@ def test_mask2former_head_forward_shapes_cuda():
     assert len(aux) == decoder_layers
     for a in aux:
         assert a["pred_logits"].shape == (B, num_queries, num_classes + 1)
-        assert a["pred_masks"].shape == (B, num_queries, *res4)
+        assert a["pred_masks"].shape == (B, num_queries, *res1)
         assert a["pred_logits"].is_cuda and a["pred_masks"].is_cuda

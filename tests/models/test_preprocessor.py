@@ -282,7 +282,8 @@ def test_denoising_preprocessor_init():
         with_masking=False,
         mask_generator=None,
         input_format="ZYXC",
-        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
+        mask_channel_idx=-1,
     )
     assert len(proc.transforms) == 3, "Expected three transforms: DeepCopyInputsAsTargets, ConvolveWithPSF, MixedPoissonGaussianNoise"
     assert isinstance(proc.transforms[0], DeepCopyInputsAsTargets), "Expected first transform to be DeepCopyInputsAsTargets"
@@ -323,7 +324,8 @@ def test_denoising_preprocessor_init_invalid_params():
             with_masking=False,
             mask_generator=None,
             input_format="ZYXC",
-            input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+            input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
+            mask_channel_idx=-1,
         )
 
 
@@ -356,7 +358,8 @@ def test_denoising_preprocessor_noise_addition():
         with_masking=False,
         mask_generator=None,
         input_format="ZYXC",
-        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
+        mask_channel_idx=-1,
     )
 
     inputs = torch.ones((BATCH, DEPTH, HEIGHT, WIDTH, CHANNELS), dtype=torch.float32) * 100.0
@@ -395,7 +398,8 @@ def test_denoising_preprocessor_noise_addition():
         with_masking=False,
         mask_generator=None,
         input_format="ZYXC",
-        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
+        mask_channel_idx=-1,
     )
 
     
@@ -440,7 +444,8 @@ def test_denoising_preprocessor_forward():
         with_masking=False,
         mask_generator=None,
         input_format="ZYXC",
-        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
+        mask_channel_idx=-1,
     )
 
     inputs = torch.ones((BATCH, DEPTH, HEIGHT, WIDTH, CHANNELS), dtype=torch.float32) * 100.0
@@ -499,7 +504,8 @@ def test_denoising_preprocessor_reproducibility():
         with_masking=False,
         mask_generator=None,
         input_format="ZYXC",
-        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
+        mask_channel_idx=-1,
     )
 
     proc2 = DenoisingPreprocessor(
@@ -528,7 +534,8 @@ def test_denoising_preprocessor_reproducibility():
         with_masking=False,
         mask_generator=None,
         input_format="ZYXC",
-        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
+        mask_channel_idx=-1,
     )
 
     proc3 = DenoisingPreprocessor(
@@ -556,7 +563,8 @@ def test_denoising_preprocessor_reproducibility():
         with_masking=False,
         mask_generator=None,
         input_format="ZYXC",
-        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
+        input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
+        mask_channel_idx=-1,
     )
 
     output1 = proc1(sample1, data_time=0.0)
