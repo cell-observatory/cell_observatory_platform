@@ -1,0 +1,9 @@
+BUILD: cell_observatory_platform.models.adapters.vit_det.BUILD
+input_shape: ${datasets.train_shape}
+patch_shape: ${datasets.patch_shape}
+input_format: ${dataset_layout_order}
+backbone_embed_dim: ${models.backbones.masked_encoder.embed_dim}
+out_channels: 256
+scale_factors: [4.0, 2.0, 1.0, 0.5]
+norm: LayerNorm # only LayerNorm is supported for now
+square_pad: 0 # this should always be 0 for now

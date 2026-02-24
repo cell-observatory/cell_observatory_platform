@@ -109,7 +109,7 @@ datasets:
     server_folder_path: ${paths.server_folder_path}/synthetic
     # server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
     with_hypercubes_dataframe: true
-    mask_channel: 1
+    mask_channel_idx: 1
 
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
@@ -146,7 +146,7 @@ datasets:
 
 # schedulers
 schedulers:
-  epochs: 100
+  epochs: 2
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}

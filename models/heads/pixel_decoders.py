@@ -17,7 +17,7 @@ from torch.nn.init import normal_
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
 from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.conv3d import Conv3d
-from cell_observatory_platform.models.layers.norm import get_norm
+from cell_observatory_platform.models.layers.norm import get_norm, LayerNorm3D
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
 from cell_observatory_platform.models.layers.utils import c2_xavier_fill, compute_unmasked_ratio, get_reference_points
 from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D, CrossAttention
@@ -171,6 +171,7 @@ class MSDeformAttnTransformerEncoder(nn.Module):
         # feature: [bs, c, d, h, w]
         feature_shapes = [feature.shape[2:] for feature in features]
         # feature_shapes: [num_levels, 3], with each row = (D, H, W)
+        # NOTE: forces GPU-to-CPU sync and is hence very bad for performance, should fix
         feature_shapes = torch.as_tensor(feature_shapes, dtype=torch.long, device=features[0].device)
         # [D1*H1*W1, ..., Dn*Hn*Wn] -> [0, D1*H1*W1, D1*H1*W1 + D2*H2*W2, ...]
         level_start_index = torch.cat((feature_shapes.new_zeros((1,)), feature_shapes.prod(1).cumsum(0)[:-1]))
@@ -414,53 +415,109 @@ class Mask2FormerPixelDecoder(nn.Module):
         norm: Optional[Union[str, Callable]] = None,
         use_deform_attention: bool = True,
     ):
+        """
+        Args:
+            input_shape_metadata: dictionary of input feature metadata
+                outer key: feature name (e.g. "0", "1", "2")
+                inner key: "stride" and "channels"
+            transformer_in_features: list of input feature names to use. 
+                must be a subset of input_shape_metadata.keys()
+                e.g. ["0", "1", "2"]
+            total_num_feature_levels: number of feature levels to use.
+            target_min_stride: minimum stride to use.
+            transformer_encoder_dropout: dropout probability for the transformer encoder.
+            transformer_encoder_num_heads: number of heads for the transformer encoder.
+            transformer_encoder_dim_feedforward: dimension of the feedforward network for the transformer encoder.
+            transformer_encoder_layers: number of layers for the transformer encoder.
+            conv_dim: dimension of the convolution layers.
+            mask_dim: dimension of the mask features.
+            norm: normalization layer (str or callable)
+            use_deform_attention: whether to use deformable attention.
+                if True, requires OPS3D to be installed.
+                if False, uses regular transformer encoder.
+        """
         super().__init__()
 
         self.use_deform_attention = use_deform_attention
         if use_deform_attention and not OPS3D_AVAILABLE:
             raise ImportError("Please install the deformable attention module.")
 
-        # determine shapes of input features
-        input_shapes = {k: v for k, v in input_shape_metadata.items() if k in transformer_in_features}
-        # sort feature shapes from low to high resolution
-        input_shapes_sorted = sorted(input_shapes.items(), key=lambda x: -x[1]["stride"])
-
-        # define feature maps and determine number of feature levels
-        data_items = [(feature, map["stride"], map["channels"]) for feature, map in input_shapes_sorted]
-        self.feature_maps, self.feature_maps_strides, feature_maps_in_channels = zip(*data_items)
-        self.num_feature_levels = len(self.feature_maps)
-
-        # note that this is sorted high resolution -> low resolution order. important for FPN upsampling
-        input_shape_metadata_sorted = sorted(input_shape_metadata.items(), key=lambda x: x[1]["stride"])
-        self.full_feature_map_set, _, self.full_feature_set_channels = zip(
-            *[(k, v["stride"], v["channels"]) for k, v in input_shape_metadata_sorted]
-        )
-
         self.conv_dim = conv_dim
 
-        self.transformer_num_feature_levels = len(transformer_in_features)
+        # define ALL feature maps names, strides, and channels
+        # and determine number of feature levels we will recieve
+        # NOTE: this is sorted ascending stride order 
+        # => descending (high->low) resolution order.
+        input_shapes_sorted = sorted(
+            input_shape_metadata.items(),
+            key=lambda x: x[1]["stride"]
+            )
+        data_items = [
+            (feature, map["stride"], map["channels"]) 
+            for feature, map in input_shapes_sorted
+            ]
+        (
+            self.feature_maps,
+            self.feature_maps_strides,
+            self.feature_maps_in_channels,
+        ) = zip(*data_items)
+
+        # Get shapes of input features the transformer will see
+        # by excluding features not in transformer_in_features
+        transformer_input_shapes = {
+            k: v for k, v 
+            in input_shape_metadata.items() if 
+            k in transformer_in_features
+        }
+        # sort feature shapes from high to low resolution
+        transformer_input_shapes_sorted = sorted(
+            transformer_input_shapes.items(),
+            key=lambda x: x[1]["stride"]
+            )
+        data_items = [
+            (feature, map["stride"], map["channels"]) 
+            for feature, map in transformer_input_shapes_sorted
+            ]
+        (
+            self.transformer_feature_maps,
+            self.transformer_feature_maps_strides,
+            self.transformer_feature_maps_in_channels,
+        ) = zip(*data_items)
+    
+        # Determine the number of feature levels the transformer encoder will see
+        self.transformer_num_feature_levels = len(self.transformer_feature_maps)
+
+        # we need to align the input feature maps to have the right input dimension
+        # for the transformer encoder
         if self.transformer_num_feature_levels > 1:
             channel_align_blocks = []
-            for in_channels in feature_maps_in_channels[::-1]:
+            # NOTE: We iterate in reverse order => we are now looping
+            # in low -> high resolution order.
+            for in_channels in self.transformer_feature_maps_in_channels[::-1]:
                 channel_align_blocks.append(
                     nn.Sequential(
-                        nn.Conv3d(in_channels, conv_dim, kernel_size=1),
-                        nn.GroupNorm(32, conv_dim),
+                        nn.Conv3d(in_channels, self.conv_dim, kernel_size=1),
+                        nn.GroupNorm(32, self.conv_dim),
                     )
                 )
             self.channel_align_projection = nn.ModuleList(channel_align_blocks)
-        else:
+        else: # TODO: Is this really necessary? Why not just use the above for loop?
+            # align the last (only) feature map to have the right input dimension
             self.channel_align_projection = nn.ModuleList(
                 [
                     nn.Sequential(
-                        nn.Conv3d(feature_maps_in_channels[-1], conv_dim, kernel_size=1),
-                        nn.GroupNorm(32, conv_dim),
+                        nn.Conv3d(
+                            self.transformer_feature_maps_in_channels[-1],
+                            self.conv_dim, 
+                            kernel_size=1
+                            ),
+                        nn.GroupNorm(32, self.conv_dim),
                     )
                 ]
             )
 
         self.encoder = MSDeformAttnTransformerEncoder(
-            embed_dim=conv_dim,
+            embed_dim=self.conv_dim,
             dropout=transformer_encoder_dropout,
             num_heads=transformer_encoder_num_heads,
             feedforward_dim=transformer_encoder_dim_feedforward,
@@ -468,33 +525,50 @@ class Mask2FormerPixelDecoder(nn.Module):
             num_feature_levels=self.transformer_num_feature_levels,
             use_deform_attention=use_deform_attention
         )
-        self.pe_layer = PositionalEmbeddingSinCos(math.ceil(conv_dim / 3), normalize=True)
+        self.pe_layer = PositionalEmbeddingSinCos(
+            math.ceil(conv_dim / 3), 
+            normalize=True
+            )
+        self.mask_dim = mask_dim
         self.mask_features = Conv3d(
-            conv_dim,
-            mask_dim,
+            self.conv_dim,
+            self.mask_dim,
             kernel_size=1,
             stride=1,
             padding=0,
         )
 
-        # NOTE: we always use 3 scales
         self.total_num_feature_levels = total_num_feature_levels
 
         self.target_min_stride = target_min_stride
 
-        # extra fpn levels
-        stride = min(self.feature_maps_strides)
+        # We are going to append this many extra FPN levels to the list of output feature maps
+        # if the minimum stride of the transformer feature maps is greater 
+        # than the target minimum stride
+        stride = min(self.transformer_feature_maps_strides)
         self.num_fpn_levels = int(np.log2(stride) - np.log2(self.target_min_stride))
 
         lateral_convs, output_convs = [], []
         use_bias = norm == ""
-        for in_channels in self.full_feature_set_channels[: self.num_fpn_levels]:
-            lateral_norm = get_norm(norm)(conv_dim)
-            output_norm = get_norm(norm)(conv_dim)
-            lateral_conv = Conv3d(in_channels, conv_dim, kernel_size=1, bias=use_bias, norm=lateral_norm)
+        for in_channels in self.feature_maps_in_channels[: self.num_fpn_levels]:
+            # lateral_norm = get_norm(norm)(self.conv_dim)
+            # output_norm = get_norm(norm)(self.conv_dim)
+            # FIXME: How do we want to do this?
+            if norm not in [None, "LayerNorm"]:
+                raise NotImplementedError(f"Unsupported normalization layer: {norm}")
+            elif norm == "LayerNorm":
+                lateral_norm = LayerNorm3D(self.conv_dim) 
+                output_norm = LayerNorm3D(self.conv_dim)
+            lateral_conv = Conv3d(
+                in_channels,
+                self.conv_dim,
+                kernel_size=1,
+                bias=use_bias,
+                norm=lateral_norm
+                )
             output_conv = Conv3d(
-                conv_dim,
-                conv_dim,
+                self.conv_dim,
+                self.conv_dim,
                 kernel_size=3,
                 stride=1,
                 padding=1,
@@ -535,8 +609,8 @@ class Mask2FormerPixelDecoder(nn.Module):
 
     def forward_features(self, features):
         features_list, pos_embeddings_list = [], []
-        # reverse feature maps into top-down order (from high to low resolution)
-        for idx, f in enumerate(self.feature_maps[::-1]):
+        # Reverse feature maps into top-down order (from low to high resolution)
+        for idx, f in enumerate(self.transformer_feature_maps[::-1]):
             x = features[f]
             features_list.append(self.channel_align_projection[idx](x))
             pos_embeddings_list.append(self._pad_pos_embedding(self.pe_layer(x), self.conv_dim))
@@ -553,34 +627,57 @@ class Mask2FormerPixelDecoder(nn.Module):
             features_list, masks, pos_embeddings_list
         )
 
-        tokens_per_level: list[int] = [None] * self.transformer_num_feature_levels
+        # We are going to split the transformer features back into a feature
+        # pyramid of feature maps, here we determine the number of tokens per level
+        tokens_per_level = [None] * self.transformer_num_feature_levels
         for i in range(self.transformer_num_feature_levels):
             if i < self.transformer_num_feature_levels - 1:
                 tokens_per_level[i] = level_start_index[i + 1] - level_start_index[i]
             else:
                 tokens_per_level[i] = transformer_features.shape[1] - level_start_index[i]
 
-        # [bs, num_levels * tokens_per_level, embed_dim] -> List[Tensor[bs, tokens_in_level_i, C]]
+        # [bs, sum(tokens_per_level), embed_dim] -> List[Tensor[bs, tokens_in_level_i, C]]
         transformer_features = torch.split(transformer_features, tokens_per_level, dim=1)
 
         output_map = []
         for transformer_feature, shape in zip(transformer_features, spatial_shapes):
             output_map.append(
-                transformer_feature.transpose(1, 2).view(transformer_feature.shape[0], -1, shape[0], shape[1], shape[2])
+                transformer_feature.transpose(1, 2).view(
+                    transformer_feature.shape[0], -1, shape[0], shape[1], shape[2]
+                )
             )
 
         # append `output_map` with extra FPN levels
-        # reverse feature maps into top-down order (from low to high resolution from finest K backbone maps)
-        for idx, f in enumerate(self.full_feature_map_set[: self.num_fpn_levels][::-1]):
+        # reverse feature maps into top-down order 
+        # (from low to high resolution from finest num_fpn_levels backbone maps)
+        for idx, f in enumerate(self.feature_maps[: self.num_fpn_levels][::-1]):
             x = features[f]
             lateral_conv = self.lateral_convs[idx]
             output_conv = self.output_convs[idx]
             cur_fpn = lateral_conv(x)
 
             # following FPN implementation, we use nearest upsampling here
-            y = cur_fpn + F.interpolate(output_map[-1], size=cur_fpn.shape[-3:], mode="trilinear", align_corners=False)
+            y = cur_fpn + F.interpolate(
+                output_map[-1],
+                size=cur_fpn.shape[-3:],
+                mode="trilinear", 
+                align_corners=False
+                )
             y = output_conv(y)
             output_map.append(y)
-
+            
+        # FIXME: This is the way they do it in the DinoV3 implementation,
+        # but it's a bit hairbrained because the output_map is in top-down order 
+        # (from low to high resolution)
+        # so this slices out the lowest res total_num_feature_levels feature maps, 
+        # wasting the higher res feature maps.
+        # I think we want the highest res total_num_feature_levels feature maps.
+        # => output_map[::-1][: self.total_num_feature_levels] (to return in high -> low resolution order) 
+        # or output_map[-self.total_num_feature_levels:] (to return in low -> high resolution order)
         multi_scale_features = list(output_map[: self.total_num_feature_levels])
-        return self.mask_features(output_map[-1]), output_map[0], multi_scale_features
+        # mask_features from the finest resolution feature map so 
+        # predicted masks are at the highest resolution
+        mask_out = self.mask_features(output_map[-1])
+
+        return mask_out, output_map[0], multi_scale_features
+

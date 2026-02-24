@@ -12,7 +12,7 @@ two_stage_flag: true
 denoise_queries_flag: true
 noise_scale: 0.4
 total_denosing_queries: 400 # should > max expected num labels per image roughly
-initialize_box_type: bitmask
+initialize_box_type: mask2box #bitmask # bitmask is way slower, but more accurate
 with_initial_prediction: true
 learn_query_embeddings: false
 # total_num_feature_levels: 4

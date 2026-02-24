@@ -1,0 +1,92 @@
+{
+  "recipes": [
+    {
+      "group": "channel_split",
+      "name": "jepa_sincos",
+      "base_config": "../base_configs/channel_split.yaml",
+      "pretrain_config": "jepa_sincos.yaml",
+      "pos_encoding": "sincos",
+      "head": "linear_probe",
+      "overrides": {
+        "models.meta_arch.autobench.ChannelSplitAutoBench.freeze_backbone": true
+      }
+    },
+    {
+      "group": "channel_split",
+      "name": "jepa_rope",
+      "base_config": "../base_configs/channel_split.yaml",
+      "pretrain_config": "jepa_rope.yaml",
+      "pos_encoding": "rope",
+      "head": "linear_probe",
+      "overrides": {
+        "models.meta_arch.autobench.ChannelSplitAutoBench.freeze_backbone": true
+      }
+    },
+    {
+      "group": "channel_split",
+      "name": "mae_sincos",
+      "base_config": "../base_configs/channel_split.yaml",
+      "pretrain_config": "mae_sincos.yaml",
+      "pos_encoding": "sincos",
+      "head": "linear_probe",
+      "overrides": {
+        "models.meta_arch.autobench.ChannelSplitAutoBench.freeze_backbone": true
+      }
+    },
+    {
+      "group": "channel_split",
+      "name": "mae_rope",
+      "base_config": "../base_configs/channel_split.yaml",
+      "pretrain_config": "mae_rope.yaml",
+      "pos_encoding": "rope",
+      "head": "linear_probe",
+      "overrides": {
+        "models.meta_arch.autobench.ChannelSplitAutoBench.freeze_backbone": true
+      }
+    },
+    {
+      "group": "upsample_space",
+      "name": "jepa_sincos",
+      "base_config": "../base_configs/upsample_space.yaml",
+      "pretrain_config": "jepa_sincos.yaml",
+      "pos_encoding": "sincos",
+      "head": "linear_probe",
+      "overrides": {
+        "models.meta_arch.autobench.UpsampleSpaceAutoBench.freeze_backbone": true
+      }
+    },
+    {
+      "group": "upsample_space",
+      "name": "jepa_rope",
+      "base_config": "../base_configs/upsample_space.yaml",
+      "pretrain_config": "jepa_rope.yaml",
+      "pos_encoding": "rope",
+      "head": "linear_probe",
+      "overrides": {
+        "models.meta_arch.autobench.UpsampleSpaceAutoBench.freeze_backbone": true
+      }
+    },
+    {
+      "group": "upsample_space",
+      "name": "mae_sincos",
+      "base_config": "../base_configs/upsample_space.yaml",
+      "pretrain_config": "mae_sincos.yaml",
+      "pos_encoding": "sincos",
+      "head": "linear_probe",
+      "overrides": {
+        "models.meta_arch.autobench.UpsampleSpaceAutoBench.freeze_backbone": true
+      }
+    },
+    {
+      "group": "upsample_space",
+      "name": "mae_rope",
+      "base_config": "../base_configs/upsample_space.yaml",
+      "pretrain_config": "mae_rope.yaml",
+      "pos_encoding": "rope",
+      "head": "linear_probe",
+      "overrides": {
+        "models.meta_arch.autobench.UpsampleSpaceAutoBench.freeze_backbone": true
+      }
+    }
+  ]
+}

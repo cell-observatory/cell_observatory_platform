@@ -25,11 +25,80 @@ from cell_observatory_platform.inference.utils import (
     stable_key_owner, 
     tile_hash, 
     save_feature_visualizations, 
-    save_instance_predictions
+    save_instance_predictions,
+    save_semantic_predictions,
 )
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+
+def _reduce_mask2former_queries_to_semantic_map(
+    pred_masks: torch.Tensor,
+    pred_logits: torch.Tensor,
+    num_classes: int = 1,
+    topk_per_image: int = 1,
+) -> torch.Tensor:
+    """
+    Convert Mask2Former query-based outputs to a dense semantic map.
+
+    Args:
+        pred_masks: [B, num_queries, D, H, W] - mask logits (already at target resolution)
+        pred_logits: [B, num_queries, num_classes + 1] - indices 0..num_classes-1 = semantic classes, last = no-object
+        num_classes: Number of foreground classes (default: 1 for binary segmentation)
+        topk_per_image: Number of top queries to use per image (for num_classes=1 case)
+
+    Returns:
+        semantic_map: [B, D, H, W, num_classes] - channels-last dense semantic map (per-class)
+    """
+    B, num_queries, D, H, W = pred_masks.shape
+
+    if num_classes == 1:
+        # Binary segmentation: single semantic class at index 0, no-object at index 1
+        probs = pred_logits.softmax(-1)[..., 0]  # [B, Q] - class 0 (foreground) probability per query
+        # Get top k queries by foreground probability
+        topk_indices = probs.topk(k=topk_per_image, dim=1).indices  # [B, K]
+        topk_probs = probs.gather(1, topk_indices)  # [B, K]
+        # Get masks for top k queries: gather output shape = index shape, so expand index to [B, K, D, H, W]
+        topk_indices_expanded = topk_indices.view(B, topk_per_image, 1, 1, 1).expand(B, topk_per_image, D, H, W)
+        topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
+        # Convert mask logits to probabilities
+        topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
+        # Weight masks by foreground probability and sum over top k queries
+        # topk_probs: [B, K] -> [B, K, 1, 1, 1] for broadcasting
+        semantic = (topk_probs.view(B, topk_per_image, 1, 1, 1) * topk_masks).sum(1, keepdim=True)  # [B, 1, D, H, W]
+        # Permute to channels-last: [B, D, H, W, 1]
+        semantic = semantic.permute(0, 2, 3, 4, 1)  # [B, D, H, W, 1]
+        return semantic
+    else:
+        # Multi-class segmentation: produce per-class maps
+        # pred_logits: [B, Q, num_classes + 1]; indices 0..num_classes-1 = semantic classes, last index = no-object (DETR/Mask2Former convention, see losses.py empty_weight[-1])
+        class_probs = pred_logits.softmax(-1)[..., :-1]  # [B, Q, num_classes] - keep all semantic classes, drop no-object
+        
+        # For each class, combine masks from queries assigned to that class
+        semantic_per_class = []
+        for c in range(num_classes):
+            # Get probability of class c for each query: [B, Q]
+            class_c_probs = class_probs[..., c]  # [B, Q]
+            
+            # Get top k queries for this class
+            topk_indices = class_c_probs.topk(k=min(topk_per_image, num_queries), dim=1).indices  # [B, K]
+            topk_probs = class_c_probs.gather(1, topk_indices)  # [B, K]
+            
+            # Get masks for top k queries
+            topk_indices_expanded = topk_indices.view(B, -1, 1, 1, 1).expand(B, -1, D, H, W)
+            topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
+            topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
+            
+            # Weight by class probability and combine (max aggregation for cleaner maps)
+            # Use max instead of sum to avoid over-saturation
+            weighted_masks = topk_probs.view(B, -1, 1, 1, 1) * topk_masks  # [B, K, D, H, W]
+            class_map = weighted_masks.max(dim=1)[0]  # [B, D, H, W] - max over queries
+            semantic_per_class.append(class_map)
+        
+        # Stack along channel dimension: [B, D, H, W, num_classes]
+        semantic = torch.stack(semantic_per_class, dim=-1)  # [B, D, H, W, num_classes]
+        return semantic
 
 
 class InferencerWorker:
@@ -66,6 +135,7 @@ class InferencerWorker:
         auxiliary_outputs: Optional[Any] = None,
         pmin: float = 1.0,
         pmax: float = 99.0,
+        mip_depth: int = 20,
         feature_viz_type: Optional[str] = None,
         pred_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "xyzxyz",
         gt_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "cxcyczwhd",
@@ -122,6 +192,7 @@ class InferencerWorker:
 
         self.pmin = pmin
         self.pmax = pmax
+        self.mip_depth = mip_depth
         self.z_step_pdf = z_step_pdf
         self.save_as_pdf = save_as_pdf
         self.save_as_volume = save_as_volume
@@ -510,7 +581,34 @@ class InferencerWorker:
                 )
 
         elif self.task == "semantic_segmentation":
-            raise NotImplementedError("Semantic segmentation decoder head not yet supported for sliding window inference.")            
+            if self.decoder_head_type == "mask2former":
+                # Call model.predict() which already upsamples pred_masks to input resolution
+                outputs = self.model.predict(data_sample)
+                
+                # Extract pred_masks and pred_logits from outputs
+                pred_masks = outputs["pred_masks"]  # [B, num_queries, D, H, W]
+                pred_logits = outputs["pred_logits"]  # [B, num_queries, num_classes + 1]
+                
+                # Get num_classes from model or infer from pred_logits shape
+                num_classes = pred_logits.shape[-1] - 1  # subtract no-object class
+                
+                # Convert query-based outputs to dense semantic map
+                semantic_map = _reduce_mask2former_queries_to_semantic_map(
+                    pred_masks=pred_masks,
+                    pred_logits=pred_logits,
+                    num_classes=num_classes,
+                )  # [B, D, H, W, num_classes] or [B, D, H, W, 1] for binary
+                
+                preds = {self.main_output_name: semantic_map}
+            elif self.decoder_head_type == "unet":
+                # UNet.predict returns (B, num_classes, D, H, W); inferencer expects channels-last
+                outputs = self.model.predict(data_sample)
+                pred_masks = outputs["pred_masks"]
+                preds = {self.main_output_name: pred_masks}
+            else:
+                raise NotImplementedError(
+                    f"Decoder head type {self.decoder_head_type} not supported for semantic segmentation sliding window inference."
+                )            
 
         elif self.task == "dense_prediction":
             if self.task not in {"upsample_space", "upsample_time", "upsample_space_time", "channel_split"}:
@@ -1124,20 +1222,54 @@ class InferencerWorker:
             regions.append(region)
             identifiers.append(ident)
 
-        save_instance_predictions(
-            # save_instance_predictions expects BTZYXC format
-            images=data_sample["data_tensor"].unsqueeze(1),
-            save_dir=rank_dir,
-            identifiers=identifiers,
-            preds=preds,
-            targets=targets,
-            regions=regions,
-            pred_boxes_format=self.pred_boxes_format,
-            gt_boxes_format=self.gt_boxes_format,
-            scale_gt_boxes=self.scale_gt_boxes,
-            input_format=self.input_format,
-            ortho=True,
-        )
+        if self.task == "semantic_segmentation":
+            # For semantic segmentation, use dedicated save_semantic_predictions utility
+            # Process each batch element separately
+            for b in range(B):
+                main_pred = preds[self.main_output_name][b]  # [Z, Y, X, C] or [D, H, W, C]
+                image = data_sample["data_tensor"][b]  # [Z, Y, X, C] or [D, H, W, C]
+                
+                save_semantic_predictions(
+                    name=identifiers[b],
+                    pred_semantic=main_pred,
+                    image=image,
+                    save_dir=rank_dir,
+                    save_as_volume=self.save_as_volume,
+                    save_as_pdf=self.save_as_pdf,
+                    z_step_pdf=self.z_step_pdf,
+                    filetype=self.inference_save_format,
+                    num_classes=None,  # Will be inferred from shape or metadata
+                    outputs_metadata=self.outputs_metadata,
+                    gt_semantic=None,  # Will be extracted from targets/data_sample
+                    targets=targets,
+                    data_sample=data_sample,
+                    batch_idx=b,
+                    auxiliary_outputs=self.auxiliary_outputs,
+                    resolve_path_func=self.resolve_path,
+                    zarr_chunk_shape=self.inference_zarr_chunk_shape,
+                    zarr_shard_shape=self.inference_zarr_shard_shape,
+                    pmin=self.pmin,
+                    pmax=self.pmax,
+                    mip_depth=self.mip_depth,
+                    class_names=None,  # Could be passed from config in future
+                    main_output_name=self.main_output_name,
+                )
+        else:
+            # For instance_segmentation and detection, use save_instance_predictions
+            save_instance_predictions(
+                # save_instance_predictions expects BTZYXC format
+                images=data_sample["data_tensor"].unsqueeze(1),
+                save_dir=rank_dir,
+                identifiers=identifiers,
+                preds=preds,
+                targets=targets,
+                regions=regions,
+                pred_boxes_format=self.pred_boxes_format,
+                gt_boxes_format=self.gt_boxes_format,
+                scale_gt_boxes=self.scale_gt_boxes,
+                input_format=self.input_format,
+                ortho=True,
+            )
 
     def finalize(self):
         if self.stitch_volume:

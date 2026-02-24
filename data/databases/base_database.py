@@ -62,7 +62,7 @@ class ParentDatabase:
         synthetic_only: bool = False,
         has_annotations: bool = False,
         with_hypercubes_dataframe: bool = True,
-        mask_channel: Optional[int] = None,
+        mask_channel_idx: Optional[int] = None,
     ):
         """
         A class for accessing database and retrieving hypercubes.
@@ -93,7 +93,7 @@ class ParentDatabase:
             synthetic_only: a toggle to only query synthetic hypercubes
             has_annotations: a toggle to only query hypercubes with annotations
             with_hypercubes_dataframe: whether to use hypercubes dataframe or tiles dataframe
-            mask_channel: index of the mask channel in the data (if any)
+            mask_channel_idx: index of the mask channel in the data (if any)
         """
         self.verbose = verbose
 
@@ -133,7 +133,7 @@ class ParentDatabase:
         self.cdf_target = cdf_target
         self.cdf_threshold_filter_type = cdf_threshold_filter_type
 
-        self.mask_channel = mask_channel
+        self.mask_channel_idx = mask_channel_idx
         self.synthetic_only = synthetic_only
         self.has_annotations = has_annotations
         self.dataset_layout_order = dataset_layout_order
@@ -350,6 +350,28 @@ class ParentDatabase:
         if self.server_folder_path is not None:
             self.hypercubes_dataframe["server_folder"] = self.server_folder_path
 
+       # Extract mask_bbox_dict from metadata_tile_json if present
+        if "metadata_tile_json" in self.hypercubes_dataframe.columns and self.mask_channel_idx is not None:
+            def _extract_mask_bbox_dict(metadata_json_str):
+                if metadata_json_str is None:
+                    raise ValueError(f"metadata_tile_json is None but mask_channel_idx={self.mask_channel_idx} is set")
+                try:
+                    if isinstance(metadata_json_str, str):
+                        metadata = ujson.loads(metadata_json_str)
+                    else:
+                        metadata = metadata_json_str
+                    channel_data = metadata.get(str(self.mask_channel_idx))
+                    if channel_data is None:
+                        raise ValueError(f"Channel '{self.mask_channel_idx}' not found in metadata_tile_json")
+                    mask_bbox = channel_data.get("mask_bbox_dict")
+                    if mask_bbox is None:
+                        raise ValueError(f"mask_bbox_dict not found in channel '{self.mask_channel_idx}' of metadata_tile_json")
+                    return ujson.dumps(mask_bbox)
+                except (ujson.JSONDecodeError, ValueError) as e:
+                    raise ValueError(f"Failed to extract mask_bbox_dict from metadata_tile_json: {e}")
+            
+            self.hypercubes_dataframe["mask_bbox_dict"] = self.hypercubes_dataframe["metadata_tile_json"].apply(_extract_mask_bbox_dict)
+
         # handle time granularity: expand time_size into per-timepoint rows
         self.hypercubes_dataframe = self._expand_tiles_timepoints_df(self.hypercubes_dataframe)
 
@@ -446,6 +468,9 @@ class ParentDatabase:
             "exists_aws",
             "is_synthetic",
         ]
+
+        if has_annotations:
+            base_cols.append("metadata_tile_json")
 
         query = f"""
             SELECT
@@ -638,7 +663,10 @@ class ParentDatabase:
         if self.server_folder_path is None or str(self.server_folder_path).startswith("/clusterfs"):
             filters = f"WHERE {table_name_shortcut}.exists = TRUE"
         elif str(self.server_folder_path).startswith("/groups"):
-            filters = f"WHERE {table_name_shortcut}.exists_prfs = TRUE"
+            # NOTE: database is currently not updated to reflect storage server status
+            #       remove this once the database is updated
+            filters = f"WHERE {table_name_shortcut}.exists = TRUE"
+            # filters = f"WHERE {table_name_shortcut}.exists_prfs = TRUE"
         elif str(self.server_folder_path).startswith("/aws") or str(self.server_folder_path).startswith(
             "/workspace/CellObservatoryData"
         ):
@@ -657,12 +685,19 @@ class ParentDatabase:
         filters = f"WHERE {table_name_shortcut}.is_synthetic = FALSE"
         return filters
 
-    def _has_annotations_filter(self, table_name_shortcut) -> str:
-        filters = (
-            " AND EXISTS ( SELECT 1 "
-            f"FROM jsonb_each({table_name_shortcut}.pc_metadata_json::jsonb) AS e(k, v) "
-            "WHERE (v -> 'mask_bbox_dict') IS NOT NULL AND (v -> 'mask_bbox_dict')::jsonb <> '{}'::jsonb)"
-        )
+    def _has_annotations_filter(self, table_name_shortcut, tile_view: bool = False) -> str:
+        if tile_view:
+            filters = (
+                " AND EXISTS ( SELECT 1 "
+                f"FROM jsonb_each({table_name_shortcut}.metadata_tile_json::jsonb) AS e(k, v) "
+                "WHERE (v -> 'mask_bbox_dict') IS NOT NULL AND (v -> 'mask_bbox_dict')::jsonb <> '{}'::jsonb)"
+            )
+        else:
+            filters = (
+                " AND EXISTS ( SELECT 1 "
+                f"FROM jsonb_each({table_name_shortcut}.pc_metadata_json::jsonb) AS e(k, v) "
+                "WHERE (v -> 'mask_bbox_dict') IS NOT NULL AND (v -> 'mask_bbox_dict')::jsonb <> '{}'::jsonb)"
+            )
         return filters
 
     def _filters_to_string(
@@ -687,7 +722,8 @@ class ParentDatabase:
             filters += self._real_filter(table_name_shortcut).replace("WHERE", " AND ")
 
         if has_annotations:
-            filters += self._has_annotations_filter(table_name_shortcut)
+            tile_view = table_name_shortcut == "ptv"
+            filters += self._has_annotations_filter(table_name_shortcut, tile_view)
 
         if roi_list is not None or tile_list is not None or timepoint_list is not None:
             filters += self._choose_filter(
@@ -1531,6 +1567,17 @@ class ParentDatabase:
         if "metadata_tile_json" in df.columns:
             agg_exprs.append(pl.col("metadata_tile_json").sum())
 
+
+        # TODO: Should it actually aggregate like this?
+        # Only aggregate JSON columns if they actually exist (concatenate string dicts)
+        # # Only aggregate JSON columns if they actually exist (concatenate string dicts)
+        # if "p_metadata_json" in df.columns:
+        #     agg_exprs.append(pl.col("p_metadata_json").str.join(""))
+        # if "pc_metadata_json" in df.columns:
+        #     agg_exprs.append(pl.col("pc_metadata_json").str.join(""))
+        # if "metadata_tile_json" in df.columns:
+        #     agg_exprs.append(pl.col("metadata_tile_json").str.join(""))
+
         agg_exprs.extend(
             [
                 *occ0_mean_exprs,
@@ -1611,7 +1658,7 @@ class ParentDatabase:
             return None
 
         if "mask_bbox_dict" not in pdf.columns:
-            col = _get_col(pdf, "mask_bbox_dict", self.mask_channel)
+            col = _get_col(pdf, "mask_bbox_dict", self.mask_channel_idx)
             if col is not None:
                 pdf["mask_bbox_dict"] = col
 

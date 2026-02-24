@@ -217,6 +217,48 @@ def generalized_box_iou(boxes1: Tensor, boxes2: Tensor) -> Tensor:
 
     return iou - (vol_i - union) / vol_i
 
+def _box_inter_union_diag(boxes1: Tensor, boxes2: Tensor) -> Tuple[Tensor, Tensor]:
+    """
+    Element-wise intersection and union for matched box pairs.
+    Requires boxes1.shape == boxes2.shape == [N, 6].
+    Returns (inter[N], union[N]) instead of full NxM matrices.
+    """
+    vol1 = box_volume(boxes1)
+    vol2 = box_volume(boxes2)
+
+    lt = torch.max(boxes1[:, :3], boxes2[:, :3])  # [N, 3]
+    rb = torch.min(boxes1[:, 3:], boxes2[:, 3:])  # [N, 3]
+
+    dims = _upcast(rb - lt).clamp_(min=0)  # [N, 3]
+    inter = dims[:, 0] * dims[:, 1] * dims[:, 2]  # [N]
+
+    union = vol1 + vol2 - inter
+
+    return inter, union
+
+
+def generalized_box_iou_diag(boxes1: Tensor, boxes2: Tensor) -> Tensor:
+    """
+    Diagonal-element-wise generalized IoU between boxes1 and boxes2.
+    Equivalent to torch.diag(generalized_box_iou(boxes1, boxes2)).
+
+    NOTE: boxes1 and boxes2 can have different shapes, but the result will be truncated to the smaller of the two.
+    """
+    n = min(boxes1.shape[0], boxes2.shape[0])
+    if n == 0:
+        return boxes1.new_zeros(0)
+    boxes1, boxes2 = boxes1[:n], boxes2[:n]  # Handle unequal box counts
+    inter, union = _box_inter_union_diag(boxes1, boxes2)
+    iou = inter / union
+
+    lti = torch.min(boxes1[:, :3], boxes2[:, :3])  # [N, 3]
+    rbi = torch.max(boxes1[:, 3:], boxes2[:, 3:])  # [N, 3]
+
+    whi = _upcast(rbi - lti).clamp_(min=0)  # [N, 3]
+    vol_i = whi[:, 0] * whi[:, 1] * whi[:, 2]  # [N]
+
+    return iou - (vol_i - union) / vol_i
+
 
 def project_masks_on_boxes(gt_masks, boxes, matched_idxs, M):
     """
@@ -288,6 +330,7 @@ def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
     the number of masks, (D, H, W) are the spatial dimensions.
     Returns a [N, 6] tensors, with the boxes in xyzxyz format
     """
+    assert masks.dim() == 4, f"Expected (N, D, H, W), got {masks.shape}"
     if masks.numel() == 0:
         return torch.zeros((0, 6), device=masks.device)
 
@@ -298,20 +341,20 @@ def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
     x = torch.arange(0, w, dtype=torch.float, device=masks.device)
     z, y, x = torch.meshgrid(z, y, x, indexing="ij")
 
-    x_mask = masks * x.unsqueeze(0)
+    x_mask = masks * x.unsqueeze(0) # [N, D, H, W] * [1, D, H, W] -> [N, D, H, W]
     x_max = x_mask.flatten(1).max(-1)[0]
 
-    y_mask = masks * y.unsqueeze(0)
+    y_mask = masks * y.unsqueeze(0) # [N, D, H, W] * [1, D, H, W] -> [N, D, H, W]
     y_max = y_mask.flatten(1).max(-1)[0]
 
-    z_mask = masks * z.unsqueeze(0)
+    z_mask = masks * z.unsqueeze(0) # [N, D, H, W] * [1, D, H, W] -> [N, D, H, W]
     z_max = z_mask.flatten(1).max(-1)[0]
 
     x_min = x_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
     y_min = y_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
     z_min = z_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
 
-    mask = torch.stack([x_min, y_min, z_min, x_max, y_max, z_max], 1).to(masks.device, torch.float)
+    mask = torch.stack([x_min, y_min, z_min, x_max + 1, y_max + 1, z_max + 1], 1)
     invalid_mask = (torch.isinf(x_min)) | (torch.isinf(y_min)) | (torch.isinf(z_min))
     mask[invalid_mask] = 0
     return mask

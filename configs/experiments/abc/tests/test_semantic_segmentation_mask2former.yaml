@@ -7,25 +7,26 @@ defaults:
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
   - /datasets/preprocessor/semantic_segmentation_preprocessor # configs/datasets/preprocessor/semantic_segmentation_preprocessor.yaml
   - /models/BUILD_mask2former                  # configs/models/BUILD_mask2former.yaml
-  - /models/meta_arch/mask2former/mae_large    # configs/models/mask2former/large.yaml
-  - /models/backbones/mask2former_backbone/mask2former_backbone   # configs/models/mask2former_backbone/mask2former_backbone.yaml
+  - /models/meta_arch/mask2former/mae_large_vitdet    # configs/models/mask2former/mae_large_vitdet.yaml
   - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
-  - /models/heads/pixel_decoder/mask2former_decoder  # configs/models/heads/pixel_decoder/mask2former_decoder.yaml
-  - /models/heads/mask2former_decoder/mask2former_decoder # configs/models/heads/mask2former_decoder/mask2former_decoder.yaml
+  - /models/backbones/mask2former_backbone/mask2former_backbone_w_vitdet   # configs/models/mask2former_backbone/mask2former_backbone.yaml
+  - /models/adapters/vit_det   # configs/models/adapters/vit_det.yaml
+  - /models/heads/pixel_decoder/mask2former_vitdet_pixel_decoder  # configs/models/heads/pixel_decoder/mask2former_decoder.yaml
+  - /models/heads/mask2former_decoder/mask2former_vitdet_transformer_decoder # configs/models/heads/mask2former_decoder/mask2former_decoder.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
+  - /optimizations/models/mask2former/base                # configs/optimizations/models/mask2former/base.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
 
 # experiment name (used for logging)
-experiment_name: test_semantic_segmentation_mask2former
 wandb_project: testing
+experiment_name: test_twoclass_semantic_segmentation_mask2former_vitdet_pred_stride_4_transformer_in_features_1_2_3_queries_100
 
 backend: DEEPSPEED
 
@@ -57,25 +58,33 @@ seed: 42
 # overrides
 # --------------------------------------------------------------------------------
 
-# clusters config for debugging on single GPU
-debug_mode: true
-clusters:
-  batch_size: 8 # total batch size (batch size per gpu * total gpus)
-  worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 16 # number of cpu cores per gpu
-  mem_per_cpu: 21000 # ram per cpu core
-  ray_queue_memory: 0.2
+# Two semantic classes (decoder and criterion must match)
+models:
+  meta_arch:
+    mask2former:
+      decoder_args:
+        num_classes: 2
+      criterion_args:
+        num_classes: 2
 
-
-# # clusters
+# # # clusters config for debugging on single GPU
 # clusters:
-#   batch_size: 64 # total batch size (batch size per gpu * total gpus)
+#   batch_size: 8 # total batch size (batch size per gpu * total gpus)
 #   worker_nodes: 1 # number of worker nodes
-#   gpus_per_worker: 4 # number of gpus per worker node
-#   cpus_per_gpu: 4 # number of cpu cores per gpu
+#   gpus_per_worker: 1 # number of gpus per worker node
+#   cpus_per_gpu: 16 # number of cpu cores per gpu
 #   mem_per_cpu: 21000 # ram per cpu core
 #   ray_queue_memory: 0.2
+
+
+# clusters
+clusters:
+  batch_size: 40 # total batch size (batch size per gpu * total gpus)
+  worker_nodes: 1 # number of worker nodes
+  gpus_per_worker: 4 # number of gpus per worker node
+  cpus_per_gpu: 4 # number of cpu cores per gpu
+  mem_per_cpu: 21000 # ram per cpu core
+  ray_queue_memory: 0.2
 
 #paths:
 paths:
@@ -86,6 +95,9 @@ paths:
 
 # data
 datasets:
+  # # Preprocessor (instantiated as cfg.datasets.preprocessor)
+  # preprocessor:
+  #   debug_savepath: /clusterfs/nvme/martinalvarez/GitHub/scratch/semantic_preprocessor_viz/test_semantic_segmentation_preprocessor.png
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   train_shape: [128, 256, 512, 1]
@@ -101,7 +113,9 @@ datasets:
   num_actors_min: 4
   num_actors_max: 12
 
-  max_hypercubes: 500
+  # max_hypercubes: 50
+  # max_hypercubes: 256
+  max_hypercubes: 1000
   # max_hypercubes: 10000
   # max_hypercubes: 2000000
   # max_hypercubes: 50000
@@ -120,7 +134,7 @@ datasets:
     # server_folder_path: ${paths.server_folder_path}/synthetic
     server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
     with_hypercubes_dataframe: true
-    mask_channel: 1
+    mask_channel_idx: 1
 
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
@@ -135,7 +149,6 @@ datasets:
     transforms_list: null
     bbox_data_format: zyxzyx
     bbox_output_format: cxcyczwhd
-    with_resize: false
     debug: false
     debug_device_idx: 0
     normalize_bboxes: true
@@ -167,21 +180,40 @@ optimizers:
 # hooks
 hooks:
   hooks_list:
+    # general hooks
     - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
     - _target_: cell_observatory_platform.training.hooks.LRScheduler
       backend: DEEPSPEED
     - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
     - _target_: cell_observatory_platform.training.hooks.IterationTimer
     - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-    # - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-    #   file_prefix: latest_model
-    # - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-    #   checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-    # - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
-    #   step_period: 1
-    #   epoch_period: 1
-    #   logdir: ${loggers.logdir}
-    # - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
-    #   metric_name: ${evaluation.val_metric}
-    #   compare_fn: ${evaluation.val_mode}
-    #   eval_after_validation: true
+
+    # checkpointing
+    - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+      file_prefix: latest_model
+    - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+      checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+    - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
+      step_period: 1
+      epoch_period: 1
+      logdir: ${loggers.logdir}
+    - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+      metric_name: ${evaluation.val_metric}
+      compare_fn: ${evaluation.val_mode}
+      eval_after_validation: true
+
+    # # profiling
+    # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+    #   output_dir: ${paths.outdir}/profiler
+    #   schedule:
+    #     skip_first: 10
+    #     warmup: 1
+    #     active: 2
+    #     repeat: 1
+    #     wait: 1
+    #   activities:
+    #     - CUDA
+    #     - CPU
+    #   save_tensorboard: true
+    #   shutdown_after_profile: true
+    #   save_memory_trace: true

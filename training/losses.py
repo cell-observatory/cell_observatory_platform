@@ -1,7 +1,7 @@
 import contextlib
 import copy
 import functools
-from typing import Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 import torch
 import torch.nn as nn
@@ -15,6 +15,7 @@ from cell_observatory_platform.data.structures import (
     box_cxcyczwhd_to_xyzxyz,
     box_xyzxyz_to_cxcyczwhd,
     generalized_box_iou,
+    generalized_box_iou_diag,
 )
 from cell_observatory_platform.models.layers.matchers import build_plain_detr_matcher
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
@@ -22,6 +23,7 @@ from cell_observatory_platform.models.layers.utils import (
     batch_tensors,
     get_uncertain_point_coords_with_randomness,
     point_sample,
+    point_sample_labelmap_batched,
 )
 from cell_observatory_platform.models.ops.losses import (
     batch_dice_loss,
@@ -73,6 +75,9 @@ def get_loss_fn(loss):
             "l2_masked": L2_masked_loss,
             "l1_masked": L1_masked_loss,
             "smooth_l1_masked": smooth_L1_masked_loss,
+            "sigmoid_focal_loss": sigmoid_focal_loss,
+            "sigmoid_ce_loss": sigmoid_ce_loss,
+            "dice_loss": dice_loss,
         }
         if loss in mapping:
             return mapping[loss]
@@ -348,67 +353,135 @@ class DETR_Set_Loss(nn.Module):
         # 4. compute GIOU = IoU−|C∖(A∪B)||C| where C is the convex hull
         # generalized_box_iou call returns an MxM matrix comparing every source against every target
         # we hence take the diagonal to get the IoU for each matched pair
-        loss_giou = 1 - torch.diag(
-            generalized_box_iou(box_cxcyczwhd_to_xyzxyz(source_boxes), box_cxcyczwhd_to_xyzxyz(target_boxes))
+        loss_giou = 1 - generalized_box_iou_diag(
+            box_cxcyczwhd_to_xyzxyz(source_boxes),
+            box_cxcyczwhd_to_xyzxyz(target_boxes),
         )
         losses["loss_giou"] = loss_giou.sum() / num_boxes
 
         return losses
+        
+    # NOTE: Legacy binary mask-based sampling 
+    # def loss_masks(self, outputs, targets, indices, num_masks):
+    #     """
+    #     Compute mask loss: Focal Loss and Dice Loss.
+    #     """
+    #     query_indices = self._get_query_indices(indices)
+    #     target_class_indices = self._get_target_class_indices(indices)
+
+    #     source_masks = outputs["pred_masks"][query_indices]
+    #     masks = [target["masks"] for target in targets]
+
+    #     # TODO: use valid to mask invalid areas due to padding in loss
+    #     target_masks, valid = batch_tensors(masks)
+    #     target_masks = target_masks.to(source_masks)
+    #     target_masks = target_masks[target_class_indices]
+
+    #     # no need to upsample predictions as we are using normalized coordinates
+    #     # source/target masks: (N, 1, D, H, W)
+    #     source_masks = source_masks[:, None]
+    #     target_masks = target_masks[:, None]
+
+    #     # Motivated by PointRend & Implicit PointRend
+    #     # train with mask loss calculated on K randomly
+    #     # sampled points instead of whole mask
+    #     with torch.no_grad():
+    #         # sample point_coordinates
+    #         point_coords = get_uncertain_point_coords_with_randomness(
+    #             source_masks,
+    #             lambda logits: calculate_uncertainty(logits),
+    #             self.num_points,  # K
+    #             self.oversample_ratio,
+    #             # ratio of points that are sampled via importance sampling
+    #             self.importance_sample_ratio,
+    #         )
+    #         # samples from target mask at point_coords
+    #         point_labels = point_sample(
+    #             target_masks,
+    #             point_coords,
+    #             align_corners=False,
+    #         ).squeeze(1)
+
+    #     # samples from source mask at point_coords
+    #     point_logits = point_sample(
+    #         source_masks,
+    #         point_coords,
+    #         align_corners=False,
+    #     ).squeeze(1)
+
+    #     # compute losses: cross entropy classifcation loss and dice mask loss
+    #     losses = {
+    #         "loss_mask": sigmoid_ce_loss(point_logits, point_labels, num_masks),
+    #         "loss_dice": dice_loss(point_logits, point_labels, num_masks),
+    #     }
+
+    #     del source_masks, target_masks
+    #     return losses
 
     def loss_masks(self, outputs, targets, indices, num_masks):
         """
         Compute mask loss: Focal Loss and Dice Loss.
         """
         query_indices = self._get_query_indices(indices)
-        target_class_indices = self._get_target_class_indices(indices)
-
         source_masks = outputs["pred_masks"][query_indices]
-        masks = [target["masks"] for target in targets]
-
-        # TODO: use valid to mask invalid areas due to padding in loss
-        target_masks, valid = batch_tensors(masks)
-        target_masks = target_masks.to(source_masks)
-        target_masks = target_masks[target_class_indices]
-
-        # no need to upsample predictions as we are using normalized coordinates
-        # source/target masks: (N, 1, D, H, W)
+        
+        # source masks: (N, 1, D, H, W)
         source_masks = source_masks[:, None]
-        target_masks = target_masks[:, None]
 
-        # Motivated by PointRend & Implicit PointRend
-        # train with mask loss calculated on K randomly
-        # sampled points instead of whole mask
+        # NOTE: Efficient labelmap-based sampling (avoids materializing binary masks)
+        # Gather matched instance IDs (actual labelmap values, not indices)
+        batch_indices_list = []
+        instance_ids_list = []
+        for i, (src_idx, tgt_idx) in enumerate(indices):
+            if tgt_idx.numel() > 0:
+                # nr. of batch i elements in tgt_idx
+                batch_indices_list.append(torch.full_like(tgt_idx, i))
+                # labelmap values for each target in batch i
+                instance_ids_list.append(targets[i]["mask_ids"][tgt_idx])
+        
+        if not instance_ids_list:
+            # No matches - return zero loss
+            return {
+                "loss_mask": source_masks.new_tensor(0.0), 
+                "loss_dice": source_masks.new_tensor(0.0),
+            }
+        
+        # batch_indices: [N_total_targets], instance_ids: [N_total_targets]
+        batch_indices = torch.cat(batch_indices_list)
+        instance_ids = torch.cat(instance_ids_list)
+        # stack labelmaps into a single tensor of shape (B, Z, Y, X)
+        labelmap = torch.stack([target["label_map"] for target in targets])
+
         with torch.no_grad():
-            # sample point_coordinates
+            # point_coords: [N, num_points, 3] normalized coords in [0, 1]
             point_coords = get_uncertain_point_coords_with_randomness(
                 source_masks,
                 lambda logits: calculate_uncertainty(logits),
-                self.num_points,  # K
+                self.num_points,
                 self.oversample_ratio,
-                # ratio of points that are sampled via importance sampling
                 self.importance_sample_ratio,
             )
-            # samples from target mask at point_coords
-            point_labels = point_sample(
-                target_masks,
-                point_coords,
-                align_corners=False,
-            ).squeeze(1)
+            
+            # Sample binary labels from labelmap
+            point_labels = point_sample_labelmap_batched(
+                labelmap=labelmap,
+                point_coords=point_coords,
+                batch_indices=batch_indices,
+                instance_ids=instance_ids,
+            )
 
-        # samples from source mask at point_coords
         point_logits = point_sample(
             source_masks,
             point_coords,
             align_corners=False,
         ).squeeze(1)
-
-        # compute losses: cross entropy classifcation loss and dice mask loss
+        
         losses = {
             "loss_mask": sigmoid_ce_loss(point_logits, point_labels, num_masks),
             "loss_dice": dice_loss(point_logits, point_labels, num_masks),
         }
-
-        del source_masks, target_masks
+        
+        del source_masks
         return losses
 
     def preprocess_masks(self, mask_dict):
@@ -694,11 +767,9 @@ class PlainDETR_Set_Loss(nn.Module):
 
         losses = {}
         losses["loss_bbox"] = loss_bbox.sum() / num_boxes
-        loss_giou = 1 - torch.diag(
-            generalized_box_iou(
-                box_cxcyczwhd_to_xyzxyz(src_boxes),
-                box_cxcyczwhd_to_xyzxyz(target_boxes),
-            )
+        loss_giou = 1 - generalized_box_iou_diag(
+            box_cxcyczwhd_to_xyzxyz(src_boxes),
+            box_cxcyczwhd_to_xyzxyz(target_boxes)
         )
         losses["loss_giou"] = loss_giou.sum() / num_boxes
         return losses
@@ -1093,61 +1164,104 @@ class Mask2FormerSetLoss(nn.Module):
         _repr_indent = 4
         lines = [head] + [" " * _repr_indent + line for line in body]
         return "\n".join(lines)
-class UnsupervisedMSELoss(nn.Module):
-    def __init__(self):
-        """
-        Computes the unsupervised MSE loss.
-        
-        "
-        (Unsupervised mean squared error). 
-        Given a noisy input signal y ∈ Rn and three noisy references a, b, c ∈ Rn 
-        the unsupervised mean squared error of a denoiser f is defined as: 
-        uMSE = (1/n) Σ (aᵢ - f(y)ᵢ)² - (bᵢ - cᵢ)² / 2
-        the uMSE is a consistent estimator of the MSE as long as 
-        (1) the noisy input and the noisy references are independent, 
-        (2) their means equal the corresponding entries of the ground-truth clean signal, 
-        (3) their higher-order moments are bounded. 
-        
-        These conditions are satisfied by most noise models of interest in signal
-        and image processing, such as Poisson shot noise or additive Gaussian noise. 
-        ", Marcos-Morales et al., 2023, p.4 https://doi.org/10.48550/arXiv.2210.05553
-        
-        """
-        super().__init__()
 
-    def forward(
+
+class MultiLabelBinaryPredictionLoss(nn.Module):
+    def __init__(
         self,
-        predictions: torch.Tensor,
-        targets: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-        num_patches: int,
-        aux_loss_meta: dict | None = None,
-    ) -> tuple[torch.Tensor, dict | None]:
+        loss_dict: dict[str, dict[str, Any]],
+        loss_weight_dict: dict[str, float],
+        num_classes: int,
+        num_points: int,
+        oversample_ratio: int,
+        importance_sample_ratio: float,
+        ):
+        super().__init__()
+        self.loss_fns: Dict[str, Callable] = {}
+        for loss_name, loss_params in loss_dict.items():
+            loss_fn = functools.partial(get_loss_fn(loss_name), **loss_params)
+            self.loss_fns[loss_name] = loss_fn
+        self.loss_weight_dict = loss_weight_dict
+        self.num_classes = num_classes
+        self.num_points = num_points
+        self.oversample_ratio = oversample_ratio
+        self.importance_sample_ratio = importance_sample_ratio
+
+    def loss_binary_predictions(
+        self,
+        outputs: Dict[str, torch.Tensor], 
+        targets: List[Dict[str, torch.Tensor]]
+        ):
         """
-        Args:
-            predictions: Predicted denoised signal f(y)
-            targets: Tuple of three noisy references (a, b, c) with same shape as predictions
-            num_patches: Number of patches (for normalization)
-            aux_loss_meta: Optional auxiliary loss metadata
-            
-        Returns:
-            loss: Scalar unsupervised MSE loss
-            aux_loss_meta: None (no auxiliary losses)
+        Compute binary mask prediction losses.
         """
-        # Unpack the three noisy references a, b, c
-        a, b, c = targets # B, N, px_p_token
+        B = len(targets)
+        N_classes = targets[0]["masks"].shape[0]
+
+        source_masks = outputs["pred_masks"] # B, N_classes, spatial
+        masks = [target["masks"] for target in targets]
+        target_masks = torch.stack(masks, dim=0).to(source_masks) # B, N_classes, spatial
+        assert N_classes == self.num_classes, f"Expected {self.num_classes} classes, got {N_classes}"
+
+        # Flatten masks along the batch and class dimensions to (B*N_classes, D, H, W)
+        source_masks = source_masks.flatten(0, 1) # (B*N_classes, D, H, W)
+        target_masks = target_masks.flatten(0, 1) # (B*N_classes, D, H, W)
+
+        # no need to upsample predictions as we are using normalized coordinates
+        # source/target masks: (B*N_classes, 1, D, H, W)
+        source_masks = source_masks[:, None]
+        target_masks = target_masks[:, None]
+
+        # Motivated by PointRend & Implicit PointRend
+        # train with mask loss calculated on K randomly
+        # sampled points instead of whole mask
+        with torch.no_grad():
+            # sample point_coordinates
+            point_coords = get_uncertain_point_coords_with_randomness(
+                source_masks,
+                lambda logits: calculate_uncertainty(logits),
+                self.num_points,  # K
+                self.oversample_ratio,
+                # ratio of points that are sampled via importance sampling
+                self.importance_sample_ratio,
+            ) # B*N_classes, P, 3
+            # samples from target mask at point_coords
+            point_labels = point_sample(
+                target_masks,
+                point_coords,
+                align_corners=False,
+            ).squeeze(1)
+
+        # samples from source mask at point_coords
+        point_logits = point_sample(
+            source_masks,
+            point_coords,
+            align_corners=False,
+        ).squeeze(1)
+
+        losses = {}
+        for loss_name, loss_fn in self.loss_fns.items():
+            losses[loss_name] = loss_fn(point_logits, point_labels, B*N_classes)
+        return losses
+
+    def forward(self, outputs: Dict[str, torch.Tensor], targets: List[Dict[str, torch.Tensor]]):
+        outputs_without_aux_data = {k: v for k, v in outputs.items() if k != "auxiliary_outputs"}
+
+        losses = self.loss_binary_predictions(outputs_without_aux_data, targets)
         
-        # Compute MSE between reference a and predictions: (1/n) Σ (a_i - f(y)_i)²
-        mse_term = (a - predictions).pow(2)
-        
-        # Compute the correction term: (b_i - c_i)² / 2
-        correction_term = (b - c).pow(2) / 2
-        
-        
-        
-        # uMSE = (1/n) Σ (aᵢ - f(y)ᵢ)² - (bᵢ - cᵢ)² / 2
-        # mean over pixels, then mean over patches 
-        # (should be the same, but sticking to the convention established in 
-        # the L1/L2 losses above)
-        loss = (mse_term - correction_term).mean(dim=-1).sum() / num_patches
-        
-        return loss, None
+        if "auxiliary_outputs" in outputs:
+            for i, aux_output in enumerate(outputs["auxiliary_outputs"]):
+                aux_losses = self.loss_binary_predictions({"pred_masks": aux_output}, targets)
+                # NOTE: In the paper they downweight lower resolution features like this. 
+                # They actually make it so that they all sum to 1.
+                # Here we just downweight them by 0.5**i without normalizing.
+                # They note this only provides marginal improvement here: https://github.com/MIC-DKFZ/nnUNet/issues/1417
+                aux_loss_weights = {
+                    k + f"_{i}": self.loss_weight_dict[k] * 0.5**i 
+                    for i, k in enumerate(aux_losses.keys())
+                }
+                self.loss_weight_dict.update(aux_loss_weights)
+                aux_losses = {k + f"_{i}": v for k, v in aux_losses.items()}
+                losses.update(aux_losses)
+
+        return losses

@@ -1,0 +1,9 @@
+BUILD: cell_observatory_platform.models.backbones.convnext.BUILD
+input_fmt: ${dataset_layout_order}
+input_shape: ${datasets.train_shape}
+modes: 15 # output dim of the MLP head
+depths: [3, 3, 27, 3]
+dims: [128, 256, 512, 1024]
+drop_path_rate: 0.1 # stochastic depth rate
+head_init_scale: 1. # initial scaling value for classifier weights and biases
+return_stage_features: true # whether to return stage features

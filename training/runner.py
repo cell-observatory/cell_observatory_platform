@@ -68,6 +68,7 @@ def initialize_session(cfg: DictConfig):
 
         tmpdir = f"/tmp/symlink_{uuid.uuid1()}"
         raylogsdir = Path(cfg.paths.outdir)
+        raylogsdir.mkdir(parents=True, exist_ok=True)
         os.symlink(raylogsdir, tmpdir, target_is_directory=True)
         logger.info(f"Link outdir to tmpdir: {cfg.paths.outdir} -> {tmpdir}")
         init(

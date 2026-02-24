@@ -202,6 +202,7 @@ class CheckpointManager:
 
         # ensure prefix matches destination
         dst_module = getattr(self.model, "module", self.model)
+        dst_module = getattr(dst_module, "_orig_mod", dst_module)
         if self.use_custom_state_dict_filter:
             custom_load_fn = self.make_state_dict_filter_fn(
                 include_prefixes=self.ckpt_include_prefixes, translate_map=self.ckpt_translate_map
@@ -209,6 +210,7 @@ class CheckpointManager:
             custom_load_fn(src, dst_module)
         else:
             src = self._prefix_aware_load_state_dict(src, dst_module)
+            src = self._strip_torch_compile_state_dict(src)
             missing, unexpected = dst_module.load_state_dict(src, strict=False)
             if missing:
                 logger.info("[CheckpointManager] (torch) missing keys: %s", list(missing))
@@ -259,8 +261,11 @@ class CheckpointManager:
             return k
 
         def custom_load_fn(src: Dict[str, torch.Tensor], dst: torch.nn.Module):
+            # if dst is compiled, load into the original module
+            dst = getattr(dst, "_orig_mod", dst)
             dst_state_dict = dst.state_dict()
             src_state_dict = self._prefix_aware_load_state_dict(src, dst)
+            src_state_dict = self._strip_torch_compile_state_dict(src_state_dict)
 
             # apply key translations
             if translate_map:
@@ -316,6 +321,32 @@ class CheckpointManager:
             )
 
         return custom_load_fn
+    
+    @staticmethod
+    def _strip_torch_compile_state_dict(sd: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        torch.compile may wrap modules and produce keys containing '_orig_mod'.
+        Normalize keys so compiled and uncompiled checkpoints can load interchangeably.
+        """
+        out = OrderedDict()
+        for k, v in sd.items():
+            nk = k
+
+            # common forms:
+            #   "_orig_mod.xxx"
+            #   "module._orig_mod.xxx"
+            #   "xxx._orig_mod.yyy"
+            if nk.startswith("module._orig_mod."):
+                nk = "module." + nk[len("module._orig_mod."):]
+            if nk.startswith("_orig_mod."):
+                nk = nk[len("_orig_mod."):]
+
+            # remove any nested occurrences
+            while "._orig_mod." in nk:
+                nk = nk.replace("._orig_mod.", ".")
+
+            out[nk] = v
+        return out
 
     def _get_zero_stage(self, ckpt_dir: Union[str, Path]) -> int:
         """Return ZeRO stage (0-3) from any DeepSpeed checkpoint tag folder."""

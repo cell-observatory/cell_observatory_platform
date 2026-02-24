@@ -98,14 +98,14 @@ class FinetuneCollatorActor:
             "mask_bbox_dict",
         ],
         input_format: Literal["ZYXC", "TZYXC"] = "ZYXC",
-        mask_idx: int = -1,
+        mask_channel_idx: int = -1,
         bbox_data_format: str = "zyxzyx",
         bbox_output_format: str = "zyxzyx",
         transforms_list: Optional[List[DictConfig]] = None,
         use_masks: bool = False,
+        generate_binary_masks: bool = False,
         require_targets: bool = True,
-        expect_mask_channel: bool = True,
-        with_resize: bool = False,
+        # with_resize: bool = False,
         debug: bool = False,
         debug_device_idx: Optional[int] = None,
         normalize_bboxes: bool = False,
@@ -128,7 +128,7 @@ class FinetuneCollatorActor:
         if self.input_format != "ZYXC":
             raise NotImplementedError(f"FinetuneCollatorActor currently assumes ZYXC, got {self.input_format}")
 
-        self.mask_idx = mask_idx
+        self.mask_channel_idx = mask_channel_idx
         self.bbox_data_format = bbox_data_format
         self.bbox_output_format = bbox_output_format
 
@@ -195,20 +195,21 @@ class FinetuneCollatorActor:
                 # already an instantiated callable object
                 self.transforms.append(t)
 
-        self.with_resize = with_resize
-        if self.with_resize:
-            ray.logger.info(f"FinetuneCollatorActor on rank {self.global_rank} using Resize transform")
-            # CPU-side pinned resize buffer: shape matches final GPU input
-            # input_shape is (Z_new, Y_new, X_new, C_no_mask)
-            self.resize_buffer = torch.empty(
-                (self.batch_size, *self.input_shape),
-                dtype=self.out_dtype,
-                pin_memory=True,
-            )
+        # TODO: deprecate
+        # self.with_resize = with_resize
+        # if self.with_resize:
+        #     ray.logger.info(f"FinetuneCollatorActor on rank {self.global_rank} using Resize transform")
+        #     # CPU-side pinned resize buffer: shape matches final GPU input
+        #     # input_shape is (Z_new, Y_new, X_new, C_no_mask)
+        #     self.resize_buffer = torch.empty(
+        #         (self.batch_size, *self.input_shape),
+        #         dtype=self.out_dtype,
+        #         pin_memory=True,
+        #     )
 
         self.use_masks = use_masks
+        self.generate_binary_masks = generate_binary_masks
         self.require_targets = require_targets
-        self.expect_mask_channel = expect_mask_channel
         self.normalize_bboxes = normalize_bboxes
 
         ray.logger.info(
@@ -249,6 +250,7 @@ class FinetuneCollatorActor:
             return int(gpu_ids[0])
         # Fallback for debug mode (running outside Ray Train workers)
         elif self.debug_device_idx is not None:
+            ray.logger.warning(f"Using debug device index {self.debug_device_idx}. If not debugging this could lead to unexpected behavior.")
             return self.debug_device_idx
         else:
             raise RuntimeError("No GPUs assigned to this worker by Ray")
@@ -276,9 +278,9 @@ class FinetuneCollatorActor:
             raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
 
         # For zero-copy we *require* the mask to be the last channel
-        if self.mask_idx not in (-1, C - 1):
+        if self.mask_channel_idx not in (-1, C - 1):
             raise ValueError(
-                f"For zero-copy split, mask_idx must be -1 or C-1; " f"got mask_idx={self.mask_idx}, C={C}."
+                f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
             )
 
         masks = inputs[..., -1].clone()  # (B, Z, Y, X), view
@@ -339,42 +341,43 @@ class FinetuneCollatorActor:
             else:
                 bboxes_batch.append(torch.zeros((0, 6), device=device, dtype=torch.float32))
 
-        if self.use_masks:
-            binary_masks_batch = mask_ids_to_masks(
-                batch_size=B,
-                spatial_shape=spatial_shape,
-                mask_ids_batch=mask_ids_batch,
-                masks=masks_labelmap,
-                device=device,
-            )
+        if self.use_masks and self.generate_binary_masks:
+                binary_masks_batch = mask_ids_to_masks(
+                    batch_size=B,
+                    spatial_shape=spatial_shape,
+                    mask_ids_batch=mask_ids_batch,
+                    masks=masks_labelmap,
+                    device=device,
+                )
         else:
             binary_masks_batch = [None] * B
 
         if self.bbox_data_format != self.bbox_output_format:
             bboxes_batch = [
                 convert_bbox_format(b, 
-                                    self.bbox_data_format, 
-                                    self.bbox_output_format, 
-                                    self.normalize_bboxes, 
-                                    # spatial shape is (Z, Y, X), need (X, Y, Z)
-                                    self.spatial_shape[::-1]) for b in bboxes_batch
+                    self.bbox_data_format, 
+                    self.bbox_output_format, 
+                    self.normalize_bboxes, 
+                    # spatial shape is (Z, Y, X), need (X, Y, Z)
+                    self.spatial_shape[::-1]) for b in bboxes_batch
             ]
 
         targets: List[Dict[str, Any]] = []
-        for ids, bm, boxes in zip(mask_ids_batch, binary_masks_batch, bboxes_batch):
+        for b, (ids, bm, boxes) in enumerate(zip(mask_ids_batch, binary_masks_batch, bboxes_batch)):
             mask_ids_tensor = torch.as_tensor(ids, device=device, dtype=torch.long)
             labels = torch.zeros(len(ids), device=device, dtype=torch.long)
-
             t: Dict[str, Any] = {
                 "boxes": boxes,
                 "mask_ids": mask_ids_tensor,
                 "labels": labels,
             }
-            if self.use_masks and bm is not None:
-                t["masks"] = bm
-
+            if self.use_masks:
+                if self.generate_binary_masks:
+                    t["masks"] = bm
+                else:
+                    t["label_map"] = masks_labelmap[b]
             targets.append(t)
-
+        
         return targets
 
     def _copy_h2d(self, dst: torch.Tensor, src: torch.Tensor):
@@ -407,7 +410,7 @@ class FinetuneCollatorActor:
 
             inputs_full = torch.from_numpy(h_view)
             # In inference we may have no labelmap channel at all.
-            if self.expect_mask_channel:
+            if self.mask_channel_idx is not None:
                 inputs, masks_labelmap = self._get_masks(inputs_full)
             else:
                 inputs, masks_labelmap = inputs_full, None
@@ -457,18 +460,18 @@ class FinetuneCollatorActor:
                 "metainfo": {
                     **meta_cpu,
                     "targets": targets_cpu,
-                    "resize_buffer": self.resize_buffer if self.with_resize else None,
+                    # "resize_buffer": self.resize_buffer if self.with_resize else None,
                 },
             }
 
             if self.transforms:
                 for t in self.transforms:
                     sample_cpu = t(sample_cpu)
-                inputs_resized = sample_cpu["data_tensor"]
-                metainfo_resized = sample_cpu["metainfo"]
+                inputs_transformed = sample_cpu["data_tensor"]
+                metainfo_transformed = sample_cpu["metainfo"]
             else:
-                inputs_resized = inputs
-                metainfo_resized = {
+                inputs_transformed = inputs
+                metainfo_transformed = {
                     **meta_cpu,
                     "targets": targets_cpu,
                 }
@@ -477,7 +480,7 @@ class FinetuneCollatorActor:
             dst_device = self.device_buffer.device_buffers[device_buffer_idx]
 
             with torch.cuda.stream(self.copy_stream):
-                self._copy_h2d(dst=dst_device, src=inputs_resized)
+                self._copy_h2d(dst=dst_device, src=inputs_transformed)
 
                 if self.async_device_copy:
 
@@ -509,12 +512,13 @@ class FinetuneCollatorActor:
                 # that dst_device is owned by copy_stream
                 torch.cuda.current_stream(self.device).wait_stream(self.copy_stream)
                 dst_device.record_stream(self.copy_stream)
-            
+
+            # NOTE: could probably be one recursive function that handles all tensors
             metainfo: Dict[str, Any] = {
                 "host_buffer_idx": host_buffer_idx,
                 "device_buffer_idx": device_buffer_idx,
             }
-            for k, v in metainfo_resized.items():
+            for k, v in metainfo_transformed.items():
                 if k in ("targets", "resize_buffer"):
                     continue
                 if torch.is_tensor(v):
@@ -523,7 +527,7 @@ class FinetuneCollatorActor:
                     metainfo[k] = v
 
             targets_gpu: List[Dict[str, Any]] = []
-            for tgt in metainfo_resized["targets"]:
+            for tgt in metainfo_transformed["targets"]:
                 t_out: Dict[str, Any] = {}
                 for tk, tv in tgt.items():
                     if torch.is_tensor(tv):
@@ -672,6 +676,7 @@ class CollatorActor:
             return int(gpu_ids[0])
         # Fallback for debug mode (running outside Ray Train workers)
         elif self.debug_device_idx is not None:
+            ray.logger.warning(f"Using debug device index {self.debug_device_idx}. If not debugging this could lead to unexpected behavior.")
             return self.debug_device_idx
         else:
             raise RuntimeError("No GPUs assigned to this worker by Ray")

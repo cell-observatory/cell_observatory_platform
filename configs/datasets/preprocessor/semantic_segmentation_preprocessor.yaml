@@ -19,6 +19,10 @@ transforms_list:
   - _target_: cell_observatory_platform.data.transforms.make_targets.InstanceToBoundaryMask
     connectivity: 1
 
+  # 2) Convert instance labels to foreground masks
+  - _target_: cell_observatory_platform.data.transforms.make_targets.ForegroundMasks
+    remove_boundary: true
+
   # 2) Normalize after transforms
   - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
     input_layout:
@@ -28,6 +32,6 @@ transforms_list:
 patch_shape: ${datasets.patch_shape}
 input_format: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
+mask_channel_idx: ${datasets.mask_channel_idx}
 
 seed: ${seed}
-mask_idx: -1

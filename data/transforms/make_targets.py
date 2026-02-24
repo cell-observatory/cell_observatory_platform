@@ -88,3 +88,49 @@ class InstanceToBoundaryMask:
             boundary[:, z0:z1, y0:y1, x0:x1] |= (a != b)
 
         return boundary
+
+
+class ForegroundMasks:
+    def __init__(self, remove_boundary: bool = True):
+        self.remove_boundary = remove_boundary
+
+    def __call__(self, data: dict | torch.Tensor) -> dict | torch.Tensor:
+        if isinstance(data, dict):
+            if "masks_labelmap" not in data:
+                raise KeyError("ForegroundMasks expects 'masks_labelmap' in dict.")
+            if self.remove_boundary:
+                if "boundary_masks" not in data:
+                    raise KeyError("ForegroundMasks expects 'boundary_masks' in dict.")
+                foreground_masks = self._foreground_masks(data["masks_labelmap"], data["boundary_masks"])
+            else:
+                foreground_masks = self._foreground_masks(data["masks_labelmap"])
+            data["foreground_masks"] = foreground_masks
+            return data
+        elif isinstance(data, torch.Tensor):
+            if self.remove_boundary:
+                raise ValueError("ForegroundMasks does not support tensor input if remove_boundary=True. Use dict input containing key 'boundary_masks' instead.")
+            else:
+                self._foreground_masks(data)
+        else:
+            raise ValueError(f"ForegroundWithoutBoundaryMask expects dict or torch.Tensor, got {type(data)}")
+        
+    def _foreground_masks(self, labels: torch.Tensor, boundary_masks: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        labels: (B,D,H,W) int (instance/semantic labels; background can be 0).
+        boundary_masks: (B,D,H,W) bool (boundary masks).
+        Returns: bool mask of same shape, True where boundaries occur.
+        """
+        if labels.dim() != 4:
+            raise ValueError(f"labels must be a 4D tensor assumed to be (B,D,H,W), got {labels.shape}")
+        
+        B, D, H, W = labels.shape
+        x = labels
+
+        foreground_masks = torch.zeros((B, D, H, W), dtype=torch.bool, device=x.device)
+        
+        if boundary_masks is not None:
+            foreground_masks = (x != 0) & ~boundary_masks
+        else:
+            foreground_masks = (x != 0)
+
+        return foreground_masks

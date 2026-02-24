@@ -227,9 +227,9 @@ def test_mask2former_set_loss_forward_basic(monkeypatch):
 
     losses = criterion(outputs, targets)
 
-    assert "loss_ce" in losses, "Classification loss missing"
-    assert "loss_mask" in losses, "Mask loss missing"
-    assert "loss_dice" in losses, "Dice loss missing"
+    assert "loss_labels_ce" in losses, "Classification loss missing"
+    assert "loss_mask_ce" in losses, "Mask CE loss missing"
+    assert "loss_mask_dice" in losses, "Dice loss missing"
 
     for v in losses.values():
         assert v.ndim == 0, "Loss must be scalar"
@@ -280,13 +280,13 @@ def test_mask2former_set_loss_forward_with_auxiliary(monkeypatch):
 
     losses = criterion(outputs, targets)
 
-    assert "loss_ce" in losses, "Main classification loss missing"
-    assert "loss_mask" in losses, "Main mask loss missing"
-    assert "loss_dice" in losses, "Main dice loss missing"
+    assert "loss_labels_ce" in losses, "Main classification loss missing"
+    assert "loss_mask_ce" in losses, "Main mask CE loss missing"
+    assert "loss_mask_dice" in losses, "Main dice loss missing"
 
-    assert "loss_ce_0" in losses, "Auxiliary classification loss missing"
-    assert "loss_mask_0" in losses, "Auxiliary mask loss missing"
-    assert "loss_dice_0" in losses, "Auxiliary dice loss missing"
+    assert "loss_labels_ce_0" in losses, "Auxiliary classification loss missing"
+    assert "loss_mask_ce_0" in losses, "Auxiliary mask CE loss missing"
+    assert "loss_mask_dice_0" in losses, "Auxiliary dice loss missing"
 
     for v in losses.values():
         assert v.ndim == 0, "Loss must be scalar"
@@ -358,8 +358,8 @@ def test_mask2former_loss_labels_basic():
 
     losses = criterion.loss_labels(outputs, targets, indices, num_masks)
 
-    assert "loss_ce" in losses, "Classification loss missing"
-    v = losses["loss_ce"]
+    assert "loss_labels_ce" in losses, "Classification loss missing"
+    v = losses["loss_labels_ce"]
     assert v.ndim == 0, "Loss must be scalar"
     assert torch.isfinite(v), "Loss must be finite"
     assert v >= 0, "Loss must be non-negative"
@@ -391,8 +391,8 @@ def test_mask2former_loss_masks_basic(monkeypatch):
 
     losses = criterion.loss_masks(outputs, targets, indices, num_masks)
 
-    assert "loss_mask" in losses, "Mask loss missing"
-    assert "loss_dice" in losses, "Dice loss missing"
+    assert "loss_mask_ce" in losses, "Mask CE loss missing"
+    assert "loss_mask_dice" in losses, "Dice loss missing"
 
     for v in losses.values():
         assert v.ndim == 0, "Loss must be scalar"
@@ -611,9 +611,9 @@ def test_mask2former_forward_single_loss_labels_only(monkeypatch):
 
     losses = criterion(outputs, targets)
 
-    assert "loss_ce" in losses, "Classification loss missing"
-    assert "loss_mask" not in losses, "Mask loss should not be present"
-    assert "loss_dice" not in losses, "Dice loss should not be present"
+    assert "loss_labels_ce" in losses, "Classification loss missing"
+    assert "loss_mask_ce" not in losses, "Mask CE loss should not be present"
+    assert "loss_mask_dice" not in losses, "Dice loss should not be present"
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
@@ -653,6 +653,6 @@ def test_mask2former_forward_single_loss_masks_only(monkeypatch):
 
     losses = criterion(outputs, targets)
 
-    assert "loss_mask" in losses, "Mask loss missing"
-    assert "loss_dice" in losses, "Dice loss missing"
-    assert "loss_ce" not in losses, "Classification loss should not be present"
+    assert "loss_mask_ce" in losses, "Mask CE loss missing"
+    assert "loss_mask_dice" in losses, "Dice loss missing"
+    assert "loss_labels_ce" not in losses, "Classification loss should not be present"
