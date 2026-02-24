@@ -250,6 +250,7 @@ class FinetuneCollatorActor:
             return int(gpu_ids[0])
         # Fallback for debug mode (running outside Ray Train workers)
         elif self.debug_device_idx is not None:
+            ray.logger.warning(f"Using debug device index {self.debug_device_idx}. If not debugging this could lead to unexpected behavior.")
             return self.debug_device_idx
         else:
             raise RuntimeError("No GPUs assigned to this worker by Ray")
@@ -675,6 +676,7 @@ class CollatorActor:
             return int(gpu_ids[0])
         # Fallback for debug mode (running outside Ray Train workers)
         elif self.debug_device_idx is not None:
+            ray.logger.warning(f"Using debug device index {self.debug_device_idx}. If not debugging this could lead to unexpected behavior.")
             return self.debug_device_idx
         else:
             raise RuntimeError("No GPUs assigned to this worker by Ray")
