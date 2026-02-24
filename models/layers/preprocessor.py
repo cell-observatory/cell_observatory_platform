@@ -182,8 +182,6 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         self.y_idx = self.axis_index.get("Y", None)
         self.x_idx = self.axis_index.get("X", None)
 
-        self.mask_channel_idx = mask_channel_idx
-
         # spatial dims for downsample task
         self.spatial_dims = tuple(i for ax, i in self.axis_index.items() if ax in ("Z", "Y", "X"))
 
@@ -194,6 +192,10 @@ class BaseFinetunePreprocessor(RayPreprocessor):
             raise ValueError("Input must include Y and X axes.")
         self.lateral_shape = (axis_to_size["Y"], axis_to_size["X"])
         self.channels = axis_to_size.get("C", None)
+        self.mask_channel_idx = mask_channel_idx
+        if self.channels is not None and self.mask_channel_idx is not None:
+            self.channels -= 1
+            assert self.channels > 0, "Expected at least 1 channel after mask channel removal"
         self.spatial_shape = (
             (self.axial_shape,) + self.lateral_shape if self.axial_shape is not None else self.lateral_shape
         )
@@ -367,21 +369,39 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
     """
     
     def __init__(
-        self, 
+        self,
         denoising_type: str,
-        transforms_list: Optional[list] = None,
-        *args, **kwargs,
+        *,
+        transforms_list: list | None,
+        with_masking: bool,
+        mask_generator,
+        patch_shape: tuple,
+        dtype: torch.dtype | str,
+        input_format: str,
+        input_shape: tuple[int, ...],
+        mask_channel_idx: int | None,
+        seed: int | None = None,
     ):
         if denoising_type not in ("microscopy",):
             raise ValueError(f"Unknown denoising type: {denoising_type}")
         if (transforms_list is None or len(transforms_list) == 0) and denoising_type == "microscopy":
             raise ValueError("transforms_list must be provided with at least one transform for microscopy denoising")
 
-        super().__init__(*args, transforms_list=transforms_list, **kwargs)
+        super().__init__(
+            transforms_list=transforms_list,
+            with_masking=with_masking,
+            mask_generator=mask_generator,
+            patch_shape=patch_shape,
+            dtype=dtype,
+            input_format=input_format,
+            input_shape=input_shape,
+            mask_channel_idx=mask_channel_idx,
+            seed=seed,
+        )
 
         self.denoising_type = denoising_type
 
-    def _split_inputs_and_mask(self, inputs: torch.Tensor):
+    def _split_inputs_and_mask(self, inputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         inputs: (B, Z, Y, X, C_full)
         returns:
@@ -390,6 +410,9 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
         """
         assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
         B, Z, Y, X, C = inputs.shape
+        
+        if self.mask_channel_idx is None:
+            return inputs, None
 
         if C < 2:
             raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
@@ -410,7 +433,7 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
             data_sample=data_sample,
             data_time=data_time,
         )
-        inputs_wo_mask, masks_labelmap = self._split_inputs_and_mask(inputs)
+        inputs_wo_mask, _ = self._split_inputs_and_mask(inputs)
         sample = {
             "data_tensor": inputs_wo_mask,
             "metainfo": meta,
@@ -421,7 +444,7 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
         # TODO: Consider refactoring this to support non-transformer-based decoders
         # Patchify targets for transformer-based decoders
         targets = self.pe_patchify(
-            meta["targets"][0], 
+            sample["metainfo"]["targets"][0], 
             channels=self.channels,
         )
 
@@ -450,6 +473,53 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
     - model input: channel-averaged single-channel image
     """
 
+    def __init__(
+        self,
+        *,
+        patch_shape: tuple,
+        transforms_list: list | None,
+        with_masking: bool,
+        mask_generator,
+        dtype: torch.dtype | str,
+        input_format: str,
+        input_shape: tuple[int, ...],
+        mask_channel_idx: int | None = None,
+        seed: int | None = None,
+    ):
+        super().__init__(
+            transforms_list=transforms_list,
+            with_masking=with_masking,
+            mask_generator=mask_generator,
+            patch_shape=patch_shape,
+            dtype=dtype,
+            input_format=input_format,
+            input_shape=input_shape,
+            mask_channel_idx=mask_channel_idx,
+            seed=seed,
+        )
+
+    def _split_inputs_and_mask(self, inputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Remove mask channel if present; return inputs (with or without mask stripped)."""
+        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
+        B, Z, Y, X, C = inputs.shape
+
+        if self.mask_channel_idx is None:
+            return inputs, None
+
+        if C < 2:
+            raise ValueError(
+                f"Expected at least 2 channels (image + mask), got C={C}"
+            )
+        if self.mask_channel_idx not in (-1, C - 1):
+            raise ValueError(
+                f"For zero-copy split, mask_channel_idx must be -1 or C-1; "
+                f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
+            )
+
+        masks = inputs[..., -1].clone()
+        inputs_wo_mask = inputs[..., :-1]
+        return inputs_wo_mask, masks
+
     def forward(self, data_sample: dict, data_time: float) -> dict:
         inputs, meta, preprocess_t0, data_time_value = self._common_pre(
             data_sample=data_sample,
@@ -459,14 +529,17 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
         if self.channel_idx is None:
             raise ValueError("Channel axis 'C' not present in input_format; cannot channel_split.")
 
+        inputs_wo_mask, _ = self._split_inputs_and_mask(inputs)
+
         # FIXME: consider if this is the correct order of operations
-        inputs, transform_time = self._apply_transforms(data=inputs)
+        inputs_wo_mask, transform_time = self._apply_transforms(data=inputs_wo_mask)
 
         # targets are per-channel patches from original (transformed) input
-        targets = self.pe_patchify(inputs, channels=self.channels)
+        # input_shape must describe data after mask strip; self.channels matches inputs_wo_mask
+        targets = self.pe_patchify(inputs_wo_mask, channels=self.channels)
 
         # model input: average over channels -> [B, ..., 1]
-        inputs = inputs.mean(dim=self.channel_idx, keepdim=True)
+        inputs = inputs_wo_mask.mean(dim=self.channel_idx, keepdim=True)
 
         return self._finalize(
             inputs=inputs,
