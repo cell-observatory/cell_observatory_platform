@@ -20,7 +20,7 @@ input_shape_metadata:  # Note: use input_shape, not input_shape_metadata
 
 # Levels fed into the transformer encoder (concatenated then split). Using 2 coarsest levels
 # avoids putting the finest levels through the encoder and reduces sequence length / torch.split cost.
-transformer_in_features: ["2", "3"]
+transformer_in_features: ["1", "2", "3"]
 
 # Number of multi-scale levels passed to the mask decoder (must match decoder num_feature_levels).
 total_num_feature_levels: 3
