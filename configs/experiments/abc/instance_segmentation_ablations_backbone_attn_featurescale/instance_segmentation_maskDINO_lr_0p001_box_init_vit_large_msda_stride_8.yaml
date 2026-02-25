@@ -1,24 +1,28 @@
 # @package _global_
 defaults:
   - ../base_experiments/instance_segmentation_maskDINO_lr_0p001
+ # NOTE: We are using the MAE config but no pretrained backbone => just a ViT backbone
   - /models/meta_arch/maskdino/mae_large_w_masks    # configs/models/maskdino/large.yaml
   - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
   - /optimizations/models/maskdino/mae_large # configs/optimizations/models/mae.yaml
   - /models/backbones/maskdino_backbone/maskdino_backbone  # configs/models/backbones/maskdino_backbone/maskdino_backbone_w_adapter.yaml
 
 # WandB Naming Stuff
-experiment_name: instance_segmentation_maskDINO_mae_large_msda_stride_16
+experiment_name: instance_segmentation_maskDINO_vit_large_msda_stride_8
 
 models:
   heads:
     pixel_decoder:
       use_deform_attention: true # Use MSDA
-      input_shape_metadata: # Only use stride 16 feature  
-        "3":
+      input_shape_metadata: # Only use stride 8 feature  
+        "2":
           channels: ${models.backbones.masked_encoder.embed_dim}
-          stride: 16
-      transformer_in_features: ["3"]
+          stride: 8
+      transformer_in_features: ["2"]
       total_num_feature_levels: 1
     maskdino_decoder:
       use_deform_attention: true
       total_num_feature_levels: 1
+
+clusters:
+  batch_size: ${eval:'${clusters.default_batch_size} // 2'}
