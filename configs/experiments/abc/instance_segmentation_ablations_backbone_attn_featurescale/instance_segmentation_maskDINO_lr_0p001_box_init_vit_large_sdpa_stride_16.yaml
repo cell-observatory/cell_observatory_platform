@@ -6,7 +6,8 @@ defaults:
   - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
   - /optimizations/models/maskdino/mae_large # configs/optimizations/models/mae.yaml
   - /models/backbones/maskdino_backbone/maskdino_backbone # configs/models/backbones/maskdino_backbone/maskdino_backbone_w_adapter.yaml
-
+  - _self_
+  
 # WandB Naming Stuff
 experiment_name: instance_segmentation_maskDINO_vit_large_sdpa_stride_16
 

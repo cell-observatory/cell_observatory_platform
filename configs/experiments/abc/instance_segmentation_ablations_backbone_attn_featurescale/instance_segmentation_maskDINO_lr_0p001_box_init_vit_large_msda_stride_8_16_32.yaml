@@ -5,11 +5,12 @@ defaults:
   - /models/meta_arch/maskdino/mae_large_w_masks    # configs/models/maskdino/large.yaml
   - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
   - /optimizations/models/maskdino/mae_large # configs/optimizations/models/mae.yaml
-  - /models/backbones/maskdino_backbone/maskdino_backbone_w_adapter   # configs/models/backbones/maskdino_backbone/maskdino_backbone_w_adapter.yaml
-  - /models/adapters/vit_adapter   # configs/models/adapters/vit_adapter.yaml
+  - /models/backbones/maskdino_backbone/maskdino_backbone_w_vitdet   # configs/models/backbones/maskdino_backbone/maskdino_backbone_w_vitdet.yaml
+  - /models/adapters/vit_det   # configs/models/adapters/vit_det.yaml
+  - _self_
 
 # WandB Naming Stuff
-experiment_name: instance_segmentation_maskDINO_vit_large_msda_stride_8_16_32
+experiment_name: instance_segmentation_maskDINO_vit_large_vitdet_stride_8_16_32
 
 models:
   heads:
@@ -17,13 +18,13 @@ models:
       use_deform_attention: true # Use MSDA
       input_shape_metadata: # Use stride 8, 16 and 32 features  
         "2":
-          channels: ${models.backbones.masked_encoder.embed_dim}
+          channels: ${models.adapters.out_channels}
           stride: 8
         "3":
-          channels: ${models.backbones.masked_encoder.embed_dim}
+          channels: ${models.adapters.out_channels}
           stride: 16
         "4":
-          channels: ${models.backbones.masked_encoder.embed_dim}
+          channels: ${models.adapters.out_channels}
           stride: 32
       transformer_in_features: ["2", "3", "4"]
       total_num_feature_levels: 3
