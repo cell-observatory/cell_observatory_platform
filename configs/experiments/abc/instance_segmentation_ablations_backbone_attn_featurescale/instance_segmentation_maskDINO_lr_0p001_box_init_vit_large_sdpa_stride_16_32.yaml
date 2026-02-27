@@ -13,6 +13,9 @@ defaults:
 experiment_name: instance_segmentation_maskDINO_vit_large_vitdet_stride_16_32
 
 models:
+  adapters:
+    scale_factors: [1.0, 0.5] # Only use stride 16 and 32 features
+
   heads:
     pixel_decoder:
       use_deform_attention: false # Use SDPA

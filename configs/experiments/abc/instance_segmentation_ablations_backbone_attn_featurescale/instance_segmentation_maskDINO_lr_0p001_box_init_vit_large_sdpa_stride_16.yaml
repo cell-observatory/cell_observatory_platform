@@ -5,19 +5,23 @@ defaults:
   - /models/meta_arch/maskdino/mae_large_w_masks    # configs/models/maskdino/large.yaml
   - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
   - /optimizations/models/maskdino/mae_large # configs/optimizations/models/mae.yaml
-  - /models/backbones/maskdino_backbone/maskdino_backbone # configs/models/backbones/maskdino_backbone/maskdino_backbone_w_adapter.yaml
+  - /models/backbones/maskdino_backbone/maskdino_backbone_w_vitdet   # configs/models/backbones/maskdino_backbone/maskdino_backbone_w_vitdet.yaml
+  - /models/adapters/vit_det   # configs/models/adapters/vit_det.yaml
   - _self_
   
 # WandB Naming Stuff
 experiment_name: instance_segmentation_maskDINO_vit_large_sdpa_stride_16
 
 models:
+  adapters:
+    scale_factors: [1.0] # Only use stride 16 feature
+
   heads:
     pixel_decoder:
       use_deform_attention: false # Use SDPA
       input_shape_metadata:  # Only use stride 16 feature  
         "3":
-          channels: ${models.backbones.masked_encoder.embed_dim}
+          channels: ${models.adapters.out_channels}
           stride: 16
       transformer_in_features: ["3"]
       total_num_feature_levels: 1

@@ -13,6 +13,9 @@ defaults:
 experiment_name: instance_segmentation_maskDINO_vit_large_vitdet_stride_8_16_32
 
 models:
+  adapters:
+    scale_factors: [2.0, 1.0, 0.5] # patch is 16x16x16, so 2x, 1x, 0.5x sampling to stride 8, 16 and 32 respectively
+
   heads:
     pixel_decoder:
       use_deform_attention: true # Use MSDA

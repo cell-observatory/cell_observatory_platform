@@ -8,6 +8,7 @@ defaults:
   - /datasets/preprocessor/instance_segmentation_preprocessor # configs/datasets/preprocessor/instance_segmentation_preprocessor.yaml
   - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
   - /models/BUILD_maskDINO                  # configs/models/BUILD_maskdino.yaml
+  - /models/meta_arch/maskdino/mae_large    # configs/models/maskdino/large.yaml
   - /models/heads/pixel_decoder/maskdino_encoder  # configs/models/heads/pixel_decoder/maskdino_encoder.yaml
   - /models/heads/maskdino_decoder/maskdino_decoder_box_init # configs/models/heads/maskdino_decoder/maskdino_decoder.yaml  
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
@@ -60,13 +61,23 @@ seed: 42
 
 # clusters
 clusters:
-  default_batch_size: 48  # found for A100
+  default_batch_size: 1  # found for A100
   batch_size: ${clusters.default_batch_size}
   worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 4 # number of gpus per worker node
+  gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 4 # number of cpu cores per gpu
   mem_per_cpu: 31000 # ram per cpu core
   ray_queue_memory: 0.2
+
+# # clusters
+# clusters:
+#   default_batch_size: 48  # found for A100
+#   batch_size: ${clusters.default_batch_size}
+#   worker_nodes: 1 # number of worker nodes
+#   gpus_per_worker: 4 # number of gpus per worker node
+#   cpus_per_gpu: 4 # number of cpu cores per gpu
+#   mem_per_cpu: 31000 # ram per cpu core
+#   ray_queue_memory: 0.2
 
 #paths:
 paths:
