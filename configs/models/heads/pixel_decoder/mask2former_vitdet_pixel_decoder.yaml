@@ -5,22 +5,22 @@ BUILD: cell_observatory_platform.models.heads.pixel_decoders.Mask2FormerPixelDec
 # Channels are adapter output (256). Strides must match adapter key convention:
 # adapter "0" = scale 4.0 = finest (stride 4), "3" = scale 0.5 = coarsest (stride 32).
 input_shape_metadata:  # Note: use input_shape, not input_shape_metadata
-  "0":
-    channels: ${models.adapters.out_channels}
-    stride: 4  # vitdet adapter scale 4.0 = finest
   "1":
     channels: ${models.adapters.out_channels}
-    stride: 8  # vitdet adapter scale 2.0
+    stride: 4  # vitdet adapter scale 4.0 = finest
   "2":
     channels: ${models.adapters.out_channels}
-    stride: 16  # vitdet adapter scale 1.0
+    stride: 8  # vitdet adapter scale 2.0
   "3":
+    channels: ${models.adapters.out_channels}
+    stride: 16  # vitdet adapter scale 1.0
+  "4":
     channels: ${models.adapters.out_channels}
     stride: 32  # vitdet adapter scale 0.5 = coarsest
 
 # Levels fed into the transformer encoder (concatenated then split). Using 2 coarsest levels
 # avoids putting the finest levels through the encoder and reduces sequence length / torch.split cost.
-transformer_in_features: ["1", "2", "3"]
+transformer_in_features: ["2", "3", "4"]
 
 # Number of multi-scale levels passed to the mask decoder (must match decoder num_feature_levels).
 total_num_feature_levels: 3
