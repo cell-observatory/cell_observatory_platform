@@ -2,55 +2,13 @@ import math
 import random
 from enum import Enum
 from multiprocessing import Value
-from typing import Dict, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Literal, Optional, Sequence, Tuple, Union
 
 import torch
 from hydra.utils import get_method
 
 from cell_observatory_platform.data.data_shapes import MULTICHANNEL_HYPERCUBE
 from cell_observatory_platform.training.helpers import get_patch_sizes
-
-
-# DEPRECATED
-# adapted from: https://github.com/facebookresearch/jepa/blob/main/src/masks/multiblock3d.py
-class MaskCollator(object):
-
-    def __init__(self, mask_generators, base_collator):
-        super(MaskCollator, self).__init__()
-        self.base_collator = get_method(base_collator)
-        self.mask_generators = mask_generators
-
-    def step(self):
-        for mask_generator in self.mask_generators:
-            mask_generator.step()
-
-    def __call__(self, batch):
-        batch_size = len(batch)
-        # returns a DataSample object with collated
-        # data tensor and collated metainfo
-        collated_batch = self.base_collator(batch)
-
-        collated_batch["metainfo"]["masks"] = []
-        collated_batch["metainfo"]["context_masks"] = []
-        collated_batch["metainfo"]["target_masks"] = []
-        collated_batch["metainfo"]["channels_to_mask"] = []
-        collated_batch["metainfo"]["original_patch_indices"] = []
-        for mask_generator in self.mask_generators:
-            masks, context_masks, target_masks, original_patch_indices, channels_to_mask = mask_generator(batch_size)
-
-            collated_batch["metainfo"]["masks"].append(masks)
-            collated_batch["metainfo"]["context_masks"].append(context_masks)
-            collated_batch["metainfo"]["target_masks"].append(target_masks)
-            collated_batch["metainfo"]["channels_to_mask"].append(channels_to_mask)
-            collated_batch["metainfo"]["original_patch_indices"].append(original_patch_indices)
-
-        # collated batch now is a DataSample object with
-        # a batched data tensor and a metainfo dictionary
-        # containing lists of batched masks where each
-        # list element (B,L) is from a different mask generator
-        # if the user wants to train on multiple masks variations
-        # per batch (different scales etc., see V-JEPA paper)
-        return collated_batch
 
 
 # BLOCKED: mask out a block of patches in the input tensor
@@ -78,6 +36,8 @@ class MaskModes(Enum):
     RANDOM_SPACE_ONLY = "random_space_only"
     BLOCKED_WITH_RANDOM_FILL = "blocked_with_random_fill"
     DINO_IBOT = "dino_ibot"
+    HIERA_MU = "hiera_mu"
+    HIERA_MU_BLOCKED = "hiera_mu_blocked"
 
 
 def _scale_to_tuple(scale: tuple | list | float | int) -> tuple[float, float]:
@@ -115,6 +75,10 @@ class MaskGenerator(object):
         mask_ratio_range: tuple = (0.1, 0.5),
         mask_probability: float = 0.5,
         random_circular_shift: bool = False,
+        # HIERA_MU-specific: mask_unit_size must divide token grid evenly
+        mask_unit_size: Optional[Sequence[int]] = None,
+        q_stride: Optional[Sequence[int]] = None,
+        q_pool: Optional[int] = None,
     ):
         self.device = device
 
@@ -147,6 +111,24 @@ class MaskGenerator(object):
         self.mask_ratio_range = tuple(mask_ratio_range)
         self.mask_probability = mask_probability
         self.random_circular_shift = random_circular_shift
+
+        # HIERA_MU-specific
+        self.mask_unit_size = tuple(mask_unit_size) if mask_unit_size else None
+        self.q_stride = tuple(q_stride) if q_stride else None
+        self.q_pool = int(q_pool) if q_pool is not None else None
+
+        # tokens per MU at fusion output (mask_unit_size / q_stride^q_pool) for JEPA tgt_tok_idx
+        if self.mask_unit_size is not None and self.q_stride is not None and self.q_pool is not None:
+            qs = self.q_stride
+            if len(qs) != len(self.mask_unit_size):
+                raise ValueError(f"q_stride must have the same length as mask_unit_size; got {len(qs)} and {len(self.mask_unit_size)}")
+            q_stride_pow = tuple(int(s) ** self.q_pool for s in qs)
+            self.tok_in_mu_final = tuple(
+                max(1, s // qsp) for s, qsp in zip(self.mask_unit_size, q_stride_pow)
+            )
+            self.tok_prod = int(math.prod(self.tok_in_mu_final))
+        else:
+            self.tok_prod = None
 
         # the iteration counter impacts the RNG state
         # for a given mask generation collator
@@ -395,6 +377,164 @@ class MaskGenerator(object):
             pick = masked[torch.randperm(masked.numel(), generator=generator)[:drop]].to(device)
             tgt_flat[pick] = False
 
+        return tgt_flat
+
+    def _mu_grid_shapes(self):
+        """Return (mu_size_tuple, mu_grid_shape) for MU-based masking."""
+        if self.mask_unit_size is None:
+            raise ValueError(
+                "mask_unit_size must be set for MU-based masking (HIERA_MU, HIERA_MU_BLOCKED)."
+            )
+        mu_t, mu_d, mu_h, mu_w = self.mask_unit_size
+        T, D, H, W = self.time, self.depth, self.height, self.width
+        assert T % mu_t == 0 and D % mu_d == 0 and H % mu_h == 0 and W % mu_w == 0, (
+            f"mask_unit_size {self.mask_unit_size} must divide input_shape_patches {(T,D,H,W)}"
+        )
+        Tg = T // mu_t
+        Dg = D // mu_d
+        Hg = H // mu_h
+        Wg = W // mu_w
+        return (mu_t, mu_d, mu_h, mu_w), (Tg, Dg, Hg, Wg)
+
+    # TODO: unify with existing block sampling logic into one helper function
+    def _sample_block_size_on_grid(
+        self, grid_shape: Tuple[int, int, int, int], generator
+    ) -> Tuple[int, int, int, int]:
+        """Sample block size (t,d,h,w) for a 4D grid using existing scale logic."""
+        Tg, Dg, Hg, Wg = grid_shape
+
+        if Tg > 1:
+            r = torch.rand(1, generator=generator).item()
+            mn, mx = self.temporal_mask_scale
+            t = max(1, int(Tg * (mn + r * (mx - mn))))
+            t = min(t, Tg)
+        else:
+            t = 1
+
+        r = torch.rand(1, generator=generator).item()
+        mn, mx = self.axial_mask_scale
+        area = int(Hg * Wg * (mn + r * (mx - mn)))
+        area = max(1, min(area, Hg * Wg))
+
+        r = torch.rand(1, generator=generator).item()
+        mn, mx = self.aspect_ratio_scale_hw
+        ar = mn + r * (mx - mn)
+        h = int(round(math.sqrt(area * ar)))
+        w = int(round(math.sqrt(area / ar)))
+        h = max(1, min(h, Hg))
+        w = max(1, min(w, Wg))
+
+        if Dg > 1:
+            r = torch.rand(1, generator=generator).item()
+            mn, mx = self.lateral_mask_scale
+            d = max(1, int(Dg * (mn + r * (mx - mn))))
+            d = min(d, Dg)
+        else:
+            d = 1
+
+        return (t, d, h, w)
+
+    def _shrink_block_to_fit(
+        self, block_size: Tuple[int, int, int, int], max_volume: int
+    ) -> Tuple[int, int, int, int]:
+        """Shrink block size until volume <= max_volume."""
+        bt, bd, bh, bw = block_size
+        sizes = [bt, bd, bh, bw]
+        while sizes[0] * sizes[1] * sizes[2] * sizes[3] > max_volume:
+            k = max(range(4), key=lambda i: sizes[i])
+            if sizes[k] == 1:
+                break
+            sizes[k] -= 1
+        return tuple(sizes)
+
+    def _mu_patch_offsets(
+        self,
+        mu_size: Tuple[int, int, int, int],
+        patch_grid_shape: Tuple[int, int, int, int],
+    ) -> torch.Tensor:
+        """Flat patch indices within one MU (for base 0,0,0,0). Shape (flat_mu_size,)."""
+        mu_t, mu_d, mu_h, mu_w = mu_size
+        T, D, H, W = patch_grid_shape
+
+        tt = torch.arange(mu_t, device=self.device, dtype=torch.long)
+        dd = torch.arange(mu_d, device=self.device, dtype=torch.long)
+        hh = torch.arange(mu_h, device=self.device, dtype=torch.long)
+        ww = torch.arange(mu_w, device=self.device, dtype=torch.long)
+        grid = torch.stack(torch.meshgrid(tt, dd, hh, ww, indexing="ij"), dim=-1)
+
+        off = (
+            grid[..., 0] * (D * H * W)
+            + grid[..., 1] * (H * W)
+            + grid[..., 2] * W
+            + grid[..., 3]
+        )
+        return off.reshape(-1)
+
+    def _mu_indices_to_patch_indices(
+        self,
+        mu_idx: torch.Tensor,
+        mu_size: Tuple[int, int, int, int],
+        mu_grid_shape: Tuple[int, int, int, int],
+    ) -> torch.Tensor:
+        """Convert flat MU indices to flat patch indices."""
+        mu_t, mu_d, mu_h, mu_w = mu_size
+        Tg, Dg, Hg, Wg = mu_grid_shape
+        T, D, H, W = self.time, self.depth, self.height, self.width
+
+        mu_idx = mu_idx.to(torch.long).to(self.device)
+
+        w = mu_idx % Wg
+        tmp = mu_idx // Wg
+        h = tmp % Hg
+        tmp = tmp // Hg
+        d = tmp % Dg
+        t = tmp // Dg
+
+        # get patch indices for MU
+        t0 = t * mu_t
+        d0 = d * mu_d
+        h0 = h * mu_h
+        w0 = w * mu_w
+
+        # start patch index of MU
+        base = t0 * (D * H * W) + d0 * (H * W) + h0 * W + w0
+
+        # get patch offsets within MU
+        offsets = self._mu_patch_offsets(mu_size, (T, D, H, W))
+        # get patch indices for patches within MU
+        patches = base[:, None] + offsets[None, :]
+        return patches.reshape(-1)
+
+    def _generate_single_blocked_mu_mask(
+        self,
+        num_target_mus: int,
+        block_size_mu: Tuple[int, int, int, int],
+        mu_grid_shape: Tuple[int, int, int, int],
+        generator: torch.Generator,
+    ) -> torch.Tensor:
+        """Flat (num_mus,) bool, True = target MU."""
+        Tg, Dg, Hg, Wg = mu_grid_shape
+        num_mus = Tg * Dg * Hg * Wg
+
+        if num_target_mus <= 0:
+            raise ValueError(f"num_target_mus ({num_target_mus}) must be greater than 0")
+        if num_target_mus >= num_mus:
+            raise ValueError(f"num_target_mus ({num_target_mus}) must be less than num_mus ({num_mus})")
+
+        tgt_grid = torch.zeros((Tg, Dg, Hg, Wg), dtype=torch.bool, device=self.device)
+        masked = 0
+
+        for _ in range(self.num_blocks):
+            remaining = num_target_mus - masked
+            if remaining <= 0:
+                break
+            delta = self._try_add_block_bool(
+                tgt_grid, block_size_mu, remaining, generator, tries=10
+            )
+            masked += delta
+
+        tgt_flat = tgt_grid.flatten()
+        tgt_flat = self._complete_target_count(tgt_flat, num_target_mus, generator)
         return tgt_flat
 
     def _generate_single_blocked_mask(
@@ -665,17 +805,233 @@ class MaskGenerator(object):
 
             return masks, context_masks, target_masks, original_patch_indices
 
+    def _generate_hiera_mu_mask(
+        self, batch_size: int, generator: Optional[torch.Generator] = None
+    ) -> Tuple:
+        """
+        Generate MU-level masks and expand to patch-level metadata.
+        Returns 7-tuple including mu_mask for Hiera encoder.
+        """
+        if self.mask_unit_size is None:
+            raise ValueError(
+                "mask_unit_size must be provided when mask_mode=HIERA_MU. "
+                "It should match Hiera's mask_unit_size (e.g. from q_stride^q_pool)."
+            )
+        T, D, H, W = self.time, self.depth, self.height, self.width
+        mu_size = tuple(self.mask_unit_size)
+        if len(mu_size) != 4:
+            raise ValueError(
+                f"mask_unit_size must have 4 elements (T,D,H,W) for input_shape_patches "
+                f"{(T,D,H,W)}; got {mu_size}"
+            )
+        mu_t, mu_d, mu_h, mu_w = mu_size
+        assert T % mu_t == 0 and D % mu_d == 0 and H % mu_h == 0 and W % mu_w == 0, (
+            f"mask_unit_size {mu_size} must divide input_shape_patches {(T,D,H,W)}"
+        )
+        num_mus_t, num_mus_d = T // mu_t, D // mu_d
+        num_mus_h, num_mus_w = H // mu_h, W // mu_w
+        num_mus = num_mus_t * num_mus_d * num_mus_h * num_mus_w
+        flat_mu_size = mu_t * mu_d * mu_h * mu_w
+        N = T * D * H * W
+
+        num_target_mus = int(round(num_mus * self.random_masking_ratio))
+        num_ctx_mus = num_mus - num_target_mus
+        if num_target_mus <= 0 or num_ctx_mus <= 0:
+            raise ValueError(f"num_target_mus ({num_target_mus}) or num_ctx_mus ({num_ctx_mus}) must be greater than 0")
+
+        def mu_to_patch_indices(mu_idx: int) -> torch.Tensor:
+            mu_flat = mu_idx
+            mu_w_i = mu_flat % num_mus_w
+            mu_flat //= num_mus_w
+            mu_h_i = mu_flat % num_mus_h
+            mu_flat //= num_mus_h
+            mu_d_i = mu_flat % num_mus_d
+            mu_t_i = mu_flat // num_mus_d
+            t0, d0, h0, w0 = (
+                mu_t_i * mu_t, mu_d_i * mu_d,
+                mu_h_i * mu_h, mu_w_i * mu_w,
+            )
+            patch_indices = []
+            for tt in range(t0, t0 + mu_t):
+                for dd in range(d0, d0 + mu_d):
+                    for hh in range(h0, h0 + mu_h):
+                        for ww in range(w0, w0 + mu_w):
+                            patch_idx = tt * (D * H * W) + dd * (H * W) + hh * W + ww
+                            patch_indices.append(patch_idx)
+            return torch.tensor(patch_indices, dtype=torch.long, device=self.device)
+
+        masks_list, ctx_list, tgt_list, orig_list = [], [], [], []
+        mu_masks_list = []
+        mu_keep_idx_list = []
+        tgt_tok_idx_list = []
+
+        for _ in range(batch_size):
+            perm_mus = torch.randperm(num_mus, generator=generator, device=self.device)
+            ctx_mus = perm_mus[:num_ctx_mus]
+            tgt_mus = perm_mus[num_ctx_mus : num_ctx_mus + num_target_mus]
+
+            ctx_patches = torch.cat([mu_to_patch_indices(i) for i in ctx_mus.tolist()])
+            tgt_patches = torch.cat([mu_to_patch_indices(i) for i in tgt_mus.tolist()])
+
+            perm = torch.cat([ctx_patches, tgt_patches], dim=0)
+            orig = torch.argsort(perm, dim=0, stable=True)
+            num_ctx, num_tgt = len(ctx_patches), len(tgt_patches)
+            m = torch.ones(N, dtype=torch.int32, device=self.device)
+            m[:num_ctx] = 0
+            m = m[orig]
+
+            mu_mask = torch.ones(num_mus, dtype=torch.bool, device=self.device)
+            mu_mask[ctx_mus] = False
+
+            masks_list.append(m)
+            ctx_list.append(ctx_patches)
+            tgt_list.append(tgt_patches)
+            orig_list.append(orig)
+            mu_masks_list.append(mu_mask)
+            mu_keep_idx_list.append(ctx_mus)
+
+            if self.tok_prod is not None:
+                base = tgt_mus.unsqueeze(-1).long() * self.tok_prod
+                offs = torch.arange(self.tok_prod, device=self.device, dtype=base.dtype).view(1, -1)
+                tgt_tok_idx_list.append((base + offs).reshape(-1))
+
+        min_ctx = min(len(c) for c in ctx_list)
+        min_tgt = min(len(t) for t in tgt_list)
+        min_ctx_mus = min_ctx // flat_mu_size
+        ctx_list = [c[:min_ctx] for c in ctx_list]
+        tgt_list = [t[:min_tgt] for t in tgt_list]
+        mu_keep_idx_list = [m[:min_ctx_mus] for m in mu_keep_idx_list]
+
+        masks = torch.utils.data.default_collate(masks_list)
+        context_masks = torch.utils.data.default_collate(ctx_list)
+        target_masks = torch.utils.data.default_collate(tgt_list)
+        original_patch_indices = torch.utils.data.default_collate(orig_list)
+        mu_mask = torch.stack(mu_masks_list)
+        mu_keep_idx = torch.utils.data.default_collate(mu_keep_idx_list)
+
+        perm = torch.cat([context_masks, target_masks], dim=1)
+        patches_used, _ = torch.sort(perm, dim=1)
+
+        tgt_tok_idx = torch.utils.data.default_collate(tgt_tok_idx_list) if self.tok_prod is not None and tgt_tok_idx_list else None
+
+        return {
+            "masks": masks,
+            "context_masks": context_masks,
+            "target_masks": target_masks,
+            "original_patch_indices": original_patch_indices,
+            "channels_to_mask": self.channels_to_mask,
+            "patches_used": patches_used,
+            "mu_mask": mu_mask,
+            "mu_keep_idx": mu_keep_idx,
+            "tgt_tok_idx": tgt_tok_idx,
+        }
+
+    def _generate_hiera_mu_blocked_mask(
+        self,
+        batch_size: int,
+        generator: torch.Generator,
+    ) -> Dict[str, Any]:
+        """MU-aligned blocked masking. Same output dict as HIERA_MU."""
+ 
+        mu_size, mu_grid_shape = self._mu_grid_shapes()
+        mu_t, mu_d, mu_h, mu_w = mu_size
+        Tg, Dg, Hg, Wg = mu_grid_shape
+
+        num_mus = Tg * Dg * Hg * Wg
+        num_target_mus = int(round(num_mus * self.random_masking_ratio))
+        num_target_mus = max(1, min(num_target_mus, num_mus - 1))
+        num_ctx_mus = num_mus - num_target_mus
+
+        block_size_mu = self._sample_block_size_on_grid(mu_grid_shape, generator)
+        block_size_mu = self._shrink_block_to_fit(
+            block_size_mu, max_volume=num_target_mus
+        )
+
+        flat_mu = mu_t * mu_d * mu_h * mu_w
+        N = self.time * self.depth * self.height * self.width
+        assert N == num_mus * flat_mu
+
+        masks_list, ctx_list, tgt_list, orig_list, mu_masks_list = (
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
+        mu_keep_idx_list = []
+        tgt_tok_idx_list = []
+
+        for _ in range(batch_size):
+            tgt_mu_flat = self._generate_single_blocked_mu_mask(
+                num_target_mus=num_target_mus,
+                block_size_mu=block_size_mu,
+                mu_grid_shape=mu_grid_shape,
+                generator=generator,
+            )
+            tgt_mus = tgt_mu_flat.nonzero(as_tuple=False).squeeze(1)
+            ctx_mus = (~tgt_mu_flat).nonzero(as_tuple=False).squeeze(1)
+
+            mu_mask = tgt_mu_flat.clone()
+
+            ctx_patches = self._mu_indices_to_patch_indices(
+                ctx_mus, mu_size, mu_grid_shape
+            )
+            tgt_patches = self._mu_indices_to_patch_indices(
+                tgt_mus, mu_size, mu_grid_shape
+            )
+
+            perm = torch.cat([ctx_patches, tgt_patches], dim=0)
+            orig = torch.argsort(perm, dim=0, stable=True)
+
+            m = torch.ones(N, dtype=torch.int32, device=self.device)
+            m[: ctx_patches.numel()] = 0
+            m = m[orig]
+
+            masks_list.append(m)
+            ctx_list.append(ctx_patches)
+            tgt_list.append(tgt_patches)
+            orig_list.append(orig)
+            mu_masks_list.append(mu_mask)
+            mu_keep_idx_list.append(ctx_mus)
+
+            if self.tok_prod is not None:
+                base = tgt_mus.unsqueeze(-1).long() * self.tok_prod
+                offs = torch.arange(self.tok_prod, device=self.device, dtype=base.dtype).view(1, -1)
+                tgt_tok_idx_list.append((base + offs).reshape(-1))
+
+        masks = torch.utils.data.default_collate(masks_list)
+        context_masks = torch.utils.data.default_collate(ctx_list)
+        target_masks = torch.utils.data.default_collate(tgt_list)
+        original_patch_indices = torch.utils.data.default_collate(orig_list)
+        mu_mask = torch.stack(mu_masks_list)
+        mu_keep_idx = torch.utils.data.default_collate(mu_keep_idx_list)
+        tgt_tok_idx = torch.utils.data.default_collate(tgt_tok_idx_list) if self.tok_prod is not None and tgt_tok_idx_list else None
+
+        perm = torch.cat([context_masks, target_masks], dim=1)
+        patches_used, _ = torch.sort(perm, dim=1)
+
+        return {
+            "masks": masks,
+            "context_masks": context_masks,
+            "target_masks": target_masks,
+            "original_patch_indices": original_patch_indices,
+            "channels_to_mask": self.channels_to_mask,
+            "patches_used": patches_used,
+            "mu_mask": mu_mask,
+            "mu_keep_idx": mu_keep_idx,
+            "tgt_tok_idx": tgt_tok_idx,
+        }
+
     def __call__(self, batch_size):
         """
         Generate masks for the given batch size.
 
         Returns:
-            For JEPA/MAE modes (BLOCKED, RANDOM, etc.):
-                Tuple of (masks, context_masks, target_masks, original_patch_indices,
-                          channels_to_mask, patches_used)
-            For DINO_IBOT mode:
-                Dict with keys: collated_masks, mask_indices_list, masks_weight,
-                                upperbound, n_masked_patches
+            Dict with optional keys (unused keys are omitted or None):
+            - JEPA/MAE: masks, context_masks, target_masks, original_patch_indices,
+              channels_to_mask, patches_used, mu_mask (HIERA_MU only)
+            - DINO_IBOT: collated_masks, mask_indices_list, masks_weight,
+              upperbound, n_masked_patches
         """
         if self.mask_mode in (
             MaskModes.BLOCKED,
@@ -683,9 +1039,13 @@ class MaskGenerator(object):
             MaskModes.BLOCKED_SPACE_ONLY,
             MaskModes.BLOCKED_WITH_RANDOM_FILL,
             MaskModes.DINO_IBOT,
+            MaskModes.HIERA_MU,
+            MaskModes.HIERA_MU_BLOCKED,
         ):
             seed = self.step()
-            g = torch.Generator()
+            dev = str(self.device)
+            gen_dev = "cuda" if dev.startswith("cuda") else "cpu"
+            g = torch.Generator(device=gen_dev)
             g.manual_seed(seed)
 
         # ---- DINO/iBOT mode: returns a dict ----
@@ -730,6 +1090,10 @@ class MaskGenerator(object):
             masks, context_masks, target_masks, original_patch_indices = self._generate_blocked_with_random_fill(
                 batch_size=batch_size, generator=g
             )
+        elif self.mask_mode == MaskModes.HIERA_MU:
+            return self._generate_hiera_mu_mask(batch_size=batch_size, generator=g)
+        elif self.mask_mode == MaskModes.HIERA_MU_BLOCKED:
+            return self._generate_hiera_mu_blocked_mask(batch_size=batch_size, generator=g)
         else:
             raise ValueError(f"Unknown mask mode: {self.mask_mode}")
 
@@ -737,7 +1101,15 @@ class MaskGenerator(object):
         perm = torch.cat([context_masks, target_masks], dim=1)
         patches_used, _ = torch.sort(perm, dim=1)
 
-        return masks, context_masks, target_masks, original_patch_indices, self.channels_to_mask, patches_used
+        return {
+            "masks": masks,
+            "context_masks": context_masks,
+            "target_masks": target_masks,
+            "original_patch_indices": original_patch_indices,
+            "channels_to_mask": self.channels_to_mask,
+            "patches_used": patches_used,
+            "mu_mask": None,
+        }
 
 
 def apply_masks(x, masks, concat=True):

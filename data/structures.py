@@ -402,3 +402,112 @@ def bitmask_to_boxes(masks: torch.Tensor) -> torch.Tensor:
         # else: leave that row as zeros for empty mask
 
     return boxes
+
+
+# ---------------------------------------------------------------------------
+# 3D box / mask / point transforms for crops
+# ---------------------------------------------------------------------------
+
+def uncrop_boxes_3d(boxes: Tensor, crop_box: List[int]) -> Tensor:
+    """Shift boxes from crop-local to global coordinates.
+    boxes: (N, 6) as [x0, y0, z0, x1, y1, z1]
+    crop_box: [x0, y0, z0, x1, y1, z1]
+    """
+    cx0, cy0, cz0 = crop_box[0], crop_box[1], crop_box[2]
+    offset = torch.tensor(
+        [[cx0, cy0, cz0, cx0, cy0, cz0]], device=boxes.device, dtype=boxes.dtype
+    )
+    return boxes + offset
+
+
+def uncrop_points_3d(points: Tensor, crop_box: List[int]) -> Tensor:
+    """Shift points (x, y, z) from crop-local to global coordinates.
+    points: (N, 3)
+    """
+    cx0, cy0, cz0 = crop_box[0], crop_box[1], crop_box[2]
+    offset = torch.tensor(
+        [[cx0, cy0, cz0]], device=points.device, dtype=points.dtype
+    )
+    return points + offset
+
+
+def uncrop_masks_3d(
+    masks: Tensor,
+    crop_box: List[int],
+    orig_z: int,
+    orig_y: int,
+    orig_x: int,
+) -> Tensor:
+    """Pad masks from crop-local shape back to full volume shape.
+    masks: (N, Z_crop, Y_crop, X_crop)
+    crop_box: [x0, y0, z0, x1, y1, z1]
+    """
+    x0, y0, z0, x1, y1, z1 = crop_box
+    if x0 == 0 and y0 == 0 and z0 == 0 and x1 == orig_x and y1 == orig_y and z1 == orig_z:
+        return masks
+    pad_x = orig_x - (x1 - x0)
+    pad_y = orig_y - (y1 - y0)
+    pad_z = orig_z - (z1 - z0)
+    pad = (x0, pad_x - x0, y0, pad_y - y0, z0, pad_z - z0)
+    return torch.nn.functional.pad(masks, pad, value=0)
+
+
+def box_iou_3d(boxes1: Tensor, boxes2: Tensor) -> Tensor:
+    """Pairwise 3D IoU between two sets of boxes (N,6) and (M,6).
+    Returns (N, M) IoU matrix.
+    Boxes in [x0, y0, z0, x1, y1, z1] format (half-open x1,y1,z1).
+    """
+    x0 = torch.max(boxes1[:, None, 0], boxes2[None, :, 0])
+    y0 = torch.max(boxes1[:, None, 1], boxes2[None, :, 1])
+    z0 = torch.max(boxes1[:, None, 2], boxes2[None, :, 2])
+    x1 = torch.min(boxes1[:, None, 3], boxes2[None, :, 3])
+    y1 = torch.min(boxes1[:, None, 4], boxes2[None, :, 4])
+    z1 = torch.min(boxes1[:, None, 5], boxes2[None, :, 5])
+
+    inter = (x1 - x0).clamp(min=0) * (y1 - y0).clamp(min=0) * (z1 - z0).clamp(min=0)
+    vol1 = box_volume(boxes1)
+    vol2 = box_volume(boxes2)
+    union = vol1[:, None] + vol2[None, :] - inter
+    return inter / union.clamp(min=1e-6)
+
+
+def nms_3d(
+    boxes: Tensor,
+    scores: Tensor,
+    iou_threshold: float,
+) -> Tensor:
+    """Greedy NMS on 3D boxes. Returns indices to keep."""
+    if boxes.numel() == 0:
+        return torch.empty(0, dtype=torch.long, device=boxes.device)
+
+    order = scores.argsort(descending=True)
+    keep = []
+    suppressed = torch.zeros(len(boxes), dtype=torch.bool, device=boxes.device)
+
+    for idx in order:
+        i = idx.item()
+        if suppressed[i]:
+            continue
+        keep.append(i)
+        ious = box_iou_3d(boxes[i : i + 1], boxes)[0]
+        suppressed |= ious > iou_threshold
+
+    return torch.tensor(keep, dtype=torch.long, device=boxes.device)
+
+
+def is_box_near_crop_edge_3d(
+    boxes: Tensor,
+    crop_box: List[int],
+    orig_box: List[int],
+    atol: float = 20.0,
+) -> Tensor:
+    """Filter masks whose boxes touch a crop boundary (but not the image boundary).
+    boxes: (N, 6) in crop-local coords; crop_box/orig_box: [x0,y0,z0,x1,y1,z1]
+    """
+    crop_t = torch.as_tensor(crop_box, dtype=torch.float, device=boxes.device)
+    orig_t = torch.as_tensor(orig_box, dtype=torch.float, device=boxes.device)
+    global_boxes = uncrop_boxes_3d(boxes, crop_box).float()
+    near_crop = torch.isclose(global_boxes, crop_t[None, :], atol=atol, rtol=0)
+    near_orig = torch.isclose(global_boxes, orig_t[None, :], atol=atol, rtol=0)
+    near_crop_only = near_crop & ~near_orig
+    return near_crop_only.any(dim=1)

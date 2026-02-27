@@ -1,24 +1,26 @@
+import sys
 import inspect
 import logging
-import sys
 from copy import deepcopy
-from typing import Any, Literal, Mapping, Union
+from typing import Any, Literal, Mapping, Optional, Union, List
 
 import torch
 import torch.nn as nn
 from deepspeed.runtime.zero import GatheredParameters
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
 
-from cell_observatory_platform.data.masking.mask_generator import apply_masks
-from cell_observatory_platform.models.backbones.maskedencoder import MaskedEncoder
-from cell_observatory_platform.models.heads.maskedpredictor import MaskedPredictor
-from cell_observatory_platform.models.layers.activation import get_activation
-from cell_observatory_platform.models.layers.attention import RopeAttention
 from cell_observatory_platform.models.layers.mlp import get_mlp
 from cell_observatory_platform.models.layers.norm import get_norm
-from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
-from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops, init_weights
 from cell_observatory_platform.training.losses import get_loss_fn
+from cell_observatory_platform.models.layers.attention import RopeAttention
+from cell_observatory_platform.models.layers.activation import get_activation
+from cell_observatory_platform.data.masking.mask_generator import apply_masks
+from cell_observatory_platform.models.heads.maskedpredictor import MaskedPredictor
+from cell_observatory_platform.models.backbones.maskedencoder import MaskedEncoder
+from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
+from cell_observatory_platform.models.backbones.masked_hiera_encoder import MaskedHieraEncoder
+from cell_observatory_platform.models.heads.masked_hiera_predictor import MaskedHieraPredictor
+from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops, init_weights
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -158,6 +160,13 @@ class JEPA(nn.Module):
         mlp_wide_silu: bool = False,
         loss_fn: str = "l1_masked",
         dtype: torch.dtype = torch.bfloat16,
+        backbone_type: Literal["vit", "hiera"] = "vit",
+        # Hiera-specific parameters
+        hiera_q_pool: int = 3,
+        hiera_q_stride: tuple = (2, 2),
+        hiera_stages: tuple = (2, 3, 16, 3),
+        hiera_mask_unit_size: Optional[tuple] = None,
+        buffer_device: str = "cuda",
         **kwargs,
     ):
         super().__init__()
@@ -206,8 +215,10 @@ class JEPA(nn.Module):
         self.rope_theta = rope_theta
         self.mlp_wide_silu = mlp_wide_silu
         self.rope_random_rotation_per_head = rope_random_rotation_per_head
+        self.backbone_type = backbone_type
 
-        self.input_encoder = MaskedEncoder(
+        if backbone_type == "vit":
+            self.input_encoder = MaskedEncoder(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
             patch_shape=self.patch_shape,
@@ -231,9 +242,8 @@ class JEPA(nn.Module):
             rope_theta=self.rope_theta,
             mlp_wide_silu=mlp_wide_silu,
             dtype=dtype,
-        )
-
-        self.target_predictor = MaskedPredictor(
+            )
+            self.target_predictor = MaskedPredictor(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
             patch_shape=self.patch_shape,
@@ -259,9 +269,43 @@ class JEPA(nn.Module):
             rope_theta=self.rope_theta,
             mlp_wide_silu=mlp_wide_silu,
             dtype=dtype,
-        )
+            )
+        elif backbone_type == "hiera":
+            self.input_encoder = MaskedHieraEncoder(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                embed_dim=self.embed_dim,
+                num_heads=self.num_heads,
+                drop_path_rate=self.drop_path_rate,
+                q_pool=hiera_q_pool,
+                q_stride=hiera_q_stride,
+                stages=hiera_stages,
+                mask_unit_size=hiera_mask_unit_size,
+                norm_layer=self.norm_layer,
+            )
+            encoder_dim_out = self.input_encoder.encoder.blocks[-1].dim_out
+            self.target_predictor = MaskedHieraPredictor(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                encoder_dim_out=encoder_dim_out,
+                decoder_embed_dim=self.predictor_embed_dim,
+                decoder_depth=self.predictor_depth,
+                decoder_num_heads=self.predictor_num_heads,
+                decoder_spec=self.input_encoder.get_decoder_spec(),
+                mlp_ratio=self.mlp_ratio,
+                norm_layer=self.norm_layer,
+                prediction_mode="lowest_level",
+                output_embed_dim=encoder_dim_out,
+            )
+        else:
+            raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
 
         self.weight_init_type = weight_init_type
+
+        self.model_initialized = False
+        self.init_model_weights(buffer_device=buffer_device)
 
         # NOTE: do deepcopy after weight init
         self.target_encoder = deepcopy(self.input_encoder)
@@ -284,12 +328,15 @@ class JEPA(nn.Module):
                     tparam.data.copy_(torch.lerp(iparam.data, tparam.data, beta))
 
     def init_model_weights(self, buffer_device: str | None = None):
-        # TODO: move model inits back into each model class
-        init_weights(self, weight_init_type=self.weight_init_type)
-        for mod in self.modules():
-            if isinstance(mod, RopeAttention):
-                mod.init_rope_parameters(device=buffer_device)
-
+        # FIXME: hack until we move model inits back into each model class
+        if not self.model_initialized:
+            # TODO: move model inits back into each model class
+            init_weights(self, weight_init_type=self.weight_init_type)
+            for mod in self.modules():
+                if isinstance(mod, RopeAttention):
+                    mod.init_rope_parameters(device=buffer_device)
+            self.model_initialized = True
+    
     @torch.jit.ignore
     def _get_nparams_and_flops(
         self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
@@ -336,18 +383,40 @@ class JEPA(nn.Module):
 
     @torch.jit.ignore
     def get_num_patches(self):
-        if self.abs_sincos_enc:
-            return self.input_encoder.pos_embedding.num_patches
-        else:
+        if self.backbone_type == "hiera":
+            return self.input_encoder.get_num_patches()
+        elif self.backbone_type == "vit":
+            if self.abs_sincos_enc:
+                return self.input_encoder.pos_embedding.num_patches
             num_patches, _ = calc_num_patches(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
                 patch_shape=self.patch_shape,
             )
             return num_patches
+        else:
+            raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
+
+    @staticmethod
+    def _select_tokens(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
+        """
+        x:   [B, N, C]
+        idx: [B, M] long
+        ->   [B, M, C]
+        """
+        return x.gather(1, idx.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
+
+        if self.backbone_type == "vit":
+            return self._forward_vit(data_sample, inputs, meta)
+        elif self.backbone_type == "hiera":
+            return self._forward_hiera(data_sample, inputs, meta)
+        else:
+            raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
+
+    def _forward_vit(self, data_sample: dict, inputs: torch.Tensor, meta: dict):
         masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
         target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
 
@@ -374,9 +443,54 @@ class JEPA(nn.Module):
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions
 
+    def _forward_hiera(self, data_sample: dict, inputs: torch.Tensor, meta: dict):
+        mu_mask = meta.get("mu_mask", [None])[0]
+        mu_keep_idx = meta.get("mu_keep_idx", [None])[0]
+        tgt_tok_idx = meta.get("tgt_tok_idx", [None])[0]
+
+        if mu_mask is None or mu_keep_idx is None or tgt_tok_idx is None:
+            raise ValueError(
+                "JEPA+Hiera requires mu_mask, mu_keep_idx, tgt_tok_idx in meta. "
+                "Use mask_mode=HIERA_MU or HIERA_MU_BLOCKED with q_stride and q_pool."
+            )
+
+        # 1) context encoder (masked) -> fused windowed map
+        ctx_feat, _ = self.input_encoder(
+            inputs,
+            masks=mu_mask,
+            ctx_idx=mu_keep_idx,
+            with_intermediates=True,
+            with_fusion_heads=True,
+            return_windowed=True,
+        )
+
+        pred_tokens = self.target_predictor(ctx_feat, mu_mask=mu_mask, ctx_idx=mu_keep_idx)
+
+        # 2) target encoder (dense) -> fused windowed map -> flatten to token grid
+        with torch.no_grad():
+            tgt_feat, _ = self.target_encoder(
+                inputs,
+                masks=None,
+                ctx_idx=None,
+                with_intermediates=True,
+                with_fusion_heads=True,
+                return_windowed=True,
+            )
+            tgt_tokens = tgt_feat.view(tgt_feat.shape[0], -1, tgt_feat.shape[-1])
+
+        # 3) select targets/preds by precomputed indices
+        pred_sel = self._select_tokens(pred_tokens, tgt_tok_idx)
+        tgt_sel = self._select_tokens(tgt_tokens, tgt_tok_idx)
+
+        loss, aux = self.loss_fn(tgt_sel, pred_sel, tgt_tok_idx.numel())
+
+        loss_dict = {"step_loss": loss, **(aux or {})}
+        return loss_dict, pred_sel
+
     def forward_features(self, inputs, masks=None, concat_masks=True):
         x = self.input_encoder.forward_features(inputs, masks=masks)
         return x
+
 
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(JEPA.__init__)

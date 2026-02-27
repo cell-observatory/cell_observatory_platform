@@ -107,28 +107,20 @@ class RayPreprocessor(torch.nn.Module):
 
         if self.with_masking:
             masking_time = time.time()
-            masks, context_masks, target_masks, original_patch_indices, channels_to_mask, patches_used = (
-                self.mask_generator(inputs.shape[0])
-            )
+            mask_data = self.mask_generator(inputs.shape[0])
             masking_time = time.time() - masking_time
 
-            return {
-                "data_tensor": inputs,
-                "metainfo": {
-                    "masks": [masks] if self.with_masking else None,
-                    "context_masks": [context_masks] if self.with_masking else None,
-                    "target_masks": [target_masks] if self.with_masking else None,
-                    "original_patch_indices": [original_patch_indices] if self.with_masking else None,
-                    "channels_to_mask": [channels_to_mask] if self.with_masking else None,
-                    "patches_used": [patches_used] if self.with_masking else None,
-                    "preprocess_time": time.time() - preprocess_time,
-                    "data_time": data_time,
-                    "masking_time": masking_time,
-                    "transform_time": transform_time if self.transforms is not None else -1,
-                    "tokens_per_batch": tokens_per_batch,
-                    **meta,
-                },
+            mask_lists = {k: [v] for k, v in mask_data.items() if v is not None}
+            metainfo = {
+                **mask_lists,
+                "preprocess_time": time.time() - preprocess_time,
+                "data_time": data_time,
+                "masking_time": masking_time,
+                "transform_time": transform_time if self.transforms is not None else -1,
+                "tokens_per_batch": tokens_per_batch,
+                **meta,
             }
+            return {"data_tensor": inputs, "metainfo": metainfo}
         else:
             return {
                 "data_tensor": inputs,
@@ -273,16 +265,8 @@ class MultiSequenceRayPreprocessor(torch.nn.Module):
         """
         Calls the dataset stream's mask generator if enabled.
 
-        Supports two return conventions from the mask generator:
-          - JEPA/MAE modes: returns a 6-tuple
-            (masks, context_masks, target_masks, original_patch_indices,
-             channels_to_mask, patches_used)
-          - DINO/iBOT mode: returns a dict
-            {collated_masks, mask_indices_list, masks_weight,
-             upperbound, n_masked_patches}
-
-        In both cases, the result is normalized into a flat dict (mask_kwargs)
-        whose entries are merged into the stream's metainfo.
+        Expects mask generator to return a dict with optional keys (unused as None).
+        Values are wrapped in single-element lists and merged into the stream's metainfo.
         """
         spec = self.data_streams[name]
         if not spec.with_masking:
@@ -294,43 +278,14 @@ class MultiSequenceRayPreprocessor(torch.nn.Module):
 
         B = x.shape[0]
         mt0 = time.time()
-        mask_result = mask_gen(B)
+        mask_data = mask_gen(B)
         masking_time = time.time() - mt0
 
-        # Normalize the mask generator result into a generic dict
-        if isinstance(mask_result, dict):
-            # DINO/iBOT mode -- already a dict, pass through as-is
-            mask_kwargs = mask_result
-        elif isinstance(mask_result, tuple):
-            # Legacy JEPA/MAE mode -- unpack 6-tuple into dict
-            (
-                masks,
-                context_masks,
-                target_masks,
-                original_patch_indices,
-                channels_to_mask,
-                patches_used,
-            ) = mask_result
-
-            mask_kwargs: Dict[str, Any] = {}
-            if masks is not None:
-                mask_kwargs["masks"] = [masks]
-            if context_masks is not None:
-                mask_kwargs["context_masks"] = [context_masks]
-            if target_masks is not None:
-                mask_kwargs["target_masks"] = [target_masks]
-            if original_patch_indices is not None:
-                mask_kwargs["original_patch_indices"] = [original_patch_indices]
-            if channels_to_mask is not None:
-                mask_kwargs["channels_to_mask"] = [channels_to_mask]
-            if patches_used is not None:
-                mask_kwargs["patches_used"] = [patches_used]
-        else:
+        if not isinstance(mask_data, dict):
             raise TypeError(
-                f"Mask generator for stream={name!r} returned unexpected type: {type(mask_result)}. "
-                f"Expected dict (DINO/iBOT) or tuple (JEPA/MAE)."
+                f"Mask generator for stream={name!r} returned {type(mask_data)}, expected dict."
             )
-
+        mask_kwargs = {k: [v] for k, v in mask_data.items() if v is not None}
         return mask_kwargs, masking_time
 
     def forward(self, data_sample: Any, data_time: float, idx: int):
@@ -611,36 +566,10 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         if self.with_masking:
             mt0 = time.time()
             B = inputs.shape[0]
-            (
-                masks,
-                context_masks,
-                target_masks,
-                original_patch_indices,
-                channels_to_mask,
-                patches_used,
-            ) = self.mask_generator(B)
+            mask_data = self.mask_generator(B)
             masking_time = time.time() - mt0
 
-            mask_lists = {}
-            for name, mask in zip(
-                [
-                    "masks",
-                    "context_masks",
-                    "target_masks",
-                    "original_patch_indices",
-                    "channels_to_mask",
-                ],
-                [
-                    masks,
-                    context_masks,
-                    target_masks,
-                    original_patch_indices,
-                    channels_to_mask,
-                ],
-            ):
-                if mask is not None:
-                    mask_lists[name] = [mask]
-
+            mask_lists = {k: [v] for k, v in mask_data.items() if v is not None}
             return {
                 "data_tensor": inputs,
                 "metainfo": {

@@ -47,13 +47,28 @@ def _normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
     return np.clip(out, 0, 1)
 
 
-def _ensure_numpy(preds: ArrayLike):
-    """Convert to numpy array if needed."""
-    if isinstance(preds, torch.Tensor):
-        arr = preds.float().detach().cpu().numpy()
-    else:
-        arr = np.asarray(preds)
-    return arr
+def _ensure_numpy(x: ArrayLike):
+    """Convert torch/numpy/list-like to numpy on CPU."""
+    if isinstance(x, np.ndarray):
+        return x
+
+    if isinstance(x, torch.Tensor):
+        return x.detach().float().cpu().numpy()
+
+    if isinstance(x, (list, tuple)):
+        if len(x) == 0:
+            return np.asarray(x)
+
+        if len(x) == 1:
+            return _ensure_numpy(x[0])
+
+        xs = [_ensure_numpy(v) for v in x]
+        try:
+            return np.stack(xs, axis=0)
+        except Exception:
+            return np.asarray(xs, dtype=object)
+
+    return np.asarray(x)
 
 def _ensure_numpy_tzyxc(preds: ArrayLike) -> np.ndarray:
     """
@@ -834,7 +849,7 @@ def save_instance_predictions(
     pmax: float = 99.0,
     background_channel: int = 0,
     scale_gt_boxes: bool = True,
-    input_format: Literal["ZYXC"] = "ZYXC",
+    input_format: Literal["ZYXC", "TZYXC"] = "ZYXC",
     ortho: bool = False,
     # NOTE: unused for now
     ortho_mode: Literal["center"] = "center",
@@ -908,30 +923,13 @@ def save_instance_predictions(
         # FIXME: we unsqueeze since downstream plotting logic
         #       expects (N,T,Z,Y,X) shape, generalize later if needed
         if gt_masks is not None:
-            if input_format == "ZYXC":
-                # accept either torch or numpy; only add T dim if missing
-                if isinstance(gt_masks, torch.Tensor):
-                    if gt_masks.ndim == 4:
-                        gt_masks = gt_masks.unsqueeze(1)  # (N,1,Z,Y,X)
-                else:
-                    gt_masks = np.asarray(gt_masks)
-                    if gt_masks.ndim == 4:
-                        gt_masks = gt_masks[:, None, ...]
-            else:
-                raise ValueError(f"Unsupported input_format for gt_masks: {input_format!r}")
             gt_masks = _ensure_numpy(gt_masks)
+            if gt_masks.ndim == 4:
+                gt_masks = gt_masks[:, None, ...]  # (N,Z,Y,X) -> (N,1,Z,Y,X)
         if pr_masks is not None:
-            if input_format == "ZYXC":
-                if isinstance(pr_masks, torch.Tensor):
-                    if pr_masks.ndim == 4:
-                        pr_masks = pr_masks.unsqueeze(1)  # (N,1,Z,Y,X)
-                else:
-                    pr_masks = np.asarray(pr_masks)
-                    if pr_masks.ndim == 4:
-                        pr_masks = pr_masks[:, None, ...]
-            else:
-                raise ValueError(f"Unsupported input_format for pr_masks: {input_format!r}")
             pr_masks = _ensure_numpy(pr_masks)
+            if pr_masks.ndim == 4:
+                pr_masks = pr_masks[:, None, ...]  # (N,Z,Y,X) -> (N,1,Z,Y,X)
 
         # --- plot ---
         has_boxes_row = _has_nonempty(gt_xyzxyz) or _has_nonempty(pr_xyzxyz)

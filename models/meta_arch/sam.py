@@ -6,7 +6,7 @@ https://github.com/facebookresearch/sam2/blob/main/training/model/sam2.py
 
 import logging
 from abc import abstractmethod
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Literal, Tuple
 
 import numpy as np
 
@@ -32,6 +32,23 @@ from cell_observatory_platform.models.layers.utils import (
     get_next_point,
     sample_box_points,
     concat_points
+)
+from cell_observatory_platform.data.structures import (
+    box_volume,
+    is_box_near_crop_edge_3d,
+    masks_to_boxes_v2,
+    nms_3d,
+    uncrop_boxes_3d,
+    uncrop_masks_3d,
+    uncrop_points_3d,
+)
+from cell_observatory_platform.inference.amg import (
+    MaskData,
+    batch_iterator,
+    build_all_layer_point_grids_3d,
+    calculate_stability_score_3d,
+    generate_crop_boxes_3d,
+    remove_small_regions_3d,
 )
 
 # a large negative value as a placeholder score for missing objects
@@ -675,6 +692,7 @@ class SAM2Base(torch.nn.Module):
                             device=device, non_blocking=True
                         )
                         obj_pos = self._get_1d_sine_pe(obj_pos / t_diff_max, dim=tpos_dim, out_dtype=current_vision_feats[-1].dtype)
+                        base_dtype = current_vision_feats[-1].dtype
                         obj_pos = self.obj_ptr_tpos_proj(obj_pos.to(base_dtype))
                         obj_pos = obj_pos.unsqueeze(1).expand(-1, B, self.mem_dim)
                     else:
@@ -1017,6 +1035,22 @@ class SAM2(SAM2Base):
         # of all frames at once. This avoids backbone OOM errors on very long videos in evaluation, but could be slightly slower.
         forward_backbone_per_frame_for_eval=False,
         freeze_image_encoder=False,
+        # --- Automatic mask generation args (inference only) ---
+        points_per_side: int = 16,
+        points_per_batch: int = 64,
+        pred_iou_thresh: float = 0.8,
+        stability_score_thresh: float = 0.92,
+        stability_score_offset: float = 1.0,
+        mask_threshold: float = 0.0,
+        box_nms_thresh: float = 0.7,
+        crop_n_layers: int = 0,
+        crop_nms_thresh: float = 0.7,
+        crop_overlap_ratio: float = 512 / 1500,
+        crop_n_points_downscale_factor: int = 1,
+        use_m2m: bool = False,
+        multimask_output_for_predict: bool = True,
+        min_mask_region_area: int = 0,
+        debug: bool = False,
         **kwargs,
     ):
         super().__init__(
@@ -1028,6 +1062,8 @@ class SAM2(SAM2Base):
             sam_mask_decoder=sam_mask_decoder,
             **kwargs,
         )
+
+        self.debug = debug
 
         self.use_act_ckpt_iterative_pt_sampling = use_act_ckpt_iterative_pt_sampling
         self.forward_backbone_per_frame_for_eval = forward_backbone_per_frame_for_eval
@@ -1065,6 +1101,28 @@ class SAM2(SAM2Base):
         if freeze_image_encoder:
             for p in self.image_encoder.parameters():
                 p.requires_grad = False
+
+        # # Inference-time config
+        self._amg_points_per_side = points_per_side
+        self._amg_points_per_batch = points_per_batch
+        self._amg_pred_iou_thresh = pred_iou_thresh
+        self._amg_stability_score_thresh = stability_score_thresh
+        self._amg_stability_score_offset = stability_score_offset
+        self._amg_mask_threshold = mask_threshold
+        self._amg_box_nms_thresh = box_nms_thresh
+        self._amg_crop_n_layers = crop_n_layers
+        self._amg_crop_nms_thresh = crop_nms_thresh
+        self._amg_crop_overlap_ratio = crop_overlap_ratio
+        self._amg_crop_n_points_downscale_factor = crop_n_points_downscale_factor
+        self._amg_use_m2m = use_m2m
+        self._amg_multimask_output = multimask_output_for_predict
+        self._amg_min_mask_region_area = min_mask_region_area
+
+        self._amg_point_grids = build_all_layer_point_grids_3d(
+            points_per_side,
+            crop_n_layers,
+            crop_n_points_downscale_factor,
+        )
 
     def init_model_weights(self, buffer_device: str | None = None):
         for mod in self.modules():
@@ -1524,6 +1582,415 @@ class SAM2(SAM2Base):
         current_out["multistep_object_score_logits"] = all_object_score_logits
 
         return point_inputs, sam_outputs
+
+    @torch.no_grad()
+    def predict(self, data_sample: dict, type: Literal["volume", "video"] = "volume") -> dict:
+        """
+        Automatic mask generation for a single volume.
+        """
+        if type == "volume":
+            vol = data_sample["data_tensor"]
+            assert vol.shape[0] == 1, "predict() expects batch_size=1"
+
+            mask_data = self._predict_generate_masks(vol)
+            mask_data.to_numpy()
+
+            return {
+                "masks": mask_data["masks"],
+                "boxes": mask_data["boxes"],
+                "iou_preds": mask_data["iou_preds"],
+                "stability_score": mask_data["stability_score"],
+                "points": mask_data["points"],
+            }
+        else:
+            # TODO: implement video prediction
+            raise NotImplementedError(f"type {type} not supported yet")
+
+    def _predict_generate_masks(self, vol: torch.Tensor) -> "MaskData":
+        """
+        Generate masks for the full volume, possibly with multi-scale crops.
+        """
+        if self.input_fmt == "TZYXC":
+            _, C, vol_z, vol_y, vol_x = vol.shape
+            orig_size = (vol_z, vol_y, vol_x)
+
+            crop_boxes, layer_idxs = generate_crop_boxes_3d(
+                orig_size,
+                self._amg_crop_n_layers,
+                self._amg_crop_overlap_ratio,
+            )
+
+            data = MaskData()
+            for crop_box, layer_idx in zip(crop_boxes, layer_idxs):
+                crop_data = self._predict_process_crop(
+                    vol, crop_box, layer_idx, orig_size
+                )
+                data.cat(crop_data)
+
+            # Cross-crop NMS: prefer masks from smaller crops
+            if len(crop_boxes) > 1:
+                volumes = box_volume(data["crop_boxes"])
+                scores = 1.0 / volumes.clamp(min=1)
+                keep = nms_3d(
+                    data["boxes"].float(),
+                    scores,
+                    iou_threshold=self._amg_crop_nms_thresh,
+                )
+                data.filter(keep)
+
+            # Optional: remove small disconnected regions and holes
+            if self._amg_min_mask_region_area > 0:
+                data = self._predict_postprocess_small_regions(
+                    data,
+                    self._amg_min_mask_region_area,
+                    self._amg_crop_nms_thresh,
+                )
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        return data
+
+    # Per-crop: encode, generate points, iterate batches, within-crop NMS
+    def _predict_process_crop(
+        self,
+        vol: torch.Tensor,
+        crop_box: List[int],
+        crop_layer_idx: int,
+        orig_size: Tuple[int, int, int],
+    ) -> "MaskData":
+        """
+        Process a single crop: encode image, run batched point prediction,
+        NMS within crop, then map results back to global coordinates.
+        """
+        if self.input_fmt == "TZYXC":
+            x0, y0, z0, x1, y1, z1 = crop_box
+            cropped = vol[:, :, z0:z1, y0:y1, x0:x1]  # (1, C, Zc, Yc, Xc)
+            crop_size = (z1 - z0, y1 - y0, x1 - x0)
+
+            # Encode the crop
+            features = self._predict_encode_crop(cropped)
+
+            # Build point grid scaled to crop pixel coords (x, y, z)
+            # point_grids are in [0,1]^3; scale to pixel coords
+            scale = np.array([crop_size[2], crop_size[1], crop_size[0]])[None, :]  # (1, 3) as x, y, z
+            points_for_crop = self._amg_point_grids[crop_layer_idx] * scale  # (N_pts, 3)
+
+            # Process in batches
+            data = MaskData()
+            for (points_batch,) in batch_iterator(
+                self._amg_points_per_batch, points_for_crop
+            ):
+                batch_data = self._predict_process_batch(
+                    points_batch, features, crop_size, crop_box, orig_size
+                )
+                batch_data.to_cpu()  # offload before accumulation
+                data.cat(batch_data)
+                del batch_data
+
+            if len(data) == 0:
+                return data
+
+            # Within-crop NMS
+            keep = nms_3d(
+                data["boxes"].float(),
+                data["iou_preds"],
+                iou_threshold=self._amg_box_nms_thresh,
+            )
+            data.filter(keep)
+
+            # Map back to global coordinates
+            data["boxes"] = uncrop_boxes_3d(data["boxes"], crop_box)
+            data["points"] = uncrop_points_3d(data["points"], crop_box)
+            n = len(data["iou_preds"])
+            data["crop_boxes"] = torch.tensor(
+                [crop_box] * n, device=data["boxes"].device
+            )
+
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        return data
+
+    # Image encoding for a crop
+    def _predict_encode_crop(self, crop_vol: torch.Tensor) -> dict:
+        """
+        Run image encoder + prepare backbone features for a single crop.
+        """
+        backbone_out = self.forward_image({"data_tensor": crop_vol})
+        _, vision_feats, vision_pos_embeds, feat_sizes = (
+            self._prepare_backbone_features(backbone_out)
+        )
+
+        # Add no_mem_embed for single-image SAM mode
+        if self.directly_add_no_mem_embed:
+            vision_feats[-1] = vision_feats[-1] + self.no_mem_embed
+
+        if self.input_fmt == "TZYXC":
+            # Reshape from (DHW, B, C) to (B, C, D, H, W)
+            B = crop_vol.shape[0]
+            feats_5d = []
+            for feat, size in zip(vision_feats[::-1], feat_sizes[::-1]):
+                feats_5d.append(feat.permute(1, 2, 0).view(B, -1, *size))
+            feats_5d = feats_5d[::-1]  # back to fine->coarse order
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        result = {
+            "image_embed": feats_5d[-1],           # coarsest level
+            "high_res_feats": feats_5d[:-1],        # finer levels
+            "feat_sizes": feat_sizes,
+            "vision_feats": vision_feats,
+            "vision_pos_embeds": vision_pos_embeds,
+        }
+        return result
+
+    # Per-batch: run model, filter by IoU / stability / crop edge
+    def _predict_process_batch(
+        self,
+        points: np.ndarray,
+        features: dict,
+        crop_size: Tuple[int, int, int],
+        crop_box: List[int],
+        orig_size: Tuple[int, int, int],
+    ) -> "MaskData":
+        """
+        Run inference on a batch of point prompts.
+        """
+        device = self.device
+        if self.input_fmt == "TZYXC":
+            orig_z, orig_y, orig_x = orig_size
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        # Prepare point inputs
+        points_t = torch.as_tensor(points, dtype=torch.float32, device=device)
+        # Each point is one prompt => (P, 1, 3) coords, (P, 1) labels=1 (foreground)
+        point_coords = points_t[:, None, :]  # (P, 1, 3)
+        point_labels = torch.ones(
+            point_coords.shape[0], 1, dtype=torch.int32, device=device
+        )
+
+        point_inputs = {
+            "point_coords": point_coords,
+            "point_labels": point_labels,
+        }
+
+        # Get backbone features for single image (idx 0)
+        backbone_feats = features["image_embed"]
+        high_res = features["high_res_feats"]      # list of (1, C, ...)
+
+        # Run SAM heads
+        P = point_coords.shape[0]
+        if self.input_fmt == "TZYXC":
+            backbone_expanded = backbone_feats.expand(P, -1, -1, -1, -1)
+            high_res_expanded = [f.expand(P, -1, -1, -1, -1) for f in high_res] if high_res else None
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        (
+            low_res_multimasks,  # (P, M, D4, H4, W4)
+            high_res_multimasks, # (P, M, Z, Y, X)
+            ious,                # (P, M)
+            low_res_masks,       # (P, 1, D4, H4, W4)
+            high_res_masks,      # (P, 1, Z, Y, X)
+            _obj_ptr,
+            _obj_score,
+        ) = self._forward_sam_heads(
+            backbone_features=backbone_expanded,
+            point_inputs=point_inputs,
+            mask_inputs=None,
+            high_res_features=high_res_expanded,
+            multimask_output=self._amg_multimask_output,
+        )
+
+        # Flatten multi-mask dim: (P, M, ...) -> (P*M, ...)
+        masks = high_res_multimasks.flatten(0, 1)      # (P*M, Z, Y, X)
+        iou_preds = ious.flatten(0, 1)                  # (P*M,)
+        low_res = low_res_multimasks.flatten(0, 1)      # (P*M, D4, H4, W4)
+        M = high_res_multimasks.shape[1]
+        pts_repeated = points_t.repeat_interleave(M, dim=0)  # (P*M, 3)
+
+        data = MaskData(
+            masks=masks,
+            iou_preds=iou_preds,
+            points=pts_repeated,
+            low_res_masks=low_res,
+        )
+
+        if self.debug:
+            print(f"data['masks'].shape: {data['masks'].shape}")
+            print(f"data['iou_preds'].shape: {data['iou_preds'].shape}")
+            print(f"IOU PREDS: {data['iou_preds']}")
+            print(f"data['low_res_masks'].shape: {data['low_res_masks'].shape}")
+
+        # Optionally do mask-to-mask refinement
+        if self._amg_use_m2m:
+            refined_masks, refined_ious = self._predict_refine_with_m2m(
+                data["points"], data["low_res_masks"], features
+            )
+            data["masks"] = refined_masks.squeeze(1)
+            data["iou_preds"] = refined_ious.squeeze(1)
+
+        # Filter by predicted IoU
+        if self._amg_pred_iou_thresh > 0.0:
+            keep = data["iou_preds"] > self._amg_pred_iou_thresh
+            data.filter(keep)
+
+            if self.debug:
+                print(f"keep (after iou filter): {keep}")
+
+        # Calculate and filter by stability score
+        if self.input_fmt == "TZYXC":
+            data["stability_score"] = calculate_stability_score_3d(
+                data["masks"],
+                self._amg_mask_threshold,
+                self._amg_stability_score_offset,
+            )                
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+        
+        if self._amg_stability_score_thresh > 0.0:
+            keep = data["stability_score"] >= self._amg_stability_score_thresh
+            data.filter(keep)
+
+            if self.debug:
+                print(f"stability_score: {data['stability_score']}")
+                print(f"keep (after stability score filter): {keep}")
+
+        # Threshold masks and compute boxes
+        data["masks"] = data["masks"] > self._amg_mask_threshold
+        if self.input_fmt == "TZYXC":
+            data["boxes"] = masks_to_boxes_v2(data["masks"])
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        # Filter boxes that touch crop boundaries but not volume boundaries
+        if self.input_fmt == "TZYXC":
+            keep = ~is_box_near_crop_edge_3d(
+                data["boxes"],
+                crop_box,
+                [0, 0, 0, orig_x, orig_y, orig_z],
+            )
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+        
+        if not torch.all(keep):
+            data.filter(keep)
+
+        if self.input_fmt == "TZYXC":
+            # Uncrop masks back to full volume for cross-crop NMS later
+            data["masks"] = uncrop_masks_3d(
+                data["masks"], crop_box, orig_z, orig_y, orig_x
+            )
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        # Drop low_res_masks to save memory
+        del data["low_res_masks"]
+
+        if self.debug:
+            print(f"data['masks'].shape: {data['masks'].shape}")
+            print(f"data['iou_preds'].shape: {data['iou_preds'].shape}")
+            print(f"IOU PREDS: {data['iou_preds']}")
+            print(f"data['boxes'].shape: {data['boxes'].shape}")
+
+        return data
+
+    def _predict_refine_with_m2m(
+        self,
+        points: torch.Tensor,
+        low_res_masks: torch.Tensor,
+        features: dict,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        One-step refinement: feed previous low-res mask + original point
+        back through the decoder with multimask_output=False.
+        """
+        if self.input_fmt == "TZYXC":
+            all_masks, all_ious = [], []
+            backbone_feats = features["image_embed"]
+            high_res = features["high_res_feats"]
+
+            for (pts_batch, lr_batch,) in batch_iterator(
+                self._amg_points_per_batch, points, low_res_masks
+            ):
+                B = pts_batch.shape[0]
+                point_inputs = {
+                    "point_coords": pts_batch[:, None, :],
+                    "point_labels": torch.ones(B, 1, dtype=torch.int32, device=self.device),
+                }
+                backbone_expanded = backbone_feats.expand(B, -1, -1, -1, -1)
+                high_res_expanded = (
+                    [f.expand(B, -1, -1, -1, -1) for f in high_res]
+                    if high_res else None
+                )
+
+                (
+                    _, _,
+                    ious,            # (B, 1)
+                    _,
+                    high_res_masks,  # (B, 1, Z, Y, X)
+                    _, _,
+                ) = self._forward_sam_heads(
+                    backbone_features=backbone_expanded,
+                    point_inputs=point_inputs,
+                    mask_inputs=lr_batch[:, None, :, :, :],
+                    high_res_features=high_res_expanded,
+                    multimask_output=False,
+                )
+                all_masks.append(high_res_masks)
+                all_ious.append(ious)
+        
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        return torch.cat(all_masks, dim=0), torch.cat(all_ious, dim=0)
+
+    def _predict_postprocess_small_regions(
+        self,
+        mask_data: "MaskData",
+        min_mask_region_area: int,
+        nms_thresh: float,
+    ) -> "MaskData":
+        """
+        Remove small disconnected regions and holes from masks,
+        then rerun box NMS to remove any new duplicates.
+        Edits mask_data in place.
+        """
+        if len(mask_data) == 0:
+            return mask_data
+
+        if self.input_fmt == "TZYXC":
+            new_masks = []
+            scores = []
+            for i in range(len(mask_data["masks"])):
+                mask_np = mask_data["masks"][i].cpu().numpy().astype(bool)
+
+                mask_np, changed_holes = remove_small_regions_3d(mask_np, min_mask_region_area, mode="holes")
+                unchanged = not changed_holes
+                mask_np, changed_islands = remove_small_regions_3d(mask_np, min_mask_region_area, mode="islands")
+                unchanged = unchanged and (not changed_islands)
+
+                new_masks.append(torch.as_tensor(mask_np, device=mask_data["masks"].device).unsqueeze(0))
+                scores.append(float(unchanged))
+
+            masks = torch.cat(new_masks, dim=0)
+            boxes = masks_to_boxes_v2(masks)
+
+            keep = nms_3d(
+                boxes.float(),
+                torch.as_tensor(scores, device=boxes.device),
+                iou_threshold=nms_thresh,
+            )
+
+            mask_data["masks"] = masks
+            mask_data["boxes"] = boxes
+            mask_data.filter(keep)
+
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        return mask_data
 
 
 # ---------------------------------------------------------------------------

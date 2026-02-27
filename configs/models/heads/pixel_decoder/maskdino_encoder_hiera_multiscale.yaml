@@ -1,0 +1,25 @@
+BUILD: cell_observatory_platform.models.heads.pixel_decoders.MaskDINOEncoder.BUILD
+
+input_shape_metadata:
+  "1":
+    channels: 256
+    stride: 16
+  "2":
+    channels: 256
+    stride: 32
+  "3":
+    channels: 256
+    stride: 64
+
+transformer_in_features: ["1", "2", "3"]
+target_min_stride: null
+total_num_feature_levels: 3
+transformer_encoder_dropout: 0.1
+transformer_encoder_num_heads: 8
+transformer_encoder_dim_feedforward: 1024
+num_transformer_encoder_layers: 4
+conv_dim: 384
+mask_dim: 256
+norm: null
+dtype: ${quantization}
+use_deform_attention: false

@@ -147,7 +147,7 @@ class RopeAttention(nn.Module):
         random_rotation_per_head: bool = True,
         rope_type: Literal["mixed", "axial", "custom"] = "axial",
         rope_theta: float = 10.0,
-        input_fmt: str = "TZXYC",
+        input_fmt: str = "TZYXC",
         input_shape: tuple = (16, 128, 128, 128, 2),
         patch_shape: tuple = (4, 16, 16, 16),
         device: str = "cuda",
@@ -1259,3 +1259,73 @@ class MemoryAttention(nn.Module):
             curr_pos = curr_pos.transpose(0, 1)
 
         return normed_output
+
+
+class MaskUnitAttention(nn.Module):
+    """
+    Computes either Mask Unit or Global Attention. Also is able to perform q pooling.
+
+    Note: this assumes the tokens have already been flattened and unrolled into mask units.
+    See `Unroll` in cell_observatory_platform.models.layers.utils for more details.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        dim_out: int,
+        heads: int,
+        q_stride: int = 1,
+        window_size: int = 0,
+        use_mask_unit_attn: bool = False,
+    ):
+        """
+        Args:
+        - dim, dim_out: The input and output feature dimensions.
+        - heads: The number of attention heads.
+        - q_stride: If greater than 1, pool q with this stride. The stride should be flattened (e.g., 2x2 = 4).
+        - window_size: The current (flattened) size of a mask unit *after* pooling (if any).
+        - use_mask_unit_attn: Use Mask Unit or Global Attention.
+        """
+        super().__init__()
+
+        self.dim = dim
+        self.dim_out = dim_out
+        self.heads = heads
+        self.q_stride = q_stride
+
+        self.head_dim = dim_out // heads
+        self.scale = (self.head_dim) ** -0.5
+
+        self.qkv = nn.Linear(dim, 3 * dim_out)
+        self.proj = nn.Linear(dim_out, dim_out)
+
+        self.window_size = window_size
+        self.use_mask_unit_attn = use_mask_unit_attn
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """ Input should be of shape [batch, tokens, channels]. """
+        B, N, _ = x.shape
+        num_windows = (
+            (N // (self.q_stride * self.window_size)) if self.use_mask_unit_attn else 1
+        )
+
+        qkv = (
+            self.qkv(x)
+            .reshape(B, -1, num_windows, 3, self.heads, self.head_dim)
+            .permute(3, 0, 4, 2, 1, 5)
+        )
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        if self.q_stride > 1:
+            # Refer to Unroll to see how this performs a maxpool-Nd
+            q = (
+                q.view(B, self.heads, num_windows, self.q_stride, -1, self.head_dim)
+                .max(dim=3)
+                .values
+            )
+
+        x = F.scaled_dot_product_attention(q, k, v)
+
+        x = x.transpose(1, 3).reshape(B, -1, self.dim_out)
+        x = self.proj(x)
+        return x

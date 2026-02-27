@@ -1,0 +1,17 @@
+BUILD: cell_observatory_platform.models.backbones.maskdino_backbone.BUILD
+
+backbone_embed_dims:
+  - 256
+  - 256
+  - 256
+train_backbone: true
+use_layernorm: true
+blocks_to_train: null
+out_layers: null
+adapter_out_layers: null
+backbone_args: ${models.backbones.masked_hiera_encoder}
+adapter_args: null
+backbone_output_format: feature_map
+input_shape: ${datasets.input_shape}
+patch_shape: ${datasets.patch_shape}
+input_format: ${dataset_layout_order}

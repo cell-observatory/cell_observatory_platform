@@ -182,11 +182,11 @@ class DINO(nn.Module):
 
         global_crops = data_tensors["global_crops"].cuda(non_blocking=True)
         local_crops = data_tensors["local_crops"].cuda(non_blocking=True)
-        masks = global_meta["collated_masks"].cuda(non_blocking=True)
-        mask_indices_list = global_meta["mask_indices_list"].cuda(non_blocking=True)
-        masks_weight = global_meta["masks_weight"].cuda(non_blocking=True)
-        n_masked_patches_tensor = global_meta["n_masked_patches"].cuda(non_blocking=True)
-        upperbound = global_meta["upperbound"]
+        masks = global_meta["collated_masks"][0].cuda(non_blocking=True)
+        mask_indices_list = global_meta["mask_indices_list"][0].cuda(non_blocking=True)
+        masks_weight = global_meta["masks_weight"][0].cuda(non_blocking=True)
+        n_masked_patches_tensor = global_meta["n_masked_patches"][0].cuda(non_blocking=True)
+        upperbound = global_meta["upperbound"][0]
 
         n_global_crops = global_meta["n_crops"]
         n_local_crops = local_meta["n_crops"]

@@ -112,7 +112,7 @@ use_mask_input_as_output_without_sam: false
 directly_add_no_mem_embed: true
 
 # currently dont use high-res features
-use_high_res_features_in_sam: false
+use_high_res_features_in_sam: true
 
 # multimask output not relevant for our prediction task
 multimask_output_in_sam: false

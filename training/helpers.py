@@ -479,6 +479,7 @@ def get_masked_input_data(model, inputs, device: Optional[torch.device] = 'cuda'
         "target_masks": [target_idx],
         "original_patch_indices": [torch.arange(n_patches, dtype=torch.long, device=device)],
         "patches_used": [torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0).expand(inputs[0],-1)],
+        "mu_mask": [None],
     }
 
     # summary() will unpack the input data but the fwd function in
@@ -1046,21 +1047,32 @@ def init_weights(model: nn.Module, weight_init_type: str):
     elif weight_init_type == "vjepa":
         # helpers from:
         # https://github.com/facebookresearch/ijepa/blob/main/src/models/vision_transformer.py
-        def _vjepa_fix_init_weight(enc_model: nn.Module):
+        def _vjepa_rescale_block_stack(enc_model: nn.Module):
+            """Rescale att proj and mlp fc2 per layer. Supports ViT (encoder.transformer_blocks)
+            and Hiera (encoder.blocks), and predictor with decoder.transformer_blocks."""
             def rescale(param, layer_id):
                 param.div_(math.sqrt(2.0 * layer_id))
 
-            if not hasattr(enc_model, "encoder") or not hasattr(
-                enc_model.encoder, "transformer_blocks"
-            ):
+            blocks = None
+            if hasattr(enc_model, "encoder") and hasattr(enc_model.encoder, "transformer_blocks"):
+                blocks = enc_model.encoder.transformer_blocks
+            elif hasattr(enc_model, "encoder") and hasattr(enc_model.encoder, "blocks"):
+                blocks = enc_model.encoder.blocks
+            elif hasattr(enc_model, "decoder") and hasattr(enc_model.decoder, "transformer_blocks"):
+                blocks = enc_model.decoder.transformer_blocks
+            if blocks is None:
                 raise ValueError(
-                    "VJEPA init: expected an encoder with `encoder.transformer_blocks` "
+                    "VJEPA init: expected encoder with `encoder.transformer_blocks` or "
+                    "`encoder.blocks`, or decoder with `decoder.transformer_blocks` "
                     f"on {enc_model.__class__.__name__}"
                 )
 
-            for layer_id, layer in enumerate(enc_model.encoder.transformer_blocks):
-                rescale(layer.att.proj.weight.data, layer_id + 1)
-                rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+            for layer_id, layer in enumerate(blocks):
+                att_proj = getattr(layer, "att", None) or getattr(layer, "attn", None)
+                if att_proj is not None and hasattr(att_proj, "proj"):
+                    rescale(att_proj.proj.weight.data, layer_id + 1)
+                if hasattr(layer, "mlp") and hasattr(layer.mlp, "fc2"):
+                    rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
         def _vjepa_init_weights(m):
             if isinstance(m, nn.Linear):
@@ -1097,7 +1109,7 @@ def init_weights(model: nn.Module, weight_init_type: str):
                 "VJEPA init: could not locate input encoder. "
                 f"Tried aliases: {INPUT_ENCODER_ALIASES}"
             )
-        _vjepa_fix_init_weight(input_encoder)
+        _vjepa_rescale_block_stack(input_encoder)
 
         # Required: target predictor
         target_predictor, tp_path = _resolve_alias(model, TARGET_PREDICTOR_ALIASES)
@@ -1106,7 +1118,7 @@ def init_weights(model: nn.Module, weight_init_type: str):
                 "VJEPA init: could not locate target predictor. "
                 f"Tried aliases: {TARGET_PREDICTOR_ALIASES}"
             )
-        _vjepa_fix_init_weight(target_predictor)
+        _vjepa_rescale_block_stack(target_predictor)
 
     # ------------------------------------------------------------------
     # VJEPA2
@@ -1134,21 +1146,28 @@ def init_weights(model: nn.Module, weight_init_type: str):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-        def _vjepa2_rescale_blocks(enc_model: nn.Module):
+        def _vjepa2_rescale_block_stack(enc_model: nn.Module):
+            """Rescale att proj and mlp fc2 per layer. Supports ViT (encoder.transformer_blocks)
+            and Hiera (encoder.blocks), and predictor with decoder.transformer_blocks."""
             def rescale(param, layer_id):
                 param.div_(math.sqrt(2.0 * layer_id))
 
-            if not hasattr(enc_model, "encoder") or not hasattr(
-                enc_model.encoder, "transformer_blocks"
-            ):
-                raise ValueError(
-                    "VJEPA2 init: expected an encoder with `encoder.transformer_blocks` "
-                    f"on {enc_model.__class__.__name__}"
-                )
+            blocks = None
+            if hasattr(enc_model, "encoder") and hasattr(enc_model.encoder, "transformer_blocks"):
+                blocks = enc_model.encoder.transformer_blocks
+            elif hasattr(enc_model, "encoder") and hasattr(enc_model.encoder, "blocks"):
+                blocks = enc_model.encoder.blocks
+            elif hasattr(enc_model, "decoder") and hasattr(enc_model.decoder, "transformer_blocks"):
+                blocks = enc_model.decoder.transformer_blocks
+            if blocks is None:
+                return
 
-            for layer_id, layer in enumerate(enc_model.encoder.transformer_blocks):
-                rescale(layer.att.proj.weight.data, layer_id + 1)
-                rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+            for layer_id, layer in enumerate(blocks):
+                att_proj = getattr(layer, "att", None) or getattr(layer, "attn", None)
+                if att_proj is not None and hasattr(att_proj, "proj"):
+                    rescale(att_proj.proj.weight.data, layer_id + 1)
+                if hasattr(layer, "mlp") and hasattr(layer.mlp, "fc2"):
+                    rescale(layer.mlp.fc2.weight.data, layer_id + 1)
 
         model.apply(_vjepa2_init_weights)
 
@@ -1158,11 +1177,11 @@ def init_weights(model: nn.Module, weight_init_type: str):
                 "VJEPA2 init: could not locate input encoder. "
                 f"Tried aliases: {INPUT_ENCODER_ALIASES}"
             )
-        _vjepa2_rescale_blocks(input_encoder)
+        _vjepa2_rescale_block_stack(input_encoder)
 
         target_predictor, tp_path = _resolve_alias(model, TARGET_PREDICTOR_ALIASES)
-        if target_predictor is not None and hasattr(target_predictor, "encoder"):
-            _vjepa2_rescale_blocks(target_predictor)
+        if target_predictor is not None:
+            _vjepa2_rescale_block_stack(target_predictor)
 
     # ------------------------------------------------------------------
     # ViT-Adapter style init

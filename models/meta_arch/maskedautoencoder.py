@@ -1,22 +1,24 @@
+import sys
 import inspect
 import logging
-import sys
-from typing import Any, Dict, Literal, Mapping, Tuple, Union
+from typing import Any, Dict, Literal, Mapping, Optional, Tuple, Union, List
 
 import torch
 import torch.nn as nn
 
+from cell_observatory_platform.models.layers.mlp import get_mlp
+from cell_observatory_platform.models.layers.norm import get_norm
+from cell_observatory_platform.training.losses import get_loss_fn
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
+from cell_observatory_platform.models.layers.attention import RopeAttention
+from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.data.masking.mask_generator import apply_masks
 from cell_observatory_platform.models.backbones.maskedencoder import MaskedEncoder
 from cell_observatory_platform.models.heads.maskedpredictor import MaskedPredictor
-from cell_observatory_platform.models.layers.activation import get_activation
-from cell_observatory_platform.models.layers.attention import RopeAttention
-from cell_observatory_platform.models.layers.mlp import get_mlp
-from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
+from cell_observatory_platform.models.backbones.masked_hiera_encoder import MaskedHieraEncoder
+from cell_observatory_platform.models.heads.masked_hiera_predictor import MaskedHieraPredictor
 from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops, init_weights
-from cell_observatory_platform.training.losses import get_loss_fn
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -157,6 +159,12 @@ class MaskedAutoEncoder(nn.Module):
         loss_fn: str = "l2_masked",
         with_auxiliary_loss: bool = False,
         dtype: torch.dtype = torch.bfloat16,
+        backbone_type: Literal["vit", "hiera"] = "vit",
+        # Hiera-specific parameters
+        hiera_q_pool: int = 3,
+        hiera_q_stride: tuple = (2, 2),
+        hiera_stages: tuple = (2, 3, 16, 3),
+        hiera_mask_unit_size: tuple = (8,8,8),
         **kwargs,
     ):
         super().__init__()
@@ -208,8 +216,10 @@ class MaskedAutoEncoder(nn.Module):
         self.rope_theta = rope_theta
         self.wide_silu = mlp_wide_silu
         self.rope_random_rotation_per_head = rope_random_rotation_per_head
+        self.backbone_type = backbone_type
 
-        self.masked_encoder = MaskedEncoder(
+        if backbone_type == "vit":
+            self.masked_encoder = MaskedEncoder(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
             patch_shape=self.patch_shape,
@@ -233,9 +243,8 @@ class MaskedAutoEncoder(nn.Module):
             rope_theta=self.rope_theta,
             mlp_wide_silu=mlp_wide_silu,
             dtype=self.dtype,
-        )
-
-        self.masked_decoder = MaskedPredictor(
+            )
+            self.masked_decoder = MaskedPredictor(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
             patch_shape=self.patch_shape,
@@ -261,7 +270,33 @@ class MaskedAutoEncoder(nn.Module):
             rope_theta=self.rope_theta,
             mlp_wide_silu=mlp_wide_silu,
             dtype=self.dtype,
-        )
+            )
+        else:
+            self.masked_encoder = MaskedHieraEncoder(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                embed_dim=self.embed_dim,
+                num_heads=self.num_heads,
+                drop_path_rate=self.drop_path_rate,
+                q_pool=hiera_q_pool,
+                q_stride=hiera_q_stride,
+                stages=hiera_stages,
+                mask_unit_size=hiera_mask_unit_size,
+                norm_layer=self.norm_layer,
+            )
+            self.masked_decoder = MaskedHieraPredictor(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                encoder_dim_out=self.masked_encoder.encoder.blocks[-1].dim_out,
+                decoder_embed_dim=self.decoder_embed_dim,
+                decoder_depth=self.decoder_depth,
+                decoder_num_heads=self.decoder_num_heads,
+                decoder_spec=self.masked_encoder.get_decoder_spec(),
+                mlp_ratio=self.mlp_ratio,
+                norm_layer=self.norm_layer,
+            )
 
         self.weight_init_type = weight_init_type
 
@@ -317,27 +352,45 @@ class MaskedAutoEncoder(nn.Module):
 
     @torch.jit.ignore
     def get_num_patches(self):
-        if self.abs_sincos_enc:
-            return self.masked_encoder.pos_embedding.num_patches
-        else:
+        if self.backbone_type == "hiera":
+            return self.masked_encoder.get_num_patches()
+        elif self.backbone_type == "vit":
+            if self.abs_sincos_enc:
+                return self.masked_encoder.pos_embedding.num_patches
             num_patches, _ = calc_num_patches(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
                 patch_shape=self.patch_shape,
             )
             return num_patches
+        else:
+            raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
         masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
         target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
+        mu_mask = meta.get("mu_mask", [None])[0]
+        mu_keep_idx = meta.get("mu_keep_idx", [None])[0]
 
-        x, patches = self.masked_encoder(inputs, masks=context_masks)
-        x = self.masked_decoder(
-            x, original_patch_indices=original_patch_indices, target_masks=target_masks, patches_used=patches_used
-        )
+        if self.backbone_type == "vit":
+            x, patches = self.masked_encoder(inputs, masks=context_masks)
+            x = self.masked_decoder(
+                x,
+                original_patch_indices=original_patch_indices,
+                target_masks=target_masks,
+                patches_used=patches_used,
+            )
+        elif self.backbone_type == "hiera":
+            if mu_mask is None:
+                raise ValueError("Hiera backbone requires mu_mask in meta. Use mask_mode=HIERA_MU.")
+            if mu_keep_idx is None:
+                raise ValueError("Hiera backbone requires mu_keep_idx in meta (HIERA_MU random masking).")
+            x, patches = self.masked_encoder(inputs, masks=mu_mask, ctx_idx=mu_keep_idx)
+            x = self.masked_decoder(x, mu_mask=mu_mask, ctx_idx=mu_keep_idx)
+        else:
+            raise ValueError(f"Unsupported backbone_type={self.backbone_type}")
 
-        # compute loss over masked patches (re-index if blocked masking removed some patches)
         if patches_used is not None:
             target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
         else:
@@ -365,11 +418,24 @@ class MaskedAutoEncoder(nn.Module):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
         masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
         target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
+        mu_mask = meta.get("mu_mask", [None])[0]
+        mu_keep_idx = meta.get("mu_keep_idx", [None])[0]
 
-        x, patches = self.masked_encoder(inputs, masks=context_masks)
-        x = self.masked_decoder(
-            x, original_patch_indices=original_patch_indices, target_masks=target_masks, patches_used=patches_used
-        )
+        if self.backbone_type == "vit":
+            x, patches = self.masked_encoder(inputs, masks=context_masks)
+            x = self.masked_decoder(
+                x,
+                original_patch_indices=original_patch_indices,
+                target_masks=target_masks,
+                patches_used=patches_used,
+            )
+        elif self.backbone_type == "hiera":
+            if mu_mask is None or mu_keep_idx is None:
+                raise ValueError("Hiera backbone requires mu_mask and mu_keep_idx in meta. Use mask_mode=HIERA_MU.")
+            x, patches = self.masked_encoder(inputs, masks=mu_mask, ctx_idx=mu_keep_idx)
+            x = self.masked_decoder(x, mu_mask=mu_mask, ctx_idx=mu_keep_idx)
+        else:
+            raise ValueError(f"Unsupported backbone_type={self.backbone_type}")
 
         predictions = self.masked_encoder.patch_embedding._unpatchify(x, out_channels=None)
         return predictions

@@ -1,11 +1,10 @@
 # @package _global_
 defaults:
-  - /tasks/instance_segmentation
   - /paths/janelia
   - /hydra/overrides
-  - /clusters/janelia_h100
-  - /datasets/databases/base_database
+  - /clusters/local
   - /datasets/pretrain_dataset_ray
+  - /datasets/databases/base_database
   - /datasets/preprocessor/sam2video_preprocessor
   - /datasets/masking/mask_generator
   - /models/BUILD_SAM2
@@ -21,37 +20,41 @@ defaults:
   - /optimizations/models/mae/large
   - /optimizations/optimizations
   - /profiling/profiling
+  - /inference/inference_instance_segmentation
   - _self_
 
-experiment_name: sam2_baseline_128x256x512_150_epoch_lr_0p001_opt_adamw
+experiment_name: test_sam2_inference
 wandb_project: testing
 
 backend: DEEPSPEED
-distributed_framework: ray
 run_type: single_run
-job_type: train
-trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+job_type: predict
+trainer: cell_observatory_platform.training.loops.Inferencer
 loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
 
 quantization: bfloat16
-dataset_dtype: float16
+dataset_dtype: bfloat16
 storage_dtype: uint16
 dataset_layout_order: TZYXC
 seed: 42
 
+inference:
+  roi_tile_list:
+    - [653, "000x_002y_001z.zarr"]
+  decoder_head_type: "sam"
+
 clusters:
-  batch_size: 40
-  worker_nodes: 5
-  gpus_per_worker: 8
-  cpus_per_gpu: 12
-  mem_per_cpu: 40000
+  batch_size: 1
+  worker_nodes: 1
+  gpus_per_worker: 1
+  cpus_per_gpu: 48
+  mem_per_cpu: 16000
   ray_queue_memory: 0.2
 
 paths:
-  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
+  outdir: ${paths.data_path}/results/inference/${experiment_name}
   resume_checkpointdir: null
-  pretrained_checkpointdir: null
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/sam2_baseline_128x256x512_150_epoch_lr_0p0001_opt_adamw/checkpoints
 
 datasets:
   batch_size: ${clusters.batch_size_per_gpu}
@@ -59,28 +62,30 @@ datasets:
   input_shape: [1, 128, 256, 512, 2]
   patch_shape: [1, 16, 16, 16, null]
 
-  occupancy_threshold: 0.9
+  occupancy_threshold: 0.0
   split: 0.0
 
   return_dataloader: true
   distributed_sampler: true
+
   buffer_capacity: 16
   num_actors_min: 4
   num_actors_max: 12
-  max_hypercubes: null
 
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: /groups/betzig/betziglab/CellObservatoryData/databases/prepared_1_128_128_128_2_hypercube_view.csv
 
-  synthetic_only: true
-  has_annotations: true
-
   databases:
+    max_rois: null
+    max_tiles: null
+    roi_list: [653]
+    tile_list: ["000x_002y_001z.zarr"]
+    timepoint_list: [0]
     cdf_threshold: null
     occupancy_threshold_filter_type: 'min_ch0'
     synthetic_only: true
     has_annotations: true
-    server_folder_path: /groups/betzig/betziglab/CellObservatoryData/synthetic
+    server_folder_path: ${paths.server_folder_path}/synthetic
     with_hypercubes_dataframe: true
     mask_channel: 1
 
@@ -118,44 +123,15 @@ datasets:
       - "prepared_id"
       - "mask_bbox_dict"
 
+
+  preserve_order: false
+  callback_strategy: grpc
+  async_device_copy: false
+
 schedulers:
-  epochs: 150
-  warmup: 30
-  cooldown: 5
+  epochs: 1
 
-optimizers:
-  wd: ${eval:'${optimizers.lr} * 0.1'}
-  lr: 1e-4
-
-# hooks
 hooks:
   hooks_list:
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.LRScheduler
-    backend: DEEPSPEED
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
   - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
-    file_prefix: latest_model
-    backend: DEEPSPEED
-  # - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-  #   checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  # - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
-  #   metric_name: ${evaluation.val_metric}
-  #   compare_fn: ${evaluation.val_mode}
-  #   eval_after_validation: true
-
-    # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
-    #   output_dir: ${paths.outdir}/profiler
-    #   schedule:
-    #     # skip_first: 10
-    #     warmup: 20
-    #     active: 2
-    #     repeat: 1
-    #     wait: 1
-    #   activities:
-    #     - CUDA
-    #     - CPU
-    #   save_tensorboard: true
-    #   shutdown_after_profile: true
-    #   save_memory_trace: true

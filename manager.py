@@ -442,11 +442,12 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             sjob_worker_nodes.append(f'-w "done({cfg.clusters.job_name})"')
 
         if cfg.clusters.timelimit is not None:
-            sjob_worker_nodes.append(f"--We {cfg.clusters.timelimit} ")
-
+            sjob_worker_nodes.append(f"-W {cfg.clusters.timelimit} ")
+        
+        # sjob_worker_nodes.append(f'-Ep "bash {q(cfg.paths.repo_path)}/cluster/clean_shm.sh"')
         sjob_worker_nodes.append(f"-J {cfg.clusters.job_name}")
         sjob_worker_nodes.append(f"-o {outdir}/{cfg.clusters.job_name}.log")
-        sjob_worker_nodes.append(f"-env 'all'")
+        sjob_worker_nodes.append(f'-env "all"')
         sjob_worker_nodes.append(f"{q(ray_wrap)}")
 
         print("Submitting lsf job with configuration:")

@@ -31,4 +31,4 @@ mask_idx: -1
 # debug_savepath: null
 expect_mask_channel: true # ${datasets.collate_fn.expect_mask_channel}
 require_targets: true #${datasets.collate_fn.require_targets}
-max_masks: 38
+max_masks: 40 # 38 on single-gpu, 35 on multi-gpu

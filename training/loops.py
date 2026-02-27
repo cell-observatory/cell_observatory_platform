@@ -796,7 +796,7 @@ class TestTrainer(BaseTrainer):
                 end = time.perf_counter()
                 for idx, data_sample in enumerate(self.test_dataloader):
                     data_time = time.perf_counter() - end
-                    data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
+                    data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time, idx=idx)
                     self.run_test_step(idx, data_sample)
                     end = time.perf_counter()
         
@@ -912,7 +912,7 @@ class Inferencer(BaseTrainer):
                 end = time.perf_counter()
                 for idx, data_sample in enumerate(self.test_dataloader):
                     data_time = time.perf_counter() - end
-                    data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
+                    data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time, idx=idx)
                     self.run_inference_step(idx, data_sample)
                     end = time.perf_counter()
         

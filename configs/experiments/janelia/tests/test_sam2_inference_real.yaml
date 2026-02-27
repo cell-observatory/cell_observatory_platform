@@ -1,0 +1,174 @@
+# @package _global_
+defaults:
+  - /paths/janelia
+  - /hydra/overrides
+  - /clusters/local
+  - /datasets/pretrain_dataset_ray
+  - /datasets/databases/base_database
+  - /datasets/preprocessor/sam2video_preprocessor
+  - /datasets/masking/mask_generator
+  - /models/BUILD_SAM2
+  - /models/meta_arch/sam/base_single_scale
+  - /models/backbones/masked_encoder/large
+  - /models/backbones/sam_backbone/sam_backbone
+  - /checkpoint/checkpoint
+  - /loggers/loggers
+  - /evaluation/base_evaluator
+  - /deepspeed/zero2
+  - /optimizers/adamw_torch
+  - /schedulers/warmup_cosine_decay
+  - /optimizations/models/mae/large
+  - /optimizations/optimizations
+  - /profiling/profiling
+  - /inference/inference_instance_segmentation
+  - _self_
+
+experiment_name: test_sam2_inference_real
+wandb_project: testing
+
+backend: DEEPSPEED
+run_type: single_run
+job_type: predict
+trainer: cell_observatory_platform.training.loops.Inferencer
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+quantization: bfloat16
+dataset_dtype: bfloat16
+storage_dtype: uint16
+dataset_layout_order: TZYXC
+seed: 42
+
+inference:
+  roi_tile_list:
+    # - [130, "000x_002y_000z.zarr"]
+    # - [147, "000x_002y_000z.zarr"]
+    # - [105, "000x_002y_000z.zarr"]
+    - [104, "000x_002y_000z.zarr"]
+    - [103, "000x_002y_000z.zarr"]
+    - [102, "000x_002y_000z.zarr"]
+    - [101, "000x_002y_000z.zarr"]
+    - [100, "000x_002y_000z.zarr"]
+    - [99, "000x_002y_000z.zarr"]
+    - [98, "000x_002y_000z.zarr"]
+    - [97, "000x_002y_000z.zarr"]
+    - [96, "000x_002y_000z.zarr"]
+    - [95, "000x_002y_000z.zarr"]
+    - [94, "000x_002y_000z.zarr"]
+    - [93, "000x_002y_000z.zarr"]
+    - [92, "000x_002y_000z.zarr"]
+    - [91, "000x_002y_000z.zarr"]
+    - [90, "000x_002y_000z.zarr"]
+  decoder_head_type: "sam"
+
+clusters:
+  batch_size: 1
+  worker_nodes: 1
+  gpus_per_worker: 1
+  cpus_per_gpu: 48
+  mem_per_cpu: 16000
+  ray_queue_memory: 0.2
+
+paths:
+  outdir: ${paths.data_path}/results/inference/${experiment_name}
+  resume_checkpointdir: null
+  pretrained_checkpointdir: ${paths.data_path}/pretrained_models/sam2_baseline_128x256x512_150_epoch_lr_0p0001_opt_adamw/checkpoints
+
+datasets:
+  batch_size: ${clusters.batch_size_per_gpu}
+  train_shape: [1, 128, 256, 512, 1]
+  input_shape: [1, 128, 256, 512, 1]
+  patch_shape: [1, 16, 16, 16, null]
+
+  channels_subset: [0]
+
+  occupancy_threshold: 0.0
+  split: 0.0
+
+  return_dataloader: true
+  distributed_sampler: true
+
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+
+  databases:
+    max_rois: null
+    max_tiles: null
+    roi_list: [104, 103, 102, 101, 100, 99, 98, 97, 96, 95, 94, 93, 92, 91, 90]
+    tile_list: ["000x_002y_000z.zarr"]
+    timepoint_list: [0]
+    cdf_threshold: null
+    occupancy_threshold_filter_type: 'min_ch0'
+    synthetic_only: false
+    has_annotations: false
+    server_folder_path: ${paths.server_folder_path}
+    with_hypercubes_dataframe: true
+    mask_channel: null
+
+  preprocessor:
+    expect_mask_channel: ${datasets.collate_fn.expect_mask_channel}
+    require_targets: ${datasets.collate_fn.require_targets}
+
+  columns:
+    - "x_start"
+    - "y_start"
+    - "z_start"
+    - "time_start"
+    - "channel_size"
+    - "z_size"
+    - "y_size"
+    - "x_size"
+    - "time_size"
+    - "server_folder"
+    - "output_folder"
+    - "tile_name"
+    - "prepared_id"
+
+  collate_fn:
+    _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
+    dtype: ${dataset_dtype}
+    require_targets: false
+    expect_mask_channel: false
+    buffer_dtype: ${storage_dtype}
+    batch_size: ${clusters.batch_size_per_gpu}
+    input_shape: ${datasets.input_shape}
+    input_format: ${dataset_layout_order}
+    device_buffer_capacity: 2
+    pin_numa_node: ${datasets.pin_numa_node}
+    pin_pages: ${datasets.pin_memory}
+    use_masks: true
+    transforms_list: null
+    bbox_data_format: zyxzyx
+    bbox_output_format: cxcyczwhd
+    debug: false
+    normalize_bboxes: true
+    async_device_copy: false
+    columns:
+      - "x_start"
+      - "y_start"
+      - "z_start"
+      - "time_start"
+      - "channel_size"
+      - "z_size"
+      - "y_size"
+      - "x_size"
+      - "time_size"
+      - "server_folder"
+      - "output_folder"
+      - "tile_name"
+      - "prepared_id"
+
+  preserve_order: false
+  callback_strategy: grpc
+  async_device_copy: false
+
+schedulers:
+  epochs: 1
+
+hooks:
+  hooks_list:
+  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter

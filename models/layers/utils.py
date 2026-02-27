@@ -6,6 +6,7 @@ https://github.com/IDEA-Research/MaskDINO/blob/3831d8514a3728535ace8d4ecc7d28044
 https://github.com/facebookresearch/dinov3/dinov3/utils/utils.py
 """
 
+import math
 from typing import List, Tuple
 
 import numpy as np
@@ -17,6 +18,197 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from cell_observatory_platform.data.structures import masks_to_boxes_v2
+
+
+class Unroll(nn.Module):
+    """
+    Reorders the tokens such that patches are contiguous in memory.
+    E.g., given [B, (H, W), C] and stride of (Sy, Sx), this will re-order the tokens as
+                           [B, (Sy, Sx, H // Sy, W // Sx), C]
+
+    This allows operations like Max2d to be computed as x.view(B, Sx*Sy, -1, C).max(dim=1).
+    Not only is this faster, but it also makes it easy to support inputs of arbitrary
+    dimensions in addition to patch-wise sparsity.
+
+    Performing this operation multiple times in sequence puts entire windows as contiguous
+    in memory. For instance, if you applied the stride (2, 2) 3 times, entire windows of
+    size 8x8 would be contiguous in memory, allowing operations like mask unit attention
+    computed easily and efficiently, while also allowing max to be applied sequentially.
+
+    Note: This means that intermediate values of the model are not in HxW order, so they
+    need to be re-rolled if you want to use the intermediate values as a HxW feature map.
+    The last block of the network is fine though, since by then the strides are all consumed.
+    """ 
+
+    def __init__(
+        self,
+        input_size: Tuple[int, ...],
+        patch_stride: Tuple[int, ...],
+        unroll_schedule: List[Tuple[int, ...]],
+    ):
+        super().__init__()
+        self.size = [i // s for i, s in zip(input_size, patch_stride)]
+        self.schedule = unroll_schedule
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Input: Flattened patch embeddings [B, N, C]
+        Output: Patch embeddings [B, N, C] permuted such that [B, 4, N//4, C].max(1) etc. performs MaxPoolNd
+        """
+        B, _, C = x.shape
+
+        cur_size = self.size
+        x = x.view(*([B] + cur_size + [C]))
+
+        for strides in self.schedule:
+            # Move patches with the given strides to the batch dimension
+
+            # Create a view of the tensor with the patch stride as separate dims
+            # For example in 2d: [B, H // Sy, Sy, W // Sx, Sx, C]
+            cur_size = [i // s for i, s in zip(cur_size, strides)]
+            new_shape = [B] + sum([[i, s] for i, s in zip(cur_size, strides)], []) + [C]
+            x = x.view(new_shape)
+
+            # Move the patch stride into the batch dimension
+            # For example in 2d: [B, Sy, Sx, H // Sy, W // Sx, C]
+            L = len(new_shape)
+            permute = (
+                [0] + list(range(2, L - 1, 2)) + list(range(1, L - 1, 2)) + [L - 1]
+            )
+            x = x.permute(permute)
+
+            # Now finally flatten the relevant dims into the batch dimension
+            x = x.flatten(0, len(strides))
+            B *= math.prod(strides)
+
+        x = x.reshape(-1, math.prod(self.size), C)
+        return x
+
+
+def undo_windowing(x: torch.Tensor, size: List[int], cur_mu_shape: List[int]) -> torch.Tensor:
+    """
+    Convert windowed tokens [B, N, *cur_mu_shape, C] back to spatial order [B, *full_spatial, C].
+    full_spatial[i] = size[i] * cur_mu_shape[i].
+    """
+    B, N, *_, C = x.shape
+    D = len(size)
+    x = x.view(B, *size, *cur_mu_shape, C)
+    perm = [0]
+    for i in range(D):
+        perm.append(1 + i)      # size dim
+        perm.append(1 + D + i)  # cur_mu_shape dim
+    perm.append(len(x.shape) - 1)
+    x = x.permute(perm)
+    new_dims = [size[i] * cur_mu_shape[i] for i in range(D)]
+    x = x.reshape(B, *new_dims, C)
+    return x
+
+
+def conv_nd(n: int):
+    """Factory returning Conv2d for n=2, Conv3d for n=3, etc."""
+    if n == 2:
+        return nn.Conv2d
+    elif n == 3:
+        return nn.Conv3d
+    else:
+        raise NotImplementedError(f"conv_nd not implemented for n={n}")
+
+
+def do_pool_stride(x: torch.Tensor, stride: int) -> torch.Tensor:
+    """Max-pool over groups of `stride` tokens in flattened [B, N, C] tensor."""
+    if stride is None or stride <= 1:
+        return x
+    B, N, C = x.shape
+    assert N % stride == 0, f"N={N} must be divisible by stride={stride}"
+    x = x.view(B, N // stride, stride, C)
+    return x.max(dim=2).values
+
+
+class Reroll(nn.Module):
+    """
+    Undos the "unroll" operation so that you can use intermediate features.
+    """
+
+    def __init__(
+        self,
+        input_size: Tuple[int, ...],
+        patch_stride: Tuple[int, ...],
+        unroll_schedule: List[Tuple[int, ...]],
+        stage_ends: List[int],
+        q_pool: int,
+    ):
+        super().__init__()
+        self.size = [i // s for i, s in zip(input_size, patch_stride)]
+
+        # The first stage has to reverse everything
+        # The next stage has to reverse all but the first unroll, etc.
+        self.schedule = {}
+        size = self.size
+        for i in range(stage_ends[-1] + 1):
+            self.schedule[i] = unroll_schedule, size
+            # schedule unchanged if no pooling at a stage end
+            if i in stage_ends[:q_pool]:
+                if len(unroll_schedule) > 0:
+                    size = [n // s for n, s in zip(size, unroll_schedule[0])]
+                unroll_schedule = unroll_schedule[1:]
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        block_idx: int,
+        mask: torch.Tensor = None,
+        return_windowed: bool = False,
+    ) -> torch.Tensor:
+        """
+        Roll the given tensor back up to spatial order assuming it's from the given block.
+
+        If return_windowed=True:
+            - Returns [B, N, *cur_mu_shape, C] (MU-grid layout) without undo_windowing.
+        If return_windowed=False:
+            - If mask is not None: returns [B, #MUs, MUy, MUx, C].
+            - If mask is None: returns [B, H, W, C] after undo_windowing.
+        """
+        schedule, size = self.schedule[block_idx]
+        B, N, C = x.shape
+
+        D = len(size)
+        cur_mu_shape = [1] * D
+
+        for strides in schedule:
+            # Extract the current patch from N
+            x = x.view(B, *strides, N // math.prod(strides), *cur_mu_shape, C)
+
+            # Move that patch into the current MU
+            # Example in 2d: [B, Sy, Sx, N//(Sy*Sx), MUy, MUx, C] -> [B, N//(Sy*Sx), Sy, MUy, Sx, MUx, C]
+            L = len(x.shape)
+            permute = (
+                [0, 1 + D]
+                + sum(
+                    [list(p) for p in zip(range(1, 1 + D), range(1 + D + 1, L - 1))],
+                    [],
+                )
+                + [L - 1]
+            )
+            x = x.permute(permute)
+
+            # Reshape to [B, N//(Sy*Sx), *MU, C]
+            for i in range(D):
+                cur_mu_shape[i] *= strides[i]
+            x = x.reshape(B, -1, *cur_mu_shape, C)
+            N = x.shape[1]
+
+        # Current shape (e.g., 2d: [B, #MUy*#MUx, MUy, MUx, C])
+        x = x.view(B, N, *cur_mu_shape, C)
+
+        # Output format controlled explicitly
+        if return_windowed:
+            return x
+
+        # If masked (legacy behavior), return windowed; else undo_windowing to spatial
+        if mask is not None:
+            return x
+        x = undo_windowing(x, size, cur_mu_shape)
+        return x
 
 
 def cat_keep_shapes(x_list: List[Tensor]) -> Tuple[Tensor, List[Tuple[int]], List[int]]:
