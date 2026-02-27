@@ -2,7 +2,7 @@
 defaults:
   - ../base_experiments/instance_segmentation_maskDINO_lr_0p001
  # NOTE: We are using the MAE config but no pretrained backbone => just a ViT backbone
-  - /models/meta_arch/maskdino/mae_large_w_masks    # configs/models/maskdino/large.yaml
+  - /models/meta_arch/maskdino/mae_large_w_masks_adapter    # configs/models/maskdino/large.yaml
   - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
   - /optimizations/models/maskdino/mae_large # configs/optimizations/models/mae.yaml
   - /models/backbones/maskdino_backbone/maskdino_backbone_w_vitdet   # configs/models/backbones/maskdino_backbone/maskdino_backbone_w_vitdet.yaml
