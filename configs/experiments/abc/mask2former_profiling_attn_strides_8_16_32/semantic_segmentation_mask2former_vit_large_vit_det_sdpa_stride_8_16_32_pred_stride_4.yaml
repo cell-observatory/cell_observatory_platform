@@ -24,8 +24,9 @@ defaults:
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
 
-experiment_name: profiling_semantic_segmentation_mask2former_mae_large_vit_det_1_2_3_transformer_in_features_pred_stride_4_sdpa
-wandb_project: testing
+experiment_name: profiling_semantic_segmentation_mask2former_vit_large_vit_det_sdpa_stride_8_16_32_pred_stride_4
+wandb_project: profiling_finetune
+# wandb_project: testing
 
 backend: DEEPSPEED
 
@@ -77,7 +78,7 @@ models:
 
 # clusters
 clusters:
-  batch_size: 16 # total batch size (batch size per gpu * total gpus)
+  batch_size: 32 # total batch size (batch size per gpu * total gpus)
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 4 # number of gpus per worker node
   cpus_per_gpu: 4 # number of cpu cores per gpu
@@ -170,7 +171,7 @@ datasets:
 
 # schedulers
 schedulers:
-  epochs: 5
+  epochs: 10
 
 optimizers:
   # TODO: implement Detectron/DETR-style decoupled weight decay

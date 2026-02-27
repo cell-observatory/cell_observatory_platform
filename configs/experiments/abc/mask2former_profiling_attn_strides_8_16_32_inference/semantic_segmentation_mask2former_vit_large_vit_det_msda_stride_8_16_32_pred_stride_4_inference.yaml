@@ -1,0 +1,15 @@
+# @package _global_
+defaults:
+  - ../base_experiments/semantic_segmentation_mask2former_inference
+
+
+experiment_name: semantic_segmentation_mask2former_vit_large_vit_det_msda_stride_8_16_32_pred_stride_4_inference
+
+models:
+  heads:
+    pixel_decoder:
+      use_deform_attention: true
+
+
+paths:
+  pretrained_checkpointdir: /clusterfs/nvme/martinalvarez/segment_3d/pretrained_models/profiling_semantic_segmentation_mask2former_vit_large_vit_det_msda_stride_8_16_32_pred_stride_4/checkpoints
