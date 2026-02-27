@@ -1,5 +1,6 @@
 defaults:
-  - /models/backbones/maskdino_backbone
+  - maskdino_backbone
+  - _self_
 
 backbone_embed_dims: 
   - ${models.backbones.masked_encoder.embed_dim} # [1024, 1024, 1024, 1024]x4 if using all layers
