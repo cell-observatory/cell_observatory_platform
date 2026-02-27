@@ -9,12 +9,7 @@ from cell_observatory_platform.models.layers.norm import LayerNorm3D
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
 from cell_observatory_platform.models.layers.conv3d import Conv3d
 
-try:
-    from ops3d import _C
-    OPS3D_AVAILABLE = True
-except ImportError:
-    OPS3D_AVAILABLE = False
-    
+
 def _assert_strides_are_log2_contiguous(strides):
     """
     Assert that each stride is 2x times its preceding stride, i.e. "contiguous in log2".
@@ -23,6 +18,13 @@ def _assert_strides_are_log2_contiguous(strides):
         assert stride == 2 * strides[i - 1], "Strides {} {} are not log2 contiguous".format(
             stride, strides[i - 1]
         )
+
+STRIDE_TO_FEATURE_MAP_NAME = {
+    4: "1",
+    8: "2",
+    16: "3",
+    32: "4",
+}
 
 class SimpleFeaturePyramid(nn.Module):
     """
@@ -141,8 +143,11 @@ class SimpleFeaturePyramid(nn.Module):
             self.stages.append(layers)
 
         self.top_block = top_block
-        # Return feature names are "<stage>", like ["0", "1", "2", "3"]
-        self._out_feature_strides = {f"{stage}": stride for stage, stride in enumerate(strides)}
+        # Return feature names are "<stage>", like ["1", "2", "3", "4"]
+        self._out_feature_strides = {
+            STRIDE_TO_FEATURE_MAP_NAME[stride]: stride
+            for stride in strides
+            }
         # top block output feature maps.
         if self.top_block is not None:
             raise NotImplementedError("Top block is not supported yet.")
@@ -178,7 +183,7 @@ class SimpleFeaturePyramid(nn.Module):
                 mapping from feature map name to pyramid feature map tensor
                 in high to low resolution order. Returned feature names follow 
                 the DETR stage naming convention e.g.,
-                ["0", "1", "2", "3"].
+                ["1", "2", "3", "4"].
         """
         results = []
         for stage in self.stages:
