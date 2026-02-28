@@ -918,9 +918,10 @@ class ParentDatabase:
                 return df
 
             except Exception as e:
+                last_exception = e
                 logger.warning(f"Attempt {i+1} failed with error: {e}. Retrying...")
         logger.error(f"Failed to execute query: {query}")
-        raise
+        raise last_exception
 
     def list_tables(self) -> Any:
         return self.execute_query("SELECT tablename FROM pg_tables WHERE schemaname = 'public';")
