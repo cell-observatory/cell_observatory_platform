@@ -12,6 +12,9 @@ defaults:
 # WandB Naming Stuff
 experiment_name: instance_segmentation_maskDINO_mae_large_vitdet_stride_8_16_32
 
+paths:
+  pretrained_checkpointdir: TODO
+
 models:
   adapters:
     scale_factors: [2.0, 1.0, 0.5] # patch is 16x16x16, so 2x, 1x, 0.5x sampling to stride 8, 16 and 32 respectively

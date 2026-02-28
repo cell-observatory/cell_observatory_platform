@@ -12,6 +12,9 @@ defaults:
 # WandB Naming Stuff
 experiment_name: instance_segmentation_maskDINO_vit_large_msda_stride_8
 
+paths:
+  pretrained_checkpointdir: TODO
+
 # NOTE: Even though we are doing single scale feature map, 
 # we use the adapter to ensure we fairly compare channel dimensions
 # And in this case do upsampling to stride 8
