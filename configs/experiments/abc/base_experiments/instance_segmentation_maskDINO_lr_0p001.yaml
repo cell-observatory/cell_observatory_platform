@@ -55,6 +55,7 @@ seed: 42
 # overrides
 # --------------------------------------------------------------------------------
 
+TODO: Should this be moved to the finetune specific configs?
 # deepspeed:
 #   checkpoint:
 #     load_universal: true
