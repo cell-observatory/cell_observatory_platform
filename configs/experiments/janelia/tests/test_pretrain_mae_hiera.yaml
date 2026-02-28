@@ -37,7 +37,7 @@ dataset_layout_order: ZYXC
 seed: 42
 
 clusters:
-  batch_size: 24
+  batch_size: 40
   worker_nodes: 1
   gpus_per_worker: 1
   cpus_per_gpu: 12

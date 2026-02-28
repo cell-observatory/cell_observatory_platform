@@ -79,6 +79,7 @@ class MaskGenerator(object):
         mask_unit_size: Optional[Sequence[int]] = None,
         q_stride: Optional[Sequence[int]] = None,
         q_pool: Optional[int] = None,
+        skip_patch_mask_generation: bool = False,
     ):
         self.device = device
 
@@ -149,6 +150,8 @@ class MaskGenerator(object):
             layout=self.layout,
         )
         self.input_shape_patches = (self.time, self.depth, self.height, self.width)
+
+        self.skip_patch_mask_generation = bool(skip_patch_mask_generation)
 
     def _get_input_shape_patches(self, input_shape, temporal_patch_size, axial_patch_size, lateral_patch_size, layout):
         axis_to_value = dict(zip(layout.value, input_shape))
@@ -839,26 +842,7 @@ class MaskGenerator(object):
         if num_target_mus <= 0 or num_ctx_mus <= 0:
             raise ValueError(f"num_target_mus ({num_target_mus}) or num_ctx_mus ({num_ctx_mus}) must be greater than 0")
 
-        def mu_to_patch_indices(mu_idx: int) -> torch.Tensor:
-            mu_flat = mu_idx
-            mu_w_i = mu_flat % num_mus_w
-            mu_flat //= num_mus_w
-            mu_h_i = mu_flat % num_mus_h
-            mu_flat //= num_mus_h
-            mu_d_i = mu_flat % num_mus_d
-            mu_t_i = mu_flat // num_mus_d
-            t0, d0, h0, w0 = (
-                mu_t_i * mu_t, mu_d_i * mu_d,
-                mu_h_i * mu_h, mu_w_i * mu_w,
-            )
-            patch_indices = []
-            for tt in range(t0, t0 + mu_t):
-                for dd in range(d0, d0 + mu_d):
-                    for hh in range(h0, h0 + mu_h):
-                        for ww in range(w0, w0 + mu_w):
-                            patch_idx = tt * (D * H * W) + dd * (H * W) + hh * W + ww
-                            patch_indices.append(patch_idx)
-            return torch.tensor(patch_indices, dtype=torch.long, device=self.device)
+        mu_size, mu_grid_shape = self._mu_grid_shapes()
 
         masks_list, ctx_list, tgt_list, orig_list = [], [], [], []
         mu_masks_list = []
@@ -870,30 +854,39 @@ class MaskGenerator(object):
             ctx_mus = perm_mus[:num_ctx_mus]
             tgt_mus = perm_mus[num_ctx_mus : num_ctx_mus + num_target_mus]
 
-            ctx_patches = torch.cat([mu_to_patch_indices(i) for i in ctx_mus.tolist()])
-            tgt_patches = torch.cat([mu_to_patch_indices(i) for i in tgt_mus.tolist()])
-
-            perm = torch.cat([ctx_patches, tgt_patches], dim=0)
-            orig = torch.argsort(perm, dim=0, stable=True)
-            num_ctx, num_tgt = len(ctx_patches), len(tgt_patches)
-            m = torch.ones(N, dtype=torch.int32, device=self.device)
-            m[:num_ctx] = 0
-            m = m[orig]
-
             mu_mask = torch.ones(num_mus, dtype=torch.bool, device=self.device)
             mu_mask[ctx_mus] = False
-
-            masks_list.append(m)
-            ctx_list.append(ctx_patches)
-            tgt_list.append(tgt_patches)
-            orig_list.append(orig)
             mu_masks_list.append(mu_mask)
             mu_keep_idx_list.append(ctx_mus)
+
+            if not self.skip_patch_mask_generation:
+                ctx_patches = self._mu_indices_to_patch_indices(ctx_mus, mu_size, mu_grid_shape)
+                tgt_patches = self._mu_indices_to_patch_indices(tgt_mus, mu_size, mu_grid_shape)
+                perm = torch.cat([ctx_patches, tgt_patches], dim=0)
+                orig = torch.argsort(perm, dim=0, stable=True)
+                m = torch.ones(N, dtype=torch.int32, device=self.device)
+                m[: len(ctx_patches)] = 0
+                m = m[orig]
+                masks_list.append(m)
+                ctx_list.append(ctx_patches)
+                tgt_list.append(tgt_patches)
+                orig_list.append(orig)
 
             if self.tok_prod is not None:
                 base = tgt_mus.unsqueeze(-1).long() * self.tok_prod
                 offs = torch.arange(self.tok_prod, device=self.device, dtype=base.dtype).view(1, -1)
                 tgt_tok_idx_list.append((base + offs).reshape(-1))
+
+        if self.skip_patch_mask_generation:
+            mu_mask = torch.stack(mu_masks_list)
+            mu_keep_idx = torch.utils.data.default_collate(mu_keep_idx_list)
+            tgt_tok_idx = torch.utils.data.default_collate(tgt_tok_idx_list) if self.tok_prod is not None and tgt_tok_idx_list else None
+            return {
+                "mu_mask": mu_mask,
+                "mu_keep_idx": mu_keep_idx,
+                "tgt_tok_idx": tgt_tok_idx,
+                "channels_to_mask": self.channels_to_mask,
+            }
 
         min_ctx = min(len(c) for c in ctx_list)
         min_tgt = min(len(t) for t in tgt_list)
@@ -972,37 +965,48 @@ class MaskGenerator(object):
             ctx_mus = (~tgt_mu_flat).nonzero(as_tuple=False).squeeze(1)
 
             mu_mask = tgt_mu_flat.clone()
-
-            ctx_patches = self._mu_indices_to_patch_indices(
-                ctx_mus, mu_size, mu_grid_shape
-            )
-            tgt_patches = self._mu_indices_to_patch_indices(
-                tgt_mus, mu_size, mu_grid_shape
-            )
-
-            perm = torch.cat([ctx_patches, tgt_patches], dim=0)
-            orig = torch.argsort(perm, dim=0, stable=True)
-
-            m = torch.ones(N, dtype=torch.int32, device=self.device)
-            m[: ctx_patches.numel()] = 0
-            m = m[orig]
-
-            masks_list.append(m)
-            ctx_list.append(ctx_patches)
-            tgt_list.append(tgt_patches)
-            orig_list.append(orig)
             mu_masks_list.append(mu_mask)
             mu_keep_idx_list.append(ctx_mus)
+
+            if not self.skip_patch_mask_generation:
+                ctx_patches = self._mu_indices_to_patch_indices(
+                    ctx_mus, mu_size, mu_grid_shape
+                )
+                tgt_patches = self._mu_indices_to_patch_indices(
+                    tgt_mus, mu_size, mu_grid_shape
+                )
+                perm = torch.cat([ctx_patches, tgt_patches], dim=0)
+                orig = torch.argsort(perm, dim=0, stable=True)
+
+                m = torch.ones(N, dtype=torch.int32, device=self.device)
+                m[: ctx_patches.numel()] = 0
+                m = m[orig]
+                masks_list.append(m)
+                ctx_list.append(ctx_patches)
+                tgt_list.append(tgt_patches)
+                orig_list.append(orig)
 
             if self.tok_prod is not None:
                 base = tgt_mus.unsqueeze(-1).long() * self.tok_prod
                 offs = torch.arange(self.tok_prod, device=self.device, dtype=base.dtype).view(1, -1)
                 tgt_tok_idx_list.append((base + offs).reshape(-1))
 
+        if self.skip_patch_mask_generation:
+            mu_mask = torch.stack(mu_masks_list)
+            mu_keep_idx = torch.utils.data.default_collate(mu_keep_idx_list)
+            tgt_tok_idx = torch.utils.data.default_collate(tgt_tok_idx_list) if self.tok_prod is not None and tgt_tok_idx_list else None
+            return {
+                "mu_mask": mu_mask,
+                "mu_keep_idx": mu_keep_idx,
+                "tgt_tok_idx": tgt_tok_idx,
+                "channels_to_mask": self.channels_to_mask,
+            }
+
         masks = torch.utils.data.default_collate(masks_list)
         context_masks = torch.utils.data.default_collate(ctx_list)
         target_masks = torch.utils.data.default_collate(tgt_list)
         original_patch_indices = torch.utils.data.default_collate(orig_list)
+        
         mu_mask = torch.stack(mu_masks_list)
         mu_keep_idx = torch.utils.data.default_collate(mu_keep_idx_list)
         tgt_tok_idx = torch.utils.data.default_collate(tgt_tok_idx_list) if self.tok_prod is not None and tgt_tok_idx_list else None

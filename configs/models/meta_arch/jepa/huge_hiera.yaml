@@ -23,8 +23,8 @@ fixed_dropout_depth: false
 norm_layer: LayerNorm
 act_layer: SiLU
 mlp_layer: SwiGLU
-abs_sincos_enc: false
-rope_pos_enc: true
+abs_sincos_enc: true
+rope_pos_enc: false
 rope_random_rotation_per_head: true
 rope_mixed: false
 rope_theta: 100.0

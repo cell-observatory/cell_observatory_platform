@@ -78,22 +78,22 @@ class Attention(nn.Module):
         q = self.q_norm(q)
         k = self.k_norm(k)
 
-        try:
-            # priority: flash > efficient > math
-            with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]):
-                x = F.scaled_dot_product_attention(
-                    q,
-                    k,
-                    v,
-                    dropout_p=self.att_drop.p if self.training else 0.0,
-                )
+        # Removed: SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+            x = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                dropout_p=self.att_drop.p if self.training else 0.0,
+            )
 
-        except NotImplementedError:
-            q = q * self.scale
-            att = q @ k.transpose(-2, -1)
-            att = att.softmax(dim=-1)
-            att = self.att_drop(att)
-            x = att @ v
+        # REMOVED: standard attention fallback
+        # except NotImplementedError:
+        #     q = q * self.scale
+        #     att = q @ k.transpose(-2, -1)
+        #     att = att.softmax(dim=-1)
+        #     att = self.att_drop(att)
+        #     x = att @ v
 
         x = x.transpose(1, 2).reshape(B, L, C)
         x = self.proj(x)
@@ -347,23 +347,23 @@ class RopeAttention(nn.Module):
         else:
             q_rope, k_rope = apply_rope(q, k, pos_enc=pos_enc, rope_type="custom")
 
-        try:
-            # priority: flash > efficient > math
-            # TODO: consider adding back SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION
-            with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
-                x = F.scaled_dot_product_attention(
-                    q_rope,
-                    k_rope,
-                    v,
-                    dropout_p=self.att_drop.p if self.training else 0.0,
-                )
+        # priority: flash > efficient > math
+        # TODO: consider adding back SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+            x = F.scaled_dot_product_attention(
+                q_rope,
+                k_rope,
+                v,
+                dropout_p=self.att_drop.p if self.training else 0.0,
+            )
 
-        except NotImplementedError:
-            q_rope = q_rope * self.scale
-            att = q_rope @ k_rope.transpose(-2, -1)
-            att = att.softmax(dim=-1)
-            att = self.att_drop(att)
-            x = att @ v
+        # REMOVED: standard attention fallback
+        # except NotImplementedError:
+        #     q_rope = q_rope * self.scale
+        #     att = q_rope @ k_rope.transpose(-2, -1)
+        #     att = att.softmax(dim=-1)
+        #     att = self.att_drop(att)
+        #     x = att @ v
 
         return x
 
@@ -555,7 +555,8 @@ class CrossAttention(nn.Module):
         q = self.q_norm(q)
         k = self.k_norm(k)
 
-        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION]):
+        # REMOVED: SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
             out = F.scaled_dot_product_attention(
                 q,
                 k,
@@ -696,6 +697,7 @@ class RopeCrossAttention(RopeAttention):
         else:
             raise ValueError("RopeCrossAttention does not support rope_type='custom' for cross-attention.")
 
+        # REMOVED: SDPBackend.MATH, SDPBackend.EFFICIENT_ATTENTION
         with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
             x = F.scaled_dot_product_attention(
                 q_rope,
@@ -1311,8 +1313,8 @@ class MaskUnitAttention(nn.Module):
 
         qkv = (
             self.qkv(x)
-            .reshape(B, -1, num_windows, 3, self.heads, self.head_dim)
-            .permute(3, 0, 4, 2, 1, 5)
+            .reshape(B, num_windows, -1, 3, self.heads, self.head_dim) # [B, num_windows, *spatial, 3, heads, head_dim]
+            .permute(3, 0, 4, 1, 2, 5) # [3, B, heads, num_windows, *spatial, head_dim]
         )
         q, k, v = qkv[0], qkv[1], qkv[2]
 
@@ -1324,8 +1326,24 @@ class MaskUnitAttention(nn.Module):
                 .values
             )
 
-        x = F.scaled_dot_product_attention(q, k, v)
+        # q: [B, H, W, Lq, Dh]
+        # k,v: [B, H, W, Lk, Dh]
+        B, H, W, Lq, Dh = q.shape
+        Lk = k.shape[3]
 
-        x = x.transpose(1, 3).reshape(B, -1, self.dim_out)
+        # Move W next to B and merge -> 4D (for Flash SDPA)
+        q_ = q.permute(0, 2, 1, 3, 4).reshape(B * W, H, Lq, Dh) # [B * W, H, Lq, Dh]
+        k_ = k.permute(0, 2, 1, 3, 4).reshape(B * W, H, Lk, Dh) # [B * W, H, Lk, Dh]
+        v_ = v.permute(0, 2, 1, 3, 4).reshape(B * W, H, Lk, Dh) # [B * W, H, Lk, Dh]
+
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+            out_ = F.scaled_dot_product_attention(q_, k_, v_)
+
+        # Un-merge back to [B, H, W, Lq, Dh]
+        out = out_.reshape(B, W, H, Lq, Dh).permute(0, 2, 1, 3, 4)
+        x = out
+
+        # [B, H, W, Lq, Dh] -> [B, W, Lq, H, Dh] for (W, Lq) token order
+        x = x.permute(0, 2, 3, 1, 4).reshape(B, -1, self.dim_out)
         x = self.proj(x)
         return x

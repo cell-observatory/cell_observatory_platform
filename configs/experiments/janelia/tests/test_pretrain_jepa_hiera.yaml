@@ -37,9 +37,9 @@ dataset_layout_order: ZYXC
 seed: 42
 
 clusters:
-  batch_size: 16
+  batch_size: 1280 # 72-80
   worker_nodes: 1
-  gpus_per_worker: 1
+  gpus_per_worker: 8
   cpus_per_gpu: 12
   mem_per_cpu: 40000
   ray_queue_memory: 0.2
@@ -53,7 +53,7 @@ datasets:
   batch_size: ${clusters.batch_size_per_gpu}
   input_shape: [128, 256, 256, 2]
   train_shape: [128, 256, 256, 2]
-  patch_shape: [4, 4, 4, null]
+  patch_shape: [8, 8, 8, null]
 
   occupancy_threshold: 0.9
   split: 0.1
@@ -65,7 +65,7 @@ datasets:
   num_actors_max: 12
 
   # max_hypercubes: 300
-  max_hypercubes: 3000
+  max_hypercubes: 200000
 
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
@@ -101,6 +101,12 @@ datasets:
         mask_unit_size: [1, 8, 8, 8]
         q_stride: [1, 2, 2, 2]
         q_pool: 2
+        skip_patch_mask_generation: true
+
+models:
+  meta_arch:
+    jepa:
+      hiera_checkpoint_first_n_blocks: 0
 
 schedulers:
   epochs: 1
@@ -116,3 +122,17 @@ hooks:
       backend: DEEPSPEED
     - _target_: cell_observatory_platform.training.hooks.IterationTimer
     - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+    # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+    #   output_dir: ${paths.outdir}/profiler
+    #   schedule:
+    #     # skip_first: 10
+    #     warmup: 1
+    #     active: 2
+    #     repeat: 1
+    #     wait: 1
+    #   activities:
+    #     - CUDA
+    #     - CPU
+    #   save_tensorboard: true
+    #   shutdown_after_profile: true
+    #   save_memory_trace: true

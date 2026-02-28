@@ -382,10 +382,8 @@ class MaskedAutoEncoder(nn.Module):
                 patches_used=patches_used,
             )
         elif self.backbone_type == "hiera":
-            if mu_mask is None:
-                raise ValueError("Hiera backbone requires mu_mask in meta. Use mask_mode=HIERA_MU.")
-            if mu_keep_idx is None:
-                raise ValueError("Hiera backbone requires mu_keep_idx in meta (HIERA_MU random masking).")
+            if mu_mask is None or mu_keep_idx is None:
+                raise ValueError("Hiera backbone requires mu_mask and mu_keep_idx in meta. Use mask_mode=HIERA_MU.")
             x, patches = self.masked_encoder(inputs, masks=mu_mask, ctx_idx=mu_keep_idx)
             x = self.masked_decoder(x, mu_mask=mu_mask, ctx_idx=mu_keep_idx)
         else:
