@@ -1,9 +1,9 @@
 # @package _global_
 defaults:
-  - ../base_experiments/semantic_segmentation_mask2former_inference
+  - ../base_experiments/semantic_segmentation_mask2former_inference_real
 
 
-experiment_name: semantic_segmentation_mask2former_vit_large_vit_det_msda_stride_8_16_32_pred_stride_4_inference
+experiment_name: semantic_segmentation_mask2former_vit_large_vit_det_msda_stride_8_16_32_pred_stride_4_inference_real
 
 models:
   heads:
