@@ -1,3 +1,4 @@
+
 import matplotlib
 import matplotlib.ticker as ticker
 from matplotlib import pyplot as plt
@@ -12,11 +13,13 @@ import logging
 import re
 import sys
 from pathlib import Path
+from typing import Union
 
 import numpy as np
+import pandas as pd
 import seaborn as sns
 
-from cell_observatory_platform.utils.common import savesvg
+from utils.common import savesvg
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -25,48 +28,22 @@ logger = logging.getLogger(__name__)
 def days_to_formatter(days, pos):
 
     if days >= 365:
-        years = np.ceil(days / 365)
-        return f"{years:.0f}y"
+        years = np.round(days / 365, 1)
+        return f"{years:.1f}y"
     elif days >= 1:
         return f"{days:.0f}d"
     elif days >= 1 / 24:
-        hours = np.ceil(days * 24)
-        return f"{hours:.0f}h"
+        hours = np.round(days * 24, 1)
+        return f"{hours:.1f}h"
     elif days >= 1 / (24 * 60):
-        minutes = np.ceil(days * 24 * 60)
-        return f"{minutes:.0f}m"
+        minutes = np.round(days * 24 * 60, 1)
+        return f"{minutes:.1f}m"
+    elif days >= 1 / (24 * 60 * 60):
+        seconds = np.round(days * 24 * 60 * 60, 1)
+        return f"{seconds:.1f}s"
     else:
-        seconds = np.ceil(days * 24 * 60 * 60)
-        return f"{seconds:.0f}s"
-
-
-def savesvg(
-    fig: plt.Figure,
-    savepath: Union[Path, str],
-    top: float = 0.9,
-    bottom: float = 0.1,
-    left: float = 0.1,
-    right: float = 0.9,
-    hspace: float = 0.35,
-    wspace: float = 0.1,
-):
-
-    plt.subplots_adjust(top=top, bottom=bottom, left=left, right=right, hspace=hspace, wspace=wspace)
-    plt.savefig(savepath, bbox_inches="tight", dpi=300, pad_inches=0.25)
-
-    if Path(savepath).suffix == ".svg":
-        # Read in the file
-        with open(savepath, "r", encoding="utf-8") as f:
-            filedata = f.read()
-
-        # Replace the target string
-        filedata = re.sub('height="[0-9]+(\.[0-9]+)pt"', "", filedata)
-        filedata = re.sub('width="[0-9]+(\.[0-9]+)pt"', "", filedata)
-
-        # Write the file out again
-        with open(savepath, "w", encoding="utf-8") as f:
-            f.write(filedata)
-
+        milliseconds = np.round(days * 24 * 60 * 60 * 1000, 1)
+        return f"{milliseconds:.1f}ms"
 
 def plot_parameter_scaling(
     df,
@@ -89,9 +66,9 @@ def plot_parameter_scaling(
         "Patch (x, y, z, t, c)",
         "(16, 16, 16, 2, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
     published_models_legend=[
         "Data (x, y, c)",
@@ -99,9 +76,9 @@ def plot_parameter_scaling(
         "Patch (x, y, c)",
         "(16, 16, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
 ):
     for background in ["default", "dark_background"]:
@@ -161,7 +138,7 @@ def plot_parameter_scaling(
                 markeredgewidth=0.5,
             )
 
-        d = data[(data["data"] == "2D(rgb)") & (data["px"] == 16) & (data["mfu"] == 0.3)]
+        d = data[(data["data"] == "2D(rgb)") & (data["px"] == 16) & (data["mfu"] == 0.5)]
 
         for line in range(0, d.shape[0]):
             xx = d[x][line]
@@ -243,7 +220,7 @@ def plot_data_parameter_scaling(
     y="training_gflops_per_volume",
     ylabel="Training GFLOPs per volume",
     ytwin1="training_time_per_volume",
-    ytwinlabel1="Training H100 seconds per volume",
+    ytwinlabel1="Training GPU seconds per volume",
     ytwin2=None,
     ytwinlabel2=None,
     ytwin3=None,
@@ -265,9 +242,9 @@ def plot_data_parameter_scaling(
         "Patch (x, y, z, t, c)",
         "(16, 16, 16, 2, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
     published_models_legend=[
         "Data (x, y, c)",
@@ -275,10 +252,11 @@ def plot_data_parameter_scaling(
         "Patch (x, y, c)",
         "(16, 16, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
+    gpu="H200",
 ):
     for background in ["default", "dark_background"]:
         plt.style.use(background)
@@ -336,6 +314,7 @@ def plot_data_parameter_scaling(
                         ax=axis,
                         legend=True,
                         markers=True,
+                        marker='o',
                         palette="Greens",
                         markeredgecolor="dimgrey" if background == "default" else "lightgrey",
                         markeredgewidth=0.5,
@@ -352,6 +331,7 @@ def plot_data_parameter_scaling(
                         ax=axis,
                         legend=True,
                         markers=True,
+                        marker='o',
                         palette=palette,
                         markeredgecolor="dimgrey" if background == "default" else "lightgrey",
                         markeredgewidth=0.5,
@@ -386,7 +366,7 @@ def plot_data_parameter_scaling(
                 else:
                     axis.legend(legend_handles, legend, loc="upper left", ncol=1, title="", frameon=False)
 
-                if y == "training_time" or y.startswith("training_h100_days"):
+                if y == "training_time" or y.startswith("training_gpu_days"):
                     formatter = ticker.FuncFormatter(days_to_formatter)
                     axis.yaxis.set_major_formatter(formatter)
                     axis.yaxis.set_minor_formatter(formatter)
@@ -397,7 +377,7 @@ def plot_data_parameter_scaling(
                 yscalelabel, xy=(0, 1.03), xycoords="axes fraction", clip_on=False, ha="center", rotation=90
             )
 
-        d = data[(data["data"] == f"2D({rgb})") & (data["px"] == patch_size) & (data["mfu"] == 0.3)]
+        d = data[(data["data"] == f"2D({rgb})") & (data["px"] == patch_size) & (data["mfu"] == 0.5)]
 
         for line in range(0, d.shape[0]):
             xx = d[x][line]
@@ -464,22 +444,23 @@ def plot_individual_parameters(
         "Patch (x, y, z, t, c)",
         "(16, 16, 16, 2, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
+    gpu="H200",
 ):
-    df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
+    df["number_gpu_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
     df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
-    df["training_h100_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
+    df["training_gpu_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
     df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
 
     fois = {
         f"training_gflops_per_volume": f"Training GFLOPs per volume",
-        f"training_time_per_volume": f"Training H100 seconds per volume",
+        f"training_time_per_volume": f"Training {gpu} seconds per volume",
         f"number_h100_for_batch": f"Minimum number of H100s needed for a batch ({batch_size})",
         f"cost_h100_for_batch": f"Cost of H100s needed for a batch ({batch_size}, $37,500 each)",
-        f"training_h100_hours_per_step": f"Training H100 hours per batch ({batch_size})",
+        f"training_gpu_hours_per_step": f"Training {gpu} hours per batch ({batch_size})",
     }
     for y, ylabel in fois.items():
         plot_parameter_scaling(
@@ -493,16 +474,16 @@ def plot_individual_parameters(
         )
 
     fois = {
-        f"training_h100_days_per_epoch": f"Training H100 time per epoch",
-        f"training_h100_cost_per_epoch": f"H100 compute cost per epoch ($6/hr)",
+        f"training_gpu_days_per_epoch": f"Training {gpu} time per epoch",
+        f"training_gpu_cost_per_epoch": f"H100 compute cost per epoch ($6/hr)",
         f"training_tflops_per_epoch": f"Training Tera-FLOPs (TFLOPs) per epoch",
     }
 
     for dataset_size in [1000000, 1281167, 14197122, 10000000, 100000000, 303000000, 1000000000]:
-        df["training_h100_days_per_epoch"] = dataset_size * df["training_time_per_volume"] / 3600 / 24
-        df["multigpu_training_days_per_epoch"] = df["training_h100_days_per_epoch"] / df["number_h100_for_batch"]
-        df["multigpu_256_training_days_per_epoch"] = df["training_h100_days_per_epoch"] / 256
-        df[f"training_h100_cost_per_epoch"] = df[f"training_h100_days_per_epoch"] * 24 * cost_h100_per_hr
+        df["training_gpu_days_per_epoch"] = dataset_size * df["training_time_per_volume"] / 3600 / 24
+        df["multigpu_training_days_per_epoch"] = df["training_gpu_days_per_epoch"] / df["number_h100_for_batch"]
+        df["multigpu_256_training_days_per_epoch"] = df["training_gpu_days_per_epoch"] / 256
+        df[f"training_gpu_cost_per_epoch"] = df[f"training_gpu_days_per_epoch"] * 24 * cost_h100_per_hr
         df[f"training_tflops_per_epoch"] = dataset_size * df["training_tflops_per_volume"]
 
         for y, ylabel in fois.items():
@@ -529,15 +510,16 @@ def plot_published_models(
         "Patch (x, y, c)",
         "(16, 16, 3)",
         "Model FLOPs Utilization",
-        "MFU(0.3)",
-        "MFU(0.6)",
-        "MFU(0.9)",
+        "MFU(0.5)",
+        "MFU(0.75)",
+        "MFU(1.0)",
     ],
+    gpu="H200",
 ):
     batch_size = 4096
     df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * batch_size) / 80)
     df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
-    df["training_h100_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
+    df["training_gpu_hours_per_step"] = batch_size * df["training_time_per_volume"] / 3600
     df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
 
     cols = list(models["S"].keys())
@@ -555,7 +537,7 @@ def plot_published_models(
     fois = {
         f"dataset_size": f"Training dataset size (millions of volumes)",
         f"training_volumes": f"Training volumes seen (billions)",
-        f"training_time": f"Training H100 time",
+        f"training_time": f"Training {gpu} time",
         f"training_compute": f"Training TFLOPs",
         f"training_cost": f"Training cost",
     }
@@ -807,3 +789,456 @@ def plot_gpt_vit(outdir):
         plt.savefig(f"{outdir}/gpt_vit_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
         plt.savefig(f"{outdir}/gpt_vit_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
         savesvg(fig, f"{outdir}/gpt_vit_{background}.svg")
+
+
+def plot_gpu_scaling(data, outdir):
+            
+    df = data.copy()
+    df["trainable_model_params"] = np.round(df["trainable_model_params"]/1e6, 0).astype(int) 
+    
+    if "3d" in str(outdir):
+        df.query("trainable_model_params == 314 or trainable_model_params == 319", inplace=True)
+        
+    gpu_type = df["gpu"].unique()[0]
+    
+    for m in df["main_module_0_name"].unique():
+        df.loc[df["main_module_0_name"] == m, "scaling_ratio"] = df.loc[df["main_module_0_name"] == m, "epoch_time"] / df.loc[df["main_module_0_name"] == m, "epoch_time"].max()
+    
+    print(df[["index", "training_gpus", "epoch_time", "main_module_0_name", "trainable_model_params", "scaling_ratio"]])
+
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
+
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12, 
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        
+        g = sns.lineplot(
+            data=df,
+            x="training_gpus",
+            y="epoch_time",
+            hue="main_module_0_name",
+            style="main_module_0_name",
+            legend=True,
+            markers=True,
+            palette="muted",
+            markeredgecolor="dimgrey" if background == "default" else "lightgrey",
+            markeredgewidth=0.5,
+            ax=ax
+        )
+        
+        ax.set_ylabel(f"Self-supervised pretraining {gpu_type} time per epoch (seconds)")
+        ax.set_xlabel("Number of GPUs")
+
+        ax.set_ylim(50, 2.5*60)
+        ax.set_xlim(7, 33)
+        ax.set_xticks([8, 16, 24, 32])
+        
+        ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
+        ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
+        
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+
+        legend_handles, _ = g.get_legend_handles_labels()
+        labels = ["JEPA (628M)", "MAE (319M)"]
+        ax.legend(legend_handles, labels, loc="upper right", ncol=1, title="", frameon=False)
+                    
+        plt.savefig(f"{outdir}/gpu_scaling_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/gpu_scaling_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/gpu_scaling_{background}.svg")
+
+
+def plot_model_scaling(data, outdir):
+    df = data.copy()
+    df.query("training_gpus == 8", inplace=True)
+    df["epoch_time_per_gpu_per_token"] = df["epoch_time"] / df["tokens_per_epoch"] * df["training_gpus"] # seconds per token per gpu
+    gpu_type = df["gpu"].unique()[0]
+    token_shape = df["token_shape"].iloc[0]
+
+    for dataset_size, label in zip([1e5, 1e6, 1e7, 1e8], ["100K", "1M", "10M", "100M"]):
+        df[f"epoch_time_per_gpu_{label}"] = dataset_size * df["epoch_time_per_gpu_per_token"] / (3600 * 24)
+    
+    print(df[[
+        "index",  
+        # "model_params", 
+        "trainable_model_params",
+        # "batch_size_per_gpu",
+        # "batch_size",
+        # "tokens_per_epoch", 
+        # "steps_per_epoch",
+        "epoch_time", 
+        "epoch_time_per_gpu_100K", 
+        "epoch_time_per_gpu_1M", 
+        "epoch_time_per_gpu_10M", 
+        "epoch_time_per_gpu_100M"
+    ]])
+        
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
+
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12, 
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+        
+        for ii, (ll, offset) in enumerate(
+            zip(
+                ["100K", "1M", "10M", "100M"],
+                [0, 0, 0.15, 0.3],
+            )
+        ):
+            if ii == 0:
+                axis = ax
+            else:
+                axis = ax.twinx()
+                axis.spines["right"].set_position(("axes", 1 + offset))
+
+            
+            g = sns.lineplot(
+                data=df,
+                x="trainable_model_params",
+                y=f"epoch_time_per_gpu_{ll}",
+                hue="main_module_0_name",
+                style="main_module_0_name",
+                legend=True,
+                markers=True,
+                palette="muted",
+                markeredgecolor="dimgrey" if background == "default" else "lightgrey",
+                markeredgewidth=0.5,
+                ax=axis
+            )
+            
+            # for i, m in enumerate(df["main_module_0_name"].unique()):
+            #     df_m = df.query("main_module_0_name == @m")
+            #     sns.regplot(
+            #         data=df_m,
+            #         x="trainable_model_params",
+            #         y=f"epoch_time_per_gpu_{ll}",
+            #         fit_reg=True,
+            #         ci=None,
+            #         order=1,
+            #         color=sns.color_palette("muted")[i],
+            #         label=m,
+            #         scatter=False,
+            #         truncate=True,
+            #         ax=axis,
+            #     )
+            
+            axis.patch.set_visible(False)
+            plt.setp(axis.spines.values(), visible=False)
+            axis.spines["right"].set_visible(True)
+            axis.spines["left"].set_visible(True)
+            axis.spines["bottom"].set_visible(True)
+            
+            axis.set_ylabel(ll)
+            if ll is not None and ii != 0:
+                axis.yaxis.set_label_coords(1 + offset, 1.07)
+                
+            if ii == 0:
+                axis.annotate(
+                    ll, xy=(0, 1.03), xycoords="axes fraction", clip_on=False, ha="center", rotation=90
+                )
+                
+            axis.set_xscale("log")
+            axis.set_yscale("log")
+            formatter = ticker.FuncFormatter(days_to_formatter)
+            axis.yaxis.set_major_formatter(formatter)
+            axis.yaxis.set_minor_formatter(formatter)
+            axis.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=[0.25, 0.5, 0.75]))
+            
+            axis.set_xlim(1e8, 2e9)
+            
+            legend_handles, _ = g.get_legend_handles_labels()
+            if "3d" in str(outdir):
+                labels = [
+                    f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})", 
+                    f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})",
+                ]
+                axis.set_ylim(1e-3 * 10**ii, 1e-0 * 10**ii)
+            else:
+                labels = [
+                    f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})", 
+                    f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})",
+                ]
+                axis.set_ylim(1e-2 * 10**ii, 10 * 10**ii)
+                
+            axis.legend(legend_handles, labels, loc="upper left", ncol=1, title="", frameon=False)
+        
+        ax.set_ylabel(f"Self-supervised pretraining {gpu_type} time per epoch")
+        ax.set_xlabel("Trainable model parameters")
+        
+        ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
+        ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
+                    
+        plt.savefig(f"{outdir}/model_scaling_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/model_scaling_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/model_scaling_{background}.svg")
+
+
+def plot_utilization(data, outdir):
+            
+    df = data.copy()
+    df.query("training_gpus == 8", inplace=True)
+    gpu = df["gpu"].unique()[0]
+    token_shape = df["token_shape"].iloc[0]
+        
+    df = pd.melt(
+        df, id_vars=["index", "trainable_model_params", "main_module_0_name"], 
+        value_vars=[f"q75_utilization_per_gpu", f"max_vram_percent_per_gpu"], 
+        var_name="metric", 
+        value_name="value"
+    )
+    print(df)
+        
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
+
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12, 
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        g = sns.relplot(
+            data=df,
+            x="trainable_model_params",
+            y="value",
+            hue="main_module_0_name",
+            col="metric",
+            kind="line",
+            markers=True,
+            palette="muted",
+            legend=True,
+            ax=ax
+        )
+        
+        g.set_titles("")
+        g.set_ylabels("")
+        g.set_xlabels("Trainable model parameters", clear_inner=False)
+        g.set(xlim=(1e8, 2.2e9), ylim=(85, 100))
+        
+        if "3d" in str(outdir):
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})",
+            ]
+        else:
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})",
+            ]
+            
+        sns.move_legend(g, labels=labels, loc="upper left", ncol=2, frameon=False, title="")
+        
+        for i, ax in enumerate(g.axes.flat):
+            
+            ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
+            ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
+            ax.spines['right'].set_visible(False)
+            ax.spines['top'].set_visible(False)
+
+            if i == 0:
+                ax.set_title(f"{gpu} utilization (75th percentile)")
+            elif i == 1:
+                ax.set_title(f"{gpu} VRAM usage (Max)")
+                    
+        plt.savefig(f"{outdir}/utilization_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/utilization_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/utilization_{background}.svg")
+        
+        
+def plot_flops(data, outdir):
+            
+    df = data.copy()
+    df.query("training_gpus == 8", inplace=True)
+    gpu = df["gpu"].unique()[0]
+    token_shape = df["token_shape"].iloc[0]
+    
+    df = pd.melt(
+        df, id_vars=["index", "trainable_model_params", "main_module_0_name"], 
+        value_vars=[f"fwd_flop_per_second_per_gpu", f"bwd_flop_per_second_per_gpu"], 
+        var_name="metric", 
+        value_name="value"
+    )
+    print(df)
+        
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
+
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12, 
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        g = sns.relplot(
+            data=df,
+            x="trainable_model_params",
+            y="value",
+            hue="main_module_0_name",
+            col="metric",
+            kind="line",
+            markers=True,
+            palette="muted",
+            legend=True,
+            ax=ax
+        )
+        
+        g.set_titles("")
+        g.set_ylabels("")
+        g.set_xlabels("Trainable model parameters", clear_inner=False)
+        g.set(xlim=(1e8, 2.2e9), ylim=(None, None))
+        
+        if "3d" in str(outdir):
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})",
+            ]
+        else:
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})",
+            ]
+            
+        sns.move_legend(g, labels=labels, loc="upper left", ncol=2, frameon=False, title="")
+        
+        for i, ax in enumerate(g.axes.flat):
+            
+            ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
+            ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
+            ax.spines['right'].set_visible(False)
+            ax.spines['top'].set_visible(False)
+
+            if i == 0:
+                ax.set_title(f"Forward FLOPS ({gpu})")
+            elif i == 1:
+                ax.set_title(f"Backward FLOPS ({gpu})")
+            elif i == 2:
+                ax.set_title(f"Total FLOPS ({gpu})")
+                    
+        plt.savefig(f"{outdir}/flops_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/flops_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/flops_{background}.svg")
+        
+        
+def plot_data_scaling(data, outdir):
+    df = data.copy()
+    df.query("training_gpus == 8", inplace=True)
+    gpu = df["gpu"].unique()[0]
+    token_shape = df["token_shape"].iloc[0]
+    
+    print(df[[
+        "index", 
+        "trainable_model_params", 
+        "batch_size", 
+        "batch_size_per_gpu", 
+        "tokens_per_second", 
+        "tokens_per_second_per_gpu", 
+        "gib_per_second", 
+        "gib_per_second_per_gpu",
+        "main_module_0_name"
+    ]])
+        
+    for background in ["default", "dark_background"]:
+        plt.style.use(background)
+
+        plt.rcParams.update(
+            {
+                #'font.family': 'Helvetica',
+                "font.size": 12,
+                "axes.titlesize": 14,
+                "axes.labelsize": 14,
+                "xtick.labelsize": 12, 
+                "ytick.labelsize": 12,
+                "legend.fontsize": 12,
+                "axes.autolimit_mode": "round_numbers",
+                "hatch.color": "k",
+            }
+        )
+        fig, ax = plt.subplots(figsize=(8, 8))
+        
+        g = sns.lineplot(
+            data=df,
+            x="trainable_model_params",
+            y="gib_per_second_per_gpu",
+            hue="main_module_0_name",
+            style="main_module_0_name",
+            legend=True,
+            markers=True,
+            palette="muted",
+            markeredgecolor="dimgrey" if background == "default" else "lightgrey",
+            markeredgewidth=0.5,
+            ax=ax
+        )
+
+        ax.set_xscale("log")
+        ax.set_ylabel(f"GiB/s ({gpu})")
+        ax.set_xlabel("Trainable model parameters")
+        ax.set_ylim(0, 6)
+        ax.set_xlim(1e8, 2e9)
+        
+        ax.grid(True, which="major", axis="both", lw=0.1, ls="-", zorder=0)
+        ax.grid(True, which="minor", axis="both", lw=0.1, ls="-", zorder=0)
+        
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+
+        legend_handles, _ = g.get_legend_handles_labels()
+        
+        if "3d" in str(outdir):
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['c']})",
+            ]
+        else:
+            labels = [
+                f"JEPA ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})", 
+                f"MAE ({token_shape['x']}, {token_shape['y']}, {token_shape['z']}, {token_shape['t']}, {token_shape['c']})",
+            ]
+        ax.legend(legend_handles, labels, loc="lower left", ncol=1, title="", frameon=False)
+
+        plt.savefig(f"{outdir}/data_scaling_{background}.pdf", bbox_inches="tight", pad_inches=0.25)
+        plt.savefig(f"{outdir}/data_scaling_{background}.png", dpi=300, bbox_inches="tight", pad_inches=0.25)
+        savesvg(fig, f"{outdir}/data_scaling_{background}.svg")

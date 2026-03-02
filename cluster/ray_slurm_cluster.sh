@@ -76,6 +76,7 @@ do_cleanup() {
             fi
             # fallback: run cleanup ourselves
             python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+            bash /workspace/cell_observatory_platform/cluster/clean_shm.sh || true
             ray stop --force >/dev/null 2>&1 || true
             '
     " >/dev/null 2>&1 &
@@ -101,6 +102,7 @@ do_cleanup() {
                     fi
                     # fallback: run cleanup ourselves
                     python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+                    bash /workspace/cell_observatory_platform/cluster/clean_shm.sh || true
                     ray stop --force >/dev/null 2>&1 || true
                 '
             " >/dev/null 2>&1 &
@@ -113,7 +115,7 @@ do_cleanup() {
         wait "$pid" || true
     done
 
-    sleep 90
+    sleep 120
 
     echo "Shutting down the job"
     scancel "$SLURM_JOB_ID"
@@ -129,7 +131,7 @@ srun -n1 -N1 -w $head_node "
 " &
 head_bg_pid=$!
 
-sleep 10
+sleep 60
 check_headnode="apptainer exec --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray status --address $head_node_ip:$port"
 while ! $check_headnode; do
     echo "Waiting for head node..."
@@ -160,6 +162,7 @@ fi
 # trap 'do_cleanup' EXIT
 trap 'do_cleanup; exit 130' INT # SIGINT
 trap 'do_cleanup; exit 143' TERM # SIGTERM like bkill
+trap 'do_cleanup; exit 140' TERM # TERM_RUNLIMIT 
 
 # CHECK CLUSTER STATUS
 srun -n1 -N1 -w $head_node " 

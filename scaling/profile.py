@@ -210,7 +210,7 @@ def data_memory_footprint(volume_size, batch_size=1, dtype='float16'):
     return gbytes
 
 
-def compute_time(flops, gpu="H100", unit="seconds", mfu=.5):
+def compute_time(flops, gpu="H200", unit="seconds", mfu=.5):
     """
     Google benchmark
     https://github.com/GoogleCloudPlatform/vertex-ai-samples/blob/main/community-content/vertex_model_garden/benchmarking_reports/jax_vit_benchmarking_report.md
@@ -237,7 +237,21 @@ def compute_time(flops, gpu="H100", unit="seconds", mfu=.5):
         # https://resources.nvidia.com/en-us-hopper-architecture/nvidia-h100-tensor-c
         # ~x2 A100
         # average_utilization = 109 * 10 ** 12
-        peak_theoretical_flops = 989.4 * 10 ** 12
+        peak_theoretical_flops = 989 * 10 ** 12
+        
+    elif gpu == "H200":
+        # https://newsletter.semianalysis.com/p/nvidia-blackwell-perf-tco-analysis
+        peak_theoretical_flops = 989 * 10 ** 12
+
+    elif gpu == "B100":
+        # https://newsletter.semianalysis.com/p/nvidia-blackwell-perf-tco-analysis
+        # ~x2 H200
+        peak_theoretical_flops = 1750 * 10 ** 12
+        
+    elif gpu == "B200":
+        # https://newsletter.semianalysis.com/p/nvidia-blackwell-perf-tco-analysis
+        # ~x2 H200
+        peak_theoretical_flops = 2250 * 10 ** 12
 
     else:
         raise Exception("Unknown GPU device")

@@ -83,7 +83,7 @@ jobs:
       ORG: ${{ github.repository_owner }}
     steps:
       - name: Delete old tagged images
-        uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
+        uses: snok/container-retention-policy@v3.0.1
         with:
           tag-selection: tagged
           image-names: "*"      # cell_observatory_platform, aovift, ...
@@ -100,7 +100,7 @@ jobs:
       ORG: ${{ github.repository_owner }}
     steps:
       - name: Delete old untagged images
-        uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
+        uses: snok/container-retention-policy@v3.0.1
         with:
           tag-selection: untagged
           image-names: "*"      # cell_observatory_platform, aovift, ...
@@ -155,7 +155,7 @@ jobs:
           echo "IMAGES_FILTER=$(paste -sd ' '  all_feature_branches_names.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Delete old untagged images
-        uses: snok/container-retention-policy@4f22ef80902ad409ed55a99dc5133cc1250a0d03    # v3.0.0
+        uses: snok/container-retention-policy@v3.0.1
         env:
           IMAGES_FILTER: ${{ steps.get_branches.outputs.IMAGES_FILTER }}
         with:

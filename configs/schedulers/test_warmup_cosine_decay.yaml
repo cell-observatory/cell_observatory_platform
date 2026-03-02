@@ -1,7 +1,7 @@
 type: cosine
-epochs: 5
-warmup: 1
-cooldown: 1
+epochs: 10
+warmup: 2
+cooldown: 2
 fixedlr: false
 ema: [0.998, 1.0]
 warmup_min_ratio: 0.5
