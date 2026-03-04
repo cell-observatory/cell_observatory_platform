@@ -47,8 +47,7 @@ RUN echo "PS1='\e[97m\u\e[0m@\e[94m\h\e[0m:\e[35m\w\e[0m# '" >> /root/.bashrc
 
 
 # Install requirements. Don't "apt-get upgrade" or else all the NVIDIA tools and drivers will update.
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
   sudo \
   htop \
   cifs-utils \
@@ -68,8 +67,13 @@ RUN apt-get update \
   xsltproc \ 
   docbook-xsl \
   libnuma-dev \
+  software-properties-common \
   && rm -rf /var/lib/apt/lists/*
 
+
+RUN echo "Install apptainer"
+RUN add-apt-repository -y ppa:apptainer/ppa
+RUN apt-get update && apt-get install -y apptainer && rm -rf /var/lib/apt/lists/*
 
 RUN echo "Installing grafana"
 
@@ -98,6 +102,7 @@ COPY requirements.txt requirements.txt
 
 RUN echo "Install additional dependencies"
 FROM pip_install AS torch_26_01
+RUN pip install --ignore-installed cryptography
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt --progress-bar off --root-user-action=ignore --cache-dir /root/.cache/pip
 
