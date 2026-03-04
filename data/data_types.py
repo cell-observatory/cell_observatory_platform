@@ -34,6 +34,9 @@ class NUMPY_DTYPES(Enum):
     float16 = numpy.float16
     fp16 = numpy.float16
 
+    uint8 = numpy.uint8
+    u8 = numpy.uint8
+
     uint16 = numpy.uint16
     u16 = numpy.uint16
 
