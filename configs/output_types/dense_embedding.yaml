@@ -1,6 +1,7 @@
 output_type: dense_embedding
 dtype: float32
 order: C
+axes: TZYXD
 
 save:
   format: zarr

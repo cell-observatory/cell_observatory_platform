@@ -1,6 +1,7 @@
 output_type: dense_semantic
 dtype: float32
 order: C
+axes: TZYXC
 
 save:
   format: zarr

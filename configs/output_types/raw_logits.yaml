@@ -1,9 +1,10 @@
 output_type: raw_logits
 dtype: float32
 order: C
+axes: QC
 
 save:
-  format: zarr
+  format: npy
   destination: temp
 
 viz:
