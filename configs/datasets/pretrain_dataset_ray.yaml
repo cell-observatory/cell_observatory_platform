@@ -43,7 +43,8 @@ distributed_sampler: true
 prefetch_factor: 1 # prefetch factor for the dataloader
 num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
 
-drop_last_policy: true # whether to drop the last batch if it is smaller than the batch size
+# "drop" = drop last incomplete batch; "pad" = pad last batch with zeros, set batch_size_actual and valid_mask
+last_batch_policy: "drop"
 
 collate_fn:
   _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.CollatorActor

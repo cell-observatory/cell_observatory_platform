@@ -434,6 +434,10 @@ class FinetuneCollatorActor:
             for k in self.columns:
                 if k in batch:
                     meta_cpu[k] = batch[k]
+            if "batch_size_actual" in batch:
+                meta_cpu["batch_size_actual"] = batch["batch_size_actual"]
+            if "valid_mask" in batch:
+                meta_cpu["valid_mask"] = batch["valid_mask"]
 
             # Build targets only when requested (training). For inference, produce empty targets
             # so downstream transforms that expect `metainfo["targets"]` still work.
@@ -779,6 +783,10 @@ class CollatorActor:
             for k in self.columns:
                 if k in batch:
                     metainfo[k] = batch[k]
+            if "batch_size_actual" in batch:
+                metainfo["batch_size_actual"] = batch["batch_size_actual"]
+            if "valid_mask" in batch:
+                metainfo["valid_mask"] = batch["valid_mask"]
 
             if self.debug:
                 # NOTE: for testing only, put_free(idx) otherwise called by hooks in
@@ -812,10 +820,14 @@ class LoaderActor:
         with_batched_api: bool = True,
         channels_subset: Optional[List[int]] = None,
         pad_mode: Literal["zero"] = "zero",
+        last_batch_policy: str = "drop",
+        save_mode: str = "create",
     ):
         self.dim = dim
         self.input_format = input_format.upper()
         self.pad_mode = pad_mode
+        self.last_batch_policy = last_batch_policy
+        self.save_mode = save_mode
 
         self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
         self.driver_process_numa_node = numa_node
@@ -910,14 +922,26 @@ class LoaderActor:
         return h
 
     def __call__(self, batch):
+        actual_len = len(batch["server_folder"])
+        if actual_len > self.batch_size:
+            raise ValueError(
+                f"Batch has {actual_len} elements but batch_size is {self.batch_size}. "
+                "Partitioning should ensure batch_size is never exceeded."
+            )
+
         buffer = ray.get(self.buffer_actor.get_free.remote())
         dst = np.ndarray(
             self.batch_shape, dtype=self.buffer_dtype, buffer=self._shm.buf, offset=buffer["slot"] * self.slot_bytes
         )
 
+        # When last_batch_policy == "pad" and batch is partial, pad with zeros
+        need_pad = self.last_batch_policy == "pad" and actual_len < self.batch_size
+        if need_pad:
+            dst.fill(0)
+
         write_futs = []
         with ts.Batch() as b:
-            for i in range(self.batch_size):
+            for i in range(actual_len):
                 p = os.path.join(
                     batch["server_folder"][i],
                     batch["output_folder"][i],
@@ -990,6 +1014,39 @@ class LoaderActor:
 
         batch["buffer_name"] = np.array([buffer["name"]] * self.batch_size)
         batch["buffer_idx"] = np.full((self.batch_size,), buffer["slot"], dtype=np.int32)
+        batch["batch_size_actual"] = actual_len
+        batch["valid_mask"] = np.array([i < actual_len for i in range(self.batch_size)], dtype=bool)
+
+        if self.save_mode == "append_channel":
+            batch["existing_zarr_path"] = np.array(
+                [
+                    os.path.join(
+                        batch["server_folder"][i],
+                        batch["output_folder"][i],
+                        batch["tile_name"][i],
+                    )
+                    for i in range(actual_len)
+                ],
+                dtype=object,
+            )
+
+        if need_pad:
+            for k, v in list(batch.items()):
+                if k in ("buffer_name", "buffer_idx", "batch_size_actual", "valid_mask"):
+                    continue
+                if hasattr(v, "__len__") and len(v) == actual_len and actual_len < self.batch_size:
+                    if isinstance(v, np.ndarray):
+                        if v.dtype.kind in ("U", "S", "O"):
+                            pad_val = v[-1] if actual_len > 0 else ""
+                            batch[k] = np.concatenate([v, np.array([pad_val] * (self.batch_size - actual_len))])
+                        else:
+                            batch[k] = np.pad(
+                                v, (0, self.batch_size - actual_len), mode="edge"
+                            )
+                    else:
+                        pad_val = v[-1] if actual_len > 0 else None
+                        batch[k] = list(v) + [pad_val] * (self.batch_size - actual_len)
+
         return batch
 
 
@@ -1014,14 +1071,14 @@ def partition_indices_for_inference(
     df: pd.DataFrame,
     world_size: int,
     batch_size: int,
-    drop_last_policy: bool,
+    last_batch_policy: str,
     roi_col: str = "prepared_id",
     tile_col: str = "tile_name",
 ) -> list[list[int]]:
     total = len(df)
     num_samples_per_rank = total // world_size
 
-    if drop_last_policy:
+    if last_batch_policy == "drop":
         num_samples_per_rank = (num_samples_per_rank // batch_size) * batch_size
 
     # round-robin assignment if not enough samples
@@ -1094,7 +1151,7 @@ def get_dataset_ray(
     dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
     shuffle: bool = False,
-    drop_last: bool = True,
+    last_batch_policy: str = "drop",
 ):
     if seed is not None and not shuffle:
         raise ValueError("Seed provided but shuffle is False.")
@@ -1136,7 +1193,7 @@ def get_dataset_ray(
             df=base_df,
             world_size=ws,
             batch_size=cfg.clusters.batch_size_per_gpu,
-            drop_last_policy=drop_last,
+            last_batch_policy=last_batch_policy,
             roi_col="prepared_id",
             tile_col="tile_name",
         )
@@ -1163,7 +1220,7 @@ def get_dataset_ray(
         shard_len = n_shard // ws
         local_table = table.slice(rk * shard_len, shard_len)
 
-        if drop_last:
+        if last_batch_policy == "drop":
             B = cfg.clusters.batch_size_per_gpu
             keep = (local_table.num_rows // B) * B
             local_table = local_table.slice(0, keep)
@@ -1199,6 +1256,8 @@ def get_dataset_ray(
             "numa_node": torch_gpu_to_numa(local_rank())["numa_node"],
             "dim": get_data_dim(cfg.dataset_layout_order),
             "input_format": cfg.dataset_layout_order,
+            "last_batch_policy": cfg.datasets.last_batch_policy,
+            "save_mode": cfg.inference.save_mode,
         },
         compute=ray.data.ActorPoolStrategy(min_size=cfg.datasets.num_actors_min, max_size=cfg.datasets.num_actors_max),
     )
@@ -1211,7 +1270,7 @@ def get_dataloader_ray(
     batch_size: int,
     collate_fn: Optional[Callable],
     epoch: int = 0,
-    drop_last: bool = True,
+    last_batch_policy: str = "drop",
     database: Optional[Any] = None,
     dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
@@ -1245,7 +1304,7 @@ def get_dataloader_ray(
             dp_rank=dp_rank,
             seed=int(cfg.seed) + int(epoch),
             shuffle=True,
-            drop_last=drop_last,
+            last_batch_policy=last_batch_policy,
         )
         val_dataset, val_dataset_len = get_dataset_ray(
             cfg,
@@ -1256,7 +1315,7 @@ def get_dataloader_ray(
             dp_rank=dp_rank,
             seed=None,
             shuffle=False,
-            drop_last=drop_last,
+            last_batch_policy=last_batch_policy,
         )
 
         record_dataset_len(cfg, train_dataset_len, val_dataset_len)
@@ -1271,9 +1330,15 @@ def get_dataloader_ray(
 
     else:
         train_dataset, train_dataset_len = get_dataset_ray(
-            cfg, indices=None, database=db, columns=list(cfg.datasets.columns), 
-            dp_degree=dp_degree, dp_rank=dp_rank, 
-            seed=int(cfg.seed) + int(epoch), shuffle=True, drop_last=drop_last
+            cfg,
+            indices=None,
+            database=db,
+            columns=list(cfg.datasets.columns),
+            dp_degree=dp_degree,
+            dp_rank=dp_rank,
+            seed=int(cfg.seed) + int(epoch),
+            shuffle=True,
+            last_batch_policy=last_batch_policy,
         )
         record_dataset_len(cfg, train_dataset_len, 0)
 
