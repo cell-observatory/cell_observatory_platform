@@ -173,3 +173,67 @@ def get_buffers(type: str,
         return ray.get_actor(name, namespace=f"buffers_node_{node_id}")
     else:
         raise ValueError(f"Unsupported buffer type: {type}")
+
+
+def set_output_buffers(
+    local_rank: int,
+    global_rank: int,
+    numa_node: int,
+    batch_size: int,
+    output_shape: tuple,
+    dtype: str = "float16",
+    buffer_capacity: int = 8,
+    pin_to_numa_node: bool = True,
+    node_id: int = 0,
+    max_concurrent_calls: int = 256,
+):
+    """
+    Create OutputBuffer for inference: shared memory for model outputs
+    (batch_size, T, Z, Y, X, C_out). Metadata (roi, tile_name, coords, etc.)
+    is passed separately with each slot reference.
+    """
+    name = f"output_shm_buffer_numa_{numa_node}_rank_{global_rank}"
+    input_shape = output_shape
+
+    ray.logger.info(
+        f"Global rank {global_rank} creating output buffer actor "
+        f"on local rank {local_rank} and NUMA node {numa_node}"
+    )
+
+    scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
+        node_id=node_id,
+        soft=False,
+    )
+    buffer = HostMemoryBuffer.options(
+        name=name,
+        namespace=f"buffers_node_{node_id}",
+        lifetime="detached",
+        max_concurrency=max_concurrent_calls,
+        scheduling_strategy=scheduling_strategy,
+    ).remote(
+        name=name,
+        dtype=dtype,
+        capacity=buffer_capacity,
+        batch_size=batch_size,
+        input_shape=input_shape,
+        pin_numa_node=pin_to_numa_node,
+        numa_node=numa_node,
+    )
+    buffer_cfg = ray.get(buffer.get_config.remote())
+
+    ray.logger.info(
+        f"Output buffer actor '{name}' on NUMA node {numa_node} "
+        f"with capacity {buffer_capacity} and batch shape {(batch_size, *input_shape)}"
+    )
+
+    return buffer, buffer_cfg
+
+
+def get_output_buffers(
+    global_rank: int,
+    local_rank: int,
+    node_id: int,
+    numa_node: int,
+):
+    name = f"output_shm_buffer_numa_{numa_node}_rank_{global_rank}"
+    return ray.get_actor(name, namespace=f"buffers_node_{node_id}")
