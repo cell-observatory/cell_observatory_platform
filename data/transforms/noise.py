@@ -18,7 +18,7 @@ class MixedPoissonGaussianNoise:
         """
         Adds realistic mixed Poisson-Gaussian noise to the input data.
         
-        Assumes that the input data is expressed as incident photons (counts).
+        Assumes that the input data is expressed as incident photons.
         
         Args:
             quantum_efficiency: float or tuple[float, float] representing quantum efficiency of the camera
