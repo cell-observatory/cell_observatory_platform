@@ -1,0 +1,69 @@
+_target_: cell_observatory_platform.inference.inferencer.InferencerWorker
+
+aggregate_mode: save_local
+
+use_cached_hypercubes_dataframe: ${datasets.databases.use_cached_hypercubes_dataframe}
+hypercubes_dataframe_path: ${datasets.databases.hypercubes_dataframe_path}
+
+input_format: ${dataset_layout_order} 
+input_shape: ${datasets.input_shape}
+patch_shape: ${datasets.patch_shape}
+timepoint_list: ${datasets.databases.timepoint_list}
+
+task: semantic_segmentation
+decoder_head_type: "mask2former"
+feature_viz_type: null
+
+roi_tile_list: null
+
+protocol: ${datasets.databases.protocol}
+dotenv_path: null
+dbname: ${datasets.databases.dbname}
+server_folder_path: ${paths.server_folder_path}
+verbose: false
+max_hypercubes: null
+max_partitions: 10
+num_save_workers: 2
+
+# BufferManager memory budget (Phase 0B). Phase 6 will roll out to all configs.
+memory:
+  rank_memory_budget_gb: 64
+  fractions:
+    pre: 0.1
+    post: 0.1
+    save: 0.7
+    viz: 0.1
+
+# "create" = write to pred_{roi}_{tile}.zarr; "append_channel" = extend existing zarr at server_folder/output_folder/tile_name
+save_mode: "create"
+
+# plotting parameters
+save_dir: ${paths.outdir}/inference_semantic_segmentation
+save_as_pdf: true
+save_as_volume: false
+z_step_pdf: 1
+mip_depth: 1
+pmin: 1.0
+pmax: 99.0
+
+# TIFF OPTION:
+# save_format: "tiff"
+# zarr_chunk_shape: null
+# zarr_shard_shape: null
+
+# ZARR OPTION:
+save_format: "zarr"
+zarr_chunk_shape: [32, 32, 32]
+zarr_shard_shape: [128, 128, 128]
+
+outputs_metadata:
+  predictions:
+    activation: null
+    num_output_channels: 1
+
+auxiliary_outputs:
+  - name: data_tensor
+    path: data_tensor
+    num_output_channels: ${datasets.input_shape[3]}
+    activation: null
+    patchified: false
