@@ -49,7 +49,7 @@ def test_data_pipeline_ray_distributed(config):
         config.datasets.prefetch_factor = 1
         config.datasets.num_workers = "${clusters.cpus_per_worker}"
 
-        config.datasets.drop_last_policy = True
+        config.datasets.last_batch_policy = "drop"
 
         config.datasets.collate_fn = {
             "_target_": "cell_observatory_platform.data.datasets.pretrain_dataset_ray.CollatorActor",

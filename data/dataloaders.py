@@ -137,7 +137,7 @@ def get_dataloader(
         dataloader_config = {
             "cfg": config,
             "batch_size": config.clusters.batch_size_per_gpu,
-            "drop_last": config.datasets.drop_last_policy,
+            "last_batch_policy": config.datasets.last_batch_policy,
             "collate_fn": collate_fn,
             "database": db,
             "dp_degree": dp_degree,
@@ -146,7 +146,7 @@ def get_dataloader(
         train_dataloader, val_dataloader, database_df = get_dataloader_ray(
             cfg=config,
             batch_size=config.clusters.batch_size_per_gpu,
-            drop_last=config.datasets.drop_last_policy,
+            last_batch_policy=config.datasets.last_batch_policy,
             collate_fn=collate_fn,
             database=db,
             dp_degree=dp_degree,
