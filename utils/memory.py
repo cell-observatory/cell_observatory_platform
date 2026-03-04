@@ -4,7 +4,8 @@ import os
 import psutil
 import datetime as _dt
 import subprocess
-from typing import Dict, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import ray
 import torch
@@ -134,3 +135,53 @@ def process_summary() -> str:
 
 def top_processes_rss(n: int = 15) -> str:
     return _run_cmd(["bash", "-lc", f"ps -eo pid,rss,comm --sort=-rss | head -n {n+1}"])
+
+
+def check_inference_capacity(
+    output_base_path: Union[Path, str],
+    estimated_bytes: int,
+    min_free_disk_gb: float = 10.0,
+    min_free_ram_gb: Optional[float] = None,
+) -> Tuple[bool, str]:
+    """
+    Pre-flight check for inference: verify disk and optionally RAM capacity.
+
+    Returns (ok, message). If ok is False, message explains the failure.
+    """
+    path = str(output_base_path)
+    if not path or path == ".":
+        path = os.getcwd()
+    path = os.path.abspath(path)
+
+    total, used, free = statvfs_usage(path)
+    if free is not None:
+        min_free_bytes = int(min_free_disk_gb * 1e9)
+        if free < estimated_bytes:
+            return (
+                False,
+                f"Insufficient disk space: need {estimated_bytes / 1e9:.1f} GB, "
+                f"only {free / 1e9:.1f} GB free at {path}",
+            )
+        if free < min_free_bytes:
+            return (
+                False,
+                f"Insufficient disk space: need at least {min_free_disk_gb} GB free, "
+                f"only {free / 1e9:.1f} GB free at {path}",
+            )
+    else:
+        return False, f"Cannot stat filesystem at {path}"
+
+    if min_free_ram_gb is not None:
+        try:
+            mem = psutil.virtual_memory()
+            available_gb = mem.available / 1e9
+            if available_gb < min_free_ram_gb:
+                return (
+                    False,
+                    f"Insufficient RAM: need at least {min_free_ram_gb} GB free, "
+                    f"only {available_gb:.1f} GB available",
+                )
+        except Exception as e:
+            return False, f"Cannot check RAM: {e}"
+
+    return True, "OK"
