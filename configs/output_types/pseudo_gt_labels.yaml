@@ -1,12 +1,10 @@
-output_type: bboxes
+output_type: pseudo_gt_labels
 dtype: float32
 order: C
-axes: Q6
+axes: QC
 
 save:
   format: zarr_attributes
   destination: existing
 
-viz:
-  handler: bbox_overlay
-  required: false
+postprocess: argmax
