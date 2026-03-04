@@ -21,6 +21,7 @@ server_folder_path: ${paths.server_folder_path}
 verbose: false
 max_hypercubes: null
 max_partitions: 10
+num_save_workers: 2
 
 save_dir: ${paths.outdir}/inference_upsample
 

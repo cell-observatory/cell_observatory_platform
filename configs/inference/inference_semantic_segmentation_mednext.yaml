@@ -5,18 +5,14 @@ aggregate_mode: save_local
 use_cached_hypercubes_dataframe: ${datasets.databases.use_cached_hypercubes_dataframe}
 hypercubes_dataframe_path: ${datasets.databases.hypercubes_dataframe_path}
 
-input_format: ${dataset_layout_order} 
+input_format: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
 patch_shape: ${datasets.patch_shape}
 timepoint_list: ${datasets.databases.timepoint_list}
 
-task: detection
-decoder_head_type: "plaindetr"
+task: semantic_segmentation
+decoder_head_type: "unet"
 feature_viz_type: null
-
-pred_boxes_format: xyzxyz
-gt_boxes_format: cxcyczwhd
-scale_gt_boxes: false
 
 roi_tile_list: null
 
@@ -29,40 +25,29 @@ max_hypercubes: null
 max_partitions: 10
 num_save_workers: 2
 
-save_dir: ${paths.outdir}/inference_detection
+save_dir: ${paths.outdir}/inference_semantic_segmentation
 
 # plotting parameters
 save_as_pdf: true
 save_as_volume: false
-z_step_pdf: 10
+z_step_pdf: 1
+mip_depth: 1
 pmin: 1.0
 pmax: 99.0
-
-# TIFF OPTION:
-# save_format: "tiff"
-# zarr_chunk_shape: null
-# zarr_shard_shape: null
 
 # ZARR OPTION:
 save_format: "zarr"
 zarr_chunk_shape: [32, 32, 32]
 zarr_shard_shape: [128, 128, 128]
 
-# --- not used for detection ---
-
 outputs_metadata:
   predictions:
     activation: null
-    num_output_channels: null
+    num_output_channels: 1
 
 auxiliary_outputs:
   - name: data_tensor
     path: data_tensor
-    num_output_channels: 1
-    activation: null
-    patchified: false
-  - name: targets
-    path: targets
-    num_output_channels: null
+    num_output_channels: ${datasets.input_shape[3]}
     activation: null
     patchified: false
