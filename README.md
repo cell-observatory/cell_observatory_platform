@@ -48,7 +48,7 @@
 ## Docker [images](https://github.com/cell-observatory/cell_observatory_platform/pkgs/container/cell_observatory_platform)
 Our prebuilt image with Python, Torch, and all packages installed for you.
 ```shell
-docker pull ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08
+docker pull ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_26_01
 ```
 
 ## Clone the repository to your host system
@@ -109,7 +109,7 @@ PYTHONPATH=REPLACE_ME_WITH_YOUR_ROOT_REPO_DIR
 
 To run docker image, cd to repo directory or replace `$(pwd)` with your local path for the repository.
 ```shell
-docker run --network host -u 1000 --privileged -v $(pwd):/workspace/cell_observatory_platform -w /workspace/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -it --rm  --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08 bash
+docker run --network host -u 1000 --privileged -v $(pwd):/workspace/cell_observatory_platform -w /workspace/cell_observatory_platform --env PYTHONUNBUFFERED=1 --pull missing -it --rm  --ipc host --gpus all ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_26_01bash
 ```
 
 ## Running docker image on a cluster via apptainer
@@ -117,23 +117,23 @@ Running an image on a cluster typically requires an apptainer version of the ima
 
 ### amd64/x86_64
 ```shell
-apptainer pull --arch amd64 --force develop_torch_25_08.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08
+apptainer pull --arch amd64 --force develop_torch_26_01.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_26_01
 ```
 
 ### arm64/aarch64
 ```shell
-apptainer pull --arch arm64 --force develop_torch_25_08.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08
+apptainer pull --arch arm64 --force develop_torch_26_01.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_26_01
 ```
 
 ## Building a new apptainer image with a different torch version 
-First, you need to build an apptainer image for torch from the containers provided by Nvidia (e.g., `25.08-py3` from this [catalog](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch/tags)):
+First, you need to build an apptainer image for torch from the containers provided by Nvidia (e.g., `26.01-py3` from this [catalog](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch/tags)):
 ``` shell
-apptainer pull --arch amd64 --force pytorch_25.08-py3.sif docker://nvcr.io/nvidia/pytorch:25.08-py3
+apptainer pull --arch amd64 --force pytorch_26.01-py3.sif docker://nvcr.io/nvidia/pytorch:26.01-py3
 ```
 
 Then you can run the following command to build a complete image:  
 ``` shell
-apptainer build --arch amd64 --nv --force develop_torch_25_08.sif apptainerfile.def
+apptainer build --arch amd64 --nv --force develop_torch_26_01.sif apptainerfile.def
 ```
 
 > [!IMPORTANT]

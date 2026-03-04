@@ -1,5 +1,5 @@
 docker_image: null
-apptainer_image: /groups/betzig/betziglab/thayer/develop_torch_25_08.sif
+apptainer_image: /groups/betzig/betziglab/thayer/develop_torch_26_01.sif
 
 # No need to change anything below
 # --------------------------------------------------------------------------------

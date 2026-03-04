@@ -1,5 +1,5 @@
 Bootstrap: localimage
-From: pytorch_25.08-py3.sif
+From: pytorch_26.01-py3.sif
 Stage: base
 
 %environment
@@ -69,11 +69,15 @@ apt-get update && \
 echo "Install ohmyzsh"
 sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
 
+echo "Install additional dependencies"
 # needs to have
 # sudo mount --bind ~/.cache/pip /tmp/pip
 pip list
 pip install -r requirements.txt --progress-bar off --cache-dir /tmp/pip
 pip list
+
+echo "Install ops3d kernels"
+pip install https://raw.githubusercontent.com/cell-observatory/ops3d/main/dist/ops3d-0.1.0-cp312-cp312-linux_x86_64.whl 
 
 %runscript
 exec /bin/bash -l -c "$@"
