@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
+from omegaconf import OmegaConf
 
 
 # Supported dtypes for layout computation (NumPy-compatible names)
@@ -146,6 +148,29 @@ def validate_layout(layout: OutputLayout) -> None:
         raise ValueError(
             f"sum(entry.nbytes)={total} != slot_bytes_total={layout.slot_bytes_total}"
         )
+
+
+def load_output_type_configs(
+    output_type_names: list[str],
+    config_dir: Optional[Path] = None,
+) -> dict[str, dict[str, Any]]:
+    """
+    Load output type configs from YAML files.
+    Returns {output_type_name: {dtype, order, save, viz, axes, ...}}.
+    """
+    if config_dir is None:
+        # Default: configs/output_types relative to package root
+        pkg_root = Path(__file__).resolve().parent.parent
+        config_dir = pkg_root.parent / "configs" / "output_types"
+    result: dict[str, dict[str, Any]] = {}
+    for name in output_type_names:
+        path = config_dir / f"{name}.yaml"
+        if path.exists():
+            cfg = OmegaConf.load(path)
+            result[name] = OmegaConf.to_container(cfg, resolve=True)
+        else:
+            raise FileNotFoundError(f"Output type config not found: {path}")
+    return result
 
 
 def compute_layout(
