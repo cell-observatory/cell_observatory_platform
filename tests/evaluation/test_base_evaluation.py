@@ -1,19 +1,19 @@
 import logging
 import sys
 from pathlib import Path
+import tempfile
 
 import pytest
 import torch
 from hydra.utils import get_class
 from omegaconf import DictConfig, open_dict
-from ray.train import report
+from ray.train import Checkpoint, report    
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
+from utils.context import is_main_process, process_rank
 
 
 def _test_base_evaluation(cfg: DictConfig):
-    from cell_observatory_platform.utils.context import process_rank
-
     rank = process_rank()
     trainer_cls = get_class(cfg.trainer)
     trainer = trainer_cls(cfg)
@@ -38,7 +38,13 @@ def _test_base_evaluation(cfg: DictConfig):
     evaluator.reset()
     assert all(v is None for v in evaluator._results.values())
 
-    report({"success": True})
+    metrics = {"success": True}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint = Checkpoint.from_directory(tmpdir)
+        if is_main_process():
+            return report(metrics=metrics, checkpoint=checkpoint)
+        else:
+            return report(metrics=metrics, checkpoint=None)
 
 
 def test_evaluation(config):

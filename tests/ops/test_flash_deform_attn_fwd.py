@@ -27,8 +27,8 @@ if not torch.cuda.is_available():
 
 N = 1  # batch size
 M = 8  # number of attention heads
-D = 288  # feature dimension (per head)
-Lq = 32 * 32 * 32  # query length
+D = 64  # feature dimension (per head)
+Lq = 16 * 16 * 16  # query length
 L = 4  # number of feature levels
 K = 8  # sampling points per query / head / level
 im2col_step = 128  # # partitions batch into bs/im2col calls

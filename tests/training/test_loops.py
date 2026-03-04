@@ -1,28 +1,42 @@
 import os
 import sys
 from pathlib import Path
+import tempfile
 
 import pytest
 import torch
 from hydra.utils import get_class
 from omegaconf import open_dict
-from ray.train import report
+from ray.train import Checkpoint, report
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
+from cell_observatory_platform.utils.context import is_main_process
 
 
 def _test_train_loop_dist(config):
     trainer_cls = get_class(config.trainer)
     trainer = trainer_cls(config)
     trainer.run()
-    report({"success": True})
+    metrics = {"success": True}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint = Checkpoint.from_directory(tmpdir)
+        if is_main_process():
+            return report(metrics=metrics, checkpoint=checkpoint)
+        else:
+            return report(metrics=metrics, checkpoint=None)
 
 
 def _test_testing_loop_dist(config):
     trainer_cls = get_class(config.trainer)
     trainer = trainer_cls(config)
     trainer.test()
-    report({"success": True})
+    metrics = {"success": True}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint = Checkpoint.from_directory(tmpdir)
+        if is_main_process():
+            return report(metrics=metrics, checkpoint=checkpoint)
+        else:
+            return report(metrics=metrics, checkpoint=None)
 
 
 @pytest.mark.order(1)

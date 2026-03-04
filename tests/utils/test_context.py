@@ -1,27 +1,25 @@
 import sys
+import math
+import tempfile
 from pathlib import Path
 
 import pytest
 import torch
 from omegaconf import open_dict
-
+from ray.train import Checkpoint, report
+    
 from cell_observatory_platform.tests.conftest import config, distributed_test
-
+from cell_observatory_platform.utils.context import (
+    OpMap,
+    barrier,
+    gather_and_reduce,
+    get_world_size,
+    inference_context,
+    process_rank,
+    is_main_process,
+)
 
 def _test_context(config):
-    import math
-
-    import torch
-    from ray.train import report
-
-    from cell_observatory_platform.utils.context import (
-        OpMap,
-        barrier,
-        gather_and_reduce,
-        get_world_size,
-        inference_context,
-        process_rank,
-    )
 
     # basic sanity — OpMap values equal torch.distributed enums
     assert OpMap.SUM.value == torch.distributed.ReduceOp.SUM
@@ -61,7 +59,13 @@ def _test_context(config):
         assert model.training is False
     assert model.training is True
 
-    report({"success": True})
+    metrics = {"success": True}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint = Checkpoint.from_directory(tmpdir)
+        if is_main_process():
+            return report(metrics=metrics, checkpoint=checkpoint)
+        else:
+            return report(metrics=metrics, checkpoint=None)
 
 
 def test_context(config):
