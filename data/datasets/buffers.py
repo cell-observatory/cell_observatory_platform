@@ -101,6 +101,15 @@ class HostMemoryBuffer:
         return {"slot": slot, "name": self.name, "slot_bytes": self.slot_bytes,
                 "batch_shape": self.batch_shape, "dtype": self.dtype, "capacity": self.cap}
 
+    def try_get_free(self):
+        """Non-blocking get. Returns slot info dict or None if queue empty."""
+        try:
+            slot = self.free.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
+        return {"slot": slot, "name": self.name, "slot_bytes": self.slot_bytes,
+                "batch_shape": self.batch_shape, "dtype": self.dtype, "capacity": self.cap}
+
     async def put_free(self, slot: int):
         await self.free.put(int(slot))
         return True
@@ -184,13 +193,16 @@ def set_output_buffers(
     pin_to_numa_node: bool = True,
     node_id: int = 0,
     max_concurrent_calls: int = 256,
+    name_suffix: str = "output",
 ):
     """
     Create OutputBuffer for inference: shared memory for model outputs
     (batch_size, T, Z, Y, X, C_out). Metadata (roi, tile_name, coords, etc.)
     is passed separately with each slot reference.
+
+    name_suffix: "output" for save_output pool, "viz" for viz_output pool.
     """
-    name = f"output_shm_buffer_numa_{numa_node}_rank_{global_rank}"
+    name = f"{name_suffix}_shm_buffer_numa_{numa_node}_rank_{global_rank}"
     input_shape = output_shape
 
     ray.logger.info(

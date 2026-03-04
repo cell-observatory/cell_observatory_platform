@@ -50,6 +50,9 @@ class BufferManager:
         buffer_capacity: int = 8,
         rank_memory_budget_gb: float = 64.0,
         memory_fractions: Optional[Dict[str, float]] = None,
+        enable_viz: bool = False,
+        viz_slot_bytes: int = 4 * 1024 * 1024,
+        viz_capacity: int = 4,
     ):
         self.local_rank = local_rank
         self.global_rank = global_rank
@@ -77,7 +80,25 @@ class BufferManager:
             buffer_capacity=buffer_capacity,
             pin_to_numa_node=True,
             node_id=node_id,
+            name_suffix="output",
         )
+
+        # Create viz_output pool when enabled (best-effort, non-blocking)
+        self._viz_buffer_actor: Optional[Any] = None
+        self._viz_slot_bytes = viz_slot_bytes
+        if enable_viz:
+            self._viz_buffer_actor, _ = set_output_buffers(
+                local_rank=local_rank,
+                global_rank=global_rank,
+                numa_node=numa_node,
+                batch_size=1,
+                output_shape=(viz_slot_bytes,),
+                dtype="uint8",
+                buffer_capacity=viz_capacity,
+                pin_to_numa_node=True,
+                node_id=node_id,
+                name_suffix="viz",
+            )
 
         # Metrics
         self._save_in_use_high_water: int = 0
@@ -85,6 +106,7 @@ class BufferManager:
         self._save_alloc_count: int = 0
         self._save_blocked_time_s: float = 0.0
         self._viz_drops: int = 0
+        self._viz_in_use_current: int = 0
 
     def alloc(self, pool_class: str, block: bool = True) -> Optional[SlotHandle]:
         """
@@ -114,11 +136,29 @@ class BufferManager:
                 batch_shape=tuple(result["batch_shape"]),
             )
         elif pool_class == "viz_output":
-            if not block:
-                # Stub: no viz pool yet, always return None
+            if block:
+                raise NotImplementedError("viz_output blocking alloc not supported")
+            if self._viz_buffer_actor is None:
                 self._viz_drops += 1
                 return None
-            raise NotImplementedError("viz_output blocking alloc not supported")
+            result = self._viz_buffer_actor.try_get_free.remote()
+            try:
+                slot_info = ray.get(result)
+            except Exception:
+                self._viz_drops += 1
+                return None
+            if slot_info is None:
+                self._viz_drops += 1
+                return None
+            self._viz_in_use_current += 1
+            return SlotHandle(
+                pool_class="viz_output",
+                slot_idx=slot_info["slot"],
+                shm_name=slot_info["name"],
+                slot_bytes=slot_info["slot_bytes"],
+                batch_size=1,
+                batch_shape=tuple(slot_info["batch_shape"]),
+            )
         elif pool_class in ("preproc_input", "postproc_input"):
             raise NotImplementedError(
                 f"{pool_class} pool not implemented; deferred to data-loading refactor"
@@ -135,6 +175,10 @@ class BufferManager:
         if pool_class == "save_output":
             ray.get(self._output_buffer_actor.put_free.remote(handle.slot_idx))
             self._save_in_use_current = max(0, self._save_in_use_current - 1)
+        elif pool_class == "viz_output":
+            if self._viz_buffer_actor is not None:
+                ray.get(self._viz_buffer_actor.put_free.remote(handle.slot_idx))
+            self._viz_in_use_current = max(0, self._viz_in_use_current - 1)
         else:
             raise ValueError(f"free not implemented for pool_class: {pool_class}")
 
@@ -148,6 +192,7 @@ class BufferManager:
             },
             "viz_output": {
                 "drops": self._viz_drops,
+                "in_use_current": self._viz_in_use_current,
             },
         }
 
