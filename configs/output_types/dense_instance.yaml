@@ -1,0 +1,11 @@
+output_type: dense_instance
+dtype: float32
+order: C
+
+save:
+  format: zarr
+  destination: append_channel
+
+viz:
+  handler: instance_overlay
+  required: true
