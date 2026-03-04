@@ -1,0 +1,11 @@
+output_type: raw_logits
+dtype: float32
+order: C
+
+save:
+  format: zarr
+  destination: temp
+
+viz:
+  handler: logits_to_probs
+  required: false

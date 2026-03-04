@@ -1,0 +1,11 @@
+output_type: bboxes
+dtype: float32
+order: C
+
+save:
+  format: zarr_attributes
+  destination: new_file
+
+viz:
+  handler: bbox_overlay
+  required: false
