@@ -10,7 +10,7 @@ from omegaconf import DictConfig, open_dict
 from ray.train import Checkpoint, report    
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
-from utils.context import is_main_process, process_rank
+from cell_observatory_platform.utils.context import is_main_process, process_rank
 
 
 def _test_base_evaluation(cfg: DictConfig):
