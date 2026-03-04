@@ -147,6 +147,15 @@ class ParentDatabase:
         self.num_timepoints, z_slices, y_slices, x_slices = self._get_slices_from_layout_order(
             input_format=self.dataset_layout_order, input_shape=self.input_shape
         )
+        
+        # TODO: this is a hack to get the right number of hypercubes after CDF thresholding
+        # TODO: Need to add new columns into the database to store the CDF values to query them directly
+        if self.cdf_threshold is not None:
+            print(
+                f"Requesting 2.5x more hypercubes to get {max_hypercubes} hypercubes after CDF thresholding, "
+                f"assuming filter will drop 40%-60% of the hypercubes"
+            )
+            max_hypercubes_before_cdf = int(max_hypercubes * 2.5) if max_hypercubes is not None else None
 
         if self.with_hypercubes_dataframe:
             if z_slices not in valid_z_sizes:
@@ -174,22 +183,22 @@ class ParentDatabase:
                     self.max_hypercubes_128 = None
                 else:
                     self.max_hypercubes_128 = (
-                        max_hypercubes
+                        max_hypercubes_before_cdf
                         * (self.z_slices // self.base_cube_size_z)
                         * (self.y_slices // self.base_cube_size_y)
                         * (self.x_slices // self.base_cube_size_x)
                     )
                     print(
-                        f"Requesting {self.max_hypercubes_128 - max_hypercubes} extra hypercubes \
-                            to get {max_hypercubes} hypercubes after aggregation"
+                        f"Requesting {self.max_hypercubes_128 - max_hypercubes_before_cdf} extra hypercubes \
+                            to get {max_hypercubes_before_cdf} hypercubes after aggregation"
                     )
             else:
                 self.max_hypercubes = max_hypercubes
-                self.max_hypercubes_128 = max_hypercubes
+                self.max_hypercubes_128 = max_hypercubes_before_cdf
 
         else:
             self.max_hypercubes = max_hypercubes
-            self.max_hypercubes_128 = max_hypercubes
+            self.max_hypercubes_128 = max_hypercubes_before_cdf
 
         self._database_url = self._load_uri()
 

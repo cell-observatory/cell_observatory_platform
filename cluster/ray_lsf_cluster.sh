@@ -10,6 +10,7 @@ export NCCL_SHM_DISABLE=0
 export NCCL_DEBUG_SUBSYS=GRAPH
 export RAY_DEDUP_LOGS=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export USER_POSTEXEC=/workspace/cell_observatory_platform/cluster/clean_shm.sh
 
 # parse args from `args_parser.sh` getopts
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -81,6 +82,7 @@ do_cleanup() {
             fi
             # fallback: run cleanup ourselves
             python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+            bash /workspace/cell_observatory_platform/cluster/clean_shm.sh || true
             ray stop --force >/dev/null 2>&1 || true
             '
     " >/dev/null 2>&1 &
@@ -106,6 +108,7 @@ do_cleanup() {
                     fi
                     # fallback: run cleanup ourselves
                     python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
+                    bash /workspace/cell_observatory_platform/cluster/clean_shm.sh || true
                     ray stop --force >/dev/null 2>&1 || true
                 '
             " >/dev/null 2>&1 &
@@ -118,7 +121,7 @@ do_cleanup() {
         wait "$pid" || true
     done
 
-    sleep 90
+    sleep 120
 
     echo "Shutting down the job"
     bkill $LSB_JOBID
@@ -134,7 +137,7 @@ blaunch -z $head_node "
 " &
 head_bg_pid=$!
 
-sleep 10
+sleep 60
 
 apptainer exec --userns --nv \
     --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
@@ -178,13 +181,7 @@ fi
 # trap 'do_cleanup' EXIT
 trap 'do_cleanup; exit 130' INT # SIGINT
 trap 'do_cleanup; exit 143' TERM # SIGTERM like bkill
-
-# CHECK CLUSTER STATUS
-############################## RUN WORKLOAD
-
-# trap 'do_cleanup' EXIT
-trap 'do_cleanup; exit 130' INT # SIGINT
-trap 'do_cleanup; exit 143' TERM # SIGTERM like bkill
+trap 'do_cleanup; exit 140' TERM # TERM_RUNLIMIT 
 
 # CHECK CLUSTER STATUS
 blaunch -z $head_node " 

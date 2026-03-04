@@ -93,7 +93,7 @@ echo "[HEAD NODE]: PID for cleanup is $$"
 # wait for the head node to start/create a new session
 # directory to ensure that prometheus and grafana 
 # are started with the correct session directory
-sleep 10
+sleep 60
 
 ############################## START PROMETHEUS
 
