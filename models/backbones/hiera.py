@@ -81,8 +81,7 @@ class Hiera(nn.Module):
         head_mul: float = 2.0,
         use_mask_unit_attn: Optional[List[bool]] = None,
         norm_layer: str = "LayerNorm",
-        act_layer: nn.Module = nn.GELU,
-        return_intermediates: bool = True,
+        act_layer: nn.Module = nn.GELU
     ):
         super().__init__()
 
@@ -106,6 +105,7 @@ class Hiera(nn.Module):
             input_shape=input_shape,
             patch_shape=patch_shape,
         )
+        assert self.input_fmt in ["TZYXC", "ZYXC"], "Hiera only supports TZYXC, and ZYXC input formats"
         self.tokens_spatial_shape = [
             x for x in token_shape[:-1] # ignore channel dimension
             if x is not None and isinstance(x, int)
@@ -198,12 +198,6 @@ class Hiera(nn.Module):
             )
             embed_dim = dim_out
             self.blocks.append(block)
-
-        self.channel_list = (
-            [self.blocks[i].dim_out for i in self.stage_ends[::-1]]
-            if return_intermediates
-            else [self.blocks[-1].dim_out]
-        )
 
     def _num_spatial_dims(self) -> int:
         if self.input_fmt == "TZYXC":

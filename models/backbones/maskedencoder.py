@@ -215,9 +215,9 @@ class MaskedEncoder(nn.Module):
             input_fmt=input_fmt,
             input_shape=input_shape,
             patch_shape=self.patch_shape,
-            mlp_wide_silu=mlp_wide_silu,
+            wide_silu=mlp_wide_silu,
             out_layers=out_layers,
-            dtype=dtype,
+            dtype=dtype
         )
 
         self.out_layers = out_layers
@@ -250,7 +250,7 @@ class MaskedEncoder(nn.Module):
             )
             return num_patches
 
-    def forward(self, inputs, masks=None, concat_masks=True):
+    def forward(self, inputs, masks=None, concat_masks=True, spatial_kwargs: Optional[dict] = None):
         x, patches = self.patch_embedding(inputs, return_patches=True)
 
         if self.abs_sincos_enc:
@@ -259,7 +259,7 @@ class MaskedEncoder(nn.Module):
         if masks is not None:
             x = apply_masks(x, masks, concat=concat_masks)
 
-        x = self.encoder(x, masks=masks, pos_enc=self.freqs_cis)
+        x = self.encoder(x, masks=masks, pos_enc=self.freqs_cis, spatial_kwargs=spatial_kwargs)
 
         if self.out_layers is not None:
             outs = []
@@ -271,8 +271,8 @@ class MaskedEncoder(nn.Module):
         x = self.norm(x)
         return x, patches
 
-    def forward_features(self, inputs, masks=None, concat_masks=True):
-        x, _ = self.forward(inputs, masks=masks, concat_masks=concat_masks)
+    def forward_features(self, inputs, masks=None, concat_masks=True, spatial_kwargs: Optional[dict] = None):
+        x, _ = self.forward(inputs, masks=masks, concat_masks=concat_masks, spatial_kwargs=spatial_kwargs)
         return x
 
 

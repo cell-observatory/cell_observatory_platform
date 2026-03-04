@@ -1092,6 +1092,53 @@ def _maybe_index_rope(rope: tuple[Tensor, Tensor] | None, indices: Tensor) -> tu
         return sin, cos  # [heads, patches, embed_dim] or [patches, embed_dim]
 
 
+def apply_rope_q_only(
+    xq: torch.Tensor,
+    pos_enc: torch.Tensor | Tuple[torch.Tensor, torch.Tensor],
+    rope_type: Literal["mixed", "axial", "custom"],
+) -> torch.Tensor:
+    if isinstance(pos_enc, (tuple, list)) and len(pos_enc) == 2:
+        pos_enc_q, _ = pos_enc
+        if pos_enc_q is None:
+            return xq
+        return apply_rope_q_only(xq, pos_enc_q, rope_type)
+    if rope_type in ("mixed", "axial"):
+        return _apply_rope_v1_q_only(xq, pos_enc)
+    elif rope_type == "custom":
+        return _apply_rope_v2_q_only(xq, pos_enc)
+    else:
+        raise ValueError(f"Unknown rope type: {rope_type}")
+
+
+def _apply_rope_v1_q_only(xq: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
+    Jf = freqs_cis.shape[-1]
+    De = Jf * 2
+
+    xq_even = xq[..., :De]
+    xq_tail = xq[..., De:]
+
+    xq_ = torch.view_as_complex(xq_even.float().reshape(*xq_even.shape[:-1], -1, 2))
+    freqs_cis = reshape_for_broadcast(freqs_cis, xq_).to(xq_.device)
+    xq_rot = torch.view_as_real(xq_ * freqs_cis).flatten(3)
+
+    if xq_tail.numel():
+        return torch.cat([xq_rot, xq_tail], dim=-1).type_as(xq)
+    return xq_rot.type_as(xq)
+
+
+def _apply_rope_v2_q_only(xq: torch.Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> torch.Tensor:
+    q_dtype = xq.dtype
+    sin, cos = rope
+    xq = xq.to(dtype=sin.dtype)
+    N = xq.shape[-2]
+    prefix = N - sin.shape[-2]
+    assert prefix >= 0
+    q_prefix = xq[:, :, :prefix, :]
+    xq = apply_rope_half(xq[:, :, prefix:, :], sin, cos)
+    xq = torch.cat((q_prefix, xq), dim=-2)
+    return xq.to(dtype=q_dtype)
+
+
 # --- --- CUSTOM ROPE Class --- --
 
 

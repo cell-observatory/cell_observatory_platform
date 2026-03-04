@@ -40,12 +40,14 @@ class Encoder(nn.Module):
         wide_silu: bool = False,
         out_layers: list = None,
         dtype: torch.dtype = torch.bfloat16,
+        use_deformable_attn: bool = False,
+        da_n_points: int = 4,
+        da_n_levels: int = 1,
         **kwargs,
     ):
         super().__init__()
 
         self.patch_shape = patch_shape
-
         self.depth = depth
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -55,7 +57,6 @@ class Encoder(nn.Module):
         self.att_drop_rate = att_drop_rate
         self.drop_path_rate = drop_path_rate
 
-        # stochastic depth decay rule
         if not fixed_dropout_depth:
             dpr = np.linspace(0, self.drop_path_rate, self.depth)
 
@@ -84,13 +85,18 @@ class Encoder(nn.Module):
                     patch_shape=self.patch_shape,
                     wide_silu=wide_silu,
                     dtype=dtype,
+                    use_deformable_attn=use_deformable_attn,
+                    da_n_points=da_n_points,
+                    da_n_levels=da_n_levels,
                 )
                 for i in range(self.depth)
             ]
         )
-        self.feature_info = [dict(module=f"transformer_blocks.{i}", num_chs=self.embed_dim) for i in range(self.depth)]
+        self.feature_info = [
+            dict(module=f"transformer_blocks.{i}", num_chs=self.embed_dim)
+            for i in range(self.depth)
+        ]
         self.init_std = init_std
-
         self.out_layers = out_layers
 
     @torch.jit.ignore
@@ -105,10 +111,10 @@ class Encoder(nn.Module):
     def get_head_dims(self):
         return self.embed_dim // self.num_heads
 
-    def forward(self, x, masks=None, pos_enc=None):
+    def forward(self, x, masks=None, pos_enc=None, spatial_kwargs=None):
         outs = []
         for i, t in enumerate(self.transformer_blocks):
-            x = t(x, masks=masks, pos_enc=pos_enc)
+            x = t(x, masks=masks, pos_enc=pos_enc, spatial_kwargs=spatial_kwargs)
             if self.out_layers is not None and i in self.out_layers:
                 outs.append(x)
 

@@ -165,6 +165,10 @@ class MaskedAutoEncoder(nn.Module):
         hiera_q_stride: tuple = (2, 2),
         hiera_stages: tuple = (2, 3, 16, 3),
         hiera_mask_unit_size: tuple = (8,8,8),
+        # Deformable Attention parameters
+        use_deformable_attn: bool = False,
+        da_n_points: int = 4,
+        da_n_levels: int = 1,
         **kwargs,
     ):
         super().__init__()
@@ -218,60 +222,79 @@ class MaskedAutoEncoder(nn.Module):
         self.rope_random_rotation_per_head = rope_random_rotation_per_head
         self.backbone_type = backbone_type
 
+        if use_deformable_attn:
+            _, token_shape = calc_num_patches(
+                input_fmt=input_fmt, input_shape=input_shape, patch_shape=patch_shape,
+            )
+            assert self.input_fmt in ["ZYXC"], f"Input format {self.input_fmt} not supported yet."
+            spatial_dims = [s for s in token_shape[:-1] if s is not None]
+            if len(spatial_dims) == 4:
+                raise ValueError(
+                    "Deformable attention is not supported for 4D (T,Z,Y,X) token grids. "
+                    f"Got token_shape={token_shape}."
+                )
+
         if backbone_type == "vit":
             self.masked_encoder = MaskedEncoder(
-            input_fmt=self.input_fmt,
-            input_shape=self.input_shape,
-            patch_shape=self.patch_shape,
-            channels=self.in_chans,
-            embed_dim=self.embed_dim,
-            depth=self.depth,
-            num_heads=self.num_heads,
-            mlp_ratio=self.mlp_ratio,
-            proj_drop_rate=self.proj_drop_rate,
-            att_drop_rate=self.att_drop_rate,
-            drop_path_rate=self.drop_path_rate,
-            fixed_dropout_depth=self.fixed_dropout_depth,
-            norm_layer=self.norm_layer,
-            act_layer=self.act_layer,
-            mlp_layer=self.mlp_layer,
-            init_std=self.init_std,
-            abs_sincos_enc=self.abs_sincos_enc,
-            rope_pos_enc=self.rope_pos_enc,
-            rope_random_rotation_per_head=self.rope_random_rotation_per_head,
-            rope_type=self.rope_type,
-            rope_theta=self.rope_theta,
-            mlp_wide_silu=mlp_wide_silu,
-            dtype=self.dtype,
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                channels=self.in_chans,
+                embed_dim=self.embed_dim,
+                depth=self.depth,
+                num_heads=self.num_heads,
+                mlp_ratio=self.mlp_ratio,
+                proj_drop_rate=self.proj_drop_rate,
+                att_drop_rate=self.att_drop_rate,
+                drop_path_rate=self.drop_path_rate,
+                fixed_dropout_depth=self.fixed_dropout_depth,
+                norm_layer=self.norm_layer,
+                act_layer=self.act_layer,
+                mlp_layer=self.mlp_layer,
+                init_std=self.init_std,
+                abs_sincos_enc=self.abs_sincos_enc,
+                rope_pos_enc=self.rope_pos_enc,
+                rope_random_rotation_per_head=self.rope_random_rotation_per_head,
+                rope_type=self.rope_type,
+                rope_theta=self.rope_theta,
+                mlp_wide_silu=mlp_wide_silu,
+                dtype=self.dtype,
+                use_deformable_attn=use_deformable_attn,
+                da_n_points=da_n_points,
+                da_n_levels=da_n_levels,
             )
             self.masked_decoder = MaskedPredictor(
-            input_fmt=self.input_fmt,
-            input_shape=self.input_shape,
-            patch_shape=self.patch_shape,
-            channels=self.in_chans,
-            input_embed_dim=self.embed_dim,
-            output_embed_dim=self.masked_encoder.patch_embedding.pixels_per_patch,
-            embed_dim=self.decoder_embed_dim,
-            depth=self.decoder_depth,
-            num_heads=self.decoder_num_heads,
-            mlp_ratio=self.mlp_ratio,
-            proj_drop_rate=self.proj_drop_rate,
-            att_drop_rate=self.att_drop_rate,
-            drop_path_rate=self.drop_path_rate,
-            fixed_dropout_depth=self.fixed_dropout_depth,
-            norm_layer=self.norm_layer,
-            act_layer=self.act_layer,
-            mlp_layer=self.mlp_layer,
-            init_std=self.init_std,
-            abs_sincos_enc=self.abs_sincos_enc,
-            rope_pos_enc=self.rope_pos_enc,
-            rope_random_rotation_per_head=self.rope_random_rotation_per_head,
-            rope_type=self.rope_type,
-            rope_theta=self.rope_theta,
-            mlp_wide_silu=mlp_wide_silu,
-            dtype=self.dtype,
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                input_embed_dim=self.embed_dim,
+                output_embed_dim=self.masked_encoder.patch_embedding.pixels_per_patch,
+                embed_dim=self.decoder_embed_dim,
+                depth=self.decoder_depth,
+                num_heads=self.decoder_num_heads,
+                mlp_ratio=self.mlp_ratio,
+                proj_drop_rate=self.proj_drop_rate,
+                att_drop_rate=self.att_drop_rate,
+                drop_path_rate=self.drop_path_rate,
+                fixed_dropout_depth=self.fixed_dropout_depth,
+                norm_layer=self.norm_layer,
+                act_layer=self.act_layer,
+                mlp_layer=self.mlp_layer,
+                init_std=self.init_std,
+                abs_sincos_enc=self.abs_sincos_enc,
+                rope_pos_enc=self.rope_pos_enc,
+                rope_random_rotation_per_head=self.rope_random_rotation_per_head,
+                rope_type=self.rope_type,
+                rope_theta=self.rope_theta,
+                mlp_wide_silu=mlp_wide_silu,
+                dtype=self.dtype,
+                use_deformable_attn=use_deformable_attn,
+                da_n_points=da_n_points,
+                da_n_levels=da_n_levels,
             )
-        else:
+        elif backbone_type == "hiera":
+            # MAE Hiera: encoder -> fuse (BlockFusionHeadND) -> single-level predictor -> pixels -> loss
+            # Multiscale / return_intermediates not supported; only single-level DA or SA.
             self.masked_encoder = MaskedHieraEncoder(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
@@ -284,6 +307,7 @@ class MaskedAutoEncoder(nn.Module):
                 stages=hiera_stages,
                 mask_unit_size=hiera_mask_unit_size,
                 norm_layer=self.norm_layer,
+                channel_proj_type="fusion",
             )
             self.masked_decoder = MaskedHieraPredictor(
                 input_fmt=self.input_fmt,
@@ -296,7 +320,14 @@ class MaskedAutoEncoder(nn.Module):
                 decoder_spec=self.masked_encoder.get_decoder_spec(),
                 mlp_ratio=self.mlp_ratio,
                 norm_layer=self.norm_layer,
+                use_deformable_attn=use_deformable_attn,
+                da_n_points=da_n_points,
+                da_n_levels=1,
+                prediction_mode="pixels",
+                output_embed_dim=None,
             )
+        else:
+            raise ValueError(f"Unsupported backbone_type={backbone_type}")
 
         self.weight_init_type = weight_init_type
 
@@ -368,26 +399,71 @@ class MaskedAutoEncoder(nn.Module):
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
-        masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
-        target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
-        mu_mask = meta.get("mu_mask", [None])[0]
-        mu_keep_idx = meta.get("mu_keep_idx", [None])[0]
-
         if self.backbone_type == "vit":
-            x, patches = self.masked_encoder(inputs, masks=context_masks)
-            x = self.masked_decoder(
-                x,
-                original_patch_indices=original_patch_indices,
-                target_masks=target_masks,
-                patches_used=patches_used,
-            )
+            return self._forward_vit(inputs, meta)
         elif self.backbone_type == "hiera":
-            if mu_mask is None or mu_keep_idx is None:
-                raise ValueError("Hiera backbone requires mu_mask and mu_keep_idx in meta. Use mask_mode=HIERA_MU.")
-            x, patches = self.masked_encoder(inputs, masks=mu_mask, ctx_idx=mu_keep_idx)
-            x = self.masked_decoder(x, mu_mask=mu_mask, ctx_idx=mu_keep_idx)
+            return self._forward_hiera(inputs, meta)
         else:
             raise ValueError(f"Unsupported backbone_type={self.backbone_type}")
+
+    def _forward_vit(self, inputs: torch.Tensor, meta: dict):
+        masks, spatial_kwargs = meta["masks"][0], meta.get("spatial_kwargs", None)
+        context_masks, patches_used = meta["context_masks"][0], meta["patches_used"][0]
+        target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
+
+        x, patches = self.masked_encoder(
+            inputs, masks=context_masks, spatial_kwargs=spatial_kwargs,
+        )
+        x = self.masked_decoder(
+            x,
+            original_patch_indices=original_patch_indices,
+            target_masks=target_masks,
+            patches_used=patches_used,
+            spatial_kwargs=spatial_kwargs,
+        )
+
+        if patches_used is not None:
+            target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
+        else:
+            target_idx_in_patches_used = target_masks
+        targets = apply_masks(patches, masks=target_masks)
+        predictions = apply_masks(x, masks=target_idx_in_patches_used)
+
+        if self.with_auxiliary_loss:
+            aux_loss_meta = {
+                "targets": patches,
+                "predictions": x,
+                "patches_used": patches_used,
+                "target_masks": target_masks,
+                "prediction_masks": target_idx_in_patches_used,
+            }
+        else:
+            aux_loss_meta = None
+
+        loss, aux_losses = self.loss_fn(targets, predictions, masks.sum(), aux_loss_meta)
+        loss_dict = {"step_loss": loss, **(aux_losses or {})}
+        return loss_dict, predictions
+
+    def _forward_hiera(self, inputs: torch.Tensor, meta: dict):
+        masks, target_masks, patches_used = meta["masks"][0], meta["target_masks"][0], meta["patches_used"][0]
+        mu_mask, mu_keep_idx = meta.get("mu_mask", [None])[0], meta.get("mu_keep_idx", [None])[0]
+        spatial_kwargs = meta.get("spatial_kwargs", None)
+
+        if mu_mask is None or mu_keep_idx is None:
+            raise ValueError(
+                "Hiera backbone requires mu_mask and mu_keep_idx in meta. "
+                "Use mask_mode=HIERA_MU or HIERA_MU_BLOCKED."
+            )
+
+        x, patches = self.masked_encoder(
+            inputs, masks=mu_mask, ctx_idx=mu_keep_idx, spatial_kwargs=spatial_kwargs,
+            with_intermediates=True,
+            with_fusion_heads=True,
+            return_windowed=False,
+        )
+        x = self.masked_decoder(
+            x, mu_mask=mu_mask, ctx_idx=mu_keep_idx, spatial_kwargs=spatial_kwargs,
+        )
 
         if patches_used is not None:
             target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
@@ -414,33 +490,45 @@ class MaskedAutoEncoder(nn.Module):
 
     def predict(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
-        masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
+
+        masks, spatial_kwargs = meta["masks"][0], meta.get("spatial_kwargs", None)
+        context_masks, patches_used = meta["context_masks"][0], meta["patches_used"][0]
         target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
-        mu_mask = meta.get("mu_mask", [None])[0]
-        mu_keep_idx = meta.get("mu_keep_idx", [None])[0]
+        mu_mask, mu_keep_idx = meta.get("mu_mask", [None])[0], meta.get("mu_keep_idx", [None])[0]
 
         if self.backbone_type == "vit":
-            x, patches = self.masked_encoder(inputs, masks=context_masks)
+            x, patches = self.masked_encoder(
+                inputs, masks=context_masks, spatial_kwargs=spatial_kwargs,
+            )
             x = self.masked_decoder(
                 x,
                 original_patch_indices=original_patch_indices,
                 target_masks=target_masks,
                 patches_used=patches_used,
+                spatial_kwargs=spatial_kwargs,
             )
+        
         elif self.backbone_type == "hiera":
             if mu_mask is None or mu_keep_idx is None:
-                raise ValueError("Hiera backbone requires mu_mask and mu_keep_idx in meta. Use mask_mode=HIERA_MU.")
-            x, patches = self.masked_encoder(inputs, masks=mu_mask, ctx_idx=mu_keep_idx)
-            x = self.masked_decoder(x, mu_mask=mu_mask, ctx_idx=mu_keep_idx)
+                raise ValueError(
+                    "Hiera backbone requires mu_mask and mu_keep_idx in meta. "
+                    "Use mask_mode=HIERA_MU or HIERA_MU_BLOCKED."
+                )
+            x, patches = self.masked_encoder(
+                inputs, masks=mu_mask, ctx_idx=mu_keep_idx, spatial_kwargs=spatial_kwargs,
+                with_intermediates=True,
+                with_fusion_heads=True,
+                return_windowed=False,
+            )
+            x = self.masked_decoder(
+                x, mu_mask=mu_mask, ctx_idx=mu_keep_idx, spatial_kwargs=spatial_kwargs,
+            )
+        
         else:
             raise ValueError(f"Unsupported backbone_type={self.backbone_type}")
 
         predictions = self.masked_encoder.patch_embedding._unpatchify(x, out_channels=None)
         return predictions
-
-    def forward_features(self, inputs, masks=None, concat_masks=True):
-        x = self.masked_encoder.forward_features(inputs, masks=masks)
-        return x
 
 
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:

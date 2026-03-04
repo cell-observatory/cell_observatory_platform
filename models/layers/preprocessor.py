@@ -1,5 +1,6 @@
 import os
 import time
+import math
 import functools
 from typing import Any, Dict, Optional, Tuple, List, Callable, Mapping, Union
 
@@ -53,7 +54,7 @@ class RayPreprocessor(torch.nn.Module):
         self.input_shape = input_shape
         self.patch_shape = patch_shape
         self.input_format = input_format
-        self.num_patches, _ = calc_num_patches(
+        self.num_patches, self._token_shape = calc_num_patches(
             input_fmt=self.input_format,
             input_shape=self.input_shape,
             patch_shape=self.patch_shape,
@@ -72,10 +73,30 @@ class RayPreprocessor(torch.nn.Module):
             self.masking_ratio = 0.0
         self.seq_len = self._calculate_seq_len()
 
+        assert self.input_format in ["TZYXC", "ZYXC"], f"Input format {self.input_format} not supported yet."
+        spatial_token_shape = [s for s in self._token_shape[:-1] if s is not None]
+        self.spatial_token_shape = spatial_token_shape
+
     def _calculate_seq_len(self):
         masking_ratio = self.masking_ratio if self.with_masking else 0.0
         seq_len = int(self.num_patches * (1 - masking_ratio))
         return seq_len
+
+    def _build_spatial_kwargs(self, batch_size: int, device: torch.device) -> dict:
+        spatial_shapes = torch.tensor(
+            [self.spatial_token_shape], dtype=torch.long, device=device,
+        )
+        level_start_index = torch.zeros(1, dtype=torch.long, device=device)
+        valid_ratios = torch.ones(
+            batch_size, 1, len(self.spatial_token_shape), device=device,
+        )
+        tokens_per_level = [int(math.prod(self.spatial_token_shape))]
+        return {
+            "spatial_shapes": spatial_shapes,
+            "level_start_index": level_start_index,
+            "valid_ratios": valid_ratios,
+            "tokens_per_level": tokens_per_level,
+        }
 
     def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         """
@@ -120,19 +141,23 @@ class RayPreprocessor(torch.nn.Module):
                 "tokens_per_batch": tokens_per_batch,
                 **meta,
             }
+            metainfo["spatial_kwargs"] = self._build_spatial_kwargs(
+                batch_size=inputs.shape[0], device=inputs.device,
+            )
             return {"data_tensor": inputs, "metainfo": metainfo}
         else:
-            return {
-                "data_tensor": inputs,
-                "metainfo": {
-                    "preprocess_time": time.time() - preprocess_time,
-                    "data_time": data_time,
-                    "masking_time": -1.0,
-                    "transform_time": transform_time if self.transforms is not None else -1,
-                    "tokens_per_batch": tokens_per_batch,
-                    **meta,
-                },
+            metainfo = {
+                "preprocess_time": time.time() - preprocess_time,
+                "data_time": data_time,
+                "masking_time": -1.0,
+                "transform_time": transform_time if self.transforms is not None else -1,
+                "tokens_per_batch": tokens_per_batch,
+                **meta,
             }
+            metainfo["spatial_kwargs"] = self._build_spatial_kwargs(
+                batch_size=inputs.shape[0], device=inputs.device,
+            )
+            return {"data_tensor": inputs, "metainfo": metainfo}
 
 
 @dataclass(frozen=True)

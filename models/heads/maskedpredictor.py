@@ -118,6 +118,9 @@ class MaskedPredictor(nn.Module):
         rope_theta: float = 10.0,
         mlp_wide_silu: bool = False,
         dtype: torch.dtype = torch.bfloat16,
+        use_deformable_attn: bool = False,
+        da_n_points: int = 4,
+        da_n_levels: int = 1,
         **kwargs,
     ):
         super().__init__()
@@ -213,8 +216,11 @@ class MaskedPredictor(nn.Module):
             input_fmt=input_fmt,
             input_shape=input_shape,
             patch_shape=self.patch_shape,
-            mlp_wide_silu=mlp_wide_silu,
+            wide_silu=mlp_wide_silu,
             dtype=dtype,
+            use_deformable_attn=use_deformable_attn,
+            da_n_points=da_n_points,
+            da_n_levels=da_n_levels,
         )
 
     @torch.jit.ignore
@@ -237,7 +243,14 @@ class MaskedPredictor(nn.Module):
             )
             return num_patches
 
-    def forward(self, inputs, original_patch_indices=None, target_masks=None, patches_used=None):
+    def forward(
+        self, 
+        inputs, 
+        original_patch_indices=None, 
+        target_masks=None, 
+        patches_used=None, 
+        spatial_kwargs: Optional[dict] = None,
+    ):
         batch_size = inputs.shape[0]
 
         tokens = self.patch_projection(inputs)
@@ -255,7 +268,7 @@ class MaskedPredictor(nn.Module):
         else:
             x = patches
 
-        x = self.encoder(x, masks=patches_used, pos_enc=self.freqs_cis)
+        x = self.encoder(x, masks=patches_used, pos_enc=self.freqs_cis, spatial_kwargs=spatial_kwargs)
         x = self.norm(x)
         x = self.output_projection(x)
         return x

@@ -80,6 +80,7 @@ class MaskGenerator(object):
         q_stride: Optional[Sequence[int]] = None,
         q_pool: Optional[int] = None,
         skip_patch_mask_generation: bool = False,
+        multiscale: bool = False,
     ):
         self.device = device
 
@@ -118,6 +119,7 @@ class MaskGenerator(object):
         self.q_stride = tuple(q_stride) if q_stride else None
         self.q_pool = int(q_pool) if q_pool is not None else None
 
+        self.multiscale = multiscale
         # tokens per MU at fusion output (mask_unit_size / q_stride^q_pool) for JEPA tgt_tok_idx
         if self.mask_unit_size is not None and self.q_stride is not None and self.q_pool is not None:
             qs = self.q_stride
@@ -128,8 +130,21 @@ class MaskGenerator(object):
                 max(1, s // qsp) for s, qsp in zip(self.mask_unit_size, q_stride_pow)
             )
             self.tok_prod = int(math.prod(self.tok_in_mu_final))
+
+            if self.multiscale:
+                self.tok_prods_per_level = []
+                for lvl in range(self.q_pool + 1):
+                    pools = min(lvl + 1, self.q_pool)
+                    tok_in_mu_lvl = tuple(
+                        max(1, mu // (s ** pools))
+                        for mu, s in zip(self.mask_unit_size, qs)
+                    )
+                    self.tok_prods_per_level.append(int(math.prod(tok_in_mu_lvl)))
+            else:
+                self.tok_prods_per_level = None
         else:
             self.tok_prod = None
+            self.tok_prods_per_level = None
 
         # the iteration counter impacts the RNG state
         # for a given mask generation collator
@@ -808,6 +823,22 @@ class MaskGenerator(object):
 
             return masks, context_masks, target_masks, original_patch_indices
 
+    def _collate_tgt_tok_idx(self, tgt_tok_idx_list):
+        if not tgt_tok_idx_list:
+            return None
+        if self.multiscale and self.tok_prods_per_level:
+            num_levels = len(self.tok_prods_per_level)
+            return [
+                torch.utils.data.default_collate(
+                    [sample[lvl] for sample in tgt_tok_idx_list]
+                )
+                for lvl in range(num_levels)
+            ]
+        elif self.tok_prod is not None:
+            return torch.utils.data.default_collate(tgt_tok_idx_list)
+        else:
+            return None
+
     def _generate_hiera_mu_mask(
         self, batch_size: int, generator: Optional[torch.Generator] = None
     ) -> Tuple:
@@ -872,7 +903,14 @@ class MaskGenerator(object):
                 tgt_list.append(tgt_patches)
                 orig_list.append(orig)
 
-            if self.tok_prod is not None:
+            if self.multiscale and self.tok_prods_per_level:
+                per_level_tgt = []
+                for tp in self.tok_prods_per_level:
+                    base = tgt_mus.unsqueeze(-1).long() * tp
+                    offs = torch.arange(tp, device=self.device, dtype=base.dtype).view(1, -1)
+                    per_level_tgt.append((base + offs).reshape(-1))
+                tgt_tok_idx_list.append(per_level_tgt)
+            elif self.tok_prod is not None:
                 base = tgt_mus.unsqueeze(-1).long() * self.tok_prod
                 offs = torch.arange(self.tok_prod, device=self.device, dtype=base.dtype).view(1, -1)
                 tgt_tok_idx_list.append((base + offs).reshape(-1))
@@ -880,7 +918,7 @@ class MaskGenerator(object):
         if self.skip_patch_mask_generation:
             mu_mask = torch.stack(mu_masks_list)
             mu_keep_idx = torch.utils.data.default_collate(mu_keep_idx_list)
-            tgt_tok_idx = torch.utils.data.default_collate(tgt_tok_idx_list) if self.tok_prod is not None and tgt_tok_idx_list else None
+            tgt_tok_idx = self._collate_tgt_tok_idx(tgt_tok_idx_list)
             return {
                 "mu_mask": mu_mask,
                 "mu_keep_idx": mu_keep_idx,
@@ -905,7 +943,7 @@ class MaskGenerator(object):
         perm = torch.cat([context_masks, target_masks], dim=1)
         patches_used, _ = torch.sort(perm, dim=1)
 
-        tgt_tok_idx = torch.utils.data.default_collate(tgt_tok_idx_list) if self.tok_prod is not None and tgt_tok_idx_list else None
+        tgt_tok_idx = self._collate_tgt_tok_idx(tgt_tok_idx_list)
 
         return {
             "masks": masks,
@@ -986,7 +1024,14 @@ class MaskGenerator(object):
                 tgt_list.append(tgt_patches)
                 orig_list.append(orig)
 
-            if self.tok_prod is not None:
+            if self.multiscale and self.tok_prods_per_level:
+                per_level_tgt = []
+                for tp in self.tok_prods_per_level:
+                    base = tgt_mus.unsqueeze(-1).long() * tp
+                    offs = torch.arange(tp, device=self.device, dtype=base.dtype).view(1, -1)
+                    per_level_tgt.append((base + offs).reshape(-1))
+                tgt_tok_idx_list.append(per_level_tgt)
+            elif self.tok_prod is not None:
                 base = tgt_mus.unsqueeze(-1).long() * self.tok_prod
                 offs = torch.arange(self.tok_prod, device=self.device, dtype=base.dtype).view(1, -1)
                 tgt_tok_idx_list.append((base + offs).reshape(-1))
@@ -994,7 +1039,7 @@ class MaskGenerator(object):
         if self.skip_patch_mask_generation:
             mu_mask = torch.stack(mu_masks_list)
             mu_keep_idx = torch.utils.data.default_collate(mu_keep_idx_list)
-            tgt_tok_idx = torch.utils.data.default_collate(tgt_tok_idx_list) if self.tok_prod is not None and tgt_tok_idx_list else None
+            tgt_tok_idx = self._collate_tgt_tok_idx(tgt_tok_idx_list)
             return {
                 "mu_mask": mu_mask,
                 "mu_keep_idx": mu_keep_idx,
@@ -1009,10 +1054,11 @@ class MaskGenerator(object):
         
         mu_mask = torch.stack(mu_masks_list)
         mu_keep_idx = torch.utils.data.default_collate(mu_keep_idx_list)
-        tgt_tok_idx = torch.utils.data.default_collate(tgt_tok_idx_list) if self.tok_prod is not None and tgt_tok_idx_list else None
 
         perm = torch.cat([context_masks, target_masks], dim=1)
         patches_used, _ = torch.sort(perm, dim=1)
+
+        tgt_tok_idx = self._collate_tgt_tok_idx(tgt_tok_idx_list)
 
         return {
             "masks": masks,

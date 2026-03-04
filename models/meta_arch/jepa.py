@@ -167,6 +167,13 @@ class JEPA(nn.Module):
         hiera_stages: tuple = (2, 3, 16, 3),
         hiera_mask_unit_size: Optional[tuple] = None,
         buffer_device: str = "cuda",
+        # Deformable Attention parameters
+        use_deformable_attn: bool = False,
+        da_n_points: int = 4,
+        da_n_levels: int = 1,
+        # Multiscale (Hiera only)
+        multiscale: bool = False,
+        multiscale_out_dim: Optional[int] = None,
         **kwargs,
     ):
         super().__init__()
@@ -217,60 +224,78 @@ class JEPA(nn.Module):
         self.rope_random_rotation_per_head = rope_random_rotation_per_head
         self.backbone_type = backbone_type
 
+        if use_deformable_attn:
+            _, token_shape = calc_num_patches(
+                input_fmt=input_fmt, input_shape=input_shape, patch_shape=patch_shape,
+            )
+            assert self.input_fmt in ["ZYXC"], f"Input format {self.input_fmt} not supported yet."
+            spatial_dims = [s for s in token_shape[:-1] if s is not None]
+            if len(spatial_dims) == 4:
+                raise ValueError(
+                    "Deformable attention is not supported for 4D (T,Z,Y,X) token grids. "
+                    f"Got token_shape={token_shape}."
+                )
+
         if backbone_type == "vit":
+            # JEPA ViT: encoder -> single-level predictor (SA or DA) -> out -> loss
+            # Multiscale not supported; only single-level.
+            self.multiscale = False
             self.input_encoder = MaskedEncoder(
-            input_fmt=self.input_fmt,
-            input_shape=self.input_shape,
-            patch_shape=self.patch_shape,
-            channels=self.in_chans,
-            embed_dim=self.embed_dim,
-            depth=self.depth,
-            num_heads=self.num_heads,
-            mlp_ratio=self.mlp_ratio,
-            proj_drop_rate=self.proj_drop_rate,
-            att_drop_rate=self.att_drop_rate,
-            drop_path_rate=self.drop_path_rate,
-            fixed_dropout_depth=self.fixed_dropout_depth,
-            norm_layer=self.norm_layer,
-            act_layer=self.act_layer,
-            mlp_layer=self.mlp_layer,
-            init_std=self.init_std,
-            abs_sincos_enc=self.abs_sincos_enc,
-            rope_pos_enc=self.rope_pos_enc,
-            rope_random_rotation_per_head=self.rope_random_rotation_per_head,
-            rope_type=self.rope_type,
-            rope_theta=self.rope_theta,
-            mlp_wide_silu=mlp_wide_silu,
-            dtype=dtype,
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                channels=self.in_chans,
+                embed_dim=self.embed_dim,
+                depth=self.depth,
+                num_heads=self.num_heads,
+                mlp_ratio=self.mlp_ratio,
+                proj_drop_rate=self.proj_drop_rate,
+                att_drop_rate=self.att_drop_rate,
+                drop_path_rate=self.drop_path_rate,
+                fixed_dropout_depth=self.fixed_dropout_depth,
+                norm_layer=self.norm_layer,
+                act_layer=self.act_layer,
+                mlp_layer=self.mlp_layer,
+                init_std=self.init_std,
+                abs_sincos_enc=self.abs_sincos_enc,
+                rope_pos_enc=self.rope_pos_enc,
+                rope_random_rotation_per_head=self.rope_random_rotation_per_head,
+                rope_type=self.rope_type,
+                rope_theta=self.rope_theta,
+                mlp_wide_silu=mlp_wide_silu,
+                dtype=dtype
             )
             self.target_predictor = MaskedPredictor(
-            input_fmt=self.input_fmt,
-            input_shape=self.input_shape,
-            patch_shape=self.patch_shape,
-            channels=self.in_chans,
-            input_embed_dim=self.embed_dim,
-            output_embed_dim=self.embed_dim,
-            embed_dim=self.predictor_embed_dim,
-            depth=self.predictor_depth,
-            num_heads=self.predictor_num_heads,
-            mlp_ratio=self.mlp_ratio,
-            proj_drop_rate=self.proj_drop_rate,
-            att_drop_rate=self.att_drop_rate,
-            drop_path_rate=self.drop_path_rate,
-            fixed_dropout_depth=self.fixed_dropout_depth,
-            norm_layer=self.norm_layer,
-            act_layer=self.act_layer,
-            mlp_layer=self.mlp_layer,
-            init_std=self.init_std,
-            abs_sincos_enc=self.abs_sincos_enc,
-            rope_pos_enc=self.rope_pos_enc,
-            rope_random_rotation_per_head=self.rope_random_rotation_per_head,
-            rope_type=self.rope_type,
-            rope_theta=self.rope_theta,
-            mlp_wide_silu=mlp_wide_silu,
-            dtype=dtype,
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                input_embed_dim=self.embed_dim,
+                output_embed_dim=self.embed_dim,
+                embed_dim=self.predictor_embed_dim,
+                depth=self.predictor_depth,
+                num_heads=self.predictor_num_heads,
+                mlp_ratio=self.mlp_ratio,
+                proj_drop_rate=self.proj_drop_rate,
+                att_drop_rate=self.att_drop_rate,
+                drop_path_rate=self.drop_path_rate,
+                fixed_dropout_depth=self.fixed_dropout_depth,
+                norm_layer=self.norm_layer,
+                act_layer=self.act_layer,
+                mlp_layer=self.mlp_layer,
+                init_std=self.init_std,
+                abs_sincos_enc=self.abs_sincos_enc,
+                rope_pos_enc=self.rope_pos_enc,
+                rope_random_rotation_per_head=self.rope_random_rotation_per_head,
+                rope_type=self.rope_type,
+                rope_theta=self.rope_theta,
+                mlp_wide_silu=mlp_wide_silu,
+                dtype=dtype,
+                use_deformable_attn=use_deformable_attn,
+                da_n_points=da_n_points,
+                da_n_levels=1,
             )
         elif backbone_type == "hiera":
+            self.multiscale = multiscale
             self.input_encoder = MaskedHieraEncoder(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
@@ -283,8 +308,23 @@ class JEPA(nn.Module):
                 stages=hiera_stages,
                 mask_unit_size=hiera_mask_unit_size,
                 norm_layer=self.norm_layer,
+                channel_proj_type="fusion" if multiscale else "equalization",
+                multiscale_out_dim=multiscale_out_dim if multiscale else None
             )
-            encoder_dim_out = self.input_encoder.encoder.blocks[-1].dim_out
+
+            if multiscale:
+                assert use_deformable_attn, "multiscale=True requires use_deformable_attn=True"
+                if multiscale_out_dim is None:
+                    raise ValueError("multiscale_out_dim must be set when multiscale=True")
+                encoder_dim_out = multiscale_out_dim
+                decoder_specs = self.input_encoder.get_decoder_specs_per_level()
+                prediction_mode = "all_levels"
+            else:
+                assert not use_deformable_attn, "use_deformable_attn=False requires multiscale=True"
+                encoder_dim_out = self.input_encoder.encoder.blocks[-1].dim_out
+                decoder_specs = self.input_encoder.get_decoder_spec()
+                prediction_mode = "lowest_level"
+
             self.target_predictor = MaskedHieraPredictor(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
@@ -293,14 +333,17 @@ class JEPA(nn.Module):
                 decoder_embed_dim=self.predictor_embed_dim,
                 decoder_depth=self.predictor_depth,
                 decoder_num_heads=self.predictor_num_heads,
-                decoder_spec=self.input_encoder.get_decoder_spec(),
+                decoder_spec=decoder_specs,
                 mlp_ratio=self.mlp_ratio,
                 norm_layer=self.norm_layer,
-                prediction_mode="lowest_level",
+                prediction_mode=prediction_mode,
                 output_embed_dim=encoder_dim_out,
+                use_deformable_attn=use_deformable_attn,
+                da_n_points=da_n_points,
+                da_n_levels=da_n_levels,
             )
         else:
-            raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
+            raise ValueError(f"Unsupported backbone type: {backbone_type}")
 
         self.weight_init_type = weight_init_type
 
@@ -408,45 +451,46 @@ class JEPA(nn.Module):
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
-
         if self.backbone_type == "vit":
-            return self._forward_vit(data_sample, inputs, meta)
+            return self._forward_vit(inputs, meta)
         elif self.backbone_type == "hiera":
-            return self._forward_hiera(data_sample, inputs, meta)
+            return self._forward_hiera(inputs, meta)
         else:
             raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
 
-    def _forward_vit(self, data_sample: dict, inputs: torch.Tensor, meta: dict):
-        masks, context_masks, patches_used = meta["masks"][0], meta["context_masks"][0], meta["patches_used"][0]
+    def _forward_vit(self, inputs: torch.Tensor, meta: dict):
+        masks, spatial_kwargs = meta["masks"][0], meta.get("spatial_kwargs", None)
+        context_masks, patches_used = meta["context_masks"][0], meta["patches_used"][0]
         target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
 
-        embedding, patches = self.input_encoder(inputs, masks=context_masks)
+        embedding, patches = self.input_encoder(
+            inputs, masks=context_masks, spatial_kwargs=spatial_kwargs,
+        )
         predictions = self.target_predictor(
             embedding,
             original_patch_indices=original_patch_indices,
             target_masks=target_masks,
             patches_used=patches_used,
+            spatial_kwargs=spatial_kwargs,
         )
 
         with torch.no_grad():
-            targets, _ = self.target_encoder(inputs)
+            targets, _ = self.target_encoder(inputs, spatial_kwargs=spatial_kwargs)
 
-        # compute loss over masked patches (re-index if blocked masking removed some patches)
         if patches_used is not None:
             target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
         else:
             target_idx_in_patches_used = target_masks
         targets = apply_masks(targets, masks=target_masks)
         predictions = apply_masks(predictions, masks=target_idx_in_patches_used)
-        loss, aux_losses = self.loss_fn(predictions, targets, masks.sum())
+        loss, aux_losses = self.loss_fn(targets, predictions, masks.sum())
 
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions
 
-    def _forward_hiera(self, data_sample: dict, inputs: torch.Tensor, meta: dict):
-        mu_mask = meta.get("mu_mask", [None])[0]
-        mu_keep_idx = meta.get("mu_keep_idx", [None])[0]
-        tgt_tok_idx = meta.get("tgt_tok_idx", [None])[0]
+    def _forward_hiera(self, inputs: torch.Tensor, meta: dict):
+        mu_mask, spatial_kwargs = meta.get("mu_mask", [None])[0], meta.get("spatial_kwargs", None)
+        mu_keep_idx, tgt_tok_idx = meta.get("mu_keep_idx", [None])[0], meta.get("tgt_tok_idx", [None])[0]
 
         if mu_mask is None or mu_keep_idx is None or tgt_tok_idx is None:
             raise ValueError(
@@ -454,42 +498,66 @@ class JEPA(nn.Module):
                 "Use mask_mode=HIERA_MU or HIERA_MU_BLOCKED with q_stride and q_pool."
             )
 
-        # 1) context encoder (masked) -> fused windowed map
-        ctx_feat, _ = self.input_encoder(
+        ctx_out, _ = self.input_encoder(
             inputs,
             masks=mu_mask,
             ctx_idx=mu_keep_idx,
             with_intermediates=True,
-            with_fusion_heads=True,
+            with_fusion_heads=not self.multiscale,
             return_windowed=True,
+            spatial_kwargs=spatial_kwargs,
         )
 
-        pred_tokens = self.target_predictor(ctx_feat, mu_mask=mu_mask, ctx_idx=mu_keep_idx)
+        if isinstance(ctx_out, list):
+            pred_out = self.target_predictor(
+                ctx_out,
+                mu_mask=[mu_mask] * len(ctx_out),
+                ctx_idx=[mu_keep_idx] * len(ctx_out),
+                spatial_kwargs=spatial_kwargs,
+            )
+        else:
+            pred_out = self.target_predictor(
+                ctx_out,
+                mu_mask=mu_mask,
+                ctx_idx=mu_keep_idx,
+                spatial_kwargs=spatial_kwargs,
+            )
 
-        # 2) target encoder (dense) -> fused windowed map -> flatten to token grid
         with torch.no_grad():
-            tgt_feat, _ = self.target_encoder(
+            tgt_out, _ = self.target_encoder(
                 inputs,
                 masks=None,
                 ctx_idx=None,
                 with_intermediates=True,
-                with_fusion_heads=True,
+                with_fusion_heads=not self.multiscale,
                 return_windowed=True,
+                spatial_kwargs=spatial_kwargs,
             )
-            tgt_tokens = tgt_feat.view(tgt_feat.shape[0], -1, tgt_feat.shape[-1])
 
-        # 3) select targets/preds by precomputed indices
-        pred_sel = self._select_tokens(pred_tokens, tgt_tok_idx)
-        tgt_sel = self._select_tokens(tgt_tokens, tgt_tok_idx)
+        if not isinstance(pred_out, list):
+            pred_out = [pred_out]
+        if not isinstance(tgt_out, list):
+            tgt_out = [tgt_out]
+        if not isinstance(tgt_tok_idx, list):
+            tgt_tok_idx = [tgt_tok_idx]
 
-        loss, aux = self.loss_fn(tgt_sel, pred_sel, tgt_tok_idx.numel())
+        pred_sels, tgt_sels = [], []
+        for lvl in range(len(pred_out)):
+            tgt_tokens = tgt_out[lvl].reshape(
+                tgt_out[lvl].shape[0], -1, tgt_out[lvl].shape[-1],
+            )
+            pred_sels.append(self._select_tokens(pred_out[lvl], tgt_tok_idx[lvl]))
+            tgt_sels.append(self._select_tokens(tgt_tokens, tgt_tok_idx[lvl]))
+
+        total_count = sum(idx.numel() for idx in tgt_tok_idx)
+
+        if len(pred_sels) == 1:
+            loss, aux = self.loss_fn(tgt_sels[0], pred_sels[0], total_count)
+        else:
+            loss, aux = self.loss_fn(tgt_sels, pred_sels, total_count)
 
         loss_dict = {"step_loss": loss, **(aux or {})}
-        return loss_dict, pred_sel
-
-    def forward_features(self, inputs, masks=None, concat_masks=True):
-        x = self.input_encoder.forward_features(inputs, masks=masks)
-        return x
+        return loss_dict, pred_sels[0] if len(pred_sels) == 1 else pred_sels
 
 
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:

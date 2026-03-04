@@ -22,12 +22,18 @@ from cell_observatory_platform.models.layers.positional_encoding import (
     generate_grid_indices,
     make_axial_rope_freqs,
     make_cross_rope_pos_enc_qk,
+    apply_rope_q_only,
 )
 from cell_observatory_platform.models.layers.mlp import MLP
 from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.models.layers.activation import get_activation
-from cell_observatory_platform.models.layers.utils import cat_keep_shapes, uncat_with_shapes
 from cell_observatory_platform.models.ops.flash_deform_attn import FlashDeformAttnFunction, _is_power_of_2
+from cell_observatory_platform.models.layers.utils import (
+    reconstruct_full_feature_map,
+    get_reference_points,
+    cat_keep_shapes,
+    uncat_with_shapes,
+)
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -66,7 +72,7 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, masks=None, pos_enc=None):
+    def forward(self, x, masks=None, pos_enc=None, spatial_kwargs=None):
         B, L, C = x.shape
         # NOTE: Use -1 instead of `n_heads` to infer the actual
         #       local heads from sizes of xq, xk, and xv as TP
@@ -99,6 +105,43 @@ class Attention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
+
+    def forward_list(self, x_list, masks=None, pos_enc=None, spatial_kwargs=None) -> List[Tensor]:
+        if masks is None:
+            masks = [None] * len(x_list)
+        if pos_enc is None:
+            pos_enc = [None] * len(x_list)
+        assert len(x_list) == len(masks) == len(pos_enc), "x_list, masks, and pos_enc must have the same length"
+
+        x_flat, shapes, num_tokens = cat_keep_shapes(x_list)
+
+        q_flat = self.wq(x_flat)
+        k_flat = self.wk(x_flat)
+        v_flat = self.wv(x_flat)
+
+        q_list = uncat_with_shapes(q_flat, shapes, num_tokens)
+        k_list = uncat_with_shapes(k_flat, shapes, num_tokens)
+        v_list = uncat_with_shapes(v_flat, shapes, num_tokens)
+
+        att_out = []
+        for q, k, v, mask_i in zip(q_list, k_list, v_list, masks):
+            B, L, C = q.shape
+            q = q.view(B, L, -1, self.head_dim).transpose(1, 2)
+            k = k.view(B, L, -1, self.head_dim).transpose(1, 2)
+            v = v.view(B, L, -1, self.head_dim).transpose(1, 2)
+            q = self.q_norm(q)
+            k = self.k_norm(k)
+            with sdpa_kernel([SDPBackend.FLASH_ATTENTION]):
+                out = F.scaled_dot_product_attention(
+                    q, k, v, dropout_p=self.att_drop.p if self.training else 0.0,
+                )
+            out = out.transpose(1, 2).reshape(B, L, -1)
+            att_out.append(out)
+
+        x_flat, shapes, num_tokens = cat_keep_shapes(att_out)
+        x_flat = self.proj(x_flat)
+        x_flat = self.proj_drop(x_flat)
+        return uncat_with_shapes(x_flat, shapes, num_tokens)
 
 
 # reference: https://github.com/facebookresearch/dinov3/dinov3/layers/attention.py
@@ -367,7 +410,7 @@ class RopeAttention(nn.Module):
 
         return x
 
-    def forward_list(self, x_list, masks=None, pos_enc=None) -> List[Tensor]:
+    def forward_list(self, x_list, masks=None, pos_enc=None, spatial_kwargs=None) -> List[Tensor]:
         if masks is None:
             masks = [None] * len(x_list)
         if pos_enc is None:
@@ -401,7 +444,7 @@ class RopeAttention(nn.Module):
         x_flat = self.proj_drop(x_flat)
         return uncat_with_shapes(x_flat, shapes, num_tokens)
 
-    def forward(self, x, masks=None, pos_enc=None):
+    def forward(self, x, masks=None, pos_enc=None, spatial_kwargs=None):
         B, L, C = x.shape
 
         # TODO: evaluate impact of using fused qkv linear ops vs not
@@ -929,6 +972,323 @@ class FlashDeformAttn3D(nn.Module):
         )
         output = self.output_proj(output)
         return output
+
+
+class DeformableAttention(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        n_points: int = 4,
+        n_levels: int = 1,
+    ):
+        super().__init__()
+
+        self.dim = dim
+        self.num_heads = num_heads
+        self.n_points = n_points
+        self.n_levels = n_levels
+
+        self.da = FlashDeformAttn3D(
+            d_model=dim, n_levels=n_levels, n_heads=num_heads, n_points=n_points,
+        )
+        # NOTE: two possible strategies for masked positions:
+        # 1. learn a mask token and scatter it into the full grid
+        # 2. set masked position scores to 0 using input_padding_mask
+        self.da_mask_token = nn.Parameter(torch.zeros(1, 1, dim))
+        nn.init.trunc_normal_(self.da_mask_token, std=0.02)
+
+    def _prepare_value_map(self, x: Tensor, spatial_kwargs: dict) -> Tensor:
+        mask_indices = spatial_kwargs.get("mask_indices", None)
+        full_seq_len = spatial_kwargs.get("full_seq_len", None)
+        if mask_indices is not None and full_seq_len is not None and x.shape[1] < full_seq_len:
+            return reconstruct_full_feature_map(x, mask_indices, full_seq_len, self.da_mask_token)
+        return x
+
+    def _prepare_ref_pts(self, query_len: int, spatial_kwargs: dict, B: int, device: torch.device) -> Tensor:
+        spatial_shapes = spatial_kwargs["spatial_shapes"]
+        valid_ratios = spatial_kwargs["valid_ratios"]
+
+        # full_ref: [B, sum(D*H*W), n_levels, 3] reference points for the full grid
+        full_ref = get_reference_points(spatial_shapes, valid_ratios, device=device)
+
+        mask_indices = spatial_kwargs.get("mask_indices", None)
+        full_seq_len = spatial_kwargs.get("full_seq_len", None)
+        if mask_indices is not None and full_seq_len is not None and query_len < full_ref.shape[1]:
+            idx = mask_indices if mask_indices.dim() == 2 else mask_indices[None].expand(B, -1)
+            n_levels = full_ref.shape[2]
+            idx_exp = idx[:, :, None, None].expand(-1, -1, n_levels, 3)
+            return full_ref.gather(1, idx_exp)
+
+        return full_ref
+
+    def forward(self, x: Tensor, masks=None, pos_enc=None, spatial_kwargs=None) -> Tensor:
+        if spatial_kwargs is None:
+            raise ValueError("DeformableAttention requires spatial_kwargs dict")
+
+        B, L, C = x.shape
+        input_flatten = self._prepare_value_map(x, spatial_kwargs)
+        ref_pts = self._prepare_ref_pts(L, spatial_kwargs, B, x.device)
+
+        return self.da(
+            query=x,
+            reference_points=ref_pts,
+            input_flatten=input_flatten,
+            input_spatial_shapes=spatial_kwargs["spatial_shapes"],
+            input_level_start_index=spatial_kwargs["level_start_index"],
+        )
+
+    def forward_list(self, x_list: List[Tensor], masks=None, pos_enc=None, spatial_kwargs=None) -> List[Tensor]:
+        """
+        Multi-level DA: concatenate all levels, run single DA call, split back.
+        """
+        if spatial_kwargs is None:
+            raise ValueError("DeformableAttention.forward_list requires spatial_kwargs dict")
+
+        B = x_list[0].shape[0]
+        spatial_shapes = spatial_kwargs["spatial_shapes"]
+        valid_ratios = spatial_kwargs["valid_ratios"]
+        tokens_per_level = spatial_kwargs["tokens_per_level"]
+        mask_indices_list = spatial_kwargs.get("mask_indices_list", [None] * len(x_list))
+
+        n_levels = len(x_list)
+        assert spatial_shapes.shape[0] == n_levels, f"spatial_shapes.shape[0] ({spatial_shapes.shape[0]}) != n_levels ({n_levels})"
+
+        # Build per-level value maps (reconstruct full grids if masked)
+        values = []
+        for i, x_i in enumerate(x_list):
+            full_len_i = tokens_per_level[i]
+            m_i = mask_indices_list[i] if mask_indices_list else None
+            if m_i is not None and x_i.shape[1] < full_len_i:
+                values.append(reconstruct_full_feature_map(x_i, m_i, full_len_i, self.da_mask_token))
+            else:
+                values.append(x_i)
+
+        # input_flatten: [B, sum(full_len_i), C]
+        input_flatten = torch.cat(values, dim=1)
+
+        level_start_index = torch.zeros(n_levels, device=spatial_shapes.device, dtype=torch.long)
+        level_start_index[1:] = spatial_shapes.prod(dim=1).cumsum(0)[:-1]
+
+        # query: [B, sum(L_i), C] concatenated input lists (at their original masked or full lengths)
+        query = torch.cat(x_list, dim=1)
+
+        # full_ref: [B, sum(full_len_i), n_levels, 3] reference points for the full grid
+        full_ref = get_reference_points(spatial_shapes, valid_ratios, device=spatial_shapes.device)
+
+        # If any level is masked, gather only the query positions
+        query_ref_parts = []
+        offset = 0
+        for i, x_i in enumerate(x_list):
+            full_len_i = tokens_per_level[i]
+            L_i = x_i.shape[1]
+            m_i = mask_indices_list[i] if mask_indices_list else None
+
+            # level_ref: [B, full_len_i, n_levels, 3] ref points for level i
+            level_ref = full_ref[:, offset:offset + full_len_i]
+            offset += full_len_i
+
+            if m_i is not None and L_i < full_len_i:
+                idx = m_i if m_i.dim() == 2 else m_i[None].expand(B, -1)
+                idx_exp = idx[:, :, None, None].expand(-1, -1, n_levels, 3)
+                level_ref = level_ref.gather(1, idx_exp)
+            query_ref_parts.append(level_ref)
+
+        # reference_points: [B, sum(L_i), n_levels, 3]
+        reference_points = torch.cat(query_ref_parts, dim=1)
+
+        out = self.da(
+            query=query,
+            reference_points=reference_points,
+            input_flatten=input_flatten,
+            input_spatial_shapes=spatial_shapes,
+            input_level_start_index=level_start_index,
+        )
+
+        # Split back per level
+        lengths = [x_i.shape[1] for x_i in x_list]
+        return list(torch.split(out, lengths, dim=1))
+
+
+class DeformableRopeAttention(RopeAttention):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = True,
+        qk_norm: bool = False,
+        proj_bias: bool = True,
+        att_drop: float = 0.0,
+        proj_drop: float = 0.0,
+        norm_layer=partial(nn.LayerNorm, eps=1e-5),
+        random_rotation_per_head: bool = True,
+        rope_type: Literal["mixed", "axial", "custom"] = "axial",
+        rope_theta: float = 10.0,
+        input_fmt: str = "TZYXC",
+        input_shape: tuple = (16, 128, 128, 128, 2),
+        patch_shape: tuple = (4, 16, 16, 16),
+        device: str = "cuda",
+        dtype: torch.dtype = torch.bfloat16,
+        ffn_mask_k_bias: bool = False,
+        n_points: int = 4,
+        n_levels: int = 1,
+    ):
+        super().__init__(
+            dim, num_heads, qkv_bias, qk_norm, proj_bias, att_drop, proj_drop,
+            norm_layer, random_rotation_per_head, rope_type, rope_theta,
+            input_fmt, input_shape, patch_shape, device, dtype, ffn_mask_k_bias,
+        )
+        # NOTE: not used in DeformableRopeAttention
+        del self.wk, self.k_norm, self.proj, self.proj_drop
+
+        self.da = FlashDeformAttn3D(
+            d_model=dim, n_levels=n_levels, n_heads=num_heads, n_points=n_points,
+        )
+        self.da_mask_token = nn.Parameter(torch.zeros(1, 1, dim))
+        nn.init.trunc_normal_(self.da_mask_token, std=0.02)
+
+    def _rope_rotate_q(self, q: Tensor, masks=None, pos_enc=None) -> Tensor:
+        if not self._rope_inited and self.rope_type == "mixed":
+            raise RuntimeError("init_rope_parameters() must be called first.")
+
+        if self.rope_type == "mixed":
+            if masks is not None:
+                t_t, t_z, t_y, t_x = apply_masks_rope(self.grid_indices, masks, type="mixed")
+            else:
+                t_t, t_z, t_y, t_x = self.grid_indices
+            freqs_cis = self.compute_cis(
+                freqs=self.freqs.to(q.device), t_t=t_t, t_z=t_z, t_y=t_y, t_x=t_x,
+                input_fmt=self.input_fmt,
+            )
+            return apply_rope_q_only(q, freqs_cis, rope_type="mixed")
+
+        elif self.rope_type == "axial":
+            assert pos_enc is not None, "pos_enc is required for axial RoPE"
+            freqs_cis = apply_masks_rope(pos_enc, masks, type="axial") if masks is not None else pos_enc
+            return apply_rope_q_only(q, freqs_cis, rope_type="axial")
+
+        else:
+            return apply_rope_q_only(q, pos_enc, rope_type="custom")
+
+    def _prepare_value_map(self, x: Tensor, spatial_kwargs: dict) -> Tensor:
+        mask_indices = spatial_kwargs.get("mask_indices", None)
+        full_seq_len = spatial_kwargs.get("full_seq_len", None)
+        if mask_indices is not None and full_seq_len is not None and x.shape[1] < full_seq_len:
+            return reconstruct_full_feature_map(x, mask_indices, full_seq_len, self.da_mask_token)
+        return x
+
+    def _prepare_ref_pts(self, query_len: int, spatial_kwargs: dict, B: int) -> Tensor:
+        spatial_shapes = spatial_kwargs["spatial_shapes"]
+        valid_ratios = spatial_kwargs["valid_ratios"]
+        full_ref = get_reference_points(spatial_shapes, valid_ratios, device=spatial_shapes.device)
+
+        mask_indices = spatial_kwargs.get("mask_indices", None)
+        full_seq_len = spatial_kwargs.get("full_seq_len", None)
+        if mask_indices is not None and full_seq_len is not None and query_len < full_ref.shape[1]:
+            idx = mask_indices if mask_indices.dim() == 2 else mask_indices[None].expand(B, -1)
+            n_levels = full_ref.shape[2]
+            idx_exp = idx[:, :, None, None].expand(-1, -1, n_levels, 3)
+            return full_ref.gather(1, idx_exp)
+
+        return full_ref
+
+    def forward(self, x: Tensor, masks=None, pos_enc=None, spatial_kwargs=None) -> Tensor:
+        if spatial_kwargs is None:
+            raise ValueError("DeformableRopeAttention requires spatial_kwargs dict")
+
+        B, L, C = x.shape
+
+        q = self.wq(x).view(B, L, -1, self.head_dim).transpose(1, 2)
+        q = self.q_norm(q)
+        q_rope = self._rope_rotate_q(q, masks=masks, pos_enc=pos_enc)
+
+        da_query = q_rope.transpose(1, 2).reshape(B, L, C)
+
+        input_flatten = self._prepare_value_map(x, spatial_kwargs)
+        ref_pts = self._prepare_ref_pts(L, spatial_kwargs, B)
+
+        return self.da(
+            query=da_query,
+            reference_points=ref_pts,
+            input_flatten=input_flatten,
+            input_spatial_shapes=spatial_kwargs["spatial_shapes"],
+            input_level_start_index=spatial_kwargs["level_start_index"],
+        )
+
+    def forward_list(self, x_list: List[Tensor], masks=None, pos_enc=None, spatial_kwargs=None) -> List[Tensor]:
+        if spatial_kwargs is None:
+            raise ValueError("DeformableRopeAttention.forward_list requires spatial_kwargs dict")
+        if masks is None:
+            masks = [None] * len(x_list)
+        if pos_enc is None:
+            pos_enc = [None] * len(x_list)
+
+        valid_ratios = spatial_kwargs["valid_ratios"]
+        spatial_shapes = spatial_kwargs["spatial_shapes"]
+        tokens_per_level = spatial_kwargs["tokens_per_level"]
+        mask_indices_list = spatial_kwargs.get("mask_indices_list", [None] * len(x_list))
+
+        n_levels = len(x_list)
+        B = x_list[0].shape[0]
+        C = x_list[0].shape[-1]
+        device = spatial_shapes.device
+
+        x_flat, shapes, num_tokens = cat_keep_shapes(x_list)
+        q_flat = self.wq(x_flat)
+        q_per_level = uncat_with_shapes(q_flat, shapes, num_tokens)
+
+        da_queries = []
+        for q_i, mask_i, pe_i in zip(q_per_level, masks, pos_enc):
+            Bi, Li, Ci = q_i.shape
+            q_h = q_i.view(Bi, Li, -1, self.head_dim).transpose(1, 2)
+            q_h = self.q_norm(q_h)
+            q_rope_i = self._rope_rotate_q(q_h, masks=mask_i, pos_enc=pe_i)
+            da_queries.append(q_rope_i.transpose(1, 2).reshape(Bi, Li, Ci))
+
+        values = []
+        for i, x_i in enumerate(x_list):
+            full_len_i = tokens_per_level[i]
+            m_i = mask_indices_list[i]
+            if m_i is not None and x_i.shape[1] < full_len_i:
+                values.append(reconstruct_full_feature_map(x_i, m_i, full_len_i, self.da_mask_token))
+            else:
+                values.append(x_i)
+
+        input_flatten = torch.cat(values, dim=1)
+
+        level_start_index = torch.zeros(n_levels, device=device, dtype=torch.long)
+        level_start_index[1:] = spatial_shapes.prod(dim=1).cumsum(0)[:-1]
+
+        query = torch.cat(da_queries, dim=1)
+        full_ref = get_reference_points(spatial_shapes, valid_ratios, device=device)
+
+        # query_ref_parts: [B, sum(L_i), n_levels, 3]
+        query_ref_parts = []
+        offset = 0
+        for i, x_i in enumerate(x_list):
+            full_len_i = tokens_per_level[i]
+            Li = x_i.shape[1]
+            m_i = mask_indices_list[i]
+            level_ref = full_ref[:, offset:offset + full_len_i].expand(B, -1, -1, -1)
+            offset += full_len_i
+            if m_i is not None and Li < full_len_i:
+                idx = m_i if m_i.dim() == 2 else m_i[None].expand(B, -1)
+                idx_exp = idx[:, :, None, None].expand(-1, -1, n_levels, 3)
+                level_ref = level_ref.gather(1, idx_exp)
+            query_ref_parts.append(level_ref)
+
+        reference_points = torch.cat(query_ref_parts, dim=1)
+
+        out = self.da(
+            query=query,
+            reference_points=reference_points,
+            input_flatten=input_flatten,
+            input_spatial_shapes=spatial_shapes,
+            input_level_start_index=level_start_index,
+        )
+
+        lengths = [q.shape[1] for q in da_queries]
+        return list(torch.split(out, lengths, dim=1))
 
 
 # NOTE: used in SAM2

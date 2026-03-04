@@ -11,7 +11,9 @@ from timm.layers import DropPath, SwiGLU
 
 from cell_observatory_platform.models.layers.layer_scale import LayerScale
 from cell_observatory_platform.models.layers.mlp import SwiGLUFFN_ListFwdMixin
-from cell_observatory_platform.models.layers.attention import Attention, RopeAttention
+from cell_observatory_platform.models.layers.attention import (
+    Attention, RopeAttention, DeformableAttention, DeformableRopeAttention,
+)
 from cell_observatory_platform.models.layers.utils import cat_keep_shapes, uncat_with_shapes
 from cell_observatory_platform.models.layers.positional_encoding import _maybe_index_rope
 
@@ -47,39 +49,48 @@ class Transformer(nn.Module):
         dtype: torch.dtype = torch.bfloat16,
         layer_scale_init_values: float | None = None,
         ffn_mask_k_bias: bool = False,
+        # DA params
+        use_deformable_attn: bool = False,
+        da_n_points: int = 4,
+        da_n_levels: int = 1,
     ) -> None:
         super().__init__()
 
-        if rope_pos_enc:
-            self.att = RopeAttention(
-                dim,
-                num_heads=num_heads,
-                qkv_bias=qkv_bias,
-                qk_norm=qk_norm,
-                att_drop=att_drop,
-                proj_drop=proj_drop,
-                proj_bias=proj_bias,
-                ffn_mask_k_bias=ffn_mask_k_bias,
-                norm_layer=norm_layer,
-                random_rotation_per_head=rope_random_rotation_per_head,
-                rope_type=rope_type,
-                rope_theta=rope_theta,
-                input_fmt=input_fmt,
-                input_shape=input_shape,
-                patch_shape=patch_shape,
-                dtype=dtype,
-            )
-
+        if use_deformable_attn:
+            if rope_pos_enc:
+                self.att = DeformableRopeAttention(
+                    dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_norm=qk_norm,
+                    att_drop=att_drop, proj_drop=proj_drop, proj_bias=proj_bias,
+                    ffn_mask_k_bias=ffn_mask_k_bias, norm_layer=norm_layer,
+                    random_rotation_per_head=rope_random_rotation_per_head,
+                    rope_type=rope_type, rope_theta=rope_theta,
+                    input_fmt=input_fmt, input_shape=input_shape,
+                    patch_shape=patch_shape, dtype=dtype,
+                    n_points=da_n_points, n_levels=da_n_levels,
+                )
+            else:
+                self.att = DeformableAttention(
+                    dim, num_heads=num_heads,
+                    n_points=da_n_points, n_levels=da_n_levels,
+                )
         else:
-            self.att = Attention(
-                dim,
-                num_heads=num_heads,
-                qkv_bias=qkv_bias,
-                qk_norm=qk_norm,
-                att_drop=att_drop,
-                proj_drop=proj_drop,
-                norm_layer=norm_layer,
-            )
+            if rope_pos_enc:
+                self.att = RopeAttention(
+                    dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_norm=qk_norm,
+                    att_drop=att_drop, proj_drop=proj_drop, proj_bias=proj_bias,
+                    ffn_mask_k_bias=ffn_mask_k_bias, norm_layer=norm_layer,
+                    random_rotation_per_head=rope_random_rotation_per_head,
+                    rope_type=rope_type, rope_theta=rope_theta,
+                    input_fmt=input_fmt, input_shape=input_shape,
+                    patch_shape=patch_shape, dtype=dtype,
+                )
+            else:
+                self.att = Attention(
+                    dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_norm=qk_norm,
+                    att_drop=att_drop, proj_drop=proj_drop, norm_layer=norm_layer,
+                )
+
+        self.with_deformable_attn = use_deformable_attn
 
         if layer_scale_init_values is not None:
             self.ls1 = LayerScale(dim, init_values=layer_scale_init_values)
@@ -125,10 +136,9 @@ class Transformer(nn.Module):
             if isinstance(mod, RopeAttention):
                 mod.init_rope_parameters(device=buffer_device)
 
-    def _forward(self, x, masks=None, pos_enc=None):
+    def _forward(self, x, masks=None, pos_enc=None, spatial_kwargs=None):
         ln1 = self.norm1(x)
-
-        att = self.att(ln1, masks=masks, pos_enc=pos_enc)
+        att = self.att(ln1, masks=masks, pos_enc=pos_enc, spatial_kwargs=spatial_kwargs)
         p1 = x + self.ls1(self.drop_path1(att))
 
         ffn = self.norm2(p1)
@@ -137,12 +147,7 @@ class Transformer(nn.Module):
         p2 = p1 + self.ls2(self.drop_path2(ffn))
         return p2
 
-    def _forward_list(self, x_list: List[Tensor], masks=None, pos_enc=None) -> List[Tensor]:
-        """
-        This list operator concatenates the tokens from the list of inputs together to save
-        on the elementwise operations. Torch-compile memory-planning allows hiding the overhead
-        related to concat ops.
-        """
+    def _forward_list(self, x_list: List[Tensor], masks=None, pos_enc=None, spatial_kwargs=None) -> List[Tensor]:
         if masks is None:
             masks = [None] * len(x_list)
         if pos_enc is None:
@@ -169,7 +174,9 @@ class Transformer(nn.Module):
 
             flattened, shapes, num_tokens = cat_keep_shapes(x_subset_1_list)
             norm1 = uncat_with_shapes(self.norm1(flattened), shapes, num_tokens)
-            residual_1_list = self.att.forward_list(norm1, masks=masks, pos_enc=pos_enc_subset_list)
+            residual_1_list = self.att.forward_list(
+                norm1, masks=masks, pos_enc=pos_enc_subset_list, spatial_kwargs=spatial_kwargs,
+            )
 
             x_attn_list = [
                 torch.index_add(
@@ -207,21 +214,33 @@ class Transformer(nn.Module):
                     x_attn_list, residual_2_list, indices_2_list, residual_scale_factors
                 )
             ]
-        
+
         else:
-            x_out = []
-            for x, pos_enc_i, mask_i in zip(x_list, pos_enc, masks):
-                x_attn = x + self.ls1(self.att(self.norm1(x), masks=mask_i, pos_enc=pos_enc_i))
-                x_ffn = x_attn + self.ls2(self.mlp(self.norm2(x_attn)))
-                x_out.append(x_ffn)
-            x_ffn = x_out
+            if self.with_deformable_attn:
+                # DA path: single forward_list call processes all levels together
+                norm1_list = [self.norm1(x) for x in x_list]
+                att_list = self.att.forward_list(
+                    norm1_list, masks=masks, pos_enc=pos_enc, spatial_kwargs=spatial_kwargs,
+                )
+                x_ffn = []
+                for x, att_out in zip(x_list, att_list):
+                    x_attn = x + self.ls1(self.drop_path1(att_out))
+                    x_ffn_i = x_attn + self.ls2(self.drop_path2(self.mlp(self.norm2(x_attn))))
+                    x_ffn.append(x_ffn_i)
+            else:
+                # Standard self-attention: per-element loop
+                x_ffn = []
+                for x, pe_i, mask_i in zip(x_list, pos_enc, masks):
+                    x_attn = x + self.ls1(self.att(self.norm1(x), masks=mask_i, pos_enc=pe_i, spatial_kwargs=spatial_kwargs))
+                    x_ffn_i = x_attn + self.ls2(self.mlp(self.norm2(x_attn)))
+                    x_ffn.append(x_ffn_i)
 
         return x_ffn
 
-    def forward(self, x, masks=None, pos_enc=None):
+    def forward(self, x, masks=None, pos_enc=None, spatial_kwargs=None):
         if isinstance(x, Tensor):
-            return self._forward(x, masks=masks, pos_enc=pos_enc)
+            return self._forward(x, masks=masks, pos_enc=pos_enc, spatial_kwargs=spatial_kwargs)
         elif isinstance(x, list):
-            return self._forward_list(x, masks=masks, pos_enc=pos_enc)
+            return self._forward_list(x, masks=masks, pos_enc=pos_enc, spatial_kwargs=spatial_kwargs)
         else:
             raise ValueError(f"Unsupported input type: {type(x)}")

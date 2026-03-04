@@ -20,6 +20,23 @@ from torch.nn import functional as F
 from cell_observatory_platform.data.structures import masks_to_boxes_v2
 
 
+def reconstruct_full_feature_map(
+    x: Tensor,
+    mask_indices: Tensor,
+    full_length: int,
+    mask_token: Tensor,
+) -> Tensor:
+    """
+    Scatter context tokens back into a full-length sequence, filling
+    masked positions with a learned mask_token.    
+    """
+    B, N_ctx, C = x.shape
+    full = mask_token.expand(B, full_length, C).clone()
+    idx = mask_indices if mask_indices.dim() == 2 else mask_indices[None].expand(B, -1)
+    full.scatter_(1, idx.unsqueeze(-1).expand(-1, -1, C), x)
+    return full
+
+
 class Unroll(nn.Module):
     """
     Reorders the tokens such that patches are contiguous in memory.

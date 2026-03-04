@@ -115,23 +115,54 @@ def get_loss_fn(loss):
 
 
 def L2_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
-    loss = (targets - predictions) ** 2
-    loss = loss.mean(dim=-1)  # mean loss per patch
-    loss = loss.sum() / num_patches
-    return loss, None
+    if isinstance(targets, (list, tuple)) and isinstance(predictions, (list, tuple)):
+        total_loss = 0.0
+        for t, p in zip(targets, predictions):
+            total_loss = total_loss + ((t - p) ** 2).mean(dim=-1).sum()
+        return total_loss / num_patches, None
+    elif isinstance(targets, torch.Tensor) and isinstance(predictions, torch.Tensor):
+        loss = (targets - predictions) ** 2
+        loss = loss.mean(dim=-1) # mean loss per patch
+        loss = loss.sum() / num_patches
+        return loss, None
+    else:
+        raise TypeError(
+            f"targets and predictions must both be tensors or both be lists of tensors; "
+            f"got {type(targets)}, {type(predictions)}"
+        )
 
 
 def L1_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
-    # compute loss over masked patches
-    loss = torch.abs(targets - predictions)
-    loss = loss.mean(dim=-1)  # mean loss per patch
-    loss = loss.sum() / num_patches
-    return loss, None
+    if isinstance(targets, (list, tuple)) and isinstance(predictions, (list, tuple)):
+        total_loss = 0.0
+        for t, p in zip(targets, predictions):
+            total_loss = total_loss + torch.abs(t - p).mean(dim=-1).sum()
+        return total_loss / num_patches, None
+    elif isinstance(targets, torch.Tensor) and isinstance(predictions, torch.Tensor):
+        loss = torch.abs(targets - predictions)
+        loss = loss.mean(dim=-1)
+        loss = loss.sum() / num_patches
+        return loss, None
+    else:
+        raise TypeError(
+            f"targets and predictions must both be tensors or both be lists of tensors; "
+            f"got {type(targets)}, {type(predictions)}"
+        )
 
 
-# see: https://github.com/facebookresearch/ijepa/main/src/train.py
 def smooth_L1_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
-    return F.smooth_l1_loss(targets, predictions), None
+    if isinstance(targets, (list, tuple)) and isinstance(predictions, (list, tuple)):
+        total_loss = 0.0
+        for t, p in zip(targets, predictions):
+            total_loss = total_loss + F.smooth_l1_loss(t, p, reduction="sum")
+        return total_loss / num_patches, None
+    elif isinstance(targets, torch.Tensor) and isinstance(predictions, torch.Tensor):
+        return F.smooth_l1_loss(targets, predictions), None
+    else:
+        raise TypeError(
+            f"targets and predictions must both be tensors or both be lists of tensors; "
+            f"got {type(targets)}, {type(predictions)}"
+        )
 
 
 class FourierLoss(torch.nn.Module):
