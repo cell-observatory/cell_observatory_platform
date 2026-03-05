@@ -134,7 +134,7 @@ class MaskGenerator(object):
             if self.multiscale:
                 self.tok_prods_per_level = []
                 for lvl in range(self.q_pool + 1):
-                    pools = min(lvl + 1, self.q_pool)
+                    pools = min(lvl, q_pool)
                     tok_in_mu_lvl = tuple(
                         max(1, mu // (s ** pools))
                         for mu, s in zip(self.mask_unit_size, qs)

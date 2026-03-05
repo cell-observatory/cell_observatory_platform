@@ -47,7 +47,16 @@ def initialize_session(cfg: DictConfig):
 
     workspace_root = str(Path(__file__).resolve().parent.parent)
 
-    runtime_env = RuntimeEnv(working_dir=workspace_root, env_vars=env_vars, py_modules=[workspace_root])
+    # pip_packages = OmegaConf.to_container(cfg.clusters.get("extra_pip_packages", []), resolve=True)
+    # if not pip_packages:
+    #     pip_packages = None
+
+    runtime_env = RuntimeEnv(
+        working_dir=workspace_root, 
+        env_vars=env_vars, 
+        py_modules=[workspace_root], 
+        # pip=pip_packages,
+        )
 
     if "head_node_ip" in os.environ and "port" in os.environ:
         address = os.environ["head_node_ip"]
@@ -91,14 +100,12 @@ def run_session(cfg: DictConfig):
     scaling_config = ScalingConfig(
         num_workers=cfg.clusters.scaling_config.num_workers,
         resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
-        trainer_resources=cfg.clusters.scaling_config.trainer_resources,
         use_gpu=cfg.clusters.scaling_config.use_gpu,
     )
 
     checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
 
     run_config = RunConfig(
-        log_to_file=cfg.clusters.run_config.log_to_file,
         checkpoint_config=checkpoint_config,
         failure_config=FailureConfig(max_failures=0),
         storage_path=cfg.clusters.run_config.storage_path,
@@ -143,12 +150,10 @@ def run_tune(cfg: DictConfig):
     scaling_config = ScalingConfig(
         num_workers=cfg.clusters.scaling_config.num_workers,
         resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
-        trainer_resources=cfg.clusters.scaling_config.trainer_resources,
         use_gpu=cfg.clusters.scaling_config.use_gpu,
     )
     checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
     run_config = RunConfig(
-        log_to_file=cfg.clusters.run_config.log_to_file,
         checkpoint_config=checkpoint_config,
         failure_config=FailureConfig(max_failures=0),
         storage_path=cfg.clusters.run_config.storage_path,

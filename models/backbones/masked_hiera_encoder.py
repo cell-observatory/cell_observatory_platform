@@ -4,12 +4,11 @@ https://github.com/facebookresearch/hiera/blob/main/hiera/hiera_mae.py
 """
 
 import math
-from typing import Tuple, Optional, Union, List
+from typing import Tuple, Optional, Union, List, Literal
 
 import torch
 import torch.nn as nn
 
-from cell_observatory_platform.models.layers.utils import conv_nd
 from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.backbones.hiera import Hiera
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
@@ -125,7 +124,6 @@ class MaskedHieraEncoder(nn.Module):
         )
 
         encoder_dim_out = self.encoder.blocks[-1].dim_out
-        self.encoder_norm = get_norm(norm_layer)(encoder_dim_out)
 
         # --- multiscale backbone settings ---
         self.multiscale_out_dim = int(multiscale_out_dim or encoder_dim_out)
@@ -175,6 +173,14 @@ class MaskedHieraEncoder(nn.Module):
         else:
             self.with_intermediates = False
 
+        # Norm: use output channel dim (multiscale_out_dim when projecting, else encoder_dim_out)
+        norm_dim = (
+            self.multiscale_out_dim
+            if self.channel_proj_type in ("equalization", "fusion")
+            else encoder_dim_out
+        )
+        self.encoder_norm = get_norm(norm_layer)(norm_dim)
+
         self.num_patches, _ = calc_num_patches(
             input_fmt=self.input_fmt,
             input_shape=self.input_shape,
@@ -209,7 +215,7 @@ class MaskedHieraEncoder(nn.Module):
         q_stride = self.encoder.q_stride
         mask_unit_size = self.encoder.mask_unit_size
 
-        pools = min(lvl + 1, q_pool)
+        pools = min(lvl, q_pool)
         # total number of tokens in the mask unit at the current level
         tok_in_mu = tuple(
             max(1, int(mu // (s ** pools)))

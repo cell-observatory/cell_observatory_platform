@@ -1,7 +1,7 @@
 import inspect
 import logging
 import sys
-from typing import Any, List, Literal, Mapping, Union
+from typing import Any, List, Literal, Mapping, Union, Optional
 
 import torch
 import torch.nn as nn

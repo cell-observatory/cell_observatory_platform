@@ -88,7 +88,6 @@ class Hiera(nn.Module):
         self.input_fmt = input_fmt
         self.input_shape = input_shape
         self.patch_shape = patch_shape
-        self.return_intermediates = return_intermediates
 
         axis_to_value = dict(zip(input_fmt, input_shape))
         channels = axis_to_value.get("C", 1)
@@ -216,11 +215,9 @@ class Hiera(nn.Module):
         x: torch.Tensor,
         mask: torch.Tensor = None,
         ctx_idx: torch.Tensor = None,
-        return_intermediates: bool = None,
+        return_intermediates: bool = False,
         return_windowed_intermediates: Optional[bool] = None,
     ):
-        return_intermediates = return_intermediates if return_intermediates is not None else self.return_intermediates
-
         x, patches = self.patch_embed(x, return_patches=True)
         B, N, C = x.shape
 

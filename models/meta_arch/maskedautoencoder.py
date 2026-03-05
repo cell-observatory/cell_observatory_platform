@@ -324,6 +324,7 @@ class MaskedAutoEncoder(nn.Module):
                 da_n_points=da_n_points,
                 da_n_levels=1,
                 prediction_mode="pixels",
+                # NOTE: output_embed_dim used for lowest_level prediction mode
                 output_embed_dim=None,
             )
         else:

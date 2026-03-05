@@ -1,15 +1,15 @@
 import inspect
 import logging
 import sys
-from typing import Any, Literal, Mapping, Union
+from typing import Any, Literal, Mapping, Optional, Union
 
 import torch
 import torch.nn as nn
 
-from cell_observatory_platform.models.backbones.encoder import Encoder
-from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.mlp import get_mlp
 from cell_observatory_platform.models.layers.norm import get_norm
+from cell_observatory_platform.models.backbones.encoder import Encoder
+from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
 from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding, make_axial_rope_freqs
 

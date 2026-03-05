@@ -308,7 +308,7 @@ class JEPA(nn.Module):
                 stages=hiera_stages,
                 mask_unit_size=hiera_mask_unit_size,
                 norm_layer=self.norm_layer,
-                channel_proj_type="fusion" if multiscale else "equalization",
+                channel_proj_type="equalization" if multiscale else "fusion",
                 multiscale_out_dim=multiscale_out_dim if multiscale else None
             )
 
@@ -337,6 +337,7 @@ class JEPA(nn.Module):
                 mlp_ratio=self.mlp_ratio,
                 norm_layer=self.norm_layer,
                 prediction_mode=prediction_mode,
+                # NOTE: output_embed_dim used for lowest_level prediction mode
                 output_embed_dim=encoder_dim_out,
                 use_deformable_attn=use_deformable_attn,
                 da_n_points=da_n_points,

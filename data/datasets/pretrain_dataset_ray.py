@@ -1186,7 +1186,7 @@ def get_dataset_ray(
             "dim": get_data_dim(cfg.dataset_layout_order),
             "input_format": cfg.dataset_layout_order,
         },
-        concurrency=(cfg.datasets.num_actors_min, cfg.datasets.num_actors_max),
+        compute=ray.data.ActorPoolStrategy(min_size=cfg.datasets.num_actors_min, max_size=cfg.datasets.num_actors_max),
     )
 
     return dataset, dataset_len
