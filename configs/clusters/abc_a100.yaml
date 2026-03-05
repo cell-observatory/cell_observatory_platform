@@ -53,7 +53,6 @@ max_worker_heartbeat_timeout: 2 # in minutes (to prevent indefinite hang if one 
 
 # Ray ScalingConfig (some variables are set to null to be set in the training loop)
 run_config:
-  log_to_file: true
   storage_path: ${paths.outdir}
   checkpoint_config:
     num_to_keep: 3
@@ -71,5 +70,3 @@ scaling_config:
   resources_per_worker:
     CPU: 0 # Ray allocates cpus automatically
     GPU: 1
-  trainer_resources:
-    CPU: ${clusters.cpus_for_training_coordinator} # an additional cpu core for the training coordinator
