@@ -107,8 +107,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt --progress-bar off --root-user-action=ignore --cache-dir /root/.cache/pip
 
 RUN echo "Install ops3d kernels"
-RUN pip install https://raw.githubusercontent.com/cell-observatory/ops3d/main/dist/ops3d-0.1.0-cp312-cp312-linux_x86_64.whl 
-
+RUN BUILD_ARCH=$(uname -m) && \
+    if [ "$BUILD_ARCH" = "x86_64" ]; then \
+        pip install https://raw.githubusercontent.com/cell-observatory/ops3d/main/dist/ops3d-0.1.0-cp312-cp312-linux_x86_64.whl; \
+    elif [ "$BUILD_ARCH" = "aarch64" ]; then \
+        pip install https://raw.githubusercontent.com/cell-observatory/ops3d/main/dist/ops3d-0.1.0-cp312-cp312-linux_aarch64.whl; \
+    else \
+        echo "Unsupported architecture"; exit 1; \
+    fi
+    
 # Code to avoid running as root
 ARG USERNAME=user1000
 ENV USER=${USERNAME}
