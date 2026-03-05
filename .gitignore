@@ -164,3 +164,6 @@ src/LV_auto_batch.bat_predict_rois
 /plots/
 .history/
 pytests/
+.specstory/
+.cursorignore
+pyrightconfig.json
