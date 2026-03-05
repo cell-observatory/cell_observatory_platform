@@ -666,14 +666,9 @@ class Mask2FormerPixelDecoder(nn.Module):
             y = output_conv(y)
             output_map.append(y)
             
-        # FIXME: This is the way they do it in the DinoV3 implementation,
-        # but it's a bit hairbrained because the output_map is in top-down order 
-        # (from low to high resolution)
-        # so this slices out the lowest res total_num_feature_levels feature maps, 
-        # wasting the higher res feature maps.
-        # I think we want the highest res total_num_feature_levels feature maps.
-        # => output_map[::-1][: self.total_num_feature_levels] (to return in high -> low resolution order) 
-        # or output_map[-self.total_num_feature_levels:] (to return in low -> high resolution order)
+        # NOTE: Do we want total_num_feature_levels from the left or right edge? 
+        # i.e. Do we want to keep the HIGHEST resolution feature maps? Or the LOWEST resolution feature maps?
+        # Current implementation keeps the LOWEST resolution feature maps.
         multi_scale_features = list(output_map[: self.total_num_feature_levels])
         # mask_features from the finest resolution feature map so 
         # predicted masks are at the highest resolution
