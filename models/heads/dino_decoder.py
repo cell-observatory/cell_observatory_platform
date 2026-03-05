@@ -287,6 +287,7 @@ class TransformerDecoder(nn.Module):
 
         self.norm = norm
         # HACK: bbox regressor is defined in the MaskDINODecoder class
+        self.bbox_embed = None
         self.class_predictor = None
         self.deformable_decoder = deformable_decoder
 
