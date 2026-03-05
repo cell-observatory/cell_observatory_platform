@@ -452,7 +452,7 @@ class ParentDatabase:
         with ROI-level metadata.
         """
         filters = self._filters_to_string(
-            table_name="prepared_tiles_view_table_table",
+            table_name="prepared_tiles_view_table",
             table_name_shortcut="ptv",
             max_rois=max_rois,
             max_tiles=max_tiles,
@@ -484,7 +484,7 @@ class ParentDatabase:
         query = f"""
             SELECT
                 {', '.join(f'ptv.{c}' for c in base_cols)}
-            FROM prepared_tiles_view_table_table ptv
+            FROM prepared_tiles_view_table ptv
             {filters}
         """
 
@@ -866,7 +866,7 @@ class ParentDatabase:
                     string_agg(pc.channel_target, ','::text ORDER BY pc.channel, pc.time) as channel_targets,
                     array_agg(pc.time ORDER BY pc.channel, pc.time) as timepoints
                 FROM prepared_cubes pc
-                JOIN prepared_tiles_view_table_table ptv
+                JOIN prepared_tiles_view_table ptv
                 ON (pc.prepared_id, pc.tile_name) = (ptv.prepared_id, ptv.tile_name)
                 WHERE
                     ptv.cube_size = 128 AND ptv.channel_size = 2
@@ -953,22 +953,22 @@ class ParentDatabase:
         return len(self.get_columns(table_name))
 
     def get_random_rois(self, num_rois: int = 1) -> list[int]:
-        filter = self._exists_filter("prepared_tiles_view_table_table")
+        filter = self._exists_filter("prepared_tiles_view_table")
 
         if self.synthetic_only:
-            filter += self._synthetic_filter("prepared_tiles_view_table_table").replace("WHERE", " AND ")
+            filter += self._synthetic_filter("prepared_tiles_view_table").replace("WHERE", " AND ")
         else:
-            filter += self._real_filter("prepared_tiles_view_table_table").replace("WHERE", " AND ")
+            filter += self._real_filter("prepared_tiles_view_table").replace("WHERE", " AND ")
 
         if self.hpf_list is not None:
-            filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view_table_table").replace("WHERE", " AND ")
+            filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view_table").replace("WHERE", " AND ")
 
         if self.tile_list is not None:
-            filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view_table_table").replace(
+            filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view_table").replace(
                 "WHERE", " AND "
             )
         if self.roi_list is not None:
-            filter += self._choose_filter(rois=self.roi_list, table_name="prepared_tiles_view_table_table").replace(
+            filter += self._choose_filter(rois=self.roi_list, table_name="prepared_tiles_view_table").replace(
                 "WHERE", " AND "
             )
 
@@ -979,35 +979,35 @@ class ParentDatabase:
         # query = f"""
         #     -- Getting random ROIs
         #     SELECT DISTINCT prepared_id
-        #     FROM prepared_tiles_view_table_table {filter}
+        #     FROM prepared_tiles_view_table {filter}
         #     LIMIT {num_rois}
         # """  # ORDER BY random() could be slow on large tables
         query = f"""
             -- Getting deterministic subset of ROIs (ordered by prepared_id)
             SELECT DISTINCT prepared_id 
-            FROM prepared_tiles_view_table_table {filter}
+            FROM prepared_tiles_view_table {filter}
             ORDER BY prepared_id
             LIMIT {num_rois}
         """
         return self.execute_query(query).values.squeeze().tolist()
 
     def get_random_tiles(self, num_tiles: int = 1) -> list[tuple[int, str]]:
-        filter = self._exists_filter("prepared_tiles_view_table_table")
+        filter = self._exists_filter("prepared_tiles_view_table")
 
         if self.synthetic_only:
-            filter += self._synthetic_filter("prepared_tiles_view_table_table").replace("WHERE", " AND ")
+            filter += self._synthetic_filter("prepared_tiles_view_table").replace("WHERE", " AND ")
         else:
-            filter += self._real_filter("prepared_tiles_view_table_table").replace("WHERE", " AND ")
+            filter += self._real_filter("prepared_tiles_view_table").replace("WHERE", " AND ")
 
         if self.hpf_list is not None:
-            filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view_table_table").replace("WHERE", " AND ")
+            filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view_table").replace("WHERE", " AND ")
 
         if self.tile_list is not None:
-            filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view_table_table").replace(
+            filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view_table").replace(
                 "WHERE", " AND "
             )
         if self.roi_list is not None:
-            filter += self._choose_filter(rois=self.roi_list, table_name="prepared_tiles_view_table_table").replace(
+            filter += self._choose_filter(rois=self.roi_list, table_name="prepared_tiles_view_table").replace(
                 "WHERE", " AND "
             )
 
@@ -1018,13 +1018,13 @@ class ParentDatabase:
         # query = f"""
         #     -- Getting random tiles
         #     SELECT DISTINCT prepared_id, tile_name
-        #     FROM prepared_tiles_view_table_table {filter}
+        #     FROM prepared_tiles_view_table {filter}
         #     LIMIT {num_tiles}
         # """  # ORDER BY random() could be slow on large tables
         query = f"""
             -- Getting deterministic subset of tiles (ordered by prepared_id, tile_name)
             SELECT DISTINCT prepared_id, tile_name 
-            FROM prepared_tiles_view_table_table {filter}
+            FROM prepared_tiles_view_table {filter}
             ORDER BY prepared_id, tile_name
             LIMIT {num_tiles}
         """
