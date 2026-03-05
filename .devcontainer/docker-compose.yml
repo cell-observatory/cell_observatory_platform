@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   cell-observatory-platform:
-    image: ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_25_08
+    image: ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_26_01
     container_name: cell_observatory_dev
     user: "1000:1000"
     working_dir: /workspace/cell_observatory_platform

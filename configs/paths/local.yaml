@@ -1,5 +1,5 @@
 docker_image: null
-apptainer_image: ~/apptainer_images/develop_torch_25_08.sif
+apptainer_image: ~/apptainer_images/develop_torch_26_01.sif
 
 # No need to change anything below
 # --------------------------------------------------------------------------------
