@@ -587,14 +587,24 @@ class BestCheckpointer(HookBase):
         else:
             checkpoint = None
 
-        report(
-            metrics={
-                "best_loss": self.trainer._curr_val_metric,
-                "save_step": self.trainer._iter,
-                "save_epoch": self.trainer._epoch + 1,
-            },
-            checkpoint=checkpoint,
-        )
+        if is_main_process():
+            report(
+                metrics={
+                    "best_loss": self.trainer._curr_val_metric,
+                    "save_step": self.trainer._iter,
+                    "save_epoch": self.trainer._epoch + 1,
+                },
+                checkpoint=checkpoint,
+            )
+        else:
+            report(
+                metrics={
+                    "best_loss": self.trainer._curr_val_metric,
+                    "save_step": self.trainer._iter,
+                    "save_epoch": self.trainer._epoch + 1,
+                },
+                checkpoint=None,
+            )
 
 
 class TorchMemoryStats(HookBase):

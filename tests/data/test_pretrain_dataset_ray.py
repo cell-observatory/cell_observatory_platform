@@ -1,16 +1,17 @@
 import sys
 from pathlib import Path
+import tempfile
 
 import pytest
 import torch
 from hydra.utils import get_class, instantiate
 from omegaconf import open_dict
-from ray.train import report
+from ray.train import report, Checkpoint
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
 from cell_observatory_platform.utils.cleanup import unlink_shared_memory
 from cell_observatory_platform.data.dataloaders import get_dataloader
-
+from cell_observatory_platform.utils.context import is_main_process
 
 def test_access_to_storage_server(config):
     if not Path(config.paths.server_folder_path).exists():
@@ -35,7 +36,13 @@ def _test_dataloader_ray_dist(config):
         if idx >= 2:
             break
 
-    return report({"success": True})
+    metrics = {"success": True}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint = Checkpoint.from_directory(tmpdir)
+        if is_main_process():
+            return report(metrics=metrics, checkpoint=checkpoint)
+        else:
+            return report(metrics=metrics, checkpoint=None)
 
 
 def test_data_pipeline_ray_distributed(config):
