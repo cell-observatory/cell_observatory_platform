@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: ${{ !contains(github.head_ref || github.ref_name, 'release/') || !contains(github.head_ref || github.ref_name, 'main/') || !contains(github.head_ref || github.ref_name, 'develop/')}}
 
 env:
-  TORCH_VERSION: torch_25_08
+  TORCH_VERSION: torch_26_01
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }} # github.repository as <account>/<repo>
   DO_SIGNING: ${{ false }}
@@ -301,7 +301,7 @@ jobs:
       SUPABASE_PROD_URI: ${{ secrets.SUPABASE_PROD_URI }}
       SUPABASE_STAGING_URI: ${{ secrets.SUPABASE_STAGING_URI }}
     outputs:
-      BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} # BUILT_SIF_FILE: /home/mosaic/Desktop/actions-runner/_work/cell_observatory_platform/cell_observatory_platform/feature_github_actions_updates_torch_25_08.sif
+      BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} # BUILT_SIF_FILE: /home/mosaic/Desktop/actions-runner/_work/cell_observatory_platform/cell_observatory_platform/feature_github_actions_updates_torch_26_01.sif
       SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
       SIF_PYTORCH_VERSION: ${{ steps.sif_pytorch_version.outputs.SIF_PYTORCH_VERSION }}
       DOCKER_PYTORCH_VERSION: ${{ steps.dockerfile_pytorch_version.outputs.DOCKER_PYTORCH_VERSION }}
@@ -594,6 +594,10 @@ jobs:
           max_attempts: 2
           command: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_utils.xml tests/utils
 
+      - name: pytest /tests/ops
+        if: ${{ env.TESTING }}
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_ops.xml tests/ops
+
       - name: pytest /tests/data
         if: ${{ env.TESTING }}
         uses: nick-fields/retry@v3
@@ -601,7 +605,7 @@ jobs:
           timeout_minutes: 60
           max_attempts: 2
           command: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml tests/data
-
+    
       - name: pytest /tests/models
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml tests/models
@@ -610,13 +614,9 @@ jobs:
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml tests/training
       
-      - name: pytest /tests/ops
+      - name: pytest /tests/evaluation
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_ops.xml tests/ops
-
-      - name: pytest /tests/ops
-        if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_ops.xml tests/ops
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_ops.xml tests/evaluation
 
       - name: print testmon2
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON

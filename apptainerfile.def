@@ -1,5 +1,5 @@
 Bootstrap: localimage
-From: pytorch_25.08-py3.sif
+From: pytorch_26.01-py3.sif
 Stage: base
 
 %environment
@@ -16,8 +16,7 @@ TERM=xterm-256color
 echo "PS1='\e[97m\u\e[0m@\e[94m\h\e[0m:\e[35m\w\e[0m# '" >> /root/.bashrc
 
 
-apt-get update \
-  && apt-get install -y --no-install-recommends \
+apt-get update && apt-get install -y --no-install-recommends \
   sudo \
   htop \
   cifs-utils \
@@ -31,29 +30,18 @@ apt-get update \
   zsh \
   vmtouch \
   fio \
+  prometheus \ 
   autoconf \
+  libxslt-dev \ 
+  xsltproc \ 
+  docbook-xsl \
+  libnuma-dev \
+  software-properties-common \
   && rm -rf /var/lib/apt/lists/*
 
-
-echo "Installing prometheus"
-pver=3.5.0
-if [ "$(uname -m)" = "x86_64" ]; then
-    echo "Building for AMD64"
-    parch=amd64
-elif [ "$(uname -m)" = "aarch64" ]; then
-    echo "Building for ARM64"
-    parch=arm64
-else
-    echo "Unsupported architecture"
-    exit 1
-fi
-mkdir /etc/prometheus /var/lib/prometheus
-wget https://github.com/prometheus/prometheus/releases/download/v$pver/prometheus-$pver.linux-$parch.tar.gz
-tar xvf prometheus-$pver.linux-$parch.tar.gz
-mv prometheus-$pver.linux-$parch/prometheus /usr/local/bin/prometheus
-mv prometheus-$pver.linux-$parch/promtool /usr/local/bin/promtool
-mv prometheus-$pver.linux-$parch/prometheus.yml /etc/prometheus/prometheus.yml
-prometheus --version
+echo "Install apptainer"
+add-apt-repository -y ppa:apptainer/ppa
+apt-get update && apt-get install -y apptainer && rm -rf /var/lib/apt/lists/*
 
 echo "Installing grafana"
 mkdir -p /etc/apt/keyrings/ && \
@@ -69,11 +57,15 @@ apt-get update && \
 echo "Install ohmyzsh"
 sh -c "$(wget https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
 
+echo "Install additional dependencies"
 # needs to have
 # sudo mount --bind ~/.cache/pip /tmp/pip
 pip list
 pip install -r requirements.txt --progress-bar off --cache-dir /tmp/pip
 pip list
+
+echo "Install ops3d kernels"
+pip install https://raw.githubusercontent.com/cell-observatory/ops3d/main/dist/ops3d-0.1.0-cp312-cp312-linux_x86_64.whl 
 
 %runscript
 exec /bin/bash -l -c "$@"
