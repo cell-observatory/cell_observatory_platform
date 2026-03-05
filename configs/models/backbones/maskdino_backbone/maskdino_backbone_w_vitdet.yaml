@@ -1,0 +1,14 @@
+defaults:
+  # NOTE: It is very important to use relative path like this otherwise 
+  # Hydra will parse the config nestedly and fail to find the original backbone config
+  - maskdino_backbone 
+  - _self_
+
+backbone_embed_dims: 
+  - ${models.adapters.out_channels} # [1024, 1024, 1024, 1024]x4 if using all layers
+  - ${models.adapters.out_channels}
+  - ${models.adapters.out_channels}
+  - ${models.adapters.out_channels}
+out_layers: null  # backbone block indices to feed to the adapter
+adapter_out_layers: [0, 1, 2, 3]  # determines which adapter features to give to the decoder
+backbone_output_format: feature

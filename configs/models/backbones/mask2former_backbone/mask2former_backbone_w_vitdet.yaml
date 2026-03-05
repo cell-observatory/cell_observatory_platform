@@ -1,16 +1,11 @@
-BUILD: cell_observatory_platform.models.backbones.mask2former_backbone.BUILD
+defaults:
+  - mask2former_backbone
+  - _self_
+
 backbone_embed_dims: # each vitdet stage has the same out_channels
   - ${models.adapters.out_channels} 
   - ${models.adapters.out_channels}
   - ${models.adapters.out_channels}
   - ${models.adapters.out_channels}
-train_backbone: true
-use_layernorm: true
-blocks_to_train: null
-out_layers: ${models.backbones.masked_encoder.out_layers} 
-adapter_out_layers: [0, 1, 2, 3] # [0, 1, 2, 3] to use all adapter features
-backbone_args: ${models.backbones.masked_encoder}
-input_shape: ${datasets.input_shape}
+adapter_out_layers: [0, 1, 2, 3] # determines which adapter features to give to the decoder
 backbone_output_format: feature
-patch_shape: ${datasets.patch_shape}
-input_format: ${dataset_layout_order}

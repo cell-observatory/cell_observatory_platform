@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - ../base_experiments/ssl_finetune_vit_large
+  - /tasks/channel_split
+  - /datasets/preprocessor/channel_split_preprocessor # configs/datasets/preprocessor/channel_split_preprocessor.yaml
+  - /models/meta_arch/autobench/ChannelSplitAutoBench/mae_large # configs/models/meta_arch/autobench/ChannelSplitAutoBench/mae_large.yaml
+  - _self_
+
+# experiment name (used for logging)
+experiment_name: test_channel_split_vit
