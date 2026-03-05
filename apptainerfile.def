@@ -65,7 +65,14 @@ pip install -r requirements.txt --progress-bar off --cache-dir /tmp/pip
 pip list
 
 echo "Install ops3d kernels"
-pip install https://raw.githubusercontent.com/cell-observatory/ops3d/main/dist/ops3d-0.1.0-cp312-cp312-linux_x86_64.whl 
+IF [ "$(uname -m)" = "x86_64" ]; then
+    pip install https://raw.githubusercontent.com/cell-observatory/ops3d/main/dist/ops3d-0.1.0-cp312-cp312-linux_x86_64.whl
+elif [ "$(uname -m)" = "aarch64" ]; then
+    pip install https://raw.githubusercontent.com/cell-observatory/ops3d/main/dist/ops3d-0.1.0-cp312-cp312-linux_aarch64.whl
+else
+    echo "Unsupported architecture"
+    exit 1
+fi
 
 %runscript
 exec /bin/bash -l -c "$@"

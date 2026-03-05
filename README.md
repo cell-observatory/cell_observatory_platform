@@ -122,13 +122,13 @@ apptainer pull --arch amd64 --force develop_torch_26_01.sif docker://ghcr.io/cel
 
 ### arm64/aarch64
 ```shell
-apptainer pull --arch arm64 --force develop_torch_26_01.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_26_01
+apptainer pull --arch arm64 --force develop_torch_26_01_arm64.sif docker://ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_26_01
 ```
 
 ## Building a new apptainer image with a different torch version 
 First, you need to build an apptainer image for torch from the containers provided by Nvidia (e.g., `26.01-py3` from this [catalog](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch/tags)):
 ``` shell
-apptainer pull --arch amd64 --force pytorch_26.01-py3.sif docker://nvcr.io/nvidia/pytorch:26.01-py3
+apptainer pull --arch arm64 --force pytorch_26.01-py3_arm64.sif docker://nvcr.io/nvidia/pytorch:26.01-py3
 ```
 
 Then you can run the following command to build a complete image:  
