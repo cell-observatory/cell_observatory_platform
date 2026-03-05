@@ -3,7 +3,7 @@ Adapted from:
 https://github.com/facebookresearch/dinov3/blob/main/dinov3/eval/segmentation/models/heads/mask2former_head.py
 """
 
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from torch import nn
 from torch.nn import functional as F
@@ -33,14 +33,15 @@ class Mask2FormerHead(nn.Module):
         output = self.forward_features(features, mask)
         return output
 
-    def predict(self, features, rescale_size, mask=None):
+    def predict(self, features, rescale_size: Optional[tuple] = None, mask=None):
         output = self.forward_features(features, mask)
-        output["pred_masks"] = F.interpolate(
-            output["pred_masks"],
-            size=rescale_size,
-            mode="trilinear",
-            align_corners=False,
-        )
+        if rescale_size is not None:
+            output["pred_masks"] = F.interpolate(
+                output["pred_masks"],
+                size=rescale_size,
+                mode="trilinear",
+                align_corners=False,
+            )
         return output
 
     def layers(self, features, mask=None):

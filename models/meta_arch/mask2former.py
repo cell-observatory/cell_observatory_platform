@@ -67,10 +67,11 @@ class Mask2Former(nn.Module):
         Use this for inference/eval when you need masks at 128×256×512 or other full resolution.
         """
         features_dict = self.backbone(data_sample)
-        if rescale_size is None:
-            # Default: original input spatial shape (Z, Y, X)
-            t = data_sample["data_tensor"]
-            rescale_size = tuple(t.shape[1:4])  # channels-last: (Z, Y, X)
+        # NOTE: Remove this in the Inference refactor -- this should be handled by the InferenceWorker or the PostProcessor
+        # if rescale_size is None:
+        #     # Default: original input spatial shape (Z, Y, X)
+        #     t = data_sample["data_tensor"]
+        #     rescale_size = tuple(t.shape[1:4])  # channels-last: (Z, Y, X)
         outputs = self.segmentation_head.predict(features_dict, rescale_size=rescale_size)
         return outputs
     
