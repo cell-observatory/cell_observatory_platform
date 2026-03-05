@@ -242,12 +242,15 @@ def generalized_box_iou_diag(boxes1: Tensor, boxes2: Tensor) -> Tensor:
     Diagonal-element-wise generalized IoU between boxes1 and boxes2.
     Equivalent to torch.diag(generalized_box_iou(boxes1, boxes2)).
 
-    NOTE: boxes1 and boxes2 can have different shapes, but the result will be truncated to the smaller of the two.
+    Requires boxes1.shape[0] == boxes2.shape[0].
     """
-    n = min(boxes1.shape[0], boxes2.shape[0])
-    if n == 0:
+    n1, n2 = boxes1.shape[0], boxes2.shape[0]
+    if n1 != n2:
+        raise ValueError(
+            f"boxes1 and boxes2 must have the same number of boxes (got {n1} and {n2})"
+        )
+    if n1 == 0:
         return boxes1.new_zeros(0)
-    boxes1, boxes2 = boxes1[:n], boxes2[:n]  # Handle unequal box counts
     inter, union = _box_inter_union_diag(boxes1, boxes2)
     iou = inter / union
 

@@ -60,19 +60,13 @@ def test_generalized_box_iou_diag_identical_boxes():
 
 
 @pytest.mark.parametrize("n,m", [(10, 5), (5, 10), (3, 7)])
-def test_generalized_box_iou_diag_different_lengths(n, m):
-    """generalized_box_iou_diag with N!=M matches torch.diag of full matrix (min(N,M) diagonal)."""
+def test_generalized_box_iou_diag_raises_on_mismatched_lengths(n, m):
+    """generalized_box_iou_diag raises ValueError when boxes1 and boxes2 have different lengths."""
     boxes1 = _make_valid_boxes(n, dtype=torch.float32, seed=42)
     boxes2 = _make_valid_boxes(m, dtype=torch.float32, seed=123)
 
-    diag_result = generalized_box_iou_diag(boxes1, boxes2)
-    full_result = generalized_box_iou(boxes1, boxes2)
-    expected = torch.diag(full_result)
-
-    assert diag_result.shape == (min(n, m),)
-    assert torch.allclose(diag_result, expected, rtol=1e-5, atol=1e-6), (
-        f"n={n}, m={m}: max diff = {(diag_result - expected).abs().max().item()}"
-    )
+    with pytest.raises(ValueError, match=f"got {n} and {m}"):
+        generalized_box_iou_diag(boxes1, boxes2)
 
 
 def test_generalized_box_iou_diag_non_overlapping():
