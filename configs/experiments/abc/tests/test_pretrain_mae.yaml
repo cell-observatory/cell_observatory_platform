@@ -112,7 +112,7 @@ datasets:
     synthetic_only: false
     has_annotations: false
     with_hypercubes_dataframe: true
-    mask_channel: null
+    mask_channel_idx: null
 
 # TO TEST: (1) sincos, (2) ROPE axial (3) ROPE mixed (4) Fourier loss
 models:

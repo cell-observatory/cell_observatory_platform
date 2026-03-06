@@ -1,16 +1,12 @@
-BUILD: cell_observatory_platform.models.backbones.maskdino_backbone.BUILD
+defaults:
+  - maskdino_backbone
+  - _self_
+
 backbone_embed_dims: 
   - ${models.backbones.masked_encoder.embed_dim} # [1024, 1024, 1024, 1024]x4 if using all layers
   - ${models.backbones.masked_encoder.embed_dim}
   - ${models.backbones.masked_encoder.embed_dim}
   - ${models.backbones.masked_encoder.embed_dim}
-train_backbone: true
-use_layernorm: true
-blocks_to_train: null
-out_layers: [10, 14, 18, 23] # OR: [10, 14, 18, 22] for multi-scale features
-adapter_out_layers: [2] # [0, 1, 2, 3] to use all adapter features
-backbone_args: ${models.backbones.masked_encoder}
-input_shape: ${datasets.input_shape}
+out_layers: [10, 14, 18, 23]  # backbone block indices for strides 4,8,16,32
+adapter_out_layers: [0, 1, 2, 3]  # output all adapter features; encoder picks via transformer_in_features
 backbone_output_format: feature
-patch_shape: ${datasets.patch_shape}
-input_format: ${dataset_layout_order}

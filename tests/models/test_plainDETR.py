@@ -36,7 +36,7 @@ def _build_plain_detr_reparam_cfg():
     plain_detr_cfg = {
         "BUILD": "cell_observatory_platform.models.meta_arch.plainDETR.BUILD",
         "backbone_wrapper_args": {
-            "BUILD": "cell_observatory_platform.models.heads.plain_detr_backbone.BUILD",
+            "BUILD": "cell_observatory_platform.models.backbones.plain_detr_backbone.BUILD",
             "backbone_embed_dims": [1024, 1024, 1024, 1024],
             "train_backbone": True,
             "use_layernorm": True,

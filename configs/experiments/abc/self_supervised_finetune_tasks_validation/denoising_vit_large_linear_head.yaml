@@ -1,0 +1,46 @@
+# @package _global_
+defaults:
+  - ../base_experiments/ssl_finetune_vit_large
+  - /tasks/denoising
+  - /datasets/preprocessor/denoising_preprocessor  # configs/datasets/preprocessor/denoising_preprocessor.yaml
+  - /models/meta_arch/autobench/DenoisingAutoBench/mae_large  # configs/models/meta_arch/autobench/DenoisingAutoBench/mae_large.yaml
+  - _self_
+  
+# experiment name (used for logging)
+experiment_name: test_denoising_vit
+
+# data
+datasets:
+  # Preprocessor
+  preprocessor:
+    transforms_list:
+      # # 0) Synthetic data needs to be convolved with PSF to simulate the effect of the microscope.
+      # - _target_: cell_observatory_platform.data.transforms.psf.ConvolveWithPSF
+      # # TODO: Make this configurable.
+      #   input_format: ${dataset_layout_order}
+      #   input_shape: ${datasets.input_shape}
+      #   input_pixel_size_um: [0.1, 0.1, 0.1]
+      #   psf: /clusterfs/nvme/martinalvarez/psf-real/DSR/CamA_Arc_OMW.tif
+      #   psf_pixel_size_um: [0.1, 0.1, 0.1]
+      #   psf_format: ZYX
+      #   psf_centered: true
+      #   pad_type: reflect
+      #   # visualization_dir: ${paths.outdir}/visualizations/psf_convolution_transform
+
+    # 1) DeepCopyInputsAsTargets to create targets from inputs
+      - _target_: cell_observatory_platform.data.transforms.make_targets.DeepCopyInputsAsTargets
+
+    # 2) MixedPoissonGaussianNoise to add noise to inputs (inplace)
+      - _target_: cell_observatory_platform.data.transforms.noise.MixedPoissonGaussianNoise
+        quantum_efficiency: ${tasks.quantum_efficiency}
+        electrons_per_count: ${tasks.electrons_per_count}
+        sigma_background_noise: ${tasks.sigma_background_noise}
+        mean_background_offset: ${tasks.mean_background_offset}
+        seed: ${seed}
+        # visualization_dir: ${paths.outdir}/visualizations/mixed_poisson_gaussian_noise_transform
+
+    # 3) Normalize to normalize the data
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}

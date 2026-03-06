@@ -1,0 +1,11 @@
+defaults:
+  - mask2former_backbone
+  - _self_
+
+backbone_embed_dims: # each vitdet stage has the same out_channels
+  - ${models.adapters.out_channels} 
+  - ${models.adapters.out_channels}
+  - ${models.adapters.out_channels}
+  - ${models.adapters.out_channels}
+adapter_out_layers: [0, 1, 2, 3] # determines which adapter features to give to the decoder
+backbone_output_format: feature

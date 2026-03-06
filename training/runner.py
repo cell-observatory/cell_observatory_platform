@@ -68,6 +68,7 @@ def initialize_session(cfg: DictConfig):
 
         tmpdir = f"/tmp/symlink_{uuid.uuid1()}"
         raylogsdir = Path(cfg.paths.outdir)
+        raylogsdir.mkdir(parents=True, exist_ok=True)
         os.symlink(raylogsdir, tmpdir, target_is_directory=True)
         logger.info(f"Link outdir to tmpdir: {cfg.paths.outdir} -> {tmpdir}")
         init(
@@ -88,6 +89,28 @@ def initialize_session(cfg: DictConfig):
 
 
 def run_session(cfg: DictConfig):
+    # Debug mode: run training loop directly in main process (bypasses Ray Train)
+    # This allows debugpy breakpoints to work inside the training loop
+    if cfg.get("debug_mode", False):
+        logger.info("DEBUG MODE: Running training loop directly in main process (no Ray Train)")
+
+        # Set up single-GPU distributed environment for DeepSpeed
+        os.environ.setdefault("WORLD_SIZE", "1")
+        os.environ.setdefault("RANK", "0")
+        os.environ.setdefault("LOCAL_RANK", "0")
+        os.environ.setdefault("MASTER_ADDR", "localhost")
+        os.environ.setdefault("MASTER_PORT", "29500")
+
+        # Initialize PyTorch distributed before DeepSpeed
+        import torch.distributed as dist
+
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl", world_size=1, rank=0)
+
+        train_loop_fn = get_method(cfg.loop_per_worker_script)
+        train_loop_fn(cfg)
+        return
+
     scaling_config = ScalingConfig(
         num_workers=cfg.clusters.scaling_config.num_workers,
         resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,

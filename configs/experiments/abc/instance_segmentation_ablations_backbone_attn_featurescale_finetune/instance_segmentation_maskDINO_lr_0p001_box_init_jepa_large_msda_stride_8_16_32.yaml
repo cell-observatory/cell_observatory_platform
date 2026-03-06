@@ -1,0 +1,43 @@
+# @package _global_
+defaults:
+  - ../base_experiments/instance_segmentation_maskDINO_lr_0p001
+  # NOTE: We are using the MAE config but no pretrained backbone => just a ViT backbone
+TODO: What configs do we use here?
+  - /models/meta_arch/maskdino/mae_large_w_masks_adapter    # configs/models/maskdino/large.yaml
+  - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
+  - /optimizations/models/maskdino/mae_large # configs/optimizations/models/mae.yaml
+  - /models/backbones/maskdino_backbone/maskdino_backbone_w_vitdet   # configs/models/backbones/maskdino_backbone/maskdino_backbone_w_vitdet.yaml
+  - /models/adapters/vit_det   # configs/models/adapters/vit_det.yaml
+  - _self_
+
+# WandB Naming Stuff
+experiment_name: instance_segmentation_maskDINO_vit_large_vitdet_stride_8_16_32
+
+paths:
+  pretrained_checkpointdir: TODO
+
+models:
+  adapters:
+    scale_factors: [2.0, 1.0, 0.5] # patch is 16x16x16, so 2x, 1x, 0.5x sampling to stride 8, 16 and 32 respectively
+
+  heads:
+    pixel_decoder:
+      use_deform_attention: true # Use MSDA
+      input_shape_metadata: # Use stride 8, 16 and 32 features  
+        "2":
+          channels: ${models.adapters.out_channels}
+          stride: 8
+        "3":
+          channels: ${models.adapters.out_channels}
+          stride: 16
+        "4":
+          channels: ${models.adapters.out_channels}
+          stride: 32
+      transformer_in_features: ["2", "3", "4"]
+      total_num_feature_levels: 3
+    maskdino_decoder:
+      use_deform_attention: true
+      total_num_feature_levels: 3
+
+clusters:
+  batch_size: ${eval:'${clusters.default_batch_size} // 2'}

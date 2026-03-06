@@ -134,6 +134,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# Pyright
+pyrightconfig.json
+
 # Profiler
 *.pclprof
 
@@ -165,3 +168,5 @@ src/LV_auto_batch.bat_predict_rois
 /plots/
 .history/
 pytests/
+.specstory/
+.cursorignore

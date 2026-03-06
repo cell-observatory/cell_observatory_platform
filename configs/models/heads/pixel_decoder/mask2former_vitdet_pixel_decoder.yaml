@@ -1,0 +1,47 @@
+BUILD: cell_observatory_platform.models.heads.pixel_decoders.Mask2FormerPixelDecoder.BUILD
+
+
+# Single feature map configuration for transformer backbone
+# Channels are adapter output (256). Strides must match adapter key convention:
+# adapter "0" = scale 4.0 = finest (stride 4), "3" = scale 0.5 = coarsest (stride 32).
+input_shape_metadata:  # Note: use input_shape, not input_shape_metadata
+  "1":
+    channels: ${models.adapters.out_channels}
+    stride: 4  # vitdet adapter scale 4.0 = finest
+  "2":
+    channels: ${models.adapters.out_channels}
+    stride: 8  # vitdet adapter scale 2.0
+  "3":
+    channels: ${models.adapters.out_channels}
+    stride: 16  # vitdet adapter scale 1.0
+  "4":
+    channels: ${models.adapters.out_channels}
+    stride: 32  # vitdet adapter scale 0.5 = coarsest
+
+# Levels fed into the transformer encoder (concatenated then split). Using 2 coarsest levels
+# avoids putting the finest levels through the encoder and reduces sequence length / torch.split cost.
+transformer_in_features: ["2", "3", "4"]
+
+# Number of multi-scale levels passed to the mask decoder (must match decoder num_feature_levels).
+total_num_feature_levels: 3
+
+# This is used to determine how many extra FPN levels to append to the feature pyramid.
+# The number of extra FPN levels needed to go from the finest feature map stride in the
+# transformer feature maps (determined by transformer_in_features) to the target minimum stride.
+target_min_stride: 4
+
+# Transformer encoder args
+transformer_encoder_dropout: 0.1
+transformer_encoder_num_heads: 8
+transformer_encoder_dim_feedforward: 1024
+transformer_encoder_layers: 6
+
+# Conv dim is the input dim of the transformer encoder
+# and also the output dim of the FPN layers
+conv_dim: 256
+
+# Should match the mask dimension of the mask decoder
+mask_dim: ${models.adapters.out_channels}
+norm: "LayerNorm"
+# dtype: ${quantization}
+use_deform_attention: false

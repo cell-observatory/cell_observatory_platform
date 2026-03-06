@@ -1,0 +1,15 @@
+BUILD: cell_observatory_platform.models.heads.mask2former_decoder.MultiScaleMaskedTransformerDecoder.BUILD
+
+input_dim: 3
+in_channels: 256
+mask_classification: true
+num_classes: 1
+hidden_dim: 256
+num_queries: 100
+decoder_nheads: 8
+dim_feedforward: 2048
+decoder_num_layers: 9
+decoder_pre_norm: false
+mask_dim: ${models.backbones.convnext.dims[0]}
+enforce_input_project: false
+num_feature_levels: 3
