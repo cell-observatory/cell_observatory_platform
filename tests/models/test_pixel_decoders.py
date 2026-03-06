@@ -264,7 +264,7 @@ def test_mask2former_pixel_decoder_forward_features_shapes_cuda(add_extra_levels
     conv_dim = 64
     mask_dim = 16
 
-    input_shape = _make_input_shape_dict(48, 64, 96)
+    input_shape_metadata = _make_input_shape_dict(48, 64, 96)
     transformer_in_features = ["res3", "res4", "res5"]
 
     res3 = (32, 32, 32)
@@ -274,7 +274,7 @@ def test_mask2former_pixel_decoder_forward_features_shapes_cuda(add_extra_levels
     total_num_feature_levels = len(transformer_in_features) + (1 if add_extra_levels else 0)
 
     dec = Mask2FormerPixelDecoder(
-        input_shape=input_shape,
+        input_shape_metadata=input_shape_metadata,
         transformer_in_features=transformer_in_features,
         total_num_feature_levels=total_num_feature_levels,
         target_min_stride=8,
@@ -289,12 +289,12 @@ def test_mask2former_pixel_decoder_forward_features_shapes_cuda(add_extra_levels
     ).cuda()
 
     features = {
-        "res3": torch.randn(B, input_shape["res3"]["channels"], *res3, device="cuda"),
-        "res4": torch.randn(B, input_shape["res4"]["channels"], *res4, device="cuda"),
-        "res5": torch.randn(B, input_shape["res5"]["channels"], *res5, device="cuda"),
+        "res3": torch.randn(B, input_shape_metadata["res3"]["channels"], *res3, device="cuda"),
+        "res4": torch.randn(B, input_shape_metadata["res4"]["channels"], *res4, device="cuda"),
+        "res5": torch.randn(B, input_shape_metadata["res5"]["channels"], *res5, device="cuda"),
     }
 
-    mask_feats, finest_map, all_maps = dec.forward_features(features)
+    mask_feats, coarsest_map, all_maps = dec.forward_features(features)
 
     assert isinstance(all_maps, list)
 
@@ -303,8 +303,9 @@ def test_mask2former_pixel_decoder_forward_features_shapes_cuda(add_extra_levels
         assert t.shape[0] == B and t.shape[1] == conv_dim
         assert t.is_cuda
 
-    assert finest_map.shape == (B, conv_dim, *res3)
-    assert all_maps[-1].shape == (B, conv_dim, *res5)
+    # Second return is lowest-res feature map (output_map[0])
+    assert coarsest_map.shape == (B, conv_dim, *res5)
+    assert all_maps[-1].shape == (B, conv_dim, *res3)
 
     Dc, Hc, Wc = all_maps[-1].shape[-3:]
     assert mask_feats.shape == (B, mask_dim, Dc, Hc, Wc)

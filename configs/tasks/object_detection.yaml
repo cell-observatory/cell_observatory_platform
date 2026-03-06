@@ -1,0 +1,2 @@
+task: object_detection
+input_channels: 1

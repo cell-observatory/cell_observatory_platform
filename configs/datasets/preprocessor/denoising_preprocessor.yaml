@@ -1,0 +1,43 @@
+_target_: cell_observatory_platform.models.layers.preprocessor.DenoisingPreprocessor
+
+with_masking: false
+mask_generator: ${datasets.masking.mask_generators.0}
+dtype: ${quantization}
+
+denoising_type: microscopy
+transforms_list:
+  # 0) Synthetic data needs to be convolved with PSF to simulate the effect of the microscope.
+  - _target_: cell_observatory_platform.data.transforms.psf.ConvolveWithPSF
+  # TODO: Make this configurable.
+    input_format: ${dataset_layout_order}
+    input_shape: ${datasets.input_shape}
+    input_pixel_size_um: [0.1, 0.1, 0.1]
+    psf: /clusterfs/nvme/martinalvarez/psf-real/DSR/CamA_Arc_OMW.tif
+    psf_pixel_size_um: [0.1, 0.1, 0.1]
+    psf_format: ZYX
+    psf_centered: true
+    pad_type: reflect
+
+# 1) DeepCopyInputsAsTargets to create targets from inputs
+  - _target_: cell_observatory_platform.data.transforms.make_targets.DeepCopyInputsAsTargets
+
+# 2) MixedPoissonGaussianNoise to add noise to inputs (inplace)
+  - _target_: cell_observatory_platform.data.transforms.noise.MixedPoissonGaussianNoise
+    quantum_efficiency: ${tasks.quantum_efficiency}
+    electrons_per_count: ${tasks.electrons_per_count}
+    sigma_background_noise: ${tasks.sigma_background_noise}
+    mean_background_offset: ${tasks.mean_background_offset}
+    seed: ${seed}
+
+# 3) Normalize to normalize the data
+  - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+    input_layout:
+      _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+      value: ${dataset_layout_order}
+
+patch_shape: ${datasets.patch_shape}
+input_format: ${dataset_layout_order}
+input_shape: ${datasets.train_shape}
+mask_channel_idx: ${datasets.mask_channel_idx}
+
+seed: ${seed}

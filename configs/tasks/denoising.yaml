@@ -1,0 +1,5 @@
+task: denoising
+quantum_efficiency: 0.82
+electrons_per_count: 0.22
+sigma_background_noise: 40
+mean_background_offset: 100

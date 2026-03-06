@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - ../base_experiments/ssl_finetune_vit_large
+  - /tasks/upsample_space
+  - /datasets/preprocessor/upsample_space_preprocessor # configs/datasets/preprocessor/upsample_space_preprocessor.yaml
+  - /models/meta_arch/autobench/UpsampleSpaceAutoBench/mae_large # configs/models/meta_arch/autobench/upsample_spaceAutoBench/mae_large.yaml
+  - _self_
+
+# experiment name (used for logging)
+experiment_name: test_upsample_space_vit

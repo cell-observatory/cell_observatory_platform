@@ -106,6 +106,7 @@ datasets:
     buffer_dtype: ${storage_dtype}
     batch_size: ${clusters.batch_size_per_gpu}
     input_shape: ${datasets.input_shape}
+    mask_channel_idx: ${datasets.mask_channel_idx}
     device_buffer_capacity: 2
     pin_numa_node: ${datasets.pin_numa_node}
     pin_pages: ${datasets.pin_memory}
@@ -136,7 +137,7 @@ datasets:
     has_annotations: true
     with_hypercubes_dataframe: false
     server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
-    mask_channel: 1
+    mask_channel_idx: 1
 
 # schedulers
 schedulers:

@@ -15,13 +15,18 @@ set -euo pipefail
 
 # ---- ---- ---- ---- ---- ---- ---- ----
 
+# ---- ---- ---- ABC ---- ---- ---- ----
+CFG_DIR="experiments/abc/base_model_finetune_ablations"
+
+# ---- ---- ---- ---- ---- ---- ---- ----
+
 : "${DRY_RUN:=0}"
 : "${FAIL_FAST:=1}"
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-REPO_ROOT="$( cd "$SCRIPT_DIR/../../.." && pwd )"
+REPO_ROOT="$( cd "$SCRIPT_DIR/../.." && pwd )"
 
-MANAGER_PY="$REPO_ROOT/cell_observatory_platform/manager.py"
+MANAGER_PY="$REPO_ROOT/manager.py"
 CONFIGS_ROOT="$REPO_ROOT/configs"
 
 # Convert to unix path if cygpath exists (Git Bash on Windows)
@@ -36,10 +41,13 @@ else
   CFG_DIR_U="$CFG_DIR"
 fi
 
+# Resolve config dir against configs root so find works regardless of cwd
+CFG_FULL="$CONFIGS_ROOT_U/$CFG_DIR_U"
+
 echo "[training_multijob.sh] Repo root:    $REPO_ROOT_U"
 echo "[training_multijob.sh] Manager:      $MANAGER_PY"
 echo "[training_multijob.sh] Configs root: $CONFIGS_ROOT_U"
-echo "[training_multijob.sh] Config dir:   $CFG_DIR_U"
+echo "[training_multijob.sh] Config dir:   $CFG_FULL"
 
 # Pick runner
 run_python() {
@@ -53,12 +61,12 @@ run_python() {
   fi
 }
 
-# Collect YAMLs from the given directory
+# Collect YAMLs from the given directory (path from configs root, not cwd)
 shopt -s nullglob
-mapfile -t yamls < <(find "$CFG_DIR_U" -maxdepth 1 -type f \( -name "*.yaml" -o -name "*.yml" \) | sort)
+mapfile -t yamls < <(find "$CFG_FULL" -maxdepth 1 -type f \( -name "*.yaml" -o -name "*.yml" \) | sort)
 
 if [[ ${#yamls[@]} -eq 0 ]]; then
-  echo "[training_multijob.sh] No YAML files found in: $CFG_DIR_U"
+  echo "[training_multijob.sh] No YAML files found in: $CFG_FULL"
   exit 1
 fi
 

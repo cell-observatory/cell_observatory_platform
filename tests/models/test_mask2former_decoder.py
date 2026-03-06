@@ -61,7 +61,7 @@ def test_forward_prediction_heads_shapes(B, Q, C, heads, num_classes, mask_dim, 
         num_queries=Q,
         decoder_nheads=heads,
         dim_feedforward=2 * C,
-        decoder_layers=1,
+        decoder_num_layers=1,
         decoder_pre_norm=False,
         mask_dim=mask_dim,  # must match mask_features channel
         enforce_input_project=False,
@@ -109,7 +109,7 @@ def test_decoder_forward_end_to_end_shapes(
         num_queries=num_queries,
         decoder_nheads=heads,
         dim_feedforward=2 * hidden_dim,
-        decoder_layers=num_layers,
+        decoder_num_layers=num_layers,
         decoder_pre_norm=False,
         mask_dim=mask_dim,
         enforce_input_project=False,
@@ -126,14 +126,14 @@ def test_decoder_forward_end_to_end_shapes(
     out = dec(x, mask_features)
 
     # final predictions
-    assert "pred_logits" in out and "pred_masks" in out and "aux_outputs" in out
+    assert "pred_logits" in out and "pred_masks" in out and "auxiliary_outputs" in out
     assert out["pred_logits"].shape == (B, num_queries, num_classes + 1)
     assert out["pred_masks"].shape == (B, num_queries, Dm, Hm, Wm)
 
     # aux outputs: num_layers entries, each with same shapes
-    assert isinstance(out["aux_outputs"], list)
-    assert len(out["aux_outputs"]) == num_layers
-    for aux in out["aux_outputs"]:
+    assert isinstance(out["auxiliary_outputs"], list)
+    assert len(out["auxiliary_outputs"]) == num_layers
+    for aux in out["auxiliary_outputs"]:
         if dec.mask_classification:
             assert aux["pred_logits"].shape == (B, num_queries, num_classes + 1)
         assert aux["pred_masks"].shape == (B, num_queries, Dm, Hm, Wm)
@@ -160,7 +160,7 @@ def test_attention_mask_all_true_row_is_unmasked():
         num_queries=Q,
         decoder_nheads=heads,
         dim_feedforward=2 * C,
-        decoder_layers=1,
+        decoder_num_layers=1,
         decoder_pre_norm=False,
         mask_dim=16,
         enforce_input_project=False,

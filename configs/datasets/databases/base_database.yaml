@@ -36,7 +36,7 @@ server_folder_path: ${paths.server_folder_path}
 
 with_hypercubes_dataframe: true
 
-mask_channel: 1
+mask_channel_idx: ${datasets.mask_channel_idx} # index of the mask channel in the data (if any)
 base_cube_size_x: 128
 base_cube_size_y: 128
 base_cube_size_z: 128

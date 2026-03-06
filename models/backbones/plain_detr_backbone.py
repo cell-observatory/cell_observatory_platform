@@ -90,7 +90,7 @@ class PlainDETRBackbone(nn.Module):
         self.out_channels = self.input_shape[-1]
         self.backbone_output_format = backbone_output_format
         self.backbone_returns_sequence = self.backbone_output_format == "sequence"
-
+        
     def forward(self, data_sample: dict) -> List[dict]:
         features = self.backbone.forward_features(data_sample["data_tensor"])
 

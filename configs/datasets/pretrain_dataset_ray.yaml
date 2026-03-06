@@ -10,6 +10,7 @@ batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * to
 input_shape: [16, 128, 128, 128, 2]
 train_shape: ${datasets.input_shape}
 patch_shape: [4, 16, 16, 16]
+mask_channel_idx: 1
 
 max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
 max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
