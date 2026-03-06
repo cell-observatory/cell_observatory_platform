@@ -1,18 +1,19 @@
 import sys
 from pathlib import Path
-
+import tempfile
 import pytest
 import torch
 from omegaconf import open_dict
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
+from cell_observatory_platform.utils.context import is_main_process
 
 
 def _test_context(config):
     import math
 
     import torch
-    from ray.train import report
+    from ray.train import report, Checkpoint
 
     from cell_observatory_platform.utils.context import (
         OpMap,
@@ -61,7 +62,13 @@ def _test_context(config):
         assert model.training is False
     assert model.training is True
 
-    report({"success": True})
+    metrics = {"success": True}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint = Checkpoint.from_directory(tmpdir)
+        if is_main_process():
+            return report(metrics=metrics, checkpoint=checkpoint)
+        else:
+            return report(metrics=metrics, checkpoint=None)
 
 
 def test_context(config):

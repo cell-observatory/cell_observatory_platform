@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+import tempfile
 
 import pandas as pd
 import pytest
@@ -9,10 +10,11 @@ import torch
 from hydra.utils import get_class
 from omegaconf import DictConfig, open_dict
 from ray.train import report
+from ray.train import Checkpoint
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
 from cell_observatory_platform.training.loggers import LocalEventWriter
-from cell_observatory_platform.utils.context import get_world_size, process_rank
+from cell_observatory_platform.utils.context import get_world_size, process_rank, is_main_process
 
 
 def _test_loggers_dist(cfg: DictConfig):
@@ -91,7 +93,13 @@ def _test_loggers_dist(cfg: DictConfig):
 
     # TODO: test appending to existing CSVs
 
-    report({"success": True})
+    metrics = {"success": True}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint = Checkpoint.from_directory(tmpdir)
+        if is_main_process():
+            return report(metrics=metrics, checkpoint=checkpoint)
+        else:
+            return report(metrics=metrics, checkpoint=None)
 
 
 def test_loggers(config):

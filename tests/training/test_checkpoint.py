@@ -1,14 +1,16 @@
 import os
 import sys
 from pathlib import Path
+import tempfile
 
 import pytest
 import torch
 from hydra.utils import get_class
 from omegaconf import DictConfig, open_dict
-from ray.train import report
+from ray.train import report, Checkpoint
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
+from cell_observatory_platform.utils.context import is_main_process
 
 
 # train function to use, this should stay inside
@@ -67,7 +69,12 @@ def _test_ckpt_dist(config: DictConfig):
             "start_iter": trainer_per_worker.start_iter,
             "best_metric": trainer_per_worker.best_metric,
         }
-    report(metrics)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint = Checkpoint.from_directory(tmpdir)
+        if is_main_process():
+            return report(metrics=metrics, checkpoint=checkpoint)
+        else:
+            return report(metrics=metrics, checkpoint=None)
 
 
 # @pytest.mark.order(1)

@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+import tempfile
 
 import pytest
 import torch
@@ -8,6 +9,7 @@ from hydra.utils import get_class
 from omegaconf import open_dict
 
 from cell_observatory_platform.tests.conftest import distributed_test
+from cell_observatory_platform.utils.context import is_main_process
 
 
 def _test_hooks_dist(cfg):
@@ -16,7 +18,7 @@ def _test_hooks_dist(cfg):
 
     import pandas as pd
     import torch
-    from ray.train import report
+    from ray.train import report, Checkpoint
 
     from cell_observatory_platform.training.hooks import (
         AnomalyDetector,
@@ -519,7 +521,13 @@ def _test_hooks_dist(cfg):
 
     # ---- ---- ---- TESTS DONE ---- ---- ----
 
-    report({"success": True})
+    metrics = {"success": True}
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint = Checkpoint.from_directory(tmpdir)
+        if is_main_process():
+            return report(metrics=metrics, checkpoint=checkpoint)
+        else:
+            return report(metrics=metrics, checkpoint=None)
 
 
 def test_hooks(config):
