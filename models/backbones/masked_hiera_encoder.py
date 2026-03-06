@@ -190,7 +190,7 @@ class MaskedHieraEncoder(nn.Module):
         # Norm: use output channel dim (multiscale_out_dim when projecting, else encoder_dim_out)
         norm_dim = (
             self.multiscale_out_dim
-            if self.channel_proj_type in ("equalization", "fusion")
+            if self.channel_proj_type == "equalization"
             else encoder_dim_out
         )
         self.encoder_norm = get_norm(norm_layer)(norm_dim)
@@ -305,6 +305,10 @@ class MaskedHieraEncoder(nn.Module):
                 return x_list, patches
             
             elif self.channel_proj_type == "fusion":
+                assert return_windowed, (
+                    "channel_proj_type='fusion' requires return_windowed=True "
+                    "(intermediates must be in [B, N, *cur_mu_shape, C] format for fusion heads)"
+                )
                 all_intermediates = intermediates[: self.encoder.q_pool] + intermediates[-1:]
                 intermediates_to_fuse = [all_intermediates[i] for i in self.multiscale_level_indices]
                 x = 0.0

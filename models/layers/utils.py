@@ -102,22 +102,23 @@ class Unroll(nn.Module):
         return x
 
 
-def undo_windowing(x: torch.Tensor, size: List[int], cur_mu_shape: List[int]) -> torch.Tensor:
+def undo_windowing(x: torch.Tensor, shape: List[int], mu_shape: List[int]) -> torch.Tensor:
     """
-    Convert windowed tokens [B, N, *cur_mu_shape, C] back to spatial order [B, *full_spatial, C].
-    full_spatial[i] = size[i] * cur_mu_shape[i].
+    Convert windowed tokens [B, N, *mu_shape, C] back to spatial order [B, *shape, C].
+    shape: full spatial shape at this stage (e.g. [H, W] or [T, H, W]).
+    mu_shape: mask unit shape (tokens per window per axis).
     """
     B, N, *_, C = x.shape
-    D = len(size)
-    x = x.view(B, *size, *cur_mu_shape, C)
+    D = len(shape)
+    num_MUs = [s // mu for s, mu in zip(shape, mu_shape)]
+    x = x.view(B, *num_MUs, *mu_shape, C)
     perm = [0]
     for i in range(D):
-        perm.append(1 + i)      # size dim
-        perm.append(1 + D + i)  # cur_mu_shape dim
+        perm.append(1 + i)
+        perm.append(1 + D + i)
     perm.append(len(x.shape) - 1)
     x = x.permute(perm)
-    new_dims = [size[i] * cur_mu_shape[i] for i in range(D)]
-    x = x.reshape(B, *new_dims, C)
+    x = x.reshape(B, *shape, C)
     return x
 
 

@@ -9,8 +9,8 @@ from cell_observatory_platform.models.backbones.hiera import Hiera
 
 ZYXC_CFG = dict(
     input_fmt="ZYXC",
-    input_shape=(16, 32, 32, 1),   # Z=16, Y=32, X=32, C=1
-    patch_shape=(4, 8, 8, None),   # Z_p=4, Y_p=8, X_p=8  => tokens (4,4,4)
+    input_shape=(128, 128, 128, 1),
+    patch_shape=(4, 8, 8, None),
     embed_dim=32,
     num_heads=2,
     q_pool=1,
@@ -21,8 +21,8 @@ ZYXC_CFG = dict(
 
 TZYXC_CFG = dict(
     input_fmt="TZYXC",
-    input_shape=(2, 32, 64, 64, 1),  # T=2, Z=32, Y=64, X=64, C=1 => tokens (1,8,8,8)
-    patch_shape=(2, 4, 8, 8, None),  # T_p=2, Z_p=4, Y_p=8, X_p=8
+    input_shape=(16, 128, 128, 128, 1),  
+    patch_shape=(2, 4, 8, 8, None),
     embed_dim=32,
     num_heads=2,
     q_pool=1,

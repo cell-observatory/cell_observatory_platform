@@ -5,7 +5,7 @@ from cell_observatory_platform.models.backbones.masked_hiera_encoder import Mask
 
 ZYXC_CFG = dict(
     input_fmt="ZYXC",
-    input_shape=(32, 64, 64, 1),   # tokens (8,8,8)
+    input_shape=(128, 128, 128, 1),
     patch_shape=(4, 8, 8, None),
     embed_dim=32,
     num_heads=2,
@@ -19,7 +19,7 @@ ZYXC_CFG = dict(
 
 TZYXC_CFG = dict(
     input_fmt="TZYXC",
-    input_shape=(2, 32, 64, 64, 1),   # tokens (1,8,8,8)
+    input_shape=(16, 128, 128, 128, 1),
     patch_shape=(2, 4, 8, 8, None),
     embed_dim=32,
     num_heads=2,
@@ -56,9 +56,10 @@ def test_encoder_forward_fusion(cfg):
     B = 2
     x = torch.randn((B,) + cfg["input_shape"])
 
-    out, patches = enc(x)
+    out, patches = enc(x, return_windowed=True)
     assert isinstance(out, torch.Tensor)
-    assert out.shape[-1] == out_dim
+    final_dim = enc.encoder.blocks[-1].dim_out
+    assert out.shape[-1] == final_dim
 
 
 @pytest.mark.parametrize("cfg", [ZYXC_CFG, TZYXC_CFG], ids=["ZYXC", "TZYXC"])
