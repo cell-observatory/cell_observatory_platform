@@ -98,6 +98,7 @@ class MaskedHieraEncoder(nn.Module):
         # --- multiscale backbone mode ---
         channel_proj_type: Literal["none", "equalization", "fusion"] = "none",
         multiscale_out_dim: Optional[int] = None,
+        multiscale_level_indices: Optional[List[int]] = None,
         **kwargs,
     ):
         super().__init__()
@@ -129,8 +130,21 @@ class MaskedHieraEncoder(nn.Module):
         self.multiscale_out_dim = int(multiscale_out_dim or encoder_dim_out)
 
         q_pool = int(self.encoder.q_pool)
-        stage_in_dims = [self.encoder.blocks[i].dim_out for i in self.encoder.stage_ends[:q_pool]]
-        stage_in_dims.append(encoder_dim_out)
+        total_levels = q_pool + 1
+        all_stage_in_dims = [self.encoder.blocks[i].dim_out for i in self.encoder.stage_ends[:q_pool]]
+        all_stage_in_dims.append(encoder_dim_out)
+
+        if multiscale_level_indices is not None:
+            self.multiscale_level_indices = list(multiscale_level_indices)
+            for idx in self.multiscale_level_indices:
+                if not (0 <= idx < total_levels):
+                    raise ValueError(
+                        f"multiscale_level_indices entry {idx} out of range [0, {total_levels - 1}]"
+                    )
+        else:
+            self.multiscale_level_indices = list(range(total_levels))
+
+        stage_in_dims = [all_stage_in_dims[i] for i in self.multiscale_level_indices]
 
         q_stride_pow = tuple(int(s) ** int(q_pool) for s in self.encoder.q_stride)
         self.mask_unit_spatial_shape_final = tuple(
@@ -150,25 +164,25 @@ class MaskedHieraEncoder(nn.Module):
             self.with_intermediates = True
             # Fusion: BlockFusionHeadND (spatial downsample + channel proj)
             self.multiscale_channel_projs = nn.ModuleList()
-            curr_mu_size = list(self.encoder.mask_unit_size)
             self.multi_scale_fusion_heads = nn.ModuleList()
-            for i in self.encoder.stage_ends[:q_pool]:
-                kernel = tuple(
-                    max(1, c // f)
-                    for c, f in zip(curr_mu_size, self.mask_unit_spatial_shape_final)
-                )
-
-                in_ch = self.encoder.blocks[i].dim_out
-                out_ch = encoder_dim_out
-
-                # NOTE: original hiera implementation uses conv but we opt for linear projection
-                #       for efficiency reasons
-                head = BlockFusionHeadND(in_ch, out_ch, kernel_size=kernel)
-
-                self.multi_scale_fusion_heads.append(head)
-
-                curr_mu_size = [max(1, c // s) for c, s in zip(curr_mu_size, self.encoder.q_stride)]
-            self.multi_scale_fusion_heads.append(nn.Identity())
+            for lvl in self.multiscale_level_indices:
+                if lvl == q_pool:
+                    # Final level: no spatial downsample needed
+                    self.multi_scale_fusion_heads.append(nn.Identity())
+                else:
+                    lvl_mu_size = tuple(
+                        max(1, int(mu // (s ** lvl)))
+                        for mu, s in zip(self.encoder.mask_unit_size, self.encoder.q_stride)
+                    )
+                    kernel = tuple(
+                        max(1, c // f)
+                        for c, f in zip(lvl_mu_size, self.mask_unit_spatial_shape_final)
+                    )
+                    stage_idx = self.encoder.stage_ends[lvl]
+                    in_ch = self.encoder.blocks[stage_idx].dim_out
+                    out_ch = encoder_dim_out
+                    head = BlockFusionHeadND(in_ch, out_ch, kernel_size=kernel)
+                    self.multi_scale_fusion_heads.append(head)
         
         else:
             self.with_intermediates = False
@@ -239,8 +253,8 @@ class MaskedHieraEncoder(nn.Module):
         }
 
     def get_decoder_specs_per_level(self) -> List[dict]:
-        """Decoder specs for levels 0..q_pool (q_pool+1 levels)."""
-        return [self.get_decoder_spec_for_level(lvl) for lvl in range(self.encoder.q_pool + 1)]
+        """Decoder specs for selected multiscale levels."""
+        return [self.get_decoder_spec_for_level(lvl) for lvl in self.multiscale_level_indices]
 
     def initialize_weights(self):
         self.apply(self._mae_init_weights)
@@ -282,7 +296,8 @@ class MaskedHieraEncoder(nn.Module):
 
             if self.channel_proj_type == "equalization":
                 # Channel equalization only, no fusion. Returns list.
-                intermediates_to_eq = intermediates[: self.encoder.q_pool] + intermediates[-1:]
+                all_intermediates = intermediates[: self.encoder.q_pool] + intermediates[-1:]
+                intermediates_to_eq = [all_intermediates[i] for i in self.multiscale_level_indices]
                 x_list = [
                     self.encoder_norm(proj(interm))
                     for proj, interm in zip(self.multiscale_channel_projs, intermediates_to_eq)
@@ -290,7 +305,8 @@ class MaskedHieraEncoder(nn.Module):
                 return x_list, patches
             
             elif self.channel_proj_type == "fusion":
-                intermediates_to_fuse = intermediates[: self.encoder.q_pool] + intermediates[-1:]
+                all_intermediates = intermediates[: self.encoder.q_pool] + intermediates[-1:]
+                intermediates_to_fuse = [all_intermediates[i] for i in self.multiscale_level_indices]
                 x = 0.0
                 for head, interm_x in zip(self.multi_scale_fusion_heads, intermediates_to_fuse):
                     x = x + apply_fusion_head(head, interm_x)

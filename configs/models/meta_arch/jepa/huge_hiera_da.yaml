@@ -1,0 +1,12 @@
+# @package models.meta_arch.jepa
+# Hiera huge + Deformable Attention (multiscale)
+
+defaults:
+  - huge_hiera
+
+use_deformable_attn: true
+da_n_points: 4
+da_n_levels: 3
+multiscale: true
+multiscale_out_dim: 256
+target_only_predictor: false

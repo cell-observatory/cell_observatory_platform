@@ -1045,57 +1045,62 @@ class DeformableAttention(nn.Module):
         if spatial_kwargs is None:
             raise ValueError("DeformableAttention.forward_list requires spatial_kwargs dict")
 
-        B = x_list[0].shape[0]
         spatial_shapes = spatial_kwargs["spatial_shapes"]
         valid_ratios = spatial_kwargs["valid_ratios"]
         tokens_per_level = spatial_kwargs["tokens_per_level"]
         mask_indices_list = spatial_kwargs.get("mask_indices_list", [None] * len(x_list))
 
-        n_levels = len(x_list)
-        assert spatial_shapes.shape[0] == n_levels, f"spatial_shapes.shape[0] ({spatial_shapes.shape[0]}) != n_levels ({n_levels})"
+        value_maps = spatial_kwargs.get("value_maps", None)
+        tgt_idx_list = spatial_kwargs.get("tgt_idx_list", None)
+        cross_attn = value_maps is not None and tgt_idx_list is not None
 
-        # Build per-level value maps (reconstruct full grids if masked)
-        values = []
-        for i, x_i in enumerate(x_list):
-            full_len_i = tokens_per_level[i]
-            m_i = mask_indices_list[i] if mask_indices_list else None
-            if m_i is not None and x_i.shape[1] < full_len_i:
-                values.append(reconstruct_full_feature_map(x_i, m_i, full_len_i, self.da_mask_token))
-            else:
-                values.append(x_i)
+        B = x_list[0].shape[0]
+        n_levels = spatial_shapes.shape[0]
 
-        # input_flatten: [B, sum(full_len_i), C]
-        input_flatten = torch.cat(values, dim=1)
+        if cross_attn:
+            # TODO: consider adding third option where we scatter target tokens 
+            #       back into the full grid, and use that as the input_flatten.
+            input_flatten = spatial_kwargs["value_flatten"]
+        else:
+            assert len(x_list) == n_levels, (
+                f"spatial_shapes levels ({n_levels}) != x_list levels ({len(x_list)})"
+            )
+            values = []
+            for i, x_i in enumerate(x_list):
+                full_len_i = tokens_per_level[i]
+                m_i = mask_indices_list[i] if mask_indices_list else None
+                if m_i is not None and x_i.shape[1] < full_len_i:
+                    values.append(reconstruct_full_feature_map(x_i, m_i, full_len_i, self.da_mask_token))
+                else:
+                    values.append(x_i)
+            input_flatten = torch.cat(values, dim=1)
 
         level_start_index = torch.zeros(n_levels, device=spatial_shapes.device, dtype=torch.long)
         level_start_index[1:] = spatial_shapes.prod(dim=1).cumsum(0)[:-1]
 
-        # query: [B, sum(L_i), C] concatenated input lists (at their original masked or full lengths)
         query = torch.cat(x_list, dim=1)
 
-        # full_ref: [B, sum(full_len_i), n_levels, 3] reference points for the full grid
-        full_ref = get_reference_points(spatial_shapes, valid_ratios, device=spatial_shapes.device)
+        if cross_attn:
+            reference_points = spatial_kwargs["reference_points"]
+        else:
+            # TODO: can this be cached as well?
+            full_ref = get_reference_points(spatial_shapes, valid_ratios, device=spatial_shapes.device)
+            query_ref_parts = []
+            offset = 0
+            for i, x_i in enumerate(x_list):
+                full_len_i = tokens_per_level[i]
+                L_i = x_i.shape[1]
+                m_i = mask_indices_list[i] if mask_indices_list else None
 
-        # If any level is masked, gather only the query positions
-        query_ref_parts = []
-        offset = 0
-        for i, x_i in enumerate(x_list):
-            full_len_i = tokens_per_level[i]
-            L_i = x_i.shape[1]
-            m_i = mask_indices_list[i] if mask_indices_list else None
+                level_ref = full_ref[:, offset:offset + full_len_i]
+                offset += full_len_i
 
-            # level_ref: [B, full_len_i, n_levels, 3] ref points for level i
-            level_ref = full_ref[:, offset:offset + full_len_i]
-            offset += full_len_i
-
-            if m_i is not None and L_i < full_len_i:
-                idx = m_i if m_i.dim() == 2 else m_i[None].expand(B, -1)
-                idx_exp = idx[:, :, None, None].expand(-1, -1, n_levels, 3)
-                level_ref = level_ref.gather(1, idx_exp)
-            query_ref_parts.append(level_ref)
-
-        # reference_points: [B, sum(L_i), n_levels, 3]
-        reference_points = torch.cat(query_ref_parts, dim=1)
+                if m_i is not None and L_i < full_len_i:
+                    idx = m_i if m_i.dim() == 2 else m_i[None].expand(B, -1)
+                    idx_exp = idx[:, :, None, None].expand(-1, -1, n_levels, 3)
+                    level_ref = level_ref.gather(1, idx_exp)
+                query_ref_parts.append(level_ref)
+            reference_points = torch.cat(query_ref_parts, dim=1)
 
         out = self.da(
             query=query,
@@ -1105,7 +1110,6 @@ class DeformableAttention(nn.Module):
             input_level_start_index=level_start_index,
         )
 
-        # Split back per level
         lengths = [x_i.shape[1] for x_i in x_list]
         return list(torch.split(out, lengths, dim=1))
 
@@ -1139,7 +1143,7 @@ class DeformableRopeAttention(RopeAttention):
             input_fmt, input_shape, patch_shape, device, dtype, ffn_mask_k_bias,
         )
         # NOTE: not used in DeformableRopeAttention
-        del self.wk, self.k_norm, self.proj, self.proj_drop
+        del self.wk, self.k_norm, self.proj, self.proj_drop, self.wv, self.att_drop
 
         self.da = FlashDeformAttn3D(
             d_model=dim, n_levels=n_levels, n_heads=num_heads, n_points=n_points,
@@ -1215,6 +1219,7 @@ class DeformableRopeAttention(RopeAttention):
             input_level_start_index=spatial_kwargs["level_start_index"],
         )
 
+    # FIXME: currently does not support target-only predictor mode
     def forward_list(self, x_list: List[Tensor], masks=None, pos_enc=None, spatial_kwargs=None) -> List[Tensor]:
         if spatial_kwargs is None:
             raise ValueError("DeformableRopeAttention.forward_list requires spatial_kwargs dict")

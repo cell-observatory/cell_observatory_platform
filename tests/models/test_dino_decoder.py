@@ -130,6 +130,7 @@ def test_transformer_decoder():
         num_feature_levels=num_levels,
         deformable_decoder=True,
     ).to(device)
+    decoder.bbox_embed = None
 
     # target: (num_queries, bs, embed_dim)
     target = torch.randn(num_queries, batch_size, embed_dim, device=device)

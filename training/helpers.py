@@ -473,13 +473,24 @@ def get_masked_input_data(model, inputs, device: Optional[torch.device] = 'cuda'
     context_idx = torch.arange(context_len, dtype=torch.long, device=device).unsqueeze(0)
     target_idx  = torch.arange(context_len, n_patches, dtype=torch.long, device=device).unsqueeze(0)
 
+    # FIXME: mu_mask is at MU (mask unit) level, not patch level; shape should be (num_mus,) per sample,
+    # where num_mus depends on mask_unit_size. We cannot compute it here without model-specific
+    # config (mask_unit_size, q_stride, q_pool). A proper fix would add a per-model helper
+    # (e.g. model.get_mu_metadata()) for models that use mu_mask; not all models use it.
+    # See training/loops.py where we catch this exception and skip the model summary for models that use mu_mask.
+    mu_mask = torch.zeros(0, dtype=torch.bool, device=device)
+    mu_keep_idx = torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0)
+    tgt_tok_idx = torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0)
+
     meta = {
         "masks": [torch.ones(n_patches, dtype=torch.long, device=device).unsqueeze(0)],
         "context_masks": [context_idx],
         "target_masks": [target_idx],
         "original_patch_indices": [torch.arange(n_patches, dtype=torch.long, device=device)],
         "patches_used": [torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0).expand(inputs[0],-1)],
-        "mu_mask": [None],
+        "mu_mask": [mu_mask],
+        "mu_keep_idx": [mu_keep_idx],
+        "tgt_tok_idx": [tgt_tok_idx],
     }
 
     # summary() will unpack the input data but the fwd function in

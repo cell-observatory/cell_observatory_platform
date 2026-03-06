@@ -313,7 +313,7 @@ class EpochBasedTrainer(BaseTrainer):
         ), "Deepspeed gradient_accumulation_steps does not match the calculated value."
         self.with_grad_accumulation = self.gradient_accumulation_steps > 1
         assert self.gradient_accumulation_steps > 0, "Calculated gradient accumulation steps must be > 0."
-        # NOTE: turn off gradient accumulation for now while debugging
+        # NOTE: turn off gradient accumulation for now
         assert self.gradient_accumulation_steps == 1, "Gradient accumulation currently not supported."
 
         # initialize dataset and dataloader
@@ -328,8 +328,12 @@ class EpochBasedTrainer(BaseTrainer):
         BUILD = get_method(cfg.models.BUILD)
         model = BUILD(cfg)
 
-        with torch.no_grad():
-            model.init_model_weights(buffer_device="cuda")
+        # NOTE: we are moving model weight initialization back into each model class
+        #       this may be problematic as we scale to larger models. However, 
+        #       currently it exposes the possibility of bugs to separate model init 
+        #       from model build.
+        # with torch.no_grad():
+        #     model.init_model_weights(buffer_device="cuda")
 
         # FIXME: temporarily disable flops and param counting
         # if hasattr(model, "_get_nparams_and_flops"):
@@ -365,16 +369,23 @@ class EpochBasedTrainer(BaseTrainer):
         if cfg.optimizations.with_model_summary:
             rank = process_rank()
             if rank == 0:
-                input_shape = (cfg.clusters.batch_size, *cfg.datasets.input_shape)
-                input_data = get_masked_input_data(model, input_shape)
-
-                summarize_model(
-                    model=model,
-                    inputs=input_shape,
-                    input_data=input_data,
-                    batch_size=cfg.clusters.batch_size,
-                    logdir=cfg.paths.outdir,
-                )
+                # FIXME: make the get_masked_input_data function compatible with all models.
+                #        Consider adding helper to each model class to generate input data.
+                try:
+                    input_shape = (cfg.clusters.batch_size, *cfg.datasets.input_shape)
+                    input_data = get_masked_input_data(model, input_shape)
+        
+                    summarize_model(
+                        model=model,
+                        inputs=input_shape,
+                        input_data=input_data,
+                        batch_size=cfg.clusters.batch_size,
+                        logdir=cfg.paths.outdir,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Model summary skipped (likely incompatible model/input_data): {e}"
+                    )
 
         # initialize optimizer and learning rate scheduler
         param_groups = get_param_groups(cfg, model)

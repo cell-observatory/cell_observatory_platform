@@ -231,8 +231,8 @@ class Transformer(nn.Module):
                 # Standard self-attention: per-element loop
                 x_ffn = []
                 for x, pe_i, mask_i in zip(x_list, pos_enc, masks):
-                    x_attn = x + self.ls1(self.att(self.norm1(x), masks=mask_i, pos_enc=pe_i, spatial_kwargs=spatial_kwargs))
-                    x_ffn_i = x_attn + self.ls2(self.mlp(self.norm2(x_attn)))
+                    x_attn = x + self.ls1(self.drop_path1(self.att(self.norm1(x), masks=mask_i, pos_enc=pe_i, spatial_kwargs=spatial_kwargs)))
+                    x_ffn_i = x_attn + self.ls2(self.drop_path2(self.mlp(self.norm2(x_attn))))
                     x_ffn.append(x_ffn_i)
 
         return x_ffn

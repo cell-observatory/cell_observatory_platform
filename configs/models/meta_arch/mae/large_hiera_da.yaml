@@ -1,0 +1,10 @@
+# @package models.meta_arch.mae
+# Hiera large + Deformable Attention (single scale)
+
+defaults:
+  - large_hiera
+
+use_deformable_attn: true
+da_n_points: 4
+da_n_levels: 1
+target_only_predictor: false

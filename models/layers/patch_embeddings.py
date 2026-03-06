@@ -1,6 +1,6 @@
 import sys
 import logging
-from typing import Optional
+from typing import Optional, Literal
 
 import torch
 import torch.nn as nn
@@ -362,3 +362,241 @@ class PatchEmbedding(nn.Module):
             return projections, patches
         else:
             return projections
+
+
+# FIXME: not fully supported by models and maskgenerator yet.
+class ChannelAdaptivePatchEmbedding(nn.Module):
+    """
+    Variable-channel patch embedding.
+    """
+
+    def __init__(
+        self,
+        input_fmt: str = "ZYXC",
+        patch_shape: tuple = (4, 16, 16, 16),
+        embed_dim: int = 768,
+        max_channels: int = 32,
+        use_channel_embed: bool = True,
+        channel_fusion: Literal["concat", "attn_pool"] = "concat",
+        attn_pool_num_heads: int = 8,
+        attn_drop: float = 0.0,
+    ):
+        super().__init__()
+
+        self.input_fmt = input_fmt
+        self.patch_shape = patch_shape
+
+        self.embed_dim = embed_dim
+
+        self.max_channels = max_channels
+        self.use_channel_embed = use_channel_embed
+        self.channel_fusion = channel_fusion
+
+        self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
+            input_format=input_fmt,
+            patch_shape=patch_shape,
+        )
+
+        # Compute pixels-per-patch for ONE channel (C stays separate)
+        Ti = self.temporal_patch_size if self.temporal_patch_size is not None else 1
+        Zi = self.axial_patch_size if self.axial_patch_size is not None else 1
+        Li = self.lateral_patch_size
+        if Li is None:
+            raise ValueError("lateral_patch_size cannot be None")
+
+        P = Ti * Zi * (Li * Li)
+        self.pixels_per_patch = int(P)
+        self.proj = nn.Linear(self.pixels_per_patch, embed_dim)
+
+        if use_channel_embed:
+            self.channel_embed = nn.Embedding(max_channels, embed_dim)
+        else:
+            self.channel_embed = None
+
+        if channel_fusion == "attn_pool":
+            self.pool_ln = nn.LayerNorm(embed_dim)
+            self.pool_attn = nn.MultiheadAttention(
+                embed_dim=embed_dim,
+                num_heads=attn_pool_num_heads,
+                dropout=attn_drop,
+                batch_first=True,
+            )
+            self.pool_query = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        else:
+            self.pool_ln = None
+            self.pool_attn = None
+            self.pool_query = None
+
+    def _resolve_channel_ids(
+        self, B: int, C: int, device, channel_ids: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        """
+        Returns [B, C] long ids.
+        - None: uses 0..C-1
+        - [C]: broadcast to [B,C]
+        - [B,C]: use directly
+        """
+        if channel_ids is None:
+            ids = torch.arange(C, device=device, dtype=torch.long)
+            ids = ids.unsqueeze(0).expand(B, -1)
+        else:
+            if channel_ids.ndim == 1:
+                if channel_ids.numel() != C:
+                    raise ValueError(f"channel_ids has {channel_ids.numel()} but C={C}")
+                ids = channel_ids.to(device=device, dtype=torch.long).unsqueeze(0).expand(B, -1)
+            elif channel_ids.ndim == 2:
+                if channel_ids.shape != (B, C):
+                    raise ValueError(f"channel_ids must be [B,C]={B,C}, got {tuple(channel_ids.shape)}")
+                ids = channel_ids.to(device=device, dtype=torch.long)
+            else:
+                raise ValueError(f"channel_ids must be [C] or [B,C], got ndim={channel_ids.ndim}")
+
+        if ids.max().item() >= self.max_channels or ids.min().item() < 0:
+            raise ValueError(
+                f"channel_ids out of range for max_channels={self.max_channels}: "
+                f"min={int(ids.min())}, max={int(ids.max())}"
+            )
+        return ids
+
+    def patchify_per_channel(self, x: torch.Tensor) -> tuple[torch.Tensor, tuple]:
+        """
+        Returns:
+          patches: [B, N, C, P]
+          token_shape: (t, z, y, x, c) where t/z may be None depending on fmt
+        """
+        B = x.shape[0]
+        C = x.shape[-1]
+
+        Ti = self.temporal_patch_size
+        Zi = self.axial_patch_size
+        Li = self.lateral_patch_size
+
+        if self.input_fmt == "TZYXC":
+            if x.ndim != 6:
+                raise ValueError(f"TZYXC expects [B,T,Z,Y,X,C], got {tuple(x.shape)}")
+            T, Z, Y, X = x.shape[1], x.shape[2], x.shape[3], x.shape[4]
+            if Ti is None or Zi is None or Li is None:
+                raise ValueError("TZYXC requires temporal+axial+lateral patch sizes")
+            if (T % Ti) or (Z % Zi) or (Y % Li) or (X % Li):
+                raise ValueError(f"Input not divisible by patch sizes: {(T,Z,Y,X)} vs {(Ti,Zi,Li)}")
+
+            t = T // Ti
+            z = Z // Zi
+            y = Y // Li
+            x_ = X // Li
+            # [B, t, Ti, z, Zi, y, Li, x, Li, C]
+            p = x.reshape(B, t, Ti, z, Zi, y, Li, x_, Li, C)
+            # -> [B, t, z, y, x, C, Ti, Zi, Li, Li]
+            p = p.permute(0, 1, 3, 5, 7, 9, 2, 4, 6, 8)
+            N = t * z * y * x_
+            P = Ti * Zi * Li * Li
+            patches = p.reshape(B, N, C, P)
+            token_shape = (t, z, y, x_, C)
+            return patches, token_shape
+
+        elif self.input_fmt == "ZYXC":
+            if x.ndim != 5:
+                raise ValueError(f"ZYXC expects [B,Z,Y,X,C], got {tuple(x.shape)}")
+            Z, Y, X = x.shape[1], x.shape[2], x.shape[3]
+            if Zi is None or Li is None:
+                raise ValueError("ZYXC requires axial+lateral patch sizes")
+            if (Z % Zi) or (Y % Li) or (X % Li):
+                raise ValueError(f"Input not divisible by patch sizes: {(Z,Y,X)} vs {(Zi,Li)}")
+
+            z = Z // Zi
+            y = Y // Li
+            x_ = X // Li
+            # [B, z, Zi, y, Li, x, Li, C]
+            p = x.reshape(B, z, Zi, y, Li, x_, Li, C)
+            # -> [B, z, y, x, C, Zi, Li, Li]
+            p = p.permute(0, 1, 3, 5, 7, 2, 4, 6)
+            N = z * y * x_
+            P = Zi * Li * Li
+            patches = p.reshape(B, N, C, P)
+            token_shape = (None, z, y, x_, C)
+            return patches, token_shape
+
+        elif self.input_fmt == "TYXC":
+            if x.ndim != 5:
+                raise ValueError(f"TYXC expects [B,T,Y,X,C], got {tuple(x.shape)}")
+            T, Y, X = x.shape[1], x.shape[2], x.shape[3]
+            if Ti is None or Li is None:
+                raise ValueError("TYXC requires temporal+lateral patch sizes")
+            if (T % Ti) or (Y % Li) or (X % Li):
+                raise ValueError(f"Input not divisible by patch sizes: {(T,Y,X)} vs {(Ti,Li)}")
+
+            t = T // Ti
+            y = Y // Li
+            x_ = X // Li
+            # [B, t, Ti, y, Li, x, Li, C]
+            p = x.reshape(B, t, Ti, y, Li, x_, Li, C)
+            # -> [B, t, y, x, C, Ti, Li, Li]
+            p = p.permute(0, 1, 3, 5, 7, 2, 4, 6)
+            N = t * y * x_
+            P = Ti * Li * Li
+            patches = p.reshape(B, N, C, P)
+            token_shape = (t, None, y, x_, C)
+            return patches, token_shape
+
+        elif self.input_fmt == "YXC":
+            if x.ndim != 4:
+                raise ValueError(f"YXC expects [B,Y,X,C], got {tuple(x.shape)}")
+            Y, X = x.shape[1], x.shape[2]
+            if Li is None:
+                raise ValueError("YXC requires lateral patch size")
+            if (Y % Li) or (X % Li):
+                raise ValueError(f"Input not divisible by patch size: {(Y,X)} vs {Li}")
+
+            y = Y // Li
+            x_ = X // Li
+            # [B, y, Li, x, Li, C]
+            p = x.reshape(B, y, Li, x_, Li, C)
+            # -> [B, y, x, C, Li, Li]
+            p = p.permute(0, 1, 3, 5, 2, 4)
+            N = y * x_
+            P = Li * Li
+            patches = p.reshape(B, N, C, P)
+            token_shape = (None, None, y, x_, C)
+            return patches, token_shape
+
+        else:
+            raise NotImplementedError(f"input_fmt not supported: {self.input_fmt}")
+
+    def forward(
+        self,
+        inputs: torch.Tensor,
+        return_patches: bool = False,
+        channel_ids: Optional[torch.Tensor] = None,
+    ):
+        patches, token_shape = self.patchify_per_channel(inputs)  # [B,N,C,P]
+        B, N, C, P = patches.shape
+
+        if P != self.pixels_per_patch:
+            raise RuntimeError(f"pixels_per_patch mismatch: got {P}, expected {self.pixels_per_patch}")
+
+        # [B,N,C,D]
+        tokens = self.proj(patches)
+
+        # add channel embedding: [B,C,D] -> broadcast over N
+        if self.channel_embed is not None:
+            ids = self._resolve_channel_ids(B, C, tokens.device, channel_ids)
+            ce = self.channel_embed(ids)              # [B,C,D]
+            tokens = tokens + ce.unsqueeze(1)         # [B,N,C,D]
+
+        if self.channel_fusion == "concat":
+            out = tokens.reshape(B, N * C, self.embed_dim)
+
+        elif self.channel_fusion == "attn_pool":
+            if self.pool_attn is None:
+                raise RuntimeError("attn_pool not initialized")
+            x = self.pool_ln(tokens).reshape(B * N, C, self.embed_dim)   # [B*N,C,D]
+            q = self.pool_query.expand(B * N, -1, -1)                    # [B*N,1,D]
+            pooled, _ = self.pool_attn(q, x, x, need_weights=False)
+            out = pooled.squeeze(1).reshape(B, N, self.embed_dim)        # [B,N,D]
+
+        else:
+            raise ValueError(f"Unsupported channel_fusion: {self.channel_fusion}")
+
+        if return_patches:
+            return out, patches, token_shape
+        return out

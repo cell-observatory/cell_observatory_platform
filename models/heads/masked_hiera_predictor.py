@@ -11,6 +11,7 @@ import torch.nn as nn
 
 from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.backbones.encoder import Encoder
+from cell_observatory_platform.models.layers.utils import get_reference_points
 
 
 class MaskedHieraPredictor(nn.Module):
@@ -32,6 +33,7 @@ class MaskedHieraPredictor(nn.Module):
         use_deformable_attn: bool = False,
         da_n_points: int = 4,
         da_n_levels: int = 1,
+        target_only_predictor: bool = False,
     ):
         super().__init__()
 
@@ -41,6 +43,7 @@ class MaskedHieraPredictor(nn.Module):
 
         self.prediction_mode = prediction_mode
         self.use_deformable_attn = use_deformable_attn
+        self.target_only_predictor = target_only_predictor
 
         if isinstance(decoder_spec, list):
             self.decoder_specs = decoder_spec
@@ -56,10 +59,9 @@ class MaskedHieraPredictor(nn.Module):
 
         assert len(encoder_dims) == self.num_levels, "encoder_dim_out must be a list of length num_levels"
 
-        # NOTE: all_levels mode requires multi-level and DA
+        # NOTE: all_levels mode requires multi-level decoder_spec (DA or SA both supported)
         if prediction_mode == "all_levels":
             assert self.num_levels > 1, "all_levels requires multi-level decoder_spec"
-            assert use_deformable_attn, "all_levels requires use_deformable_attn=True"
 
         # NOTE: use last spec for single-level attrs
         last_spec = self.decoder_specs[-1]
@@ -277,31 +279,108 @@ class MaskedHieraPredictor(nn.Module):
         inputs_list: List[torch.Tensor],
         mu_mask_list: List[torch.Tensor],
         ctx_idx_list: List[torch.Tensor],
+        tgt_idx_list: Optional[List[torch.Tensor]] = None,
         spatial_kwargs: Optional[dict] = None,
     ) -> List[torch.Tensor]:
-        assert self.use_deformable_attn, "_forward_list requires use_deformable_attn=True"
+        """
+        Multilevel predictor forward.
+        - Always builds dense per-level value_maps (full token grid) from context tokens + mask_token.
+        - If target_only_predictor=True, builds queries only at target indices.
+        - If target_only_predictor=False, runs decoder on full sequences (target and context tokens).
+        Returns list of per-level outputs.
+        """
         assert self.prediction_mode == "all_levels", "_forward_list requires prediction_mode='all_levels'"
+        if self.target_only_predictor and tgt_idx_list is None:
+            raise ValueError("target_only_predictor=True requires tgt_idx_list to be passed")
+        if (not self.target_only_predictor) and (tgt_idx_list is not None):
+            raise ValueError(
+                "target_only_predictor=False but tgt_idx_list was passed; "
+                "pass tgt_idx_list only when target_only_predictor=True"
+            )
 
         device = inputs_list[0].device
         B = inputs_list[0].shape[0]
+        Cdec = self.mask_token.shape[-1]
 
-        x_list = []
+        # Build dense per-level value maps (full token grids)
+        value_maps: List[torch.Tensor] = []
         for lvl, (inp, ctx) in enumerate(zip(inputs_list, ctx_idx_list)):
             tok_in_mu_prod = self._level_tok_in_mu_prod[lvl]
             num_tok = self._level_num_tokens[lvl]
+
+            # tokens: [B, N_ctx, Cdec]
             tokens = self.decoder_embeds[lvl](inp)
+            # x_seq: [B, num_tok, Cdec]
             x_seq = self._scatter_context_to_full_sequence(
-                tokens, ctx.to(inp.device), self.mask_token, tok_in_mu_prod, num_tok,
+                tokens=tokens,
+                ctx_idx=ctx.to(inp.device),
+                mask_token=self.mask_token,
+                tok_in_mu_prod=tok_in_mu_prod,
+                num_decoder_tokens=num_tok,
             )
+
+            # x: [B, num_tok, Cdec]
             x = x_seq + self.decoder_pos_embeds[lvl]
             x = x + self.level_embed[lvl].view(1, 1, -1)
-            x_list.append(x)
+            # value_maps: [B, num_tok, Cdec]
+            value_maps.append(x)
 
-        spatial_kwargs = self._build_spatial_kwargs(self.decoder_specs, device, B)
+        sp_kw = self._build_spatial_kwargs(self.decoder_specs, device, B)
 
-        out_list = self.decoder(x_list, masks=None, pos_enc=None, spatial_kwargs=spatial_kwargs)
+        # Build decoder inputs
+        if self.target_only_predictor:
+            # DA cross-attn consumes dense value maps as memory
+            sp_kw["value_maps"] = value_maps
+            sp_kw["tgt_idx_list"] = tgt_idx_list
+            sp_kw["value_flatten"] = torch.cat(value_maps, dim=1)
 
-        outputs = []
+            # Cache reference points for target queries once (reused by every decoder layer)
+            spatial_shapes = sp_kw["spatial_shapes"]
+            valid_ratios = sp_kw["valid_ratios"]
+            tokens_per_level = sp_kw["tokens_per_level"]
+
+            # full_ref: [B, sum(full_len), n_levels, 3]
+            full_ref = get_reference_points(spatial_shapes, valid_ratios, device=device)
+            
+            ref_parts = []
+            offset = 0
+            n_levels = spatial_shapes.shape[0]
+            for i in range(n_levels):
+                full_len_i = tokens_per_level[i]
+                level_ref = full_ref[:, offset:offset + full_len_i]
+                offset += full_len_i
+
+                idx = tgt_idx_list[i]
+                if idx.dim() == 1:
+                    idx = idx.unsqueeze(0).expand(B, -1)
+                idx = idx.to(device=device, dtype=torch.long)
+                idx_exp = idx[:, :, None, None].expand(-1, -1, n_levels, 3)
+                ref_parts.append(level_ref.gather(1, idx_exp))
+            # reference_points: [B, sum(Ntgt), n_levels, 3]
+            sp_kw["reference_points"] = torch.cat(ref_parts, dim=1)
+
+            # queries: mask_token + pos_embed[tgt] + level_embed
+            x_list: List[torch.Tensor] = []
+            for lvl, tgt_idx in enumerate(tgt_idx_list):
+                if tgt_idx.dim() == 1:
+                    tgt_idx = tgt_idx.unsqueeze(0).expand(B, -1)
+                tgt_idx = tgt_idx.to(device=device, dtype=torch.long)
+                # pe: # [1, Nfull, Cdec]
+                pe = self.decoder_pos_embeds[lvl]
+                # idx: [B, Ntgt, Cdec]
+                idx = tgt_idx.unsqueeze(-1).expand(-1, -1, Cdec)
+                # pe_tgt: [B, Ntgt, Cdec]
+                pe_tgt = pe.expand(B, -1, -1).gather(1, idx)
+
+                q = self.mask_token.expand(B, tgt_idx.shape[1], Cdec) + pe_tgt
+                q = q + self.level_embed[lvl].view(1, 1, -1)
+                x_list.append(q)
+        else:
+            x_list = value_maps
+
+        out_list = self.decoder(x_list, masks=None, pos_enc=None, spatial_kwargs=sp_kw)
+
+        outputs: List[torch.Tensor] = []
         for lvl, out in enumerate(out_list):
             out = self.decoder_norm(out)
             out = self.decoder_preds[lvl](out)
@@ -313,10 +392,11 @@ class MaskedHieraPredictor(nn.Module):
         inputs: Union[torch.Tensor, List[torch.Tensor]],
         mu_mask: Union[torch.Tensor, List[torch.Tensor]],
         ctx_idx: Union[torch.Tensor, List[torch.Tensor]],
+        tgt_idx_list: Optional[List[torch.Tensor]] = None,
         spatial_kwargs: Optional[dict] = None,
     ) -> Union[torch.Tensor, List[torch.Tensor]]:
         if isinstance(inputs, (list, tuple)):
-            return self._forward_list(inputs, mu_mask, ctx_idx, spatial_kwargs)
+            return self._forward_list(inputs, mu_mask, ctx_idx, tgt_idx_list, spatial_kwargs)
         elif isinstance(inputs, torch.Tensor):
             return self._forward(inputs, mu_mask, ctx_idx, spatial_kwargs)
         else:

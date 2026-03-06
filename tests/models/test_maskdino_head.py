@@ -35,6 +35,8 @@ class DummyBackbone(nn.Module):
         self.channels = channels
 
     def forward(self, x):
+        if isinstance(x, dict):
+            x = x["data_tensor"]
         B = x.shape[0]
         device = x.device
         dtype = x.dtype
@@ -178,12 +180,23 @@ def test_maskdino_forward_train(monkeypatch):
     boxes = torch.rand(2, 6, device=device)
     masks = torch.randint(0, 2, (2, D_in, H_in, W_in), device=device, dtype=torch.float32)
 
+    mask_ids = torch.arange(1, 3, device=device)
+    label_map = torch.zeros(D_in, H_in, W_in, dtype=torch.long, device=device)
+    label_map[masks[0] > 0.5] = 1
+    label_map[masks[1] > 0.5] = 2
+
     data_sample = {
         "data_tensor": data_tensor,
         "metainfo": {
-            "targets": [[{"labels": labels, "boxes": boxes, "masks": masks}]],
-            "image_sizes": [(D_in, H_in, W_in)],
-            "orig_image_sizes": [(D_in, H_in, W_in)],
+            "targets": [[{
+                "labels": labels,
+                "boxes": boxes,
+                "masks": masks,
+                "mask_ids": mask_ids,
+                "label_map": label_map,
+            }]],
+            "image_sizes": [torch.tensor([D_in, H_in, W_in], dtype=torch.long, device=device)],
+            "orig_image_sizes": [torch.tensor([D_in, H_in, W_in], dtype=torch.long, device=device)],
         },
     }
 
@@ -327,8 +340,8 @@ def test_maskdino_predict():
         "data_tensor": data_tensor,
         "metainfo": {
             "targets": None,
-            "image_sizes": [(D_in, H_in, W_in)],
-            "orig_image_sizes": [(D_in, H_in, W_in)],
+            "image_sizes": [torch.tensor([D_in, H_in, W_in], dtype=torch.long, device=device)],
+            "orig_image_sizes": [torch.tensor([D_in, H_in, W_in], dtype=torch.long, device=device)],
         },
     }
 

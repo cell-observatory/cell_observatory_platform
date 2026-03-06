@@ -40,6 +40,24 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", verbose=True)
 
 
+def _sdpa_kernel_with_math_fallback(backends):
+    """Add MATH fallback for tests when Flash Attention isn't available."""
+    from torch.nn.attention import SDPBackend, sdpa_kernel as _sdpa_kernel
+
+    if SDPBackend.FLASH_ATTENTION in backends and SDPBackend.MATH not in backends:
+        backends = list(backends) + [SDPBackend.MATH]
+    return _sdpa_kernel(backends)
+
+
+@pytest.fixture(autouse=True)
+def patch_sdpa_for_tests(monkeypatch):
+    """Allow MATH backend fallback in tests so models run without Flash Attention."""
+    monkeypatch.setattr(
+        "cell_observatory_platform.models.layers.attention.sdpa_kernel",
+        _sdpa_kernel_with_math_fallback,
+    )
+
+
 # keeping this until we migrate models
 # tests to config setup
 @pytest.fixture(scope="session")
@@ -151,13 +169,11 @@ def distributed_test(cfg: DictConfig, test: str):
     scaling_config = ScalingConfig(
         num_workers=cfg.clusters.scaling_config.num_workers,
         resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
-        trainer_resources=cfg.clusters.scaling_config.trainer_resources,
         use_gpu=cfg.clusters.scaling_config.use_gpu,
     )
 
     checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
     run_config = RunConfig(
-        log_to_file=cfg.clusters.run_config.log_to_file,
         checkpoint_config=checkpoint_config,
         failure_config=FailureConfig(max_failures=0),
         storage_path=cfg.clusters.run_config.storage_path,

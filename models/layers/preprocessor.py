@@ -60,27 +60,9 @@ class RayPreprocessor(torch.nn.Module):
             patch_shape=self.patch_shape,
         )
 
-        # TODO: once we start supporting variable input shapes,
-        #       update this helper to use input_shape from data samples
-        #       and call calc_num_patches() from PatchEmbedding to get num_patches
-        if (
-            self.with_masking
-            and self.mask_generator is not None
-            and hasattr(self.mask_generator, "random_masking_ratio")
-        ):
-            self.masking_ratio = self.mask_generator.random_masking_ratio
-        else:
-            self.masking_ratio = 0.0
-        self.seq_len = self._calculate_seq_len()
-
         assert self.input_format in ["TZYXC", "ZYXC"], f"Input format {self.input_format} not supported yet."
         spatial_token_shape = [s for s in self._token_shape[:-1] if s is not None]
         self.spatial_token_shape = spatial_token_shape
-
-    def _calculate_seq_len(self):
-        masking_ratio = self.masking_ratio if self.with_masking else 0.0
-        seq_len = int(self.num_patches * (1 - masking_ratio))
-        return seq_len
 
     def _build_spatial_kwargs(self, batch_size: int, device: torch.device) -> dict:
         spatial_shapes = torch.tensor(
@@ -124,8 +106,6 @@ class RayPreprocessor(torch.nn.Module):
 
         assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 
-        tokens_per_batch = inputs.shape[0] * self.seq_len
-
         if self.with_masking:
             masking_time = time.time()
             mask_data = self.mask_generator(inputs.shape[0])
@@ -138,7 +118,6 @@ class RayPreprocessor(torch.nn.Module):
                 "data_time": data_time,
                 "masking_time": masking_time,
                 "transform_time": transform_time if self.transforms is not None else -1,
-                "tokens_per_batch": tokens_per_batch,
                 **meta,
             }
             metainfo["spatial_kwargs"] = self._build_spatial_kwargs(
@@ -151,7 +130,6 @@ class RayPreprocessor(torch.nn.Module):
                 "data_time": data_time,
                 "masking_time": -1.0,
                 "transform_time": transform_time if self.transforms is not None else -1,
-                "tokens_per_batch": tokens_per_batch,
                 **meta,
             }
             metainfo["spatial_kwargs"] = self._build_spatial_kwargs(

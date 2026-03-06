@@ -32,7 +32,7 @@ CONFIGS = {
         "predictor_embed_dim": 96,
         "depth": 12,
         "predictor_depth": 3,
-        "num_heads": 3,
+        "num_heads": 3, 
         "predictor_num_heads": 3,
         "mlp_ratio": 4,
     },
@@ -174,6 +174,8 @@ class JEPA(nn.Module):
         # Multiscale (Hiera only)
         multiscale: bool = False,
         multiscale_out_dim: Optional[int] = None,
+        multiscale_level_indices: Optional[List[int]] = None,
+        target_only_predictor: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -237,8 +239,7 @@ class JEPA(nn.Module):
                 )
 
         if backbone_type == "vit":
-            # JEPA ViT: encoder -> single-level predictor (SA or DA) -> out -> loss
-            # Multiscale not supported; only single-level.
+            # JEPA ViT: encoder -> single-level predictor (SA or DA)
             self.multiscale = False
             self.input_encoder = MaskedEncoder(
                 input_fmt=self.input_fmt,
@@ -290,12 +291,15 @@ class JEPA(nn.Module):
                 rope_theta=self.rope_theta,
                 mlp_wide_silu=mlp_wide_silu,
                 dtype=dtype,
+                # Deformable Attention parameters: DA or SA
                 use_deformable_attn=use_deformable_attn,
                 da_n_points=da_n_points,
                 da_n_levels=1,
             )
         elif backbone_type == "hiera":
             self.multiscale = multiscale
+            self.target_only_predictor = target_only_predictor
+            self.multiscale_level_indices = multiscale_level_indices
             self.input_encoder = MaskedHieraEncoder(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
@@ -308,19 +312,25 @@ class JEPA(nn.Module):
                 stages=hiera_stages,
                 mask_unit_size=hiera_mask_unit_size,
                 norm_layer=self.norm_layer,
+                # NOTE: for one-level prediction (i.e. multiscale=False), we fuse
+                #       all feature maps and predict at the lowest level.
+                #       For multi-level prediction (i.e. multiscale=True), we equalize
+                #       number of channels and predict at all levels.
                 channel_proj_type="equalization" if multiscale else "fusion",
-                multiscale_out_dim=multiscale_out_dim if multiscale else None
+                multiscale_out_dim=multiscale_out_dim if multiscale else None,
+                multiscale_level_indices=multiscale_level_indices if multiscale else None,
             )
 
+            # Hiera predictor options: N-level multiscale (DA or SA) or 1-level single-scale (DA or SA).
+            # - multiscale=True: N levels, all_levels prediction; DA concatenates levels, SA processes per-level (slower).
+            # - multiscale=False: 1 level (fusion), lowest_level prediction.
             if multiscale:
-                assert use_deformable_attn, "multiscale=True requires use_deformable_attn=True"
                 if multiscale_out_dim is None:
                     raise ValueError("multiscale_out_dim must be set when multiscale=True")
                 encoder_dim_out = multiscale_out_dim
                 decoder_specs = self.input_encoder.get_decoder_specs_per_level()
                 prediction_mode = "all_levels"
             else:
-                assert not use_deformable_attn, "use_deformable_attn=False requires multiscale=True"
                 encoder_dim_out = self.input_encoder.encoder.blocks[-1].dim_out
                 decoder_specs = self.input_encoder.get_decoder_spec()
                 prediction_mode = "lowest_level"
@@ -342,7 +352,9 @@ class JEPA(nn.Module):
                 use_deformable_attn=use_deformable_attn,
                 da_n_points=da_n_points,
                 da_n_levels=da_n_levels,
+                target_only_predictor=target_only_predictor,
             )
+
         else:
             raise ValueError(f"Unsupported backbone type: {backbone_type}")
 
@@ -499,6 +511,11 @@ class JEPA(nn.Module):
                 "Use mask_mode=HIERA_MU or HIERA_MU_BLOCKED with q_stride and q_pool."
             )
 
+        # Slice tgt_tok_idx to match selected multiscale levels
+        if self.multiscale and self.multiscale_level_indices is not None:
+            if isinstance(tgt_tok_idx, list):
+                tgt_tok_idx = [tgt_tok_idx[i] for i in self.multiscale_level_indices]
+
         ctx_out, _ = self.input_encoder(
             inputs,
             masks=mu_mask,
@@ -514,6 +531,7 @@ class JEPA(nn.Module):
                 ctx_out,
                 mu_mask=[mu_mask] * len(ctx_out),
                 ctx_idx=[mu_keep_idx] * len(ctx_out),
+                tgt_idx_list=tgt_tok_idx if self.target_only_predictor else None,
                 spatial_kwargs=spatial_kwargs,
             )
         else:
@@ -547,7 +565,10 @@ class JEPA(nn.Module):
             tgt_tokens = tgt_out[lvl].reshape(
                 tgt_out[lvl].shape[0], -1, tgt_out[lvl].shape[-1],
             )
-            pred_sels.append(self._select_tokens(pred_out[lvl], tgt_tok_idx[lvl]))
+            if self.target_only_predictor:
+                pred_sels.append(pred_out[lvl])
+            else:
+                pred_sels.append(self._select_tokens(pred_out[lvl], tgt_tok_idx[lvl]))
             tgt_sels.append(self._select_tokens(tgt_tokens, tgt_tok_idx[lvl]))
 
         total_count = sum(idx.numel() for idx in tgt_tok_idx)
