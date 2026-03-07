@@ -273,7 +273,7 @@ Preprocessors provide a unified interface for task-specific data preparation:
 
 ## Patch Embeddings & Channel Encoding
 
-Patch embeddings (`models/layers/patch_embeddings.py`) convert multi-channel volumes into token sequences for the transformer. Supported input layouts include `TZYXC`, `ZYXC`, `TYXC`, and `YXC`. **ChannelAdaptivePatchEmbedding** handles variable-channel input with optional learned channel embeddings and fusion via concat or pooling.
+**PatchEmbedding** convert multi-channel volumes into token sequences. Supported input layouts include `TZYXC`, `ZYXC`, `TYXC`, and `YXC`. **ChannelAdaptivePatchEmbedding** handles variable-channel input with optional learned channel embeddings and fusion via concat or pooling.
 
 ## Transforms
 
@@ -305,7 +305,7 @@ Generates patch-level masks for self-supervised learning with explicit time/spac
 |-------|----------|-------------|
 | **MAE** | `models/meta_arch/maskedautoencoder.py` | Masked Autoencoder for 3D/4D volumes (ViT or Hiera backbone) |
 | **JEPA** | `models/meta_arch/jepa.py` | Joint-Embedding Predictive Architecture, single- or multistage (ViT or Hiera backbone) |
-| **DINOv3** | `models/meta_arch/dino.py` | Self-distillation with DINO + iBOT objectives (without Gram loss or distillation features) |
+| **DINOv3** | `models/meta_arch/dino.py` | Self-distillation with DINO + iBOT objectives (**work in progress**) |
 
 ## Detection & Segmentation
 
@@ -328,7 +328,7 @@ Generates patch-level masks for self-supervised learning with explicit time/spac
 ## Layers
 
 Key layer implementations:
-- **Attention** (`models/layers/attention.py`): Multi-head self-attention with flash attention, RoPE attention, mask-unit attention (Hiera), deformable attention (`FlashDeformAttn3D`), and memory attention (SAM2)
+- **Attention** (`models/layers/attention.py`): Multi-head self-attention with flash attention, RoPE attention, mask-unit attention (Hiera), deformable attention, and memory attention (SAM2)
 - **Transformer** (`models/layers/transformer.py`): Standard and deformable transformer blocks with sequence packing support
 - **Patch Embeddings** (`models/layers/patch_embeddings.py`): 3D/4D patch embedding with multiple layout support
 - **Positional Encoding** (`models/layers/positional_encoding.py`): Sinusoidal, learned, and RoPE encodings
@@ -337,7 +337,7 @@ Key layer implementations:
 
 ## Kernels
 
-MAE, JEPA, MaskDINO, and PlainDETR support deformable attention (`FlashDeformAttn3D`).
+MAE, JEPA, MaskDINO, and PlainDETR support deformable attention.
 
 # Training
 
