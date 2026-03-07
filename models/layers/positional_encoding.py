@@ -1194,9 +1194,9 @@ class RopePositionEmbedding(nn.Module):
         P = self.D_head // (2 * ndim)
         # Needs persistent=True because we do teacher.load_state_dict(student.state_dict()) to initialize the teacher
         self.register_buffer("periods", torch.empty(P, device=device, dtype=dtype), persistent=True)
-        self._init_weights()
+        self._init_model_weights()
 
-    def _init_weights(self):
+    def _init_model_weights(self):
         self.periods.data = generate_custom_freqs(
             dim=self.D_head,
             input_fmt=self.input_fmt,

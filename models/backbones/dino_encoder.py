@@ -195,7 +195,10 @@ class DinoEncoder(nn.Module):
         self.mask_token = nn.Parameter(torch.empty(1, embed_dim, device=device))
 
     def init_weights(self):
-        self.rope_embed._init_weights()
+        self.apply(self._init_model_weights)
+
+    def _init_model_weights(self):
+        self.rope_embed._init_model_weights()
         nn.init.normal_(self.cls_token, std=0.02)
         if self.n_storage_tokens > 0:
             nn.init.normal_(self.storage_tokens, std=0.02)

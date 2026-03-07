@@ -60,6 +60,7 @@ class DINO(nn.Module):
         reweight_dino_local_loss: bool,
         local_crops_number: int,
         # global_crops_size: int,
+        buffer_device: str = "cuda",
     ):
         super().__init__()
 
@@ -152,7 +153,9 @@ class DINO(nn.Module):
         # NOTE: will be set by TeacherTemperatureSchedulerHook (see training/hooks.py)
         self.teacher_temperature = None
 
-    def init_model_weights(self, buffer_device: str | None = None) -> None:
+        self._init_model_weights(buffer_device=buffer_device)
+
+    def _init_model_weights(self, buffer_device: str) -> None:
         # NOTE: all weights are set to `nan` to ensure we initialize everything explicitly
         self.student.backbone.init_weights()
         self.student.dino_head.init_weights()
@@ -174,6 +177,25 @@ class DINO(nn.Module):
         self.teacher.backbone.init_weights()
         self.teacher.dino_head.init_weights()
         self.teacher.ibot_head.init_weights()
+
+    def get_param_groups(self, weight_decay: float, **kwargs) -> list[dict]:
+        """
+        Get param groups with decay/no-decay split.
+        TODO: reflect https://github.com/facebookresearch/dinov3/dinov3/train/param_groups.py
+        """
+        decay, no_decay = [], []
+        for name, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+            if p.ndim == 1 or "bias" in name:
+                no_decay.append(p)
+            else:
+                decay.append(p)
+
+        return [
+            {"params": decay, "weight_decay": weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ]
 
     def forward(self, data_sample: dict) -> tuple[Tensor, dict[str, float | Tensor]]:
         data_tensors = data_sample["data_tensors"]
@@ -437,32 +459,6 @@ class DINO(nn.Module):
         with torch.no_grad():
             torch._foreach_mul_(teacher_param_list, beta)
             torch._foreach_add_(teacher_param_list, student_param_list, alpha=1 - beta)
-
-    # TODO: move to training/helpers.py
-    # def get_maybe_fused_params_for_submodel(self, m: nn.Module):
-    #     params_groups = get_params_groups_with_decay_fsdp(
-    #         model=m,
-    #         lr_decay_rate=self.cfg.optim.layerwise_decay,
-    #         patch_embed_lr_mult=self.cfg.optim.patch_embed_lr_mult,
-    #         dino_head_wd_multiplier=self.cfg.optim.dino_head_wd_multiplier,
-    #     )
-    #     if self.cfg.optim.multi_tensor_optim:
-    #         fused_params_groups = fuse_params_groups(params_groups)
-    #         logger.info("fusing param groups")
-
-    #         for g in fused_params_groups:
-    #             g["foreach"] = True
-    #             g["fused"] = True
-    #         return fused_params_groups
-    #     else:
-    #         return params_groups
-
-    # def get_params_groups(self):
-    #     all_params_groups = []
-    #     for name, m in self.student.items():
-    #         logger.info(f"Getting paramer groups for {name}")
-    #         all_params_groups += self.get_maybe_fused_params_for_submodel(m)
-    #     return all_params_groups
 
     # TODO: implement in ParallelEpochBasedTrainer
     # def prepare_for_distributed_training(self) -> None:

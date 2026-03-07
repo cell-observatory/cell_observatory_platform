@@ -1,7 +1,8 @@
+import re
 import sys
 import inspect
 import logging
-from typing import Any, Dict, Literal, Mapping, Optional, Tuple, Union, List
+from typing import Any, Dict, Literal, List, Mapping, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -18,7 +19,7 @@ from cell_observatory_platform.models.heads.maskedpredictor import MaskedPredict
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
 from cell_observatory_platform.models.backbones.masked_hiera_encoder import MaskedHieraEncoder
 from cell_observatory_platform.models.heads.masked_hiera_predictor import MaskedHieraPredictor
-from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops, init_weights
+from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -169,6 +170,7 @@ class MaskedAutoEncoder(nn.Module):
         use_deformable_attn: bool = False,
         da_n_points: int = 4,
         da_n_levels: int = 1,
+        buffer_device: str = "cuda",
         **kwargs,
     ):
         super().__init__()
@@ -335,40 +337,129 @@ class MaskedAutoEncoder(nn.Module):
         self.loss_fn = get_loss_fn(loss_fn)
         self.with_auxiliary_loss = with_auxiliary_loss
 
-    def init_model_weights(self, buffer_device: str | None = None):
-        # TODO: move model inits back into each model class
-        init_weights(self, weight_init_type=self.weight_init_type)
+        self._init_model_weights(buffer_device=buffer_device)
+
+    def _init_model_weights(self, buffer_device: str | None = None):
+        # MAE model init adapted from:
+        # https://github.com/facebookresearch/mae/blob/main/models_mae.py
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                # we use xavier_uniform following official JAX ViT:
+                torch.nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+
+        self.apply(_init_weights)
+
+        if self.backbone_type == "vit":
+            w = self.masked_encoder.patch_embedding.proj.weight
+            torch.nn.init.xavier_uniform_(w.view(w.shape[0], -1))
+        elif self.backbone_type == "hiera":
+            w = self.masked_encoder.encoder.patch_embed.proj.weight.data
+            nn.init.xavier_uniform_(w.view(w.shape[0], -1))
+
+        if hasattr(self.masked_decoder, "token_param"):
+            torch.nn.init.normal_(self.masked_decoder.token_param, std=0.02)
+
         for mod in self.modules():
             if isinstance(mod, RopeAttention):
                 mod.init_rope_parameters(device=buffer_device)
 
-    @torch.jit.ignore
-    def _get_nparams_and_flops(
-        self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
-    ):
-        if device == "cuda":
-            # TODO: test this path more thoroughly
-            with torch.cuda.device(device):
-                input_shape = (batch_size, *self.input_shape)
-                data_sample = get_masked_input_data(
-                    self,
-                    inputs=input_shape,
-                    device="cuda",
-                    mask_ratio=masking_ratio,
-                )
-                seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
-                model_summary = get_nparams_and_flops(self, data_sample, seq_len)
-                model_param_count, num_flops_per_token = (
-                    model_summary["total_params"],
-                    model_summary["training_flops"],
-                )
-        elif device == "meta":
-            print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
-            return -1, -1
-        else:
-            # TODO: add support for meta device calculation for other backends
-            raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
-        return model_param_count, num_flops_per_token
+    def get_param_groups(
+        self,
+        weight_decay: float,
+        enc_layer_decay: float = 1.0,
+        dec_layer_decay: float = 1.0,
+        **kwargs,
+    ) -> List[Dict]:
+        """Layer-wise LR decay param groups for MAE pretraining.
+
+        Encoder and decoder each get per-layer groups with decaying LR scales.
+        Biases, norms, pos_embedding, cls_token, and token_param get zero WD.
+        
+        Adapted from https://github.com/facebookresearch/mae/util/lr_decay.py
+        """
+        NO_WD_KEYWORDS = ("pos_embedding", "cls_token", "token_param")
+
+        enc_L = self.masked_encoder.get_num_layers()
+        dec_L = self.masked_decoder.get_num_layers()
+
+        enc_scales = [enc_layer_decay ** (enc_L - i) for i in range(enc_L + 1)]
+        dec_scales = [dec_layer_decay ** (dec_L - i) for i in range(dec_L + 1)]
+
+        def _layer_id(suffix: str, L: int) -> int:
+            if suffix.startswith(("patch_embedding", "pos_embedding", "cls_token",
+                                  "token_param", "patch_projection")):
+                return 0
+            m = re.search(r"transformer_blocks\.(\d+)", suffix)
+            if m:
+                return int(m.group(1)) + 1
+            return L
+
+        def _is_no_wd(name: str, p) -> bool:
+            if p.ndim == 1:
+                return True
+            return any(kw in name for kw in NO_WD_KEYWORDS)
+
+        groups: Dict[str, Dict] = {}
+        for n, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+
+            if n.startswith("masked_encoder."):
+                side = "enc"
+                suffix = n[len("masked_encoder."):]
+                L, scales = enc_L, enc_scales
+            elif n.startswith("masked_decoder."):
+                side = "dec"
+                suffix = n[len("masked_decoder."):]
+                L, scales = dec_L, dec_scales
+            else:
+                side, suffix, L, scales = "other", n, 0, [1.0]
+
+            wd = 0.0 if _is_no_wd(n, p) else weight_decay
+            decay_tag = "no_decay" if wd == 0.0 else "decay"
+            lid = _layer_id(suffix, L)
+            lr_scale = scales[min(lid, len(scales) - 1)]
+
+            gname = f"{side}_layer_{lid}_{decay_tag}"
+            if gname not in groups:
+                groups[gname] = {"lr_scale": lr_scale, "weight_decay": wd, "params": []}
+            groups[gname]["params"].append(p)
+
+        return list(groups.values())
+
+    # TODO: implement for each meta_arch
+    # @torch.jit.ignore
+    # def _get_nparams_and_flops(
+    #     self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
+    # ):
+    #     if device == "cuda":
+    #         # TODO: test this path more thoroughly
+    #         with torch.cuda.device(device):
+    #             input_shape = (batch_size, *self.input_shape)
+    #             data_sample = get_masked_input_data(
+    #                 self,
+    #                 inputs=input_shape,
+    #                 device="cuda",
+    #                 mask_ratio=masking_ratio,
+    #             )
+    #             seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
+    #             model_summary = get_nparams_and_flops(self, data_sample, seq_len)
+    #             model_param_count, num_flops_per_token = (
+    #                 model_summary["total_params"],
+    #                 model_summary["training_flops"],
+    #             )
+    #     elif device == "meta":
+    #         print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
+    #         return -1, -1
+    #     else:
+    #         # TODO: add support for meta device calculation for other backends
+    #         raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
+    #     return model_param_count, num_flops_per_token
 
     @torch.jit.ignore
     def get_patch_embedding(self):

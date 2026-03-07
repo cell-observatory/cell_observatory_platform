@@ -37,7 +37,7 @@ from cell_observatory_platform.training.helpers import (
 from cell_observatory_platform.training.hooks import HookBase
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
 from cell_observatory_platform.data.dataloaders import get_dataloader
-from cell_observatory_platform.parallelism.utils import get_cp_buffers
+# from cell_observatory_platform.parallelism.utils import get_cp_buffers
 from cell_observatory_platform.training.loggers import EventRecorder, MetricsProcessor
 from cell_observatory_platform.training.optimizers import get_optimizer, build_optimizers
 from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
@@ -943,502 +943,503 @@ class Inferencer(BaseTrainer):
         self._iter += 1
 
 
-class ParallelEpochBasedTrainer(BaseTrainer):
-    def __init__(self, cfg: DictConfig) -> None:
-        super().__init__(cfg)
-        self.cfg = cfg
+# TODO: finish ParallelEpochBasedTrainer implementation
+# class ParallelEpochBasedTrainer(BaseTrainer):
+#     def __init__(self, cfg: DictConfig) -> None:
+#         super().__init__(cfg)
+#         self.cfg = cfg
 
-        print(f"Run Config:\n{OmegaConf.to_yaml(cfg)}")
+#         print(f"Run Config:\n{OmegaConf.to_yaml(cfg)}")
         
-        if cfg.optimizations is not None:
-            enable_optimizations(cfg=cfg)
+#         if cfg.optimizations is not None:
+#             enable_optimizations(cfg=cfg)
 
-        self.dtype = TORCH_DTYPES[cfg.quantization].value \
-            if isinstance(cfg.quantization, str) else cfg.quantization
-        device_module, device_type = utils.device_module, utils.device_type
-        self.device = torch.device(f"{device_type}:{int(os.environ['LOCAL_RANK'])}")
-        # Device has to be set before creating TorchFT manager
-        device_module.set_device(self.device)
+#         self.dtype = TORCH_DTYPES[cfg.quantization].value \
+#             if isinstance(cfg.quantization, str) else cfg.quantization
+#         device_module, device_type = utils.device_module, utils.device_type
+#         self.device = torch.device(f"{device_type}:{int(os.environ['LOCAL_RANK'])}")
+#         # Device has to be set before creating TorchFT manager
+#         device_module.set_device(self.device)
 
-        self.ray_context = get_context()
-        self.val_begin, self.val_interval = cfg.evaluation.val_begin, cfg.evaluation.val_interval
-        self.stop_training, self._max_epochs, self.num_tokens_seen = False, cfg.schedulers.epochs, 0
+#         self.ray_context = get_context()
+#         self.val_begin, self.val_interval = cfg.evaluation.val_begin, cfg.evaluation.val_interval
+#         self.stop_training, self._max_epochs, self.num_tokens_seen = False, cfg.schedulers.epochs, 0
 
-        # Init distributed and build meshes
-        self.parallel_dims = parallel_dims = self.init_distributed(cfg)
+#         # Init distributed and build meshes
+#         self.parallel_dims = parallel_dims = self.init_distributed(cfg)
 
-        world_mesh = parallel_dims.world_mesh
-        if parallel_dims.dp_enabled:
-            dp_mesh = world_mesh["dp"]
-            dp_degree, dp_rank = dp_mesh.size(), dp_mesh.get_local_rank()
-        else:
-            dp_degree, dp_rank = 1, 0
+#         world_mesh = parallel_dims.world_mesh
+#         if parallel_dims.dp_enabled:
+#             dp_mesh = world_mesh["dp"]
+#             dp_degree, dp_rank = dp_mesh.size(), dp_mesh.get_local_rank()
+#         else:
+#             dp_degree, dp_rank = 1, 0
 
-        # NOTE: we don't support TorchFT properly yet
-        self.ft_manager = FTManager(ft_config=cfg.parallelism.fault_tolerance)
-        dp_degree, dp_rank = self.ft_manager.get_dp_info(dp_degree, dp_rank)
+#         # NOTE: we don't support TorchFT properly yet
+#         self.ft_manager = FTManager(ft_config=cfg.parallelism.fault_tolerance)
+#         dp_degree, dp_rank = self.ft_manager.get_dp_info(dp_degree, dp_rank)
 
-        # Verify batch sizes
-        assert (
-            cfg.clusters.batch_size % (cfg.clusters.batch_size_per_gpu * dp_degree) == 0
-        ), (
-            f"global batch size must be multiple of local batch size times "
-            f"data-parallel degree ({cfg.clusters.batch_size} "
-            f"% ({cfg.clusters.batch_size_per_gpu} * {dp_degree}) != 0)"
-        )
+#         # Verify batch sizes
+#         assert (
+#             cfg.clusters.batch_size % (cfg.clusters.batch_size_per_gpu * dp_degree) == 0
+#         ), (
+#             f"global batch size must be multiple of local batch size times "
+#             f"data-parallel degree ({cfg.clusters.batch_size} "
+#             f"% ({cfg.clusters.batch_size_per_gpu} * {dp_degree}) != 0)"
+#         )
 
-        # Calculate gradient accumulation steps
-        self.gradient_accumulation_steps = cfg.clusters.batch_size // (
-            cfg.clusters.batch_size_per_gpu * dp_degree
-        )
-        self.with_grad_accumulation = self.gradient_accumulation_steps > 1
-        assert self.gradient_accumulation_steps > 0, "Calculated gradient accumulation steps must be > 0."
+#         # Calculate gradient accumulation steps
+#         self.gradient_accumulation_steps = cfg.clusters.batch_size // (
+#             cfg.clusters.batch_size_per_gpu * dp_degree
+#         )
+#         self.with_grad_accumulation = self.gradient_accumulation_steps > 1
+#         assert self.gradient_accumulation_steps > 0, "Calculated gradient accumulation steps must be > 0."
 
-        # Initialize dataset and dataloader        
-        self.train_dataloader_iter, self.val_dataloader_iter = None, None
-        self.train_dataloader, self.val_dataloader, _, \
-            self.host_buffer_actor, self.device_buffer, _ = get_dataloader(cfg, dp_degree, dp_rank)
+#         # Initialize dataset and dataloader        
+#         self.train_dataloader_iter, self.val_dataloader_iter = None, None
+#         self.train_dataloader, self.val_dataloader, _, \
+#             self.host_buffer_actor, self.device_buffer, _ = get_dataloader(cfg, dp_degree, dp_rank)
 
-        self.steps_per_epoch, self.val_steps_per_epoch = get_steps_per_epoch(
-            train_dataloader=self.train_dataloader,
-            val_dataloader=self.val_dataloader,
-            config=cfg,
-            gradient_accumulation_steps=self.gradient_accumulation_steps
-        )
+#         self.steps_per_epoch, self.val_steps_per_epoch = get_steps_per_epoch(
+#             train_dataloader=self.train_dataloader,
+#             val_dataloader=self.val_dataloader,
+#             config=cfg,
+#             gradient_accumulation_steps=self.gradient_accumulation_steps
+#         )
 
-        self._iter, self._epoch = 0, 0
-        self._val_iter, self._curr_val_metric = 0, float("inf")
+#         self._iter, self._epoch = 0, 0
+#         self._val_iter, self._curr_val_metric = 0, float("inf")
 
-        if os.environ.get("RESTART", "FALSE").upper() == "TRUE":
-            logger.info("RESTART flag detected. Resuming from latest checkpoint.")
-            with open_dict(cfg):
-                cfg.paths.resume_checkpointdir = Path(cfg.paths.outdir) / "checkpoints"
-                cfg.checkpoint.checkpoint_manager.resume_checkpointdir = cfg.paths.resume_checkpointdir
+#         if os.environ.get("RESTART", "FALSE").upper() == "TRUE":
+#             logger.info("RESTART flag detected. Resuming from latest checkpoint.")
+#             with open_dict(cfg):
+#                 cfg.paths.resume_checkpointdir = Path(cfg.paths.outdir) / "checkpoints"
+#                 cfg.checkpoint.checkpoint_manager.resume_checkpointdir = cfg.paths.resume_checkpointdir
 
-        # Control garbage collection to avoid straggler effects
-        self.gc_handler = utils.GarbageCollection(
-            gc_freq=cfg.parallelism.gc.gc_freq, 
-            debug=cfg.parallelism.gc.gc_debug
-        )
+#         # Control garbage collection to avoid straggler effects
+#         self.gc_handler = utils.GarbageCollection(
+#             gc_freq=cfg.parallelism.gc.gc_freq, 
+#             debug=cfg.parallelism.gc.gc_debug
+#         )
 
-        # Set random seed, and maybe enable deterministic mode
-        dist_utils.set_determinism(
-            world_mesh,
-            self.device,
-            cfg.parallelism.debug.seed,
-            cfg.parallelism.debug.deterministic,
-        )
+#         # Set random seed, and maybe enable deterministic mode
+#         dist_utils.set_determinism(
+#             world_mesh,
+#             self.device,
+#             cfg.parallelism.debug.seed,
+#             cfg.parallelism.debug.deterministic,
+#         )
 
-        with (
-            torch.device("meta"),
-            utils.set_default_dtype(self.dtype),
-        ):
-            # Initialize model
-            BUILD = get_method(cfg.models.BUILD)
-            model = BUILD(cfg)
+#         with (
+#             torch.device("meta"),
+#             utils.set_default_dtype(self.dtype),
+#         ):
+#             # Initialize model
+#             BUILD = get_method(cfg.models.BUILD)
+#             model = BUILD(cfg)
 
-        if hasattr(model, "_get_nparams_and_flops"):
-            self.model_param_count, self.num_flops_per_token = \
-                model._get_nparams_and_flops(batch_size=cfg.clusters.batch_size_per_gpu, device="meta")
-        else:
-            logger.warning(
-                "Model does not implement `_get_nparams_and_flops` method. "
-                "Setting model_param_count and num_flops_per_token to -1."
-                "Flops and parameter counts will be unavailable in reported metrics."
-            )
-            self.model_param_count, self.num_flops_per_token = -1, -1
+#         if hasattr(model, "_get_nparams_and_flops"):
+#             self.model_param_count, self.num_flops_per_token = \
+#                 model._get_nparams_and_flops(batch_size=cfg.clusters.batch_size_per_gpu, device="meta")
+#         else:
+#             logger.warning(
+#                 "Model does not implement `_get_nparams_and_flops` method. "
+#                 "Setting model_param_count and num_flops_per_token to -1."
+#                 "Flops and parameter counts will be unavailable in reported metrics."
+#             )
+#             self.model_param_count, self.num_flops_per_token = -1, -1
 
-        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+#         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
-        self.seq_len = int(self.preprocessor.seq_len)
-        assert (
-            self.seq_len % parallel_dims.seq_len_divisor == 0
-        ), f"""
-            Sequence length {self.seq_len} currently must be divisible by the product 
-            of TP degree ({parallel_dims.tp}) and 2 * CP degree ({parallel_dims.cp}).
-            See: https://github.com/pytorch/torchtitan/issues/1306
-            """
+#         self.seq_len = int(self.preprocessor.seq_len)
+#         assert (
+#             self.seq_len % parallel_dims.seq_len_divisor == 0
+#         ), f"""
+#             Sequence length {self.seq_len} currently must be divisible by the product 
+#             of TP degree ({parallel_dims.tp}) and 2 * CP degree ({parallel_dims.cp}).
+#             See: https://github.com/pytorch/torchtitan/issues/1306
+#             """
 
-        # move sharded model to CPU/GPU and initialize weights via DTensor
-        if cfg.checkpoint.checkpoint_manager.create_seed_checkpoint:
-            init_device = "cpu"
-            buffer_device = None
-        elif cfg.parallelism.training.enable_cpu_offload:
-            init_device = "cpu"
-            buffer_device = device_type
-        else:
-            init_device = device_type
-            buffer_device = None
+#         # move sharded model to CPU/GPU and initialize weights via DTensor
+#         if cfg.checkpoint.checkpoint_manager.create_seed_checkpoint:
+#             init_device = "cpu"
+#             buffer_device = None
+#         elif cfg.parallelism.training.enable_cpu_offload:
+#             init_device = "cpu"
+#             buffer_device = device_type
+#         else:
+#             init_device = device_type
+#             buffer_device = None
 
-        if parallel_dims.pp_enabled:
-            raise NotImplementedError("Pipeline parallelism is not yet supported.")
-        else:
-            # apply PT-D Tensor Parallel, activation checkpointing, 
-            # torch.compile, Data Parallel
-            PARALLEL = get_method(cfg.models.PARALLELISM)
-            model = PARALLEL(model, parallel_dims, cfg)
+#         if parallel_dims.pp_enabled:
+#             raise NotImplementedError("Pipeline parallelism is not yet supported.")
+#         else:
+#             # apply PT-D Tensor Parallel, activation checkpointing, 
+#             # torch.compile, Data Parallel
+#             PARALLEL = get_method(cfg.models.PARALLELISM)
+#             model = PARALLEL(model, parallel_dims, cfg)
 
-            model.to_empty(device=init_device)
-            with torch.no_grad():
-                model.init_model_weights(buffer_device=buffer_device)
-            model.train()
+#             model.to_empty(device=init_device)
+#             with torch.no_grad():
+#                 model.init_model_weights(buffer_device=buffer_device)
+#             model.train()
 
-            self.model_parts = [model]
+#             self.model_parts = [model]
 
-        self.ft_manager.maybe_set_all_reduce_hook(self.model_parts)
+#         self.ft_manager.maybe_set_all_reduce_hook(self.model_parts)
 
-        # build optimizer after applying parallelisms to the model
-        self.optimizers = build_optimizers(
-            model_parts=self.model_parts,
-            optimizer_config=cfg.optimizers,
-            parallel_dims=parallel_dims,
-            ft_manager=self.ft_manager,
-        )
-        self.schedulers = build_lr_schedulers(
-            optimizers=self.optimizers,
-            lr_scheduler_config=cfg.schedulers,
-            training_steps=self.steps_per_epoch
-        )
-        self.wd_schedulers = build_wd_schedulers(
-            optimizers=self.optimizers,
-            wd_scheduler_config=cfg.schedulers.wd_scheduler,
-            training_steps=self.steps_per_epoch,
-        )
+#         # build optimizer after applying parallelisms to the model
+#         self.optimizers = build_optimizers(
+#             model_parts=self.model_parts,
+#             optimizer_config=cfg.optimizers,
+#             parallel_dims=parallel_dims,
+#             ft_manager=self.ft_manager,
+#         )
+#         self.schedulers = build_lr_schedulers(
+#             optimizers=self.optimizers,
+#             lr_scheduler_config=cfg.schedulers,
+#             training_steps=self.steps_per_epoch
+#         )
+#         self.wd_schedulers = build_wd_schedulers(
+#             optimizers=self.optimizers,
+#             wd_scheduler_config=cfg.schedulers.wd_scheduler,
+#             training_steps=self.steps_per_epoch,
+#         )
 
-        # TODO: enable model converters hooks
-        # Post optimizer step model converters hook.
-        # e.g. calculate float8 dynamic amax/scale for all-parameter for FSDP2
-        # where it issues a single all-reduce for all parameters at once for better performance
-        # self.optimizers.register_step_post_hook(
-        #     lambda *args, **kwargs: model_converters.post_optimizer_hook(
-        #         self.model_parts
-        #     )
-        # )
+#         # TODO: enable model converters hooks
+#         # Post optimizer step model converters hook.
+#         # e.g. calculate float8 dynamic amax/scale for all-parameter for FSDP2
+#         # where it issues a single all-reduce for all parameters at once for better performance
+#         # self.optimizers.register_step_post_hook(
+#         #     lambda *args, **kwargs: model_converters.post_optimizer_hook(
+#         #         self.model_parts
+#         #     )
+#         # )
 
-        loss_parallel_enabled = (
-            parallel_dims.tp_enabled
-            and not cfg.parallelism.training.disable_loss_parallel
-        )
-        enable_compiled_autograd = cfg.optimizations.models.torch_compile.get(
-            "enable_compiled_autograd"
-        )
-        self.train_context = dist_utils.get_train_context(loss_parallel_enabled, 
-                                                          enable_compiled_autograd)
-        self.maybe_enable_amp = dist_utils.maybe_enable_amp(
-            parallel_dims,
-            cfg.parallelism.training.mixed_precision_param,
-            device_type,
-        )
+#         loss_parallel_enabled = (
+#             parallel_dims.tp_enabled
+#             and not cfg.parallelism.training.disable_loss_parallel
+#         )
+#         enable_compiled_autograd = cfg.optimizations.models.torch_compile.get(
+#             "enable_compiled_autograd"
+#         )
+#         self.train_context = dist_utils.get_train_context(loss_parallel_enabled, 
+#                                                           enable_compiled_autograd)
+#         self.maybe_enable_amp = dist_utils.maybe_enable_amp(
+#             parallel_dims,
+#             cfg.parallelism.training.mixed_precision_param,
+#             device_type,
+#         )
 
-        # Initialize metric postprocessor and evaluator
-        self.timers = self.init_timers()
+#         # Initialize metric postprocessor and evaluator
+#         self.timers = self.init_timers()
         
-        self.metrics_processor = MetricsProcessor(
-            gradient_accumulation_steps=self.gradient_accumulation_steps,
-            optimizers=self.optimizers,
-            lr_schedulers=self.schedulers,
-            model_parts=self.model_parts,
-            parallel_dims=self.parallel_dims,
-            timers=self.timers,
-            num_flops_per_token=self.num_flops_per_token,
-            model_param_count=self.model_param_count
-        )
-        self.evaluator = instantiate(cfg.evaluation.evaluator)
+#         self.metrics_processor = MetricsProcessor(
+#             gradient_accumulation_steps=self.gradient_accumulation_steps,
+#             optimizers=self.optimizers,
+#             lr_schedulers=self.schedulers,
+#             model_parts=self.model_parts,
+#             parallel_dims=self.parallel_dims,
+#             timers=self.timers,
+#             num_flops_per_token=self.num_flops_per_token,
+#             model_param_count=self.model_param_count
+#         )
+#         self.evaluator = instantiate(cfg.evaluation.evaluator)
 
-        # if resume job, gather the state from the checkpoint
-        # else intialize outdir, logdir, and checkpointdir
-        # these directories should be empty if not resuming a job
-        # to avoid overwriting existing checkpoints
-        best_metric, step, epoch = resume_run(self, cfg)
-        self.start_epoch, self.start_iter, self.best_metric = epoch, step, best_metric
-        self._epoch, self._iter, self._val_iter, self._curr_val_metric = self.start_epoch, self.start_iter, 0, float('inf')
+#         # if resume job, gather the state from the checkpoint
+#         # else intialize outdir, logdir, and checkpointdir
+#         # these directories should be empty if not resuming a job
+#         # to avoid overwriting existing checkpoints
+#         best_metric, step, epoch = resume_run(self, cfg)
+#         self.start_epoch, self.start_iter, self.best_metric = epoch, step, best_metric
+#         self._epoch, self._iter, self._val_iter, self._curr_val_metric = self.start_epoch, self.start_iter, 0, float('inf')
 
-        # initialize checkpoint manager
-        # NOTE: any attributes must be initialized before checkpoint loading
-        self.checkpoiunt_save_period = cfg.checkpoint.checkpoint_manager.save_period
-        self.checkpoint_manager = CheckpointManager(
-            dataloader=None,
-            model_parts=self.model_parts,
-            optimizers=self.optimizers,
-            lr_schedulers=self.schedulers,
-            states={"train_state": self, "wd_schedulers": self.wd_schedulers},
-            checkpoint_config=cfg.checkpoint.checkpoint_manager,
-            # TODO: support sd_adapter
-            sd_adapter=None,
-            base_folder=cfg.checkpoint.checkpoint_manager.save_checkpointdir,
-            ft_manager=self.ft_manager,
-        )
+#         # initialize checkpoint manager
+#         # NOTE: any attributes must be initialized before checkpoint loading
+#         self.checkpoiunt_save_period = cfg.checkpoint.checkpoint_manager.save_period
+#         self.checkpoint_manager = CheckpointManager(
+#             dataloader=None,
+#             model_parts=self.model_parts,
+#             optimizers=self.optimizers,
+#             lr_schedulers=self.schedulers,
+#             states={"train_state": self, "wd_schedulers": self.wd_schedulers},
+#             checkpoint_config=cfg.checkpoint.checkpoint_manager,
+#             # TODO: support sd_adapter
+#             sd_adapter=None,
+#             base_folder=cfg.checkpoint.checkpoint_manager.save_checkpointdir,
+#             ft_manager=self.ft_manager,
+#         )
 
-        if cfg.checkpoint.checkpoint_manager.resume_checkpointdir is not None or \
-            cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir is not None:
-            if self.start_iter > 0 and Path(cfg.checkpoint.checkpoint_manager.resume_checkpointdir).exists():
-                logger.info("[Trainer] Resuming training from step {} and epoch {}.".format(self.start_iter, self.start_epoch))
-                self.checkpoint_manager.load(step=self.start_iter)
-            elif Path(cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir).exists():
-                logger.info(
-                    "[Trainer] Initializing model weights from pretrained checkpoint at %s. "
-                    "Starting training from step 0 and epoch 0.",
-                    cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir,
-                )
-                load_model_from_ckpt(cfg, self.checkpoint_manager)
-                # We force fresh run statistics after loading pretrained weights
-                self.start_epoch, self.start_iter = 0, 0
-                self._epoch, self._iter, self._val_iter = 0, 0, 0
-                self.best_metric = float("inf")
+#         if cfg.checkpoint.checkpoint_manager.resume_checkpointdir is not None or \
+#             cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir is not None:
+#             if self.start_iter > 0 and Path(cfg.checkpoint.checkpoint_manager.resume_checkpointdir).exists():
+#                 logger.info("[Trainer] Resuming training from step {} and epoch {}.".format(self.start_iter, self.start_epoch))
+#                 self.checkpoint_manager.load(step=self.start_iter)
+#             elif Path(cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir).exists():
+#                 logger.info(
+#                     "[Trainer] Initializing model weights from pretrained checkpoint at %s. "
+#                     "Starting training from step 0 and epoch 0.",
+#                     cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir,
+#                 )
+#                 load_model_from_ckpt(cfg, self.checkpoint_manager)
+#                 # We force fresh run statistics after loading pretrained weights
+#                 self.start_epoch, self.start_iter = 0, 0
+#                 self._epoch, self._iter, self._val_iter = 0, 0, 0
+#                 self.best_metric = float("inf")
 
-    def init_distributed(self, cfg) -> ParallelDims:
-        configure_torch_comm_env(cfg.parallelism.comm)
-        return ParallelDims(
-            dp_shard=cfg.parallelism.training.data_parallel_shard_degree,
-            dp_replicate=cfg.parallelism.training.data_parallel_replicate_degree,
-            cp=cfg.parallelism.training.context_parallel_degree,
-            tp=cfg.parallelism.training.tensor_parallel_degree,
-            pp=cfg.parallelism.training.pipeline_parallel_degree,
-            ep=cfg.parallelism.training.expert_parallel_degree,
-            etp=cfg.parallelism.training.expert_tensor_parallel_degree,
-            world_size=get_world_size(),
-        )
+#     def init_distributed(self, cfg) -> ParallelDims:
+#         configure_torch_comm_env(cfg.parallelism.comm)
+#         return ParallelDims(
+#             dp_shard=cfg.parallelism.training.data_parallel_shard_degree,
+#             dp_replicate=cfg.parallelism.training.data_parallel_replicate_degree,
+#             cp=cfg.parallelism.training.context_parallel_degree,
+#             tp=cfg.parallelism.training.tensor_parallel_degree,
+#             pp=cfg.parallelism.training.pipeline_parallel_degree,
+#             ep=cfg.parallelism.training.expert_parallel_degree,
+#             etp=cfg.parallelism.training.expert_tensor_parallel_degree,
+#             world_size=get_world_size(),
+#         )
     
-    def init_timers(self):
-        self.fwd_start = torch.cuda.Event(enable_timing=True)
-        self.fwd_end = torch.cuda.Event(enable_timing=True)
-        self.bwd_start = torch.cuda.Event(enable_timing=True)
-        self.bwd_end = torch.cuda.Event(enable_timing=True)
-        self.step_start = torch.cuda.Event(enable_timing=True)
-        self.step_end = torch.cuda.Event(enable_timing=True)
-        timers = {             
-            "fwd_start": self.fwd_start,
-            "fwd_end": self.fwd_end,
-            "bwd_start": self.bwd_start,
-            "bwd_end": self.bwd_end,
-            "step_start": self.step_start,
-            "step_end": self.step_end,
-        }
-        return timers
+#     def init_timers(self):
+#         self.fwd_start = torch.cuda.Event(enable_timing=True)
+#         self.fwd_end = torch.cuda.Event(enable_timing=True)
+#         self.bwd_start = torch.cuda.Event(enable_timing=True)
+#         self.bwd_end = torch.cuda.Event(enable_timing=True)
+#         self.step_start = torch.cuda.Event(enable_timing=True)
+#         self.step_end = torch.cuda.Event(enable_timing=True)
+#         timers = {             
+#             "fwd_start": self.fwd_start,
+#             "fwd_end": self.fwd_end,
+#             "bwd_start": self.bwd_start,
+#             "bwd_end": self.bwd_end,
+#             "step_start": self.step_start,
+#             "step_end": self.step_end,
+#         }
+#         return timers
 
-    def run(self):
-        """
-        Launch training.
-        """
-        self.before_train()
+#     def run(self):
+#         """
+#         Launch training.
+#         """
+#         self.before_train()
 
-        while self._epoch < self._max_epochs and not self.stop_training:
-            self.run_epoch()
+#         while self._epoch < self._max_epochs and not self.stop_training:
+#             self.run_epoch()
 
-        self.after_train()
+#         self.after_train()
 
-    def run_epoch(self) -> None:
-        """
-        Iterate one epoch.
-        """
-        self.before_epoch()
+#     def run_epoch(self) -> None:
+#         """
+#         Iterate one epoch.
+#         """
+#         self.before_epoch()
 
-        self.train_dataloader_iter = iter(self.train_dataloader)
+#         self.train_dataloader_iter = iter(self.train_dataloader)
         
-        for _ in range(self.steps_per_epoch):
-            self.run_step()
+#         for _ in range(self.steps_per_epoch):
+#             self.run_step()
 
-        if self.val_dataloader and \
-           (self._epoch >= self.val_begin and
-            (self._epoch - self.val_begin) % self.val_interval == 0):
-            self.run_validation()
+#         if self.val_dataloader and \
+#            (self._epoch >= self.val_begin and
+#             (self._epoch - self.val_begin) % self.val_interval == 0):
+#             self.run_validation()
 
-        self.after_epoch()
-        self._epoch += 1
+#         self.after_epoch()
+#         self._epoch += 1
 
-    def run_step(self) -> None:
-        """
-        Iterate one step.
-        """
-        self.before_step()
+#     def run_step(self) -> None:
+#         """
+#         Iterate one step.
+#         """
+#         self.before_step()
 
-        self.optimizers.zero_grad()
+#         self.optimizers.zero_grad()
         
-        microbatch_loss_dicts = []
-        for _microbatch in range(self.gradient_accumulation_steps):
-            t_start = time.perf_counter()
-            data_sample = next(self.train_dataloader_iter)
-            data_time = time.perf_counter() - t_start
-            data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
+#         microbatch_loss_dicts = []
+#         for _microbatch in range(self.gradient_accumulation_steps):
+#             t_start = time.perf_counter()
+#             data_sample = next(self.train_dataloader_iter)
+#             data_time = time.perf_counter() - t_start
+#             data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time)
             
-            loss_dict = self.forward_backward_step(self._iter, data_sample)
-            microbatch_loss_dicts.append({
-                k: (v.detach() if torch.is_tensor(v) else v)
-                for k, v in loss_dict.items()
-            })
+#             loss_dict = self.forward_backward_step(self._iter, data_sample)
+#             microbatch_loss_dicts.append({
+#                 k: (v.detach() if torch.is_tensor(v) else v)
+#                 for k, v in loss_dict.items()
+#             })
 
-        grad_norm = dist_utils.clip_grad_norm_(
-            [p for m in self.model_parts for p in m.parameters()],
-            self.cfg.parallelism.training.max_norm,
-            foreach=True,
-            pp_mesh=(
-                self.parallel_dims.world_mesh["pp"] if self.parallel_dims.pp_enabled else None
-            ),
-            ep_enabled=self.parallel_dims.ep_enabled,
-        )
+#         grad_norm = dist_utils.clip_grad_norm_(
+#             [p for m in self.model_parts for p in m.parameters()],
+#             self.cfg.parallelism.training.max_norm,
+#             foreach=True,
+#             pp_mesh=(
+#                 self.parallel_dims.world_mesh["pp"] if self.parallel_dims.pp_enabled else None
+#             ),
+#             ep_enabled=self.parallel_dims.ep_enabled,
+#         )
         
-        self.checkpoint_manager.maybe_wait_for_staging()
-        self.step_start.record()
-        self.optimizers.step()
-        self.step_end.record()
+#         self.checkpoint_manager.maybe_wait_for_staging()
+#         self.step_start.record()
+#         self.optimizers.step()
+#         self.step_end.record()
 
-        # for short testing runs:
-        # if self._iter > 25:
-        #     raise RuntimeError(
-        #         f"Training stopped at step {self._iter} for testing."
-        #     )
-        # logger.info(f"step_loss: {loss}")
+#         # for short testing runs:
+#         # if self._iter > 25:
+#         #     raise RuntimeError(
+#         #         f"Training stopped at step {self._iter} for testing."
+#         #     )
+#         # logger.info(f"step_loss: {loss}")
 
-        metrics, aggregated_loss = self.metrics_processor.process(
-            data_sample=data_sample,
-            loss_dicts=microbatch_loss_dicts,
-            extra_metrics={
-                "perf/grad_norm": grad_norm.item(),
-            },
-        )
-        data_sample["advanced_metrics"] = metrics
+#         metrics, aggregated_loss = self.metrics_processor.process(
+#             data_sample=data_sample,
+#             loss_dicts=microbatch_loss_dicts,
+#             extra_metrics={
+#                 "perf/grad_norm": grad_norm.item(),
+#             },
+#         )
+#         data_sample["advanced_metrics"] = metrics
 
-        self.after_step(data_sample=data_sample, 
-                        outputs=None, 
-                        loss_dict=aggregated_loss)
-        self._iter += 1
+#         self.after_step(data_sample=data_sample, 
+#                         outputs=None, 
+#                         loss_dict=aggregated_loss)
+#         self._iter += 1
 
-    def forward_backward_step(self, idx, data_sample: Sequence[dict]):
-        """
-        Iterate one mini-batch fwd+bkwd step.
-        """
-        # TODO: consider adding as step Hook in Training/Hooks.py
-        # applies context parallelism if cp is enabled
-        if self.parallel_dims.cp_enabled:
-            cp_buffers, cp_seq_dims = get_cp_buffers(data_sample, 
-                                                     self.model_parts, 
-                                                     disable_load_balance=True)
-            optional_context_parallel_ctx = (
-                dist_utils.create_context_parallel_ctx(
-                    cp_mesh=self.parallel_dims.world_mesh["cp"],
-                    cp_buffers=cp_buffers,
-                    cp_seq_dims=cp_seq_dims,
-                    cp_no_restore_buffers={cp_buffers[0], cp_buffers[1]}, # inputs, targets
-                    cp_rotate_method=self.cfg.parallelism.training.context_parallel_rotate_method,
-                )
-            )
-        else:
-            optional_context_parallel_ctx = None
+#     def forward_backward_step(self, idx, data_sample: Sequence[dict]):
+#         """
+#         Iterate one mini-batch fwd+bkwd step.
+#         """
+#         # TODO: consider adding as step Hook in Training/Hooks.py
+#         # applies context parallelism if cp is enabled
+#         if self.parallel_dims.cp_enabled:
+#             cp_buffers, cp_seq_dims = get_cp_buffers(data_sample, 
+#                                                      self.model_parts, 
+#                                                      disable_load_balance=True)
+#             optional_context_parallel_ctx = (
+#                 dist_utils.create_context_parallel_ctx(
+#                     cp_mesh=self.parallel_dims.world_mesh["cp"],
+#                     cp_buffers=cp_buffers,
+#                     cp_seq_dims=cp_seq_dims,
+#                     cp_no_restore_buffers={cp_buffers[0], cp_buffers[1]}, # inputs, targets
+#                     cp_rotate_method=self.cfg.parallelism.training.context_parallel_rotate_method,
+#                 )
+#             )
+#         else:
+#             optional_context_parallel_ctx = None
 
-        if self.parallel_dims.pp_enabled:
-            raise NotImplementedError("Pipeline parallelism is not yet supported.")
-        else:
-            # Non-PP forward / backward
-            with self.train_context(optional_context_parallel_ctx):
-                assert len(self.model_parts) == 1
-                with self.maybe_enable_amp:
-                    self.fwd_start.record()
-                    loss_dict, outputs = self.model_parts[0](data_sample)
-                    self.fwd_end.record()
-                    loss = loss_dict["step_loss"]
-                # Need to free outputs before bwd to avoid peaking memory
-                del outputs
-                self.bwd_start.record()
-                loss.backward()
-                self.bwd_end.record()
+#         if self.parallel_dims.pp_enabled:
+#             raise NotImplementedError("Pipeline parallelism is not yet supported.")
+#         else:
+#             # Non-PP forward / backward
+#             with self.train_context(optional_context_parallel_ctx):
+#                 assert len(self.model_parts) == 1
+#                 with self.maybe_enable_amp:
+#                     self.fwd_start.record()
+#                     loss_dict, outputs = self.model_parts[0](data_sample)
+#                     self.fwd_end.record()
+#                     loss = loss_dict["step_loss"]
+#                 # Need to free outputs before bwd to avoid peaking memory
+#                 del outputs
+#                 self.bwd_start.record()
+#                 loss.backward()
+#                 self.bwd_end.record()
 
-        self.after_backward(data_sample=data_sample, loss_dict=loss_dict, outputs=None)
+#         self.after_backward(data_sample=data_sample, loss_dict=loss_dict, outputs=None)
 
-        return loss_dict
+#         return loss_dict
 
-    def run_validation(self) -> None:
-        """
-        Run validation.
-        """
-        self.before_validation()
+#     def run_validation(self) -> None:
+#         """
+#         Run validation.
+#         """
+#         self.before_validation()
 
-        self.val_dataloader_iter = iter(self.val_dataloader)
+#         self.val_dataloader_iter = iter(self.val_dataloader)
 
-        with inference_context(self.model_parts[0]):
-            with torch.no_grad():
-                for step_idx in range(self.val_steps_per_epoch):
-                    self.run_validation_step(step_idx)
+#         with inference_context(self.model_parts[0]):
+#             with torch.no_grad():
+#                 for step_idx in range(self.val_steps_per_epoch):
+#                     self.run_validation_step(step_idx)
 
-        metrics = self.evaluator.evaluate()
-        self.event_recorder.put_scalars(
-            scope="epoch",
-            prefix="val_",
-            **{
-                k: (v.item() if torch.is_tensor(v) else v)
-                for k, v in metrics.items()
-            },
-        )
-        self.evaluator.reset()
+#         metrics = self.evaluator.evaluate()
+#         self.event_recorder.put_scalars(
+#             scope="epoch",
+#             prefix="val_",
+#             **{
+#                 k: (v.item() if torch.is_tensor(v) else v)
+#                 for k, v in metrics.items()
+#             },
+#         )
+#         self.evaluator.reset()
 
-        self.after_validation()
+#         self.after_validation()
 
-    def run_validation_step(self, idx: int) -> None:
-        """
-        Run one validation step.
-        """
-        self.before_val_step()
+#     def run_validation_step(self, idx: int) -> None:
+#         """
+#         Run one validation step.
+#         """
+#         self.before_val_step()
 
-        microbatch_loss_dicts = []
-        for _microbatch in range(self.gradient_accumulation_steps):
-            t_start = time.perf_counter()
-            data_sample = next(self.val_dataloader_iter)
-            data_time = time.perf_counter() - t_start
-            data_sample = self.preprocessor(
-                data_sample=data_sample,
-                data_time=data_time,
-            )
+#         microbatch_loss_dicts = []
+#         for _microbatch in range(self.gradient_accumulation_steps):
+#             t_start = time.perf_counter()
+#             data_sample = next(self.val_dataloader_iter)
+#             data_time = time.perf_counter() - t_start
+#             data_sample = self.preprocessor(
+#                 data_sample=data_sample,
+#                 data_time=data_time,
+#             )
 
-            loss_dict, outputs = self.validation_forward_step(data_sample)
-            microbatch_loss_dicts.append({
-                k: (v.detach() if torch.is_tensor(v) else v)
-                for k, v in loss_dict.items()
-            })
+#             loss_dict, outputs = self.validation_forward_step(data_sample)
+#             microbatch_loss_dicts.append({
+#                 k: (v.detach() if torch.is_tensor(v) else v)
+#                 for k, v in loss_dict.items()
+#             })
 
-            self.evaluator.process(data_sample, outputs, loss_dict)
+#             self.evaluator.process(data_sample, outputs, loss_dict)
 
-        metrics, aggregated_loss = self.metrics_processor.process(
-            data_sample=data_sample,
-            loss_dicts=microbatch_loss_dicts,
-            extra_metrics=None
-        )
-        data_sample["advanced_metrics"] = metrics
+#         metrics, aggregated_loss = self.metrics_processor.process(
+#             data_sample=data_sample,
+#             loss_dicts=microbatch_loss_dicts,
+#             extra_metrics=None
+#         )
+#         data_sample["advanced_metrics"] = metrics
 
-        self.after_val_step(
-            data_sample=data_sample,
-            outputs=outputs,
-            loss_dict=aggregated_loss,
-        )
+#         self.after_val_step(
+#             data_sample=data_sample,
+#             outputs=outputs,
+#             loss_dict=aggregated_loss,
+#         )
 
-        self._val_iter += 1
+#         self._val_iter += 1
 
-    def validation_forward_step(self, data_sample: Sequence[dict]):
-        """
-        Run microbatch for validation.
-        """
-        if self.parallel_dims.cp_enabled:
-            cp_buffers, cp_seq_dims = get_cp_buffers(data_sample, 
-                                                     self.model_parts, 
-                                                     disable_load_balance=True)
-            optional_context_parallel_ctx = (
-                dist_utils.create_context_parallel_ctx(
-                    cp_mesh=self.parallel_dims.world_mesh["cp"],
-                    cp_buffers=cp_buffers,
-                    cp_seq_dims=cp_seq_dims,
-                    cp_no_restore_buffers={cp_buffers[0], cp_buffers[1]}, # inputs, targets
-                    cp_rotate_method=self.cfg.parallelism.training.context_parallel_rotate_method,
-                )
-            )
-        else:
-            optional_context_parallel_ctx = None
+#     def validation_forward_step(self, data_sample: Sequence[dict]):
+#         """
+#         Run microbatch for validation.
+#         """
+#         if self.parallel_dims.cp_enabled:
+#             cp_buffers, cp_seq_dims = get_cp_buffers(data_sample, 
+#                                                      self.model_parts, 
+#                                                      disable_load_balance=True)
+#             optional_context_parallel_ctx = (
+#                 dist_utils.create_context_parallel_ctx(
+#                     cp_mesh=self.parallel_dims.world_mesh["cp"],
+#                     cp_buffers=cp_buffers,
+#                     cp_seq_dims=cp_seq_dims,
+#                     cp_no_restore_buffers={cp_buffers[0], cp_buffers[1]}, # inputs, targets
+#                     cp_rotate_method=self.cfg.parallelism.training.context_parallel_rotate_method,
+#                 )
+#             )
+#         else:
+#             optional_context_parallel_ctx = None
 
-        if self.parallel_dims.pp_enabled:
-            raise NotImplementedError(
-                "Pipeline parallelism is not yet supported for validation."
-            )
-        else:
-            with self.train_context(optional_context_parallel_ctx):
-                assert len(self.model_parts) == 1
-                with self.maybe_enable_amp:
-                    loss_dict, outputs = self.model_parts[0](data_sample)
+#         if self.parallel_dims.pp_enabled:
+#             raise NotImplementedError(
+#                 "Pipeline parallelism is not yet supported for validation."
+#             )
+#         else:
+#             with self.train_context(optional_context_parallel_ctx):
+#                 assert len(self.model_parts) == 1
+#                 with self.maybe_enable_amp:
+#                     loss_dict, outputs = self.model_parts[0](data_sample)
 
-        return loss_dict, outputs
+#         return loss_dict, outputs

@@ -11,6 +11,7 @@ from cell_observatory_platform.models.layers.mlp import get_mlp
 from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.backbones.encoder import Encoder
 from cell_observatory_platform.models.layers.activation import get_activation
+from cell_observatory_platform.models.layers.attention import RopeAttention
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
 from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding, make_axial_rope_freqs
 
@@ -234,6 +235,26 @@ class ViT(nn.Module):
 
         self.head = nn.Linear(self.embed_dim, modes) if modes > 0 else nn.Identity()
         self.head_drop = nn.Dropout(self.proj_drop_rate)
+
+        self._init_model_weights()
+
+    def _init_model_weights(self, buffer_device: str | None = None):
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+
+        self.apply(_init_weights)
+        w = self.patch_embedding.proj.weight
+        torch.nn.init.xavier_uniform_(w.view(w.shape[0], -1))
+
+        for mod in self.modules():
+            if isinstance(mod, RopeAttention):
+                mod.init_rope_parameters(device=buffer_device)
 
     @torch.jit.ignore
     def get_num_layers(self):

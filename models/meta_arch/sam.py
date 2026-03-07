@@ -272,7 +272,7 @@ class SAM2Base(torch.nn.Module):
         raise NotImplementedError
 
     @abstractmethod
-    def init_model_weights(self, buffer_device: str | None = None):
+    def _init_model_weights(self, buffer_device: str | None = None):
         raise NotImplementedError
 
     def _forward_sam_heads(
@@ -1051,6 +1051,7 @@ class SAM2(SAM2Base):
         multimask_output_for_predict: bool = True,
         min_mask_region_area: int = 0,
         debug: bool = False,
+        buffer_device: str = "cuda",
         **kwargs,
     ):
         super().__init__(
@@ -1124,10 +1125,39 @@ class SAM2(SAM2Base):
             crop_n_points_downscale_factor,
         )
 
-    def init_model_weights(self, buffer_device: str | None = None):
+        self._init_model_weights(buffer_device=buffer_device)
+
+    def _init_model_weights(self, buffer_device: str | None = None):
+        # Weight init for SAM2 submodules happens inside their respective __init__ methods (if at all),
+        # following the reference implementation:
+        #   - MemoryAttention
+        #   - SAMBackbone (implicitly via backbone build)
+        #   - MaskDecoder
+        #   - PromptEncoder
+        #   - MemoryEncoder
+        #   - SAM2Base
+        #   - SAM2
         for mod in self.modules():
             if isinstance(mod, RopeAttention):
                 mod.init_rope_parameters(device=buffer_device)
+
+    def get_param_groups(self, weight_decay: float, **kwargs) -> list[dict]:
+        """Standard decay/no-decay split for SAM2.
+        TODO: consider more options such as layer-wise decay, etc.
+        """
+        decay, no_decay = [], []
+        for name, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+            if p.ndim == 1 or "bias" in name:
+                no_decay.append(p)
+            else:
+                decay.append(p)
+
+        return [
+            {"params": decay, "weight_decay": weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ]
 
     def forward(self, data_sample: dict):
         if self.training or not self.forward_backbone_per_frame_for_eval:

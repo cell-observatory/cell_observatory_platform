@@ -128,14 +128,6 @@ class Transformer(nn.Module):
 
         self.sample_drop_ratio = sample_drop_ratio
 
-    def init_model_weights(self, buffer_device: str | None = None):
-        # TODO: move model inits back into each model class
-        # FIXME: add proper weight init logic for MaskDINO
-        # init_weights(self, weight_init_type=self.weight_init_type)
-        for mod in self.modules():
-            if isinstance(mod, RopeAttention):
-                mod.init_rope_parameters(device=buffer_device)
-
     def _forward(self, x, masks=None, pos_enc=None, spatial_kwargs=None):
         ln1 = self.norm1(x)
         att = self.att(ln1, masks=masks, pos_enc=pos_enc, spatial_kwargs=spatial_kwargs)

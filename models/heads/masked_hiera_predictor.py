@@ -147,9 +147,9 @@ class MaskedHieraPredictor(nn.Module):
         else:
             raise NotImplementedError(f"prediction_mode={prediction_mode}")
 
-        self.initialize_weights()
+        self._init_model_weights()
 
-    def initialize_weights(self):
+    def _init_model_weights(self):
         nn.init.trunc_normal_(self.mask_token, std=0.02)
         for pe in self.decoder_pos_embeds:
             nn.init.trunc_normal_(pe, std=0.02)

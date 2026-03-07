@@ -223,6 +223,21 @@ class MaskedPredictor(nn.Module):
             da_n_levels=da_n_levels,
         )
 
+        self._init_model_weights()
+
+    def _init_model_weights(self):
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+
+        self.apply(_init_weights)
+        torch.nn.init.normal_(self.token_param, std=0.02)
+
     @torch.jit.ignore
     def get_num_layers(self):
         return self.encoder.get_num_layers()

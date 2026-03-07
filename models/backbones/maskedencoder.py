@@ -222,6 +222,22 @@ class MaskedEncoder(nn.Module):
 
         self.out_layers = out_layers
 
+        self._init_model_weights()
+
+    def _init_model_weights(self):
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+
+        self.apply(_init_weights)
+        w = self.patch_embedding.proj.weight
+        torch.nn.init.xavier_uniform_(w.view(w.shape[0], -1))
+
     @torch.jit.ignore
     def get_num_heads(self):
         return self.encoder.get_num_heads()

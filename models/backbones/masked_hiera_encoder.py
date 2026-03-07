@@ -201,7 +201,7 @@ class MaskedHieraEncoder(nn.Module):
             patch_shape=self.patch_shape,
         )
         self.patch_embedding = self.encoder.patch_embed
-        self.initialize_weights()
+        self._init_model_weights()
 
     def get_decoder_spec(self) -> dict:
         D = len(self.encoder.tokens_spatial_shape)
@@ -256,7 +256,7 @@ class MaskedHieraEncoder(nn.Module):
         """Decoder specs for selected multiscale levels."""
         return [self.get_decoder_spec_for_level(lvl) for lvl in self.multiscale_level_indices]
 
-    def initialize_weights(self):
+    def _init_model_weights(self):
         self.apply(self._mae_init_weights)
         w = self.encoder.patch_embed.proj.weight.data
         nn.init.xavier_uniform_(w.view([w.shape[0], -1]))

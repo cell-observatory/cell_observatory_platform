@@ -1,3 +1,4 @@
+import math
 import sys
 import inspect
 import logging
@@ -8,6 +9,8 @@ import torch
 import torch.nn as nn
 from deepspeed.runtime.zero import GatheredParameters
 from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+
+from timm.layers.weight_init import trunc_normal_
 
 from cell_observatory_platform.models.layers.mlp import get_mlp
 from cell_observatory_platform.models.layers.norm import get_norm
@@ -20,7 +23,7 @@ from cell_observatory_platform.models.backbones.maskedencoder import MaskedEncod
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
 from cell_observatory_platform.models.backbones.masked_hiera_encoder import MaskedHieraEncoder
 from cell_observatory_platform.models.heads.masked_hiera_predictor import MaskedHieraPredictor
-from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops, init_weights
+from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -359,9 +362,7 @@ class JEPA(nn.Module):
             raise ValueError(f"Unsupported backbone type: {backbone_type}")
 
         self.weight_init_type = weight_init_type
-
-        self.model_initialized = False
-        self.init_model_weights(buffer_device=buffer_device)
+        self._init_model_weights(buffer_device=buffer_device)
 
         # NOTE: do deepcopy after weight init
         self.target_encoder = deepcopy(self.input_encoder)
@@ -383,43 +384,164 @@ class JEPA(nn.Module):
                     # input_encoder*B + (target_encoder - input_encoder)*(1-B) = target_encoder*B + input_encoder*(1-B)
                     tparam.data.copy_(torch.lerp(iparam.data, tparam.data, beta))
 
-    def init_model_weights(self, buffer_device: str | None = None):
-        # FIXME: hack until we move model inits back into each model class
-        if not self.model_initialized:
-            # TODO: move model inits back into each model class
-            init_weights(self, weight_init_type=self.weight_init_type)
-            for mod in self.modules():
-                if isinstance(mod, RopeAttention):
-                    mod.init_rope_parameters(device=buffer_device)
-            self.model_initialized = True
-    
-    @torch.jit.ignore
-    def _get_nparams_and_flops(
-        self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
-    ):
-        if device == "cuda":
-            # TODO: test this path more thoroughly
-            with torch.cuda.device(device):
-                input_shape = (batch_size, *self.input_shape)
-                data_sample = get_masked_input_data(
-                    self,
-                    inputs=input_shape,
-                    device="cuda",
-                    mask_ratio=masking_ratio,
-                )
-                seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
-                model_summary = get_nparams_and_flops(self, data_sample, seq_len)
-                model_param_count, num_flops_per_token = (
-                    model_summary["total_params"],
-                    model_summary["training_flops"],
-                )
-        elif device == "meta":
-            print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
-            return -1, -1
+    def _init_model_weights(self, buffer_device: str | None = None):
+        if self.weight_init_type == "vjepa":
+            # Adapted from:
+            # https://github.com/facebookresearch/ijepa/blob/main/src/models/vision_transformer.py
+            def _vjepa_rescale_block_stack(enc_model: nn.Module):
+                def rescale(param, layer_id):
+                    param.div_(math.sqrt(2.0 * layer_id))
+
+                blocks = None
+                if hasattr(enc_model, "encoder") and hasattr(enc_model.encoder, "transformer_blocks"):
+                    blocks = enc_model.encoder.transformer_blocks
+                elif hasattr(enc_model, "encoder") and hasattr(enc_model.encoder, "blocks"):
+                    blocks = enc_model.encoder.blocks
+                elif hasattr(enc_model, "decoder") and hasattr(enc_model.decoder, "transformer_blocks"):
+                    blocks = enc_model.decoder.transformer_blocks
+                if blocks is None:
+                    raise ValueError(
+                        "VJEPA init: expected encoder with `encoder.transformer_blocks` or "
+                        "`encoder.blocks`, or decoder with `decoder.transformer_blocks` "
+                        f"on {enc_model.__class__.__name__}"
+                    )
+
+                for layer_id, layer in enumerate(blocks):
+                    # HIERA: attn.proj, mlp.fc2, VIT: att.proj, mlp.fc2
+                    att_proj = getattr(layer, "att", None) or getattr(layer, "attn", None)
+                    if att_proj is not None and hasattr(att_proj, "proj"):
+                        rescale(att_proj.proj.weight.data, layer_id + 1)
+                    if hasattr(layer, "mlp") and hasattr(layer.mlp, "fc2"):
+                        # see: https://github.com/huggingface/pytorch-image-models/timm/layers/mlp.py
+                        rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+
+            def _vjepa_init_weights(m):
+                if isinstance(m, nn.Linear):
+                    trunc_normal_(m.weight, std=self.init_std)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+                elif isinstance(m, nn.LayerNorm):
+                    nn.init.constant_(m.bias, 0)
+                    nn.init.constant_(m.weight, 1.0)
+                elif isinstance(m, (nn.Conv2d, nn.Conv3d)):
+                    trunc_normal_(m.weight, std=self.init_std)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+
+            if hasattr(self.target_predictor, "token_param"):
+                trunc_normal_(self.target_predictor.token_param, std=self.init_std)
+
+            self.apply(_vjepa_init_weights)
+            _vjepa_rescale_block_stack(self.input_encoder)
+            _vjepa_rescale_block_stack(self.target_predictor)
+
+        elif self.weight_init_type == "vjepa2":
+            # Adapted from:
+            # https://github.com/facebookresearch/vjepa2/main/src/models/vision_transformer.py
+            def _vjepa2_init_weights(m):
+                if isinstance(m, nn.Linear):
+                    trunc_normal_(m.weight, std=self.init_std)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+                elif isinstance(m, nn.LayerNorm):
+                    nn.init.constant_(m.bias, 0)
+                    nn.init.constant_(m.weight, 1.0)
+                elif isinstance(m, (nn.Conv2d, nn.Conv3d)):
+                    trunc_normal_(m.weight, std=self.init_std)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
+
+            def _vjepa2_rescale_block_stack(enc_model: nn.Module):
+                def rescale(param, layer_id):
+                    param.div_(math.sqrt(2.0 * layer_id))
+
+                blocks = None
+                if hasattr(enc_model, "encoder") and hasattr(enc_model.encoder, "transformer_blocks"):
+                    blocks = enc_model.encoder.transformer_blocks
+                elif hasattr(enc_model, "encoder") and hasattr(enc_model.encoder, "blocks"):
+                    blocks = enc_model.encoder.blocks
+                # NOTE: both HIERA and VIT use decoder.transformer_blocks (i.e. encoder module)
+                elif hasattr(enc_model, "decoder") and hasattr(enc_model.decoder, "transformer_blocks"):
+                    blocks = enc_model.decoder.transformer_blocks
+                if blocks is None:
+                    raise ValueError(
+                        "VJEPA2 init: expected model with `encoder.transformer_blocks` or "
+                        "`encoder.blocks`, and decoder with `decoder.transformer_blocks` "
+                        f"on {enc_model.__class__.__name__}"
+                    )
+
+                for layer_id, layer in enumerate(blocks):
+                    att_proj = getattr(layer, "att", None) or getattr(layer, "attn", None)
+                    if att_proj is not None and hasattr(att_proj, "proj"):
+                        rescale(att_proj.proj.weight.data, layer_id + 1)
+                    if hasattr(layer, "mlp") and hasattr(layer.mlp, "fc2"):
+                        rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+
+            self.apply(_vjepa2_init_weights)
+            _vjepa2_rescale_block_stack(self.input_encoder)
+            _vjepa2_rescale_block_stack(self.target_predictor)
+
         else:
-            # TODO: add support for meta device calculation for other backends
-            raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
-        return model_param_count, num_flops_per_token
+            raise ValueError(f"Unsupported weight initialization type: {self.weight_init_type}")
+
+        for mod in self.modules():
+            if isinstance(mod, RopeAttention):
+                mod.init_rope_parameters(device=buffer_device)
+
+    def get_param_groups(self, weight_decay: float, **kwargs) -> list[dict]:
+        """
+        Decay/no-decay split across input_encoder and target_predictor.
+        NOTE: `target_encoder` is frozen and automatically excluded.
+        
+        Adapted from: https://github.com/facebookresearch/vjepa2
+        """
+        return [
+            {"params": [p for n, p in self.input_encoder.named_parameters()
+                         if p.requires_grad and ("bias" not in n) and (p.ndim != 1)]},
+            {"params": [p for n, p in self.target_predictor.named_parameters()
+                         if p.requires_grad and ("bias" not in n) and (p.ndim != 1)]},
+            {
+                "params": [p for n, p in self.input_encoder.named_parameters()
+                           if p.requires_grad and (("bias" in n) or (p.ndim == 1))],
+                "WD_exclude": True,
+                "weight_decay": 0,
+            },
+            {
+                "params": [p for n, p in self.target_predictor.named_parameters()
+                           if p.requires_grad and (("bias" in n) or (p.ndim == 1))],
+                "WD_exclude": True,
+                "weight_decay": 0,
+            },
+        ]
+
+    # TODO: implement for each meta_arch    
+    # @torch.jit.ignore
+    # def _get_nparams_and_flops(
+    #     self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
+    # ):
+    #     if device == "cuda":
+    #         # TODO: test this path more thoroughly
+    #         with torch.cuda.device(device):
+    #             input_shape = (batch_size, *self.input_shape)
+    #             data_sample = get_masked_input_data(
+    #                 self,
+    #                 inputs=input_shape,
+    #                 device="cuda",
+    #                 mask_ratio=masking_ratio,
+    #             )
+    #             seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
+    #             model_summary = get_nparams_and_flops(self, data_sample, seq_len)
+    #             model_param_count, num_flops_per_token = (
+    #                 model_summary["total_params"],
+    #                 model_summary["training_flops"],
+    #             )
+    #     elif device == "meta":
+    #         print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
+    #         return -1, -1
+    #     else:
+    #         # TODO: add support for meta device calculation for other backends
+    #         raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
+    #     return model_param_count, num_flops_per_token
 
     @torch.jit.ignore
     def get_patch_embedding(self):

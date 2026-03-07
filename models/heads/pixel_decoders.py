@@ -224,6 +224,7 @@ class MaskDINOEncoder(nn.Module):
         norm: Callable = None,
         dtype: str = "bfloat16",
         use_deform_attention: bool = True,
+        buffer_device: str = "cuda",
     ):
         super().__init__()
 
@@ -327,9 +328,9 @@ class MaskDINOEncoder(nn.Module):
             padding=0,
         )
 
-        self.weight_init()
+        self._init_model_weights(buffer_device=buffer_device)
 
-    def weight_init(self):
+    def _init_model_weights(self, buffer_device: str):
         weight_init.c2_xavier_fill(self.mask_features)
         for proj in self.channel_align_projection:
             nn.init.xavier_uniform_(proj[0].weight, gain=1)
