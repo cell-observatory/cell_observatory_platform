@@ -566,7 +566,6 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         transform_time: float,
     ) -> dict:
         """Attach masking info and timing, returning the standard dict."""
-        tokens_per_batch = inputs.shape[0] * self.seq_len
 
         if self.with_masking:
             mt0 = time.time()
@@ -585,7 +584,6 @@ class BaseFinetunePreprocessor(RayPreprocessor):
                     "data_time": data_time,
                     "masking_time": masking_time,
                     "transform_time": transform_time,
-                    "tokens_per_batch": tokens_per_batch,
                 },
             }
         else:
@@ -598,7 +596,6 @@ class BaseFinetunePreprocessor(RayPreprocessor):
                     "data_time": data_time,
                     "transform_time": transform_time,
                     "masking_time": -1.0,
-                    "tokens_per_batch": tokens_per_batch,
                 },
             }
 
