@@ -83,6 +83,14 @@ class FlashDeformAttnFunction(Function):
         ctx.K = K
         ctx.im2col_step = im2col_step
 
+        num_levels = value_spatial_shapes.shape[0]
+        expected_last_dim = num_levels * K * 4
+        if sampling_loc_attn.shape[-1] != expected_last_dim:
+            raise ValueError(
+                f"sampling_loc_attn last dim {sampling_loc_attn.shape[-1]} does not match "
+                f"spatial_shapes levels {num_levels} and K {K}: expected {expected_last_dim}"
+            )
+
         # findspec(Batch Size, Queries, Num_heads = G, Channels per Group = C)
         # determine number of channels per thread inside group = d_stride and total number of threads in block = multiplier * G * C / d_stride
         # where we partition threads into blocks of dimension Z=multiplier, Y=G, X=C/d_stride

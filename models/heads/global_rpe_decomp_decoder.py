@@ -418,6 +418,7 @@ class GlobalDecoder(nn.Module):
                         new_reference_points = new_reference_points.sigmoid()
 
                 else:
+                    # TODO: remove this branch?
                     if self.reparam:
                         raise NotImplementedError("reparam iterative refinement not implemented for this case!")
 

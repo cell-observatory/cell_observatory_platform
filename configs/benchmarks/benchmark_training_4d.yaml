@@ -4,7 +4,7 @@ defaults:
   - /paths/local # configs/paths/local.yaml
   - /datasets/pretrain_dataset_ray # configs/datasets/pretrain_dataset_ray.yaml
   - /models/BUILD_MAE # configs/models/BUILD_MAE.yaml
-  - /models/meta_arch/mae/small # configs/models/meta_arch/mae/small.yaml
+  - /models/meta_arch/mae/large # configs/models/meta_arch/mae/small.yaml
   - /hooks/hooks_with_weight_decay # configs/hooks/hooks_with_weight_decay.yaml
   - /checkpoint/checkpoint # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers # configs/loggers/loggers.yaml
@@ -13,7 +13,7 @@ defaults:
   - /optimizers/lamb # configs/optimizers/lamb.yaml
   - /schedulers/test_warmup_cosine_decay # configs/schedulers/test_warmup_cosine_decay.yaml
   - /optimizations/optimizations # configs/optimizations/optimizations.yaml
-  - /optimizations/models/mae # configs/optimizations/models/mae.yaml
+  - /optimizations/models/mae/large # configs/optimizations/models/mae.yaml
   - /profiling/profiling
   - _self_
 

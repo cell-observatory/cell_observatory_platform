@@ -133,6 +133,50 @@
       "justMyCode": false
     },
     {
+      "name": "🗂️ tests/evaluation",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/evaluation/"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🪏 tests/utils/test_context",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/utils/test_context.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
       "name": "🪏 tests/training/test_hooks",
       "type": "debugpy",
       "request": "launch",
@@ -1378,6 +1422,162 @@
         "--color=yes",
         "-r fEX",
         "tests/models/test_vit_adapter.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "📈 scaling/monitor_utilization_3d",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "scaling/monitor.py",
+      "args": [
+        "--datadir",
+        "/groups/betzig/betziglab/thayer/pretrained_models/pretraining/3d",
+        "--outdir",
+        "/groups/betzig/betziglab/thayer/pretrained_models/pretraining/3d",
+        "--token_shape",
+        "128-256-256-2",
+        "--order",
+        "z-y-x-c",
+        "--token_channel_dtype",
+        "fp16",
+        "--wandb_project",
+        "profiling"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "📈 scaling/monitor_utilization_4d",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "scaling/monitor.py",
+      "args": [
+        "--datadir",
+        "/groups/betzig/betziglab/thayer/pretrained_models/pretraining/4d",
+        "--outdir",
+        "/groups/betzig/betziglab/thayer/pretrained_models/pretraining/4d",
+        "--token_shape",
+        "16-128-256-256-2",
+        "--order",
+        "t-z-y-x-c",
+        "--token_channel_dtype",
+        "fp16",
+        "--wandb_project",
+        "profiling"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "📈 scaling/forecast_published_models",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "scaling/forecast.py",
+      "args": [
+        "--outdir",
+        "/groups/betzig/betziglab/thayer/pretrained_models/forecast",
+        "--ishape",
+        "16-128-256-256-2",
+        "--ipatch",
+        "4-16-16-16-2",
+        "--arch",
+        "published_models",
+        "--dtype",
+        "float16",
+        "--gpu",
+        "H200"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "📈 scaling/forecast_vit",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "scaling/forecast.py",
+      "args": [
+        "--outdir",
+        "/groups/betzig/betziglab/thayer/pretrained_models/forecast",
+        "--ishape",
+        "16-128-256-256-2",
+        "--ipatch",
+        "4-16-16-16-2",
+        "--arch",
+        "vit",
+        "--dtype",
+        "float16",
+        "--gpu",
+        "H200"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "📈 scaling/forecast_mae_ssl",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "scaling/forecast.py",
+      "args": [
+        "--outdir",
+        "/groups/betzig/betziglab/thayer/pretrained_models/forecast",
+        "--ishape",
+        "16-128-256-256-2",
+        "--ipatch",
+        "4-16-16-16-2",
+        "--arch",
+        "mae_ssl",
+        "--dtype",
+        "float16",
+        "--gpu",
+        "H200"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "📈 scaling/forecast_mae_ft",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "scaling/forecast.py",
+      "args": [
+        "--outdir",
+        "/groups/betzig/betziglab/thayer/pretrained_models/forecast",
+        "--ishape",
+        "16-128-256-256-2",
+        "--ipatch",
+        "4-16-16-16-2",
+        "--arch",
+        "mae_ft",
+        "--dtype",
+        "float16",
+        "--gpu",
+        "H200"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",

@@ -10,6 +10,7 @@ batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * to
 input_shape: [16, 128, 128, 128, 2]
 train_shape: ${datasets.input_shape}
 patch_shape: [4, 16, 16, 16]
+mask_channel_idx: 1
 
 max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
 max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
@@ -25,7 +26,7 @@ columns: [
   'x_start', 'y_start', 'z_start', 'time_start',
   'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
   'server_folder', 'output_folder',
-  'tile_name', 'prepared_id', 'mask_bbox_dict',
+  'tile_name', 'prepared_id',
 ]
 
 occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)

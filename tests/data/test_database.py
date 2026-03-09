@@ -172,7 +172,7 @@ def test_hypercubes_list_roi_filter(database):
 def test_hypercubes_list_tiles_filter(database):
     tile_list = ["000x_000y_000z.zarr", "000x_000y_001z.zarr", "000x_000y_002z.zarr"]
 
-    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, tile_list=tile_list)
+    table = database.get_t_128_128_128_2_hypercubes(num_timepoints=16, tile_list=tile_list, max_hypercubes=1000)
     print(database.last_query)
     print(table)
 
@@ -446,7 +446,7 @@ def test_aggregate_hypercubes(config, database_type, z_slices, y_slices, x_slice
     config.datasets.databases.input_shape = (16, z_slices, y_slices, x_slices, 2)
     num_timepoints = 16
     config.datasets.databases.dataset_layout_order = "TZYXC"
-    config.datasets.databases.max_hypercubes = 100
+    config.datasets.databases.max_hypercubes = 10000
     config.datasets.databases.max_rois = None
     config.datasets.databases.max_tiles = None
     config.datasets.databases.hpf_list = None

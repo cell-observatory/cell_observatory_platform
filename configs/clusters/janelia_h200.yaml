@@ -66,5 +66,3 @@ scaling_config:
   resources_per_worker:
     CPU: 0 # Ray allocates cpus automatically
     GPU: 1
-  trainer_resources:
-    CPU: ${clusters.cpus_for_training_coordinator} # an additional cpu core for the training coordinator

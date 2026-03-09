@@ -63,7 +63,7 @@ class MaskGenerator(object):
         patch_shape: tuple = (4, 16, 16, 16),
         lateral_mask_scale: tuple | float = 0.5,
         axial_mask_scale: tuple | float = 0.5,
-        temporal_mask_scale: tuple | float = 0.5,
+        temporal_mask_scale: tuple | float = (0.5, 1.0),
         aspect_ratio_scale_hw: tuple | float = (0.2, 0.4),
         num_blocks: int = 2,
         random_masking_ratio: float = 0.7,
@@ -213,7 +213,15 @@ class MaskGenerator(object):
         # sample temporal block mask scale
         if self.time > 1:
             _rand = torch.rand(1, generator=generator).item()
-            min_t, max_t = self.temporal_mask_scale
+            
+            if isinstance(self.temporal_mask_scale, tuple):
+                min_t = self.temporal_mask_scale[0]
+                max_t = 1.0 if self.temporal_mask_scale[1] is None else self.temporal_mask_scale[1]
+                temporal_mask_scale = min_t + _rand * (max_t - min_t)
+            else: 
+                min_t = self.temporal_mask_scale 
+                max_t = 1.0
+            
             temporal_mask_scale = min_t + _rand * (max_t - min_t)
             t = int(self.time * temporal_mask_scale)
             t = min(t, self.time)

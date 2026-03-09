@@ -1,20 +1,22 @@
 import warnings
+
 warnings.filterwarnings("ignore")
 
 import matplotlib
+
 matplotlib.use('Agg')
 
-import numpy as np
-import pandas as pd
-from pathlib import Path
 import argparse
-
 import logging
+import profile
 import sys
 import time
+from pathlib import Path
 
+import cli
+import numpy as np
+import pandas as pd
 import vis
-import profile
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -24,47 +26,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class LoggerWriter:
-    def __init__(self, level):
-        # self.level is really like using log.debug(message)
-        # at least in my case
-        self.level = level
-
-    def write(self, message):
-        # if statement reduces the amount of newlines that are
-        # printed to the logger
-        if message != '\n':
-            self.level(message)
-
-    def flush(self):
-        # create a flush method so things can be flushed when
-        # the system wants to. Not sure if simply 'printing'
-        # sys.stderr is the correct way to do it, but it seemed
-        # to work properly for me.
-        self.level(sys.stderr)
-
-
-class ArgumentParserWithDefaults(argparse.ArgumentParser):
-    def add_argument(self, *args, help=None, default=None, **kwargs):
-        if help is not None:
-            kwargs['help'] = help
-        if default is not None and args[0] != '-h':
-            kwargs['default'] = default
-            if help is not None:
-                kwargs['help'] += f' (Default: `{default}`)'
-        super().add_argument(*args, **kwargs)
-
-
-def argparser():
-    parser = ArgumentParserWithDefaults(
-        formatter_class=argparse.RawTextHelpFormatter,
-        description="Copyright (c) 2025 Cell Observatory.",
-    )
-    return parser
-
-
 def parse_args(args):
-    parser = argparser()
+    parser = cli.argparser()
 
 
     parser.add_argument(
@@ -86,7 +49,8 @@ def parse_args(args):
     )
 
     parser.add_argument(
-        "--arch", type=str, default='published_models', choices=["gpt_vit", "powerlaw", "published_models", "vit", "mae_ssl", "mae_ft", "transformer"],
+        "--arch", type=str, default='published_models', 
+        choices=["gpt_vit", "powerlaw", "published_models", "vit", "mae_ssl", "mae_ft", "transformer"],
         help='architecture to use'
     )
 
@@ -109,6 +73,11 @@ def parse_args(args):
         "--batch_size", default=4096, type=int, help="number of volumes per batch"
     )
     
+    parser.add_argument(
+        "--gpu", type=str, default='H200', choices=["TPUv3", "A100", "H100", "H200", "B100", "B200"],
+        help='GPU to use'
+    )
+    
     return parser.parse_known_args(args)[0]
 
 
@@ -117,6 +86,7 @@ def scaling_transformer(
     dtype='float16',
     outdir=Path("../scaling/data/transformers"),
     mfu=0.5,
+    gpu="H200",
 ):
     dimensions = {
         "2D(g)": {"t": 1, "z": 1, "y": ishape['y'], "x": ishape['x'], "c": 1},
@@ -137,7 +107,7 @@ def scaling_transformer(
         "L": {"layers": 24, "heads": 16, "embedding": 1024, "mlp": 4096},
         "H": {"layers": 32, "heads": 16, "embedding": 1280, "mlp": 5120},
         "g": {"layers": 40, "heads": 16, "embedding": 1408, "mlp": 6144},
-        "G": {"layers": 48, "heads": 16, "embedding": 1664, "mlp": 8192},
+        # "G": {"layers": 48, "heads": 16, "embedding": 1664, "mlp": 8192},
         "e": {"layers": 56, "heads": 16, "embedding": 1792, "mlp": 15360},
         "22B": {"layers": 48, "heads": 48, "embedding": 6144, "mlp": 24576},
     }
@@ -248,8 +218,8 @@ def scaling_transformer(
                         dtype=dtype
                     )
 
-                    inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds", mfu=mfu)
-                    training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds", mfu=mfu)
+                    inference_time_per_volume = profile.compute_time(flops=flops, gpu=gpu, unit="seconds", mfu=mfu)
+                    training_time_per_volume = profile.compute_time(flops=3 * flops, gpu=gpu, unit="seconds", mfu=mfu)
 
                     patches_per_volume = np.product([s // p for s, p in zip(volume_size, patch_size)])
                     pixels_per_patch = np.product(patch_size)
@@ -301,6 +271,7 @@ def scaling_vit(
     outdir=Path("../scaling/data/vits"),
     only_2d=False,
     mfu=0.5,
+    gpu="H200",
 ):
     if only_2d:
         vit_dimensions = {
@@ -323,7 +294,7 @@ def scaling_vit(
         "L": {"layers": 24, "heads": 16, "embedding": 1024, "mlp": 4096},
         "H": {"layers": 32, "heads": 16, "embedding": 1280, "mlp": 5120},
         "g": {"layers": 40, "heads": 16, "embedding": 1408, "mlp": 6144},
-        "G": {"layers": 48, "heads": 16, "embedding": 1664, "mlp": 8192},
+        # "G": {"layers": 48, "heads": 16, "embedding": 1664, "mlp": 8192},
         "e": {"layers": 56, "heads": 16, "embedding": 1792, "mlp": 15360},
         "22B": {"layers": 48, "heads": 48, "embedding": 6144, "mlp": 24576},
     }
@@ -390,8 +361,8 @@ def scaling_vit(
                     dtype=dtype
                 )
 
-                inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds", mfu=mfu)
-                training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds", mfu=mfu)
+                inference_time_per_volume = profile.compute_time(flops=flops, gpu=gpu, unit="seconds", mfu=mfu)
+                training_time_per_volume = profile.compute_time(flops=3 * flops, gpu=gpu, unit="seconds", mfu=mfu)
                 gflops = np.round(flops / 1e9, 3)
                 gflops_per_patch = np.round(flops_per_patch / 1e9, 3)
 
@@ -455,6 +426,7 @@ def scaling_mae_ssl(
     mask_ratio=0.75,
     only_2d=False,
     mfu=0.5,
+    gpu="H200",
 ):
     if only_2d:
         maes_dimensions = {
@@ -479,7 +451,7 @@ def scaling_mae_ssl(
         "2B": {"layers": 24, "heads": 32, "embedding": 2560, "mlp": 10240},
         "6B": {"layers": 32, "heads": 32, "embedding": 4096, "mlp": 16384},
         "g": {"layers": 40, "heads": 16, "embedding": 1408, "mlp": 6144},
-        "G": {"layers": 48, "heads": 16, "embedding": 1664, "mlp": 8192},
+        # "G": {"layers": 48, "heads": 16, "embedding": 1664, "mlp": 8192},
         "e": {"layers": 56, "heads": 16, "embedding": 1792, "mlp": 15360},
         "22B": {"layers": 48, "heads": 48, "embedding": 6144, "mlp": 24576},
     }
@@ -575,8 +547,8 @@ def scaling_mae_ssl(
                     dtype=dtype
                 )
 
-                inference_time_per_volume = profile.compute_time(flops=flops, gpu="H100", unit="seconds", mfu=mfu)
-                training_time_per_volume = profile.compute_time(flops=3 * flops, gpu="H100", unit="seconds", mfu=mfu)
+                inference_time_per_volume = profile.compute_time(flops=flops, gpu=gpu, unit="seconds", mfu=mfu)
+                training_time_per_volume = profile.compute_time(flops=3 * flops, gpu=gpu, unit="seconds", mfu=mfu)
                 gflops = np.round(flops / 1e9, 3)
                 gflops_per_patch = np.round(flops_per_patch / 1e9, 3)
 
@@ -634,6 +606,7 @@ def scaling_mae_ft(
     mask_ratio=0.75,
     only_2d=False,
     mfu=0.5,
+    gpu="H200",
 ):
     if only_2d:
         maes_dimensions = {
@@ -658,7 +631,7 @@ def scaling_mae_ft(
         "2B": {"layers": 24, "heads": 32, "embedding": 2560, "mlp": 10240},
         "6B": {"layers": 32, "heads": 32, "embedding": 4096, "mlp": 16384},
         "g": {"layers": 40, "heads": 16, "embedding": 1408, "mlp": 6144},
-        "G": {"layers": 48, "heads": 16, "embedding": 1664, "mlp": 8192},
+        # "G": {"layers": 48, "heads": 16, "embedding": 1664, "mlp": 8192},
         "e": {"layers": 56, "heads": 16, "embedding": 1792, "mlp": 15360},
         "22B": {"layers": 48, "heads": 48, "embedding": 6144, "mlp": 24576},
     }
@@ -764,14 +737,14 @@ def scaling_mae_ft(
 
                 encoder_inference_time_per_volume = profile.compute_time(
                     flops=eflops,
-                    gpu="H100",
+                    gpu=gpu,
                     unit="seconds",
                     mfu=mfu
                 )
 
                 decoder_inference_time_per_volume = profile.compute_time(
                     flops=dflops,
-                    gpu="H100",
+                    gpu=gpu,
                     unit="seconds",
                     mfu=mfu
                 )
@@ -780,7 +753,7 @@ def scaling_mae_ft(
 
                 decoder_training_time_per_volume = profile.compute_time(
                     flops=3 * dflops,
-                    gpu="H100",
+                    gpu=gpu,
                     unit="seconds",
                     mfu=mfu
                 )
@@ -911,14 +884,14 @@ def main(args=None):
                     "steps": 4000000,
                     "batch_size": 4096
                 },
-                "G": {
-                    "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
-                    "dataset": "JFT-3B",
-                    "dataset_size": 3000000000,
-                    "epochs": 5000000 * 4096 / 3000000000,
-                    "steps": 5000000,
-                    "batch_size": 4096
-                },
+                # "G": {
+                #     "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
+                #     "dataset": "JFT-3B",
+                #     "dataset_size": 3000000000,
+                #     "epochs": 5000000 * 4096 / 3000000000,
+                #     "steps": 5000000,
+                #     "batch_size": 4096
+                # },
                 "e": {
                     "ishape": {'t': 1, 'z': 1, 'y': 224, 'x': 224, 'c': 3},
                     "dataset": "JFT-3B",
@@ -1106,33 +1079,36 @@ def main(args=None):
         summary.mkdir(parents=True, exist_ok=True)
 
         dataframes = []
-        for mfu in [.3, .6, .9]:
+        for mfu in [.5, .75, 1.0]:
             
             if args.arch == "vit":
-                df = scaling_vit(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mfu=mfu)
+                df = scaling_vit(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mfu=mfu, gpu=args.gpu)
+                training_paradigm = "Supervised training"
             elif args.arch == "mae_ssl":
-                df = scaling_mae_ssl(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mask_ratio=args.mask_ratio, mfu=mfu)
+                df = scaling_mae_ssl(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mask_ratio=args.mask_ratio, mfu=mfu, gpu=args.gpu)
+                training_paradigm = "Self-supervised pretraining"
             elif args.arch == "mae_ft":
-                df = scaling_mae_ft(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mask_ratio=args.mask_ratio, mfu=mfu)
+                df = scaling_mae_ft(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mask_ratio=args.mask_ratio, mfu=mfu, gpu=args.gpu)
+                training_paradigm = "Supervised finetuning"
             elif args.arch == "transformer":
-                df = scaling_transformer(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mfu=mfu)
-
+                df = scaling_transformer(ishape=args.ishape, dtype=args.dtype, outdir=args.outdir, mfu=mfu, gpu=args.gpu)
+                training_paradigm = "Supervised training"
             dataframes.append(df)
 
         df = pd.concat(dataframes)
             
         df["number_h100_for_batch"] = np.ceil(df["model_training_memory"] + (df["memory_per_volume"] * args.batch_size) / 80)
         df["cost_h100_for_batch"] = df["number_h100_for_batch"] * 37500
-        df["training_h100_hours_per_step"] = args.batch_size * df["training_time_per_volume"] / 3600
+        df["training_gpu_hours_per_step"] = args.batch_size * df["training_time_per_volume"] / 3600
         df["training_tflops_per_volume"] = df["training_gflops_per_volume"] / 1000
 
         for epoch in [1, 100]:
             for dataset_size in [100000, 1000000, 1281167, 14197122, 10000000, 100000000, 303000000, 1000000000]:
                 e = "" if epoch == 1 else f"{epoch}_"
-                df[f"training_h100_days_per_{e}epoch_{dataset_size}"] = dataset_size * df["training_time_per_volume"] / 3600 / 24 * epoch
-                df[f"multigpu_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] / df["number_h100_for_batch"] * epoch
-                df[f"multigpu_256_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] / 256 * epoch
-                df[f"training_h100_cost_per_{e}epoch_{dataset_size}"] = df[f"training_h100_days_per_epoch_{dataset_size}"] * 24 * args.cost_h100_per_hr * epoch
+                df[f"training_gpu_days_per_{e}epoch_{dataset_size}"] = dataset_size * df["training_time_per_volume"] / 3600 / 24 * epoch
+                df[f"multigpu_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_gpu_days_per_epoch_{dataset_size}"] / df["number_h100_for_batch"] * epoch
+                df[f"multigpu_256_training_days_per_{e}epoch_{dataset_size}"] = df[f"training_gpu_days_per_epoch_{dataset_size}"] / 256 * epoch
+                df[f"training_gpu_cost_per_{e}epoch_{dataset_size}"] = df[f"training_gpu_days_per_epoch_{dataset_size}"] * 24 * args.cost_h100_per_hr * epoch
                 df[f"training_tflops_per_{e}epoch_{dataset_size}"] = df[f"training_tflops_per_volume"] * dataset_size * epoch
                 df[f"memory_per_{dataset_size}"] = df[f"memory_per_volume"] * dataset_size
                 df[f"num_volumes"] = df[f"memory_per_volume"] * dataset_size
@@ -1168,10 +1144,11 @@ def main(args=None):
                     'Patch (x, y, z, t, c)',
                         f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
                     'Model FLOPs Utilization',
-                        'MFU(0.3)',
-                        'MFU(0.6)',
-                        'MFU(0.9)',
+                        'MFU(0.5)',
+                        'MFU(0.75)',
+                        'MFU(1.0)',
                 ],
+                gpu=args.gpu,
             )
 
             for var in ['days', 'cost']:
@@ -1182,14 +1159,14 @@ def main(args=None):
                         outdir=outdir_summary,
                         x="parameters",
                         xlabel="Trainable parameters (excluding input and head layers)",
-                        y=f"training_h100_{var}_per_{e}epoch_100000",
-                        ylabel=f"Training H100 {var} per epoch" if epoch == 1 else f"Training H100 {var} for ({epoch}) epoch(s)",
+                        y=f"training_gpu_{var}_per_{e}epoch_100000",
+                        ylabel=f"{training_paradigm} {args.gpu} {var} per epoch" if epoch == 1 else f"{training_paradigm} {args.gpu} {var} for ({epoch}) epoch(s)",
                         yscalelabel="100K",
-                        ytwin1=f"training_h100_{var}_per_{e}epoch_1000000",
+                        ytwin1=f"training_gpu_{var}_per_{e}epoch_1000000",
                         ytwinlabel1=f"1M",
-                        ytwin2=f"training_h100_{var}_per_{e}epoch_10000000",
+                        ytwin2=f"training_gpu_{var}_per_{e}epoch_10000000",
                         ytwinlabel2=f"10M",
-                        ytwin3=f"training_h100_{var}_per_{e}epoch_100000000",
+                        ytwin3=f"training_gpu_{var}_per_{e}epoch_100000000",
                         ytwinlabel3=f"100M",
                         published_models_only=False,
                         ylog=True,
@@ -1203,10 +1180,11 @@ def main(args=None):
                             'Patch (x, y, z, t, c)',
                                 f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
                             'Model FLOPs Utilization',
-                                'MFU(0.3)',
-                                'MFU(0.6)',
-                                'MFU(0.9)',
-                        ]
+                                'MFU(0.5)',
+                                'MFU(0.75)',
+                                'MFU(1.0)',
+                        ],
+                        gpu=args.gpu,
                     )
 
             # vis.plot_individual_parameters(
@@ -1223,9 +1201,9 @@ def main(args=None):
             #         'Patch (x, y, z, t, c)',
             #             f'({args.ipatch["x"]}, {args.ipatch["y"]}, {args.ipatch["z"]}, {args.ipatch["t"]}, {args.ipatch["c"] if args.rgb else 1})',
             #         'Model FLOPs Utilization',
-            #             'MFU(0.3)',
-            #             'MFU(0.6)',
-            #             'MFU(0.9)',
+            #             'MFU(0.5)',
+            #             'MFU(0.75)',
+            #             'MFU(1.0)',
             #     ]
             # )
 

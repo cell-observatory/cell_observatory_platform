@@ -1,0 +1,168 @@
+# @package _global_
+defaults:
+  - /paths/janelia                      
+  - /hydra/overrides                    
+  - /clusters/janelia_h200                     
+  - /datasets/pretrain_dataset_ray      
+  - /models/meta_arch/mae/large        
+  - /models/BUILD_MAE     
+  - /optimizations/optimizations        
+  - /optimizations/models/mae/large    
+  - /checkpoint/checkpoint 
+  - /loggers/loggers                    
+  - /evaluation/base_evaluator          
+  - /deepspeed/zero2                    
+  - /optimizers/lamb_mae               
+  - /schedulers/test_warmup_cosine_decay   
+  - /profiling/profiling
+  - _self_
+
+# experiment name (used for logging)
+experiment_folder: pretraining/3d
+experiment_name: 3D_MAE-L_24xH200
+wandb_project: profiling
+
+backend: DEEPSPEED
+
+# distributed framework
+distributed_framework: ray
+
+# run type
+run_type: single_run # single_run, multi_run, or tune
+
+# job type
+job_type: train # train or test
+
+# trainer type
+trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+
+# loop per worker script
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+# training quantization
+quantization: bfloat16 # data type for training, options: bfloat16, float32, float16
+
+# dtype for training data
+dataset_dtype: bfloat16 # data type for training, options: bfloat16, float32, float16
+storage_dtype: uint16 # data type for storage
+
+# dataset layout in the zarr files
+dataset_layout_order: ZYXC
+
+seed: 42
+
+# overrides
+# --------------------------------------------------------------------------------
+
+clusters:
+  batch_size: 2304  # (96 per h200) total batch size
+  worker_nodes: 3 # number of worker nodes
+  gpus_per_worker: 8 # number of gpus per worker node
+  cpus_per_gpu: 12 # number of cpu cores per gpu
+  mem_per_cpu: 40000 # ram per cpu core
+  ray_queue_memory: 0.2
+
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/pretrained_models/${experiment_folder}/${experiment_name}
+  # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_folder}/${experiment_name}/checkpoints
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+
+datasets:
+  # mainly used by other configs but determined here for ease of access
+  batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  input_shape: [128, 256, 256, 2]
+  train_shape: [128, 256, 256, 2]
+  patch_shape: [16, 16, 16, null]
+
+  split: 0.1
+  return_dataloader: true
+  distributed_sampler: true
+
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+
+  max_hypercubes: 200000 #(~40% of the data is getting filtered out with out cdf threshold)
+
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+
+  databases:
+    occupancy_threshold_filter_type: 'min_ch0'
+    cdf_target: 90
+    cdf_threshold: 150
+    synthetic_only: false
+    has_annotations: false
+    with_hypercubes_dataframe: true
+    mask_channel: null
+
+  columns: [ 'x_start', 'y_start', 'z_start', 'time_start',
+          'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
+          'server_folder', 'output_folder',
+          'tile_name', 'prepared_id']
+
+  preserve_order: false # only matters for TP
+  callback_strategy: grpc # grpc, queue
+  async_device_copy: false
+
+
+  masking:
+    mask_generators:
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
+
+        mask_mode:
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "random"
+
+        random_masking_ratio: 0.75
+
+models:
+  meta_arch:
+    mae:
+      abs_sincos_enc: false
+      rope_pos_enc: true
+      rope_random_rotation_per_head: true
+      rope_mixed: false
+      rope_theta: 100.0
+      with_auxiliary_loss: true
+      loss_fn:
+        loss_type: "fourier_loss"
+        alpha: 0.001
+        fft_loss: "l1_masked"
+        spatial_loss: "l2_masked"
+        input_fmt: ${dataset_layout_order}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        embed_dim: ${models.meta_arch.mae.embed_dim}
+
+optimizers:
+  wd:  ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-3
+
+hooks:
+  hooks_list:
+  - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
+  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+  - _target_: cell_observatory_platform.training.hooks.LRScheduler
+    backend: DEEPSPEED
+  - _target_: cell_observatory_platform.training.hooks.IterationTimer
+  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+    file_prefix: latest_model
+    backend: DEEPSPEED
+  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true
+  - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
+    step_period: 5
+    epoch_period: 1
+    logdir: ${loggers.logdir}

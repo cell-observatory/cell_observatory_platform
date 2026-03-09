@@ -117,10 +117,9 @@ datasets:
     # server_folder_path: ${paths.server_folder_path}/synthetic
     # server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
     with_hypercubes_dataframe: true
-    mask_channel: null
+    mask_channel_idx: null
 
   preprocessor:
-    expect_mask_channel: ${datasets.collate_fn.expect_mask_channel}
     require_targets: ${datasets.collate_fn.require_targets}
 
   columns:
@@ -142,7 +141,6 @@ datasets:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
     dtype: ${dataset_dtype}
     require_targets: false
-    expect_mask_channel: false
     buffer_dtype: ${storage_dtype}
     batch_size: ${clusters.batch_size_per_gpu}
     input_shape: ${datasets.input_shape}

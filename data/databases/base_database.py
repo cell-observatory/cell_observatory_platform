@@ -62,7 +62,7 @@ class ParentDatabase:
         synthetic_only: bool = False,
         has_annotations: bool = False,
         with_hypercubes_dataframe: bool = True,
-        mask_channel: Optional[int] = None,
+        mask_channel_idx: Optional[int] = None,
     ):
         """
         A class for accessing database and retrieving hypercubes.
@@ -93,7 +93,7 @@ class ParentDatabase:
             synthetic_only: a toggle to only query synthetic hypercubes
             has_annotations: a toggle to only query hypercubes with annotations
             with_hypercubes_dataframe: whether to use hypercubes dataframe or tiles dataframe
-            mask_channel: index of the mask channel in the data (if any)
+            mask_channel_idx: index of the mask channel in the data (if any)
         """
         self.verbose = verbose
 
@@ -133,7 +133,7 @@ class ParentDatabase:
         self.cdf_target = cdf_target
         self.cdf_threshold_filter_type = cdf_threshold_filter_type
 
-        self.mask_channel = mask_channel
+        self.mask_channel_idx = mask_channel_idx
         self.synthetic_only = synthetic_only
         self.has_annotations = has_annotations
         self.dataset_layout_order = dataset_layout_order
@@ -147,6 +147,15 @@ class ParentDatabase:
         self.num_timepoints, z_slices, y_slices, x_slices = self._get_slices_from_layout_order(
             input_format=self.dataset_layout_order, input_shape=self.input_shape
         )
+        
+        # TODO: this is a hack to get the right number of hypercubes after CDF thresholding
+        # TODO: Need to add new columns into the database to store the CDF values to query them directly
+        if self.cdf_threshold is not None:
+            print(
+                f"Requesting 2.5x more hypercubes to get {max_hypercubes} hypercubes after CDF thresholding, "
+                f"assuming filter will drop 40%-60% of the hypercubes"
+            )
+            max_hypercubes_before_cdf = int(max_hypercubes * 2.5) if max_hypercubes is not None else None
 
         if self.with_hypercubes_dataframe:
             if z_slices not in valid_z_sizes:
@@ -174,22 +183,22 @@ class ParentDatabase:
                     self.max_hypercubes_128 = None
                 else:
                     self.max_hypercubes_128 = (
-                        max_hypercubes
+                        max_hypercubes_before_cdf
                         * (self.z_slices // self.base_cube_size_z)
                         * (self.y_slices // self.base_cube_size_y)
                         * (self.x_slices // self.base_cube_size_x)
                     )
                     print(
-                        f"Requesting {self.max_hypercubes_128 - max_hypercubes} extra hypercubes \
-                            to get {max_hypercubes} hypercubes after aggregation"
+                        f"Requesting {self.max_hypercubes_128 - max_hypercubes_before_cdf} extra hypercubes \
+                            to get {max_hypercubes_before_cdf} hypercubes after aggregation"
                     )
             else:
                 self.max_hypercubes = max_hypercubes
-                self.max_hypercubes_128 = max_hypercubes
+                self.max_hypercubes_128 = max_hypercubes_before_cdf
 
         else:
             self.max_hypercubes = max_hypercubes
-            self.max_hypercubes_128 = max_hypercubes
+            self.max_hypercubes_128 = max_hypercubes_before_cdf
 
         self._database_url = self._load_uri()
 
@@ -351,21 +360,21 @@ class ParentDatabase:
             self.hypercubes_dataframe["server_folder"] = self.server_folder_path
 
        # Extract mask_bbox_dict from metadata_tile_json if present
-        if "metadata_tile_json" in self.hypercubes_dataframe.columns and self.mask_channel is not None:
+        if "metadata_tile_json" in self.hypercubes_dataframe.columns and self.mask_channel_idx is not None:
             def _extract_mask_bbox_dict(metadata_json_str):
                 if metadata_json_str is None:
-                    raise ValueError(f"metadata_tile_json is None but mask_channel={self.mask_channel} is set")
+                    raise ValueError(f"metadata_tile_json is None but mask_channel_idx={self.mask_channel_idx} is set")
                 try:
                     if isinstance(metadata_json_str, str):
                         metadata = ujson.loads(metadata_json_str)
                     else:
                         metadata = metadata_json_str
-                    channel_data = metadata.get(str(self.mask_channel))
+                    channel_data = metadata.get(str(self.mask_channel_idx))
                     if channel_data is None:
-                        raise ValueError(f"Channel '{self.mask_channel}' not found in metadata_tile_json")
+                        raise ValueError(f"Channel '{self.mask_channel_idx}' not found in metadata_tile_json")
                     mask_bbox = channel_data.get("mask_bbox_dict")
                     if mask_bbox is None:
-                        raise ValueError(f"mask_bbox_dict not found in channel '{self.mask_channel}' of metadata_tile_json")
+                        raise ValueError(f"mask_bbox_dict not found in channel '{self.mask_channel_idx}' of metadata_tile_json")
                     return ujson.dumps(mask_bbox)
                 except (ujson.JSONDecodeError, ValueError) as e:
                     raise ValueError(f"Failed to extract mask_bbox_dict from metadata_tile_json: {e}")
@@ -443,7 +452,7 @@ class ParentDatabase:
         with ROI-level metadata.
         """
         filters = self._filters_to_string(
-            table_name="prepared_tiles_view",
+            table_name="prepared_tiles_view_table",
             table_name_shortcut="ptv",
             max_rois=max_rois,
             max_tiles=max_tiles,
@@ -475,7 +484,7 @@ class ParentDatabase:
         query = f"""
             SELECT
                 {', '.join(f'ptv.{c}' for c in base_cols)}
-            FROM prepared_tiles_view ptv
+            FROM prepared_tiles_view_table ptv
             {filters}
         """
 
@@ -822,7 +831,7 @@ class ParentDatabase:
             "y_start",
             "z_start",
         ]
-        prepared_tiles_view_column_names = [
+        prepared_tiles_view_table_column_names = [
             "hpf",
             "channel_size",
             "cube_size",
@@ -840,7 +849,7 @@ class ParentDatabase:
                 first_pc_id,
                 time_start,
                 time_size,
-                {', '.join([f'{col}' for col in prepared_cubes_column_names + prepared_tiles_view_column_names])},
+                {', '.join([f'{col}' for col in prepared_cubes_column_names + prepared_tiles_view_table_column_names])},
                 occupancy_ratios[:{num_timepoints}] as occupancy_ratios_ch_0,
                 occupancy_ratios[{num_timepoints} + 1:] as occupancy_ratios_ch_1,
                 channel_targets,
@@ -850,20 +859,20 @@ class ParentDatabase:
                 SELECT
                     min(pc.id) as first_pc_id,
                     {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                    {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
+                    {', '.join([f'ptv.{col}' for col in prepared_tiles_view_table_column_names])},
                     array_length(array_agg(pc.occupancy_ratio), 1) / ptv.channel_size as time_size,
                     div(pc.time::numeric, {num_timepoints}::numeric) * {num_timepoints}::numeric as time_start,
                     array_agg(pc.occupancy_ratio ORDER BY pc.channel, pc.time) as occupancy_ratios,
                     string_agg(pc.channel_target, ','::text ORDER BY pc.channel, pc.time) as channel_targets,
                     array_agg(pc.time ORDER BY pc.channel, pc.time) as timepoints
                 FROM prepared_cubes pc
-                JOIN prepared_tiles_view ptv
+                JOIN prepared_tiles_view_table ptv
                 ON (pc.prepared_id, pc.tile_name) = (ptv.prepared_id, ptv.tile_name)
                 WHERE
                     ptv.cube_size = 128 AND ptv.channel_size = 2
                 GROUP BY
                     {', '.join([f'pc.{col}' for col in prepared_cubes_column_names])},
-                    {', '.join([f'ptv.{col}' for col in prepared_tiles_view_column_names])},
+                    {', '.join([f'ptv.{col}' for col in prepared_tiles_view_table_column_names])},
                     (div(pc.time::numeric, {num_timepoints}::numeric))
                 {f"LIMIT {max_hypercubes}" if max_hypercubes is not None else ''}
             ) hypercubes
@@ -918,9 +927,10 @@ class ParentDatabase:
                 return df
 
             except Exception as e:
+                last_exception = e
                 logger.warning(f"Attempt {i+1} failed with error: {e}. Retrying...")
         logger.error(f"Failed to execute query: {query}")
-        raise
+        raise last_exception
 
     def list_tables(self) -> Any:
         return self.execute_query("SELECT tablename FROM pg_tables WHERE schemaname = 'public';")
@@ -943,22 +953,22 @@ class ParentDatabase:
         return len(self.get_columns(table_name))
 
     def get_random_rois(self, num_rois: int = 1) -> list[int]:
-        filter = self._exists_filter("prepared_tiles_view")
+        filter = self._exists_filter("prepared_tiles_view_table")
 
         if self.synthetic_only:
-            filter += self._synthetic_filter("prepared_tiles_view").replace("WHERE", " AND ")
+            filter += self._synthetic_filter("prepared_tiles_view_table").replace("WHERE", " AND ")
         else:
-            filter += self._real_filter("prepared_tiles_view").replace("WHERE", " AND ")
+            filter += self._real_filter("prepared_tiles_view_table").replace("WHERE", " AND ")
 
         if self.hpf_list is not None:
-            filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view").replace("WHERE", " AND ")
+            filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view_table").replace("WHERE", " AND ")
 
         if self.tile_list is not None:
-            filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view").replace(
+            filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view_table").replace(
                 "WHERE", " AND "
             )
         if self.roi_list is not None:
-            filter += self._choose_filter(rois=self.roi_list, table_name="prepared_tiles_view").replace(
+            filter += self._choose_filter(rois=self.roi_list, table_name="prepared_tiles_view_table").replace(
                 "WHERE", " AND "
             )
 
@@ -969,35 +979,35 @@ class ParentDatabase:
         # query = f"""
         #     -- Getting random ROIs
         #     SELECT DISTINCT prepared_id
-        #     FROM prepared_tiles_view {filter}
+        #     FROM prepared_tiles_view_table {filter}
         #     LIMIT {num_rois}
         # """  # ORDER BY random() could be slow on large tables
         query = f"""
             -- Getting deterministic subset of ROIs (ordered by prepared_id)
             SELECT DISTINCT prepared_id 
-            FROM prepared_tiles_view {filter}
+            FROM prepared_tiles_view_table {filter}
             ORDER BY prepared_id
             LIMIT {num_rois}
         """
         return self.execute_query(query).values.squeeze().tolist()
 
     def get_random_tiles(self, num_tiles: int = 1) -> list[tuple[int, str]]:
-        filter = self._exists_filter("prepared_tiles_view")
+        filter = self._exists_filter("prepared_tiles_view_table")
 
         if self.synthetic_only:
-            filter += self._synthetic_filter("prepared_tiles_view").replace("WHERE", " AND ")
+            filter += self._synthetic_filter("prepared_tiles_view_table").replace("WHERE", " AND ")
         else:
-            filter += self._real_filter("prepared_tiles_view").replace("WHERE", " AND ")
+            filter += self._real_filter("prepared_tiles_view_table").replace("WHERE", " AND ")
 
         if self.hpf_list is not None:
-            filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view").replace("WHERE", " AND ")
+            filter += self._age_filter(hpfs=self.hpf_list, table_name="prepared_tiles_view_table").replace("WHERE", " AND ")
 
         if self.tile_list is not None:
-            filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view").replace(
+            filter += self._choose_filter(tiles=self.tile_list, table_name="prepared_tiles_view_table").replace(
                 "WHERE", " AND "
             )
         if self.roi_list is not None:
-            filter += self._choose_filter(rois=self.roi_list, table_name="prepared_tiles_view").replace(
+            filter += self._choose_filter(rois=self.roi_list, table_name="prepared_tiles_view_table").replace(
                 "WHERE", " AND "
             )
 
@@ -1008,13 +1018,13 @@ class ParentDatabase:
         # query = f"""
         #     -- Getting random tiles
         #     SELECT DISTINCT prepared_id, tile_name
-        #     FROM prepared_tiles_view {filter}
+        #     FROM prepared_tiles_view_table {filter}
         #     LIMIT {num_tiles}
         # """  # ORDER BY random() could be slow on large tables
         query = f"""
             -- Getting deterministic subset of tiles (ordered by prepared_id, tile_name)
             SELECT DISTINCT prepared_id, tile_name 
-            FROM prepared_tiles_view {filter}
+            FROM prepared_tiles_view_table {filter}
             ORDER BY prepared_id, tile_name
             LIMIT {num_tiles}
         """
@@ -1567,6 +1577,17 @@ class ParentDatabase:
         if "metadata_tile_json" in df.columns:
             agg_exprs.append(pl.col("metadata_tile_json").sum())
 
+
+        # TODO: Should it actually aggregate like this?
+        # Only aggregate JSON columns if they actually exist (concatenate string dicts)
+        # # Only aggregate JSON columns if they actually exist (concatenate string dicts)
+        # if "p_metadata_json" in df.columns:
+        #     agg_exprs.append(pl.col("p_metadata_json").str.join(""))
+        # if "pc_metadata_json" in df.columns:
+        #     agg_exprs.append(pl.col("pc_metadata_json").str.join(""))
+        # if "metadata_tile_json" in df.columns:
+        #     agg_exprs.append(pl.col("metadata_tile_json").str.join(""))
+
         agg_exprs.extend(
             [
                 *occ0_mean_exprs,
@@ -1647,7 +1668,7 @@ class ParentDatabase:
             return None
 
         if "mask_bbox_dict" not in pdf.columns:
-            col = _get_col(pdf, "mask_bbox_dict", self.mask_channel)
+            col = _get_col(pdf, "mask_bbox_dict", self.mask_channel_idx)
             if col is not None:
                 pdf["mask_bbox_dict"] = col
 

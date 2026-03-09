@@ -44,7 +44,7 @@ exclusive: null   # whether to use exclusive node allocation (not recommended)
 nodelist: null    # list of specific nodes to use
 dependency: null  # job dependency
 constraint: null  # constraint for the job
-timelimit: null   # time limit for the job
+timelimit: 48:00   # time limit for the job
 max_worker_heartbeat_timeout: 2 # in minutes (to prevent indefinite hang if one process fails)
 
 # Ray ScalingConfig (some variables are set to null to be set in the training loop)
@@ -66,5 +66,3 @@ scaling_config:
   resources_per_worker:
     CPU: 0 # Ray allocates cpus automatically
     GPU: 1
-  trainer_resources:
-    CPU: ${clusters.cpus_for_training_coordinator} # an additional cpu core for the training coordinator

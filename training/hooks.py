@@ -180,7 +180,7 @@ class AnomalyDetector(HookBase):
         self._anom_ctx.__exit__(None, None, None)
 
     def after_step(self, data_sample, outputs, loss_dict):
-        if torch.isnan(loss_dict["step_loss"]):
+        if torch.isnan(torch.tensor(loss_dict["step_loss"])):
             self.loss_nans += 1
             logger.warning(
                 f"Step loss is {loss_dict['step_loss']} \
@@ -835,9 +835,14 @@ class TorchProfiler(HookBase):
 
         self._wait, self._warmup = schedule.get("wait"), schedule.get("warmup")
         self._active, self._repeat = schedule.get("active"), schedule.get("repeat")
+        self._skip_first = schedule.get("skip_first")
 
         self._output_dir = output_dir
-        self.profile_times = (self._wait + self._warmup + self._active) * self._repeat
+        # Total steps until first trace: skip_first + (wait + warmup + active) per repeat
+        self.profile_times = (
+            (self._skip_first)
+            + ((self._wait + self._warmup + self._active) * self._repeat)
+        )  # NOTE: this is conservative: skip_first_wait could make it smaller
         self._profiler, self._closed = None, False
 
         os.makedirs(os.path.join(output_dir, "log"), exist_ok=True)
@@ -870,13 +875,21 @@ class TorchProfiler(HookBase):
                 logger.error(f"Failed to capture memory snapshot {e}")
 
             torch.cuda.memory._record_memory_history(enabled=None)
+            
+    def _flush_traces_on_oom(self, *args, **kwargs):
+        self._flush_traces()
 
     def before_train(self):
         torch.cuda.memory._record_memory_history(max_entries=self.max_mem_events_per_snapshot)
+        torch._C._cuda_attach_out_of_memory_observer(self._flush_traces_on_oom)
         self._profiler = torch.profiler.profile(
             activities=self._activities,
             schedule=torch.profiler.schedule(
-                wait=self._wait, warmup=self._warmup, active=self._active, repeat=self._repeat
+                wait=self._wait, 
+                warmup=self._warmup,
+                active=self._active,
+                repeat=self._repeat,
+                skip_first=self._skip_first,
             ),
             on_trace_ready=self._on_trace_ready,
             record_shapes=True,

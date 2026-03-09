@@ -132,20 +132,22 @@ def set_buffers(local_rank: int,
             node_id=node_id,
             soft=False,
         )
-        buffer = HostMemoryBuffer.options(name=name,
-                                      namespace=f"buffers_node_{node_id}",
-                                      lifetime="detached",
-                                      # allow concurrent get/put calls
-                                      max_concurrency=max_concurrent_calls,
-                                      scheduling_strategy=scheduling_strategy
-                                      ).remote(
-                                          name=name,
-                                          dtype=dtype,
-                                          capacity=buffer_capacity,
-                                          batch_size=batch_size,
-                                          input_shape=input_shape,
-                                          pin_numa_node=pin_to_numa_node,
-                                          numa_node=numa_node)
+        buffer = HostMemoryBuffer.options(
+            name=name,
+            namespace=f"buffers_node_{node_id}",
+            lifetime="detached",
+            # allow concurrent get/put calls
+            max_concurrency=max_concurrent_calls,
+            scheduling_strategy=scheduling_strategy,
+        ).remote(
+            name=name,
+            dtype=dtype,
+            capacity=buffer_capacity,
+            batch_size=batch_size,
+            input_shape=input_shape,
+            pin_numa_node=pin_to_numa_node,
+            numa_node=numa_node,
+        )
         buffer_cfg = ray.get(buffer.get_config.remote())
 
         ray.logger.info(f"Shared memory buffer actor '{name}' "
