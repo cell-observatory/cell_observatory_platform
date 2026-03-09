@@ -444,7 +444,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         if cfg.clusters.timelimit is not None:
             sjob_worker_nodes.append(f"-W {cfg.clusters.timelimit} ")
         
-        # sjob_worker_nodes.append(f'-Ep "bash {q(cfg.paths.repo_path)}/cluster/clean_shm.sh"')
+        sjob_worker_nodes.append(f'-Ep "bash {q(cfg.paths.repo_path)}/cluster/clean_shm.sh"')
         sjob_worker_nodes.append(f"-J {cfg.clusters.job_name}")
         sjob_worker_nodes.append(f"-o {outdir}/{cfg.clusters.job_name}.log")
         sjob_worker_nodes.append(f'-env "all"')
