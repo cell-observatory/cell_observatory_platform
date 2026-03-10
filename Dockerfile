@@ -74,7 +74,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN echo "Install apptainer"
 RUN add-apt-repository -y ppa:apptainer/ppa
 RUN apt-get update && apt-get install -y apptainer && rm -rf /var/lib/apt/lists/*
-RUN sed -i 's/^sessiondir max size = .*/sessiondir max size = 4096/' /etc/apptainer/apptainer.conf
+# allow apptainer to use more memory for the --writable-tmpfs that is used.
+RUN apptainer config global -s "sessiondir max size" 53248  
 
 RUN echo "Installing grafana"
 
