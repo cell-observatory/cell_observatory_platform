@@ -27,6 +27,8 @@ class SupabaseDatabase(ParentDatabase):
             uri = os.environ.get("SUPABASE_STAGING_URI")
         elif self.dbname == "prod":
             uri = os.environ.get("SUPABASE_PROD_URI")
+        elif self.dbname == "local":
+            uri = os.environ.get("SUPABASE_LOCAL_URI")
         else:
             raise ValueError(f"Unknown database name: {self.dbname}")
 
