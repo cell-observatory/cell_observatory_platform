@@ -543,6 +543,15 @@ jobs:
       #     path: ${{ env.TESTMON_DATAFILE }}
       #     key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}-branchname
 
+
+      - name: Copy postgres database ~/db_files/sandbox to repo
+        run: |
+          /bin/cp -sfr ~/db_files/sandbox .
+
+      - name: Start postgres database in apptainer
+        run: |
+          apptainer instance run --writable --env POSTGRES_PASSWORD=postgres sandbox/ -c 'config_file=/etc/postgresql/postgresql.conf' my_postgres_instance
+
       - name: List files in the repository
         run: |
           ls -lhXR ${{ github.workspace }}
@@ -630,6 +639,11 @@ jobs:
           include_passed: true
           group_suite: false
           include_time_in_summary: true
+
+      - name: Stop postgres database in apptainer
+        if: always() # Ensure this runs even if previous steps fail
+        run: |
+          apptainer instance stop my_postgres_instance
 
   list_cache_folder:
     if: always() # always list the cache folder, even if the build failed.
