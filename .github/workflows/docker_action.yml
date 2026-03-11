@@ -545,10 +545,9 @@ jobs:
       #     path: ${{ env.TESTMON_DATAFILE }}
       #     key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}-branchname
 
-
       - name: Copy postgres database ~/db_files/sandbox to repo
         run: |
-          rsync -a --delete ~/db_files/sandbox/ sandbox/
+          rsync -av --delete ~/db_files/sandbox/ sandbox/
 
       - name: Start postgres database in apptainer in background
         run: |
@@ -616,7 +615,7 @@ jobs:
           timeout_minutes: 60
           max_attempts: 2
           command: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_data.xml tests/data
-    
+
       - name: pytest /tests/models
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml tests/models
@@ -624,7 +623,7 @@ jobs:
       - name: pytest /tests/training
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml tests/training
-      
+
       - name: pytest /tests/evaluation
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_ops.xml tests/evaluation
