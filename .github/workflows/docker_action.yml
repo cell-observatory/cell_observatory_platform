@@ -546,11 +546,11 @@ jobs:
 
       - name: Copy postgres database ~/db_files/sandbox to repo
         run: |
-          /bin/cp -sfr ~/db_files/sandbox .
+          rsync -a --delete ~/db_files/sandbox sandbox
 
       - name: Start postgres database in apptainer
         run: |
-          apptainer instance run --writable --env POSTGRES_PASSWORD=postgres sandbox/ -c 'config_file=/etc/postgresql/postgresql.conf' my_postgres_instance
+          apptainer instance start --writable --env POSTGRES_PASSWORD=postgres sandbox/ my_postgres_instance_${{ github.workflow }}-${{ github.head_ref || github.ref_name }} -c 'config_file=/etc/postgresql/postgresql.conf'
 
       - name: List files in the repository
         run: |
@@ -643,7 +643,7 @@ jobs:
       - name: Stop postgres database in apptainer
         if: always() # Ensure this runs even if previous steps fail
         run: |
-          apptainer instance stop my_postgres_instance
+          apptainer instance stop my_postgres_instance_${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
 
   list_cache_folder:
     if: always() # always list the cache folder, even if the build failed.
