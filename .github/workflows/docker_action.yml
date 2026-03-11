@@ -550,10 +550,9 @@ jobs:
         run: |
           rsync -a --delete ~/db_files/sandbox/ sandbox/
 
-      - name: Start postgres database in apptainer
+      - name: Start postgres database in apptainer in background
         run: |
-          apptainer instance start --writable --env POSTGRES_PASSWORD=postgres sandbox/ my_postgres_instance -c 'config_file=/etc/postgresql/postgresql.conf'
-          psql ${{ env.SUPABASE_LOCAL_URI }} --command="SELECT COUNT(*) FROM PREPARED;"
+          apptainer instance run --writable --env POSTGRES_PASSWORD=postgres sandbox/ my_postgres_instance -c 'config_file=/etc/postgresql/postgresql.conf' && psql ${{ env.SUPABASE_LOCAL_URI }} --command="SELECT COUNT(*) FROM PREPARED;"
 
       - name: List files in the repository
         run: |
