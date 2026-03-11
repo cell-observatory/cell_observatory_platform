@@ -265,9 +265,15 @@ Preprocessors provide a unified interface for task-specific data preparation:
 | Preprocessor | Task | Description |
 |-------------|------|-------------|
 | `RayPreprocessor` | Pretraining | dtype normalization, masking, transforms |
+| `MultiSequenceRayPreprocessor` | DINO-style | Multiple dataset streams (global/local crops), per-stream transforms and masking |
 | `ChannelSplitPreprocessor` | Channel Split | Predicts per-channel from averaged input |
 | `UpsamplePreprocessor` | Super-resolution | NA-mask downsampling for space/time upsampling |
 | `InstanceSegmentationPreprocessor` | Instance Seg | Mask/bbox extraction, target building |
+| `SAM2VideoPreprocessor` | Video segmentation | Prompt-based video segmentation/tracking |
+
+## Patch Embeddings & Channel Encoding
+
+**PatchEmbedding** convert multi-channel volumes into token sequences. Supported input layouts include `TZYXC`, `ZYXC`, `TYXC`, and `YXC`. **ChannelAdaptivePatchEmbedding** handles variable-channel input with optional learned channel embeddings and fusion via concat or pooling.
 
 ## Transforms
 
@@ -277,14 +283,19 @@ Transforms can be applied in either the **Collator** (CPU, during data loading) 
 - **`Crop`**: Random and center cropping
 - **`Normalize`**: Percentile-based normalization
 - **`ProbabilisticChoice`**: Randomly select between transform pipelines
+- **`MultiCrop3D`**: Multi-crop augmentation for DINO-style pretraining (global + local crops)
+- **`ChannelDropout`**: Randomly drop channels by selecting a subset (configurable keep ratio)
 
 ## MaskGenerator
 
 Generates patch-level masks for self-supervised learning with explicit time/space awareness:
 
 - `BLOCKED` / `BLOCKED_TIME_ONLY` / `BLOCKED_SPACE_ONLY`: Block-based masking
-- `RANDOM` / `RANDOM_SPACE_ONLY`: MAE-style masking
+- `RANDOM` / `RANDOM_SPACE_ONLY`: MAE-style random masking
 - `BLOCKED_PATTERNED`: Deterministic time downsampling patterns
+- `BLOCKED_WITH_RANDOM_FILL`: Block-based masking with random infill
+- `DINO_IBOT`: iBOT-style patch masking for DINO pretraining
+- `HIERA_MU` / `HIERA_MU_BLOCKED`: Mask-unit-aligned masking for Hiera backbone (random or block-based)
 
 # Models
 
@@ -292,31 +303,41 @@ Generates patch-level masks for self-supervised learning with explicit time/spac
 
 | Model | Location | Description |
 |-------|----------|-------------|
-| **MAE** | `models/meta_arch/maskedautoencoder.py` | Masked Autoencoder for 3D/4D volumes |
-| **JEPA** | `models/meta_arch/jepa.py` | Joint-Embedding Predictive Architecture |
+| **MAE** | `models/meta_arch/maskedautoencoder.py` | Masked Autoencoder for 3D/4D volumes (ViT or Hiera backbone) |
+| **JEPA** | `models/meta_arch/jepa.py` | Joint-Embedding Predictive Architecture, single- or multistage (ViT or Hiera backbone) |
+| **DINOv3** | `models/meta_arch/dino.py` | Self-distillation with DINO + iBOT objectives (**work in progress**) |
 
 ## Detection & Segmentation
 
 | Model | Location | Description |
 |-------|----------|-------------|
-| **plainDETR** | `models/meta_arch/plainDETR.py` | 3D object detection  |
+| **plainDETR** | `models/meta_arch/plainDETR.py` | 3D object detection |
 | **MaskDINO** | `models/meta_arch/maskdino.py` | 3D instance segmentation |
-| **Mask2Former** |  | 3D semantic segmentation |
+| **Mask2Former** | `models/meta_arch/mask2former.py` | 3D semantic/panoptic segmentation |
+| **SAM2** | `models/meta_arch/sam.py` | Segment Anything 2 for 3D volumes with automatic mask generation and iterative point-prompt refinement |
 
 ## Backbones
 
 - **ViT** (`models/backbones/vit.py`): Vision Transformer with RoPE/sincos positional encoding
+- **Hiera** (`models/backbones/hiera.py`): Hierarchical Vision Transformer with mask-unit attention and multistage pooling
 - **ConvNeXt** (`models/backbones/convnext.py`): ConvNeXt backbone
-- **MaskedEncoder** (`models/backbones/maskedencoder.py`): Encoder with masking support
+- **DinoEncoder** (`models/backbones/dino_encoder.py`): ViT backbone for DINOv3
+- **MaskedEncoder** (`models/backbones/maskedencoder.py`): ViT-based encoder with masking support for MAE/JEPA
+- **MaskedHieraEncoder** (`models/backbones/masked_hiera_encoder.py`): Hiera-based encoder with mask-unit masking for MAE/JEPA multistage pretraining
 
 ## Layers
 
 Key layer implementations:
-- **Attention**: Multi-head self-attention with flash attention support and deformable attention 
-- **Transformer**: Standard and deformable transformer blocks
-- **Patch Embeddings**: 3D/4D patch embedding with multiple layout support
-- **Positional Encoding**: Sinusoidal, learned, and RoPE encodings
-- **Matchers**: Hungarian matcher for detection/segmentation
+- **Attention** (`models/layers/attention.py`): Multi-head self-attention with flash attention, RoPE attention, mask-unit attention (Hiera), deformable attention, and memory attention (SAM2)
+- **Transformer** (`models/layers/transformer.py`): Standard and deformable transformer blocks with sequence packing support
+- **Patch Embeddings** (`models/layers/patch_embeddings.py`): 3D/4D patch embedding with multiple layout support
+- **Positional Encoding** (`models/layers/positional_encoding.py`): Sinusoidal, learned, and RoPE encodings
+- **Memory Encoders** (`models/layers/memory_encoders.py`): Memory encoder/fuser for SAM2 video tracking
+- **Matchers** (`models/layers/matcher.py`): Hungarian matcher for detection/segmentation
+
+## Kernels
+
+MAE, JEPA, MaskDINO, and PlainDETR support deformable attention.
 
 # Training
 
@@ -418,13 +439,13 @@ The `InferencerWorker` provides distributed inference with two modes:
 
 Supported tasks:
 - `detection` (plainDETR)
-- `instance_segmentation` (MaskDINO)
-- `semantic_segmentation` (mask2Former)
+- `instance_segmentation` (MaskDINO, SAM2)
+- `semantic_segmentation` (Mask2Former)
 - `dense_prediction` (upsampling, channel split)
 - `pretrain` (reconstruction)
 - `feature_extractor` (feature visualization)
 
-
+**SAM2 automatic mask generation** (`inference/amg.py`): Grid-based point prompting with iterative refinement, NMS, stability scoring, and crop-based tiling for full 3D volumes.
 
 # Profiling
 
@@ -444,7 +465,7 @@ Multiple profiling tools are supported:
 
 Here's what each configuration subdirectory handles:
 
-- **[`configs/models/`](configs/models)** - Model architectures (MAE, JEPA, plainDETR, MaskDINO, backbones, heads)
+- **[`configs/models/`](configs/models)** - Model architectures (MAE, JEPA, DINO, SAM2, plainDETR, MaskDINO, Mask2Former, backbones, heads)
 - **[`configs/datasets/`](configs/datasets)** - Dataset classes, databases, and preprocessor parameters
 - **[`configs/tasks/`](configs/tasks)** - Task-specific configs (channel_split, instance_segmentation, upsample_*)
 - **[`configs/optimizers/`](configs/optimizers)** - Optimizer configurations (AdamW, LAMB, Lion, Muon)

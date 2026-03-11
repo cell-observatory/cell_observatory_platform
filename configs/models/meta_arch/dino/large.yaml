@@ -1,0 +1,39 @@
+# head config
+ibot_separate_head: true
+centering: sinkhorn_knopp
+
+# DINO head
+dino_head_n_prototypes: 65536
+dino_head_hidden_dim: 2048
+dino_head_bottleneck_dim: 256
+dino_head_nlayers: 3
+
+# iBOT head
+ibot_head_n_prototypes: 65536
+ibot_head_hidden_dim: 2048
+ibot_head_bottleneck_dim: 256
+ibot_head_nlayers: 3
+
+# iBOT masking
+ibot_mask_ratio_min_max:
+  - 0.1
+  - 0.5
+ibot_mask_sample_probability: 0.5
+
+# loss weights
+dino_loss_weight: 1.0
+dino_global_ignore_diagonal: true
+dino_koleo_loss_weight: 0.1
+ibot_loss_weight: 1.0
+
+# KoLeo
+koleo_loss_distributed: false
+koleo_distributed_replicas: 0
+koleo_topk: 1
+koleo_distributed_loss_group_size: null
+
+# local loss reweighting
+reweight_dino_local_loss: false
+
+# crops
+local_crops_number: 8 # IMPORTANT: must match n_local_crops in transforms/dino.yaml

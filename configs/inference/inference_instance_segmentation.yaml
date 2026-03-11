@@ -33,7 +33,7 @@ save_dir: ${paths.outdir}/inference_instance_segmentation
 # plotting parameters
 save_as_pdf: true
 save_as_volume: false
-z_step_pdf: 10
+z_step_pdf: 40
 pmin: 1.0
 pmax: 99.0
 

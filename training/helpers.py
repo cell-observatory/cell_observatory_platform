@@ -473,12 +473,24 @@ def get_masked_input_data(model, inputs, device: Optional[torch.device] = 'cuda'
     context_idx = torch.arange(context_len, dtype=torch.long, device=device).unsqueeze(0)
     target_idx  = torch.arange(context_len, n_patches, dtype=torch.long, device=device).unsqueeze(0)
 
+    # FIXME: mu_mask is at MU (mask unit) level, not patch level; shape should be (num_mus,) per sample,
+    # where num_mus depends on mask_unit_size. We cannot compute it here without model-specific
+    # config (mask_unit_size, q_stride, q_pool). A proper fix would add a per-model helper
+    # (e.g. model.get_mu_metadata()) for models that use mu_mask; not all models use it.
+    # See training/loops.py where we catch this exception and skip the model summary for models that use mu_mask.
+    mu_mask = torch.zeros(0, dtype=torch.bool, device=device)
+    mu_keep_idx = torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0)
+    tgt_tok_idx = torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0)
+
     meta = {
         "masks": [torch.ones(n_patches, dtype=torch.long, device=device).unsqueeze(0)],
         "context_masks": [context_idx],
         "target_masks": [target_idx],
         "original_patch_indices": [torch.arange(n_patches, dtype=torch.long, device=device)],
         "patches_used": [torch.arange(n_patches, dtype=torch.long, device=device).unsqueeze(0).expand(inputs[0],-1)],
+        "mu_mask": [mu_mask],
+        "mu_keep_idx": [mu_keep_idx],
+        "tgt_tok_idx": [tgt_tok_idx],
     }
 
     # summary() will unpack the input data but the fwd function in
@@ -940,275 +952,6 @@ def named_apply(
     return module
 
 
-def init_weights(model: nn.Module, weight_init_type: str):
-    logger = logging.getLogger(__name__)
-    
-    # ------------------------------------------------------------------
-    # Common alias resolution helpers
-    # ------------------------------------------------------------------
-    def _resolve_alias(root: nn.Module, paths):
-        """
-        paths: list[tuple[str, ...]]
-
-        Returns (obj, path) where obj is the resolved attribute chain,
-        or (None, None) if none match.
-        """
-        for chain in paths:
-            obj = root
-            ok = True
-            for name in chain:
-                if not hasattr(obj, name):
-                    ok = False
-                    break
-                obj = getattr(obj, name)
-            if ok:
-                return obj, chain
-        return None, None
-
-    # Alias tables
-    PATCH_EMBED_WEIGHT_ALIASES = [
-        ("masked_encoder", "patch_embedding", "proj", "weight"),
-        ("masked_encoder", "patch_embed", "proj", "weight"),
-        ("backbone", "patch_embedding", "proj", "weight"),
-        ("backbone", "patch_embed", "proj", "weight"),
-        ("encoder", "patch_embedding", "proj", "weight"),
-        ("encoder", "patch_embed", "proj", "weight"),
-    ]
-
-    TOKEN_PARAM_ALIASES = [
-        ("masked_decoder", "token_param"),
-        ("decoder", "token_param"),
-        ("backbone", "token_param"),
-        ("encoder", "token_param"),
-    ]
-
-    INPUT_ENCODER_ALIASES = [
-        ("input_encoder",),
-        ("masked_encoder",),
-        ("backbone",),
-        ("encoder",),
-    ]
-
-    TARGET_PREDICTOR_ALIASES = [
-        ("target_predictor",),
-        ("decoder",),
-    ]
-
-    # ------------------------------------------------------------------
-    # MAE
-    # ------------------------------------------------------------------
-    
-    if weight_init_type == "mae":
-        # MAE model init utility function adapted from:
-        # https://github.com/facebookresearch/mae/main/models_mae.py
-        def _mae_init_weights(m):
-            if isinstance(m, nn.Linear):
-                # use xavier_uniform following official JAX ViT
-                torch.nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.bias, 0)
-                nn.init.constant_(m.weight, 1.0)
-            # NOTE: we follow the initialization scheme of MAE here however
-            #       we might consider doing as timm does and
-            #       include the option to initalize with init_weights
-            #       function of module if it exists and then call
-            #       named_apply(_mae_init_weights) afterwards in which
-            #       case we'd include the below commented code
-            # elif hasattr(m, 'init_weights'):
-            #     m.init_weights()
-
-        patch_w, patch_path = _resolve_alias(model, PATCH_EMBED_WEIGHT_ALIASES)
-        if patch_w is None:
-            raise ValueError(
-                "MAE init: could not locate patch embedding weight. "
-                f"Tried aliases: {PATCH_EMBED_WEIGHT_ALIASES}"
-            )
-        torch.nn.init.xavier_uniform_(patch_w.view(patch_w.shape[0], -1))
-
-        token_param, token_path = _resolve_alias(model, TOKEN_PARAM_ALIASES)
-        if token_param is not None:
-            torch.nn.init.normal_(token_param, std=0.02)
-        else:
-            logger.debug(
-                "MAE init: token_param not found (aliases: %s); skipping token init.",
-                TOKEN_PARAM_ALIASES,
-            )
-
-        # initialize nn.Linear and nn.LayerNorm
-        model.apply(_mae_init_weights)
-
-    # ------------------------------------------------------------------
-    # VJEPA
-    # ------------------------------------------------------------------
-
-    elif weight_init_type == "vjepa":
-        # helpers from:
-        # https://github.com/facebookresearch/ijepa/blob/main/src/models/vision_transformer.py
-        def _vjepa_fix_init_weight(enc_model: nn.Module):
-            def rescale(param, layer_id):
-                param.div_(math.sqrt(2.0 * layer_id))
-
-            if not hasattr(enc_model, "encoder") or not hasattr(
-                enc_model.encoder, "transformer_blocks"
-            ):
-                raise ValueError(
-                    "VJEPA init: expected an encoder with `encoder.transformer_blocks` "
-                    f"on {enc_model.__class__.__name__}"
-                )
-
-            for layer_id, layer in enumerate(enc_model.encoder.transformer_blocks):
-                rescale(layer.att.proj.weight.data, layer_id + 1)
-                rescale(layer.mlp.fc2.weight.data, layer_id + 1)
-
-        def _vjepa_init_weights(m):
-            if isinstance(m, nn.Linear):
-                trunc_normal_(m.weight, std=model.init_std)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.bias, 0)
-                nn.init.constant_(m.weight, 1.0)
-            elif isinstance(m, nn.Conv2d):
-                trunc_normal_(m.weight, std=model.init_std)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Conv3d):
-                trunc_normal_(m.weight, std=model.init_std)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
-        decoder_token, dec_path = _resolve_alias(model, [("masked_decoder", "token_param")] + TOKEN_PARAM_ALIASES)
-        if decoder_token is None:
-            raise ValueError(
-                "VJEPA init: could not locate decoder token_param. "
-                f"Tried aliases: {[('masked_decoder', 'token_param')] + TOKEN_PARAM_ALIASES}"
-            )
-        trunc_normal_(decoder_token, std=model.init_std)
-
-        # Initialize all Linear/Norm/Conv
-        model.apply(_vjepa_init_weights)
-
-        # Required: input encoder
-        input_encoder, input_path = _resolve_alias(model, INPUT_ENCODER_ALIASES)
-        if input_encoder is None:
-            raise ValueError(
-                "VJEPA init: could not locate input encoder. "
-                f"Tried aliases: {INPUT_ENCODER_ALIASES}"
-            )
-        _vjepa_fix_init_weight(input_encoder)
-
-        # Required: target predictor
-        target_predictor, tp_path = _resolve_alias(model, TARGET_PREDICTOR_ALIASES)
-        if target_predictor is None:
-            raise ValueError(
-                "VJEPA init: could not locate target predictor. "
-                f"Tried aliases: {TARGET_PREDICTOR_ALIASES}"
-            )
-        _vjepa_fix_init_weight(target_predictor)
-
-    # ------------------------------------------------------------------
-    # VJEPA2
-    # ------------------------------------------------------------------
-    
-    elif weight_init_type == "vjepa2":
-        # helpers from:
-        # https://github.com/facebookresearch/vjepa2/main/src/models/vision_transformer.py
-        def _vjepa2_init_weights(m):
-            if isinstance(m, nn.Linear):
-                trunc_normal_(m.weight, std=model.init_std)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.bias, 0)
-                nn.init.constant_(m.weight, 1.0)
-            # NOTE: technically vjepa2 only applies the below
-            #       to input encoder and not target predictor
-            elif isinstance(m, nn.Conv2d):
-                trunc_normal_(m.weight, std=model.init_std)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.Conv3d):
-                trunc_normal_(m.weight, std=model.init_std)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
-        def _vjepa2_rescale_blocks(enc_model: nn.Module):
-            def rescale(param, layer_id):
-                param.div_(math.sqrt(2.0 * layer_id))
-
-            if not hasattr(enc_model, "encoder") or not hasattr(
-                enc_model.encoder, "transformer_blocks"
-            ):
-                raise ValueError(
-                    "VJEPA2 init: expected an encoder with `encoder.transformer_blocks` "
-                    f"on {enc_model.__class__.__name__}"
-                )
-
-            for layer_id, layer in enumerate(enc_model.encoder.transformer_blocks):
-                rescale(layer.att.proj.weight.data, layer_id + 1)
-                rescale(layer.mlp.fc2.weight.data, layer_id + 1)
-
-        model.apply(_vjepa2_init_weights)
-
-        input_encoder, input_path = _resolve_alias(model, INPUT_ENCODER_ALIASES)
-        if input_encoder is None:
-            raise ValueError(
-                "VJEPA2 init: could not locate input encoder. "
-                f"Tried aliases: {INPUT_ENCODER_ALIASES}"
-            )
-        _vjepa2_rescale_blocks(input_encoder)
-
-        target_predictor, tp_path = _resolve_alias(model, TARGET_PREDICTOR_ALIASES)
-        if target_predictor is not None and hasattr(target_predictor, "encoder"):
-            _vjepa2_rescale_blocks(target_predictor)
-
-    # ------------------------------------------------------------------
-    # ViT-Adapter style init
-    # ------------------------------------------------------------------
-
-    elif weight_init_type == "vit_adapter":
-        def _vit_adapter_init_weights(m):
-            if isinstance(m, nn.Linear):
-                torch.nn.init.trunc_normal_(m.weight, std=0.02)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d, nn.BatchNorm1d)):
-                nn.init.constant_(m.bias, 0)
-                nn.init.constant_(m.weight, 1.0)
-            elif isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
-                fan_out = (
-                    m.kernel_size[0]
-                    * m.kernel_size[1]
-                    * m.kernel_size[2]
-                    * m.out_channels
-                )
-                fan_out //= m.groups
-                m.weight.data.normal_(0, math.sqrt(2.0 / fan_out))
-                if m.bias is not None:
-                    m.bias.data.zero_()
-            elif isinstance(m, (nn.Conv1d, nn.ConvTranspose1d)):
-                fan_out = m.kernel_size[0] * m.out_channels
-                fan_out //= m.groups
-                m.weight.data.normal_(0, math.sqrt(2.0 / fan_out))
-                if m.bias is not None:
-                    m.bias.data.zero_()
-
-        if not (hasattr(model, "up") and hasattr(model, "spatial_prior_module") and hasattr(model, "interactions")):
-            raise ValueError(
-                "vit_adapter init: expected model to have attributes "
-                "`up`, `spatial_prior_module`, and `interactions`."
-            )
-        model.up.apply(_vit_adapter_init_weights)
-        model.spatial_prior_module.apply(_vit_adapter_init_weights)
-        model.interactions.apply(_vit_adapter_init_weights)
-        torch.nn.init.normal_(model.level_embed)
-
-    else:
-        raise ValueError(f"Unknown weight initialization type: {weight_init_type}")
-
-
 def get_data_dim(layout_order: str) -> int:
     if layout_order == "TZYXC":
         return 4
@@ -1288,60 +1031,60 @@ def get_image_sizes(
     else:
         raise ValueError(f"Unsupported input_format: {input_format}")
 
-    # TODO: consider how to generalize to spacetime
-
-    # Build a 3D padding mask [B, Z, Y, X] or [B, Y, X]
-    # We only care about spatial volume axes for DETR-style masks.
-    spatial_axes = [ax for ax in ("Z", "Y", "X") if ax in input_format]
+    spatiotemporal_axes = [ax for ax in ("T", "Z", "Y", "X") if ax in input_format]
 
     # map axis -> full size from input_shape
     axis_to_size = dict(zip(input_format, input_shape))
-    full_sizes = {ax: int(axis_to_size[ax]) for ax in spatial_axes}
+    full_sizes = {ax: int(axis_to_size[ax]) for ax in spatiotemporal_axes}
 
-    # spatial mask shape (Z, Y, X) or (Y, X)
-    spatial_shape = tuple(full_sizes[ax] for ax in spatial_axes)
+    # spatial mask shape
+    spatiotemporal_shape = tuple(full_sizes[ax] for ax in spatiotemporal_axes)
     
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     image_sizes: List[Tuple[int, ...]] = []
     for i in range(batch_size):
-        spatial_dims = [int(metadata[f"{ax}_size"][i]) for ax in ax_names]
-        image_sizes.append(tuple(spatial_dims))
+        spatiotemporal_dims = [int(metadata[f"{ax}_size"][i]) for ax in ax_names]
+        image_sizes.append(tuple(spatiotemporal_dims))
 
-    image_sizes_padded: List[Tuple[int, ...]] = [spatial_shape] * batch_size
+    image_sizes_padded: List[Tuple[int, ...]] = [spatiotemporal_shape] * batch_size
 
     # use orig_* sizes only if *all* are present
     if all(f"orig_{ax}_size" in metadata for ax in ax_names):
         orig_image_sizes: List[Tuple[int, ...]] = []
         for i in range(batch_size):
-            spatial_dims = [int(metadata[f"orig_{ax}_size"][i]) for ax in ax_names]
-            orig_image_sizes.append(tuple(spatial_dims))
+            spatiotemporal_dims = [int(metadata[f"orig_{ax}_size"][i]) for ax in ax_names]
+            orig_image_sizes.append(tuple(spatiotemporal_dims))
     else:
         orig_image_sizes = image_sizes_padded
 
     padding_mask = torch.zeros(
-        (batch_size, *spatial_shape),
+        (batch_size, *spatiotemporal_shape),
         dtype=torch.bool,
         device=device,
     )
 
     # metadata keys for sizes: z_size, y_size, x_size
-    size_keys = {ax: f"{ax.lower()}_size" for ax in spatial_axes}
+    size_keys = {ax: f"{ax.lower()}_size" for ax in ax_names}
+    
+    # Map lowercase ax_names to uppercase axis names for consistency
+    ax_to_upper = {"time": "T", "z": "Z", "y": "Y", "x": "X", "channel": "C"}
 
     for b in range(batch_size):
         # actual sizes along each spatial axis (default: full size if missing)
         actual = {}
-        for ax in spatial_axes:
+        for ax in ax_names:
             key = size_keys[ax]
+            ax_upper = ax_to_upper[ax]
             if key in metadata:
-                actual[ax] = int(metadata[key][b])
+                actual[ax_upper] = int(metadata[key][b])
             else:
-                actual[ax] = full_sizes[ax]
+                actual[ax_upper] = full_sizes[ax_upper]
 
         # Mark padded voxels as True
         # We want: padded if index >= actual[ax] along ANY spatial axis.
-        if spatial_axes == ["Z", "Y", "X"]:
+        if spatiotemporal_axes == ["Z", "Y", "X"]:
             Z_full, Y_full, X_full = full_sizes["Z"], full_sizes["Y"], full_sizes["X"]
             z_lim, y_lim, x_lim = actual["Z"], actual["Y"], actual["X"]
 
@@ -1352,17 +1095,21 @@ def get_image_sizes(
             if x_lim < X_full:
                 padding_mask[b, :, :, x_lim:] = True
 
-        elif spatial_axes == ["Y", "X"]:
-            Y_full, X_full = full_sizes["Y"], full_sizes["X"]
-            y_lim, x_lim = actual["Y"], actual["X"]
+        elif spatiotemporal_axes == ["T", "Z", "Y", "X"]:
+            T_full, Z_full, Y_full, X_full = full_sizes["T"], full_sizes["Z"], full_sizes["Y"], full_sizes["X"]
+            t_lim, z_lim, y_lim, x_lim = actual["T"], actual["Z"], actual["Y"], actual["X"]
 
+            if t_lim < T_full:
+                padding_mask[b, t_lim:, :, :, :] = True
+            if z_lim < Z_full:
+                padding_mask[b, :, z_lim:, :, :] = True
             if y_lim < Y_full:
-                padding_mask[b, y_lim:, :] = True
+                padding_mask[b, :, :, y_lim:, :] = True
             if x_lim < X_full:
-                padding_mask[b, :, x_lim:] = True
+                padding_mask[b, :, :, :, x_lim:] = True
 
         else:
-            raise ValueError(f"Unsupported spatial_axes combination: {spatial_axes}")
+            raise ValueError(f"Unsupported spatiotemporal_axes combination: {spatiotemporal_axes}")
 
     return image_sizes, orig_image_sizes, image_sizes_padded, padding_mask
 
@@ -1583,3 +1330,28 @@ def assert_same_db_hash_across_ranks(local_hash: int, group=None):
             f"[RANK {dist.get_rank()}] Database hash mismatch across ranks "
             f"(xor != 0) - shards / filters not identical!"
         )
+
+
+def named_replace(
+    fn: Callable,
+    module: nn.Module,
+    name: str = "",
+    depth_first: bool = True,
+    include_root: bool = False,
+) -> nn.Module:
+    if not depth_first and include_root:
+        module = fn(module=module, name=name)
+    for child_name_o, child_module in list(module.named_children()):
+        child_name = ".".join((name, child_name_o)) if name else child_name_o
+        new_child = named_replace(
+            fn=fn,
+            module=child_module,
+            name=child_name,
+            depth_first=depth_first,
+            include_root=True,
+        )
+        setattr(module, child_name_o, new_child)
+
+    if depth_first and include_root:
+        module = fn(module=module, name=name)
+    return module

@@ -1,5 +1,5 @@
-import logging
 import sys
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Literal, Mapping, Optional
 
@@ -15,7 +15,6 @@ from cell_observatory_platform.training.helpers import (
     get_input_data,
     get_nparams_and_flops,
     get_patch_sizes,
-    init_weights,
 )
 from cell_observatory_platform.training.losses import get_loss_fn
 
@@ -60,6 +59,7 @@ class AutoBench(nn.Module, ABC):
         weight_init_type: str = "mae",
         with_auxiliary_loss: bool = False,
         freeze_backbone: bool = False,
+        buffer_device: str = "cuda",
     ):
         super().__init__()
         self.backbone_args = backbone_args
@@ -103,41 +103,78 @@ class AutoBench(nn.Module, ABC):
         """
         raise NotImplementedError
 
-    def init_model_weights(self, buffer_device: str | None = None):
-        # TODO: move model inits back into each model class
-        init_weights(self, weight_init_type=self.weight_init_type)
-        for mod in self.modules():
-            if isinstance(mod, RopeAttention):
-                mod.init_rope_parameters(device=buffer_device)
+    def _init_model_weights(self, buffer_device: str | None = None):
+        """No-op: AutoBench delegates weight initialization to each backbone
+        and decoder module. Each module built via its Hydra BUILD function
+        handles its own weight initialization in __init__.
 
-    @torch.jit.ignore
-    def _get_nparams_and_flops(
-        self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
-    ):
-        # FIXME: this may be inaccurate when we start working on
-        #        temporal masking related tasks
-        if device == "cuda":
-            # TODO: test this path more thoroughly
-            with torch.cuda.device(device):
-                input_shape = (batch_size, *self.input_shape)
-                data_sample = get_input_data(
-                    inputs=input_shape,
-                    device="cuda",
-                )
-                seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
-                model_summary = get_nparams_and_flops(self, data_sample, seq_len)
-                model_param_count, num_flops_per_token = (
-                    model_summary["total_params"],
-                    model_summary["training_flops"],
-                )
-        elif device == "meta":
-            print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
-            return -1, -1
-        else:
-            # TODO: add support for meta device calculation for other backends
-            raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
+        If you add a new backbone or decoder for use with AutoBench,
+        ensure it calls its own weight init at the end of __init__.
+        See, for example, the following self-initializing modules:
+          - MaskedEncoder, MaskedHieraEncoder (backbones)
+          - MaskedPredictor, MaskedHieraPredictor (decoders)
+          - LinearHead, LinearProbe (decoders)
+        """
+        pass
 
-        return model_param_count, num_flops_per_token
+    def get_param_groups(self, weight_decay: float, **kwargs) -> list[dict]:
+        """
+        Backbone/decoder split with decay/no-decay within each.
+        """
+        NO_WD_KEYWORDS = ("bias", "pos_embedding", "cls_token", "token_param", "level_embed")
+
+        def _split(module: nn.Module) -> list[dict]:
+            decay, no_decay = [], []
+            for name, p in module.named_parameters():
+                if not p.requires_grad:
+                    continue
+                if p.ndim == 1 or any(kw in name for kw in NO_WD_KEYWORDS):
+                    no_decay.append(p)
+                else:
+                    decay.append(p)
+            groups = []
+            if decay:
+                groups.append({"params": decay, "weight_decay": weight_decay})
+            if no_decay:
+                groups.append({"params": no_decay, "weight_decay": 0.0})
+            return groups
+
+        groups = []
+        if self.backbone is not None:
+            groups.extend(_split(self.backbone))
+        if self.decoder is not None:
+            groups.extend(_split(self.decoder))
+        return groups
+
+    # TODO: implement for each meta_arch 
+    # @torch.jit.ignore
+    # def _get_nparams_and_flops(
+    #     self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
+    # ):
+    #     # FIXME: this may be inaccurate when we start working on
+    #     #        temporal masking related tasks
+    #     if device == "cuda":
+    #         # TODO: test this path more thoroughly
+    #         with torch.cuda.device(device):
+    #             input_shape = (batch_size, *self.input_shape)
+    #             data_sample = get_input_data(
+    #                 inputs=input_shape,
+    #                 device="cuda",
+    #             )
+    #             seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
+    #             model_summary = get_nparams_and_flops(self, data_sample, seq_len)
+    #             model_param_count, num_flops_per_token = (
+    #                 model_summary["total_params"],
+    #                 model_summary["training_flops"],
+    #             )
+    #     elif device == "meta":
+    #         print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
+    #         return -1, -1
+    #     else:
+    #         # TODO: add support for meta device calculation for other backends
+    #         raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
+
+    #     return model_param_count, num_flops_per_token
 
     @torch.jit.ignore
     def get_num_patches(self) -> int:
@@ -155,12 +192,6 @@ class AutoBench(nn.Module, ABC):
             patch_shape=self.patch_shape,
         )
         return num_patches
-
-    def _init_all_weights(self):
-        """
-        Called by subclasses AFTER backbone/decoder are constructed.
-        """
-        init_weights(self, weight_init_type=self.weight_init_type)
 
     @torch.jit.ignore
     def forward_features(self, data_tensor: torch.Tensor):

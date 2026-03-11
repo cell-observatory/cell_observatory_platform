@@ -1,0 +1,117 @@
+# @package _global_
+defaults:
+  - /paths/janelia
+  - /hydra/overrides
+  - /clusters/local
+  - /datasets/databases/base_database
+  - /datasets/pretrain_dataset_ray
+  - /datasets/preprocessor/dino_multisequence_preprocessor
+  - /datasets/transforms/dino
+  - /datasets/masking/dino_ibot
+  - /models/meta_arch/dino/large
+  - /models/backbones/dino_encoder/large
+  - /models/BUILD_DINO
+  - /checkpoint/checkpoint
+  - /loggers/loggers
+  - /evaluation/base_evaluator
+  - /deepspeed/zero2
+  - /optimizers/adamw_torch
+  - /schedulers/warmup_cosine_decay
+  - /optimizations/optimizations
+  - /optimizations/models/dino/large
+  - /profiling/profiling
+  - _self_
+
+experiment_name: test_pretrain
+wandb_project: testing
+
+backend: DEEPSPEED
+distributed_framework: ray
+run_type: single_run
+job_type: train
+trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+quantization: bfloat16
+dataset_dtype: bfloat16
+storage_dtype: uint16
+dataset_layout_order: ZYXC
+seed: 42
+
+clusters:
+  batch_size: 1
+  worker_nodes: 1
+  gpus_per_worker: 1
+  cpus_per_gpu: 12
+  mem_per_cpu: 40000
+  ray_queue_memory: 0.2
+
+paths:
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+
+datasets:
+  batch_size: ${clusters.batch_size_per_gpu}
+  input_shape: [128, 256, 256, 2]
+  train_shape: [128, 256, 256, 2]
+  patch_shape: [16, 16, 16, null]
+  occupancy_threshold: 0.0
+  split: 0.0
+  return_dataloader: true
+  distributed_sampler: true
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+  max_hypercubes: 1000
+  use_cached_hypercubes_dataframe: true
+  hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+  databases:
+    occupancy_threshold_filter_type: 'min_ch0'
+    cdf_target: 90
+    cdf_threshold: 150
+    synthetic_only: false
+    has_annotations: false
+    with_hypercubes_dataframe: true
+    mask_channel: null
+  columns: [ 'x_start', 'y_start', 'z_start', 'time_start',
+          'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
+          'server_folder', 'output_folder',
+          'tile_name', 'prepared_id' ]
+  preserve_order: false
+  callback_strategy: grpc
+  async_device_copy: false
+
+schedulers:
+  epochs: 1
+  warmup: 0
+  cooldown: 0
+
+optimizers:
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-3
+
+hooks:
+  hooks_list:
+    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
+    - _target_: cell_observatory_platform.training.hooks.EMASchedulerHook
+      ema_start: 0.992
+      ema_end: 1.0
+    - _target_: cell_observatory_platform.training.hooks.TeacherTemperatureSchedulerHook
+      teacher_temp_final_value: 0.07
+      warmup_teacher_temp_value: 0.04
+      teacher_temp_base_value: 0.07
+      warmup_teacher_temp_epochs: 0
+    - _target_: cell_observatory_platform.training.hooks.LRScheduler
+      backend: DEEPSPEED
+    - _target_: cell_observatory_platform.training.hooks.IterationTimer
+    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+    - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+      file_prefix: latest_model
+      backend: DEEPSPEED
+    - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+      checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+    - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+      metric_name: ${evaluation.val_metric}
+      compare_fn: ${evaluation.val_mode}
+      eval_after_validation: true

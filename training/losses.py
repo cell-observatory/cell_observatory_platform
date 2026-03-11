@@ -1,13 +1,19 @@
-import contextlib
 import copy
+import math
+import contextlib
 import functools
+from collections import defaultdict
+from typing import List, Dict
+
+from omegaconf import DictConfig, OmegaConf
 from typing import Any, Callable, Dict, List, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from omegaconf import DictConfig, OmegaConf
+import torch.distributed as dist
 from torch.nn.functional import interpolate
+from torch.utils.checkpoint import checkpoint
 
 from cell_observatory_platform.data.masking.mask_generator import apply_masks
 from cell_observatory_platform.data.structures import (
@@ -32,9 +38,10 @@ from cell_observatory_platform.models.ops.losses import (
     dice_loss,
     sigmoid_ce_loss,
     sigmoid_focal_loss,
+    iou_loss
 )
 from cell_observatory_platform.training.helpers import get_patch_sizes
-from cell_observatory_platform.utils.context import get_world_size, is_torch_dist_initialized
+from cell_observatory_platform.utils.context import get_world_size, is_torch_dist_initialized, process_rank
 
 
 # adapted from: https://github.com/pytorch/torchtitan/torchtitan/components/loss.py
@@ -113,23 +120,54 @@ def get_loss_fn(loss):
 
 
 def L2_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
-    loss = (targets - predictions) ** 2
-    loss = loss.mean(dim=-1)  # mean loss per patch
-    loss = loss.sum() / num_patches
-    return loss, None
+    if isinstance(targets, (list, tuple)) and isinstance(predictions, (list, tuple)):
+        total_loss = 0.0
+        for t, p in zip(targets, predictions):
+            total_loss = total_loss + ((t - p) ** 2).mean(dim=-1).sum()
+        return total_loss / num_patches, None
+    elif isinstance(targets, torch.Tensor) and isinstance(predictions, torch.Tensor):
+        loss = (targets - predictions) ** 2
+        loss = loss.mean(dim=-1) # mean loss per patch
+        loss = loss.sum() / num_patches
+        return loss, None
+    else:
+        raise TypeError(
+            f"targets and predictions must both be tensors or both be lists of tensors; "
+            f"got {type(targets)}, {type(predictions)}"
+        )
 
 
 def L1_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
-    # compute loss over masked patches
-    loss = torch.abs(targets - predictions)
-    loss = loss.mean(dim=-1)  # mean loss per patch
-    loss = loss.sum() / num_patches
-    return loss, None
+    if isinstance(targets, (list, tuple)) and isinstance(predictions, (list, tuple)):
+        total_loss = 0.0
+        for t, p in zip(targets, predictions):
+            total_loss = total_loss + torch.abs(t - p).mean(dim=-1).sum()
+        return total_loss / num_patches, None
+    elif isinstance(targets, torch.Tensor) and isinstance(predictions, torch.Tensor):
+        loss = torch.abs(targets - predictions)
+        loss = loss.mean(dim=-1)
+        loss = loss.sum() / num_patches
+        return loss, None
+    else:
+        raise TypeError(
+            f"targets and predictions must both be tensors or both be lists of tensors; "
+            f"got {type(targets)}, {type(predictions)}"
+        )
 
 
-# see: https://github.com/facebookresearch/ijepa/main/src/train.py
 def smooth_L1_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
-    return F.smooth_l1_loss(targets, predictions), None
+    if isinstance(targets, (list, tuple)) and isinstance(predictions, (list, tuple)):
+        total_loss = 0.0
+        for t, p in zip(targets, predictions):
+            total_loss = total_loss + F.smooth_l1_loss(t, p, reduction="sum")
+        return total_loss / num_patches, None
+    elif isinstance(targets, torch.Tensor) and isinstance(predictions, torch.Tensor):
+        return F.smooth_l1_loss(targets, predictions), None
+    else:
+        raise TypeError(
+            f"targets and predictions must both be tensors or both be lists of tensors; "
+            f"got {type(targets)}, {type(predictions)}"
+        )
 
 
 class FourierLoss(torch.nn.Module):
@@ -564,7 +602,7 @@ class DETR_Set_Loss(nn.Module):
         )
 
         if is_torch_dist_initialized():
-            torch.distributed.all_reduce(total_num_masks)
+            dist.all_reduce(total_num_masks)
         average_num_masks_per_device = torch.clamp(total_num_masks / get_world_size(), min=1).item()
 
         losses = {}
@@ -849,7 +887,7 @@ class PlainDETR_Set_Loss(nn.Module):
         num_boxes = sum(len(t["labels"]) for t in targets)
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
         if is_torch_dist_initialized():
-            torch.distributed.all_reduce(num_boxes)
+            dist.all_reduce(num_boxes)
         num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
 
         # Compute all the requested losses
@@ -1265,3 +1303,832 @@ class MultiLabelBinaryPredictionLoss(nn.Module):
                 losses.update(aux_losses)
 
         return losses
+
+
+# adapted from:
+# https://github.com/facebookresearch/dinov3/dinov3/loss
+class DINOLoss(nn.Module):
+    def __init__(
+        self,
+        out_dim,
+        student_temp=0.1,
+        center_momentum=0.9,
+    ):
+        super().__init__()
+        
+        self.student_temp = student_temp
+        self.center_momentum = center_momentum
+        
+        self.register_buffer("center", torch.full((1, out_dim), math.nan))
+        
+        self.updated = True
+        self.reduce_handle = None
+        self.len_teacher_output = None
+        self.async_batch_center = None
+
+    def init_weights(self) -> None:
+        self.center.zero_()
+
+    @torch.no_grad()
+    def softmax_center_teacher(self, teacher_output, teacher_temp, update_centers=True):
+        if update_centers:
+            self.apply_center_update()
+        # teacher centering and sharpening
+        return F.softmax((teacher_output - self.center) / teacher_temp, dim=-1)
+
+    @torch.no_grad()
+    def sinkhorn_knopp_teacher(self, teacher_output, teacher_temp, n_iterations=3):
+        # teacher_output: [batch, prototypes]
+        teacher_output = teacher_output.float()
+        # NOTE: original refereence uses get_subgroup_size() instead of get_world_size()
+        world_size = get_world_size() if is_torch_dist_initialized() else 1
+        # NOTE: Q is K-by-B for consistency with notations from DINO paper
+        Q = torch.exp(teacher_output / teacher_temp).t()
+        B = Q.shape[1] * world_size  # number of samples to assign
+        K = Q.shape[0]  # how many prototypes
+
+        # make the matrix sums to 1
+        sum_Q = torch.sum(Q)
+        if is_torch_dist_initialized():
+            # NOTE: for distillation do: group=get_process_subgroup()
+            dist.all_reduce(sum_Q)
+        Q /= sum_Q
+
+        for _ in range(n_iterations):
+            # normalize each row: total weight per prototype must be 1/K
+            sum_of_rows = torch.sum(Q, dim=1, keepdim=True)
+            if is_torch_dist_initialized():
+                # NOTE: for distillation do: group=get_process_subgroup()
+                dist.all_reduce(sum_of_rows)
+            Q /= sum_of_rows
+            Q /= K
+
+            # normalize each column: total weight per sample must be 1/B
+            Q /= torch.sum(Q, dim=0, keepdim=True)
+            Q /= B
+
+        Q *= B  # the colomns must sum to 1 so that Q is an assignment
+        return Q.t()
+
+    def forward(self, student_logits, teacher_probs, ignore_diagonal=False):
+        """
+        Cross-entropy between softmax outputs of the teacher and student networks.
+
+        student_logits: [student crops, batch, prototypes]
+        teacher_probs:  [teacher crops, batch, prototypes] must sum to 1 over the last dim
+
+        loss = 0
+        count = 0
+        for each sample `b` in the batch:
+            for each student crop `s` of this sample:
+                for each teacher crop `t` of this sample:
+                    if ignore_diagonal and s == t:
+                        continue
+                    loss += cross_entropy(softmax(student_logits[s, b] / student_temp), teacher_probs[t, b])
+                    count += 1
+        return loss / count
+        """
+        student_crops, B, K = student_logits.shape
+        teacher_crops, _, _ = teacher_probs.shape
+        student_logits = F.log_softmax(student_logits.float() / self.student_temp, dim=-1)
+        if not ignore_diagonal:
+            loss = -torch.einsum("s b k, t b k -> ", student_logits, teacher_probs)
+            return loss / (B * student_crops * teacher_crops)
+        else:
+            loss = -torch.einsum("s b k, t b k -> s t", student_logits, teacher_probs)
+            min_st = min(student_crops, teacher_crops)
+            loss = torch.diagonal_scatter(loss, loss.new_zeros(min_st))
+            return loss.sum() / (B * student_crops * teacher_crops - B * min_st)
+
+    @torch.no_grad()
+    def update_center(self, teacher_output):
+        self.reduce_center_update(teacher_output)
+
+    @torch.no_grad()
+    def reduce_center_update(self, teacher_output):
+        self.updated = False
+        self.len_teacher_output = len(teacher_output)
+        self.async_batch_center = torch.sum(teacher_output, dim=0, keepdim=True)
+        if is_torch_dist_initialized():
+            # NOTE: for distillation do: group=get_process_subgroup()
+            self.reduce_handle = dist.all_reduce(self.async_batch_center, async_op=True)
+
+    @torch.no_grad()
+    def apply_center_update(self):
+        if self.updated is False:
+            # NOTE: original refereence uses get_subgroup_size() instead of get_world_size()
+            world_size = get_world_size() if is_torch_dist_initialized() else 1
+
+            if self.reduce_handle is not None:
+                self.reduce_handle.wait()
+            _t = self.async_batch_center / (self.len_teacher_output * world_size)
+
+            self.center = self.center * self.center_momentum + _t * (1 - self.center_momentum)
+
+            self.updated = True
+
+
+def lossfunc(t, s, temp):
+    return torch.sum(t.float() * F.log_softmax(s.float() / temp, dim=-1), dim=-1)
+
+
+# NOTE: This is a module and not a function in the `iBOTPatchLoss` class
+# This is because we want to torch.compile it, and torch.compil-ing a single
+# function with the `@torch.compile` decorator is bad.
+# It's better to `module.compile()` it, as we can control when we enable or
+# disable compilation globally.
+class SinkhornKnoppTeacher(nn.Module):
+    @torch.no_grad()
+    def forward(self, teacher_output, teacher_temp, n_masked_patches_tensor, n_iterations=3):
+        teacher_output = teacher_output.float()
+        # world_size = dist.get_world_size() if is_torch_dist_initialized() else 1
+        Q = torch.exp(teacher_output / teacher_temp).t()  # Q is K-by-B for consistency with notations from our paper
+        # B = Q.shape[1] * world_size # number of samples to assign
+        B = n_masked_patches_tensor
+        # NOTE: for distillation do: group=get_process_subgroup()
+        if is_torch_dist_initialized():
+            dist.all_reduce(B)
+        K = Q.shape[0]  # how many prototypes
+
+        # make the matrix sums to 1
+        sum_Q = torch.sum(Q)
+        if is_torch_dist_initialized():
+            # NOTE: for distillation do: group=get_process_subgroup()
+            dist.all_reduce(sum_Q)
+        Q /= sum_Q
+
+        for _ in range(n_iterations):
+            # normalize each row: total weight per prototype must be 1/K
+            sum_of_rows = torch.sum(Q, dim=1, keepdim=True)
+            if is_torch_dist_initialized():
+                # NOTE: for distillation do: group=get_process_subgroup()
+                dist.all_reduce(sum_of_rows)
+            Q /= sum_of_rows
+            Q /= K
+
+            # normalize each column: total weight per sample must be 1/B
+            Q /= torch.sum(Q, dim=0, keepdim=True)
+            Q /= B
+
+        Q *= B  # the colomns must sum to 1 so that Q is an assignment
+        return Q.t()
+
+
+class iBOTPatchLoss(nn.Module):
+    def __init__(self, patch_out_dim, student_temp=0.1, center_momentum=0.9):
+        super().__init__()
+        
+        self.student_temp = student_temp
+        self.center_momentum = center_momentum
+        
+        self.register_buffer("center", torch.full((1, 1, patch_out_dim), math.nan))
+        
+        self.updated = True
+        self.reduce_handle = None
+        
+        self.len_teacher_patch_tokens = None
+        
+        self.async_batch_center = None
+        
+        self.sinkhorn_knopp_teacher = SinkhornKnoppTeacher()
+        self.sinkhorn_knopp_teacher.compile()
+
+    def init_weights(self) -> None:
+        self.center.zero_()
+
+    @torch.no_grad()
+    def softmax_center_teacher(self, teacher_patch_tokens, teacher_temp, update_centers=True):
+        if update_centers:
+            self.apply_center_update()
+        return F.softmax((teacher_patch_tokens - self.center) / teacher_temp, dim=-1)
+
+    def forward(self, student_patch_tokens, teacher_patch_tokens, student_masks_flat):
+        """
+        Cross-entropy between softmax outputs of the teacher and student networks.
+
+        student_patch_tokens: (B, N, D) tensor
+        teacher_patch_tokens: (B, N, D) tensor
+        student_masks_flat: (B, N) tensor
+        """
+        t = teacher_patch_tokens
+        s = student_patch_tokens
+        loss = lossfunc(t, s, self.student_temp)
+        loss = torch.sum(loss * student_masks_flat.float(), dim=-1) / student_masks_flat.sum(dim=-1).clamp(min=1.0)
+        return -loss.mean()
+
+    def forward_masked(
+        self,
+        student_patch_tokens_masked,
+        teacher_patch_tokens_masked,
+        student_masks_flat,
+        n_masked_patches=None,
+        masks_weight=None,
+    ):
+        t = teacher_patch_tokens_masked
+        s = student_patch_tokens_masked
+        # loss = torch.sum(t * F.log_softmax(s / self.student_temp, dim=-1), dim=-1)
+        loss = lossfunc(t, s, self.student_temp)
+        if masks_weight is None:
+            masks_weight = (
+                (1 / student_masks_flat.sum(-1).clamp(min=1.0))
+                .unsqueeze(-1)
+                .expand_as(student_masks_flat)[student_masks_flat]
+            )
+        if n_masked_patches is not None:
+            loss = loss[:n_masked_patches]
+        loss = loss * masks_weight
+        return -loss.sum() / student_masks_flat.shape[0]
+
+    @torch.no_grad()
+    def update_center(self, teacher_patch_tokens):
+        self.reduce_center_update(teacher_patch_tokens)
+
+    @torch.no_grad()
+    def reduce_center_update(self, teacher_patch_tokens):
+        self.updated = False
+        self.len_teacher_patch_tokens = len(teacher_patch_tokens)
+        self.async_batch_center = torch.sum(teacher_patch_tokens.mean(1), dim=0, keepdim=True)
+        if is_torch_dist_initialized():
+            # NOTE: for distillation do: group=get_process_subgroup()
+            self.reduce_handle = dist.all_reduce(self.async_batch_center, async_op=True)
+
+    @torch.no_grad()
+    def apply_center_update(self):
+        if self.updated is False:
+            # NOTE: original refereence uses get_subgroup_size() instead of get_world_size()
+            world_size = get_world_size() if is_torch_dist_initialized() else 1
+
+            if self.reduce_handle is not None:
+                self.reduce_handle.wait()
+            _t = self.async_batch_center / (self.len_teacher_patch_tokens * world_size)
+
+            self.center = self.center * self.center_momentum + _t * (1 - self.center_momentum)
+
+            self.updated = True
+
+
+class KoLeoLoss(nn.Module):
+    """
+    Kozachenko-Leonenko entropic loss regularizer from 
+    Sablayrolles et al. (2018): "Spreading vectors for similarity search".
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.pdist = nn.PairwiseDistance(2, eps=1e-8)
+
+    def pairwise_NNs_inner(self, x):
+        """
+        Pairwise nearest neighbors for L2-normalized vectors.
+        Uses Torch rather than Faiss to remain on GPU.
+        """
+        # parwise dot products (= inverse distance)
+        dots = torch.mm(x, x.t())
+        n = x.shape[0]
+        dots.view(-1)[:: (n + 1)].fill_(-1)  # Trick to fill diagonal with -1
+        _, indices = torch.max(dots, dim=1)  # max inner prod -> min distance
+        return indices
+
+    def forward(self, student_output, eps=1e-8):
+        """
+        Args:
+            student_output (BxD): backbone output of student
+        """
+        with torch.autocast("cuda", enabled=False):
+            student_output = F.normalize(student_output, eps=eps, p=2, dim=-1)
+            indices = self.pairwise_NNs_inner(student_output)
+            distances = self.pdist(student_output, student_output[indices])  # BxD, BxD -> B
+            loss = -torch.log(distances + eps).mean()
+        return loss
+
+
+class KoLeoLossDistributed(nn.Module):
+    """
+    Kozachenko-Leonenko entropic loss regularizer from 
+    Sablayrolles et al. (2018): Spreading vectors for similarity search.
+    """
+
+    def __init__(self, topk=1, loss_group_size: int | None = None):
+        super().__init__()
+        
+        self.pdist = nn.PairwiseDistance(2, eps=1e-8)
+        
+        self.topk = topk
+        # NOTE: Size of the nearest neighbor set. If None, uses global batch size.
+        self.loss_group_size = loss_group_size
+
+    def pairwise_NNs_inner(self, x, all_x, rank):
+        """
+        Pairwise nearest neighbors for L2-normalized vectors.
+        Uses Torch rather than Faiss to remain on GPU.
+        """
+        # parwise dot products (= inverse distance)
+        dots = torch.mm(x, all_x.t())  # local_B x global_B
+        local_B, global_B = dots.shape
+        dots.view(-1)[rank * local_B :: (global_B + 1)].fill_(-1)  # Trick to fill diagonal with -1
+        _, indices = torch.topk(dots, dim=1, k=self.topk)  # max inner prod -> min distance
+        return indices
+
+    def forward(self, student_output, eps=1e-8):
+        """
+        Args:
+            student_output (BxD): backbone output of student
+        """
+        with torch.autocast("cuda", enabled=False):
+            student_output = F.normalize(student_output, eps=eps, p=2, dim=-1)  # local_B x D
+
+            if is_torch_dist_initialized():
+                all_student_outputs = torch.cat(dist.nn.all_gather(student_output), dim=0)  # global_B x D
+                world_size = get_world_size()
+                rank = process_rank()
+            else:
+                all_student_outputs = student_output
+                world_size = 1
+                rank = 0
+
+            # Group the global batch into groups of size `loss_group_size` and use the features of the group
+            # the local rank falls into as the nearest neighbor set for the local rank
+            local_B = len(student_output)
+            global_B = len(all_student_outputs)
+            loss_group_size = self.loss_group_size if self.loss_group_size is not None else global_B
+            if loss_group_size % local_B != 0:
+                raise ValueError(
+                    f"Loss group size size {loss_group_size} must be a multiple of local batch size {local_B}."
+                )
+            if global_B % loss_group_size != 0:
+                raise ValueError(
+                    f"Global batch size {global_B} must be divisible by loss group size {loss_group_size}."
+                )
+            
+            n_groups = global_B // loss_group_size
+            ranks_per_group = world_size // n_groups
+            rank_in_group = rank % ranks_per_group
+            group = rank // ranks_per_group
+            
+            all_student_outputs = all_student_outputs.view(n_groups, loss_group_size, student_output.shape[1])
+            all_student_outputs = all_student_outputs[group]  # loss_group_size x D
+
+            with torch.no_grad():
+                indices = self.pairwise_NNs_inner(student_output, all_student_outputs, rank_in_group)  # local_B x topk
+
+            student_output_expanded = (
+                student_output.unsqueeze(1).repeat(1, self.topk, 1).flatten(0, 1)
+            )  # (local_B * topk) x D
+            distances = self.pdist(student_output_expanded, all_student_outputs[indices].flatten(0, 1))  # BxD, BxD -> B
+            loss = -torch.log(distances.float() + eps).mean()
+
+        return loss
+
+
+class MultiStepMultiMasksAndIousLoss(nn.Module):
+    def __init__(
+        self,
+        input_fmt,
+        weight_dict,
+        focal_alpha=0.25,
+        focal_gamma=2,
+        supervise_all_iou=False,
+        iou_use_l1_loss=False,
+        pred_obj_scores=False,
+        focal_gamma_obj_score=0.0,
+        focal_alpha_obj_score=-1,
+        activation_checkpoint=False,
+        use_point_sampling=False,
+        # How to pick number of points?
+        # Find the mask logit resolution loss samples from.
+        # E.g., for volume 128×256×512, at stride 4, that is 32×64×128 = 262,144 candidate voxels.
+        # 5% => ~13k
+        # 10% => ~26k
+        # 20% => ~52k
+        num_points=20000,
+        oversample_ratio=3,
+        importance_sample_ratio=0.75,
+    ):
+        """
+        Computes the multi-step multi-mask and IoU losses.
+        Args:
+            weight_dict: dict containing weights for focal, dice, iou losses
+            focal_alpha: alpha for sigmoid focal loss
+            focal_gamma: gamma for sigmoid focal loss
+            supervise_all_iou: if True, back-prop iou losses for all predicted masks
+            iou_use_l1_loss: use L1 loss instead of MSE loss for iou
+            pred_obj_scores: if True, compute loss for object scores
+            focal_gamma_obj_score: gamma for sigmoid focal loss on object scores
+            focal_alpha_obj_score: alpha for sigmoid focal loss on object scores
+        """
+        super().__init__()
+
+        self.input_fmt = input_fmt
+
+        self.weight_dict = weight_dict
+        self.focal_alpha = focal_alpha
+        self.focal_gamma = focal_gamma
+
+        assert "loss_mask" in self.weight_dict, "loss_mask must be in weight_dict"
+        assert "loss_dice" in self.weight_dict, "loss_dice must be in weight_dict"
+        assert "loss_iou" in self.weight_dict, "loss_iou must be in weight_dict"
+        assert "loss_class" in self.weight_dict, "loss_class must be in weight_dict"
+
+        if "loss_class" not in self.weight_dict:
+            self.weight_dict["loss_class"] = 0.0
+
+        self.focal_alpha_obj_score = focal_alpha_obj_score
+        self.focal_gamma_obj_score = focal_gamma_obj_score
+        self.supervise_all_iou = supervise_all_iou
+        self.iou_use_l1_loss = iou_use_l1_loss
+        self.pred_obj_scores = pred_obj_scores
+
+        self.core_loss_key = "step_loss"
+
+        # optimizations
+        self.activation_checkpoint = activation_checkpoint
+        self.use_point_sampling = use_point_sampling
+        self.num_points = num_points
+        self.oversample_ratio = oversample_ratio
+        self.importance_sample_ratio = importance_sample_ratio
+
+    def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
+        assert len(outs_batch) == len(targets_batch), "outs_batch and targets_batch must have the same length"
+        num_objects = torch.tensor(
+            (targets_batch.shape[1]), device=targets_batch.device, dtype=torch.float
+        )  # Number of objects is fixed within a batch
+        if is_torch_dist_initialized():
+            dist.all_reduce(num_objects)
+        # num_objects = torch.clamp(num_objects / get_world_size(), min=1).item()
+        num_objects = torch.clamp(num_objects / get_world_size(), min=1.0)
+
+        losses = defaultdict(int)
+        for outs, targets in zip(outs_batch, targets_batch):
+            if self.activation_checkpoint:
+                cur_losses = self._forward_checkpoint(outs, targets, num_objects)
+            else:
+                cur_losses = self._forward(outs, targets, num_objects)
+            for k, v in cur_losses.items():
+                losses[k] += v
+
+        return losses
+
+    @torch.no_grad()
+    def _sample_points_and_labels(
+        self,
+        src_masks: torch.Tensor,      # [N, M, Z, Y, X] logits
+        target_masks: torch.Tensor,   # [N, 1, Z, Y, X] float/bool
+    ):
+        """
+        Returns:
+        point_coords_flat: [N*M, P, 3]  (coords per predicted mask)
+        point_labels:      [N, M, P]    (GT sampled at those coords)
+        """
+        N, M, Z, Y, X = src_masks.shape
+        P = self.num_points
+        if P <= 0:
+            raise ValueError("num_points must be > 0 when use_point_sampling=True")
+
+        # coords are per (N*M) predicted mask
+        src_flat = src_masks.detach().reshape(N * M, 1, Z, Y, X)
+        point_coords_flat = get_uncertain_point_coords_with_randomness(
+            src_flat,
+            lambda logits: calculate_uncertainty(logits),
+            P,
+            self.oversample_ratio,
+            self.importance_sample_ratio,
+        )  # [N*M, P, 3]
+
+        # Sample GT labels in ONE call per object by stacking coords along the point dimension:
+        # [N*M, P, 3] -> [N, M*P, 3]
+        point_coords_obj = point_coords_flat.view(N, M * P, 3)
+        gt = target_masks  # [N,1,Z,Y,X]
+        point_labels_obj = point_sample(gt, point_coords_obj, align_corners=False).squeeze(1)  # [N, M*P]
+        point_labels = point_labels_obj.view(N, M, P)  # [N, M, P]
+
+        return point_coords_flat, point_labels
+
+    def _forward(self, outputs: Dict, targets: torch.Tensor, num_objects):
+        """
+        Compute the losses related to the masks: the focal loss and the dice loss,
+        and also the MAE or MSE loss between predicted IoUs and actual IoUs.
+
+        Here "multistep_pred_multimasks_high_res" is a list of multimasks (tensors
+        of shape [N, M, D, H, W], where M could be 1 or larger, corresponding to
+        one or multiple predicted masks from a click.
+
+        We back-propagate focal, dice losses only on the prediction channel
+        with the lowest focal+dice loss between predicted mask and ground-truth.
+        If `supervise_all_iou` is True, we backpropagate ious losses for all predicted masks.
+        """
+        src_masks_list = outputs["multistep_pred_multimasks_high_res"]
+        pred_dtype = src_masks_list[0].dtype
+        pred_device = src_masks_list[0].device
+        target_masks = targets.unsqueeze(1).to(device=pred_device, dtype=pred_dtype)
+        if self.input_fmt == "TZYXC":
+            assert target_masks.dim() == 5, f"Expected target_masks shape (N, 1, Z, Y, X), got {target_masks.shape}"
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+        ious_list = outputs["multistep_pred_ious"]
+        object_score_logits_list = outputs["multistep_object_score_logits"]
+
+        assert len(src_masks_list) == len(ious_list), \
+            f"Expected len(src_masks_list) == len(ious_list), got {len(src_masks_list)} and {len(ious_list)}"
+        assert len(object_score_logits_list) == len(ious_list), \
+            f"Expected len(object_score_logits_list) == len(ious_list), got {len(object_score_logits_list)} and {len(ious_list)}"
+
+        # accumulate the loss over prediction steps
+        losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
+        for src_masks, ious, object_score_logits in zip(
+            src_masks_list, ious_list, object_score_logits_list
+        ):
+            self._update_losses(
+                losses, src_masks, target_masks, ious, num_objects, object_score_logits
+            )
+        losses[self.core_loss_key] = self.reduce_loss(losses)
+        # Cast step_loss to prediction dtype so backward matches model
+        losses[self.core_loss_key] = losses[self.core_loss_key].to(src_masks_list[0].dtype)
+        return losses
+
+    def _forward_checkpoint(self, outputs, targets, num_objects):
+        src_masks_list = outputs["multistep_pred_multimasks_high_res"]
+        ious_list = outputs["multistep_pred_ious"]
+        object_score_logits_list = outputs["multistep_object_score_logits"]
+
+        pred_dtype = src_masks_list[0].dtype
+        pred_device = src_masks_list[0].device
+        target_masks = targets.unsqueeze(1).to(device=pred_device, dtype=pred_dtype)  # [N,1,Z,Y,X]
+
+        # weights tensor for dot product
+        w = target_masks.new_tensor([
+            float(self.weight_dict["loss_mask"]),
+            float(self.weight_dict["loss_dice"]),
+            float(self.weight_dict["loss_iou"]),
+            float(self.weight_dict.get("loss_class", 0.0)),
+        ])
+
+        total = target_masks.new_zeros(())
+        comp_sum_detached = target_masks.new_zeros(4)
+
+        for src_masks, pred_ious, obj_logits in zip(src_masks_list, ious_list, object_score_logits_list):
+            if self.use_point_sampling:
+                with torch.no_grad():
+                    point_coords_flat, point_labels = self._sample_points_and_labels(src_masks, target_masks)
+
+                comps = checkpoint(
+                    self._step_loss_components_points,
+                    src_masks, pred_ious, obj_logits, target_masks, num_objects,
+                    point_coords_flat, point_labels,
+                    use_reentrant=False,
+                    preserve_rng_state=False,  # safe: no randomness inside checkpointed fn
+                )
+            else:
+                comps = checkpoint(
+                    self._step_loss_components,
+                    src_masks, pred_ious, obj_logits, target_masks, num_objects,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
+
+            total = total + (comps * w).sum()
+            comp_sum_detached = comp_sum_detached + comps.detach()
+
+        out = {self.core_loss_key: total.to(pred_dtype)}
+        out["loss_mask"]  = comp_sum_detached[0]
+        out["loss_dice"]  = comp_sum_detached[1]
+        out["loss_iou"]   = comp_sum_detached[2]
+        out["loss_class"] = comp_sum_detached[3]
+        return out
+
+    def _step_loss_components_points(
+        self,
+        src_masks,            # [N, M, Z, Y, X]
+        pred_ious,            # [N, M]
+        object_score_logits,  # [N, 1] or [N]
+        target_masks_base,    # [N, 1, Z, Y, X]
+        num_objects,          # 0-dim cuda float
+        point_coords_flat,    # [N*M, P, 3]
+        point_labels,         # [N, M, P]
+    ):
+        N, M, Z, Y, X = src_masks.shape
+        P = point_labels.shape[-1]
+
+        src_flat = src_masks.reshape(N * M, 1, Z, Y, X)
+        point_logits_flat = point_sample(src_flat, point_coords_flat, align_corners=False).squeeze(1)  # [N*M,P]
+        point_logits = point_logits_flat.view(N, M, P)  # [N,M,P]
+
+        loss_multimask = sigmoid_focal_loss(
+            point_logits, point_labels, num_objects,
+            alpha=self.focal_alpha, gamma=self.focal_gamma,
+            loss_on_multimask=True,
+        )
+        loss_multidice = dice_loss(
+            point_logits, point_labels, num_objects,
+            loss_on_multimask=True,
+        )
+
+        # obj score loss
+        if not self.pred_obj_scores:
+            loss_class = loss_multimask.new_zeros(())
+            target_obj = loss_multimask.new_ones((loss_multimask.shape[0], 1))
+        else:
+            target_obj = torch.any((target_masks_base[:, 0] > 0).flatten(1), dim=-1)[..., None].to(
+                dtype=loss_multimask.dtype, device=loss_multimask.device
+            )
+            loss_class = sigmoid_focal_loss(
+                object_score_logits, target_obj, num_objects,
+                alpha=self.focal_alpha_obj_score, gamma=self.focal_gamma_obj_score,
+            )
+
+        # dense IoU
+        target_masks_iou = target_masks_base.expand_as(src_masks)
+        loss_multiiou = iou_loss(
+            src_masks, target_masks_iou, pred_ious, num_objects,
+            loss_on_multimask=True, use_l1_loss=self.iou_use_l1_loss,
+        )
+
+        # best-mask selection unchanged
+        if loss_multimask.size(1) > 1:
+            combo = (
+                loss_multimask * float(self.weight_dict["loss_mask"])
+                + loss_multidice * float(self.weight_dict["loss_dice"])
+            )
+            best = torch.argmin(combo, dim=-1)  # [N]
+            b = torch.arange(combo.size(0), device=combo.device)
+
+            loss_mask = loss_multimask[b, best].unsqueeze(1)
+            loss_dice = loss_multidice[b, best].unsqueeze(1)
+            if self.supervise_all_iou:
+                loss_iou = loss_multiiou.mean(dim=-1).unsqueeze(1)
+            else:
+                loss_iou = loss_multiiou[b, best].unsqueeze(1)
+        else:
+            loss_mask = loss_multimask
+            loss_dice = loss_multidice
+            loss_iou  = loss_multiiou
+
+        loss_mask = (loss_mask * target_obj).sum()
+        loss_dice = (loss_dice * target_obj).sum()
+        loss_iou  = (loss_iou  * target_obj).sum()
+
+        return torch.stack([loss_mask, loss_dice, loss_iou, loss_class])
+
+    def _step_loss_components(
+        self,
+        src_masks,
+        pred_ious,
+        object_score_logits,
+        target_masks,
+        num_objects,
+    ):
+        target_masks = target_masks.expand_as(src_masks)
+
+        # [N, M]
+        loss_multimask = sigmoid_focal_loss(
+            src_masks, target_masks, num_objects,
+            alpha=self.focal_alpha, gamma=self.focal_gamma,
+            loss_on_multimask=True,
+        )
+        loss_multidice = dice_loss(
+            src_masks, target_masks, num_objects,
+            loss_on_multimask=True,
+        )
+
+        if not self.pred_obj_scores:
+            loss_class = loss_multimask.new_zeros(())
+            target_obj = loss_multimask.new_ones((loss_multimask.shape[0], 1))
+        else:
+            target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[..., None].to(
+                dtype=loss_multimask.dtype, device=loss_multimask.device
+            )
+            loss_class = sigmoid_focal_loss(
+                object_score_logits, target_obj, num_objects,
+                alpha=self.focal_alpha_obj_score, gamma=self.focal_gamma_obj_score,
+            )
+
+        # [N, M]
+        loss_multiiou = iou_loss(
+            src_masks, target_masks, pred_ious, num_objects,
+            loss_on_multimask=True, use_l1_loss=self.iou_use_l1_loss,
+        )
+
+        if loss_multimask.size(1) > 1:
+            combo = (
+                loss_multimask * float(self.weight_dict["loss_mask"])
+                + loss_multidice * float(self.weight_dict["loss_dice"])
+            )
+            best = torch.argmin(combo, dim=-1)  # [N]
+            b = torch.arange(combo.size(0), device=combo.device)
+
+            loss_mask = loss_multimask[b, best].unsqueeze(1)  # [N,1]
+            loss_dice = loss_multidice[b, best].unsqueeze(1)  # [N,1]
+            if self.supervise_all_iou:
+                loss_iou = loss_multiiou.mean(dim=-1).unsqueeze(1)
+            else:
+                loss_iou = loss_multiiou[b, best].unsqueeze(1)
+        else:
+            loss_mask = loss_multimask
+            loss_dice = loss_multidice
+            loss_iou  = loss_multiiou
+
+        # gate, then reduce to scalars
+        loss_mask = (loss_mask * target_obj).sum()
+        loss_dice = (loss_dice * target_obj).sum()
+        loss_iou  = (loss_iou  * target_obj).sum()
+
+        return torch.stack([loss_mask, loss_dice, loss_iou, loss_class])
+
+    def _update_losses(
+        self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
+    ):
+        # target_masks is [N,1,Z,Y,X]
+        target_masks_base = target_masks
+
+        if self.use_point_sampling:
+            # coords/labels are no_grad and depend on src_masks.detach()
+            point_coords_flat, point_labels = self._sample_points_and_labels(src_masks, target_masks_base)
+
+            N, M, Z, Y, X = src_masks.shape
+            src_flat = src_masks.reshape(N * M, 1, Z, Y, X)
+            point_logits_flat = point_sample(src_flat, point_coords_flat, align_corners=False).squeeze(1)  # [N*M,P]
+            point_logits = point_logits_flat.view(N, M, -1)  # [N,M,P]
+
+            loss_multimask = sigmoid_focal_loss(
+                point_logits, point_labels, num_objects,
+                alpha=self.focal_alpha, gamma=self.focal_gamma,
+                loss_on_multimask=True,
+            )
+            loss_multidice = dice_loss(
+                point_logits, point_labels, num_objects,
+                loss_on_multimask=True,
+            )
+        else:
+            target_masks = target_masks_base.expand_as(src_masks)  # [N,M,Z,Y,X]
+            loss_multimask = sigmoid_focal_loss(
+                src_masks, target_masks, num_objects,
+                alpha=self.focal_alpha, gamma=self.focal_gamma,
+                loss_on_multimask=True,
+            )
+            loss_multidice = dice_loss(
+                src_masks, target_masks, num_objects,
+                loss_on_multimask=True,
+            )
+
+        if not self.pred_obj_scores:
+            loss_class = loss_multimask.new_zeros(())
+            target_obj = loss_multimask.new_ones((loss_multimask.shape[0], 1))
+        else:
+            target_obj = torch.any((target_masks_base[:, 0] > 0).flatten(1), dim=-1)[..., None].to(
+                dtype=loss_multimask.dtype, device=loss_multimask.device
+            )
+            loss_class = sigmoid_focal_loss(
+                object_score_logits, target_obj, num_objects,
+                alpha=self.focal_alpha_obj_score, gamma=self.focal_gamma_obj_score,
+            )
+
+        target_masks_iou = target_masks_base.expand_as(src_masks)
+        loss_multiiou = iou_loss(
+            src_masks, target_masks_iou, ious, num_objects,
+            loss_on_multimask=True, use_l1_loss=self.iou_use_l1_loss,
+        )
+        assert loss_multimask.dim() == 2, f"Expected loss_multimask shape (N, M), got {loss_multimask.shape}"
+        assert loss_multidice.dim() == 2, f"Expected loss_multidice shape (N, M), got {loss_multidice.shape}"
+        assert loss_multiiou.dim() == 2, f"Expected loss_multiiou shape (N, M), got {loss_multiiou.shape}"
+
+        if loss_multimask.size(1) > 1:
+            # take the mask indices with the smallest focal + dice loss for back propagation
+            loss_combo = (
+                loss_multimask * self.weight_dict["loss_mask"]
+                + loss_multidice * self.weight_dict["loss_dice"]
+            )
+            best_loss_inds = torch.argmin(loss_combo, dim=-1)
+            batch_inds = torch.arange(loss_combo.size(0), device=loss_combo.device)
+            # loss_mask: (N, 1), loss_dice: (N, 1)
+            loss_mask = loss_multimask[batch_inds, best_loss_inds].unsqueeze(1)
+            loss_dice = loss_multidice[batch_inds, best_loss_inds].unsqueeze(1)
+            # calculate the iou prediction and slot losses only in the index
+            # with the minimum loss for each mask (to be consistent w/ SAM)
+            if self.supervise_all_iou:
+                loss_iou = loss_multiiou.mean(dim=-1).unsqueeze(1)
+            else:
+                loss_iou = loss_multiiou[batch_inds, best_loss_inds].unsqueeze(1)
+        else:
+            loss_mask = loss_multimask
+            loss_dice = loss_multidice
+            loss_iou = loss_multiiou
+
+        # backprop focal, dice and iou loss only if obj present
+        loss_mask = loss_mask * target_obj
+        loss_dice = loss_dice * target_obj
+        loss_iou = loss_iou * target_obj
+
+        # sum over batch dimension (note that the losses are already divided by num_objects)
+        losses["loss_mask"] += loss_mask.sum()
+        losses["loss_dice"] += loss_dice.sum()
+        losses["loss_iou"] += loss_iou.sum()
+        losses["loss_class"] += loss_class
+
+    def reduce_loss(self, losses):
+        reduced_loss = 0.0
+        for loss_key, weight in self.weight_dict.items():
+            if loss_key not in losses:
+                raise ValueError(f"{type(self)} doesn't compute {loss_key}")
+            if weight != 0:
+                reduced_loss += losses[loss_key] * weight
+
+        return reduced_loss

@@ -36,8 +36,9 @@ from cell_observatory_platform.utils.memory import (
     bytes_gb,
     ray_memory_summary,
 )
-from cell_observatory_platform.training.helpers import log_data_timings
 from cell_observatory_platform.training.loggers import EventWriter
+from cell_observatory_platform.training.helpers import log_data_timings
+from cell_observatory_platform.training.schedulers import CosineScheduler
 from cell_observatory_platform.utils.context import gather_and_reduce, is_main_process, process_rank
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -1020,6 +1021,71 @@ class EMASchedulerHook(HookBase):
         """
         self.model.ema_update(beta=next(self.ema_scheduler))
 
+
+class TeacherTemperatureSchedulerHook(HookBase):
+    """
+    Updates teacher temperature each step: cosine warmup from warmup_teacher_temp
+    to teacher_temp over warmup_teacher_temp_epochs, then constant (DINO-style).
+    """
+
+    def __init__(
+        self,
+        teacher_temp_final_value: float,
+        warmup_teacher_temp_value: float,
+        teacher_temp_base_value: float,
+        warmup_teacher_temp_epochs: int,
+    ):
+        super().__init__()
+        
+        self.warmup_teacher_temp_value = warmup_teacher_temp_value
+        self.teacher_temp_base_value = teacher_temp_base_value
+        self.teacher_temp_final_value = teacher_temp_final_value
+        self.warmup_teacher_temp_epochs = warmup_teacher_temp_epochs
+
+    def before_train(self):
+        self.model = self.trainer.model
+        # NOTE: in case model gets wrpped w. module, we must unwrap it
+        model = getattr(self.trainer.model, "module", self.trainer.model)
+        warmup_iters = int(self.warmup_teacher_temp_epochs * self.trainer.steps_per_epoch)
+        self.teacher_temp_schedule = CosineScheduler(
+            start_warmup_value=self.warmup_teacher_temp_value,
+            base_value=self.teacher_temp_base_value,
+            final_value=self.teacher_temp_final_value,
+            total_iters=self.trainer._max_epochs * self.trainer.steps_per_epoch,
+            warmup_iters=warmup_iters,
+            freeze_iters=0,
+            trunc_extra=0.0,
+        )
+        model.teacher_temperature = self.teacher_temp_schedule[0]
+
+    def after_step(self, data_sample, outputs, loss_dict):
+        step = self.trainer._iter + 1
+        # NOTE: in case model gets wrpped w. module, we must unwrap it
+        model = getattr(self.trainer.model, "module", self.trainer.model)
+        model.teacher_temperature = self.teacher_temp_schedule[step]
+
+
+# NOTE: see models/meta_arch/dino.py for more details
+class LocalLossReweightingHook(HookBase):
+    def __init__(self, start: float, peak: float, end: float, warmup_epochs: int, cosine_epochs: int):
+        super().__init__()
+        
+        self.start = start
+        self.peak = peak
+        self.end = end
+        self.warmup_epochs = warmup_epochs
+        self.cosine_epochs = cosine_epochs
+        
+    def before_train(self):
+        self.model = self.trainer.model
+        self.local_loss_schedule = linear_warmup_cosine_decay(
+            start=self.start,
+            peak=self.peak,
+            end=self.end,
+            warmup_iterations=self.warmup_epochs * self.trainer.steps_per_epoch,
+            total_iterations=self.trainer._max_epochs * self.trainer.steps_per_epoch,
+        )
+        self.model.local_loss_schedule = self.local_loss_schedule
 
 class WeightDecayScheduleHook(HookBase):
     def __init__(self, backend: str = "DEEPSPEED"):

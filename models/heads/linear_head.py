@@ -15,6 +15,15 @@ class LinearProbe(nn.Module):
     def __init__(self, in_dim, output_dim):
         super().__init__()
         self.linear = nn.Linear(in_dim, output_dim)
+        self.init_weights()
+
+    def init_weights(self):
+        self.apply(self._init_model_weights)
+
+    def _init_model_weights(self):
+        trunc_normal_(self.linear.weight, std=0.02)
+        if self.linear.bias is not None:
+            nn.init.constant_(self.linear.bias, 0)
 
     def forward(self, x):
         return self.linear(x)
@@ -46,10 +55,13 @@ class LinearHead(nn.Module):
         )
         self.last_layer = nn.Linear(bottleneck_dim, self.output_dim, bias=False)
 
-    def init_weights(self) -> None:
-        self.apply(self._init_weights)
+        self.init_weights()
 
-    def _init_weights(self, m):
+    def init_weights(self) -> None:
+        self.apply(self._init_model_weights)
+
+    def _init_model_weights(self, m):
+        # Adapted from: https://github.com/facebookresearch/dinov3/dinov3/layers/dino_head.py
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.02)
             if m.bias is not None:

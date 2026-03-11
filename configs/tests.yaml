@@ -1,9 +1,12 @@
 defaults:
   - /clusters/local # configs/clusters/local.yaml
   - /paths/local # configs/paths/local.yaml
-  - /datasets/pretrain_dataset_ray # configs/datasets/pretrain_dataset_ray.yaml
-  - /models/BUILD_JEPA # configs/models/BUILD_JEPA.yaml
-  - /models/meta_arch/jepa/large # configs/models/meta_arch/jepa/large.yaml
+  - /datasets/databases/base_database
+  - /datasets/preprocessor/ray_preprocessor
+  - /datasets/pretrain_dataset_ray
+  - /datasets/masking/mask_generator
+  - /models/BUILD_MAE # configs/models/BUILD_MAE.yaml
+  - /models/meta_arch/mae/large # configs/models/meta_arch/mae/tiny.yaml
   - /optimizations/optimizations # configs/optimizations/optimizations.yaml
   - /optimizations/models/jepa/large # configs/optimizations/models/jepa.yaml
   - /hooks/hooks_with_weight_decay # configs/hooks/hooks_with_weight_decay.yaml

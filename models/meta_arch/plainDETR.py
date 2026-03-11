@@ -54,6 +54,7 @@ class PlainDETR(nn.Module):
         reparam: bool = True,
         normalize_pos_encodings: bool = True,
         topk: int = 100,
+        buffer_device: str = "cuda",
     ):
         super().__init__()
 
@@ -132,40 +133,65 @@ class PlainDETR(nn.Module):
         self.topk = topk
         self.reparam = reparam
 
-    def init_model_weights(self, buffer_device: str | None = None):
-        # TODO: move model inits back into each model class
-        # FIXME: add proper weight init logic for PlainDETR
-        # init_weights(self, weight_init_type=self.weight_init_type)
+        self._init_model_weights(buffer_device=buffer_device)
+
+    def _init_model_weights(self, buffer_device: str | None = None):
+        # Weight init for PlainDETR happens inside __init__
+        # following the reference implementation:
+        # - Transformer (plain_detr_transformer.py)
+        # - GlobalDecoder (global_rpe_decomp_decoder.py)
+        # - PlainDETRBackbone (plain_detr_backbone.py)  
+        # - TransformerEncoder (plain_detr_transformer_encoder.py)
         for mod in self.modules():
             if isinstance(mod, RopeAttention):
                 mod.init_rope_parameters(device=buffer_device)
 
-    @torch.jit.ignore
-    def _get_nparams_and_flops(
-        self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
-    ):
-        if device == "cuda":
-            # TODO: test this path more thoroughly
-            with torch.cuda.device(device):
-                input_shape = (batch_size, *self.input_shape)
-                data_sample = get_input_data(
-                    inputs=input_shape,
-                    device="cuda",
-                )
-                seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
-                model_summary = get_nparams_and_flops(self, data_sample, seq_len)
-                model_param_count, num_flops_per_token = (
-                    model_summary["total_params"],
-                    model_summary["training_flops"],
-                )
-        elif device == "meta":
-            print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
-            return -1, -1
-        else:
-            # TODO: add support for meta device calculation for other backends
-            raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
+    def get_param_groups(self, weight_decay: float, **kwargs) -> list[dict]:
+        """
+        Standard decay/no-decay split for PlainDETR.
+        TODO: consider more options such as layer-wise decay, etc.
+        """
+        decay, no_decay = [], []
+        for name, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+            if p.ndim == 1 or "bias" in name:
+                no_decay.append(p)
+            else:
+                decay.append(p)
 
-        return model_param_count, num_flops_per_token
+        return [
+            {"params": decay, "weight_decay": weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ]
+
+    # TODO: implement for each meta_arch
+    # @torch.jit.ignore
+    # def _get_nparams_and_flops(
+    #     self, batch_size: int, device: Literal["cuda", "meta"] = "cuda", masking_ratio: float = 0.0
+    # ):
+    #     if device == "cuda":
+    #         # TODO: test this path more thoroughly
+    #         with torch.cuda.device(device):
+    #             input_shape = (batch_size, *self.input_shape)
+    #             data_sample = get_input_data(
+    #                 inputs=input_shape,
+    #                 device="cuda",
+    #             )
+    #             seq_len = int(self.get_num_patches()) * (1 - masking_ratio)
+    #             model_summary = get_nparams_and_flops(self, data_sample, seq_len)
+    #             model_param_count, num_flops_per_token = (
+    #                 model_summary["total_params"],
+    #                 model_summary["training_flops"],
+    #             )
+    #     elif device == "meta":
+    #         print(f"Warning: using 'meta' device for flops/nparams calculation is not yet supported.")
+    #         return -1, -1
+    #     else:
+    #         # TODO: add support for meta device calculation for other backends
+    #         raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
+
+    #     return model_param_count, num_flops_per_token
 
     def _forward(self, samples):
         """The forward expects a List, which consists of:

@@ -1,8 +1,55 @@
 import random
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn.functional as F
+
+
+
+def stack_metainfo(meta_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not meta_list:
+        return {}
+
+    all_keys: set = set()
+    for m in meta_list:
+        if m is not None:
+            all_keys.update(m.keys())
+
+    merged: Dict[str, Any] = {}
+    for key in all_keys:
+        values = [
+            (m.get(key, None) if m is not None else None)
+            for m in meta_list
+        ]
+        merged[key] = _merge_values(values)
+    return merged
+
+
+def _merge_values(values: List[Any]) -> Any:
+    if all(v is None for v in values):
+        return None
+
+    first = next(v for v in values if v is not None)
+
+    # list: concatenate
+    if isinstance(first, list):
+        out: list = []
+        for v in values:
+            if v is not None:
+                out.extend(v)
+        return out
+
+    # dict: recurse
+    if isinstance(first, dict):
+        return stack_metainfo([v if v is not None else {} for v in values])
+
+    # tensor: cat along dim 0
+    if isinstance(first, torch.Tensor):
+        parts = [v for v in values if v is not None]
+        return torch.cat(parts, dim=0)
+
+    # scalar / bool / str / other: keep ALL per-crop values as a list
+    return list(values)
 
 
 def parse_target_shape_range(

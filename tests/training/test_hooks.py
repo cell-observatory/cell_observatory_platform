@@ -148,16 +148,18 @@ def _test_hooks_dist(cfg):
         def step(self):
             pass
 
-    orig_wd_sched = getattr(trainer, "wd_scheduler", None)
-    trainer.wd_scheduler = _NoOpWDScheduler(trainer.opt)
+    orig_wd_sched = getattr(trainer, "wd_schedulers", None)
+    trainer.wd_schedulers = _NoOpWDScheduler(trainer.optimizers)
 
-    # ensure optimizer param group 0 has a weight_decay key
-    if "weight_decay" not in trainer.opt.param_groups[0]:
-        trainer.opt.param_groups[0]["weight_decay"] = 0.05
+    # With get_param_groups we may have decay + no_decay groups; ensure we test against
+    # the same group the hook records
+    opt = trainer.optimizers
+    if "weight_decay" not in opt.param_groups[0]:
+        opt.param_groups[0]["weight_decay"] = 0.05
+    initial_wd = opt.param_groups[0]["weight_decay"]
 
     # initialize WD hook
     wd_hook.before_train()
-    initial_wd = trainer.opt.param_groups[0]["weight_decay"]
 
     # simulate two steps at epoch 0
     trainer._epoch = 0
@@ -182,7 +184,7 @@ def _test_hooks_dist(cfg):
 
     # restore monkeypatches
     trainer.model.is_gradient_accumulation_boundary = orig_boundary
-    trainer.wd_scheduler = orig_wd_sched
+    trainer.wd_schedulers = orig_wd_sched
 
     # ---- ---- ---- IterationTimer tests ---- ---- ----
 

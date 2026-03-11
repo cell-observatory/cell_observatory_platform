@@ -1,7 +1,12 @@
 import pytest
 import torch
 
-from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
+from cell_observatory_platform.models.layers.patch_embeddings import (
+    PatchEmbedding,
+    ChannelAdaptivePatchEmbedding,
+    calc_num_patches,
+)
+
 
 CASES = [
     # 5D: TZYXC
@@ -99,3 +104,102 @@ def test_patchify_shapes_reshape(case):
 
     out = pe(x)
     assert out.shape == (case["input_shape"][0], num_patches, case["embed_dim"])
+
+
+# ---------------------------------------------------------------------------
+# ChannelAdaptivePatchEmbedding
+# ---------------------------------------------------------------------------
+
+
+CA_CASES = [
+    dict(
+        name="ZYXC",
+        input_fmt="ZYXC",
+        input_shape=(2, 12, 16, 16, 3),  # B, Z, Y, X, C
+        patch_shape=(4, 8, 8, None),
+        embed_dim=32,
+        channels=3,
+    ),
+    dict(
+        name="TZYXC",
+        input_fmt="TZYXC",
+        input_shape=(2, 4, 8, 16, 16, 2),  # B, T, Z, Y, X, C
+        patch_shape=(2, 4, 8, 8, None),
+        embed_dim=32,
+        channels=2,
+    )
+]
+
+
+def _ca_num_patches(case):
+    num_patches, _ = calc_num_patches(
+        input_fmt=case["input_fmt"],
+        input_shape=case["input_shape"][1:],
+        patch_shape=case["patch_shape"],
+    )
+    return num_patches
+
+
+@pytest.mark.parametrize("case", CA_CASES, ids=[c["name"] for c in CA_CASES])
+def test_channel_adaptive_concat_shape(case):
+    pe = ChannelAdaptivePatchEmbedding(
+        input_fmt=case["input_fmt"],
+        patch_shape=case["patch_shape"],
+        embed_dim=case["embed_dim"],
+        max_channels=16,
+        channel_fusion="concat",
+    )
+    x = torch.randn(case["input_shape"])
+    out = pe(x)
+    B = case["input_shape"][0]
+    C = case["channels"]
+    N = _ca_num_patches(case)
+    assert out.shape == (B, N * C, case["embed_dim"])
+
+
+@pytest.mark.parametrize("case", CA_CASES, ids=[c["name"] for c in CA_CASES])
+def test_channel_adaptive_attn_pool_shape(case):
+    pe = ChannelAdaptivePatchEmbedding(
+        input_fmt=case["input_fmt"],
+        patch_shape=case["patch_shape"],
+        embed_dim=case["embed_dim"],
+        max_channels=8,
+        channel_fusion="attn_pool",
+        attn_pool_num_heads=4,
+    )
+    x = torch.randn(case["input_shape"])
+    out = pe(x)
+    B = case["input_shape"][0]
+    N = _ca_num_patches(case)
+    assert out.shape == (B, N, case["embed_dim"])
+
+
+def test_channel_adaptive_return_patches():
+    pe = ChannelAdaptivePatchEmbedding(
+        input_fmt="ZYXC",
+        patch_shape=(4, 8, 8, None),
+        embed_dim=32,
+        max_channels=8,
+        channel_fusion="concat",
+    )
+    x = torch.randn(1, 12, 16, 16, 3)
+    out, patches, token_shape = pe(x, return_patches=True)
+    assert patches.ndim == 4  # [B, N, C, P]
+    assert patches.shape[2] == 3  # C
+    assert isinstance(token_shape, tuple)
+
+
+def test_channel_adaptive_with_channel_ids():
+    pe = ChannelAdaptivePatchEmbedding(
+        input_fmt="ZYXC",
+        patch_shape=(4, 8, 8, None),
+        embed_dim=32,
+        max_channels=16,
+        channel_fusion="concat",
+    )
+    x = torch.randn(2, 12, 16, 16, 3)
+    ids = torch.tensor([5, 10, 15])
+    out = pe(x, channel_ids=ids)
+    B, N_C, D = out.shape
+    assert B == 2
+    assert D == 32

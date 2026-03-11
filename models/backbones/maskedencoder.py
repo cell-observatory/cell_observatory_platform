@@ -1,18 +1,18 @@
 import inspect
 import logging
 import sys
-from typing import Any, List, Literal, Mapping, Union
+from typing import Any, List, Literal, Mapping, Union, Optional
 
 import torch
 import torch.nn as nn
 
-from cell_observatory_platform.data.masking.mask_generator import apply_masks
-from cell_observatory_platform.models.backbones.encoder import Encoder
-from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.mlp import get_mlp
 from cell_observatory_platform.models.layers.norm import get_norm
+from cell_observatory_platform.models.backbones.encoder import Encoder
+from cell_observatory_platform.models.layers.activation import get_activation
+from cell_observatory_platform.data.masking.mask_generator import apply_masks
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
-from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding
+from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding, make_axial_rope_freqs
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -113,7 +113,7 @@ class MaskedEncoder(nn.Module):
         abs_sincos_enc: bool = False,
         rope_pos_enc: bool = True,
         rope_random_rotation_per_head: bool = True,
-        rope_mixed: bool = True,
+        rope_type: Literal["mixed", "axial", "custom"] = "axial",
         rope_theta: float = 10.0,
         mlp_wide_silu: bool = False,
         out_layers: List[int] = None,
@@ -167,7 +167,7 @@ class MaskedEncoder(nn.Module):
         # positional encoding parameters
         self.abs_sincos_enc = abs_sincos_enc
         self.rope_pos_enc = rope_pos_enc
-        self.rope_mixed = rope_mixed
+        self.rope_type = rope_type
         self.rope_theta = rope_theta
         self.wide_silu = mlp_wide_silu
         self.rope_random_rotation_per_head = rope_random_rotation_per_head
@@ -182,6 +182,18 @@ class MaskedEncoder(nn.Module):
                 # TODO: add support for cls token
                 cls_token=False,
             )
+        # precompute axial RoPE frequencies once and store as buffer
+        if self.rope_pos_enc and self.rope_type == "axial":
+            freqs_cis = make_axial_rope_freqs(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                dim=self.embed_dim // self.num_heads,
+                theta=self.rope_theta,
+            )
+            self.register_buffer("freqs_cis", freqs_cis)
+        else:
+            self.freqs_cis = None
 
         self.encoder = Encoder(
             embed_dim=self.embed_dim,
@@ -198,17 +210,33 @@ class MaskedEncoder(nn.Module):
             init_std=self.init_std,
             rope_pos_enc=rope_pos_enc,
             rope_random_rotation_per_head=rope_random_rotation_per_head,
-            rope_mixed=rope_mixed,
+            rope_type=rope_type,
             rope_theta=rope_theta,
             input_fmt=input_fmt,
             input_shape=input_shape,
             patch_shape=self.patch_shape,
-            mlp_wide_silu=mlp_wide_silu,
+            wide_silu=mlp_wide_silu,
             out_layers=out_layers,
-            dtype=dtype,
+            dtype=dtype
         )
 
         self.out_layers = out_layers
+
+        self._init_model_weights()
+
+    def _init_model_weights(self):
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                torch.nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+
+        self.apply(_init_weights)
+        w = self.patch_embedding.proj.weight
+        torch.nn.init.xavier_uniform_(w.view(w.shape[0], -1))
 
     @torch.jit.ignore
     def get_num_heads(self):
@@ -238,7 +266,7 @@ class MaskedEncoder(nn.Module):
             )
             return num_patches
 
-    def forward(self, inputs, masks=None, concat_masks=True):
+    def forward(self, inputs, masks=None, concat_masks=True, spatial_kwargs: Optional[dict] = None):
         x, patches = self.patch_embedding(inputs, return_patches=True)
 
         if self.abs_sincos_enc:
@@ -247,7 +275,7 @@ class MaskedEncoder(nn.Module):
         if masks is not None:
             x = apply_masks(x, masks, concat=concat_masks)
 
-        x = self.encoder(x, masks=masks)
+        x = self.encoder(x, masks=masks, pos_enc=self.freqs_cis, spatial_kwargs=spatial_kwargs)
 
         if self.out_layers is not None:
             outs = []
@@ -259,8 +287,8 @@ class MaskedEncoder(nn.Module):
         x = self.norm(x)
         return x, patches
 
-    def forward_features(self, inputs, masks=None, concat_masks=True):
-        x, _ = self.forward(inputs, masks=masks, concat_masks=concat_masks)
+    def forward_features(self, inputs, masks=None, concat_masks=True, spatial_kwargs: Optional[dict] = None):
+        x, _ = self.forward(inputs, masks=masks, concat_masks=concat_masks, spatial_kwargs=spatial_kwargs)
         return x
 
 
