@@ -553,6 +553,7 @@ jobs:
       - name: Start postgres database in apptainer
         run: |
           apptainer instance start --writable --env POSTGRES_PASSWORD=postgres sandbox/ my_postgres_instance -c 'config_file=/etc/postgresql/postgresql.conf'
+          psql --host localhost --user postgres --port 5432 --command="SELECT COUNT(*) FROM PREPARED;"
 
       - name: List files in the repository
         run: |
