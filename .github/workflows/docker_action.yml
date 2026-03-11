@@ -300,6 +300,7 @@ jobs:
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
       SUPABASE_PROD_URI: ${{ secrets.SUPABASE_PROD_URI }}
       SUPABASE_STAGING_URI: ${{ secrets.SUPABASE_STAGING_URI }}
+      SUPABASE_LOCAL_URI: ${{ secrets.SUPABASE_LOCAL_URI }}
     outputs:
       BUILT_SIF_PATH: ${{ steps.built_sif_path.outputs.BUILT_SIF_PATH }} # BUILT_SIF_FILE: /home/mosaic/Desktop/actions-runner/_work/cell_observatory_platform/cell_observatory_platform/feature_github_actions_updates_torch_26_01.sif
       SIF_FILE: ${{ steps.bootstrap_sif.outputs.SIF_FILE }}
@@ -529,6 +530,7 @@ jobs:
       SUPABASE_KEY: ${{ secrets.PRODUCTION_PROJECT_ANON_PUBLIC_KEY }}
       SUPABASE_STAGING_URI: ${{ secrets.SUPABASE_STAGING_URI }}
       SUPABASE_PROD_URI: ${{ secrets.SUPABASE_PROD_URI }}
+      SUPABASE_LOCAL_URI: ${{ secrets.SUPABASE_LOCAL_URI }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       WANDB_USERNAME: ${{ secrets.WANDB_USERNAME }}
       WANDB_DATA_DIR: ${{ github.workspace }}
