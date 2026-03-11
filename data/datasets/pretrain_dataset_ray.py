@@ -141,6 +141,7 @@ class FinetuneCollatorActor:
 
         self.host_buffer_actor = get_buffers(
             type="host_memory",
+            pool_name="loader",
             numa_node=self.numa_node,
             local_rank=self.local_rank,
             global_rank=self.global_rank,
@@ -620,6 +621,7 @@ class CollatorActor:
 
         self.host_buffer_actor = get_buffers(
             type="host_memory",
+            pool_name="loader",
             numa_node=self.numa_node,
             local_rank=self.local_rank,
             global_rank=self.global_rank,
@@ -862,7 +864,8 @@ class LoaderActor:
 
         # memory buffer
         self.buffer_actor = get_buffers(
-            type=f"host_memory",
+            type="host_memory",
+            pool_name="loader",
             node_id=self.node_id,
             local_rank=self.local_rank,
             global_rank=self.global_rank,
