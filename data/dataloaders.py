@@ -127,6 +127,7 @@ def get_dataloader(
             pin_to_numa_node=config.datasets.pin_numa_node,
             max_concurrent_calls=config.datasets.max_concurrent_calls,
             node_id=node_id(),
+            pool_name="loader",
             numa_node=torch_gpu_to_numa(local_rank())["numa_node"],
         )
 
