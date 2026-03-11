@@ -550,7 +550,7 @@ jobs:
 
       - name: Start postgres database in apptainer
         run: |
-          apptainer instance start --writable --env POSTGRES_PASSWORD=postgres sandbox/ my_postgres_instance_${{ github.workflow }}-${{ github.head_ref || github.ref_name }} -c 'config_file=/etc/postgresql/postgresql.conf'
+          apptainer instance start --writable --env POSTGRES_PASSWORD=postgres sandbox/ my_postgres_instance -c 'config_file=/etc/postgresql/postgresql.conf'
 
       - name: List files in the repository
         run: |
@@ -643,7 +643,7 @@ jobs:
       - name: Stop postgres database in apptainer
         if: always() # Ensure this runs even if previous steps fail
         run: |
-          apptainer instance stop my_postgres_instance_${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+          apptainer instance stop my_postgres_instance
 
   list_cache_folder:
     if: always() # always list the cache folder, even if the build failed.
