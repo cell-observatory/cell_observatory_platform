@@ -546,7 +546,7 @@ jobs:
 
       - name: Copy postgres database ~/db_files/sandbox to repo
         run: |
-          rsync -a --delete ~/db_files/sandbox sandbox
+          rsync -a --delete ~/db_files/sandbox/ sandbox/
 
       - name: Start postgres database in apptainer
         run: |
