@@ -5,7 +5,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, Literal, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -22,7 +22,69 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s -
 logger = logging.getLogger(__name__)
 
 
-def read_npy(image_path: str, dtype: NUMPY_DTYPES | str = None) -> np.ndarray:
+def save_scores(
+    image_path: str,
+    scores: np.ndarray,
+    task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
+    input_format: Literal["TN", "N"],
+    save_mode: Literal["overwrite", "append", "new_image"],
+) -> None:
+    raise NotImplementedError("save_instance_scores is not implemented")
+
+def save_labels(
+    image_path: str,
+    labels: np.ndarray,
+    label_names: List[str],
+    task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
+    input_format: Literal["TN", "N"],
+    save_mode: Literal["overwrite", "append", "new_image"],
+) -> None:
+    raise NotImplementedError("save_instance_labels is not implemented")
+
+def save_masks(
+    image_path: str,
+    masks: np.ndarray,
+    input_format: Literal["TZYXC", "ZYXC"],
+    task: Literal["instance_segmentation", "semantic_segmentation"],
+    save_mode: Literal["overwrite", "append", "new_image"],
+    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
+    chunk_shape: Optional[Tuple[int, int, int]] = None,
+) -> None:
+    if save_mode == "overwrite":
+        save_zarr_overwrite_channel(
+            image_path=image_path,
+            data=masks,
+            input_format=input_format,
+        )
+    elif save_mode == "append":
+        save_zarr_append_channel(
+            image_path=image_path,
+            data=masks,
+            input_format=input_format,
+        )
+    elif save_mode == "new_image":
+        if shard_cube_shape is None or chunk_shape is None:
+            raise ValueError("shard_cube_shape and chunk_shape are required for new_image mode")
+        save_zarr(
+            image_path=image_path,
+            data=masks,
+            shard_cube_shape=shard_cube_shape,
+            chunk_shape=chunk_shape,
+            input_format=input_format,
+        )
+    else:
+        raise ValueError(f"Invalid save mode: {save_mode}")
+
+def save_boxes(
+    image_path: str,
+    boxes: np.ndarray,
+    input_format: Literal["TN6", "N6"],
+    task: Literal["instance_segmentation", "detection"],
+    save_mode: Literal["overwrite", "append", "new_image"],
+) -> None:
+    raise NotImplementedError("save_instance_boxes is not implemented")
+
+def read_npy(image_path: str, dtype: Optional[NUMPY_DTYPES | str] = None) -> np.ndarray:
     if isinstance(image_path, torch.Tensor):
         path = Path(str(image_path.numpy(), "utf-8"))
     else:
@@ -115,7 +177,13 @@ def save_file(image_path: str, data: np.ndarray, **kwargs) -> None:
 
 # NOTE: taken from ml-data-cell_observatory_platform
 def create_zarr_spec(
-    data_shape, zarr_version, path, input_format, shard_cube_shape, chunk_shape, dtype: str = "uint16"
+    data_shape: Tuple[int, ...],
+    zarr_version: str,
+    path: str,
+    input_format: str,
+    shard_cube_shape: Tuple[int, int, int],
+    chunk_shape: Tuple[int, int, int],
+    dtype: NUMPY_DTYPES | str = "uint16",
 ):
     # NOTE: currently zarr saving format assumes time dimension is present
     #       always, we should consider changing this in the future
@@ -244,6 +312,63 @@ def save_zarr(
     ds = ts.open(zarr_spec).result()
     ds[:] = data
 
+
+def save_zarr_append_channel(
+    image_path: str,
+    data: np.ndarray,
+    input_format: str = "TZYXC",
+    zarr_driver: str = "zarr3",
+    dtype: str = "float16",
+) -> None:
+    """Append data as new channel(s) to an existing zarr array.
+
+    Opens the existing zarr read-write, resizes along the channel dimension,
+    and writes data into the new channel slice. Uses TensorStore resize().
+    """
+    if not len(data.shape) == len(input_format):
+        raise ValueError(f"data.shape and input_format must have the same length but got: {len(data.shape)=}, {len(input_format)=}")
+    channel_dim = input_format.index("C")
+    if channel_dim != len(input_format) - 1:
+        raise NotImplementedError("Only channel-last input_formats are currently supported for appending channels.")
+    ds = read_zarr(image_path, zarr_driver=zarr_driver, dtype=dtype, cast=False)
+    if len(ds.shape) != len(data.shape):
+        raise ValueError(f"data.shape and store.shape must have the same length but got: {len(data.shape)=}, {len(ds.shape)=}")
+    for i in data.shape:
+        if i != channel_dim and data.shape[i] != ds.shape[i]:
+            dim_name = input_format[i]
+            raise ValueError(f"Only the channel dimension can be appended, but got data.shape[{i}] != store_shape[{i}] for dimension {dim_name} with input_format={input_format}.")
+    new_shape = list(ds.shape).copy()
+    new_shape[channel_dim] = new_shape[channel_dim] + data.shape[channel_dim]
+    ds.resize(exclusive_max=tuple(new_shape), expand_only=True)
+    ds[..., -data.shape[channel_dim]:] = data.astype(dtype)
+
+def save_zarr_overwrite_channel(
+    image_path: str,
+    data: np.ndarray,
+    input_format: str = "TZYXC",
+    zarr_driver: str = "zarr3",
+    dtype: str = "float16",
+) -> None:
+    """Overwrite data in an existing zarr array.
+    
+    Opens the existing zarr read-write, and overwrites the last C channels with the new data, 
+    where C is the number of channels in the new data.
+    """
+    if not len(data.shape) == len(input_format):
+        raise ValueError(f"data.shape and input_format must have the same length but got: {len(data.shape)=}, {len(input_format)=}")
+    channel_dim = input_format.index("C")
+    if channel_dim != len(input_format) - 1:
+        raise NotImplementedError("Only channel-last input_formats are currently supported for overwriting channels.")
+    ds = read_zarr(image_path, zarr_driver=zarr_driver, dtype=dtype, cast=False)
+    if len(ds.shape) != len(data.shape):
+        raise ValueError(f"data.shape and store.shape must have the same length but got: {len(data.shape)=}, {len(ds.shape)=}")
+    for i in data.shape:
+        if i != channel_dim and data.shape[i] != ds.shape[i]:
+            dim_name = input_format[i]
+            raise ValueError(f"Only the channel dimension can be overwritten, but got data.shape[{i}] != store_shape[{i}] for dimension {dim_name} with input_format={input_format}.")
+        elif i == channel_dim and data.shape[i] >= ds.shape[i]:
+            raise ValueError(f"Cannot overwrite with more channels than the existing zarr, but got data.shape[{i}] >= store_shape[{i}] for dimension {dim_name} with input_format={input_format}.")
+    ds[..., -data.shape[channel_dim]:] = data.astype(dtype)
 
 def save_tiff(image_path: str, data: np.ndarray, axes: str, with_fiji: bool = False) -> None:
     if with_fiji:
