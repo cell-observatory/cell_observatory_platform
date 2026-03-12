@@ -364,12 +364,11 @@ class BufferManager:
         self.max_concurrent_calls = max_concurrent_calls
 
         self._buffer_actors: Dict[str, ActorHandle[HostMemoryBuffer]] = {}
-        self._buffer_configs: Dict[str, Dict[str, Any]] = {}
-        self._shm_refs: Dict[str, shared_memory.SharedMemory] = {}
-        self._buffer_dtypes: Dict[str, np.dtype] = {}
         
         self._current_memory_usage_bytes = 0
         self._max_memory_usage_bytes = int(rank_memory_budget_gb * 2**30 * (1 - safety_margin))
+
+        atexit.register(self.shutdown)
 
     def set_buffer(
         self,
@@ -409,9 +408,6 @@ class BufferManager:
                 max_concurrent_calls=self.max_concurrent_calls,
             )
             self._buffer_actors[pool_name] = buffer_actor
-            self._buffer_configs[pool_name] = buffer_cfg
-            self._shm_refs[pool_name] = shared_memory.SharedMemory(name=buffer_cfg["name"])
-            self._buffer_dtypes[pool_name] = buffer_dtype
             
         except Exception as e:
             raise RuntimeError(f"Failed to set buffer for pool {pool_name}: {e}")
@@ -455,10 +451,7 @@ class BufferManager:
             ray.logger.info(
                 f"BufferManager shutdown metrics for pool {pool_name}: {pool_metrics}"
             )
-
+            
     def shutdown(self) -> None:
         """Log final metrics and kill the underlying Ray actors."""
         self.log_metrics_at_shutdown()
-        for pool_name, buffer_actor in self._buffer_actors.items():
-            ray.logger.info(f"Shutting down buffer actor for pool {pool_name}")
-            ray.kill(buffer_actor)
