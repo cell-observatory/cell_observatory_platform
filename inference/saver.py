@@ -8,7 +8,8 @@ import ray
 
 from cell_observatory_platform.data.io import save_masks, save_scores, save_labels, save_boxes
 from cell_observatory_platform.data.datasets.buffers import BufferManager, slot_info_to_view
-from hydra.utils import instantiate
+from pathlib import Path
+import os
 
 def input_format_to_output_format(
     input_format: Literal["TZYXC", "ZYXC"],
@@ -220,12 +221,29 @@ class SaveWorker:
         max_retries: int = 3,
         retry_backoff_s: float = 0.5,
         max_workers: int = 4,
+        columns: List[str] = [
+            "x_start",
+            "y_start",
+            "z_start",
+            "time_start",
+            "channel_size",
+            "z_size",
+            "y_size",
+            "x_size",
+            "time_size",
+            "server_folder",
+            "output_folder",
+            "tile_name",
+            "prepared_id",
+            "mask_bbox_dict",
+        ],
     ):
         self.buffer_manager = buffer_manager
         self.max_retries = max_retries
+        self.columns = columns
         # TODO: Support threading with retries for each save operation
         if max_retries > 0:
-            ray.logger.warning(f"Saving with retries is not supported yet")
+            ray.logger.warning("Saving with retries is not supported yet")
         self.retry_backoff_s = retry_backoff_s
         self.thread_pool = ThreadPoolExecutor(
             max_workers=max_workers, 
@@ -243,6 +261,7 @@ class SaveWorker:
         save_mode: Literal["overwrite", "append", "new_image"],
         shard_cube_shape: Optional[Tuple[int, int, int]] = None,
         chunk_shape: Optional[Tuple[int, int, int]] = None,
+        save_dir: Optional[Path | str] = None,
     ) -> None:
         sample_metainfo = inference_outputs["metainfo"]
         task = sample_metainfo["task"]
@@ -260,18 +279,25 @@ class SaveWorker:
         t0 = time.perf_counter()
         for b in range(batch_size):
             preds_element = {}
-            metadata_element = {
-                "prepared_id": sample_metainfo["prepared_id"][b],
-                "tile_name": sample_metainfo["tile_name"][b],
-                "output_folder": sample_metainfo["output_folder"][b],
-                "existing_zarr_path": sample_metainfo["existing_zarr_path"][b],
-            }
+            metadata_element = {col: sample_metainfo[col][b] for col in self.columns}
+            if save_mode == "overwrite" or save_mode == "append":
+                image_path = os.path.join(
+                    metadata_element["server_folder"],
+                    metadata_element["output_folder"],
+                    metadata_element["tile_name"],
+                )
+            elif save_mode == "new_image":
+                if save_dir is None:
+                    raise ValueError("save_dir is required for new_image mode")
+                image_path: Path = Path(save_dir) / metadata_element["output_folder"] / metadata_element["tile_name"]
+                image_path.resolve()
+                image_path.parent.mkdir(parents=True, exist_ok=True)
             for name, output_array in output_arrays.items():
                 preds_element[name] = output_array[b]
             if task == "instance_segmentation":
                 batch_futures.append(self.thread_pool.submit(
                     save_instance_predictions,
-                    image_path=metadata_element["output_folder"],
+                    image_path=str(image_path),
                     preds=preds_element,
                     input_format=sample_metainfo["input_format"],
                     save_mode=save_mode,
@@ -281,7 +307,7 @@ class SaveWorker:
             elif task == "semantic_segmentation":
                 batch_futures.append(self.thread_pool.submit(
                     save_semantic_predictions,
-                    image_path=metadata_element["output_folder"],
+                    image_path=str(image_path),
                     preds=preds_element,
                     input_format=sample_metainfo["input_format"],
                     save_mode=save_mode,
@@ -291,7 +317,7 @@ class SaveWorker:
             elif task == "detection":
                 batch_futures.append(self.thread_pool.submit(
                     save_detection_predictions,
-                    image_path=metadata_element["output_folder"],
+                    image_path=str(image_path),
                     preds=preds_element,
                     input_format=sample_metainfo["input_format"],
                     save_mode=save_mode,

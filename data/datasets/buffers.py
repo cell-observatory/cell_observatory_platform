@@ -296,6 +296,48 @@ def get_slot_bytes(shape: tuple[int, ...], dtype: str) -> int:
     )
 
 
+def init_output_memory_pools(
+    buffer_manager: BufferManager, 
+    output_metadata: Dict[str, Any], 
+    batch_size: int,
+    save: Optional[bool] = False,
+    viz: Optional[bool] = False,
+    save_buffer_capacity: Optional[int] = None,
+    viz_buffer_capacity: Optional[int] = None,
+    pin_to_numa_node: Optional[bool] = True,
+) -> None:
+    """
+    Initialize output memory pools for save and viz.
+    """
+    if save and save_buffer_capacity is None:
+        raise ValueError("save_buffer_capacity must be provided if save is True")
+    if viz and viz_buffer_capacity is None:
+        raise ValueError("viz_buffer_capacity must be provided if viz is True")
+    if not save and not viz:
+        raise ValueError("at least one of save or viz must be True")
+
+    for name, metadata in output_metadata.items():
+        if save:
+            buffer_manager.set_buffer(
+                pool_name=f"{name}_save",
+                batch_size=batch_size,
+                input_shape=metadata["shape"],
+                dtype=metadata["dtype"],
+                buffer_type="host_memory",
+                buffer_capacity=save_buffer_capacity,
+                pin_to_numa_node=pin_to_numa_node,
+            )
+        if viz:
+            buffer_manager.set_buffer(
+                pool_name=f"{name}_viz",
+                batch_size=batch_size,
+                input_shape=metadata["shape"],
+                dtype=metadata["dtype"],
+                buffer_type="host_memory",
+                buffer_capacity=viz_buffer_capacity,
+                pin_to_numa_node=pin_to_numa_node,
+            )
+
 
 class BufferManager:
     """
