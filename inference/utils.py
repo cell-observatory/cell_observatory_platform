@@ -1,8 +1,8 @@
 from tqdm import tqdm
 import hashlib
 from pathlib import Path
-from typing import Literal, Optional, Tuple, Union, Dict, Sequence, Any
-
+from typing import Any, Callable, Dict, Literal, Optional, Sequence, Tuple, Union, List
+from torch import Tensor
 import torch
 import numpy as np
 import torch.nn.functional as F
@@ -12,7 +12,9 @@ from matplotlib.patches import Rectangle
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import ListedColormap, BoundaryNorm
 
+
 from cell_observatory_platform.data.io import save_file
+from cell_observatory_platform.data.datasets.buffers import BufferManager
 from cell_observatory_platform.data.structures import convert_bbox_format
 
 ArrayLike = Union[np.ndarray, torch.Tensor]
@@ -35,6 +37,28 @@ def tile_owner(roi_id: int, tile_name: str, world_size: int) -> int:
 def tile_hash(tile_name: str) -> int:
     return stable_i64(tile_name)
 
+
+def unpack_batched_tensors(
+    tensors: Dict[str, Tensor],
+    skip_keys: Optional[set[str]] = None,
+) -> List[Dict[str, Tensor]]:
+    """
+    Unpack batch dimension of a dictionary of tensors: 
+    Dict[str, Tensor BZYX] -> List[Dict[str, Tensor ZYX]] with len B.
+
+    Uses unbind(0) (no copy) and zip. Entries whose values have no .unbind are skipped.
+    """
+    skip_keys = skip_keys or set()
+    tensor_items = [
+        (k, v)
+        for k, v in tensors.items()
+        if k not in skip_keys and getattr(v, "unbind", None) is not None
+    ]
+    if not tensor_items:
+        return []
+    keys = [k for k, _ in tensor_items]
+    unbound = [t.unbind(0) for _, t in tensor_items]
+    return [dict(zip(keys, batch_slice)) for batch_slice in zip(*unbound)]
 
 def _normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
     img2d = np.asarray(img2d)
@@ -70,6 +94,17 @@ def _ensure_numpy_tzyxc(preds: ArrayLike) -> np.ndarray:
         raise ValueError(f"Expected 4D ZYXC or 5D TZYXC, got shape {arr.shape}")
 
     return arr
+
+def _ensure_numpy_tnc(preds: ArrayLike) -> np.ndarray:
+    """
+    Ensures we have a numpy array in TNC:
+      - if input is NC -> add T=1
+      - if input is TNC -> no-op
+    """
+    arr = _ensure_numpy(preds)
+    if arr.ndim == 2:  # NC -> add T=1
+        arr = arr[None, ...]
+    return arr  
 
 
 def _tzyxc_to_tczyx_or_czyx(
@@ -1218,18 +1253,13 @@ def save_instance_predictions(
                     pdf.savefig(fig)
                     plt.close(fig)
 
-<<<<<<< HEAD
         print(f"[save_instance_predictions] wrote {out_pdf}")
-=======
-        print(f"[save_instance_predictions] wrote {out_pdf}")
-        
 
 
 def visualize_semantic_labels(
     image: ArrayLike,
-    pred_semantic: ArrayLike,
-    gt_semantic: ArrayLike | None,
-    num_classes: int,
+    pred: Dict[str, ArrayLike],
+    target: Dict[str, ArrayLike] | None,
     out_path: Path | str,
     *,
     class_names: Sequence[str] | None = None,
@@ -1237,7 +1267,6 @@ def visualize_semantic_labels(
     pmin: float = 1.0,
     pmax: float = 99.0,
     mip_depth: int = 20,
-    pred_is_probabilities: bool = False,
 ) -> None:
     """
     Visualize semantic segmentation labels with per-class columns.
@@ -1251,22 +1280,24 @@ def visualize_semantic_labels(
     Args:
         image: TZYXC or ZYXC array - real input image
         pred_semantic: TZYXC or ZYXC with C in {1, num_classes} - per-class predictions (logits or probs)
-        gt_semantic: TZYXC/ZYXC with C in {1, num_classes}, or ZYX (class index), or None
-        num_classes: Number of semantic classes
+        targets: TZYXC/ZYXC with C in {1, num_classes}, or ZYX (class index), or None
         out_path: Output PDF path
         class_names: Optional list of class names (length num_classes)
         z_step: Step size for z-slices
         pmin: Percentile for image normalization (lower bound)
         pmax: Percentile for image normalization (upper bound)
         mip_depth: Depth for max-intensity projection
-        pred_is_probabilities: If True, pred_semantic is already in [0, 1]; only clip. If False, apply sigmoid.
     """
     # Normalize inputs to TZYXC
     image_tzyxc = _ensure_numpy_tzyxc(image)
-    pred_tzyxc = _ensure_numpy_tzyxc(pred_semantic)
+    pred_masks = _ensure_numpy_tzyxc(pred["masks"])
+    pred_labels = _ensure_numpy_tnc(pred["labels"])
+    num_classes = pred_labels.shape[-1]
+
+    
     
     T, Z, Y, X, C_img = image_tzyxc.shape
-    T_pred, Z_pred, Y_pred, X_pred, C_pred = pred_tzyxc.shape
+    T_pred, Z_pred, Y_pred, X_pred, C_pred = pred_masks.shape
     
     # Validate spatial dimensions match
     if (T, Z, Y, X) != (T_pred, Z_pred, Y_pred, X_pred):
@@ -1274,65 +1305,14 @@ def visualize_semantic_labels(
             f"Image and prediction must have same T,Z,Y,X. "
             f"Got image {(T,Z,Y,X)} vs pred {(T_pred,Z_pred,Y_pred,X_pred)}"
         )
-    
-    # Handle pred_semantic channels
-    if C_pred == 1:
-        # Single channel: expand to num_classes (only first class has data)
-        pred_expanded = np.zeros((T, Z, Y, X, num_classes), dtype=pred_tzyxc.dtype)
-        pred_expanded[..., 0] = pred_tzyxc[..., 0]
-        pred_tzyxc = pred_expanded
-    elif C_pred == num_classes:
-        # Already per-class format
-        pass
-    else:
-        raise ValueError(
-            f"pred_semantic must have C=1 or C=num_classes={num_classes}, got C={C_pred}"
-        )
-
-    # Convert to display range: sigmoid if logits, else clip (already probabilities)
-    if pred_is_probabilities:
-        pred_tzyxc = np.clip(pred_tzyxc.astype(np.float64), 0, 1).astype(np.float32)
-    else:
-        pred_tzyxc = _sigmoid(pred_tzyxc)
-    
-    # Handle gt_semantic
-    if gt_semantic is not None:
-        gt_arr = _ensure_numpy(gt_semantic)
         
-        if gt_arr.ndim == 3:
-            # ZYX class index -> one-hot encode
-            Z_gt, Y_gt, X_gt = gt_arr.shape
-            if (Z, Y, X) != (Z_gt, Y_gt, X_gt):
-                raise ValueError(
-                    f"GT spatial dims {(Z_gt,Y_gt,X_gt)} don't match image {(Z,Y,X)}"
-                )
-            # One-hot encode: [Z,Y,X] -> [Z,Y,X,num_classes]
-            gt_onehot = np.zeros((Z, Y, X, num_classes), dtype=np.float32)
-            for c in range(num_classes):
-                gt_onehot[..., c] = (gt_arr == c).astype(np.float32)
-            # Add T dimension
-            gt_tzyxc = gt_onehot[None, ...]  # [1, Z, Y, X, num_classes]
-        else:
-            gt_tzyxc = _ensure_numpy_tzyxc(gt_semantic)
-            T_gt, Z_gt, Y_gt, X_gt, C_gt = gt_tzyxc.shape
-            
-            if (T, Z, Y, X) != (T_gt, Z_gt, Y_gt, X_gt):
-                raise ValueError(
-                    f"GT spatial dims {(T_gt,Z_gt,Y_gt,X_gt)} don't match image {(T,Z,Y,X)}"
-                )
-            
-            if C_gt == 1:
-                # Single channel: expand to num_classes
-                gt_expanded = np.zeros((T, Z, Y, X, num_classes), dtype=gt_tzyxc.dtype)
-                gt_expanded[..., 0] = gt_tzyxc[..., 0]
-                gt_tzyxc = gt_expanded
-            elif C_gt != num_classes:
-                raise ValueError(
-                    f"GT must have C=1 or C=num_classes={num_classes}, got C={C_gt}"
-                )
+    # Handle gt_semantic
+    if target is not None:
+        gt_masks = _ensure_numpy_tzyxc(target["masks"])
+        gt_labels = _ensure_numpy_tnc(target["labels"])
     else:
-        # No GT: create zeros with same shape as pred
-        gt_tzyxc = np.zeros((T, Z, Y, X, num_classes), dtype=np.float32)
+        gt_masks = np.zeros((T, Z, Y, X, C_pred), dtype=np.float32)
+        gt_labels = np.zeros((T, Z, Y, X, num_classes), dtype=np.float32)
     
     # Prepare class names
     if class_names is None:
@@ -1379,7 +1359,7 @@ def visualize_semantic_labels(
                 # Columns 1 to num_classes: Pred per class (sigmoid already applied; clip to [0,1], no min-max)
                 for c in range(num_classes):
                     col_idx = 1 + c
-                    pred_block = pred_tzyxc[t, z0:z1, ..., c]  # [z_block, Y, X]
+                    pred_block = pred_masks[t, z0:z1, ..., c]  # [z_block, Y, X]
                     pred_mip = pred_block.max(axis=0)  # [Y, X]
                     pred_display = np.clip(pred_mip, 0, 1).astype(np.float32)
                     axes_row[col_idx].imshow(pred_display, cmap="viridis", interpolation="nearest")
@@ -1389,7 +1369,7 @@ def visualize_semantic_labels(
                 # Columns num_classes+1 to 2*num_classes: GT per class (clip to [0,1], no min-max)
                 for c in range(num_classes):
                     col_idx = 1 + num_classes + c
-                    gt_block = gt_tzyxc[t, z0:z1, ..., c]  # [z_block, Y, X]
+                    gt_block = gt_masks[t, z0:z1, ..., c]  # [z_block, Y, X]
                     gt_mip = gt_block.max(axis=0)  # [Y, X]
                     gt_display = np.clip(gt_mip, 0, 1).astype(np.float32)
                     axes_row[col_idx].imshow(gt_display, cmap="viridis", interpolation="nearest")
@@ -1404,28 +1384,20 @@ def visualize_semantic_labels(
 
 def save_semantic_predictions(
     name: str,
-    pred_semantic: ArrayLike,
-    image: ArrayLike,
+    preds: Sequence[Dict[str, ArrayLike]],
+    images: Sequence[ArrayLike],
     save_dir: Path | str,
     save_as_volume: bool,
     save_as_pdf: bool,
     z_step_pdf: int,
     filetype: Literal["tiff", "zarr"],
-    num_classes: int | None = None,
-    outputs_metadata: dict | None = None,
-    gt_semantic: ArrayLike | None = None,
-    targets: list[dict] | None = None,
-    data_sample: dict | None = None,
-    batch_idx: int = 0,
-    auxiliary_outputs: dict | None = None,
-    resolve_path_func: Callable[[dict, str], Any] | None = None,
+    targets: Sequence[Dict[str, ArrayLike]] | None = None,
     zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
     zarr_shard_shape: Optional[Tuple[int, ...]] = None,
     pmin: float = 1.0,
     pmax: float = 99.0,
     mip_depth: int = 20,
     class_names: Sequence[str] | None = None,
-    main_output_name: str = "predictions",
 ) -> None:
     """
     Save semantic segmentation predictions with dedicated visualization.
@@ -1439,154 +1411,73 @@ def save_semantic_predictions(
     
     Args:
         name: Identifier for this prediction
-        pred_semantic: Prediction tensor [Z, Y, X, C] or [T, Z, Y, X, C]
+        preds: Prediction tensor [Z, Y, X, C] or [T, Z, Y, X, C]
         image: Input image tensor [Z, Y, X, C] or [T, Z, Y, X, C]
         save_dir: Directory to save outputs
         save_as_volume: Whether to save volume files
         save_as_pdf: Whether to save PDF visualization
         z_step_pdf: Step size for z-slices in PDF
         filetype: Volume file format ("tiff" or "zarr")
-        num_classes: Number of semantic classes (inferred if None)
-        outputs_metadata: Metadata dict for inferring num_classes
-        gt_semantic: Ground truth tensor (optional, extracted from targets/data_sample if None)
         targets: List of target dicts (one per batch element)
         data_sample: Data sample dict for extracting GT and auxiliary outputs
-        batch_idx: Batch index for extracting from targets/data_sample
-        auxiliary_outputs: Dict of auxiliary output specs to include in volume saves
-        resolve_path_func: Function to resolve paths in data_sample (e.g., inferencer.resolve_path)
         zarr_chunk_shape: Chunk shape for Zarr files
         zarr_shard_shape: Shard shape for Zarr files
         pmin: Percentile for normalization (lower bound)
         pmax: Percentile for normalization (upper bound)
         mip_depth: Depth for max-intensity projection
         class_names: Optional list of class names for visualization
-        main_output_name: Key name for main prediction in preds_dict (default: "predictions")
     """
-    import torch
-    
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Normalize pred_semantic to TZYXC
-    pred_tensor = torch.as_tensor(pred_semantic) if isinstance(pred_semantic, (np.ndarray, list)) else pred_semantic
-    if pred_tensor.ndim == 4:
-        pred_tensor = pred_tensor.unsqueeze(0)  # [1, Z, Y, X, C]
-    pred_np = _ensure_numpy(pred_tensor)
-    
-    # Infer num_classes from prediction shape or metadata
-    _, _, _, _, C_pred = pred_np.shape
-    if num_classes is None:
-        num_classes = C_pred if C_pred > 1 else 1
-        # Fallback to outputs_metadata if shape doesn't give us num_classes
-        if num_classes == 1 and outputs_metadata:
-            main_output_name = next(iter(outputs_metadata.keys())) if outputs_metadata else None
-            if main_output_name and outputs_metadata.get(main_output_name, {}).get("num_output_channels"):
-                num_classes = outputs_metadata[main_output_name]["num_output_channels"]
-    
-    # Normalize image to TZYXC
-    image_tensor = torch.as_tensor(image) if isinstance(image, (np.ndarray, list)) else image
-    if image_tensor.ndim == 4:
-        image_tensor = image_tensor.unsqueeze(0)  # [1, Z, Y, X, C]
-    image_np = _ensure_numpy(image_tensor)
-    
-    # Extract ground truth if not provided
-    # SemanticSegmentationPreprocessor stores targets[b]["masks"] as (N_masks, D, H, W) and "labels" as (N_masks,);
-    # see preprocessor.py: semantic_masks[batch_idx] -> [N_masks, D, H, W] with D,H,W = Z,Y,X.
-    gt_semantic_np = None
-    if gt_semantic is None:
-        def _masks_to_zyxc(masks: torch.Tensor) -> torch.Tensor | None:
-            if masks.dtype == torch.bool:
-                masks = masks.float()
-            if masks.ndim == 3:
-                return masks  # [Z, Y, X] single channel
-            if masks.ndim == 4:
-                # Preprocessor format: (N_masks, D, H, W) -> (D, H, W, N_masks) = (Z, Y, X, C)
-                return masks.permute(1, 2, 3, 0)
-            return None
+    if targets is None:
+        targets = [{} for _ in range(len(preds))]
+    if not (len(preds) == len(images) == len(targets)):
+        raise ValueError("preds/image/targets must have same length")
 
-        if targets and batch_idx < len(targets) and targets[batch_idx]:
-            target_dict = targets[batch_idx]
-            if isinstance(target_dict, dict) and "masks" in target_dict and isinstance(target_dict["masks"], torch.Tensor):
-                gt_semantic = _masks_to_zyxc(target_dict["masks"])
+    images = list(images)
+    preds = list(preds)
+    targets = list(targets)
 
-        if gt_semantic is None and data_sample:
-            try:
-                metainfo_targets = data_sample.get("metainfo", {}).get("targets", None)
-                if isinstance(metainfo_targets, (list, tuple)) and len(metainfo_targets) > 0 and batch_idx < len(metainfo_targets):
-                    target_item = metainfo_targets[batch_idx]
-                    if isinstance(target_item, dict) and "masks" in target_item and isinstance(target_item["masks"], torch.Tensor):
-                        gt_semantic = _masks_to_zyxc(target_item["masks"])
-            except Exception:
-                pass
+    for i in range(len(preds)):
 
-    if gt_semantic is not None:
-        gt_semantic = _ensure_numpy(gt_semantic)
-        gt_semantic_np = gt_semantic
-    
-    # Build preds_dict for volume saving
-    preds_dict = {}
-    preds_dict[main_output_name] = pred_np
-    
-    # Add auxiliary outputs if provided
-    if auxiliary_outputs and data_sample and resolve_path_func:
-        for aux_name, spec in auxiliary_outputs.items():
-            path = spec.get("path", aux_name)
-            try:
-                aux_value = resolve_path_func(data_sample, path)
-                if isinstance(aux_value, torch.Tensor):
-                    aux_slice = aux_value[batch_idx]  # [Z, Y, X, C] or similar
-                    if aux_slice.ndim == 4:
-                        aux_slice = aux_slice.unsqueeze(0)  # [1, Z, Y, X, C]
-                    preds_dict[aux_name] = _ensure_numpy(aux_slice)
-            except Exception:
-                continue
-    
-    # Add ground truth to preds_dict for volume saving
-    if gt_semantic_np is not None:
-        if gt_semantic_np.ndim == 3:
-            gt_for_dict = gt_semantic_np[..., None]  # [Z, Y, X, 1]
-        elif gt_semantic_np.ndim == 4:
-            gt_for_dict = gt_semantic_np
-        else:
-            gt_for_dict = None
+        images[i] = _ensure_numpy(images[i])
+
+        for key, arr in preds[i].items():
+            preds[i][key] = _ensure_numpy(arr)
         
-        if gt_for_dict is not None:
-            if gt_for_dict.ndim == 4:
-                gt_for_dict = gt_for_dict[None, ...]  # [1, Z, Y, X, C]
-            preds_dict["ground_truth"] = gt_for_dict
-    
-    # Save volume files (TIFF/Zarr) if requested
-    if save_as_volume:
-        save_predictions(
-            name=name,
-            predictions=preds_dict,
-            save_dir=save_dir,
-            save_as_volume=True,
-            save_as_pdf=False,  # Use dedicated semantic visualization for PDF
-            z_step_pdf=z_step_pdf,
-            filetype=filetype,
-            zarr_chunk_shape=zarr_chunk_shape,
-            zarr_shard_shape=zarr_shard_shape,
-            pmin=pmin,
-            pmax=pmax,
-            mip_depth=mip_depth,
-        )
-    
-    # Save semantic visualization PDF if requested (pred_np is already probabilities from reducer)
-    if save_as_pdf:
-        visualize_semantic_labels(
-            image=image_np,
-            pred_semantic=pred_np,
-            gt_semantic=gt_semantic_np,
-            num_classes=num_classes,
-            out_path=save_dir / f"pred_{name}_semantic_MIP.pdf",
-            class_names=class_names,
-            z_step=z_step_pdf,
-            pmin=pmin,
-            pmax=pmax,
-            mip_depth=mip_depth,
-            pred_is_probabilities=True,
-        )
+        for key, arr in targets[i].items():
+            targets[i][key] = _ensure_numpy(arr)
+        
+
+        # Save volume files (TIFF/Zarr) if requested
+        if save_as_volume:
+            save_predictions(
+                name=name,
+                predictions=preds[i],
+                save_dir=save_dir,
+                save_as_volume=True,
+                save_as_pdf=False,  # Use dedicated semantic visualization for PDF
+                z_step_pdf=z_step_pdf,
+                filetype=filetype,
+                pmin=pmin,
+                pmax=pmax,
+                zarr_chunk_shape=zarr_chunk_shape,
+                zarr_shard_shape=zarr_shard_shape,
+            )
+        
+        # Save semantic visualization PDF if requested (pred_np is already probabilities from reducer)
+        if save_as_pdf:
+            visualize_semantic_labels(
+                image=images[i],
+                pred=preds[i],
+                target=targets[i],
+                out_path=save_dir / f"pred_{name}_semantic_MIP.pdf",
+                class_names=class_names,
+                z_step=z_step_pdf,
+                pmin=pmin,
+                pmax=pmax,
+                mip_depth=mip_depth,
+            )
 
 
 
@@ -1658,4 +1549,3 @@ def reduce_queries_to_semantic_map(
         # Stack along channel dimension: [B, D, H, W, num_classes]
         semantic = torch.stack(semantic_per_class, dim=-1)  # [B, D, H, W, num_classes]
         return semantic
->>>>>>> d12b49c (feat: introduce InferenceVisualizer and VizWorker for handling model output visualizations)

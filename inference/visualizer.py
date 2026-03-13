@@ -11,23 +11,28 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Sequence, List, Tuple
 
 import numpy as np
-from cell_observatory_platform.data.datasets.buffers import slot_info_to_view
-from cell_observatory_platform.inference.utils import save_semantic_predictions
-from cell_observatory_platform.inference.utils import save_feature_visualizations
-from cell_observatory_platform.inference.utils import save_instance_predictions
-from cell_observatory_platform.inference.utils import save_bbox_overlay
-from cell_observatory_platform.inference.utils import save_predictions
+from cell_observatory_platform.data.datasets.buffers import slot_info_to_view, BufferManager
+from cell_observatory_platform.inference.utils import (
+    save_semantic_predictions,
+    save_feature_visualizations,
+    save_instance_predictions,
+    save_bbox_overlay,
+    save_predictions,
+    unpack_batched_tensors,
+    )
 import ray
 
 
+
 @ray.remote(namespace="visualizer", lifetime="detached", num_cpus=0)
-class VisWorker:
+class VizWorker:
     """
     Pure component that dispatches to visualization handlers based on output_type.viz.handler.
     """
 
-    def __init__(self, rank: int) -> None:
-        self.rank = rank
+    def __init__(self, buffer_manager: BufferManager) -> None:
+        self.buffer_manager = buffer_manager
+        self.global_rank = buffer_manager.global_rank
         self._handlers: Dict[str, Callable[..., None]] = {}
         self._register_default_handlers()
 
@@ -49,7 +54,7 @@ class VisWorker:
         save_semantic_predictions(
             name=inference_outputs["name"],
             pred_semantic=inference_outputs["semantic_masks"].unsqueeze(1),
-            image=inference_outputs["data_tensor"].unsqueeze(1),
+            images=inference_outputs["data_tensor"].unsqueeze(1),
             save_dir=save_dir,
             **kwargs,
         )
@@ -62,12 +67,20 @@ class VisWorker:
     ) -> None:
 
         regions, identifiers = self._prepare_regions_and_identifiers(inference_outputs["metainfo"])
+
+        # Per-batch unpacking: _unpack_batch(inference_outputs, skip_keys={"metainfo"})
+        # -> List[Dict[str, Tensor ZYX]] (len = B) for per-sample handling
+        targets = inference_outputs.pop("targets")
+        targets_unpacked = unpack_batched_tensors(targets)
+        data_tensor = inference_outputs.pop("data_tensor")
+        data_tensor_unpacked = list(data_tensor.unbind(0))
+        unpacked_inference_outputs = unpack_batched_tensors(inference_outputs, skip_keys={"metainfo"})
         save_instance_predictions(
             save_dir=save_dir,
+            images=data_tensor_unpacked,
+            targets=targets_unpacked,
+            preds=unpacked_inference_outputs,
             identifiers=identifiers,
-            images=inference_outputs["data_tensor"].unsqueeze(1),
-            preds=inference_outputs["preds"],
-            targets=inference_outputs["targets"],
             regions=regions,
             **kwargs,
         )
@@ -157,7 +170,7 @@ class VisWorker:
                 coord_frame="voxel",
             )
             ident = (
-                f"rank{self.rank:03d}_roi{roi}_{tile_nm}"
+                f"rank{self.global_rank:03d}_roi{roi}_{tile_nm}"
                 f"_t{t0}-{t1}_z{z0}-{z1}_y{y0}-{y1}_x{x0}-{x1}"
             )
 
@@ -177,19 +190,13 @@ class VisWorker:
         """
         Dispatch to the appropriate handler based on output_type.viz.handler.
         """
-        sample_metainfo = inference_outputs["metainfo"]
-        task = sample_metainfo["task"]
-        batch_size = sample_metainfo["batch_size_actual"]
-        output_arrays = {}
         slots_to_free = []
-        for name, output in inference_outputs.items():
-            slot_info = output["slot_info"]
-            output_metadata = output["metadata"]
+        for name, slot_info in inference_outputs.items():
+            if name == "metainfo":
+                continue
             output_array = slot_info_to_view(slot_info)
-            output_arrays[name] = output_array
+            inference_outputs[name] = output_array
             slots_to_free.append(slot_info)
-        
-        inference_outputs.update(output_arrays)
 
         for handler_name, kwargs in handler_configs.items():
             if handler_name not in self._handlers:
@@ -201,3 +208,6 @@ class VisWorker:
                 save_dir=save_dir,
                 **kwargs,
             )
+        
+        for slot_info in slots_to_free:
+            self.buffer_manager.free_slot(slot_info)
