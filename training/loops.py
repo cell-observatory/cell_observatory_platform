@@ -954,10 +954,10 @@ class Inferencer(BaseTrainer):
         else:
             self.viz_worker = None
         # initialize inferencer_worker
-        self.inferencer_worker = instantiate(
+        self.inferencer_worker: InferencerWorker = instantiate(
             cfg.inference, 
             model=self.model, 
-            database=database_df,
+            # database=database_df,
             buffer_manager=self.buffer_manager,
             save_worker=self.save_worker,
             viz_worker=self.viz_worker,
@@ -986,8 +986,6 @@ class Inferencer(BaseTrainer):
         self,
         idx: int,
         data_sample: Sequence[dict],
-        save: bool = False,
-        viz: bool = False
     ) -> None:
         """
         Iterate one prediction step.
