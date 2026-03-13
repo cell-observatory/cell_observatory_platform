@@ -255,6 +255,9 @@ class SaveWorker:
             "save_failures": 0,
         }
     
+    def get_metrics(self) -> Dict[str, Any]:
+        return self._save_metrics.copy()
+
     def save(
         self, 
         inference_outputs: Dict[str, Any], 
@@ -263,79 +266,83 @@ class SaveWorker:
         chunk_shape: Optional[Tuple[int, int, int]] = None,
         save_dir: Optional[Path | str] = None,
     ) -> None:
-        sample_metainfo = inference_outputs["metainfo"]
-        task = sample_metainfo["task"]
-        batch_size = sample_metainfo["batch_size_actual"]
         output_arrays = {}
         slots_to_free = []
-        for name, output in inference_outputs.items():
-            slot_info = output["slot_info"]
-            output_metadata = output["metadata"]
-            output_array = slot_info_to_view(slot_info)
-            output_arrays[name] = output_array
-            slots_to_free.append(slot_info)
-
-        batch_futures: List[Future] = []
         t0 = time.perf_counter()
-        for b in range(batch_size):
-            preds_element = {}
-            metadata_element = {col: sample_metainfo[col][b] for col in self.columns}
-            if save_mode == "overwrite" or save_mode == "append":
-                image_path = os.path.join(
-                    metadata_element["server_folder"],
-                    metadata_element["output_folder"],
-                    metadata_element["tile_name"],
-                )
-            elif save_mode == "new_image":
-                if save_dir is None:
-                    raise ValueError("save_dir is required for new_image mode")
-                image_path: Path = Path(save_dir) / metadata_element["output_folder"] / metadata_element["tile_name"]
-                image_path.resolve()
-                image_path.parent.mkdir(parents=True, exist_ok=True)
-            for name, output_array in output_arrays.items():
-                preds_element[name] = output_array[b]
-            if task == "instance_segmentation":
-                batch_futures.append(self.thread_pool.submit(
-                    save_instance_predictions,
-                    image_path=str(image_path),
-                    preds=preds_element,
-                    input_format=sample_metainfo["input_format"],
-                    save_mode=save_mode,
-                    chunk_shape=chunk_shape,
-                    shard_cube_shape=shard_cube_shape,
-                ))
-            elif task == "semantic_segmentation":
-                batch_futures.append(self.thread_pool.submit(
-                    save_semantic_predictions,
-                    image_path=str(image_path),
-                    preds=preds_element,
-                    input_format=sample_metainfo["input_format"],
-                    save_mode=save_mode,
-                    chunk_shape=chunk_shape,
-                    shard_cube_shape=shard_cube_shape,
-                ))
-            elif task == "detection":
-                batch_futures.append(self.thread_pool.submit(
-                    save_detection_predictions,
-                    image_path=str(image_path),
-                    preds=preds_element,
-                    input_format=sample_metainfo["input_format"],
-                    save_mode=save_mode,
-                ))
-            else:
-                raise ValueError(f"Unknown task: {task}")
+        try:
+            sample_metainfo = inference_outputs["metainfo"]
+            task = sample_metainfo["task"]
+            batch_size = sample_metainfo["batch_size_actual"]
+            for name, slot_info in inference_outputs.items():
+                if name == "metainfo":
+                    continue
+                output_array = slot_info_to_view(slot_info)
+                output_arrays[name] = output_array
+                slots_to_free.append(slot_info)
 
-        for future in as_completed(batch_futures):
-            try:
-                future.result()
-                self._save_metrics["save_successes"] += 1
-            except Exception as e:
-                ray.logger.error(f"Failed to save batch element: {e}", exc_info=True)
-                self._save_metrics["save_failures"] += 1
-                continue
-        self._save_metrics["save_time_ms"] += (time.perf_counter() - t0) * 1000
-        for slot_info in slots_to_free:
-            self.buffer_manager.free_slot(slot_info)
+            batch_futures: List[Future] = []
+            for b in range(batch_size):
+                preds_element = {}
+                metadata_element = {col: sample_metainfo[col][b] for col in self.columns}
+                if save_mode == "overwrite" or save_mode == "append":
+                    image_path = os.path.join(
+                        metadata_element["server_folder"],
+                        metadata_element["output_folder"],
+                        metadata_element["tile_name"],
+                    )
+                elif save_mode == "new_image":
+                    if save_dir is None:
+                        raise ValueError("save_dir is required for new_image mode")
+                    image_path: Path = Path(save_dir) / metadata_element["output_folder"] / metadata_element["tile_name"]
+                    image_path.resolve()
+                    image_path.parent.mkdir(parents=True, exist_ok=True)
+                for name, output_array in output_arrays.items():
+                    preds_element[name] = output_array[b]
+                if task == "instance_segmentation":
+                    batch_futures.append(self.thread_pool.submit(
+                        save_instance_predictions,
+                        image_path=str(image_path),
+                        preds=preds_element,
+                        input_format=sample_metainfo["input_format"],
+                        save_mode=save_mode,
+                        chunk_shape=chunk_shape,
+                        shard_cube_shape=shard_cube_shape,
+                    ))
+                elif task == "semantic_segmentation":
+                    batch_futures.append(self.thread_pool.submit(
+                        save_semantic_predictions,
+                        image_path=str(image_path),
+                        preds=preds_element,
+                        input_format=sample_metainfo["input_format"],
+                        save_mode=save_mode,
+                        chunk_shape=chunk_shape,
+                        shard_cube_shape=shard_cube_shape,
+                    ))
+                elif task == "detection":
+                    batch_futures.append(self.thread_pool.submit(
+                        save_detection_predictions,
+                        image_path=str(image_path),
+                        preds=preds_element,
+                        input_format=sample_metainfo["input_format"],
+                        save_mode=save_mode,
+                    ))
+                else:
+                    raise ValueError(f"Unknown task: {task}")
+
+            for future in as_completed(batch_futures):
+                try:
+                    future.result()
+                    self._save_metrics["save_successes"] += 1
+                except Exception as e:
+                    ray.logger.error(f"Failed to save batch element: {e}", exc_info=True)
+                    self._save_metrics["save_failures"] += 1
+                    continue
+            self._save_metrics["save_time_ms"] += (time.perf_counter() - t0) * 1000
+        except Exception as e:
+            ray.logger.error(f"Failed to save: {e}", exc_info=True)
+        finally:
+            for slot_info in slots_to_free:
+                self.buffer_manager.free_slot(slot_info)
 
 
 def submit_with_state(executor: ThreadPoolExecutor, fn: Callable, arg: Any, attempt: int, future_state: Dict[Future, Dict[str, Any]]):
