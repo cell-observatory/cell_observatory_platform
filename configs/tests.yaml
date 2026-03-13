@@ -68,6 +68,7 @@ clusters:
   gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 8 # number of cpu cores per gpu
   mem_per_cpu: 16000 # ram per cpu core
+  num_workers: 1 # number of workers per node
 
 datasets:
   # mainly used by other configs but determined here for ease of access

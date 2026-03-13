@@ -37,6 +37,7 @@ os.environ["NCCL_CROSS_NIC"] = "1"
 os.environ["NCCL_P2P_LEVEL"] = "NVL"
 os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "3600"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["RAY_TRAIN_WORKER_GROUP_START_TIMEOUT_SEC"] = "3600"
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", verbose=True)
 
 

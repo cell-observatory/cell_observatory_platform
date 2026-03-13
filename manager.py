@@ -33,6 +33,7 @@ from cell_observatory_platform.utils.profiling import enable_profiling
 # Update environment variables
 os.environ["HYDRA_FULL_ERROR"] = "1"
 os.environ["RAY_DEDUP_LOGS"] = "0"
+os.environ["RAY_TRAIN_WORKER_GROUP_START_TIMEOUT_SEC"] = "3600"
 
 load_dotenv(Path(__file__).parent / ".env", verbose=True)
 
