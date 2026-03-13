@@ -20,6 +20,7 @@ if not OmegaConf.has_resolver("now"):
 import torch
 from deepspeed import initialize
 from ray.train import get_context
+import ray
 
 from cell_observatory_platform.training.helpers import (
     enable_optimizations,
@@ -41,8 +42,19 @@ from cell_observatory_platform.parallelism.utils import get_cp_buffers
 from cell_observatory_platform.training.loggers import EventRecorder, MetricsProcessor
 from cell_observatory_platform.training.optimizers import get_optimizer, build_optimizers
 from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
-from cell_observatory_platform.utils.context import inference_context, process_rank, get_world_size
+from cell_observatory_platform.utils.context import (
+    inference_context,
+    process_rank,
+    get_world_size,
+    local_rank,
+    node_id,
+    torch_gpu_to_numa,
+)
+from cell_observatory_platform.inference.inferencer import InferencerWorker
 from cell_observatory_platform.training.schedulers import get_param_groups, get_schedulers, build_lr_schedulers, build_wd_schedulers
+from cell_observatory_platform.data.datasets.buffers import BufferManager, init_output_memory_pools
+from cell_observatory_platform.inference.saver import SaveWorker
+from cell_observatory_platform.inference.visualizer import VizWorker
 
 from torchtitan.tools import utils
 from torchtitan.components.ft import FTManager
@@ -896,10 +908,49 @@ class Inferencer(BaseTrainer):
             config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
         )
 
+        # Build Output Memory Pools
+        self.buffer_manager = BufferManager(
+            local_rank=local_rank(),
+            global_rank=process_rank(),
+            node_id=node_id(),
+            numa_node=torch_gpu_to_numa(local_rank())["numa_node"],
+            rank_memory_budget_gb=cfg.inference.memory.rank_memory_budget_gb,
+            max_concurrent_calls=cfg.inference.buffer_manager.max_concurrent_calls,
+            safety_margin=cfg.inference.buffer_manager.safety_margin,
+        )
+        
+        init_output_memory_pools(
+            buffer_manager=self.buffer_manager,
+            output_metadata=cfg.inference.outputs_metadata, #TODO: make sure this includes aux outputs, targets, and inputs if we want to vizualize them
+            batch_size=cfg.clusters.batch_size_per_gpu,
+            save=cfg.inference.save,
+            viz=cfg.inference.viz,
+            save_buffer_capacity=cfg.inference.buffer_manager.save_buffer_capacity,
+            viz_buffer_capacity=cfg.inference.buffer_manager.viz_buffer_capacity,
+        )
+        if cfg.inference.save:
+            self.save_worker = SaveWorker.options(name=f"save_worker_rank_{process_rank()}").remote(
+                buffer_manager=self.buffer_manager,
+                max_retries=cfg.inference.max_retries,
+                retry_backoff_s=cfg.inference.retry_backoff_s,
+            )
+        else:
+            self.save_worker = None
+        if cfg.inference.viz:
+            self.viz_worker = VizWorker.options(name=f"viz_worker_rank_{process_rank()}").remote(
+                buffer_manager=self.buffer_manager
+            )
+        else:
+            self.viz_worker = None
         # initialize inferencer_worker
-        self.inferencer_worker = instantiate(cfg.inference, 
-                                             model=self.model, 
-                                             database=database_df)
+        self.inferencer_worker = instantiate(
+            cfg.inference, 
+            model=self.model, 
+            database=database_df,
+            buffer_manager=self.buffer_manager,
+            save_worker=self.save_worker,
+            viz_worker=self.viz_worker,
+        )
 
     def predict(self):
         """
@@ -920,7 +971,13 @@ class Inferencer(BaseTrainer):
 
         self.after_test()
 
-    def run_inference_step(self, idx: int, data_sample: Sequence[dict]) -> None:
+    def run_inference_step(
+        self,
+        idx: int,
+        data_sample: Sequence[dict],
+        save: bool = False,
+        viz: bool = False
+    ) -> None:
         """
         Iterate one prediction step.
         """
@@ -930,7 +987,6 @@ class Inferencer(BaseTrainer):
 
         self.after_test_step(data_sample=data_sample, outputs=None, loss_dict=None)
         self._iter += 1
-
 
 class ParallelEpochBasedTrainer(BaseTrainer):
     def __init__(self, cfg: DictConfig) -> None:
