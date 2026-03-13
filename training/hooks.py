@@ -16,7 +16,7 @@ import operator
 from collections import Counter
 from enum import Enum
 from pathlib import Path
-from typing import Literal, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Literal, Optional, Sequence, Union
 
 import torch
 from fvcore.common.timer import Timer
@@ -40,6 +40,8 @@ from cell_observatory_platform.training.loggers import EventWriter
 from cell_observatory_platform.training.helpers import log_data_timings
 from cell_observatory_platform.training.schedulers import CosineScheduler
 from cell_observatory_platform.utils.context import gather_and_reduce, is_main_process, process_rank
+if TYPE_CHECKING:
+    from cell_observatory_platform.training.loops import BaseTrainer, Inferencer
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -60,7 +62,7 @@ class HookBase:
 
     # a weak reference to the trainer object
     # set by the trainer when the hook is registered
-    trainer = None
+    trainer: "BaseTrainer" = None
 
     # the priority of the hook
     # hooks with higher priority will
@@ -472,6 +474,60 @@ class IterationTimer(HookBase):
         # _total_timer only counts
         # total time in step excluding hooks
         self._total_timer.pause()
+
+
+class InferenceMetricsHook(HookBase):
+    """
+    Collect inference metrics from InferencerWorker, SaveWorker, VizWorker
+    and forward to EventRecorder with prefix='inference_'.
+    Runs only when trainer has inferencer_worker (i.e. Inferencer).
+    """     
+
+    PRIORITY = HOOK_PRIORITY.MEDIUM
+
+    trainer: "Inferencer"
+
+    def __init__(self, log_every_n_steps: int = 100):
+        self._log_every_n_steps = log_every_n_steps
+        self._last_logged_step = 0
+
+    def before_test(self):
+        self._inference_start_time = time.perf_counter()
+        self._inference_total_samples = 0
+
+    def after_test_step(self, data_sample, outputs, loss_dict):
+        if not hasattr(self.trainer, "inferencer_worker"):
+            return
+        
+        if self.trainer._iter - self._last_logged_step >= self._log_every_n_steps:
+            self._log_metrics()
+            self._last_logged_step = self.trainer._iter
+
+    def _log_metrics(self):
+        metrics = self.trainer.inferencer_worker.get_step_metrics()
+        if metrics:
+            self.trainer.event_recorder.put_scalars(
+                scope="step",
+                prefix="inference_",
+                **metrics,
+            )
+
+    def after_test(self):
+        if not hasattr(self.trainer, "inferencer_worker"):
+            return
+        if getattr(self, "_inference_total_samples", 0) <= 0:
+            return
+        duration_s = time.perf_counter() - getattr(
+            self, "_inference_start_time", time.perf_counter()
+        )
+        if duration_s > 0:
+            samples_per_sec = self._inference_total_samples / duration_s
+            self.trainer.event_recorder.put_scalars(
+                scope="epoch",
+                prefix="inference_",
+                samples_per_sec=samples_per_sec,
+                tiles_per_sec=samples_per_sec,
+            )
 
 
 class PeriodicWriter(HookBase):

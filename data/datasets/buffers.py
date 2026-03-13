@@ -182,6 +182,8 @@ class HostMemoryBuffer:
             "try_get_free_wait_time_s": 0.0,
             "try_get_free_drops": 0,
             "in_use_current": 0,
+            "capacity": self.cap,
+            "slot_bytes": self.slot_bytes,
         }
 
 
@@ -443,6 +445,11 @@ class BufferManager:
         for pool_name, buffer_actor in self._buffer_actors.items():
             metrics[pool_name] = ray.get(buffer_actor.get_metrics.remote())
         return metrics
+    
+    def clear_metrics(self) -> None:
+        """Flush the metrics for the BufferManager."""
+        for pool_name, buffer_actor in self._buffer_actors.items():
+            buffer_actor.clear_metrics.remote()
 
     def log_metrics_at_shutdown(self) -> None:
         """Log BufferManager metrics at shutdown."""
