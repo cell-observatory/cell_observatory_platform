@@ -21,7 +21,7 @@ from cell_observatory_platform.inference.utils import (
     unpack_batched_tensors,
     )
 import ray
-
+import time
 
 
 @ray.remote(namespace="visualizer", lifetime="detached", num_cpus=0)
@@ -35,6 +35,12 @@ class VizWorker:
         self.global_rank = buffer_manager.global_rank
         self._handlers: Dict[str, Callable[..., None]] = {}
         self._register_default_handlers()
+        self._metrics: Dict[str, float | int] = {
+            "visualize_count": 0.0,
+            "visualize_wait_time_s": 0.0,
+            "visualize_successes": 0.0,
+            "visualize_failures": 0.0,
+        }
 
     def _register_default_handlers(self) -> None:
         """Register built-in handlers for viz.handler names."""
@@ -179,7 +185,16 @@ class VizWorker:
         
         return regions, identifiers
 
+    def get_metrics(self) -> Dict[str, float | int]:
+        return self._metrics.copy()
 
+    def clear_metrics(self) -> None:
+        self._metrics = {
+            "visualize_count": 0.0,
+            "visualize_wait_time_s": 0.0,
+            "visualize_successes": 0.0,
+            "visualize_failures": 0.0,
+        }
 
     def visualize(
         self,
@@ -191,6 +206,7 @@ class VizWorker:
         Dispatch to the appropriate handler based on output_type.viz.handler.
         """
         slots_to_free = []
+        start_time = time.perf_counter()
         try:
             for name, slot_info in inference_outputs.items():
                 if name == "metainfo":
@@ -209,10 +225,13 @@ class VizWorker:
                     save_dir=save_dir,
                     **kwargs,
                 )
-        
+            end_time = time.perf_counter()
+            self._metrics["visualize_wait_time_s"] = end_time - start_time
+            self._metrics["visualize_successes"] += 1
         except Exception as e:
-            ray.logger.error(f"Failed to visualize: {e}", exc_info=True)
-
+                ray.logger.error(f"Failed to visualize: {e}", exc_info=True)
+                self._metrics["visualize_failures"] += 1
         finally:
+            self._metrics["visualize_count"] += 1
             for slot_info in slots_to_free:
                 self.buffer_manager.free_slot(slot_info)

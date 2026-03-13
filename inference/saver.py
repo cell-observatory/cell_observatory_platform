@@ -258,6 +258,13 @@ class SaveWorker:
     def get_metrics(self) -> Dict[str, Any]:
         return self._save_metrics.copy()
 
+    def clear_metrics(self) -> None:
+        self._save_metrics = {
+            "save_time_ms": 0.0,
+            "save_successes": 0,
+            "save_failures": 0,
+        }
+
     def save(
         self, 
         inference_outputs: Dict[str, Any], 

@@ -1279,6 +1279,7 @@ class InferencerWorker:
         Get metrics for the current step
         """
         buffer_metrics = self.buffer_manager.get_metrics()
+        self.buffer_manager.clear_metrics()
         metrics = {}
         for pool_name, pool_metrics in buffer_metrics.items():
             metrics[f"{pool_name}_avg_get_free_wait_time_s"] = pool_metrics["get_free_wait_time_s"] / pool_metrics["get_free_count"]
@@ -1295,14 +1296,18 @@ class InferencerWorker:
 
         save_metrics = ray.get(self.save_worker.get_metrics.remote())
         viz_metrics = ray.get(self.viz_worker.get_metrics.remote())
+        self.save_worker.clear_metrics.remote()
+        self.viz_worker.clear_metrics.remote()
         save_total = save_metrics["save_successes"] + save_metrics["save_failures"]
         viz_total = viz_metrics["visualize_successes"] + viz_metrics["visualize_failures"]
-        metrics["save_worker_avg_save_time_ms"] = save_metrics["save_time_ms"] / save_total
-        metrics["save_worker_pct_save_successes"] = 100 * save_metrics["save_successes"] / save_total
-        metrics["save_worker_pct_save_failures"] = 100 * save_metrics["save_failures"] / save_total
-        metrics["viz_worker_avg_visualize_time_ms"] = viz_metrics["visualize_time_ms"] / viz_total
-        metrics["viz_worker_pct_visualize_successes"] = 100 * viz_metrics["visualize_successes"] / viz_total
-        metrics["viz_worker_pct_visualize_failures"] = 100 * viz_metrics["visualize_failures"] / viz_total
+        metrics["save_count"] = save_total
+        metrics["avg_save_time_ms"] = save_metrics["save_time_ms"] / save_total
+        metrics["pct_save_successes"] = 100 * save_metrics["save_successes"] / save_total
+        metrics["pct_save_failures"] = 100 * save_metrics["save_failures"] / save_total
+        metrics["visualize_count"] = viz_total
+        metrics["avg_visualize_time_ms"] = viz_metrics["visualize_time_ms"] / viz_total
+        metrics["pct_visualize_successes"] = 100 * viz_metrics["visualize_successes"] / viz_total
+        metrics["pct_visualize_failures"] = 100 * viz_metrics["visualize_failures"] / viz_total
         return metrics
 
     def finalize(self):
