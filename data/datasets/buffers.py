@@ -434,10 +434,10 @@ class BufferManager:
         Free a slot.
         """
         buffer_actor = ray.get_actor(slot_info["name"], namespace=f"buffers_node_{self.node_id}")
-        ray.get(buffer_actor.put_free.remote(slot_info["slot"]))
+        buffer_actor.put_free.remote(slot_info["slot"])
     
 
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> Dict[str, Dict[str, float | int]]:
         """Get the metrics for the BufferManager."""
         metrics = {}
         for pool_name, buffer_actor in self._buffer_actors.items():
