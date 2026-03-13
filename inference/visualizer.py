@@ -191,23 +191,28 @@ class VizWorker:
         Dispatch to the appropriate handler based on output_type.viz.handler.
         """
         slots_to_free = []
-        for name, slot_info in inference_outputs.items():
-            if name == "metainfo":
-                continue
-            output_array = slot_info_to_view(slot_info)
-            inference_outputs[name] = output_array
-            slots_to_free.append(slot_info)
+        try:
+            for name, slot_info in inference_outputs.items():
+                if name == "metainfo":
+                    continue
+                output_array = slot_info_to_view(slot_info)
+                inference_outputs[name] = output_array
+                slots_to_free.append(slot_info)
 
-        for handler_name, kwargs in handler_configs.items():
-            if handler_name not in self._handlers:
-                raise ValueError(
-                    f"Unknown viz.handler: {handler_name}. Registered: {list(self._handlers.keys())}"
+            for handler_name, kwargs in handler_configs.items():
+                if handler_name not in self._handlers:
+                    raise ValueError(
+                        f"Unknown viz.handler: {handler_name}. Registered: {list(self._handlers.keys())}"
+                    )
+                self._handlers[handler_name](
+                    inference_outputs=inference_outputs,
+                    save_dir=save_dir,
+                    **kwargs,
                 )
-            self._handlers[handler_name](
-                inference_outputs=inference_outputs,
-                save_dir=save_dir,
-                **kwargs,
-            )
         
-        for slot_info in slots_to_free:
-            self.buffer_manager.free_slot(slot_info)
+        except Exception as e:
+            ray.logger.error(f"Failed to visualize: {e}", exc_info=True)
+
+        finally:
+            for slot_info in slots_to_free:
+                self.buffer_manager.free_slot(slot_info)
