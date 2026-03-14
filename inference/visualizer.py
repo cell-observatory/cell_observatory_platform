@@ -211,6 +211,8 @@ class VizWorker:
             for name, slot_info in inference_outputs.items():
                 if name == "metainfo":
                     continue
+                if isinstance(slot_info, np.ndarray):
+                    continue
                 output_array = slot_info_to_view(slot_info)
                 inference_outputs[name] = output_array
                 slots_to_free.append(slot_info)
