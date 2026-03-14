@@ -2,6 +2,8 @@ from typing import Any, Dict, List, Literal, Mapping, Optional
 
 import torch
 from hydra.utils import get_method
+from collections import OrderedDict
+from omegaconf import DictConfig
 from torch import nn
 from torch.nn import functional as F
 
@@ -13,7 +15,7 @@ from cell_observatory_platform.models.layers.attention import RopeAttention
 from cell_observatory_platform.models.layers.matchers import HungarianMatcher
 from cell_observatory_platform.training.helpers import get_input_data, get_nparams_and_flops, init_weights
 from cell_observatory_platform.training.losses import DETR_Set_Loss
-
+from cell_observatory_platform.utils.shape_format import get_spatial_shape
 
 class MaskDINO(nn.Module):
     def __init__(
@@ -22,10 +24,13 @@ class MaskDINO(nn.Module):
         segmentation_head: MaskDINOHead,
         matcher: HungarianMatcher,
         criterion: DETR_Set_Loss,
+        input_shape: tuple,
+        input_fmt: str,
         num_queries: int,
         instance_segmentation_flag: bool,
         topk_per_image: int,
         focus_on_boxes: bool = False,
+        output_metadata: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
 
@@ -39,6 +44,31 @@ class MaskDINO(nn.Module):
         self.topk_per_image = topk_per_image
         self.instance_segmentation_flag = instance_segmentation_flag
         self.focus_on_boxes = focus_on_boxes
+
+        # MaskDINO outputs: masks, boxes, labels
+        # Masks is same spatial shape as input
+        # Boxes is (num_queries, 6)
+        # Labels is (num_queries, 1)
+        spatial_shape = get_spatial_shape(input_shape, input_fmt)
+        default_output_metadata = DictConfig({
+            "tensor_info": {
+                "masks": {
+                    "shape": spatial_shape,
+                    "dtype": "uint16",
+                },
+                "boxes": {
+                    "shape": (num_queries, 6),
+                    "dtype": "float32",
+                },
+                "labels": {
+                    "shape": (num_queries, 1),
+                    "dtype": "int64",
+                },
+            },
+        })
+        if output_metadata is not None:
+            default_output_metadata.merge_with(output_metadata)
+        self.output_metadata = default_output_metadata
 
     def init_model_weights(self, buffer_device: str | None = None):
         # TODO: move model inits back into each model class
@@ -74,6 +104,10 @@ class MaskDINO(nn.Module):
             raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
 
         return model_param_count, num_flops_per_token
+
+    @torch.jit.ignore
+    def get_output_metadata(self):
+        return self.output_metadata
 
     @staticmethod
     def adjust_loss_weight_dict(

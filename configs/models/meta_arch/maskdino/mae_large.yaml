@@ -52,6 +52,16 @@ instance_segmentation_flag: false
 topk_per_image: 100
 focus_on_boxes: false
 
+output_metadata:
+  tensor_info:
+    masks:
+      dtype: ${datasets.dtype}
+    boxes:
+      dtype: ${datasets.dtype}
+    labels:
+      dtype: ${datasets.dtype}
+
+
 # How to pick number of points?
 # Find the mask logit resolution loss samples from.
 # E.g., for volume 128×256×512, at stride 4, that is 32×64×128 = 262,144 candidate voxels.
