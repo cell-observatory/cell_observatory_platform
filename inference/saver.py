@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from typing import Literal, Optional, Tuple, Dict, Any, List, Callable
 
 import ray
-
+import numpy as np
 from cell_observatory_platform.data.io import save_masks, save_scores, save_labels, save_boxes
 from cell_observatory_platform.data.datasets.buffers import BufferManager, slot_info_to_view
 from pathlib import Path
@@ -218,8 +218,9 @@ class SaveWorker:
     def __init__(
         self,
         buffer_manager: BufferManager,
-        max_retries: int = 3,
-        retry_backoff_s: float = 0.5,
+        # TODO: Support threading with retries for each save operation
+        # max_retries: int = 3,
+        # retry_backoff_s: float = 0.5,
         max_workers: int = 4,
         columns: List[str] = [
             "x_start",
@@ -239,12 +240,12 @@ class SaveWorker:
         ],
     ):
         self.buffer_manager = buffer_manager
-        self.max_retries = max_retries
         self.columns = columns
         # TODO: Support threading with retries for each save operation
-        if max_retries > 0:
-            ray.logger.warning("Saving with retries is not supported yet")
-        self.retry_backoff_s = retry_backoff_s
+        # self.max_retries = max_retries
+        # if max_retries > 0:
+        #     ray.logger.warning("Saving with retries is not supported yet")
+        # self.retry_backoff_s = retry_backoff_s
         self.thread_pool = ThreadPoolExecutor(
             max_workers=max_workers, 
             thread_name_prefix=f"save_worker_rank_{buffer_manager.global_rank}"
@@ -283,6 +284,9 @@ class SaveWorker:
             for name, slot_info in inference_outputs.items():
                 if name == "metainfo":
                     continue
+                if isinstance(slot_info, np.ndarray):
+                    output_arrays[name] = slot_info
+                    continue
                 output_array = slot_info_to_view(slot_info)
                 output_arrays[name] = output_array
                 slots_to_free.append(slot_info)
@@ -297,6 +301,8 @@ class SaveWorker:
                         metadata_element["output_folder"],
                         metadata_element["tile_name"],
                     )
+                    if not os.path.exists(image_path):
+                        raise ValueError(f"Save mode is {save_mode} but image path {image_path} does not exist")
                 elif save_mode == "new_image":
                     if save_dir is None:
                         raise ValueError("save_dir is required for new_image mode")
