@@ -50,7 +50,7 @@ class InferencerWorker:
         input_shape: List[int],
         patch_shape: List[Optional[int]],
         decoder_head_type: str,
-        roi_tile_list: List[Tuple[int, str]],
+        # roi_tile_list: List[Tuple[int, str]],
         save_dir: Path | str,
         buffer_manager: BufferManager,
         save_mode: Literal["overwrite", "append", "new_image"],
@@ -100,24 +100,24 @@ class InferencerWorker:
             input_shape=self.input_shape,
             patch_shape=tuple(patch_shape),
         )
-        self.pe_unpatchify = functools.partial(
-            PatchEmbedding.unpatchify,
-            temporal_patch_size=temporal_patch_size,
-            axial_patch_size=self.axial_patch_size,
-            lateral_patch_size=self.lateral_patch_size,
-            token_shape=token_shape,
-            input_format=self.input_format,
-        )
+        # self.pe_unpatchify = functools.partial(
+        #     PatchEmbedding.unpatchify,
+        #     temporal_patch_size=temporal_patch_size,
+        #     axial_patch_size=self.axial_patch_size,
+        #     lateral_patch_size=self.lateral_patch_size,
+        #     token_shape=token_shape,
+        #     input_format=self.input_format,
+        # )
         # NOTE: if input format does not contain 'T' we set patch size to 1
         #       since buffers assume that the T-axis exists
         self.temporal_patch_size = temporal_patch_size if temporal_patch_size else 1
         self.token_shape = self._get_token_shape(token_shape, self.input_format)
 
-        # roi_tile_list is a list of (roi_id, tile_name) tuples
-        # to restrict inference to
-        self.roi_tile_list = roi_tile_list
-        self.roi_list = list(set([x[0] for x in roi_tile_list]))
-        self.tile_list = list(set([x[1] for x in roi_tile_list]))
+        # # roi_tile_list is a list of (roi_id, tile_name) tuples
+        # # to restrict inference to
+        # self.roi_tile_list = roi_tile_list
+        # self.roi_list = list(set([x[0] for x in roi_tile_list]))
+        # self.tile_list = list(set([x[1] for x in roi_tile_list]))
 
         self.model = model
 
@@ -1025,37 +1025,37 @@ class InferencerWorker:
     #     # assume list-like
     #     return ((spec["name"], spec) for spec in auxiliary_outputs)
 
-    def _preprocess(self, data_sample: dict) -> dict:
-        """
-        Materialize + normalize all outputs that will be saved
-        """
-        specs: Dict[str, Dict[str, Any]] = {}
+    # def _preprocess(self, data_sample: dict) -> dict:
+    #     """
+    #     Materialize + normalize all outputs that will be saved
+    #     """
+    #     specs: Dict[str, Dict[str, Any]] = {}
 
-        for name, meta in self.outputs_metadata.items():
-            m = dict(meta) if meta is not None else {}
-            specs[name] = m
+    #     for name, meta in self.outputs_metadata.items():
+    #         m = dict(meta) if meta is not None else {}
+    #         specs[name] = m
 
-        for aux_name, spec in self.auxiliary_outputs.items():
-            s = dict(spec) if spec is not None else {}
-            specs[aux_name] = s
+    #     for aux_name, spec in self.auxiliary_outputs.items():
+    #         s = dict(spec) if spec is not None else {}
+    #         specs[aux_name] = s
 
-        for name, spec in specs.items():
-            path = spec.get("path", name)
+    #     for name, spec in specs.items():
+    #         path = spec.get("path", name)
 
-            try:
-                x = self.resolve_path(data_sample, path)
-            except Exception:
-                continue  # predictions etc not in data_sample yet
+    #         try:
+    #             x = self.resolve_path(data_sample, path)
+    #         except Exception:
+    #             continue  # predictions etc not in data_sample yet
 
-            if not isinstance(x, torch.Tensor):
-                raise TypeError(f"{name}: expected torch.Tensor at preprocessing, got {type(x)} (path={path!r})")
+    #         if not isinstance(x, torch.Tensor):
+    #             raise TypeError(f"{name}: expected torch.Tensor at preprocessing, got {type(x)} (path={path!r})")
 
-            if bool(spec.get("patchified", False)):
-                x = self.pe_unpatchify(x, out_channels=spec.get("num_output_channels"))
+    #         if bool(spec.get("patchified", False)):
+    #             x = self.pe_unpatchify(x, out_channels=spec.get("num_output_channels"))
 
-            data_sample[name] = x
+    #         data_sample[name] = x
 
-        return data_sample
+    #     return data_sample
 
     def predict(self, data_sample: dict):
         """
@@ -1065,8 +1065,8 @@ class InferencerWorker:
             if self.aggregate_mode != "none":
                 ray.logger.warning("Full tile inference does not support aggregation.")
 
-            # TODO: Double check if we need to do this
-            data_sample = self._preprocess(data_sample)
+            # # TODO: Double check if we need to do this
+            # data_sample = self._preprocess(data_sample)
 
             X = data_sample["data_tensor"]
             metadata = data_sample["metainfo"]
