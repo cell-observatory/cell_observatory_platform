@@ -205,6 +205,7 @@ class JEPA(nn.Module):
         self.input_fmt = input_fmt
         self.input_shape = input_shape
         self.output_metadata = output_metadata
+        self.output_metadata = output_metadata
         axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value["C"]
         self.num_frames = axis_to_value.get("T", None)
