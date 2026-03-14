@@ -19,9 +19,11 @@ from multiprocessing import shared_memory
 import time
 
 from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TORCH_DTYPES
-from cell_observatory_platform.utils.context import (local_rank, 
-                           node_id,
-                           bind_current_process_to_node)
+from cell_observatory_platform.utils.context import (
+    local_rank, 
+    node_id,
+    bind_current_process_to_node
+)
 
 logging.basicConfig(
     stream=sys.stdout,
