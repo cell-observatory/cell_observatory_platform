@@ -171,6 +171,7 @@ class MaskedAutoEncoder(nn.Module):
         da_n_points: int = 4,
         da_n_levels: int = 1,
         buffer_device: str = "cuda",
+        output_metadata: Dict[str, Any] = None,
         **kwargs,
     ):
         super().__init__()
@@ -197,6 +198,7 @@ class MaskedAutoEncoder(nn.Module):
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
+        self.output_metadata = output_metadata
 
         axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value["C"]
@@ -488,6 +490,10 @@ class MaskedAutoEncoder(nn.Module):
             return num_patches
         else:
             raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
+    
+    @torch.jit.ignore
+    def get_output_metadata(self):
+        return self.output_metadata
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
