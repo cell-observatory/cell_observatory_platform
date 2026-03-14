@@ -918,25 +918,28 @@ class Inferencer(BaseTrainer):
             max_concurrent_calls=cfg.inference.buffer_manager.max_concurrent_calls,
             safety_margin=cfg.inference.buffer_manager.safety_margin,
         )
+
+        model_output_metadata = self.model.get_output_metadata()
+        inference_output_metadata: DictConfig = cfg.inference.outputs_metadata
+        inference_output_metadata.merge_with(model_output_metadata)
         
         init_output_memory_pools(
             buffer_manager=self.buffer_manager,
-            output_metadata=cfg.inference.outputs_metadata, #TODO: make sure this includes aux outputs, targets, and inputs if we want to vizualize them
+            output_metadata=inference_output_metadata,
             batch_size=cfg.clusters.batch_size_per_gpu,
-            save=cfg.inference.save,
-            viz=cfg.inference.viz,
+            save=cfg.inference.save_outputs,
+            viz=cfg.inference.vizualize_outputs,
             save_buffer_capacity=cfg.inference.buffer_manager.save_buffer_capacity,
             viz_buffer_capacity=cfg.inference.buffer_manager.viz_buffer_capacity,
         )
-        if cfg.inference.save:
+        if cfg.inference.save_outputs:
             self.save_worker = SaveWorker.options(name=f"save_worker_rank_{process_rank()}").remote(
                 buffer_manager=self.buffer_manager,
-                max_retries=cfg.inference.max_retries,
-                retry_backoff_s=cfg.inference.retry_backoff_s,
+                max_workers=cfg.inference.num_save_workers,
             )
         else:
             self.save_worker = None
-        if cfg.inference.viz:
+        if cfg.inference.vizualize_outputs:
             self.viz_worker = VizWorker.options(name=f"viz_worker_rank_{process_rank()}").remote(
                 buffer_manager=self.buffer_manager
             )
