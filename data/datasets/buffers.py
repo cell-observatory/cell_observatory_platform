@@ -310,6 +310,33 @@ def init_output_memory_pools(
 ) -> None:
     """
     Initialize output memory pools for save and viz.
+
+    NOTE: tensor_info is configured in the model meta-arch config
+    whereas save_tensors and visualize_tensors are configured in the inference config.
+
+    output_metadata should be structured as follows:
+    {
+        "tensor_info": {
+            "tensor_name_1": {
+                "shape": tuple,
+                "dtype": str,
+            },
+            "tensor_name_2": {
+                "shape": tuple,
+                "dtype": str,
+            },
+        },
+        "save_tensors": [
+            "tensor_name_1",
+            "tensor_name_2",
+            ...
+        ],
+        "visualize_tensors": [
+            "tensor_name_1",
+            "tensor_name_2",
+            ...
+        ],
+    }
     """
     if save and save_buffer_capacity is None:
         raise ValueError("save_buffer_capacity must be provided if save is True")
@@ -317,28 +344,38 @@ def init_output_memory_pools(
         raise ValueError("viz_buffer_capacity must be provided if viz is True")
     if not save and not viz:
         raise ValueError("at least one of save or viz must be True")
+    
+    for name in output_metadata["save_tensors"]:
+        try:
+            tensor_shape = output_metadata["tensor_info"][name]["shape"]
+            tensor_dtype = output_metadata["tensor_info"][name]["dtype"]
+        except KeyError as e:
+            raise ValueError(f"Tensor info for {name} not found in output_metadata: {e}")
+        buffer_manager.set_buffer(
+            pool_name=f"{name}_save",
+            batch_size=batch_size,
+            input_shape=tensor_shape,
+            dtype=tensor_dtype,
+            buffer_type="host_memory",
+            buffer_capacity=save_buffer_capacity,
+            pin_to_numa_node=pin_to_numa_node,
+        )
+    for name in output_metadata["visualize_tensors"]:
+        try:
+            tensor_shape = output_metadata["tensor_info"][name]["shape"]
+            tensor_dtype = output_metadata["tensor_info"][name]["dtype"]
+        except KeyError as e:
+            raise ValueError(f"Tensor info for {name} not found in output_metadata: {e}")
+        buffer_manager.set_buffer(
+            pool_name=f"{name}_viz",
+            batch_size=batch_size,
+            input_shape=tensor_shape,
+            dtype=tensor_dtype,
+            buffer_type="host_memory",
+            buffer_capacity=viz_buffer_capacity,
+            pin_to_numa_node=pin_to_numa_node,
+        )
 
-    for name, metadata in output_metadata.items():
-        if save:
-            buffer_manager.set_buffer(
-                pool_name=f"{name}_save",
-                batch_size=batch_size,
-                input_shape=metadata["shape"],
-                dtype=metadata["dtype"],
-                buffer_type="host_memory",
-                buffer_capacity=save_buffer_capacity,
-                pin_to_numa_node=pin_to_numa_node,
-            )
-        if viz:
-            buffer_manager.set_buffer(
-                pool_name=f"{name}_viz",
-                batch_size=batch_size,
-                input_shape=metadata["shape"],
-                dtype=metadata["dtype"],
-                buffer_type="host_memory",
-                buffer_capacity=viz_buffer_capacity,
-                pin_to_numa_node=pin_to_numa_node,
-            )
 
 
 class BufferManager:
