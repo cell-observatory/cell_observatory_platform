@@ -2,7 +2,7 @@ import inspect
 import logging
 import sys
 from copy import deepcopy
-from typing import Any, Literal, Mapping, Union
+from typing import Any, Dict, Literal, Mapping, Union
 
 import torch
 import torch.nn as nn
@@ -158,6 +158,7 @@ class JEPA(nn.Module):
         mlp_wide_silu: bool = False,
         loss_fn: str = "l1_masked",
         dtype: torch.dtype = torch.bfloat16,
+        output_metadata: Dict[str, Any] = None,
         **kwargs,
     ):
         super().__init__()
@@ -182,6 +183,7 @@ class JEPA(nn.Module):
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
+        self.output_metadata = output_metadata
         axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value["C"]
         self.num_frames = axis_to_value.get("T", None)
@@ -345,6 +347,10 @@ class JEPA(nn.Module):
                 patch_shape=self.patch_shape,
             )
             return num_patches
+
+    @torch.jit.ignore
+    def get_output_metadata(self):
+        return self.output_metadata
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]

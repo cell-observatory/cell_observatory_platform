@@ -1,7 +1,7 @@
 import logging
 import sys
 from abc import ABC, abstractmethod
-from typing import Any, Literal, Mapping, Optional
+from typing import Any, Dict, Literal, Mapping, Optional
 
 import torch
 import torch.nn as nn
@@ -59,6 +59,7 @@ class AutoBench(nn.Module, ABC):
         weight_init_type: str = "mae",
         with_auxiliary_loss: bool = False,
         freeze_backbone: bool = False,
+        output_metadata: Dict[str, Any] = None,
     ):
         super().__init__()
         self.backbone_args = backbone_args
@@ -70,7 +71,7 @@ class AutoBench(nn.Module, ABC):
         self.input_shape = tuple(input_shape)
         self.patch_shape = tuple(patch_shape)
         self.abs_sincos_enc = abs_sincos_enc
-
+        self.output_metadata = output_metadata
         self.loss_fn = get_loss_fn(loss_fn)
         self.with_auxiliary_loss = with_auxiliary_loss
         self.weight_init_type = weight_init_type
@@ -80,6 +81,7 @@ class AutoBench(nn.Module, ABC):
         self.decoder: Optional[nn.Module] = None
 
         self.freeze_backbone = freeze_backbone
+
 
     def _freeze_backbone(self):
         """
@@ -154,6 +156,10 @@ class AutoBench(nn.Module, ABC):
             patch_shape=self.patch_shape,
         )
         return num_patches
+
+    @torch.jit.ignore
+    def get_output_metadata(self):
+        return self.output_metadata
 
     def _init_all_weights(self):
         """

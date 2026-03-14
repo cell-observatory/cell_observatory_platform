@@ -54,6 +54,7 @@ class PlainDETR(nn.Module):
         reparam: bool = True,
         normalize_pos_encodings: bool = True,
         topk: int = 100,
+        output_metadata: Dict[str, Any] = None,
     ):
         super().__init__()
 
@@ -131,6 +132,7 @@ class PlainDETR(nn.Module):
         # for inference
         self.topk = topk
         self.reparam = reparam
+        self.output_metadata = output_metadata
 
     def init_model_weights(self, buffer_device: str | None = None):
         # TODO: move model inits back into each model class
@@ -166,6 +168,10 @@ class PlainDETR(nn.Module):
             raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
 
         return model_param_count, num_flops_per_token
+
+    @torch.jit.ignore
+    def get_output_metadata(self):
+        return self.output_metadata
 
     def _forward(self, samples):
         """The forward expects a List, which consists of:

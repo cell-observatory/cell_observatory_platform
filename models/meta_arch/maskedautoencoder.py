@@ -157,6 +157,7 @@ class MaskedAutoEncoder(nn.Module):
         loss_fn: str = "l2_masked",
         with_auxiliary_loss: bool = False,
         dtype: torch.dtype = torch.bfloat16,
+        output_metadata: Dict[str, Any] = None,
         **kwargs,
     ):
         super().__init__()
@@ -183,6 +184,7 @@ class MaskedAutoEncoder(nn.Module):
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
+        self.output_metadata = output_metadata
 
         axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value["C"]
@@ -326,6 +328,10 @@ class MaskedAutoEncoder(nn.Module):
                 patch_shape=self.patch_shape,
             )
             return num_patches
+    
+    @torch.jit.ignore
+    def get_output_metadata(self):
+        return self.output_metadata
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
