@@ -1,9 +1,10 @@
 _target_: cell_observatory_platform.inference.inferencer.InferencerWorker
 
-aggregate_mode: save_local
+inference_mode: "hypercube"
+aggregate_mode: null
 
-use_cached_hypercubes_dataframe: ${datasets.databases.use_cached_hypercubes_dataframe}
-hypercubes_dataframe_path: ${datasets.databases.hypercubes_dataframe_path}
+# use_cached_hypercubes_dataframe: ${datasets.databases.use_cached_hypercubes_dataframe}
+# hypercubes_dataframe_path: ${datasets.databases.hypercubes_dataframe_path}
 
 input_format: ${dataset_layout_order} 
 input_shape: ${datasets.input_shape}
@@ -14,29 +15,25 @@ task: instance_segmentation
 decoder_head_type: "maskdino"
 feature_viz_type: null
 
-pred_boxes_format: xyzxyz
-gt_boxes_format: cxcyczwhd
 scale_gt_boxes: true
 
-roi_tile_list: null
+# roi_tile_list: null
 
-protocol: ${datasets.databases.protocol}
-dotenv_path: null
-dbname: ${datasets.databases.dbname}
-server_folder_path: ${paths.server_folder_path}
-verbose: false
-max_hypercubes: null
-max_partitions: 10
-num_save_workers: 2
+# protocol: ${datasets.databases.protocol}
+# dotenv_path: null
+# dbname: ${datasets.databases.dbname}
+# server_folder_path: ${paths.server_folder_path}
+# verbose: false
+# max_hypercubes: null
+# max_partitions: 10
 
 save_dir: ${paths.outdir}/inference_instance_segmentation
 
 # plotting parameters
-save_as_pdf: true
-save_as_volume: false
-z_step_pdf: 40
-pmin: 1.0
-pmax: 99.0
+vizualize_outputs: true
+save_outputs: false
+save_mode: "overwrite"
+
 
 # TIFF OPTION:
 # save_format: "tiff"
@@ -51,18 +48,59 @@ zarr_shard_shape: [128, 128, 128]
 # --- not used for detection ---
 
 outputs_metadata:
-  predictions:
-    activation: null
-    num_output_channels: null
+  visualize_tensors:
+    - masks
+    - scores
+    - labels
+    - boxes
+  save_tensors:
+    - masks
+    - scores
+    - labels
+    - boxes
 
-auxiliary_outputs:
-  - name: data_tensor
-    path: data_tensor
-    num_output_channels: 1
-    activation: null
-    patchified: false
-  - name: targets
-    path: targets
-    num_output_channels: null
-    activation: null
-    patchified: false
+viz_sampling_policy:
+  - name: by_tile
+  - tile_names: ["tile_0000000000000000000000000000000000000000"]
+
+  # - name: random_sample
+  # - fraction: 0.01
+
+
+z_step_pdf: 10
+pmin: 1.0
+pmax: 99.0
+pred_boxes_format: xyzxyz
+gt_boxes_format: cxcyczwhd
+
+viz_handlers_configs:
+  instance_overlay:
+    pred_boxes_format: xyzxyz
+    gt_boxes_format: cxcyczwhd
+    z_step: 10
+    pmin: 1.0
+    pmax: 99.0
+    scale_gt_boxes: true
+    input_format: ZYXC
+    ortho: true
+
+  feature_viz:
+    gt_key: data_tensor
+    feat_key: ${inference.main_output_name}
+    z_step_pdf: 10
+    pmin: 1.0
+    pmax: 99.0
+    fit: per_t
+    sample_voxels: 50000
+    viz: pca
+
+  save_predictions:
+    save_as_volume: true
+    save_as_pdf: true
+    z_step_pdf: 10
+    filetype: "tiff"
+    zarr_chunk_shape: [32, 32, 32]
+    zarr_shard_shape: [128, 128, 128]
+    pmin: 1.0
+    pmax: 99.0
+
