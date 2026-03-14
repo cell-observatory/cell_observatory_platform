@@ -340,6 +340,18 @@ def save_zarr_append_channel(
     new_shape = list(ds.shape).copy()
     new_shape[channel_dim] = new_shape[channel_dim] + data.shape[channel_dim]
     ds.resize(exclusive_max=tuple(new_shape), expand_only=True)
+    # Final sanity check: ensure we DO NOT overwrite data, and only allow overwriting masks.
+    # Check if any numbers in the zarr array to be overwritten are not whole integers (possible "data" content?).
+    values_to_overwrite = ds[..., -data.shape[channel_dim]:]
+    if not np.all(np.mod(np.asarray(values_to_overwrite), 1) == 0):
+        raise RuntimeError(
+            "Attempted to overwrite zarr channel(s) that may contain data values "
+            "(non-integer values detected). Aborting to avoid overwriting data. "
+            "Only integer mask arrays should be overwritten."
+            f"data.shape={data.shape}, ds.shape={ds.shape}"
+            f"channel_dim={channel_dim}, n_new_channels={data.shape[channel_dim]}"
+            f"n_existing_channels={ds.shape[channel_dim]}"
+        )
     ds[..., -data.shape[channel_dim]:] = data.astype(dtype)
 
 def save_zarr_overwrite_channel(
@@ -368,6 +380,20 @@ def save_zarr_overwrite_channel(
             raise ValueError(f"Only the channel dimension can be overwritten, but got data.shape[{i}] != store_shape[{i}] for dimension {dim_name} with input_format={input_format}.")
         elif i == channel_dim and data.shape[i] >= ds.shape[i]:
             raise ValueError(f"Cannot overwrite with more channels than the existing zarr, but got data.shape[{i}] >= store_shape[{i}] for dimension {dim_name} with input_format={input_format}.")
+   
+    # Final sanity check: ensure we DO NOT overwrite data, and only allow overwriting masks.
+    # Check if any numbers in the zarr array to be overwritten are not whole integers (possible "data" content?).
+    values_to_overwrite = ds[..., -data.shape[channel_dim]:]
+    if not np.all(np.mod(np.asarray(values_to_overwrite), 1) == 0):
+        raise RuntimeError(
+            "Attempted to overwrite zarr channel(s) that may contain data values "
+            "(non-integer values detected). Aborting to avoid overwriting data. "
+            "Only integer mask arrays should be overwritten."
+            f"data.shape={data.shape}, ds.shape={ds.shape}"
+            f"channel_dim={channel_dim}, n_new_channels={data.shape[channel_dim]}"
+            f"n_existing_channels={ds.shape[channel_dim]}"
+        )
+    
     ds[..., -data.shape[channel_dim]:] = data.astype(dtype)
 
 def save_tiff(image_path: str, data: np.ndarray, axes: str, with_fiji: bool = False) -> None:
