@@ -7,7 +7,7 @@
     "options": [
       "--progress=plain"
     ],
-    "target": "torch_26_01"
+    // "target": "torch_26_01"  I don't think we need this anymore.  It is set in the Dockerfile.
   },
   // Uncomment this to use a pre-built image instead of building from the Dockerfile
   // "image": "ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_26_01",
@@ -70,6 +70,6 @@
       ]
     }
   },
-  "postCreateCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && pip install bpytop  --no-dependencies && cp ~/.bashrc /tmp/host_bashrc && echo 'source /tmp/host_bashrc' >> ~/.bashrc && python3 --version",
-  "postStartCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && export PYTHONPATH=/workspace:/workspace/cell_observatory_platform:/workspace:/workspace/cell_observatory_platform:/workspace/ops3d && pip install -e . --force-reinstall --no-deps && source ~/.bashrc"
+  "postCreateCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && pip install bpytop --user --no-dependencies && cp ~/.bashrc /tmp/host_bashrc && echo 'source /tmp/host_bashrc' >> ~/.bashrc && python3 --version",
+  "postStartCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && export PYTHONPATH=/workspace:/workspace/cell_observatory_platform:/workspace:/workspace/cell_observatory_platform:/workspace/ops3d && echo ' ' && echo 'pip installing workspace folder from source...' && pip install -e . --user --force-reinstall --no-deps && source ~/.bashrc && echo '' &&echo 'Apptainer instance run: postgres database in background...' && apptainer instance run --no-mount proc --writable --env POSTGRES_PASSWORD=postgres ../sandbox/ myjunk -c 'config_file=/etc/postgresql/postgresql.conf' && echo ' ' && echo 'Test database connection to ${SUPABASE_LOCAL_URI}...' && psql postgresql://postgres@localhost/postgres --command=\"SELECT COUNT(*) NUMBER_OF_ROWS_IN_PREPARED FROM PREPARED;\" "
 }

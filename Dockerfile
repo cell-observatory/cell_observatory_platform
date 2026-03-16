@@ -68,14 +68,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   docbook-xsl \
   libnuma-dev \
   software-properties-common \
+  postgresql-client \
   && rm -rf /var/lib/apt/lists/*
 
 
 RUN echo "Install apptainer"
 RUN add-apt-repository -y ppa:apptainer/ppa
 RUN apt-get update && apt-get install -y apptainer && rm -rf /var/lib/apt/lists/*
-# allow apptainer to use more memory for the --writable-tmpfs that is used.
-RUN apptainer config global -s "sessiondir max size" 53248  
 
 RUN echo "Installing grafana"
 
