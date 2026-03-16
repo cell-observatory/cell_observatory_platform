@@ -51,7 +51,7 @@ torch_config:
 
 scaling_config:
   use_gpu: true
-  num_workers: ${clusters.total_gpus} # number of total workers (equals total nr. gpus normally)
+  num_workers: 1
   resources_per_worker:
     CPU: 0 # Ray allocates cpus automatically
     GPU: 1

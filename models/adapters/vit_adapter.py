@@ -1,3 +1,4 @@
+import math
 import inspect
 from typing import Any, Mapping
 
@@ -403,6 +404,7 @@ class EncoderAdapter(nn.Module):
             "stage4": (2, 2, 2),
         },
         dtype: str = "bfloat16",
+        buffer_device: str = "cuda",
     ):
         super(EncoderAdapter, self).__init__()
 
@@ -519,6 +521,45 @@ class EncoderAdapter(nn.Module):
 
         if self.use_deform_attention:
             self.apply(self._init_deform_weights)
+
+        self._init_model_weights(buffer_device=buffer_device)
+
+    def _init_model_weights(self, buffer_device: str | None = None):
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                torch.nn.init.trunc_normal_(m.weight, std=0.02)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, (nn.LayerNorm, nn.BatchNorm3d, nn.BatchNorm1d)):
+                nn.init.constant_(m.bias, 0)
+                nn.init.constant_(m.weight, 1.0)
+            elif isinstance(m, (nn.Conv3d, nn.ConvTranspose3d)):
+                fan_out = (
+                    m.kernel_size[0]
+                    * m.kernel_size[1]
+                    * m.kernel_size[2]
+                    * m.out_channels
+                )
+                fan_out //= m.groups
+                m.weight.data.normal_(0, math.sqrt(2.0 / fan_out))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, (nn.Conv1d, nn.ConvTranspose1d)):
+                fan_out = m.kernel_size[0] * m.out_channels
+                fan_out //= m.groups
+                m.weight.data.normal_(0, math.sqrt(2.0 / fan_out))
+                if m.bias is not None:
+                    m.bias.data.zero_()
+
+        if not (hasattr(self, "up_spatial") and hasattr(self, "spatial_prior_module") and hasattr(self, "adapter_block")):
+            raise ValueError(
+                "vit_adapter init: expected model to have attributes "
+                "`up_spatial`, `spatial_prior_module`, and `adapter_block`."
+            )
+        self.up_spatial.apply(_init_weights)
+        self.spatial_prior_module.apply(_init_weights)
+        self.adapter_block.apply(_init_weights)
+        torch.nn.init.normal_(self.level_embed)
 
     def _get_stride(self, key: str, val):
         if isinstance(val, int):

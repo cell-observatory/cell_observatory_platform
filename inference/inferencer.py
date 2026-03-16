@@ -18,14 +18,15 @@ from dotenv import load_dotenv
 
 from cell_observatory_platform.utils.common import ceil_div
 from cell_observatory_platform.training.helpers import get_patch_sizes
+from cell_observatory_platform.inference.amg import postprocess_sam_preds
 from cell_observatory_platform.utils.context import barrier, get_world_size, process_rank
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
 from cell_observatory_platform.inference.utils import (
-    save_predictions, 
-    stable_key_owner, 
-    tile_hash, 
-    save_feature_visualizations, 
-    save_instance_predictions
+    save_predictions,
+    stable_key_owner,
+    tile_hash,
+    save_feature_visualizations,
+    save_instance_predictions,
 )
 
 logger = logging.getLogger(__name__)
@@ -209,6 +210,8 @@ class InferencerWorker:
     def _get_token_shape(self, token_shape: Tuple[int, ...], input_format: str) -> Tuple[int, ...]:
         if input_format == "ZYXC":
             return token_shape[1:-1]  # drop T and C dimensions
+        elif input_format == "TZYXC":
+            return token_shape[:-1] # drop C dimension
         else:
             raise ValueError(f"Unsupported input format: {input_format}")
 
@@ -504,6 +507,11 @@ class InferencerWorker:
         elif self.task == "instance_segmentation":
             if self.decoder_head_type == "maskdino":
                 preds = self.model.predict(data_sample)
+            elif self.decoder_head_type == "sam":
+                preds = self.model.predict(data_sample, type="volume")
+                preds, data_sample["data_tensor"] = postprocess_sam_preds(
+                    preds, data_sample["data_tensor"]
+                )
             else:
                 raise NotImplementedError(
                     f"Decoder head type {self.decoder_head_type} not supported for instance segmentation sliding window inference."
@@ -1072,6 +1080,17 @@ class InferencerWorker:
         else:
             raise ValueError(f"Unknown aggregate_mode: {self.aggregate_mode}")
 
+    def _to_cpu_detached(self, x: Any) -> Any:
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu()
+        if isinstance(x, dict):
+            return {k: self._to_cpu_detached(v) for k, v in x.items()}
+        if isinstance(x, list):
+            return [self._to_cpu_detached(v) for v in x]
+        if isinstance(x, tuple):
+            return tuple(self._to_cpu_detached(v) for v in x)
+        return x
+
     def _save_local_records(self, 
                             data_sample: dict,
                             preds: Dict[str, Any], 
@@ -1123,6 +1142,9 @@ class InferencerWorker:
 
             regions.append(region)
             identifiers.append(ident)
+
+        targets = self._to_cpu_detached(targets)
+        preds = self._to_cpu_detached(preds)
 
         save_instance_predictions(
             # save_instance_predictions expects BTZYXC format

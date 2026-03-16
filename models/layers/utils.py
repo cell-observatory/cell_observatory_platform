@@ -3,13 +3,250 @@ Adapted from:
 https://github.com/facebookresearch/detectron2/blob/536dc9d527074e3b15df5f6677ffe1f4e104a4ab/projects/PointRend/point_rend/point_features.py#L63
 https://github.com/facebookresearch/detectron2/blob/536dc9d527074e3b15df5f6677ffe1f4e104a4ab/detectron2/layers/wrappers.py#L65
 https://github.com/IDEA-Research/MaskDINO/blob/3831d8514a3728535ace8d4ecc7d28044c42dd14/maskdino/utils/misc.py#L49
+https://github.com/facebookresearch/dinov3/dinov3/utils/utils.py
 """
 
-from typing import List
+import math
+from typing import List, Tuple
+
+import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 import torch
 import torch.nn as nn
+from torch import Tensor
 from torch.nn import functional as F
+
+from cell_observatory_platform.data.structures import masks_to_boxes_v2
+
+
+def reconstruct_full_feature_map(
+    x: Tensor,
+    mask_indices: Tensor,
+    full_length: int,
+    mask_token: Tensor,
+) -> Tensor:
+    """
+    Scatter context tokens back into a full-length sequence, filling
+    masked positions with a learned mask_token.    
+    """
+    B, N_ctx, C = x.shape
+    full = mask_token.expand(B, full_length, C).clone()
+    idx = mask_indices if mask_indices.dim() == 2 else mask_indices[None].expand(B, -1)
+    full.scatter_(1, idx.unsqueeze(-1).expand(-1, -1, C), x)
+    return full
+
+
+class Unroll(nn.Module):
+    """
+    Reorders the tokens such that patches are contiguous in memory.
+    E.g., given [B, (H, W), C] and stride of (Sy, Sx), this will re-order the tokens as
+                           [B, (Sy, Sx, H // Sy, W // Sx), C]
+
+    This allows operations like Max2d to be computed as x.view(B, Sx*Sy, -1, C).max(dim=1).
+    Not only is this faster, but it also makes it easy to support inputs of arbitrary
+    dimensions in addition to patch-wise sparsity.
+
+    Performing this operation multiple times in sequence puts entire windows as contiguous
+    in memory. For instance, if you applied the stride (2, 2) 3 times, entire windows of
+    size 8x8 would be contiguous in memory, allowing operations like mask unit attention
+    computed easily and efficiently, while also allowing max to be applied sequentially.
+
+    Note: This means that intermediate values of the model are not in HxW order, so they
+    need to be re-rolled if you want to use the intermediate values as a HxW feature map.
+    The last block of the network is fine though, since by then the strides are all consumed.
+    """ 
+
+    def __init__(
+        self,
+        input_size: Tuple[int, ...],
+        patch_stride: Tuple[int, ...],
+        unroll_schedule: List[Tuple[int, ...]],
+    ):
+        super().__init__()
+        self.size = [i // s for i, s in zip(input_size, patch_stride)]
+        self.schedule = unroll_schedule
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Input: Flattened patch embeddings [B, N, C]
+        Output: Patch embeddings [B, N, C] permuted such that [B, 4, N//4, C].max(1) etc. performs MaxPoolNd
+        """
+        B, _, C = x.shape
+
+        cur_size = self.size
+        x = x.view(*([B] + cur_size + [C]))
+
+        for strides in self.schedule:
+            # Move patches with the given strides to the batch dimension
+
+            # Create a view of the tensor with the patch stride as separate dims
+            # For example in 2d: [B, H // Sy, Sy, W // Sx, Sx, C]
+            cur_size = [i // s for i, s in zip(cur_size, strides)]
+            new_shape = [B] + sum([[i, s] for i, s in zip(cur_size, strides)], []) + [C]
+            x = x.view(new_shape)
+
+            # Move the patch stride into the batch dimension
+            # For example in 2d: [B, Sy, Sx, H // Sy, W // Sx, C]
+            L = len(new_shape)
+            permute = (
+                [0] + list(range(2, L - 1, 2)) + list(range(1, L - 1, 2)) + [L - 1]
+            )
+            x = x.permute(permute)
+
+            # Now finally flatten the relevant dims into the batch dimension
+            x = x.flatten(0, len(strides))
+            B *= math.prod(strides)
+
+        x = x.reshape(-1, math.prod(self.size), C)
+        return x
+
+
+def undo_windowing(x: torch.Tensor, shape: List[int], mu_shape: List[int]) -> torch.Tensor:
+    """
+    Convert windowed tokens [B, N, *mu_shape, C] back to spatial order [B, *shape, C].
+    shape: full spatial shape at this stage (e.g. [H, W] or [T, H, W]).
+    mu_shape: mask unit shape (tokens per window per axis).
+    """
+    B, N, *_, C = x.shape
+    D = len(shape)
+    num_MUs = [s // mu for s, mu in zip(shape, mu_shape)]
+    x = x.view(B, *num_MUs, *mu_shape, C)
+    perm = [0]
+    for i in range(D):
+        perm.append(1 + i)
+        perm.append(1 + D + i)
+    perm.append(len(x.shape) - 1)
+    x = x.permute(perm)
+    x = x.reshape(B, *shape, C)
+    return x
+
+
+def conv_nd(n: int):
+    """Factory returning Conv2d for n=2, Conv3d for n=3, etc."""
+    if n == 2:
+        return nn.Conv2d
+    elif n == 3:
+        return nn.Conv3d
+    else:
+        raise NotImplementedError(f"conv_nd not implemented for n={n}")
+
+
+def do_pool_stride(x: torch.Tensor, stride: int) -> torch.Tensor:
+    """Max-pool over groups of `stride` tokens in flattened [B, N, C] tensor."""
+    if stride is None or stride <= 1:
+        return x
+    B, N, C = x.shape
+    assert N % stride == 0, f"N={N} must be divisible by stride={stride}"
+    x = x.view(B, N // stride, stride, C)
+    return x.max(dim=2).values
+
+
+class Reroll(nn.Module):
+    """
+    Undos the "unroll" operation so that you can use intermediate features.
+    """
+
+    def __init__(
+        self,
+        input_size: Tuple[int, ...],
+        patch_stride: Tuple[int, ...],
+        unroll_schedule: List[Tuple[int, ...]],
+        stage_ends: List[int],
+        q_pool: int,
+    ):
+        super().__init__()
+        self.size = [i // s for i, s in zip(input_size, patch_stride)]
+
+        # The first stage has to reverse everything
+        # The next stage has to reverse all but the first unroll, etc.
+        self.schedule = {}
+        size = self.size
+        for i in range(stage_ends[-1] + 1):
+            self.schedule[i] = unroll_schedule, size
+            # schedule unchanged if no pooling at a stage end
+            if i in stage_ends[:q_pool]:
+                if len(unroll_schedule) > 0:
+                    size = [n // s for n, s in zip(size, unroll_schedule[0])]
+                unroll_schedule = unroll_schedule[1:]
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        block_idx: int,
+        mask: torch.Tensor = None,
+        return_windowed: bool = False,
+    ) -> torch.Tensor:
+        """
+        Roll the given tensor back up to spatial order assuming it's from the given block.
+
+        If return_windowed=True:
+            - Returns [B, N, *cur_mu_shape, C] (MU-grid layout) without undo_windowing.
+        If return_windowed=False:
+            - If mask is not None: returns [B, #MUs, MUy, MUx, C].
+            - If mask is None: returns [B, H, W, C] after undo_windowing.
+        """
+        schedule, size = self.schedule[block_idx]
+        B, N, C = x.shape
+
+        D = len(size)
+        cur_mu_shape = [1] * D
+
+        for strides in schedule:
+            # Extract the current patch from N
+            x = x.view(B, *strides, N // math.prod(strides), *cur_mu_shape, C)
+
+            # Move that patch into the current MU
+            # Example in 2d: [B, Sy, Sx, N//(Sy*Sx), MUy, MUx, C] -> [B, N//(Sy*Sx), Sy, MUy, Sx, MUx, C]
+            L = len(x.shape)
+            permute = (
+                [0, 1 + D]
+                + sum(
+                    [list(p) for p in zip(range(1, 1 + D), range(1 + D + 1, L - 1))],
+                    [],
+                )
+                + [L - 1]
+            )
+            x = x.permute(permute)
+
+            # Reshape to [B, N//(Sy*Sx), *MU, C]
+            for i in range(D):
+                cur_mu_shape[i] *= strides[i]
+            x = x.reshape(B, -1, *cur_mu_shape, C)
+            N = x.shape[1]
+
+        # Current shape (e.g., 2d: [B, #MUy*#MUx, MUy, MUx, C])
+        x = x.view(B, N, *cur_mu_shape, C)
+
+        # Output format controlled explicitly
+        if return_windowed:
+            return x
+
+        # If masked (legacy behavior), return windowed; else undo_windowing to spatial
+        if mask is not None:
+            return x
+        x = undo_windowing(x, size, cur_mu_shape)
+        return x
+
+
+def cat_keep_shapes(x_list: List[Tensor]) -> Tuple[Tensor, List[Tuple[int]], List[int]]:
+    # [B_i, N_i, C_i] -> [(B_i, N_i, C_i), (B_2, N_2, C_2), ...]
+    shapes = [x.shape for x in x_list]
+    # [B_i, N_i, C_i] -> [B_i*N_i]
+    num_tokens = [x.select(dim=-1, index=0).numel() for x in x_list]
+    # (B_i, N_i, C_i) ->  (B_i*N_i, C_i) -> [SUM_i (B_i*N_i), C_i]
+    flattened = torch.cat([x.flatten(0, -2) for x in x_list])
+    return flattened, shapes, num_tokens
+
+
+def uncat_with_shapes(flattened: Tensor, shapes: List[Tuple[int]], num_tokens: List[int]) -> List[Tensor]:
+    # flattened -> [(B_i*N_i, C_i), (B_2*N_2, C_2), ...]
+    outputs_splitted = torch.split_with_sizes(flattened, num_tokens, dim=0)
+    # [(B_i, N_i, C_i), (B_2, N_2, C_2), ...] -> [(B_i, N_i, C_*), (B_2, N_2, C_*), ...]
+    shapes_adjusted = [shape[:-1] + torch.Size([flattened.shape[-1]]) for shape in shapes]
+    # [(B_i*N_i, C_*), (B_2*N_2, C_*), ...] -> [(B_i, N_i, C_*), (B_2, N_2, C_*), ...]
+    outputs_reshaped = [o.reshape(shape) for o, shape in zip(outputs_splitted, shapes_adjusted)]
+    return outputs_reshaped
 
 
 def inverse_sigmoid(x, eps=1e-5):
@@ -404,3 +641,309 @@ def c2_xavier_fill(module: nn.Module) -> None:
     nn.init.kaiming_uniform_(module.weight, a=1)
     if module.bias is not None:
         nn.init.constant_(module.bias, 0)
+
+
+def concat_points(old_point_inputs, new_points, new_labels):
+    """Add new points and labels to previous point inputs (add at the end)."""
+    if old_point_inputs is None:
+        points, labels = new_points, new_labels
+    else:
+        points = torch.cat([old_point_inputs["point_coords"], new_points], dim=1)
+        labels = torch.cat([old_point_inputs["point_labels"], new_labels], dim=1)
+
+    return {"point_coords": points, "point_labels": labels}
+
+
+def sample_box_points(
+    input_fmt: str,
+    masks: torch.Tensor,
+    time_separable: bool = True,
+    noise: float = 0.1,  # SAM default
+    noise_bound: int = 20,  # SAM default
+    top_left_label: int = 2,
+    bottom_right_label: int = 3,
+) -> Tuple[np.array, np.array]:
+    """
+    Sample a noised version of the corners of a given `bbox`
+
+    Inputs:
+    - input_fmt: input format, e.g. "ZYXC"
+    - masks: [B, 1, D, H, W] masks, dtype=torch.Tensor
+    - noise: noise as a fraction of box depth, width and height, dtype=float
+    - noise_bound: maximum amount of noise (in pure pixels), dtype=int
+
+    Returns:
+    - box_coords: [B, num_pt, 3], contains (z, y, x) coordinates of box corners, dtype=torch.float
+    - box_labels: [B, num_pt], label 2 is reserverd for top left and 3 for bottom right corners, dtype=torch.int32
+    """
+    if input_fmt == "ZYXC" or (input_fmt == "TZYXC" and time_separable):
+        device = masks.device
+        # box_coords: [B, 6] for masks: [N, D, H, W]
+        box_coords = masks_to_boxes_v2(masks.squeeze(1))
+        B, _, D, H, W = masks.shape
+        # box_labels: [B, 2]
+        box_labels = torch.tensor(
+            [top_left_label, bottom_right_label], dtype=torch.int, device=device
+        ).repeat(B)
+        if noise > 0.0:
+            if not isinstance(noise_bound, torch.Tensor):
+                noise_bound = torch.tensor(noise_bound, device=device)
+            # NOTE: masks_to_boxes_v2 returns x1, y1, z1, x2, y2, z2 format
+            # bbox_w: [B, 1], bbox_h: [B, 1], bbox_d: [B, 1]
+            bbox_w = box_coords[..., 3] - box_coords[..., 0]
+            bbox_h = box_coords[..., 4] - box_coords[..., 1]
+            bbox_d = box_coords[..., 5] - box_coords[..., 2]
+            max_dx = torch.min(bbox_w * noise, noise_bound)
+            max_dy = torch.min(bbox_h * noise, noise_bound)
+            max_dz = torch.min(bbox_d * noise, noise_bound)
+            # bbox_noise: [B, 6] in range [-1, 1]
+            box_noise = 2 * torch.rand(B, 1, 6, device=device) - 1
+            box_noise = box_noise * torch.stack((max_dx, max_dy, max_dz, max_dx, max_dy, max_dz), dim=-1)
+
+            box_coords = box_coords + box_noise
+            img_bounds = (
+                torch.tensor([W, H, D, W, H, D], device=device) - 1
+            )  # uncentered pixel coords
+            box_coords.clamp_(torch.zeros_like(img_bounds), img_bounds)  # In place clamping
+
+        box_coords = box_coords.reshape(-1, 2, 3)  # always 2 points (top left and bottom right)
+        box_labels = box_labels.reshape(-1, 2)  # always 2 labels (top left and bottom right)
+    else:
+        raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
+
+    return box_coords, box_labels
+
+
+def sample_random_points_from_errors(
+        input_fmt: str,
+        gt_masks: torch.Tensor,
+        pred_masks: torch.Tensor,
+        time_separable: bool = True,
+        num_pt: int = 1,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Sample `num_pt` random points (along with their labels) independently from the error regions.
+
+    Inputs:
+    - input_fmt: input format, e.g. "ZYXC"
+    - gt_masks: [B, 1, D, H, W] masks, dtype=torch.bool
+    - pred_masks: [B, 1, D, H, W] masks, dtype=torch.bool or None
+    - num_pt: int, number of points to sample independently for each of the B error maps
+
+    Outputs:
+    - points: [B, num_pt, 3], dtype=torch.float, contains (x, y, z) coordinates of each sampled point
+    - labels: [B, num_pt], dtype=torch.int32, where 1 means positive clicks and 0 means
+      negative clicks
+    """
+    if input_fmt == "ZYXC" or (input_fmt == "TZYXC" and time_separable):
+        if pred_masks is None:  # if pred_masks is not provided, treat it as empty
+            pred_masks = torch.zeros_like(gt_masks)
+        assert gt_masks.dtype == torch.bool and gt_masks.size(1) == 1, f"Expected (B, 1, D, H, W), got {gt_masks.shape}"
+        assert pred_masks.dtype == torch.bool and pred_masks.shape == gt_masks.shape, f"Expected (B, 1, D, H, W), got {pred_masks.shape}"
+        assert num_pt >= 0, f"num_pt must be >= 0, got {num_pt}"
+
+        B, _, D_im, H_im, W_im = gt_masks.shape
+        device = gt_masks.device
+
+        # false positive region, a new point sampled in this region should have
+        # negative label to correct the FP error
+        fp_masks = ~gt_masks & pred_masks
+        # false negative region, a new point sampled in this region should have
+        # positive label to correct the FN error
+        fn_masks = gt_masks & ~pred_masks
+        # whether the prediction completely match the ground-truth on each mask
+        # all_correct: [B, 1]
+        all_correct = torch.all((gt_masks == pred_masks).flatten(2), dim=2)
+        # all_correct: [B, 1, 1, 1, 1]
+        all_correct = all_correct[..., None, None, None]
+
+        # channel 0 is FP map, while channel 1 is FN map
+        pts_noise = torch.rand(B, num_pt, D_im, H_im, W_im, 2, device=device)
+        # sample a negative new click from FP region or a positive new click
+        # from FN region, depend on where the maximum falls,
+        # and in case the predictions are all correct (no FP or FN), we just
+        # sample a negative click from the background region
+        # sample negative click in FP region OR if all correct and background
+        pts_noise[..., 0] *= fp_masks | (all_correct & ~gt_masks)
+        # sample positive click in FN region
+        pts_noise[..., 1] *= fn_masks
+        # pts_idx: [B, num_pt]
+        pts_idx = pts_noise.flatten(2).argmax(dim=2)
+        # labels: [B, num_pt]
+        labels = (pts_idx % 2).to(torch.int32)
+        pts_idx = pts_idx // 2
+        pts_x = pts_idx % W_im
+        pts_y = (pts_idx // W_im) % H_im
+        pts_z = pts_idx // (W_im * H_im)
+        points = torch.stack([pts_x, pts_y, pts_z], dim=2).to(torch.float)
+    else:
+        raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
+    return points, labels
+
+
+def sample_one_point_from_error_center(
+        input_fmt: str,
+        gt_masks: torch.Tensor,
+        pred_masks: torch.Tensor,
+        time_separable: bool = True,
+        padding: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Sample 1 random point (along with its label) from the center of each error region,
+    that is, the point with the largest distance to the boundary of each error region.
+    This is the RITM sampling method from https://github.com/saic-vul/ritm_interactive_segmentation/blob/master/isegm/inference/clicker.py
+
+    Inputs:
+    - input_fmt: input format, e.g. "ZYXC"
+    - gt_masks: [B, 1, D, H, W] masks, dtype=torch.bool
+    - pred_masks: [B, 1, D, H, W] masks, dtype=torch.bool or None
+    - padding: if True, pad with boundary of 1 px for distance transform
+
+    Outputs:
+    - points: [B, 1, 3], dtype=torch.float, contains (x, y, z) coordinates of each sampled point
+    - labels: [B, 1], dtype=torch.int32, where 1 means positive clicks and 0 means negative clicks
+    """
+    if pred_masks is None:
+        pred_masks = torch.zeros_like(gt_masks)
+    assert gt_masks.dtype == torch.bool and gt_masks.size(1) == 1, f"Expected (B, 1, D, H, W), got {gt_masks.shape}"
+    assert pred_masks.dtype == torch.bool and pred_masks.shape == gt_masks.shape, f"Expected (B, 1, D, H, W), got {pred_masks.shape}"
+
+    if input_fmt == "ZYXC" or (input_fmt == "TZYXC" and time_separable):
+        B, _, D_im, H_im, W_im = gt_masks.shape
+        device = gt_masks.device
+
+        # false positive region, a new point sampled in this region should have
+        # negative label to correct the FP error
+        fp_masks = ~gt_masks & pred_masks
+        # false negative region, a new point sampled in this region should have
+        # positive label to correct the FN error
+        fn_masks = gt_masks & ~pred_masks
+
+        all_correct = torch.all((gt_masks == pred_masks).flatten(2), dim=2)  # [B,1]
+        all_correct = all_correct[:, 0]  # [B]
+
+        fp_np = fp_masks.cpu().numpy()
+        fn_np = fn_masks.cpu().numpy()
+        bg_np = (~gt_masks).cpu().numpy()  # background for fallback
+
+        points = torch.zeros(B, 1, 3, dtype=torch.float)
+        labels = torch.zeros(B, 1, dtype=torch.int32)  # default negative
+
+        for b in range(B):
+            if bool(all_correct[b]):
+                # --- fallback: sample a negative click from background (~gt) ---
+                bg = bg_np[b, 0]  # [D,H,W] bool
+                bg_flat = bg.reshape(-1)
+                idxs = np.flatnonzero(bg_flat)
+                pt_idx = int(np.random.choice(idxs))
+                x = pt_idx % W_im
+                y = (pt_idx // W_im) % H_im
+                z = pt_idx // (H_im * W_im)
+
+                points[b, 0] = torch.tensor([x, y, z], dtype=torch.float)
+                labels[b, 0] = 0
+                continue
+
+            # --- normal case: pick the deepest voxel in FN or FP by 3D EDT ---
+            fn = fn_np[b, 0]  # [D,H,W] bool
+            fp = fp_np[b, 0]  # [D,H,W] bool
+
+            if padding:
+                fn_pad = np.pad(fn, ((1, 1), (1, 1), (1, 1)), mode="constant")
+                fp_pad = np.pad(fp, ((1, 1), (1, 1), (1, 1)), mode="constant")
+            else:
+                fn_pad, fp_pad = fn, fp
+
+            fn_dt = distance_transform_edt(fn_pad.astype(np.uint8))
+            fp_dt = distance_transform_edt(fp_pad.astype(np.uint8))
+
+            if padding:
+                fn_dt = fn_dt[1:-1, 1:-1, 1:-1]
+                fp_dt = fp_dt[1:-1, 1:-1, 1:-1]
+
+            fn_flat = fn_dt.reshape(-1)
+            fp_flat = fp_dt.reshape(-1)
+
+            fn_argmax = int(np.argmax(fn_flat))
+            fp_argmax = int(np.argmax(fp_flat))
+
+            fn_max = float(fn_flat[fn_argmax])
+            fp_max = float(fp_flat[fp_argmax])
+
+            # choose whether we correct FN (positive click) or FP (negative click)
+            is_positive = fn_max > fp_max
+            pt_idx = fn_argmax if is_positive else fp_argmax
+
+            x = pt_idx % W_im
+            y = (pt_idx // W_im) % H_im
+            z = pt_idx // (H_im * W_im)
+
+            points[b, 0] = torch.tensor([x, y, z], dtype=torch.float)
+            labels[b, 0] = int(is_positive)
+
+    else:
+        raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
+
+    points = points.to(device)
+    labels = labels.to(device)
+    return points, labels
+
+
+def get_next_point(
+    input_fmt: str,
+    gt_masks: torch.Tensor,
+    pred_masks: torch.Tensor,
+    method: str,
+    time_separable: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    if method == "uniform":
+        return sample_random_points_from_errors(input_fmt, gt_masks, pred_masks, time_separable)
+    elif method == "center":
+        return sample_one_point_from_error_center(input_fmt, gt_masks, pred_masks, time_separable)
+    else:
+        raise ValueError(f"unknown sampling method {method}")
+
+
+def select_closest_cond_frames(frame_idx, cond_frame_outputs, max_cond_frame_num):
+    """
+    Select up to `max_cond_frame_num` conditioning frames from `cond_frame_outputs`
+    that are temporally closest to the current frame at `frame_idx`. Here, we take
+    - a) the closest conditioning frame before `frame_idx` (if any);
+    - b) the closest conditioning frame after `frame_idx` (if any);
+    - c) any other temporally closest conditioning frames until reaching a total
+         of `max_cond_frame_num` conditioning frames.
+
+    Outputs:
+    - selected_outputs: selected items (keys & values) from `cond_frame_outputs`.
+    - unselected_outputs: items (keys & values) not selected in `cond_frame_outputs`.
+    """
+    if max_cond_frame_num == -1 or len(cond_frame_outputs) <= max_cond_frame_num:
+        selected_outputs = cond_frame_outputs
+        unselected_outputs = {}
+    else:
+        assert max_cond_frame_num >= 2, "we should allow using 2+ conditioning frames"
+        selected_outputs = {}
+
+        # the closest conditioning frame before `frame_idx` (if any)
+        idx_before = max((t for t in cond_frame_outputs if t < frame_idx), default=None)
+        if idx_before is not None:
+            selected_outputs[idx_before] = cond_frame_outputs[idx_before]
+
+        # the closest conditioning frame after `frame_idx` (if any)
+        idx_after = min((t for t in cond_frame_outputs if t >= frame_idx), default=None)
+        if idx_after is not None:
+            selected_outputs[idx_after] = cond_frame_outputs[idx_after]
+
+        # add other temporally closest conditioning frames until reaching a total
+        # of `max_cond_frame_num` conditioning frames.
+        num_remain = max_cond_frame_num - len(selected_outputs)
+        inds_remain = sorted(
+            (t for t in cond_frame_outputs if t not in selected_outputs),
+            key=lambda x: abs(x - frame_idx),
+        )[:num_remain]
+        selected_outputs.update((t, cond_frame_outputs[t]) for t in inds_remain)
+        unselected_outputs = {
+            t: v for t, v in cond_frame_outputs.items() if t not in selected_outputs
+        }
+
+    return selected_outputs, unselected_outputs

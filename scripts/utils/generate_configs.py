@@ -204,7 +204,7 @@ TASK_METHOD_DEFAULTS = {
 # Keys: (task_group, pos_encoding_type)
 # -----------------------------
 
-VALID_POS_ENCODINGS = ["rope", "sincos"]
+VALID_POS_ENCODINGS = ["rope", "sincos", "nope"]
 
 TASK_POS_ENCODING_PRESETS = {
     # -----------------
@@ -228,6 +228,18 @@ TASK_POS_ENCODING_PRESETS = {
         "models.heads.maskedpredictor.abs_sincos_enc": True,
         "models.heads.maskedpredictor.rope_pos_enc": False,
     },
+    ("channel_split", "nope"): {
+        "models.backbones.masked_encoder.abs_sincos_enc": False,
+        "models.backbones.masked_encoder.rope_pos_enc": False,
+        "models.backbones.masked_encoder.rope_random_rotation_per_head": True,
+        "models.backbones.masked_encoder.rope_mixed": False,
+        "models.backbones.masked_encoder.rope_theta": 100.0,
+        "models.heads.maskedpredictor.abs_sincos_enc": False,
+        "models.heads.maskedpredictor.rope_pos_enc": False,
+        "models.heads.maskedpredictor.rope_random_rotation_per_head": True,
+        "models.heads.maskedpredictor.rope_mixed": False,
+        "models.heads.maskedpredictor.rope_theta": 100.0,
+    },
 
     # -----------------
     # upsample_space
@@ -249,6 +261,18 @@ TASK_POS_ENCODING_PRESETS = {
         "models.backbones.masked_encoder.rope_pos_enc": False,
         "models.heads.maskedpredictor.abs_sincos_enc": True,
         "models.heads.maskedpredictor.rope_pos_enc": False,
+    },
+    ("upsample_space", "nope"): {
+        "models.backbones.masked_encoder.abs_sincos_enc": False,
+        "models.backbones.masked_encoder.rope_pos_enc": False,
+        "models.backbones.masked_encoder.rope_random_rotation_per_head": True,
+        "models.backbones.masked_encoder.rope_mixed": False,
+        "models.backbones.masked_encoder.rope_theta": 100.0,
+        "models.heads.maskedpredictor.abs_sincos_enc": False,
+        "models.heads.maskedpredictor.rope_pos_enc": False,
+        "models.heads.maskedpredictor.rope_random_rotation_per_head": True,
+        "models.heads.maskedpredictor.rope_mixed": False,
+        "models.heads.maskedpredictor.rope_theta": 100.0,
     },
 
     # -----------------

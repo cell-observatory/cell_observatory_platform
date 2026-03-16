@@ -125,7 +125,7 @@ class FinetuneCollatorActor:
         self.device_buffer_capacity = device_buffer_capacity
 
         self.input_format = input_format.upper()
-        if self.input_format != "ZYXC":
+        if self.input_format not in ["ZYXC", "TZYXC"]:
             raise NotImplementedError(f"FinetuneCollatorActor currently assumes ZYXC, got {self.input_format}")
 
         self.mask_channel_idx = mask_channel_idx
@@ -160,8 +160,18 @@ class FinetuneCollatorActor:
         if pin_pages:
             base_ptr = ctypes.addressof(ctypes.c_char.from_buffer(self._shm.buf))
             self.host_buffer_ptr = base_ptr
-            cp.cuda.runtime.hostRegister(base_ptr, self.slot_bytes * self.capacity, 0)
-            self._pinned = True
+            size = self.slot_bytes * self.capacity
+            if size > 0:
+                try:
+                    cp.cuda.runtime.hostRegister(base_ptr, size, 0)
+                    self._pinned = True
+                except cudart.CUDARuntimeError as e:
+                    logger.warning(
+                        "hostRegister failed (%s), proceeding without pinned host memory", e
+                    )
+                    self._pinned = False
+            else:
+                self._pinned = False
         else:
             self._pinned = False
 
@@ -231,6 +241,9 @@ class FinetuneCollatorActor:
         input_format = input_format.upper()
         if input_format == "ZYXC":
             return input_shape[:-1]
+        elif input_format == "TZYXC":
+            # spatial shape is (Z, Y, X)
+            return input_shape[1:-1]
         else:
             raise NotImplementedError(f"Unsupported input_format: {input_format}")
 
@@ -239,6 +252,10 @@ class FinetuneCollatorActor:
         input_format = input_format.upper()
         if input_format == "ZYXC":
             # remove mask channel: (Z, Y, X, C_full) -> (Z, Y, X, C_full-1)
+            *spatial, channels = input_shape
+            return tuple([*spatial, channels - 1])
+        elif input_format == "TZYXC":
+            # remove mask channel: (T, Z, Y, X, C_full) -> (T, Z, Y, X, C_full-1)
             *spatial, channels = input_shape
             return tuple([*spatial, channels - 1])
         else:
@@ -265,118 +282,126 @@ class FinetuneCollatorActor:
             pass
 
     def _get_masks(self, inputs: torch.Tensor):
-        """
-        inputs: (B, Z, Y, X, C_full)
-        returns:
-          inputs_wo_mask: (B, Z, Y, X, C_full-1)
-          masks_labelmap: (B, Z, Y, X)
-        """
-        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
-        B, Z, Y, X, C = inputs.shape
-
+        assert self.input_format.upper().endswith("C"), "Input format must end with 'C' (channels)"
+        C = inputs.shape[-1]
         if C < 2:
             raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
-
         # For zero-copy we *require* the mask to be the last channel
         if self.mask_channel_idx not in (-1, C - 1):
             raise ValueError(
                 f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
             )
-
-        masks = inputs[..., -1].clone()  # (B, Z, Y, X), view
+        masks = inputs[..., -1].clone()
         return inputs, masks
 
     def _build_targets(
         self,
         masks_labelmap: torch.Tensor,  # (B, Z, Y, X) on CPU
         mask_bbox_dict_batch: List[str],
+        legacy_data_format: bool = True,
     ):
         """
         Build per-sample targets from labelmap + mask_bbox_dict.
         If self.use_masks is False, no binary masks are constructed and
         the "masks" key is omitted entirely from the targets.
         """
-        # TODO: add check for different input formats
-        B, Zm, Ym, Xm = masks_labelmap.shape
-        spatial_shape = (Zm, Ym, Xm)
-        device = masks_labelmap.device
-
-        mask_ids_batch: List[List[int]] = []
-        bboxes_batch: List[torch.Tensor] = []
-
-        for raw in mask_bbox_dict_batch:
-            instances = ujson.loads(raw)
-
-            ids: List[int] = []
-            boxes: List[List[float]] = []
-
-            for cell_id_str, bbox in instances.items():
-                ids.append(int(cell_id_str))
-                if isinstance(bbox, (list, tuple)) and len(bbox) == 6:
-                    if self.bbox_data_format == "zyxzyx":
-                        zmin, ymin, xmin, zmax, ymax, xmax = bbox
-                    elif self.bbox_data_format == "xyzxyz":
-                        xmin, ymin, zmin, xmax, ymax, zmax = bbox
-                    else:
-                        raise ValueError(f"Unsupported bbox_data_format={self.bbox_data_format}")
-                elif isinstance(bbox, dict):
-                    zmin = bbox.get("zmin")
-                    ymin = bbox.get("ymin")
-                    xmin = bbox.get("xmin")
-                    zmax = bbox.get("zmax")
-                    ymax = bbox.get("ymax")
-                    xmax = bbox.get("xmax")
-                else:
-                    continue
-
-                if None in (zmin, ymin, xmin, zmax, ymax, xmax):
-                    continue
-
-                boxes.append([zmin, ymin, xmin, zmax, ymax, xmax])
-
-            mask_ids_batch.append(ids)
-
-            if boxes:
-                bboxes_batch.append(torch.as_tensor(boxes, device=device, dtype=torch.float32))
+        # FIXME: remove legacy_data_format once database is updated to 
+        #        reflect timepoint of annotations
+        if legacy_data_format:
+            if self.input_format == "ZYXC":
+                B, Zm, Ym, Xm = masks_labelmap.shape
+                spatiotemporal_shape = (Zm, Ym, Xm)
+            elif self.input_format == "TZYXC":
+                # NOTE: will only be used for T=1 edge case, see note above
+                B, T, Zm, Ym, Xm = masks_labelmap.shape
+                spatiotemporal_shape = (T, Zm, Ym, Xm)
             else:
-                bboxes_batch.append(torch.zeros((0, 6), device=device, dtype=torch.float32))
+                raise NotImplementedError(f"Unsupported input_format={self.input_format}")
 
-        if self.use_masks and self.generate_binary_masks:
-                binary_masks_batch = mask_ids_to_masks(
-                    batch_size=B,
-                    spatial_shape=spatial_shape,
-                    mask_ids_batch=mask_ids_batch,
-                    masks=masks_labelmap,
-                    device=device,
-                )
-        else:
-            binary_masks_batch = [None] * B
+            device = masks_labelmap.device
 
-        if self.bbox_data_format != self.bbox_output_format:
-            bboxes_batch = [
-                convert_bbox_format(b, 
-                    self.bbox_data_format, 
-                    self.bbox_output_format, 
-                    self.normalize_bboxes, 
-                    # spatial shape is (Z, Y, X), need (X, Y, Z)
-                    self.spatial_shape[::-1]) for b in bboxes_batch
-            ]
+            mask_ids_batch: List[List[int]] = []
+            bboxes_batch: List[torch.Tensor] = []
 
-        targets: List[Dict[str, Any]] = []
-        for b, (ids, bm, boxes) in enumerate(zip(mask_ids_batch, binary_masks_batch, bboxes_batch)):
-            mask_ids_tensor = torch.as_tensor(ids, device=device, dtype=torch.long)
-            labels = torch.zeros(len(ids), device=device, dtype=torch.long)
-            t: Dict[str, Any] = {
-                "boxes": boxes,
-                "mask_ids": mask_ids_tensor,
-                "labels": labels,
-            }
-            if self.use_masks:
-                if self.generate_binary_masks:
-                    t["masks"] = bm
+            for raw in mask_bbox_dict_batch:
+                instances = ujson.loads(raw)
+
+                ids: List[int] = []
+                boxes: List[List[float]] = []
+
+                for cell_id_str, bbox in instances.items():
+                    ids.append(int(cell_id_str))
+                    if isinstance(bbox, (list, tuple)) and len(bbox) == 6:
+                        if self.bbox_data_format == "zyxzyx":
+                            zmin, ymin, xmin, zmax, ymax, xmax = bbox
+                        elif self.bbox_data_format == "xyzxyz":
+                            xmin, ymin, zmin, xmax, ymax, zmax = bbox
+                        else:
+                            raise ValueError(f"Unsupported bbox_data_format={self.bbox_data_format}")
+                    elif isinstance(bbox, dict):
+                        zmin = bbox.get("zmin")
+                        ymin = bbox.get("ymin")
+                        xmin = bbox.get("xmin")
+                        zmax = bbox.get("zmax")
+                        ymax = bbox.get("ymax")
+                        xmax = bbox.get("xmax")
+                    else:
+                        continue
+
+                    if None in (zmin, ymin, xmin, zmax, ymax, xmax):
+                        continue
+
+                    boxes.append([zmin, ymin, xmin, zmax, ymax, xmax])
+
+                mask_ids_batch.append(ids)
+
+                if boxes:
+                    bboxes_batch.append(torch.as_tensor(boxes, device=device, dtype=torch.float32))
                 else:
-                    t["label_map"] = masks_labelmap[b]
-            targets.append(t)
+                    bboxes_batch.append(torch.zeros((0, 6), device=device, dtype=torch.float32))
+
+            if self.use_masks and self.generate_binary_masks:
+                    # binary_masks_batch: List[Tensor[N, *spatial]] of size B
+                    binary_masks_batch = mask_ids_to_masks(
+                        batch_size=B,
+                        spatiotemporal_shape=spatiotemporal_shape,
+                        mask_ids_batch=mask_ids_batch,
+                        masks=masks_labelmap,
+                        device=device,
+                    )
+            else:
+                binary_masks_batch = [None] * B
+
+            if self.bbox_data_format != self.bbox_output_format:
+                bboxes_batch = [
+                    convert_bbox_format(b, 
+                        self.bbox_data_format, 
+                        self.bbox_output_format, 
+                        self.normalize_bboxes, 
+                        # spatial shape is (Z, Y, X), need (X, Y, Z)
+                        self.spatial_shape[::-1]) for b in bboxes_batch
+                ]
+
+            targets: List[Dict[str, Any]] = []
+            for b, (ids, bm, boxes) in enumerate(zip(mask_ids_batch, binary_masks_batch, bboxes_batch)):
+                mask_ids_tensor = torch.as_tensor(ids, device=device, dtype=torch.long)
+                labels = torch.zeros(len(ids), device=device, dtype=torch.long)
+                t: Dict[str, Any] = {
+                    "boxes": boxes,
+                    "mask_ids": mask_ids_tensor,
+                    "labels": labels,
+                }
+                if self.use_masks:
+                    if self.generate_binary_masks:
+                        t["masks"] = bm
+                    else:
+                        t["label_map"] = masks_labelmap[b]
+                targets.append(t)
+        
+        else:
+            # TODO: once database is updated to reflect timepoint of annotations,
+            #       implement new build targets logic
+            raise NotImplementedError("New build targets logic not implemented yet.")
         
         return targets
 
@@ -431,6 +456,7 @@ class FinetuneCollatorActor:
                     mask_bbox_dict_batch=mask_bbox_dict_batch,
                 )
             else:
+                # FIXME: once we migrate to new database format, we need to update this logic
                 B = inputs.shape[0]
                 device = torch.device("cpu")
                 targets_cpu = []
@@ -615,8 +641,18 @@ class CollatorActor:
         if pin_pages:
             base_ptr = ctypes.addressof(ctypes.c_char.from_buffer(self._shm.buf))
             self.host_buffer_ptr = base_ptr
-            cp.cuda.runtime.hostRegister(base_ptr, self.slot_bytes * self.capacity, 0)
-            self._pinned = True
+            size = self.slot_bytes * self.capacity
+            if size > 0:
+                try:
+                    cp.cuda.runtime.hostRegister(base_ptr, size, 0)
+                    self._pinned = True
+                except cudart.CUDARuntimeError as e:
+                    logger.warning(
+                        "hostRegister failed (%s), proceeding without pinned host memory", e
+                    )
+                    self._pinned = False
+            else:
+                self._pinned = False
         else:
             self._pinned = False
 

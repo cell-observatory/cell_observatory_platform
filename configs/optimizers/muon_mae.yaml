@@ -6,9 +6,6 @@ betas: [0.9, 0.99]
 eps: 1e-08
 adjust_lr_fn: match_rms_adamw
 
-param_group_split_mode: mae
-# layer_decay: 0.75
-layer_decay: 1.0 # default no layer decay
-# weight_decay: 0.05
-decoder_layer_decay: 1.0 # default no layer decay
-no_weight_decay_list: ['pos_embedding', 'cls_token', 'bias']
+get_param_groups_extra:
+  enc_layer_decay: 1.0 # default no layer decay; use 0.75 for MAE-style decay
+  dec_layer_decay: 1.0 # default no layer decay

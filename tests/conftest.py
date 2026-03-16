@@ -14,8 +14,10 @@ try:
 except ValueError:
     pass
 
+import ray
 from ray import cluster_resources, init
 from ray.runtime_env import RuntimeEnv
+from ray.util import list_named_actors
 from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
 
@@ -37,7 +39,26 @@ os.environ["NCCL_CROSS_NIC"] = "1"
 os.environ["NCCL_P2P_LEVEL"] = "NVL"
 os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "3600"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["RAY_TRAIN_WORKER_GROUP_START_TIMEOUT_SEC"] = "3600"
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", verbose=True)
+
+
+def _sdpa_kernel_with_math_fallback(backends):
+    """Add MATH fallback for tests when Flash Attention isn't available."""
+    from torch.nn.attention import SDPBackend, sdpa_kernel as _sdpa_kernel
+
+    if SDPBackend.FLASH_ATTENTION in backends and SDPBackend.MATH not in backends:
+        backends = list(backends) + [SDPBackend.MATH]
+    return _sdpa_kernel(backends)
+
+
+@pytest.fixture(autouse=True)
+def patch_sdpa_for_tests(monkeypatch):
+    """Allow MATH backend fallback in tests so models run without Flash Attention."""
+    monkeypatch.setattr(
+        "cell_observatory_platform.models.layers.attention.sdpa_kernel",
+        _sdpa_kernel_with_math_fallback,
+    )
 
 
 # keeping this until we migrate models
@@ -123,6 +144,27 @@ def config() -> DictConfig:
     return cfg
 
 
+def _cleanup_ray_test_actors():
+    if not ray.is_initialized():
+        return
+    try:
+        actors = list_named_actors(all_namespaces=True)
+    except Exception:
+        return
+    for entry in actors:
+        ns = entry.get("namespace") or entry.get("namespace", "")
+        name = entry.get("name") or entry.get("name", "")
+        if not name:
+            continue
+
+        if ns == "schedulers" or (isinstance(ns, str) and ns.startswith("buffers_node_")):
+            try:
+                handle = ray.get_actor(name, namespace=ns)
+                ray.kill(handle, no_restart=True)
+            except Exception:
+                pass
+
+
 def distributed_test(cfg: DictConfig, test: str):
     # test needs to be a string that can
     # be resolved to a callable to prevent
@@ -173,4 +215,5 @@ def distributed_test(cfg: DictConfig, test: str):
     )
 
     result = trainer.fit()
+    _cleanup_ray_test_actors()
     return result.metrics

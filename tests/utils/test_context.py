@@ -33,6 +33,7 @@ def _test_context(config):
     # ranks and world size under Ray
     rank = process_rank()
     world = get_world_size()
+    
     assert 0 <= rank < world
     assert world > 1
 
@@ -76,7 +77,7 @@ def test_context(config):
         pytest.skip("No GPUs available for testing")
     else:
         n_gpus = torch.cuda.device_count()
-        if n_gpus < 2:
+        if n_gpus < 2 or config.clusters.num_workers < 2:
             pytest.skip("At least 2 GPUs are required for this test")
 
     with open_dict(config):

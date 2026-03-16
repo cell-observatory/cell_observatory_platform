@@ -53,14 +53,11 @@ ROPE_CASES = [
 
 
 @pytest.mark.parametrize(
-    "dim,num_heads,rope_mixed",
-    [
-        (32, 4, True),
-        (32, 4, False),
-    ],
+    "dim,num_heads,rope_type",
+    [(32, 4, "mixed")],  # axial requires pos_enc from top-level module
 )
 @pytest.mark.parametrize("case", ROPE_CASES, ids=[c[0] for c in ROPE_CASES])
-def test_rope_attention_shapes(dim, num_heads, rope_mixed, case):
+def test_rope_attention_shapes(dim, num_heads, rope_type, case):
     input_fmt, input_shape_batched, patch_shape = case
     input_shape = input_shape_batched[1:]
     L = tokens_from(input_fmt, input_shape, patch_shape)
@@ -75,7 +72,7 @@ def test_rope_attention_shapes(dim, num_heads, rope_mixed, case):
         proj_bias=True,
         att_drop=0.0,
         proj_drop=0.0,
-        rope_mixed=rope_mixed,
+        rope_type=rope_type,
         rope_theta=10.0,
         input_fmt=input_fmt,
         input_shape=input_shape,
@@ -118,7 +115,7 @@ def test_transformer_shapes(rope_pos_enc, dim, num_heads, mlp_ratio, case):
         drop_path=0.0,
         rope_pos_enc=rope_pos_enc,
         rope_random_rotation_per_head=True,
-        rope_mixed=True,
+        rope_type="mixed" if rope_pos_enc else "axial",
         rope_theta=10.0,
         input_fmt=input_fmt,
         input_shape=input_shape,

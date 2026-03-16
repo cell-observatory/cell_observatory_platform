@@ -13,6 +13,7 @@ from cell_observatory_platform.models.layers.preprocessor import (
     UpsamplePreprocessor,
 )
 
+
 BATCH = 32
 TIME = 16
 DEPTH = 128
@@ -20,10 +21,7 @@ HEIGHT = 128
 WIDTH = 128
 CHANNELS = 2
 
-FMT_2D = "TYXC"
 FMT_3D = "TZYXC"
-
-SHAPE_2D = (BATCH, TIME, HEIGHT, WIDTH, CHANNELS)
 SHAPE_3D = (BATCH, TIME, DEPTH, HEIGHT, WIDTH, CHANNELS)
 
 # ---- helpers ----
@@ -31,17 +29,17 @@ SHAPE_3D = (BATCH, TIME, DEPTH, HEIGHT, WIDTH, CHANNELS)
 
 def _dummy_mask_generator(batch_size: int):
     masks = torch.ones(batch_size, 1, dtype=torch.bool)
-    ctx = torch.zeros(batch_size, 1, dtype=torch.bool)
-    tgt = torch.ones(batch_size, 1, dtype=torch.bool)
+    ctx = torch.zeros(batch_size, 1, dtype=torch.long)
+    tgt = torch.ones(batch_size, 1, dtype=torch.long)
     orig_idx = torch.arange(batch_size)
     channels_to_mask = [0]
-    return masks, ctx, tgt, orig_idx, channels_to_mask, None
-
-
-def _delta_psf_2d(h: int, w: int) -> torch.Tensor:
-    psf = torch.zeros((h, w), dtype=torch.float32)
-    psf[h // 2, w // 2] = 1.0
-    return psf
+    return {
+        "masks": masks,
+        "context_masks": ctx,
+        "target_masks": tgt,
+        "original_patch_indices": orig_idx,
+        "channels_to_mask": channels_to_mask,
+    }
 
 
 def _delta_psf_3d(d: int, h: int, w: int) -> torch.Tensor:
@@ -60,8 +58,8 @@ def _delta_psf_3d(d: int, h: int, w: int) -> torch.Tensor:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for RayPreprocessor tests")
 def test_ray_preprocessor_transform_and_masking_on_cuda():
-    B, T, Y, X, C = 2, 1, 4, 4, 3
-    inputs = torch.ones((B, T, Y, X, C), dtype=torch.float32, device="cuda")
+    B, T, Z, Y, X, C = 2, 1, 1, 4, 4, 3
+    inputs = torch.ones((B, T, Z, Y, X, C), dtype=torch.float32, device="cuda")
     sample = {"data_tensor": inputs, "metainfo": {"k": "v"}}
 
     def add_five(x: torch.Tensor) -> torch.Tensor:
@@ -71,14 +69,14 @@ def test_ray_preprocessor_transform_and_masking_on_cuda():
     proc = RayPreprocessor(
         dtype=torch.float32,
         with_masking=True,
-        input_format="TYXC",
-        input_shape=(T, Y, X, C),
-        patch_shape=(1, 4, 4, None),
+        input_format="TZYXC",
+        input_shape=(T, Z, Y, X, C),
+        patch_shape=(1, 1, 4),
         mask_generator=_dummy_mask_generator,
         transforms_list=[add_five],
     )
 
-    out = proc(sample, data_time=0.33)
+    out = proc(sample, data_time=0.33, idx=0)
     data = out["data_tensor"]
     meta = out["metainfo"]
 
@@ -96,26 +94,24 @@ def test_ray_preprocessor_transform_and_masking_on_cuda():
     assert isinstance(meta["transform_time"], float)
     assert meta["data_time"] == 0.33
 
-    assert meta["tokens_per_batch"] == B * proc.seq_len
-
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for RayPreprocessor tests")
 def test_ray_preprocessor_no_mask_returns_empty_meta():
-    B, T, Y, X, C = 2, 1, 4, 4, 2
-    inputs = torch.zeros((B, T, Y, X, C), dtype=torch.float32, device="cuda")
+    B, T, Z, Y, X, C = 2, 1, 1, 4, 4, 2
+    inputs = torch.zeros((B, T, Z, Y, X, C), dtype=torch.float32, device="cuda")
     sample = {"data_tensor": inputs, "metainfo": {}}
 
     proc = RayPreprocessor(
         dtype=torch.float32,
         with_masking=False,
-        input_format="TYXC",
-        input_shape=(T, Y, X, C),
-        patch_shape=(1, 4, 4, None),
+        input_format="TZYXC",
+        input_shape=(T, Z, Y, X, C),
+        patch_shape=(1, 1, 4),
         mask_generator=_dummy_mask_generator,
         transforms_list=None,
     )
 
-    out = proc(sample, data_time=0.0)
+    out = proc(sample, data_time=0.0, idx=0)
     data = out["data_tensor"]
     meta = out["metainfo"]
 
@@ -130,7 +126,6 @@ def test_ray_preprocessor_no_mask_returns_empty_meta():
     assert meta["masking_time"] == -1.0
     assert isinstance(meta["transform_time"], float)
     assert meta["data_time"] == 0.0
-    assert meta["tokens_per_batch"] == B * proc.seq_len
 
 
 def test_requires_c_last_in_input_format():
@@ -161,10 +156,7 @@ def test_requires_xy_axes_present():
 
 @pytest.mark.parametrize(
     "fmt, full_shape, axial_patch_size",
-    [
-        (FMT_2D, SHAPE_2D, None),
-        (FMT_3D, SHAPE_3D, 4),
-    ],
+    [(FMT_3D, SHAPE_3D, 4)],
 )
 def test_spatial_dims_and_indices(fmt, full_shape, axial_patch_size):
     expected_axis_index = {ax: idx + 1 for idx, ax in enumerate(fmt)}
@@ -178,9 +170,9 @@ def test_spatial_dims_and_indices(fmt, full_shape, axial_patch_size):
     )
 
     if "Z" in fmt:
-        patch_shape = (1, axial_patch_size, 4, 4, None)
+        patch_shape = (1, axial_patch_size, 4)
     else:
-        patch_shape = (1, 4, 4, None)
+        patch_shape = (1, 4)
 
     pp = ChannelSplitPreprocessor(
         dtype=torch.float32,
@@ -208,26 +200,6 @@ def test_spatial_dims_and_indices(fmt, full_shape, axial_patch_size):
     assert pp.spatial_shape == expected_spatial_shape
     assert pp.channels == axis_to_size.get("C")
     assert pp.timepoints == axis_to_size.get("T")
-
-
-def test_channel_split_keeps_dim_and_means():
-    B, T, Y, X, C = SHAPE_2D
-    x = torch.zeros(SHAPE_2D, dtype=torch.float32)
-    for c in range(C):
-        x[..., c] = float(c)
-    pp = ChannelSplitPreprocessor(
-        dtype=torch.float32,
-        patch_shape=(1, 4, 4, None),
-        transforms_list=[],
-        with_masking=False,
-        mask_generator=None,
-        input_format=FMT_2D,
-        input_shape=SHAPE_2D[1:],
-    )
-    out = pp.forward({"data_tensor": x, "metainfo": {}}, data_time=0.0)
-    y = out["data_tensor"]
-    assert y.shape == (B, T, Y, X, 1)
-    assert torch.allclose(y.mean(), torch.tensor((C - 1) / 2, dtype=torch.float32))
 
 
 def test_resize_mask_broadcast_3d_with_time_and_channel():

@@ -47,7 +47,16 @@ def initialize_session(cfg: DictConfig):
 
     workspace_root = str(Path(__file__).resolve().parent.parent)
 
-    runtime_env = RuntimeEnv(working_dir=workspace_root, env_vars=env_vars, py_modules=[workspace_root])
+    # pip_packages = OmegaConf.to_container(cfg.clusters.get("extra_pip_packages", []), resolve=True)
+    # if not pip_packages:
+    #     pip_packages = None
+
+    runtime_env = RuntimeEnv(
+        working_dir=workspace_root, 
+        env_vars=env_vars, 
+        py_modules=[workspace_root], 
+        # pip=pip_packages,
+        )
 
     if "head_node_ip" in os.environ and "port" in os.environ:
         address = os.environ["head_node_ip"]

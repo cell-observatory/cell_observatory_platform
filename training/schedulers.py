@@ -1,15 +1,16 @@
 """
 Partly adapted from:
 https://github.com/pytorch/torchtitan/torchtitan/components/lr_scheduler.py
+https://github.com/facebookresearch/dinov3/dinov3/train/cosine_lr_scheduler.py
 """
 
-import re
 import math
-import json
 import copy
 import logging
 import functools
 from typing import Dict, List, Any, Callable, Iterator
+
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -17,7 +18,7 @@ from torch.optim.lr_scheduler import LinearLR
 
 from timm.scheduler import create_scheduler_v2
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.optim.lr_scheduler import LambdaLR, LRScheduler
@@ -30,130 +31,52 @@ logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INF
 
 
 def get_param_groups(config, model: nn.Module) -> List[Dict]:
-    if not getattr(config.optimizers, "param_group_split_mode", False):
-        return model.parameters()
+    """Build optimizer parameter groups.
 
-    # adapted from: https://github.com/facebookresearch/mae/blob/main/util/lr_decay.py
-    # FIXME: remove unused config parameters and simplify
-    if config.optimizers.param_group_split_mode == "mae":
-        enc_layer_decay = float(getattr(config.optimizers, "layer_decay"))
-        dec_layer_decay = float(getattr(config.optimizers, "decoder_layer_decay"))
-        weight_decay = float(getattr(config.optimizers, "wd"))
-        no_wd_list = tuple(getattr(config.optimizers, "no_weight_decay_list"))
+    Delegates to ``model.get_param_groups(weight_decay, **kw)`` when the model
+    implements that method.  Otherwise falls back to a universal decay /
+    no-decay split via ``_default_param_groups``.
+    """
+    weight_decay = float(config.optimizers.wd)
 
-        ALWAYS_NO_WD_SUFFIX = ("pos_embedding", "cls_token", "token_param")
+    if hasattr(model, "get_param_groups"):
+        extra_cfg = getattr(config.optimizers, "get_param_groups_extra", None)
+        extra = OmegaConf.to_container(extra_cfg, resolve=True) if extra_cfg else {}
+        if not isinstance(extra, dict):
+            extra = {}
+        return model.get_param_groups(weight_decay=weight_decay, **extra)
 
-        enc_L = model.masked_encoder.get_num_layers()
-        dec_L = model.masked_decoder.get_num_layers()
+    logger.warning(
+        "%s does not implement get_param_groups(); "
+        "falling back to default decay/no-decay split.",
+        model.__class__.__name__,
+    )
+    return _default_param_groups(model, weight_decay)
 
-        enc_scales = [enc_layer_decay ** (enc_L - i) for i in range(enc_L + 1)]
-        dec_scales = [dec_layer_decay ** (dec_L - i) for i in range(dec_L + 1)]
 
-        def _layer_id_from_name(suffix: str, L: int) -> int:
-            if suffix.startswith(("patch_embedding", "pos_embedding", "cls_token",
-                                  "token_param", "patch_projection")):
-                return 0
-            m = re.search(r"transformer_blocks\.(\d+)", suffix)
-            if m:
-                return int(m.group(1)) + 1
-            if "output_projection" in suffix or suffix.startswith("norm"):
-                return L
-            return L
+_NO_WD_KEYWORDS = ("bias", "pos_embedding", "cls_token", "token_param", "level_embed")
 
-        def _is_no_wd(name: str, p) -> bool:
-            if p.ndim == 1:
-                return True
-            for pat in no_wd_list:
-                if name == pat or name.endswith(pat):
-                    return True
-            for pat in ALWAYS_NO_WD_SUFFIX:
-                if pat in name:
-                    return True
-            return False
 
-        param_groups, param_group_names = {}, {}
+def _default_param_groups(model: nn.Module, weight_decay: float) -> List[Dict]:
+    """Universal fallback: separate decay vs no-decay params.
 
-        for n, p in model.named_parameters():
-            if not p.requires_grad:
-                continue
+    No-decay: all 1-d params (biases, norms) and known special params.
+    """
+    decay, no_decay = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if p.ndim == 1 or any(kw in name for kw in _NO_WD_KEYWORDS):
+            no_decay.append(p)
+        else:
+            decay.append(p)
 
-            if n.startswith("masked_encoder."):
-                side, suffix, L, scales = "enc", n[len("masked_encoder."):], enc_L, enc_scales
-            elif n.startswith("masked_decoder."):
-                side, suffix, L, scales = "dec", n[len("masked_decoder."):], dec_L, dec_scales
-            else:
-                raise ValueError(f"Parameter {n} not under masked_encoder/decoder")
-
-            decay_tag = "no_decay" if _is_no_wd(n, p) else "decay"
-            wd = 0.0 if decay_tag == "no_decay" else weight_decay
-
-            lid = _layer_id_from_name(suffix, L)
-            lr_scale = scales[lid]
-
-            gname = f"{side}_layer_{lid}_{decay_tag}"
-            if gname not in param_groups:
-                param_groups[gname] = {"lr_scale": lr_scale, "weight_decay": wd, "params": []}
-                param_group_names[gname] = {"lr_scale": lr_scale, "weight_decay": wd, "params": []}
-
-            param_groups[gname]["params"].append(p)
-            param_group_names[gname]["params"].append(n)
-
-        print("parameter groups: \n%s" % json.dumps(param_group_names, indent=2))
-
-        return list(param_groups.values())
-
-    # from: https://github.com/facebookresearch/ijepa/main/src/helper.py
-    elif config.optimizers.param_group_split_mode == "vjepa":
-        param_groups = [
-            {
-                'params': (p for n, p in model.input_encoder.named_parameters()
-                        if ('bias' not in n) and (len(p.shape) != 1))
-            }, {
-                'params': (p for n, p in model.target_predictor.named_parameters()
-                        if ('bias' not in n) and (len(p.shape) != 1))
-            }, {
-                'params': (p for n, p in model.input_encoder.named_parameters()
-                        if ('bias' in n) or (len(p.shape) == 1)),
-                'WD_exclude': True,
-                'weight_decay': 0
-            }, {
-                'params': (p for n, p in model.target_predictor.named_parameters()
-                        if ('bias' in n) or (len(p.shape) == 1)),
-                'WD_exclude': True,
-                'weight_decay': 0
-            }
-        ]
-        return param_groups
-
-    # from: https://github.com/facebookresearch/vjepa2/app/vjepa/utils.py#L228
-    elif config.optimizers.param_group_split_mode == "vjepa2":
-        zero_init_bias_wd = config.optimizers.zero_init_bias_wd
-
-        param_groups = [
-            {"params": (p for n, p in model.input_encoder.named_parameters() \
-                        if ("bias" not in n) and (len(p.shape) != 1))},
-            {"params": (p for n, p in model.target_predictor.named_parameters() \
-                        if ("bias" not in n) and (len(p.shape) != 1))},
-            {
-                "params": (p for n, p in model.input_encoder.named_parameters() \
-                            if ("bias" in n) or (len(p.shape) == 1)),
-                "WD_exclude": zero_init_bias_wd,
-                "weight_decay": 0,
-            },
-            {
-                "params": (p for n, p in model.target_predictor.named_parameters() \
-                           if ("bias" in n) or (len(p.shape) == 1)),
-                "WD_exclude": zero_init_bias_wd,
-                "weight_decay": 0,
-            },
-        ]
-        return param_groups
-
-    else:
-        raise NotImplementedError(
-            f"Unknown param_group_split_mode: \
-                                  {config.optimizers.param_group_split_mode}"
-        )
+    groups = []
+    if decay:
+        groups.append({"params": decay, "weight_decay": weight_decay})
+    if no_decay:
+        groups.append({"params": no_decay, "weight_decay": 0.0})
+    return groups
 
 
 def get_schedulers(
@@ -654,3 +577,82 @@ def build_lr_schedulers(
         raise ValueError(f"Unknown lr scheduler schedule: {schedule}")
 
     return LRSchedulersContainer(optimizers, lr_lambda)
+
+
+class CosineScheduler(object):
+    def __init__(
+        self,
+        base_value,
+        final_value,
+        total_iters,
+        warmup_iters=0,
+        start_warmup_value=0,
+        freeze_iters=0,
+        trunc_extra=0.0,
+    ):
+        super().__init__()
+
+        self.total_iters = total_iters
+        self.final_value = np.float64(final_value)
+
+        freeze_schedule = np.zeros((freeze_iters))
+
+        warmup_schedule = np.linspace(start_warmup_value, base_value, warmup_iters)
+
+        if trunc_extra == 0.0:
+            iters = np.arange(total_iters - warmup_iters - freeze_iters)
+            schedule = final_value + 0.5 * (base_value - final_value) * (1 + np.cos(np.pi * iters / len(iters)))
+        else:
+            cosine_steps = total_iters - warmup_iters - freeze_iters
+            iters = np.linspace(0, np.pi, int((1 + trunc_extra) * cosine_steps))[:cosine_steps]
+            schedule = np.cos(iters)
+            schedule = (schedule + 1) / 2
+            schedule = (schedule - schedule[-1]) / (1 - schedule[-1])
+            schedule = schedule * (base_value - final_value) + final_value
+
+        self.schedule = np.concatenate((freeze_schedule, warmup_schedule, schedule), dtype=np.float64)
+
+        assert len(self.schedule) == self.total_iters, "Schedule length does not match total iterations"
+
+    def __getitem__(self, it):
+        if it >= self.total_iters:
+            return self.final_value
+        else:
+            return self.schedule[it]
+
+
+def linear_warmup_cosine_decay(
+    start: float,
+    peak: float,
+    end: float,
+    warmup_iterations: int,
+    total_iterations: int,
+    cosine_iterations: int | None = None,
+) -> np.ndarray:
+    """
+    Create a learning rate schedule with linear warmup, a cosine, and an optional constant part in the end.
+
+    Args:
+        start (float): Initial learning rate.
+        peak (float): Learning rate after linear warmup.
+        end (float): Final learning rate after cosine.
+        warmup_iterations (int): Number of iterations for linear warmup.
+        total_iterations (int): Total number of iterations for the schedule.
+        cosine_iterations (int | None): Number of iterations for cosine.
+            If None, cosine part will be over remaining iterations after warmup.
+    Returns:
+        np.ndarray: Learning rate schedule as a numpy array.
+    """
+    linear = np.linspace(start, peak, warmup_iterations, endpoint=False)
+
+    if cosine_iterations is None:
+        cosine_iterations = total_iterations - warmup_iterations
+    cosine = np.cos(np.linspace(0, np.pi, cosine_iterations))
+    cosine = (cosine + 1) / 2
+    cosine = (peak - end) * cosine + end
+
+    remaining_iterations = total_iterations - cosine_iterations - warmup_iterations
+    assert remaining_iterations >= 0
+    
+    constant = np.full((remaining_iterations,), fill_value=end)
+    return np.concatenate([linear, cosine, constant])

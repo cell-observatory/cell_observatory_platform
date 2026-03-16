@@ -8,6 +8,8 @@ from cell_observatory_platform.data.data_shapes import MULTICHANNEL_HYPERCUBE
 from cell_observatory_platform.data.masking.mask_generator import MaskGenerator, MaskModes
 
 
+_FORMAT_MAP = {"CTZYX": "TZYXC", "CTYX": "TYXC", "CZYX": "ZYXC"}
+
 @pytest.fixture
 def make_mask_generator():
     def _make(
@@ -26,6 +28,9 @@ def make_mask_generator():
         temporal_mask_scale: float = 0.1,
         aspect_ratio_scale_hw=0.1,
         num_blocks: int = 1,
+        mask_unit_size: Optional[tuple] = None,
+        q_stride: Optional[tuple] = None,
+        q_pool: Optional[int] = None,
     ):
         fmt = layout.value
         has_T = "T" in fmt
@@ -53,6 +58,9 @@ def make_mask_generator():
             "X": lateral_patch_size,
         }
         patch_shape = tuple(axis_patch[a] for a in fmt)
+        input_format = _FORMAT_MAP.get(fmt, fmt)
+        if fmt in ("CTZYX", "CTYX", "CZYX"):
+            patch_shape = patch_shape[1:]
 
         def _to_range(v):
             return (v, v) if isinstance(v, (int, float)) else tuple(v)
@@ -62,8 +70,9 @@ def make_mask_generator():
         temporal_mask_scale_ = _to_range(temporal_mask_scale)
         aspect_ratio_scale_hw_ = _to_range(aspect_ratio_scale_hw)
 
-        return MaskGenerator(
+        kwargs = dict(
             layout=layout,
+            input_format=input_format,
             input_shape=input_shape,
             patch_shape=patch_shape,
             mask_mode=maskmode,
@@ -76,6 +85,13 @@ def make_mask_generator():
             num_blocks=num_blocks,
             device=torch.device("cpu"),
         )
+        if mask_unit_size is not None:
+            kwargs["mask_unit_size"] = mask_unit_size
+        if q_stride is not None:
+            kwargs["q_stride"] = q_stride
+        if q_pool is not None:
+            kwargs["q_pool"] = q_pool
+        return MaskGenerator(**kwargs)
 
     return _make
 
@@ -132,7 +148,9 @@ def test_blocked_pattern_mask(
         aspect_ratio_scale_hw=(1.0, 1.0),
     )
 
-    masks, ctx, tgt, orig_idx, _, _ = mg(batch_size=batch_size)
+    out = mg(batch_size=batch_size)
+    masks = out["masks"]
+    orig_idx = out["original_patch_indices"]
 
     expected_length = mg.time * mg.depth * mg.height * mg.width
     assert masks.shape == (batch_size, expected_length)
@@ -206,7 +224,11 @@ def test_random_mask(make_mask_generator, batch_size, layout, maskmode, random_r
         aspect_ratio_scale_hw=(1.0, 1.0),
     )
 
-    masks, ctx_idx, tgt_idx, orig_idx, _, _ = mg(batch_size=batch_size)
+    out = mg(batch_size=batch_size)
+    masks = out["masks"]
+    ctx_idx = out["context_masks"]
+    tgt_idx = out["target_masks"]
+    orig_idx = out["original_patch_indices"]
 
     S = mg.depth * mg.height * mg.width
     total_len = mg.time * S
@@ -307,7 +329,11 @@ def test_blocked_mask_properties(
         num_blocks=1,
     )
 
-    masks, ctx_idx, tgt_idx, orig_idx, _, _ = mg(batch_size=batch_size)
+    out = mg(batch_size=batch_size)
+    masks = out["masks"]
+    ctx_idx = out["context_masks"]
+    tgt_idx = out["target_masks"]
+    orig_idx = out["original_patch_indices"]
 
     t_lo, t_hi = mg.temporal_mask_scale
     a_lo, a_hi = mg.axial_mask_scale
@@ -465,11 +491,60 @@ def test_blocked_mask_3d_debug_prints(make_mask_generator, lateral_scale, axial_
 
     # run a few iterations to see variability
     for itr in range(5):
-        masks, ctx_idx, tgt_idx, orig_idx, _, _ = mg(batch_size=1)
-        mask = masks[0]
+        out = mg(batch_size=1)
+        mask = out["masks"][0]
         n_unmasked = int((mask == 0).sum().item())
         n_masked = int((mask == 1).sum().item())
         print(
             f"  iter {itr:02d}: masked={n_masked:,}  unmasked={n_unmasked:,}  "
             f"masked%={100.0*n_masked/total_len:.2f}%  total={total_len:,}"
         )
+
+
+@pytest.mark.parametrize("maskmode", [MaskModes.BLOCKED_WITH_RANDOM_FILL])
+def test_blocked_with_random_fill_returns_dict(make_mask_generator, maskmode):
+    mg = make_mask_generator(
+        maskmode=maskmode,
+        layout=MULTICHANNEL_HYPERCUBE.TZYXC,
+        time_length=4,
+        spatial_shape=(16, 16, 16),
+        lateral_patch_size=16,
+        axial_patch_size=16,
+    )
+    out = mg(batch_size=2)
+    assert isinstance(out, dict)
+    for k in ("masks", "context_masks", "target_masks", "original_patch_indices", "patches_used"):
+        assert k in out
+
+
+@pytest.mark.parametrize("maskmode", [MaskModes.DINO_IBOT])
+def test_dino_ibot_returns_dict(make_mask_generator, maskmode):
+    mg = make_mask_generator(
+        maskmode=maskmode,
+        layout=MULTICHANNEL_HYPERCUBE.TZYXC,
+        time_length=4,
+        spatial_shape=(16, 16, 16),
+        lateral_patch_size=16,
+        axial_patch_size=16,
+    )
+    out = mg(batch_size=2)
+    assert isinstance(out, dict)
+    assert "collated_masks" in out or "mask_indices_list" in out
+
+
+@pytest.mark.parametrize("maskmode", [MaskModes.HIERA_MU])
+def test_hiera_mu_returns_dict(make_mask_generator, maskmode):
+    mg = make_mask_generator(
+        maskmode=maskmode,
+        layout=MULTICHANNEL_HYPERCUBE.TZYXC,
+        time_length=4,
+        spatial_shape=(16, 16, 16),
+        lateral_patch_size=8,
+        axial_patch_size=8,
+        mask_unit_size=(1, 2, 2, 2),
+        q_stride=(1, 2, 2, 2),
+        q_pool=1,
+    )
+    out = mg(batch_size=2)
+    assert isinstance(out, dict)
+    assert "mu_mask" in out and "mu_keep_idx" in out and "tgt_tok_idx" in out
