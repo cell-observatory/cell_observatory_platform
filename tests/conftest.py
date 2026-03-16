@@ -14,8 +14,10 @@ try:
 except ValueError:
     pass
 
+import ray
 from ray import cluster_resources, init
 from ray.runtime_env import RuntimeEnv
+from ray.util import list_named_actors
 from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
 
@@ -142,6 +144,27 @@ def config() -> DictConfig:
     return cfg
 
 
+def _cleanup_ray_test_actors():
+    if not ray.is_initialized():
+        return
+    try:
+        actors = list_named_actors(all_namespaces=True)
+    except Exception:
+        return
+    for entry in actors:
+        ns = entry.get("namespace") or entry.get("namespace", "")
+        name = entry.get("name") or entry.get("name", "")
+        if not name:
+            continue
+
+        if ns == "schedulers" or (isinstance(ns, str) and ns.startswith("buffers_node_")):
+            try:
+                handle = ray.get_actor(name, namespace=ns)
+                ray.kill(handle, no_restart=True)
+            except Exception:
+                pass
+
+
 def distributed_test(cfg: DictConfig, test: str):
     # test needs to be a string that can
     # be resolved to a callable to prevent
@@ -192,4 +215,5 @@ def distributed_test(cfg: DictConfig, test: str):
     )
 
     result = trainer.fit()
+    _cleanup_ray_test_actors()
     return result.metrics
