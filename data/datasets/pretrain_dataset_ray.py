@@ -160,8 +160,18 @@ class FinetuneCollatorActor:
         if pin_pages:
             base_ptr = ctypes.addressof(ctypes.c_char.from_buffer(self._shm.buf))
             self.host_buffer_ptr = base_ptr
-            cp.cuda.runtime.hostRegister(base_ptr, self.slot_bytes * self.capacity, 0)
-            self._pinned = True
+            size = self.slot_bytes * self.capacity
+            if size > 0:
+                try:
+                    cp.cuda.runtime.hostRegister(base_ptr, size, 0)
+                    self._pinned = True
+                except cudart.CUDARuntimeError as e:
+                    logger.warning(
+                        "hostRegister failed (%s), proceeding without pinned host memory", e
+                    )
+                    self._pinned = False
+            else:
+                self._pinned = False
         else:
             self._pinned = False
 
@@ -631,8 +641,18 @@ class CollatorActor:
         if pin_pages:
             base_ptr = ctypes.addressof(ctypes.c_char.from_buffer(self._shm.buf))
             self.host_buffer_ptr = base_ptr
-            cp.cuda.runtime.hostRegister(base_ptr, self.slot_bytes * self.capacity, 0)
-            self._pinned = True
+            size = self.slot_bytes * self.capacity
+            if size > 0:
+                try:
+                    cp.cuda.runtime.hostRegister(base_ptr, size, 0)
+                    self._pinned = True
+                except cudart.CUDARuntimeError as e:
+                    logger.warning(
+                        "hostRegister failed (%s), proceeding without pinned host memory", e
+                    )
+                    self._pinned = False
+            else:
+                self._pinned = False
         else:
             self._pinned = False
 
