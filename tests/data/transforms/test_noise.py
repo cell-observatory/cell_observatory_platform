@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 import torch
+import torch.nn.functional as F_nn
 
 from pathlib import Path
 
@@ -21,6 +22,40 @@ def _scipy_gaussian_filter_3d_ref(arr: np.ndarray, sigma: float, radius: int) ->
         out = gaussian_filter1d(
             out, sigma=sigma, axis=axis, mode="constant", cval=0.0, radius=radius
         )
+    return out
+
+
+def _gaussian_1d_kernel_for_ref(sigma: float, kernel_size: int, device, dtype) -> torch.Tensor:
+    """Build normalized 1D Gaussian kernel (same formula as noise._gaussian_kernel_1d)."""
+    k = kernel_size
+    half = (k - 1) / 2.0
+    x = torch.arange(k, device=device, dtype=dtype) - half
+    kernel = torch.exp(-(x ** 2) / (2.0 * sigma ** 2))
+    kernel = kernel / kernel.sum()
+    return kernel  # (k,)
+
+
+def _full_3d_gaussian_conv_ref(
+    x: torch.Tensor, sigma: float, kernel_size: int
+) -> torch.Tensor:
+    """Reference: one 3D conv with kernel = outer product of 1D Gaussians.
+    Mathematically equivalent to separable 3x 1D conv when 1D kernels are normalized."""
+    B, C, Z, Y, X = x.shape
+    device, dtype = x.device, x.dtype
+    pad = kernel_size // 2
+    k_1d = _gaussian_1d_kernel_for_ref(sigma, kernel_size, device, dtype)  # (k,)
+    # Outer product: K3d[z,y,x] = k_1d[z] * k_1d[y] * k_1d[x]; sum(K3d) = 1
+    K_3d = (
+        k_1d.view(kernel_size, 1, 1)
+        * k_1d.view(1, kernel_size, 1)
+        * k_1d.view(1, 1, kernel_size)
+    )  # (k,k,k)
+    # conv3d weight: (C_out, C_in, kZ, kY, kX); groups=C -> (C, 1, k, k, k)
+    w = K_3d.unsqueeze(0).unsqueeze(0).expand(C, 1, kernel_size, kernel_size, kernel_size)
+    x_pad = F_nn.pad(
+        x, (pad, pad, pad, pad, pad, pad), mode="constant", value=0.0
+    )  # (left_x, right_x, left_y, right_y, left_z, right_z)
+    out = F_nn.conv3d(x_pad, w, groups=C)
     return out
 
 
@@ -214,6 +249,58 @@ class TestGaussianBlur3dPerBatchSigma:
         )
 
 
+class TestGaussianBlur3dVsFull3dConv:
+    """Correctness of separable implementation vs a single 3D conv with outer-product kernel.
+    Catches normalization or kernel-construction bugs."""
+
+    def test_full_3d_kernel_sums_to_one(self):
+        """Outer product of normalized 1D kernels should sum to 1 (no double normalization)."""
+        for sigma in (0.5, 1.0, 1.5):
+            k_1d = _gaussian_1d_kernel_for_ref(sigma, 7, torch.device("cpu"), torch.float64)
+            one = torch.tensor(1.0, device=k_1d.device, dtype=k_1d.dtype)
+            assert torch.allclose(k_1d.sum(), one), "1D kernel should be normalized"
+            K_3d = (
+                k_1d.view(7, 1, 1) * k_1d.view(1, 7, 1) * k_1d.view(1, 1, 7)
+            )
+            assert torch.allclose(
+                K_3d.sum(), one, rtol=1e-9, atol=1e-9
+            ), "3D outer-product kernel should sum to 1"
+
+    def test_single_sigma_separable_matches_full_3d_conv(self):
+        """GaussianBlur3d (separable 1D convs) should match one 3D conv with same kernel."""
+        kernel_size = 7
+        sigma = 1.0
+        blur = GaussianBlur3d(kernel_size=kernel_size)
+        torch.manual_seed(123)
+        x = torch.randn(1, 2, 8, 10, 12, dtype=torch.float64)
+        out_separable = blur(x, sigma=sigma)
+        out_full_3d = _full_3d_gaussian_conv_ref(x, sigma, kernel_size)
+        torch.testing.assert_close(
+            out_separable,
+            out_full_3d,
+            rtol=1e-9,
+            atol=1e-9,
+            msg="Separable 3D blur should match full 3D conv (same kernel, no normalizing factor error)",
+        )
+
+    def test_single_sigma_matches_full_3d_conv_float32(self):
+        """Same as above in float32 (typical training dtype)."""
+        kernel_size = 5
+        sigma = 0.8
+        blur = GaussianBlur3d(kernel_size=kernel_size)
+        torch.manual_seed(456)
+        x = torch.randn(2, 1, 6, 8, 8, dtype=torch.float32)
+        out_separable = blur(x, sigma=sigma)
+        out_full_3d = _full_3d_gaussian_conv_ref(x, sigma, kernel_size)
+        torch.testing.assert_close(
+            out_separable,
+            out_full_3d,
+            rtol=1e-5,
+            atol=1e-5,
+            msg="Separable vs full 3D conv mismatch in float32",
+        )
+
+
 class TestGaussianBlur3dEdgeCases:
     """Tests for edge cases and error handling."""
 
@@ -382,7 +469,7 @@ class TestCytosolicHazeEdgeCases:
 # CytosolicHaze visualization test (optional, skipped by default)
 # -----------------------------------------------------------------------------
 
-# @pytest.mark.skip(reason="optional visualization")
+@pytest.mark.skip(reason="optional visualization")
 def test_cytosolichaze_visualize_sphere():
     """Generate a batch of hollow 3D spheres with different radii, apply CytosolicHaze, and save orthoslice visualizations.
     To run: temporarily remove the @pytest.mark.skip decorator, then:
