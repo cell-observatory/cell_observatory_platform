@@ -18,8 +18,7 @@
     "--entrypoint=",
     "--privileged",
     "--shm-size=64g",
-    "--gpus",
-    "all"
+    "--gpus=all"
   ],
   "mounts": [
     "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached",
