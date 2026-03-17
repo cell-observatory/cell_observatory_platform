@@ -17,10 +17,7 @@
     "PYTHONUNBUFFERED=1",
     "--entrypoint=",
     "--privileged",
-    "--ipc",
-    "host",
-    "--ipc",
-    "host",
+    "--shm-size=64g",
     "--gpus",
     "all"
   ],
