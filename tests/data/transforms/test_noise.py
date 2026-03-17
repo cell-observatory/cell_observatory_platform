@@ -1,6 +1,27 @@
+import numpy as np
+import pytest
 import torch
 
-from cell_observatory_platform.data.transforms.noise import MixedPoissonGaussianNoise
+from pathlib import Path
+
+from cell_observatory_platform.data.transforms.noise import (
+    CytosolicHaze,
+    GaussianBlur3d,
+    MixedPoissonGaussianNoise,
+)
+
+
+def _scipy_gaussian_filter_3d_ref(arr: np.ndarray, sigma: float, radius: int) -> np.ndarray:
+    """Reference 3D Gaussian blur via scipy. arr shape (Z,Y,X).
+    Uses constant (zero) padding to match GaussianBlur3d."""
+    from scipy.ndimage import gaussian_filter1d
+
+    out = arr.astype(np.float64)
+    for axis in (0, 1, 2):
+        out = gaussian_filter1d(
+            out, sigma=sigma, axis=axis, mode="constant", cval=0.0, radius=radius
+        )
+    return out
 
 
 def test_mixed_poisson_gaussian_noise_reproducible_with_seed():
@@ -80,4 +101,330 @@ def test_mixed_poisson_gaussian_noise_updates_data_tensor_in_dict_only():
     assert out["data_tensor"].shape == inputs.shape, "Output data tensor shape is not the same as input shape"
     assert torch.allclose(out["metainfo"]["targets"][0], targets), "Output targets are not the same as input targets"
     assert torch.all(out["data_tensor"] == 2.0), "Output data tensor is not the same as expected background"
+
+
+# -----------------------------------------------------------------------------
+# GaussianBlur3d tests
+# -----------------------------------------------------------------------------
+
+
+class TestGaussianBlur3dInit:
+    """Tests for GaussianBlur3d initialization."""
+
+    def test_init_stores_kernel_size(self):
+        blur = GaussianBlur3d(kernel_size=7)
+        assert blur.kernel_size == 7
+
+    def test_init_odd_kernel_size(self):
+        blur5 = GaussianBlur3d(kernel_size=5)
+        blur7 = GaussianBlur3d(kernel_size=7)
+        assert blur5.kernel_size == 5
+        assert blur7.kernel_size == 7
+
+
+class TestGaussianBlur3dShape:
+    """Tests that GaussianBlur3d preserves input shape."""
+
+    def test_single_sigma_preserves_shape(self):
+        blur = GaussianBlur3d(kernel_size=7)
+        x = torch.randn(2, 3, 8, 16, 16)
+        out = blur(x, sigma=1.0)
+        assert out.shape == x.shape
+
+    def test_per_batch_sigma_preserves_shape(self):
+        blur = GaussianBlur3d(kernel_size=7)
+        x = torch.randn(2, 3, 8, 16, 16)
+        sigma = torch.tensor([1.0, 1.5])
+        out = blur(x, sigma=sigma)
+        assert out.shape == x.shape
+
+    def test_handles_small_spatial_dims(self):
+        blur = GaussianBlur3d(kernel_size=5)
+        x = torch.randn(1, 1, 4, 4, 4)
+        out = blur(x, sigma=1.0)
+        assert out.shape == x.shape
+
+
+class TestGaussianBlur3dSingleSigma:
+    """Tests for the single-sigma branch."""
+
+    def test_deterministic(self):
+        blur = GaussianBlur3d(kernel_size=7)
+        torch.manual_seed(42)
+        x = torch.randn(2, 1, 8, 8, 8)
+        out1 = blur(x, sigma=1.0)
+        out2 = blur(x, sigma=1.0)
+        torch.testing.assert_close(out1, out2)
+
+    def test_blurs_smoothes(self):
+        blur = GaussianBlur3d(kernel_size=7)
+        torch.manual_seed(42)
+        x = torch.randn(1, 1, 12, 12, 12)
+        out = blur(x, sigma=1.0)
+        assert out.var() < x.var()
+
+    def test_correctness_vs_scipy(self):
+        kernel_size = 7
+        radius = (kernel_size - 1) // 2
+        blur = GaussianBlur3d(kernel_size=kernel_size)
+        torch.manual_seed(123)
+        x = torch.randn(1, 1, 10, 12, 14, dtype=torch.float64)
+        out = blur(x, sigma=1.0)
+        ref = _scipy_gaussian_filter_3d_ref(x[0, 0].numpy(), sigma=1.0, radius=radius)
+        np.testing.assert_allclose(
+            out[0, 0].numpy(), ref, rtol=1e-4, atol=1e-4, err_msg="GaussianBlur3d single-sigma vs scipy mismatch"
+        )
+
+
+class TestGaussianBlur3dPerBatchSigma:
+    """Tests for the per-batch-sigma branch."""
+
+    def test_different_sigmas_produce_different_blur(self):
+        blur = GaussianBlur3d(kernel_size=7)
+        torch.manual_seed(42)
+        x = torch.randn(2, 1, 8, 8, 8)
+        sigma = torch.tensor([1.0, 2.0])
+        out = blur(x, sigma=sigma)
+        assert not torch.allclose(out[0], out[1])
+
+    def test_same_sigma_per_element_matches_single_sigma(self):
+        blur = GaussianBlur3d(kernel_size=7)
+        torch.manual_seed(42)
+        x = torch.randn(2, 1, 8, 8, 8)
+        sigma_per_batch = torch.tensor([1.0, 1.0])
+        out_per_batch = blur(x, sigma=sigma_per_batch)
+        out_single = blur(x, sigma=1.0)
+        torch.testing.assert_close(out_per_batch, out_single, rtol=1e-5, atol=1e-5)
+
+    def test_correctness_vs_scipy_per_batch(self):
+        kernel_size = 7
+        radius = (kernel_size - 1) // 2
+        blur = GaussianBlur3d(kernel_size=kernel_size)
+        torch.manual_seed(123)
+        x = torch.randn(2, 1, 8, 10, 12, dtype=torch.float64)
+        sigma = torch.tensor([1.0, 1.5], dtype=torch.float64)
+        out = blur(x, sigma=sigma)
+        ref = np.empty_like(x.numpy())
+        for b in range(2):
+            ref[b, 0] = _scipy_gaussian_filter_3d_ref(
+                x[b, 0].numpy(), sigma=float(sigma[b]), radius=radius
+            )
+        np.testing.assert_allclose(
+            out.numpy(), ref, rtol=1e-4, atol=1e-4, err_msg="GaussianBlur3d per-batch vs scipy mismatch"
+        )
+
+
+class TestGaussianBlur3dEdgeCases:
+    """Tests for edge cases and error handling."""
+
+    def test_sigma_shape_mismatch_raises(self):
+        blur = GaussianBlur3d(kernel_size=7)
+        x = torch.randn(2, 1, 8, 8, 8)
+        sigma = torch.tensor([1.0, 1.0, 1.0])
+        with pytest.raises(ValueError, match="sigma must be scalar or shape"):
+            blur(x, sigma=sigma)
+
+    def test_single_sigma_accepts_scalar_and_0dim_tensor(self):
+        blur = GaussianBlur3d(kernel_size=7)
+        x = torch.randn(1, 1, 6, 6, 6)
+        out_float = blur(x, sigma=1.0)
+        out_int = blur(x, sigma=1)
+        out_tensor = blur(x, sigma=torch.tensor(1.0))
+        torch.testing.assert_close(out_float, out_int)
+        torch.testing.assert_close(out_float, out_tensor)
+
+
+# -----------------------------------------------------------------------------
+# CytosolicHaze unit tests (not redundant)
+# -----------------------------------------------------------------------------
+
+
+class TestCytosolicHazeInit:
+    """Tests for CytosolicHaze initialization."""
+
+    def test_init_stores_parameters(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.5, haze_sigma=1.0)
+        assert haze.membrane_enhancement_factor == 1.5
+        assert haze.haze_sigma == 1.0
+
+    def test_init_computes_kernel_size(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.0, haze_sigma=1.0)
+        assert haze.kernel_size % 2 == 1
+        assert haze.kernel_size >= 6 * 1.0 + 1
+        haze_tuple = CytosolicHaze(membrane_enhancement_factor=1.0, haze_sigma=(1.0, 2.0))
+        assert haze_tuple.kernel_size % 2 == 1
+        assert haze_tuple.kernel_size >= 6 * 2.0 + 1
+
+    def test_init_unsupported_input_format_raises(self):
+        with pytest.raises(ValueError, match="Unsupported input_format"):
+            CytosolicHaze(membrane_enhancement_factor=1.0, haze_sigma=1.0, input_format="XYZ")
+
+
+class TestCytosolicHazeShape:
+    """Tests that CytosolicHaze preserves input shape."""
+
+    def test_preserves_shape_zyxc(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.2, haze_sigma=1.0, seed=42, input_format="ZYXC")
+        x = torch.randn(2, 8, 12, 12, 2)
+        out = haze(x)
+        assert out.shape == x.shape
+
+    def test_preserves_shape_czxy(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.2, haze_sigma=1.0, seed=42, input_format="CZXY")
+        x = torch.randn(2, 2, 8, 12, 12)
+        out = haze(x)
+        assert out.shape == x.shape
+
+    def test_preserves_shape_with_time(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.2, haze_sigma=1.0, seed=42, input_format="TZYXC")
+        x = torch.randn(1, 2, 6, 10, 10, 2)
+        out = haze(x)
+        assert out.shape == x.shape
+
+
+class TestCytosolicHazeReproducibility:
+    """Tests for reproducibility and single vs tuple sigma."""
+
+    def test_reproducible_with_seed(self):
+        haze_a = CytosolicHaze(membrane_enhancement_factor=1.2, haze_sigma=1.0, seed=42, input_format="ZYXC")
+        haze_b = CytosolicHaze(membrane_enhancement_factor=1.2, haze_sigma=1.0, seed=42, input_format="ZYXC")
+        x = torch.randn(1, 8, 12, 12, 1)
+        torch.testing.assert_close(haze_a(x), haze_b(x))
+
+    def test_reproducible_with_tuple_haze_sigma(self):
+        haze_a = CytosolicHaze(membrane_enhancement_factor=1.2, haze_sigma=(0.5, 1.5), seed=123, input_format="ZYXC")
+        haze_b = CytosolicHaze(membrane_enhancement_factor=1.2, haze_sigma=(0.5, 1.5), seed=123, input_format="ZYXC")
+        x = torch.randn(2, 8, 12, 12, 1)
+        torch.testing.assert_close(haze_a(x), haze_b(x))
+
+    def test_tuple_haze_sigma_different_per_batch(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.2, haze_sigma=(0.5, 1.5), seed=42, input_format="ZYXC")
+        x = torch.randn(2, 8, 12, 12, 1)
+        out = haze(x)
+        assert not torch.allclose(out[0], out[1])
+
+
+class TestCytosolicHazeCorrectness:
+    """Tests correctness vs GaussianBlur3d formula."""
+
+    def test_formula_with_factor_one(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.0, haze_sigma=1.0, seed=42, input_format="ZYXC")
+        blur = GaussianBlur3d(kernel_size=haze.kernel_size)
+        torch.manual_seed(123)
+        x = torch.randn(1, 8, 10, 12, 1, dtype=torch.float64)
+        out = haze(x)
+        x_channel_first = x.permute(0, 4, 1, 2, 3)
+        blur_ref = blur(x_channel_first, sigma=1.0)
+        blur_ref_zyxc = blur_ref.permute(0, 2, 3, 4, 1)
+        expected = x + blur_ref_zyxc
+        torch.testing.assert_close(out, expected, rtol=1e-4, atol=1e-4)
+
+    def test_membrane_enhancement_factor_applied(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=2.0, haze_sigma=0.5, seed=42, input_format="ZYXC")
+        blur = GaussianBlur3d(kernel_size=haze.kernel_size)
+        x = torch.ones(1, 6, 8, 8, 1, dtype=torch.float64) * 10.0
+        out = haze(x)
+        x_channel_first = x.permute(0, 4, 1, 2, 3)
+        blur_ref = blur(x_channel_first, sigma=0.5)
+        blur_ref_zyxc = blur_ref.permute(0, 2, 3, 4, 1)
+        expected = 2.0 * x + blur_ref_zyxc
+        torch.testing.assert_close(out, expected, rtol=1e-4, atol=1e-4)
+
+
+class TestCytosolicHazeDictInput:
+    """Tests for dict input handling."""
+
+    def test_updates_data_tensor_only(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.2, haze_sigma=1.0, seed=42, input_format="ZYXC")
+        data_tensor = torch.randn(1, 6, 8, 8, 1)
+        targets = torch.ones(1, 6, 8, 8, 1)
+        batch = {"data_tensor": data_tensor.clone(), "metainfo": {"targets": [targets.clone()]}}
+        out = haze(batch)
+        assert out["data_tensor"].shape == data_tensor.shape
+        torch.testing.assert_close(out["metainfo"]["targets"][0], targets)
+        assert torch.any(out["data_tensor"] != data_tensor)
+
+    def test_missing_data_tensor_raises(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.0, haze_sigma=1.0, input_format="ZYXC")
+        with pytest.raises(KeyError, match="expects 'data_tensor'"):
+            haze({"metainfo": {"targets": [torch.zeros(1, 4, 4, 4, 1)]}})
+
+    def test_missing_targets_raises(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.0, haze_sigma=1.0, input_format="ZYXC")
+        with pytest.raises(KeyError, match="expects 'targets'"):
+            haze({"data_tensor": torch.zeros(1, 4, 4, 4, 1), "metainfo": {}})
+
+
+class TestCytosolicHazeEdgeCases:
+    """Tests for edge cases and error handling."""
+
+    def test_wrong_input_type_raises(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.0, haze_sigma=1.0, input_format="ZYXC")
+        with pytest.raises(TypeError, match="expects torch.Tensor or dict"):
+            haze([1, 2, 3])
+        with pytest.raises(TypeError, match="expects torch.Tensor or dict"):
+            haze(None)
+
+    def test_restores_original_dtype(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.2, haze_sigma=1.0, seed=42, input_format="ZYXC")
+        x = torch.randint(0, 100, (1, 6, 8, 8, 1), dtype=torch.uint16)
+        out = haze(x)
+        assert out.dtype == torch.uint16
+
+    def test_handles_small_spatial(self):
+        haze = CytosolicHaze(membrane_enhancement_factor=1.2, haze_sigma=0.5, seed=42, input_format="ZYXC")
+        x = torch.randn(1, 1, 4, 4, 4)
+        out = haze(x)
+        assert out.shape == x.shape
+
+
+# -----------------------------------------------------------------------------
+# CytosolicHaze visualization test (optional, skipped by default)
+# -----------------------------------------------------------------------------
+
+# @pytest.mark.skip(reason="optional visualization")
+def test_cytosolichaze_visualize_sphere():
+    """Generate a batch of hollow 3D spheres with different radii, apply CytosolicHaze, and save orthoslice visualizations.
+    To run: temporarily remove the @pytest.mark.skip decorator, then:
+    pytest tests/data/transforms/test_noise.py::test_cytosolichaze_visualize_sphere -v -s
+    Output saved to tests/data/transforms/cytosolichaze_vis_output/
+    """
+    Z, Y, X = 24, 32, 32
+    centers = (Z / 2 - 0.5, Y / 2 - 0.5, X / 2 - 0.5)
+    zz, yy, xx = np.meshgrid(np.arange(Z), np.arange(Y), np.arange(X), indexing="ij")
+
+    radii = [
+        min(Z, Y, X) / 4 - 4,         # Small sphere
+        min(Z, Y, X) / 4,             # Medium sphere
+        min(Z, Y, X) / 4 + 4,         # Large sphere
+    ]
+    thickness = 3
+
+    batch_spheres = []
+    for ri in radii:
+        ro = ri
+        ri_inner = ro - thickness
+        r = np.sqrt((zz - centers[0]) ** 2 + (yy - centers[1]) ** 2 + (xx - centers[2]) ** 2)
+        sphere = ((r <= ro) & (r > ri_inner)).astype(np.float32) * 100.0
+        batch_spheres.append(sphere)
+
+    # Stack as batch (B, Z, Y, X, C=1) shape
+    x = np.stack(batch_spheres, axis=0)[..., np.newaxis]
+    x = torch.from_numpy(x)
+
+    vis_dir = Path(__file__).resolve().parent / "cytosolichaze_vis_output"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+
+    haze = CytosolicHaze(
+        membrane_enhancement_factor=(0.8, 1.2),
+        haze_sigma=(0.8, 1.5),
+        seed=42,
+        input_format="ZYXC",
+        visualization_dir=str(vis_dir),
+    )
+    out = haze(x)
+
+    assert out.shape == x.shape
+    assert torch.any(out != x)
+    assert out.dtype == x.dtype
 
