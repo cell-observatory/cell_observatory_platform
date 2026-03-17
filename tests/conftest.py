@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from ray.util import list_named_actors
 from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
 
+from cell_observatory_platform.utils.cleanup import unlink_shared_memory
 from cell_observatory_platform.utils.container import get_container_info
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -59,6 +61,25 @@ def patch_sdpa_for_tests(monkeypatch):
         "cell_observatory_platform.models.layers.attention.sdpa_kernel",
         _sdpa_kernel_with_math_fallback,
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_ray_and_cuda_before_test():
+    yield
+    # Teardown: run after each test to leave a clean slate for the next
+    if ray.is_initialized():
+        try:
+            ray.shutdown()
+        except Exception:
+            pass
+        time.sleep(2)
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        pass
 
 
 # keeping this until we migrate models
@@ -171,6 +192,8 @@ def distributed_test(cfg: DictConfig, test: str):
     # serialization issues
     test = get_method(test)
 
+    unlink_shared_memory()
+
     project_root = str(Path(__file__).resolve().parent.parent)
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
@@ -184,36 +207,42 @@ def distributed_test(cfg: DictConfig, test: str):
         runtime_env=runtime_env,
         num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
         num_gpus=cfg.clusters.total_gpus,
+        object_store_memory=cfg.clusters.object_store_memory,
         ignore_reinit_error=True,
     )
 
-    for resource, count in cluster_resources().items():
-        logger.info(f"{resource}: {count}")
+    try:
+        for resource, count in cluster_resources().items():
+            logger.info(f"{resource}: {count}")
 
-    scaling_config = ScalingConfig(
-        num_workers=cfg.clusters.scaling_config.num_workers,
-        resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
-        use_gpu=cfg.clusters.scaling_config.use_gpu,
-    )
+        scaling_config = ScalingConfig(
+            num_workers=cfg.clusters.scaling_config.num_workers,
+            resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
+            use_gpu=cfg.clusters.scaling_config.use_gpu,
+        )
 
-    checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
-    run_config = RunConfig(
-        checkpoint_config=checkpoint_config,
-        failure_config=FailureConfig(max_failures=0),
-        storage_path=cfg.clusters.run_config.storage_path,
-    )
+        checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
+        run_config = RunConfig(
+            checkpoint_config=checkpoint_config,
+            failure_config=FailureConfig(max_failures=0),
+            storage_path=cfg.clusters.run_config.storage_path,
+        )
 
-    torch_config = TorchConfig(timeout_s=cfg.clusters.torch_config.timeout_s)
+        torch_config = TorchConfig(timeout_s=cfg.clusters.torch_config.timeout_s)
 
-    trainer = TorchTrainer(
-        train_loop_per_worker=test,
-        train_loop_config=cfg,
-        run_config=run_config,
-        scaling_config=scaling_config,
-        torch_config=torch_config,
-        datasets=None,
-    )
+        trainer = TorchTrainer(
+            train_loop_per_worker=test,
+            train_loop_config=cfg,
+            run_config=run_config,
+            scaling_config=scaling_config,
+            torch_config=torch_config,
+            datasets=None,
+        )
 
-    result = trainer.fit()
-    _cleanup_ray_test_actors()
-    return result.metrics
+        result = trainer.fit()
+        _cleanup_ray_test_actors()
+        return result.metrics
+    finally:
+        ray.shutdown()
+        time.sleep(3)
+        unlink_shared_memory()

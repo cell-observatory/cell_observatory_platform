@@ -30,14 +30,9 @@
     "PYTHONUNBUFFERED=1",
     "--entrypoint=",
     "--privileged",
-    "--ipc",
-    "host",
-    "--ipc",
-    "host",
-    "--gpus",
-    "all",
-    "-p",
-    "55555:5432"
+    "--shm-size=64g",
+    "--gpus=all",
+    "-p=55555:5432"
   ],
   "mounts": [
     "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached",
