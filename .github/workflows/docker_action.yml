@@ -538,6 +538,8 @@ jobs:
       REPO_DIR: ${{ github.workspace }}
       DATA_DIR: ${{ github.workspace }}
       STORAGE_SERVER_DIR: /groups/betzig/betziglab/CellObservatoryData
+      REQUIRED_SHM_GB: 64
+      RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE: 1
     steps:
       # - name: Cache pytest .testmondata
       #   uses: actions/cache@v4
@@ -568,6 +570,19 @@ jobs:
           id
           id -u
           ls -lhXR
+
+      - name: Check shm size
+        if: env.REQUIRED_SHM_GB != '0'
+        run: |
+          SHM_KB=$(df -k /dev/shm 2>/dev/null | tail -1 | awk '{print $2}')
+          REQUIRED_KB=$((REQUIRED_SHM_GB * 1024 * 1024))
+          SHM=$(numfmt --to=iec $((SHM_KB * 1024)) 2>/dev/null)
+          if [ -z "$SHM_KB" ] || [ "$SHM_KB" -lt "$REQUIRED_KB" ]; then
+            echo "Host /dev/shm is $SHM; need ${REQUIRED_SHM_GB}G."
+            exit 1
+          else
+            echo "/dev/shm: $SHM"
+          fi
 
       - name: Set APPTAINER_BINDS
         id: apptainer_binds
