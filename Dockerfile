@@ -69,6 +69,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libnuma-dev \
   software-properties-common \
   postgresql-client \
+  rsync \
   && rm -rf /var/lib/apt/lists/*
 
 
