@@ -1,3 +1,4 @@
+import time
 import json
 import warnings
 from pathlib import Path
@@ -322,15 +323,15 @@ def test_hypercubes_annotations_filter(database):
     assert table.shape[0] > 0, f"Zero hypercubes were returned"
 
 
-@pytest.mark.skip("Supabase times out for this test because the database is not updated.")
+@pytest.mark.parametrize("max_hypercubes", [1000, 10000])
 @pytest.mark.parametrize("database_type", database_types)
-def test_1_128_128_128_2_hypercubes_database(config, database_type):
+def test_1_128_128_128_2_hypercubes_database(config, database_type, max_hypercubes):
     config.experiment_name = "test_1_128_128_128_2_hypercubes_database"
     config.datasets.databases._target_ = get_database_class(database_type)
     config.datasets.databases.input_shape = (128, 128, 128, 2)
     config.datasets.databases.dataset_layout_order = "ZYXC"
     num_timepoints = 1
-    config.datasets.databases.max_hypercubes = 100
+    config.datasets.databases.max_hypercubes = max_hypercubes
     config.datasets.databases.fetch_hypercubes_dataframe = True
     config.datasets.databases.use_cached_hypercubes_dataframe = False
     config.datasets.databases.hypercubes_dataframe_path = (
@@ -339,10 +340,12 @@ def test_1_128_128_128_2_hypercubes_database(config, database_type):
 
     print(config.datasets.databases.hypercubes_dataframe_path)
     print(f"Initializing {config.datasets.databases._target_}...")
-    pprint(OmegaConf.to_container(config, resolve=True))
 
+    start_time = time.time()
     database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
+    elapsed_time = time.time() - start_time
+    print(f"\nFetched {table.shape[0]} hypercubes in {elapsed_time:.3f} seconds.\n")
     print(table)
 
     assert (
@@ -371,10 +374,12 @@ def test_16_128_128_128_2_hypercubes_database(config, database_type, max_hypercu
     )
 
     print(f"Initializing {config.datasets.databases._target_}...")
-    # pprint(OmegaConf.to_container(config, resolve=True))
 
+    start_time = time.time()
     database = instantiate(config.datasets.databases)
     table = database.hypercubes_dataframe
+    elapsed_time = time.time() - start_time
+    print(f"\nFetched {table.shape[0]} hypercubes in {elapsed_time:.3f} seconds.\n")
     print(table.columns)
     print(table)
 
@@ -761,3 +766,48 @@ def test_tiles_dataframe(config, database_type):
     print(f"Columns: {df.columns.tolist()}")
     print("\n=== Example Aggregated Row (first row) ===")
     print(example_row.to_string(index=False))
+
+@pytest.mark.parametrize("database_type", database_types)
+@pytest.mark.parametrize(
+    "t_timepoints,z_slices,y_slices,x_slices",
+    [
+        (1, 128, 128, 128),
+        (1, 128, 256, 256),
+        (16, 128, 128, 128),
+        (16, 128, 256, 256),
+    ],
+)
+def test_local_vs_prod_hypercubes_database(config, database_type, t_timepoints, z_slices, y_slices, x_slices):
+    config.experiment_name = f"test_local_vs_prod_{t_timepoints}d_{z_slices}z_{y_slices}y_{x_slices}x_hypercubes_database"
+    config.datasets.databases._target_ = get_database_class(database_type)
+    config.datasets.databases.max_hypercubes = 10000
+    config.datasets.databases.input_shape = (t_timepoints, z_slices, y_slices, x_slices, 2)
+    config.datasets.databases.dataset_layout_order = "TZYXC"
+    config.datasets.databases.fetch_hypercubes_dataframe = True
+    config.datasets.databases.use_cached_hypercubes_dataframe = False
+    config.datasets.databases.hypercubes_dataframe_path = (
+        Path(config.paths.outdir) / "database" / f"{config.experiment_name}.csv"
+    )
+
+    timings = {}
+    for dbname in ("local", "prod"):
+        config.datasets.databases.dbname = dbname
+        
+        start_time = time.time()
+        database = instantiate(config.datasets.databases)
+        table = database.hypercubes_dataframe
+        timings[dbname] = time.time() - start_time
+        
+        assert (table["time_size"] == t_timepoints).all(), f"All time sizes should be {t_timepoints}"
+        assert (
+            table.shape[0] <= config.datasets.databases.max_hypercubes
+        ), f"Only {config.datasets.databases.max_hypercubes} hypercubes should be returned"
+        assert table.shape[0] > 0, f"Zero hypercubes were returned"
+        assert table["first_pc_id"].unique().all(), f"`first_pc_id` should have unique values"
+        assert table["first_pc_id"].nunique() == table.shape[0], f"Each hypercube should have a unique `first_pc_id`"
+        assert (
+            table.shape[0] == config.datasets.databases.max_hypercubes
+        ), f"{config.datasets.databases.max_hypercubes} hypercubes should be returned"
+    
+    print(f"{config.datasets.databases.max_hypercubes} x {config.datasets.databases.input_shape} HCs")    
+    print(f"prod: {timings['prod']:.3f}s, local: {timings['local']:.3f}s ({timings['prod'] / timings['local']:.2f}x)")
