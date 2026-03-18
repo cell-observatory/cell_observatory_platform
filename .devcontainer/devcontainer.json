@@ -37,7 +37,8 @@
   "mounts": [
     "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.ssh,target=/home/ubuntu/.ssh,type=bind,consistency=cached",
-    "source=/groups/betzig/betziglab,target=/groups/betzig/betziglab,type=bind,consistency=cached"
+    "source=/groups/betzig/betziglab,target=/groups/betzig/betziglab,type=bind,consistency=cached",
+    "source=/scratch/${localEnv:USER}/sandbox,target=/scratch/sandbox,type=bind,consistency=cached"
   ],
   "customizations": {
     "vscode": {
@@ -66,5 +67,5 @@
     }
   },
   "postCreateCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && pip install bpytop --user --no-dependencies && cp ~/.bashrc /tmp/host_bashrc && echo 'source /tmp/host_bashrc' >> ~/.bashrc && python3 --version",
-  "postStartCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && export PYTHONPATH=/workspace:/workspace/cell_observatory_platform:/workspace:/workspace/cell_observatory_platform:/workspace/ops3d && echo ' ' && echo 'pip installing workspace folder from source...' && pip install -e . --user --force-reinstall --no-deps && source ~/.bashrc && echo '' &&echo 'Apptainer instance run: postgres database in background...' && apptainer instance run --no-mount proc --writable --env POSTGRES_PASSWORD=postgres ../sandbox/ myjunk -c 'config_file=/etc/postgresql/postgresql.conf' && echo ' ' && echo 'Test database connection to ${SUPABASE_LOCAL_URI}...' && psql postgresql://postgres@localhost/postgres --command=\"SELECT COUNT(*) NUMBER_OF_ROWS_IN_PREPARED FROM PREPARED;\" "
+  "postStartCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && export PYTHONPATH=/workspace:/workspace/cell_observatory_platform:/workspace:/workspace/cell_observatory_platform:/workspace/ops3d && echo ' ' && echo 'pip installing workspace folder from source...' && pip install -e . --user --force-reinstall --no-deps && source ~/.bashrc && echo '' && echo 'Apptainer instance run: postgres database in background...' && apptainer instance run --no-mount proc --writable --env POSTGRES_PASSWORD=postgres /scratch/sandbox myjunk -c 'config_file=/etc/postgresql/postgresql.conf' && echo ' ' && echo 'Test database connection to ${SUPABASE_LOCAL_URI}...' && psql postgresql://postgres@localhost/postgres --command=\"SELECT COUNT(*) NUMBER_OF_ROWS_IN_PREPARED FROM PREPARED;\" "
 }
