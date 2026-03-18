@@ -23,7 +23,7 @@ env:
   IMAGE_NAME: ${{ github.repository }} # github.repository as <account>/<repo>
   DO_SIGNING: ${{ false }}
   BRANCH: ${{ github.head_ref || github.ref_name }} # 'main' or 'develop'
-  PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings -r fEX --junit-xml=test_results/test-results # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
+  PYTEST: python -m pytest --cache-clear -vvv --color=yes --disable-warnings -r fEX -s --log-cli-level=DEBUG -o log_cli=true --junit-xml=test_results/test-results # will get appended with _data.xml, _utils.xml, _models.xml, _training.xml later...
   TESTING: ${{ true }} # skip tests if we have this branch name
   # TESTMON_DATAFILE: ~/.cache/TESTMON/.testmondata  # where testmon stores its data file
 
@@ -622,6 +622,7 @@ jobs:
       - name: pytest /tests/ops
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_ops.xml tests/ops
+        timeout-minutes: 15
 
       - name: pytest /tests/data
         if: ${{ env.TESTING }}
@@ -634,14 +635,17 @@ jobs:
       - name: pytest /tests/models
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_models.xml tests/models
+        timeout-minutes: 30
 
       - name: pytest /tests/training
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml tests/training
+        timeout-minutes: 60
 
       - name: pytest /tests/evaluation
         if: ${{ env.TESTING }}
-        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_ops.xml tests/evaluation
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_evaluation.xml tests/evaluation
+        timeout-minutes: 15
 
       - name: print testmon2
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
