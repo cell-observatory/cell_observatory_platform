@@ -553,7 +553,20 @@ jobs:
 
       - name: Start postgres database in apptainer in background
         run: |
-          apptainer instance run --writable --env POSTGRES_PASSWORD=postgres /tmp/sandbox/ my_postgres_instance -c 'config_file=/etc/postgresql/postgresql.conf' && psql ${{ env.SUPABASE_LOCAL_URI }} --command="SELECT COUNT(*) FROM PREPARED;"
+          if apptainer instance list | grep -q "my_postgres_instance"; then
+            apptainer instance stop my_postgres_instance || true
+          fi
+
+          apptainer instance run --writable --env POSTGRES_PASSWORD=postgres /tmp/sandbox/ my_postgres_instance -c 'config_file=/etc/postgresql/postgresql.conf'
+
+          for i in {1..10}; do
+            if psql ${{ env.SUPABASE_LOCAL_URI }} --command="SELECT COUNT(*) FROM PREPARED;" && break; then
+              break
+            else
+              echo "Waiting for postgres to be ready..."
+              sleep 2
+            fi
+          done
 
       - name: List files in the repository
         run: |
