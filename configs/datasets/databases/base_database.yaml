@@ -1,6 +1,6 @@
 # This gets overridden in tests/data/test_database.py to test both classes.
 _target_: cell_observatory_platform.data.databases.supabase_database.SupabaseDatabase # e.g. cell_observatory_platform.data.databases.trino_database.TrinoDatabase  
-dbname: 'local' # or 'staging' or 'prod' for remote databases. local is for local postgres database.
+dbname: 'prod' # or 'staging' or 'prod' for remote databases. local is for local postgres database.
 
 dotenv_path: ${paths.dotenv_path}
 
