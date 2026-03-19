@@ -4,26 +4,41 @@
     // These lines will build from Dockerfile otherwise comment these and uncomment "image" below
     "dockerfile": "../Dockerfile",
     "context": "..",
-    "options": ["--progress=plain"],
-    "target": "torch_26_01"
+    "options": [
+      "--progress=plain"
+    ],
+    // "target": "torch_26_01"  I don't think we need this anymore.  It is set in the Dockerfile.
   },
   // Uncomment this to use a pre-built image instead of building from the Dockerfile
   // "image": "ghcr.io/cell-observatory/cell_observatory_platform:develop_torch_26_01",
   "workspaceFolder": "/workspace/cell_observatory_platform",
   "containerUser": "ubuntu",
   "overrideCommand": true,
+  // Map container port 5432 to host port 55555
+  "forwardPorts": [
+    "55555:5432"
+  ],
+  // This does not work for Remote SSH.  So we need to manually forward the port in the run Args
+  "portsAttributes": {
+    "55555": {
+      "label": "PostgreSQL Database (mapped from container port 5432 to host port 55555)",
+      "onAutoForward": "notify"
+    }
+  },
   "runArgs": [
     "-e",
     "PYTHONUNBUFFERED=1",
     "--entrypoint=",
     "--privileged",
     "--shm-size=64g",
-    "--gpus=all"
+    "--gpus=all",
+    "-p=55555:5432"
   ],
   "mounts": [
     "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.ssh,target=/home/ubuntu/.ssh,type=bind,consistency=cached",
-    "source=/groups/betzig/betziglab,target=/groups/betzig/betziglab,type=bind,consistency=cached"
+    "source=/groups/betzig/betziglab,target=/groups/betzig/betziglab,type=bind,consistency=cached",
+    "source=/scratch/${localEnv:USER}/sandbox,target=/scratch/sandbox,type=bind,consistency=cached"
   ],
   "customizations": {
     "vscode": {
@@ -34,7 +49,10 @@
         "python.linting.enabled": true,
         "python.linting.flake8Enabled": true,
         "python.formatting.provider": "black",
-        "python.formatting.blackArgs": ["--line-length", "88"],
+        "python.formatting.blackArgs": [
+          "--line-length",
+          "88"
+        ],
         "editor.formatOnSave": true,
         "editor.codeActionsOnSave": {
           "source.organizeImports": "always"
@@ -48,6 +66,6 @@
       ]
     }
   },
-  "postCreateCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && pip install bpytop  --no-dependencies && cp ~/.bashrc /tmp/host_bashrc && echo 'source /tmp/host_bashrc' >> ~/.bashrc && python3 --version",
-  "postStartCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && export PYTHONPATH=/workspace:/workspace/cell_observatory_platform:/workspace:/workspace/cell_observatory_platform:/workspace/ops3d && pip install -e . --force-reinstall --no-deps && source ~/.bashrc"
+  "postCreateCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && pip install bpytop --user --no-dependencies && cp ~/.bashrc /tmp/host_bashrc && echo 'source /tmp/host_bashrc' >> ~/.bashrc && python3 --version",
+  "postStartCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && export PYTHONPATH=/workspace:/workspace/cell_observatory_platform:/workspace:/workspace/cell_observatory_platform:/workspace/ops3d && echo ' ' && echo 'pip installing workspace folder from source...' && pip install -e . --user --force-reinstall --no-deps && source ~/.bashrc && echo '' && echo 'Apptainer instance run: postgres database in background...' && apptainer instance run --no-mount proc --writable --env POSTGRES_PASSWORD=postgres /scratch/sandbox myjunk -c 'config_file=/etc/postgresql/postgresql.conf' && echo ' ' && echo 'Test database connection to ${SUPABASE_LOCAL_URI}...' && psql postgresql://postgres@localhost/postgres --command=\"SELECT COUNT(*) NUMBER_OF_ROWS_IN_PREPARED FROM PREPARED;\" "
 }

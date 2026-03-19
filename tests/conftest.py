@@ -22,7 +22,7 @@ from ray.util import list_named_actors
 from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
 
-from cell_observatory_platform.utils.cleanup import clean_all_user_shm, unlink_shared_memory
+from cell_observatory_platform.utils.cleanup import unlink_shared_memory
 from cell_observatory_platform.utils.container import get_container_info
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -193,7 +193,6 @@ def distributed_test(cfg: DictConfig, test: str):
     test = get_method(test)
 
     unlink_shared_memory()
-    clean_all_user_shm()
 
     project_root = str(Path(__file__).resolve().parent.parent)
     if project_root not in sys.path:
@@ -247,4 +246,3 @@ def distributed_test(cfg: DictConfig, test: str):
         ray.shutdown()
         time.sleep(3)
         unlink_shared_memory()
-        clean_all_user_shm()

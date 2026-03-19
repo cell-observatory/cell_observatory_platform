@@ -916,10 +916,11 @@ class ParentDatabase:
                 # https://sfu-db.github.io/connector-x/freq_questions.html
                 t0 = time.perf_counter()
                 result = cx.read_sql(
-                    conn=self._database_url + "?options=-c%20statement_timeout%3D600000",  # set timeout to 10min
+                    conn=self._database_url,  # set timeout to 10min
                     query=query,
                     protocol=self.protocol,
                     return_type="arrow",
+                    pre_execution_query=["SET statement_timeout = '10min';"]
                 )
                 df = result.to_pandas(split_blocks=False, date_as_object=False)
                 t1 = time.perf_counter()
@@ -1829,13 +1830,13 @@ def get_prepared_rois_csv(
         statement_timeout_ms: int = 600_000,
         retries: int = 3,
     ) -> pd.DataFrame:
-        conn = f"{database_url}?options=-c%20statement_timeout%3D{statement_timeout_ms}"
+        conn = f"{database_url}"
 
         last_err: Exception | None = None
         for i in range(retries):
             try:
                 t0 = time.perf_counter()
-                result = cx.read_sql(conn=conn, query=query, protocol=protocol, return_type="arrow")
+                result = cx.read_sql(conn=conn, query=query, protocol=protocol, return_type="arrow", pre_execution_query=["SET statement_timeout = '{statement_timeout_ms}';"])
                 df = result.to_pandas(split_blocks=False, date_as_object=False)
                 t1 = time.perf_counter()
                 logger.info(f"Took {t1 - t0:.2f}s to fetch dataframe with shape {df.shape}")
