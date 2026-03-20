@@ -81,3 +81,16 @@ svar: null
 meta: null
 
 interactive_session_type: false
+
+env: # NCCL settings optimized for ethernet without infiniBand
+  NCCL_DEBUG: "TRACE"           
+  NCCL_DEBUG_SUBSYS: "GRAPH"           
+  NCCL_CUMEM_ENABLE: null 
+  NCCL_CROSS_NIC: true
+  NCCL_P2P_LEVEL: "NVL"
+  NCCL_IB_DISABLE: 1
+  NCCL_NET_GDR_LEVEL: 0
+  NCCL_P2P_DISABLE: 0
+  NCCL_SHM_DISABLE: 0
+  NCCL_BUFFSIZE: 8388608
+  CUDA_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7

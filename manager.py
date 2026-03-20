@@ -30,11 +30,6 @@ OmegaConf.register_new_resolver("eval", eval)
 from cell_observatory_platform.utils.container import get_container_info
 from cell_observatory_platform.utils.profiling import enable_profiling
 
-# Update environment variables
-os.environ["HYDRA_FULL_ERROR"] = "1"
-os.environ["RAY_DEDUP_LOGS"] = "0"
-os.environ["RAY_TRAIN_WORKER_GROUP_START_TIMEOUT_SEC"] = "3600"
-
 load_dotenv(Path(__file__).parent / ".env", verbose=True)
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -100,16 +95,17 @@ def set_env_from_cfg(cfg: DictConfig) -> None:
     def _to_str(v):
         return "1" if isinstance(v, bool) and v else "0" if isinstance(v, bool) else str(v)
 
-    if not hasattr(cfg.optimizations, "env"):
-        warnings.warn("No env section found in config.")
-        return
+    for settings in ["optimizations", "clusters"]:
+        if not hasattr(cfg[settings], "env"):
+            warnings.warn("No env section found in config.")
+            return
 
-    for key, val in cfg.optimizations.env.items():
-        if val is None:
-            continue
-        env_key = key.upper()
-        os.environ[env_key] = _to_str(val)
-        logger.debug("Set %s=%s", env_key, os.environ[env_key])
+        for key, val in cfg[settings].env.items():
+            if val is None:
+                continue
+            env_key = key.upper()
+            os.environ[env_key] = _to_str(val)
+            logger.debug("Set %s=%s", env_key, os.environ[env_key])
 
 
 def posixify(s: str) -> str:
@@ -225,8 +221,6 @@ def main(cfg: DictConfig):
 
 
 def launch_job(cfg: DictConfig, run_config_name: str = None):
-    # TODO: make sure this recapitulates the old ENV variable
-    #       setting logic
     # set environment variables from the config
     set_env_from_cfg(cfg)
     enable_profiling(cfg)

@@ -28,20 +28,6 @@ from cell_observatory_platform.utils.container import get_container_info
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Update environment variables
-os.environ["HYDRA_FULL_ERROR"] = "1"
-os.environ["RAY_DEDUP_LOGS"] = "0"
-os.environ["NCCL_DEBUG"] = "TRACE"
-os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
-os.environ["NCCL_DEBUG_SUBSYS"] = "GRAPH"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-os.environ["NCCL_CUMEM_ENABLE"] = "0"
-os.environ["NCCL_CROSS_NIC"] = "1"
-os.environ["NCCL_P2P_LEVEL"] = "NVL"
-os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "3600"
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["RAY_TRAIN_WORKER_GROUP_START_TIMEOUT_SEC"] = "3600"
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", verbose=True)
 
 
