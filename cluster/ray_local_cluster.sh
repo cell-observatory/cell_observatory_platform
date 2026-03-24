@@ -12,6 +12,9 @@ source "$DIR/args_parser.sh"
 tmpdir=/tmp/symlink_$(uuidgen | cut -d "-" -f5)
 echo "Create symlink: $outdir -> $tmpdir"
 
+scratch=/scratch/$USER/
+mkdir -p $scratch
+
 ############################## SETUP PORTS
 # for debugging
 set -x
@@ -47,12 +50,27 @@ export cluster_address
 
 ############################## START HEAD NODE
 
-apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind /dev/shm:/dev/shm \
-    --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
+echo "Copying local database to head $head_node"
+rsync -avz --stats $database_sandbox $scratch/sandbox.tar.gz >/dev/null 2>&1 &
+tar -Sxzvf $scratch/sandbox.tar.gz >/dev/null 2>&1 &
+
+apptainer exec --userns --nv \
+    --bind $storage_server \
+    --bind $workspace \
+    --bind $bind \
+    --bind /dev/shm:/dev/shm \
+    --bind $scratch:/scratch \
+    --bind $outdir:$tmpdir \
+    $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
     -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir -q $object_store_memory &
 sleep 60
 
-check_headnode="apptainer exec --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray status --address $head_node_ip:$port"
+check_headnode="apptainer exec --nv \
+    --bind $storage_server --bind $workspace \
+    --bind $bind \
+    --bind $outdir:$tmpdir \
+    --bind $scratch:/scratch \
+    $env ray status --address $head_node_ip:$port"
 while ! $check_headnode; do
     echo "Waiting for head node..."
     sleep 3
@@ -82,12 +100,23 @@ trap 'exit 143' SIGTERM SIGINT
 
 ############################## CHECK STATUS
 
-echo apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind \
-    --bind $outdir:$tmpdir $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
+echo apptainer exec --userns --nv \
+    --bind $storage_server \
+    --bind $workspace \
+    --bind $bind \
+    --bind $outdir:$tmpdir \
+    --bind $scratch:/scratch \
+    $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
     -a $cluster_address -r 1
 
 ############################## RUN WORKLOAD
 
 echo "Running user tasks"
 echo $tasks
-apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks
+apptainer exec --userns --nv \
+    --bind $storage_server \
+    --bind $workspace \
+    --bind $bind \
+    --bind $outdir:$tmpdir \
+    --bind $scratch:/scratch \
+    $env $tasks

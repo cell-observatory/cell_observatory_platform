@@ -51,6 +51,8 @@ cleanup() {
     (( _cleaned )) && return
     _cleaned=1
     echo "Running worker node cleanup..."
+    apptainer instance stop mysql >/dev/null 2>&1 || true
+    echo "Successfully stopped local database"
     ray stop --force >/dev/null 2>&1 || true
     echo "Successfully stopped ray worker"
     python3 /workspace/cell_observatory_platform/utils/cleanup.py 
@@ -65,6 +67,25 @@ trap 'cleanup; exit 143' TERM INT
 # remove any leftover shared memory segments
 python3 /workspace/cell_observatory_platform/utils/cleanup.py
 trap 'cleanup; exit 143' TERM INT
+
+############################## START LOCAL DATABASE
+
+echo "Starting local database"
+apptainer instance run --no-mount proc --writable --env POSTGRES_PASSWORD=postgres /scratch/sandbox mysql -c 'config_file=/etc/postgresql/postgresql.conf' >/dev/null 2>&1 &
+db_pid=$!
+sleep 10
+
+echo "Testing database connection"
+psql postgresql://postgres@localhost/postgres --command="SELECT COUNT(*) NUMBER_OF_ROWS_IN_PREPARED FROM PREPARED;" >/dev/null 2>&1
+rc=$?
+if [ $rc -ne 0 ]; then
+    echo "Database connection failed"
+    exit 1
+fi
+echo "Database connection successful"
+
+
+############################## START RAY
 
 # remove any leftover shared memory segments
 python3 /workspace/cell_observatory_platform/utils/cleanup.py

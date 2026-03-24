@@ -4,12 +4,13 @@ echo "=== argv passed ==="
 i=1; for a in "$@"; do printf '%2d: [%s]\n' "$i" "$a"; i=$((i+1)); done
 echo "========================================="
 
-while getopts ":b:c:d:e:g:m:n:o:p:q:s:t:j:x:y:z:" option; do
+while getopts ":a:b:c:d:e:g:m:n:o:p:q:s:t:j:x:y:z:" option; do
     case "${option}" in
     b)  bind=${OPTARG} ;;
     c)  cpus=${OPTARG} ;;
     d)  storage_server=${OPTARG} ;;
     e)  env=${OPTARG} ;;
+    f)  database_sandbox=${OPTARG} ;;
     g)  gpus=${OPTARG} ;;
     m)  mem=${OPTARG} ;;
     n)  nodes=${OPTARG} ;;
