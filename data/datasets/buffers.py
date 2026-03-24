@@ -17,6 +17,7 @@ import queue
 from threading import Lock
 from multiprocessing import shared_memory
 import time
+import re
 
 from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TORCH_DTYPES
 from cell_observatory_platform.utils.context import (
@@ -32,7 +33,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def slot_info_to_view(slot_info: Dict[str, Any]) -> np.ndarray:
+BUFFER_NAME_REGEX = re.compile(r"host_pinned_shm_buffer_(?P<pool_name>.*)_numa_(?P<numa_node>\d+)_rank_(?P<global_rank>\d+)")
+
+def parse_buffer_name(buffer_name: str) -> Dict[str, str]:
+    match = BUFFER_NAME_REGEX.match(buffer_name)
+    if match is None:
+        raise ValueError(f"Invalid buffer name: {buffer_name}")
+    return match.groupdict()
+
+def get_buffer_name(pool_name: str, numa_node: int, global_rank: int) -> str:
+    return f"host_pinned_shm_buffer_{pool_name}_numa_{numa_node}_rank_{global_rank}"
+
+def slot_info_to_view(slot_info: Dict[str, Any], shm: shared_memory.SharedMemory) -> np.ndarray:
     """
     Convert slot info to a view of the slot.
     """
@@ -43,7 +55,7 @@ def slot_info_to_view(slot_info: Dict[str, Any]) -> np.ndarray:
         if isinstance(dtype, str)
         else dtype
     )
-    buffer = shared_memory.SharedMemory(name=slot_info["name"]).buf
+    buffer = shm.buf
     offset = slot_info["slot"] * slot_info["slot_bytes"]
     return np.ndarray(batch_shape, dtype=dtype, buffer=buffer, offset=offset)
 
@@ -211,7 +223,7 @@ def set_buffers(
     buffer's config must match the requested capacity, batch_shape, and dtype.
     """
     if buffer_type == "host_memory":
-        name = f"host_pinned_shm_buffer_{pool_name}_numa_{numa_node}_rank_{global_rank}"
+        name = get_buffer_name(pool_name, numa_node, global_rank)
         namespace = f"buffers_node_{node_id}"
         expected_batch_shape = (int(batch_size[0]), *tuple(input_shape))
 
@@ -405,11 +417,36 @@ class BufferManager:
         self.max_concurrent_calls = max_concurrent_calls
 
         self._buffer_actors: Dict[str, ActorHandle[HostMemoryBuffer]] = {}
-        
+        self._buffer_cfgs: Dict[str, Dict[str, Any]] = {}
+        self._buffer_shms: Dict[str, shared_memory.SharedMemory] = {}
         self._current_memory_usage_bytes = 0
         self._max_memory_usage_bytes = int(rank_memory_budget_gb * 2**30 * (1 - safety_margin))
 
         atexit.register(self.shutdown)
+
+    def _cleanup_shms(self) -> None:
+        """Clean up the BufferManager."""
+        for pool_name, buffer_shm in self._buffer_shms.items():
+            try:
+                buffer_shm.close()
+            except Exception as e:
+                logger.exception(f"Failed to close buffer shared memory {pool_name}: {e}")
+        try:
+            self._buffer_shms.clear()
+        except Exception as e:
+            logger.exception(f"Failed to clear buffer shared memory: {e}")
+        try:
+            self._buffer_actors.clear()
+        except Exception as e:
+            logger.exception(f"Failed to clear buffer actors: {e}")
+        try:
+            self._buffer_cfgs.clear()
+        except Exception as e:
+            logger.exception(f"Failed to clear buffer configs: {e}")
+
+    def __del__(self) -> None:
+        """Clean up the BufferManager."""
+        self._cleanup_shms()
 
     def set_buffer(
         self,
@@ -425,7 +462,7 @@ class BufferManager:
         Set a buffer for a given pool.
         """
         if pool_name in self._buffer_actors:
-            raise ValueError(f"Pool {pool_name} already exists")
+            raise ValueError(f"Pool {pool_name} already exists. Use get_buffer instead.")
 
         slot_bytes = get_slot_bytes(input_shape, dtype)
         total_bytes = slot_bytes * buffer_capacity
@@ -449,7 +486,8 @@ class BufferManager:
                 max_concurrent_calls=self.max_concurrent_calls,
             )
             self._buffer_actors[pool_name] = buffer_actor
-            
+            self._buffer_cfgs[pool_name] = buffer_cfg
+            self._buffer_shms[pool_name] = shared_memory.SharedMemory(name=buffer_cfg["name"])
         except Exception as e:
             raise RuntimeError(f"Failed to set buffer for pool {pool_name}: {e}")
         
@@ -461,22 +499,58 @@ class BufferManager:
         """
         Get a buffer for a given pool.
         """
-        return get_buffers(
-            type="host_memory",
-            global_rank=self.global_rank,
-            local_rank=self.local_rank,
-            node_id=self.node_id,
-            pool_name=pool_name,
-            numa_node=self.numa_node,
-        )
+        if pool_name in self._buffer_actors:
+            return self._buffer_actors[pool_name]
+        else:
+            buffer_actor = get_buffers(
+                type="host_memory",
+                global_rank=self.global_rank,
+                local_rank=self.local_rank,
+                node_id=self.node_id,
+                pool_name=pool_name,
+                numa_node=self.numa_node,
+            )
+            buffer_cfg = ray.get(buffer_actor.get_config.remote())
+            additional_memory_usage_bytes = get_slot_bytes(buffer_cfg["batch_shape"], buffer_cfg["dtype"]) * buffer_cfg["capacity"]
+            if additional_memory_usage_bytes + self._current_memory_usage_bytes > self._max_memory_usage_bytes:
+                raise ValueError(f"Additional memory usage {additional_memory_usage_bytes} exceeds max memory usage {self._max_memory_usage_bytes}")
+            self._buffer_actors[pool_name] = buffer_actor
+            self._buffer_cfgs[pool_name] = buffer_cfg
+            self._buffer_shms[pool_name] = shared_memory.SharedMemory(name=buffer_cfg["name"])
+            self._current_memory_usage_bytes += additional_memory_usage_bytes
+            return buffer_actor
     
+    def remove_buffer(self, pool_name: str) -> None:
+        """
+        Remove a buffer for a given pool.
+        """
+        if pool_name not in self._buffer_actors:
+            raise ValueError(f"Pool {pool_name} does not exist. Use set_buffer instead.")
+        self._current_memory_usage_bytes -= get_slot_bytes(self._buffer_cfgs[pool_name]["batch_shape"], self._buffer_cfgs[pool_name]["dtype"]) * self._buffer_cfgs[pool_name]["capacity"]
+        self._buffer_shms.pop(pool_name).close()
+        self._buffer_cfgs.pop(pool_name)
+        self._buffer_actors.pop(pool_name)
+    
+    def slot_info_to_view(self, slot_info: Dict[str, Any]) -> np.ndarray:
+        """
+        Convert slot info to a view of the slot.
+        """
+        buffer_name = slot_info["name"]
+        pool_name = parse_buffer_name(buffer_name)["pool_name"]
+        buffer_actor = self.get_buffer(pool_name)
+        return slot_info_to_view(slot_info, self._buffer_shms[pool_name])
+
     def free_slot(self, slot_info: Dict[str, Any]) -> None:
         """
         Free a slot.
         """
-        buffer_actor = ray.get_actor(slot_info["name"], namespace=f"buffers_node_{self.node_id}")
-        buffer_actor.put_free.remote(slot_info["slot"])
-    
+        try:
+            buffer_name = slot_info["name"]
+            pool_name = parse_buffer_name(buffer_name)["pool_name"]
+            buffer_actor = self.get_buffer(pool_name)
+            buffer_actor.put_free.remote(slot_info["slot"])
+        except Exception as e:
+            logger.error(f"Failed to free slot {slot_info['slot']} for pool {slot_info['name']}: {e}")            
 
     def get_metrics(self) -> Dict[str, Dict[str, float | int]]:
         """Get the metrics for the BufferManager."""
@@ -500,4 +574,11 @@ class BufferManager:
             
     def shutdown(self) -> None:
         """Log final metrics and kill the underlying Ray actors."""
-        self.log_metrics_at_shutdown()
+        try:
+            self.log_metrics_at_shutdown()
+            for pool_name in self._buffer_actors.keys():
+                self.remove_buffer(pool_name)
+        except Exception as e:
+            logger.exception(f"Exception occurred while shutting down BufferManager (rank {self.global_rank}, node {self.node_id}, numa {self.numa_node}): {e}")
+        finally:
+            self._cleanup_shms()
