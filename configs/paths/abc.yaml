@@ -1,6 +1,6 @@
 docker_image: null
-# apptainer_image: /clusterfs/nvme/thayer/apptainer_images/develop_torch_25_08.sif
-apptainer_image: /clusterfs/nvme/hph/env_images/develop_torch_25_08_w_titan.sif
+apptainer_image: /clusterfs/vast/Data/cell_observatory_apptainer_images/develop_torch_26_01.sif
+database_sandbox: /clusterfs/vast/Data/cell_observatory_databases/db/2026_03_05/sandbox.tar.gz
 
 # No need to change anything below
 # --------------------------------------------------------------------------------

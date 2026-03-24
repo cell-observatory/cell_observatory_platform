@@ -315,6 +315,7 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
         f"-d {q(str(storage_server))} "
         f"-c {q(cfg.clusters.cpus_per_worker)} "
         f"-e {image} "
+        f"-f {q(str(cfg.paths.database_sandbox))} "
         f"-g {q(cfg.clusters.gpus_per_worker)} "
         f"-m {q(cfg.clusters.mem_per_worker)} "
         f"-n {q(cfg.clusters.worker_nodes)} "
