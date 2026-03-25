@@ -2,34 +2,24 @@ import os
 import re
 import time
 import logging
-import functools
 from pathlib import Path
 from typing import Callable, Iterable, List, Literal, Optional, Tuple, Any, Dict
 
 import ray
 import torch
-# from torch import distributed as dist
 from ray.actor import ActorHandle
 
 import cupy as cp
 from cupy.cuda import runtime as cudart
 import numpy as np
-# import pandas as pd
-# import connectorx as cx
 
 from omegaconf import OmegaConf
-# from dotenv import load_dotenv
 
-# from cell_observatory_platform.utils.common import ceil_div
 from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.inference.amg import postprocess_sam_preds
 from cell_observatory_platform.utils.context import barrier, get_world_size, process_rank
-from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
+from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
 from cell_observatory_platform.data.datasets.buffers import BufferManager
-# from cell_observatory_platform.inference.utils import (
-#     stable_key_owner, 
-#     tile_hash, 
-# )
 from cell_observatory_platform.inference.saver import SaveWorker
 from cell_observatory_platform.inference.visualizer import VizWorker
 
