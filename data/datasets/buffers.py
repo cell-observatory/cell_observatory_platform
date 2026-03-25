@@ -2,11 +2,13 @@ from __future__ import annotations
 import sys
 import atexit
 import asyncio
+import ctypes
 import logging
 from typing import Any, Dict, Optional, Tuple
 from typing_extensions import Buffer
 
 import cupy as cp
+from cupy.cuda import runtime as cudart
 import numpy as np
 from dataclasses import dataclass, field
 import ray
@@ -397,6 +399,12 @@ class BufferManager:
     Per-rank memory manager. Owns save_output pool (wraps HostMemoryBuffer).
     preproc_input, postproc_input: not implemented (deferred).
     viz_output: stub (alloc returns None when empty; non-blocking).
+
+    Serialization: implements ``__getstate__``/``__setstate__`` so the manager
+    can be passed to Ray actors.  Shared-memory handles and CUDA pinned
+    pointers are process-local and are re-attached on the remote side.
+    Deserialized copies are non-owning: they will close their local shm
+    handles on exit but never kill the underlying ``HostMemoryBuffer`` actors.
     """
 
     def __init__(
@@ -415,17 +423,61 @@ class BufferManager:
         self.numa_node = numa_node
         self.rank_memory_budget_gb = rank_memory_budget_gb
         self.max_concurrent_calls = max_concurrent_calls
+        self._is_owner = True
 
         self._buffer_actors: Dict[str, ActorHandle[HostMemoryBuffer]] = {}
         self._buffer_cfgs: Dict[str, Dict[str, Any]] = {}
         self._buffer_shms: Dict[str, shared_memory.SharedMemory] = {}
+        self._pinned_ptrs: Dict[str, int] = {}
         self._current_memory_usage_bytes = 0
         self._max_memory_usage_bytes = int(rank_memory_budget_gb * 2**30 * (1 - safety_margin))
 
         atexit.register(self.shutdown)
 
+    # -- Serialization --------------------------------------------------------
+
+    def __getstate__(self) -> Dict[str, Any]:
+        state = self.__dict__.copy()
+        # SharedMemory handles and CUDA pointers are process-local
+        del state["_buffer_shms"]
+        del state["_pinned_ptrs"]
+        state["_is_owner"] = False
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._pinned_ptrs = {}
+        self._buffer_shms = {}
+        for pool_name, cfg in self._buffer_cfgs.items():
+            self._buffer_shms[pool_name] = shared_memory.SharedMemory(name=cfg["name"])
+        atexit.register(self._cleanup_shms)
+
+    def pin_buffers(self) -> None:
+        """Page-lock all registered shared memory buffers with cudaHostRegister.
+
+        Must be called from a process that owns a CUDA context (e.g. the
+        inference worker).  Mirrors the pattern used in CollatorActor for H2D.
+        """
+        for pool_name, shm in self._buffer_shms.items():
+            if pool_name in self._pinned_ptrs:
+                continue
+            base_ptr = ctypes.addressof(ctypes.c_char.from_buffer(shm.buf))
+            cudart.hostRegister(base_ptr, shm.size, 0)
+            self._pinned_ptrs[pool_name] = base_ptr
+            logger.info(f"Pinned shared memory for pool {pool_name} ({shm.size} bytes)")
+
+    def unpin_buffers(self) -> None:
+        """Unregister all page-locked shared memory buffers."""
+        for pool_name, ptr in list(self._pinned_ptrs.items()):
+            try:
+                cudart.hostUnregister(ptr)
+            except Exception as e:
+                logger.exception(f"Failed to unpin buffer {pool_name}: {e}")
+        self._pinned_ptrs.clear()
+
     def _cleanup_shms(self) -> None:
         """Clean up the BufferManager."""
+        self.unpin_buffers()
         for pool_name, buffer_shm in self._buffer_shms.items():
             try:
                 buffer_shm.close()
@@ -573,10 +625,17 @@ class BufferManager:
             )
             
     def shutdown(self) -> None:
-        """Log final metrics and kill the underlying Ray actors."""
+        """Log final metrics and release resources.
+
+        Owner instances tear down the underlying Ray actors.
+        Non-owner (deserialized) copies only close local shm handles.
+        """
+        if not self._is_owner:
+            self._cleanup_shms()
+            return
         try:
             self.log_metrics_at_shutdown()
-            for pool_name in self._buffer_actors.keys():
+            for pool_name in list(self._buffer_actors.keys()):
                 self.remove_buffer(pool_name)
         except Exception as e:
             logger.exception(f"Exception occurred while shutting down BufferManager (rank {self.global_rank}, node {self.node_id}, numa {self.numa_node}): {e}")
