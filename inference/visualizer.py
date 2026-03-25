@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Sequence, List, Tuple
 
 import numpy as np
-from cell_observatory_platform.data.datasets.buffers import slot_info_to_view, BufferManager
+from cell_observatory_platform.data.datasets.buffers import BufferManager
 from cell_observatory_platform.inference.utils import (
     save_semantic_predictions,
     save_feature_visualizations,
@@ -213,7 +213,7 @@ class VizWorker:
                     continue
                 if isinstance(slot_info, np.ndarray):
                     continue
-                output_array = slot_info_to_view(slot_info)
+                output_array = self.buffer_manager.slot_info_to_view(slot_info)
                 inference_outputs[name] = output_array
                 slots_to_free.append(slot_info)
 
