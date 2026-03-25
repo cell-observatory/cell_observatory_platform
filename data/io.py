@@ -24,63 +24,113 @@ logger = logging.getLogger(__name__)
 
 def save_scores(
     image_path: str,
+    model_name: str,
     scores: np.ndarray,
     task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
     input_format: Literal["TN", "N"],
-    save_mode: Literal["overwrite", "append", "new_image"],
+    save_mode: Literal["overwrite", "append"],
+    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
+    chunk_shape: Optional[Tuple[int, int, int]] = None,
+    timepoint_idxs: Optional[List[int]] = None,
 ) -> None:
     raise NotImplementedError("save_instance_scores is not implemented")
 
 def save_labels(
     image_path: str,
+    model_name: str,
     labels: np.ndarray,
-    label_names: List[str],
     task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
     input_format: Literal["TN", "N"],
-    save_mode: Literal["overwrite", "append", "new_image"],
+    save_mode: Literal["overwrite", "append"],
+    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
+    chunk_shape: Optional[Tuple[int, int, int]] = None,
+    timepoint_idxs: Optional[List[int]] = None,
 ) -> None:
     raise NotImplementedError("save_instance_labels is not implemented")
 
 def save_masks(
     image_path: str,
+    model_name: str,
     masks: np.ndarray,
     input_format: Literal["TZYXC", "ZYXC"],
     task: Literal["instance_segmentation", "semantic_segmentation"],
-    save_mode: Literal["overwrite", "append", "new_image"],
+    save_mode: Literal["overwrite", "append"],
+    zarr_driver: str = "zarr3",
+    dtype: str = "uint16",
     shard_cube_shape: Optional[Tuple[int, int, int]] = None,
     chunk_shape: Optional[Tuple[int, int, int]] = None,
+    timepoint_idxs: Optional[List[int]] = None,
+    data_channel_idxs: Optional[List[int]] = None,
+    mask_channel_idxs: Optional[List[int]] = None,
 ) -> None:
-    if save_mode == "overwrite":
-        save_zarr_overwrite_channel(
+    """Save masks to a separate zarr labels group at <image_path>/labels/<label_name>."""
+    if save_mode == "create" and (shard_cube_shape is None or chunk_shape is None):
+        raise ValueError("shard_cube_shape and chunk_shape are required when creating new labels")
+    if task == "instance_segmentation":
+        label_name = "instance_masks"
+    elif task == "semantic_segmentation":
+        label_name = "semantic_masks"
+    else:
+        raise ValueError(f"Unsupported task for save_masks: {task}")
+    # If we are appending masks, that means they don't already exist, so we need to create them.
+    # If we are overwriting masks, that means we are either running a new model or re-running the same model.
+    # If we are running a new model, we need to create the labels array.
+    # If we are re-running the same model, we need to overwrite the old labels array.
+    if save_mode == "append":
+        label_save_mode = "create"
+    elif save_mode == "overwrite":
+        exists = label_exists(image_path, model_name, label_name, zarr_driver)
+        if exists:
+            label_save_mode = "overwrite"
+        else:
+            label_save_mode = "create"
+    else:
+        raise ValueError(f"Invalid save_mode: {save_mode}")
+
+    try:
+        update_zarr_data(
             image_path=image_path,
             data=masks,
             input_format=input_format,
+            zarr_driver=zarr_driver,
+            dtype=dtype,
+            timepoint_idxs=timepoint_idxs,
+            data_channel_idxs=data_channel_idxs,
+            mask_channel_idxs=mask_channel_idxs,
+            mode=save_mode,
         )
-    elif save_mode == "append":
-        save_zarr_append_channel(
+    except Exception as e:
+        logger.error(f"Failed to update zarr masks in root of zarr store at {image_path}: {e}")
+        raise e
+    
+    try:
+        save_zarr_labels(
             image_path=image_path,
             data=masks,
+            source_name=model_name,
+            label_name=label_name,
             input_format=input_format,
-        )
-    elif save_mode == "new_image":
-        if shard_cube_shape is None or chunk_shape is None:
-            raise ValueError("shard_cube_shape and chunk_shape are required for new_image mode")
-        save_zarr(
-            image_path=image_path,
-            data=masks,
             shard_cube_shape=shard_cube_shape,
             chunk_shape=chunk_shape,
-            input_format=input_format,
+            save_mode=label_save_mode,
+            timepoint_idxs=timepoint_idxs,
+            zarr_driver=zarr_driver,
+            dtype=dtype,
         )
-    else:
-        raise ValueError(f"Invalid save mode: {save_mode}")
+    except Exception as e:
+        logger.error(f"Failed to save zarr labels at {image_path}/{model_name}/{label_name}: {e}")
+        raise e
 
 def save_boxes(
     image_path: str,
+    model_name: str,
     boxes: np.ndarray,
     input_format: Literal["TN6", "N6"],
     task: Literal["instance_segmentation", "detection"],
-    save_mode: Literal["overwrite", "append", "new_image"],
+    save_mode: Literal["overwrite", "append"],
+    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
+    chunk_shape: Optional[Tuple[int, int, int]] = None,
+    timepoint_idxs: Optional[List[int]] = None,
 ) -> None:
     raise NotImplementedError("save_instance_boxes is not implemented")
 
@@ -125,18 +175,17 @@ def read_zarr(
     image_path: str,
     zarr_driver: str = "zarr3",
     dtype: Optional[TENSORSTORE_DTYPES | str] = None,
-    context: ts.Context | None = None,
+    context: Optional[ts.Context] = None,
     cast: bool = False,
+    subpath: Optional[str] = None,
 ) -> np.ndarray:
     """Read a Zarr file and return the data as a NumPy array"""
-    spec = {
-        "driver": zarr_driver,
-        "kvstore": {"driver": "file", "path": image_path},
-        "dtype": ts.uint16,
-    }
-    dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+    spec = _make_read_zarr_spec(image_path, subpath=subpath, driver=zarr_driver)
     ds = ts.open(spec, context=context, read=True).result()
     if cast:
+        if dtype is None:
+            raise ValueError("dtype is required when cast is True")
+        dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
         return ts.cast(ds, dtype)
     else:
         return ds
@@ -168,76 +217,27 @@ def save_file(image_path: str, data: np.ndarray, **kwargs) -> None:
     image_path = str(image_path)
 
     if image_path.endswith(".zarr"):
-        save_zarr(image_path, data, **kwargs)
+        save_zarr_data(image_path, data, **kwargs)
     elif image_path.endswith(".tiff") or image_path.endswith(".tif"):
         save_tiff(image_path, data, **kwargs)
     else:
         raise ValueError(f"Unsupported file format for {image_path}")
 
 
-# NOTE: taken from ml-data-cell_observatory_platform
-def create_zarr_spec(
+def _make_write_zarr_spec(
     data_shape: Tuple[int, ...],
     zarr_version: str,
     path: str,
-    input_format: str,
-    shard_cube_shape: Tuple[int, int, int],
-    chunk_shape: Tuple[int, int, int],
+    shard_shape: Tuple[int, int, int] | Tuple[int, int, int, int],
+    chunk_shape: Tuple[int, int, int] | Tuple[int, int, int, int],
+    subpath: Optional[str] = None,
     dtype: NUMPY_DTYPES | str = "uint16",
-):
-    # NOTE: currently zarr saving format assumes time dimension is present
-    #       always, we should consider changing this in the future
+) -> Dict[str, Any]:
     if zarr_version == "zarr3":
-        if input_format == "TZYXC":
-            num_timepoints_per_image, num_channels = data_shape[0], data_shape[-1]
-            shard_shape = [
-                num_timepoints_per_image,
-                shard_cube_shape[0],
-                shard_cube_shape[1],
-                shard_cube_shape[2],
-                num_channels,
-            ]
-            chunk_shape = [1, chunk_shape[0], chunk_shape[1], chunk_shape[2], num_channels]
-
-        elif input_format == "TCZYX":
-            num_timepoints_per_image, num_channels = data_shape[0], data_shape[1]
-            shard_shape = [
-                num_timepoints_per_image,
-                num_channels,
-                shard_cube_shape[0],
-                shard_cube_shape[1],
-                shard_cube_shape[2],
-            ]
-            chunk_shape = [1, num_channels, chunk_shape[0], chunk_shape[1], chunk_shape[2]]
-
-        elif input_format == "ZYXC":
-            num_timepoints_per_image, num_channels = data_shape[0], data_shape[-1]
-            shard_shape = [
-                num_timepoints_per_image,
-                shard_cube_shape[0],
-                shard_cube_shape[1],
-                shard_cube_shape[2],
-                num_channels,
-            ]
-            chunk_shape = [1, chunk_shape[0], chunk_shape[1], chunk_shape[2], num_channels]
-
-        elif input_format == "CZYX":
-            num_timepoints_per_image, num_channels = data_shape[0], data_shape[1]
-            shard_shape = [
-                num_timepoints_per_image,
-                num_channels,
-                shard_cube_shape[0],
-                shard_cube_shape[1],
-                shard_cube_shape[2],
-            ]
-            chunk_shape = [1, num_channels, chunk_shape[0], chunk_shape[1], chunk_shape[2]]
-
-        else:
-            raise ValueError(f"Unsupported data shape length: {len(data_shape)}")
-
         zarr_spec = {
             "driver": zarr_version,
             "kvstore": {"driver": "file", "path": path},
+            "path": subpath if subpath else "",
             "metadata": {
                 "data_type": str(dtype),
                 "shape": data_shape,
@@ -276,6 +276,7 @@ def create_zarr_spec(
         zarr_spec = {
             "driver": zarr_version,
             "kvstore": {"driver": "file", "path": path},
+            "path": subpath if subpath else "",
             "metadata": {
                 "dtype": "<u2",
                 "shape": data_shape,
@@ -289,8 +290,196 @@ def create_zarr_spec(
         }
     return zarr_spec
 
+def _make_read_zarr_spec(
+    image_path: str,
+    subpath: Optional[str] = None,
+    driver: str = "zarr3",
+) -> Dict[str, Any]:
+    spec = {
+        "driver": driver,
+        "kvstore": {"driver": "file", "path": image_path},
+        "path": subpath if subpath else "",
+    }
+    return spec
 
-def save_zarr(
+# NOTE: taken from ml-data-cell_observatory_platform
+def create_zarr_spec(
+    data_shape: Tuple[int, ...],
+    zarr_version: str,
+    path: str,
+    input_format: str,
+    shard_cube_shape: Tuple[int, int, int],
+    chunk_shape: Tuple[int, int, int],
+    source_name: Optional[str] = None,
+    label_name: Optional[str] = None,
+    dtype: NUMPY_DTYPES | str = "uint16",
+) -> Dict[str, Any]:
+    # NOTE: currently zarr saving format assumes time dimension is present
+    #       always, we should consider changing this in the future
+    if zarr_version == "zarr3":
+        if input_format == "TZYXC":
+            num_timepoints_per_image, num_channels = data_shape[0], data_shape[-1]
+            shard_shape = [
+                num_timepoints_per_image,
+                shard_cube_shape[0],
+                shard_cube_shape[1],
+                shard_cube_shape[2],
+                num_channels,
+            ]
+            chunk_shape = [1, chunk_shape[0], chunk_shape[1], chunk_shape[2], num_channels]
+
+        elif input_format == "TCZYX":
+            num_timepoints_per_image, num_channels = data_shape[0], data_shape[1]
+            shard_shape = [
+                num_timepoints_per_image,
+                num_channels,
+                shard_cube_shape[0],
+                shard_cube_shape[1],
+                shard_cube_shape[2],
+            ]
+            chunk_shape = [1, num_channels, chunk_shape[0], chunk_shape[1], chunk_shape[2]]
+
+        elif input_format == "ZYXC":
+            num_channels = data_shape[-1]
+            shard_shape = [
+                shard_cube_shape[0],
+                shard_cube_shape[1],
+                shard_cube_shape[2],
+                num_channels,
+            ]
+            chunk_shape = [chunk_shape[0], chunk_shape[1], chunk_shape[2], num_channels]
+
+        elif input_format == "CZYX":
+            num_channels = data_shape[0]
+            shard_shape = [
+                num_channels,
+                shard_cube_shape[0],
+                shard_cube_shape[1],
+                shard_cube_shape[2],
+            ]
+            chunk_shape = [num_channels, chunk_shape[0], chunk_shape[1], chunk_shape[2]]
+
+        else:
+            raise ValueError(f"Unsupported data shape length: {len(data_shape)}")
+        
+        subpath = None
+        if source_name is not None and source_name != "" and source_name != "/":
+            if label_name is None or label_name == "" or label_name == "/":
+                raise ValueError("label_name is required when source_name is provided")
+            subpath = f"{source_name}/{label_name}"
+        
+        zarr_spec = _make_write_zarr_spec(
+            data_shape=data_shape,
+            zarr_version=zarr_version,
+            path=path,
+            shard_shape=shard_shape,
+            chunk_shape=chunk_shape,
+            dtype=dtype,
+            subpath=subpath,
+        )
+    return zarr_spec
+
+
+def label_exists(image_path: str, source_name: str, label_name: str, zarr_driver: str) -> bool:
+    """
+    Returns True if the Zarr label array at `label_name` inside the store
+    at `image_path` already exists, False otherwise.
+    """
+    spec = _make_read_zarr_spec(image_path, subpath=f"{source_name}/{label_name}", driver=zarr_driver)
+    try:
+        ts.open(spec, open=True, create=False).result()
+        return True
+    except ValueError as e:
+        if "NOT_FOUND" in str(e) or "does not exist" in str(e):
+            return False
+        raise
+
+def normalize_data_shape(data: np.ndarray, input_format: str) -> np.ndarray:
+    """Normalize the data shape to the expected format"""
+    if data.ndim == len(input_format):
+        return data
+    if data.ndim == 3:
+        new_axes = []
+        if "T" in input_format.upper():
+            new_axes.append(input_format.upper().index("T"))
+        if "C" in input_format.upper():
+            new_axes.append(input_format.upper().index("C"))
+        data = np.expand_dims(data, axis=new_axes)
+    elif data.ndim == 4:
+        raise NotImplementedError("4D data is not supported for reformatting yet")
+    elif data.ndim == 5:
+        return data
+    else:
+        raise ValueError(f"Unsupported data shape: {data.shape}")
+    return data
+
+VALID_SOURCE_NAME = re.compile(r"^[^\/\\]+$")
+VALID_LABEL_NAME = re.compile(r"^[a-zA-Z0-9_]+$")
+
+def save_zarr_labels(
+    image_path: str,
+    data: np.ndarray,
+    source_name: str,
+    label_name: str,
+    input_format: str,
+    save_mode: Literal["overwrite", "create"] = "create",
+    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
+    chunk_shape: Optional[Tuple[int, int, int]] = None,
+    timepoint_idxs: Optional[List[int]] = None,
+    zarr_driver: str = "zarr3",
+    dtype: str = "uint16",
+) -> None:
+    """Create or overwrite a label array at <image_path>/<source_name>/<label_name>."""
+    if not Path(image_path).resolve().exists():
+        raise FileNotFoundError(f"Image path {image_path} does not exist")
+    if not VALID_SOURCE_NAME.match(source_name):
+        raise ValueError(f"Invalid source name: {source_name}. Source name must be a string and not contain any slashes.")
+    if not VALID_LABEL_NAME.match(label_name):
+        raise ValueError(f"Invalid label name: {label_name}. Label name must be an alphanumeric + underscore string and not contain any slashes.")
+    if save_mode == "create" and (shard_cube_shape is None or chunk_shape is None):
+        raise ValueError("shard_cube_shape and chunk_shape are required when creating new labels")
+    if source_name is None or source_name == "":
+        raise ValueError(f"source_name is required but got {source_name}")
+    if label_name is None or label_name == "":
+        raise ValueError(f"label_name is required but got {label_name}")
+
+    data = normalize_data_shape(data, input_format)
+    if timepoint_idxs is not None:
+        if len(timepoint_idxs) != data.shape[0]:
+            raise ValueError(f"timepoint_idxs must have the same length as the time dimension of the data but got: {len(timepoint_idxs)=}, {data.shape[0]=}")
+    
+    exists = label_exists(image_path, source_name, label_name, zarr_driver)
+    if exists and save_mode == "create":
+        raise ValueError(f"Label {label_name} already exists at {image_path}")
+    elif not exists and save_mode == "overwrite":
+        raise ValueError(f"Label {label_name} does not exist at {image_path}. Use save_mode='create' to create it.")
+
+    if save_mode == "create":
+        spec = create_zarr_spec(
+            data_shape=data.shape,
+            zarr_version=zarr_driver,
+            path=image_path,
+            input_format=input_format,
+            shard_cube_shape=shard_cube_shape,
+            chunk_shape=chunk_shape,
+            source_name=source_name,
+            label_name=label_name,
+            dtype=dtype,
+        )
+    elif save_mode == "overwrite":
+        spec = _make_read_zarr_spec(image_path, subpath=f"{source_name}/{label_name}", driver=zarr_driver)
+    else:
+        raise ValueError(f"Invalid save_mode: {save_mode}")
+
+    ds = ts.open(spec).result()
+    with ts.Transaction() as txn:
+        if timepoint_idxs is not None:
+            ds.with_transaction(txn)[timepoint_idxs, ...] = data.astype(dtype)
+        else:
+            ds.with_transaction(txn)[:] = data.astype(dtype)
+
+
+def save_zarr_data(
     image_path: str,
     data: np.ndarray,
     shard_cube_shape: Tuple[int, int, int],
@@ -299,6 +488,11 @@ def save_zarr(
     zarr_driver: str = "zarr3",
     dtype: str = "uint16",
 ) -> None:
+    """Create a zarr data array at <image_path> in the root of the zarr store."""
+    if image_path is None:
+        raise ValueError("image_path is required")
+    if Path(image_path).resolve().exists():
+        raise FileExistsError(f"Image path {image_path} already exists. If you want to update the data, use update_zarr_data instead.")
     zarr_spec = create_zarr_spec(
         data_shape=data.shape,
         zarr_version=zarr_driver,
@@ -309,92 +503,136 @@ def save_zarr(
         dtype=dtype,
     )
 
+    Path(image_path).mkdir(parents=True, exist_ok=True)
     ds = ts.open(zarr_spec).result()
-    ds[:] = data
+    with ts.Transaction() as txn:
+        ds.with_transaction(txn)[:] = data.astype(dtype)
 
+def normalize_idxs(idxs: Iterable[int | float], shape_size: int) -> List[int]:
+    """Normalize a list of indices to be within the bounds of the shape size. Converts negative indices to positive indices."""
+    new_idxs = []
+    for idx in idxs:
+        if not (isinstance(idx, int) or (isinstance(idx, float) and idx.is_integer())):
+            raise ValueError(f"Index {idx} is not integer-valued.")
+        if idx < 0:
+            idx = shape_size + idx
+        if idx < 0 or idx >= shape_size:
+            raise ValueError(f"Index {idx} is out of bounds for shape size {shape_size}.")
+        new_idxs.append(int(idx))
+    return new_idxs
 
-def save_zarr_append_channel(
+def update_zarr_data(
     image_path: str,
     data: np.ndarray,
-    input_format: str = "TZYXC",
+    input_format: Literal["TZYXC", "ZYXC"],
     zarr_driver: str = "zarr3",
-    dtype: str = "float16",
+    dtype: str = "uint16",
+    timepoint_idxs: Optional[List[int]] = None,
+    data_channel_idxs: Optional[List[int]] = None,
+    mask_channel_idxs: Optional[List[int]] = None,
+    mode: Literal["append", "overwrite"] = "append",
 ) -> None:
-    """Append data as new channel(s) to an existing zarr array.
+    """Append or overwrite data in an existing zarr array.
 
-    Opens the existing zarr read-write, resizes along the channel dimension,
-    and writes data into the new channel slice. Uses TensorStore resize().
+    Opens the existing zarr read-write, resizes along the channel dimension if appending,
+    and writes data into the channel slice. Uses TensorStore resize() if appending.
     """
+    if mode not in ["append", "overwrite"]:
+        raise ValueError(f"Invalid mode: {mode}. Must be one of ['append', 'overwrite'].")
+    if input_format not in ["TZYXC", "ZYXC"]:
+        raise ValueError(f"Invalid input_format: {input_format}. Must be one of ['TZYXC', 'ZYXC'].")
+    if not Path(image_path).resolve().exists():
+        raise FileNotFoundError(f"Image path {image_path} does not exist")
     if not len(data.shape) == len(input_format):
-        raise ValueError(f"data.shape and input_format must have the same length but got: {len(data.shape)=}, {len(input_format)=}")
-    channel_dim = input_format.index("C")
+        raise ValueError(f"data.shape and input_format must have the same number of dimensions but got: {len(data.shape)=}, {len(input_format)=}")
+    channel_dim = input_format.index("C") if "C" in input_format else None
+    if channel_dim is None:
+        raise ValueError(f"Channel dimension is not present in the {input_format=}.")
     if channel_dim != len(input_format) - 1:
         raise NotImplementedError("Only channel-last input_formats are currently supported for appending channels.")
-    ds = read_zarr(image_path, zarr_driver=zarr_driver, dtype=dtype, cast=False)
-    if len(ds.shape) != len(data.shape):
-        raise ValueError(f"data.shape and store.shape must have the same length but got: {len(data.shape)=}, {len(ds.shape)=}")
-    for i in data.shape:
-        if i != channel_dim and data.shape[i] != ds.shape[i]:
-            dim_name = input_format[i]
-            raise ValueError(f"Only the channel dimension can be appended, but got data.shape[{i}] != store_shape[{i}] for dimension {dim_name} with input_format={input_format}.")
-    new_shape = list(ds.shape).copy()
-    new_shape[channel_dim] = new_shape[channel_dim] + data.shape[channel_dim]
-    ds.resize(exclusive_max=tuple(new_shape), expand_only=True)
-    # Final sanity check: ensure we DO NOT overwrite data, and only allow overwriting masks.
-    # Check if any numbers in the zarr array to be overwritten are not whole integers (possible "data" content?).
-    values_to_overwrite = ds[..., -data.shape[channel_dim]:]
-    if not np.all(np.mod(np.asarray(values_to_overwrite), 1) == 0):
-        raise RuntimeError(
-            "Attempted to overwrite zarr channel(s) that may contain data values "
-            "(non-integer values detected). Aborting to avoid overwriting data. "
-            "Only integer mask arrays should be overwritten."
-            f"data.shape={data.shape}, ds.shape={ds.shape}"
-            f"channel_dim={channel_dim}, n_new_channels={data.shape[channel_dim]}"
-            f"n_existing_channels={ds.shape[channel_dim]}"
-        )
-    ds[..., -data.shape[channel_dim]:] = data.astype(dtype)
+    time_dim = input_format.index("T") if "T" in input_format else None
+    if time_dim is not None and time_dim != 0:
+        raise NotImplementedError("Only time dimension at the first position is currently supported for appending channels.")
+    if time_dim is None and timepoint_idxs is not None:
+        raise ValueError(f"Got {timepoint_idxs=} but time dimension is not present in the {input_format=}.")
 
-def save_zarr_overwrite_channel(
-    image_path: str,
-    data: np.ndarray,
-    input_format: str = "TZYXC",
-    zarr_driver: str = "zarr3",
-    dtype: str = "float16",
-) -> None:
-    """Overwrite data in an existing zarr array.
-    
-    Opens the existing zarr read-write, and overwrites the last C channels with the new data, 
-    where C is the number of channels in the new data.
-    """
-    if not len(data.shape) == len(input_format):
-        raise ValueError(f"data.shape and input_format must have the same length but got: {len(data.shape)=}, {len(input_format)=}")
-    channel_dim = input_format.index("C")
-    if channel_dim != len(input_format) - 1:
-        raise NotImplementedError("Only channel-last input_formats are currently supported for overwriting channels.")
-    ds = read_zarr(image_path, zarr_driver=zarr_driver, dtype=dtype, cast=False)
+    read_zarr_spec = _make_read_zarr_spec(image_path, subpath=None, driver=zarr_driver)
+    ds = ts.open(read_zarr_spec).result()
+
     if len(ds.shape) != len(data.shape):
-        raise ValueError(f"data.shape and store.shape must have the same length but got: {len(data.shape)=}, {len(ds.shape)=}")
-    for i in data.shape:
-        if i != channel_dim and data.shape[i] != ds.shape[i]:
-            dim_name = input_format[i]
-            raise ValueError(f"Only the channel dimension can be overwritten, but got data.shape[{i}] != store_shape[{i}] for dimension {dim_name} with input_format={input_format}.")
-        elif i == channel_dim and data.shape[i] >= ds.shape[i]:
-            raise ValueError(f"Cannot overwrite with more channels than the existing zarr, but got data.shape[{i}] >= store_shape[{i}] for dimension {dim_name} with input_format={input_format}.")
-   
-    # Final sanity check: ensure we DO NOT overwrite data, and only allow overwriting masks.
-    # Check if any numbers in the zarr array to be overwritten are not whole integers (possible "data" content?).
-    values_to_overwrite = ds[..., -data.shape[channel_dim]:]
-    if not np.all(np.mod(np.asarray(values_to_overwrite), 1) == 0):
-        raise RuntimeError(
-            "Attempted to overwrite zarr channel(s) that may contain data values "
-            "(non-integer values detected). Aborting to avoid overwriting data. "
-            "Only integer mask arrays should be overwritten."
-            f"data.shape={data.shape}, ds.shape={ds.shape}"
-            f"channel_dim={channel_dim}, n_new_channels={data.shape[channel_dim]}"
-            f"n_existing_channels={ds.shape[channel_dim]}"
-        )
+        raise ValueError(f"data.shape and store.shape must have the same number of dimensions but got: {len(data.shape)=}, {len(ds.shape)=}")
+    for spatial_dim in ["Z", "Y", "X"]:
+        dim_idx = input_format.index(spatial_dim)
+        if data.shape[dim_idx] != ds.shape[dim_idx]:
+            raise ValueError(f"Data and store have different spatial dimensions: got data.shape[{dim_idx}] != store_shape[{dim_idx}] for dimension {spatial_dim} with input_format={input_format}.")
+    if time_dim is not None:
+        if timepoint_idxs is not None:
+            if len(timepoint_idxs) != data.shape[time_dim]:
+                raise ValueError(f"timepoint_idxs must have the same length as the time dimension of the data but got: {len(timepoint_idxs)=}, {data.shape[time_dim]=}")
+        else:
+            if data.shape[time_dim] != ds.shape[time_dim]:
+                raise ValueError(f"Time dimension mismatch: got data.shape[{time_dim}] != store_shape[{time_dim}] for dimension T with input_format={input_format}.")
+
+
+    if mode == "append":
+        if mask_channel_idxs is not None:
+            raise ValueError(f"Got {mask_channel_idxs=} but mode is 'append'. Specifying custom mask channel indices is not supported for appending.")
+        old_channel_count = ds.shape[channel_dim]
+        new_shape = list[Any](ds.shape).copy()
+        new_shape[channel_dim] = new_shape[channel_dim] + data.shape[channel_dim]
+        n_new = data.shape[channel_dim]
+        start_c = old_channel_count
+        end_c = old_channel_count + n_new
+        with ts.Transaction() as txn:
+            txn_store = ds.with_transaction(txn)
+            txn_store.resize(exclusive_max=tuple(new_shape), expand_only=True).result()
+            # Final sanity check: ensure we DO NOT overwrite data, and only allow overwriting masks.
+            # Check if any numbers in the zarr array to be overwritten are not whole integers (possible "data" content?).
+            # Use positive channel indices — TensorStore does not support NumPy-style negative slices on zarr views.
+            if timepoint_idxs is not None:
+                timepoint_idxs = normalize_idxs(timepoint_idxs, ds.shape[time_dim])
+                values_to_overwrite = txn_store[timepoint_idxs, ..., start_c:end_c]
+            else:
+                values_to_overwrite = txn_store[..., start_c:end_c]
+            if np.asarray(values_to_overwrite.read().result()).any():
+                raise RuntimeError(
+                    "Attempted to append to zarr channel(s) that are not empty. "
+                    "This strongly suggests that tensorstor did not resize the array as expected or that the specification fill value is not zero."
+                    f"data.shape={data.shape}, store_shape_before_resize={ds.shape}"
+                    f"channel_dim={channel_dim}, n_new_channels={n_new}"
+                    f"n_existing_channels={old_channel_count}"
+                    f"timepoint_idxs={timepoint_idxs}"
+                )
+            values_to_overwrite.write(data.astype(dtype)).result()
     
-    ds[..., -data.shape[channel_dim]:] = data.astype(dtype)
+    elif mode == "overwrite":
+        if mask_channel_idxs is None or data_channel_idxs is None:
+            raise ValueError(f"Got {mask_channel_idxs=} and {data_channel_idxs=} but mode is 'overwrite'. Mask channel indices and data channel indices must be specified for overwriting.")
+        data_channel_idxs = normalize_idxs(data_channel_idxs, ds.shape[channel_dim])
+        mask_channel_idxs = normalize_idxs(mask_channel_idxs, ds.shape[channel_dim])
+        if len(mask_channel_idxs) != data.shape[channel_dim]:
+            raise ValueError(f"Number of mask channel indices ({len(mask_channel_idxs)}) must match the channel count of the input data ({data.shape[channel_dim]}).")
+        last_data_channel_idx = max(data_channel_idxs)
+        first_mask_channel_idx = min(mask_channel_idxs)
+        if first_mask_channel_idx <= last_data_channel_idx:
+            raise ValueError(f"Attempting to overwrite data channels: {first_mask_channel_idx=} <= {last_data_channel_idx=}.")
+        ms = sorted(mask_channel_idxs)
+        if ms != list(range(ms[0], ms[-1] + 1)):
+            raise NotImplementedError(
+                "Non-contiguous mask_channel_idxs are not supported for TensorStore overwrite writes; "
+                f"got {mask_channel_idxs=}"
+            )
+        ch_start, ch_end = ms[0], ms[-1] + 1
+        with ts.Transaction() as txn:
+            txn_store = ds.with_transaction(txn)
+            if timepoint_idxs is not None:
+                timepoint_idxs = normalize_idxs(timepoint_idxs, ds.shape[time_dim])
+                values_to_overwrite = txn_store[timepoint_idxs, ..., ch_start:ch_end]
+            else:
+                values_to_overwrite = txn_store[..., ch_start:ch_end]
+            values_to_overwrite.write(data.astype(dtype)).result()
+    else:
+        raise ValueError(f"Invalid mode: {mode}. Must be one of ['append', 'overwrite'].")
 
 def save_tiff(image_path: str, data: np.ndarray, axes: str, with_fiji: bool = False) -> None:
     if with_fiji:
