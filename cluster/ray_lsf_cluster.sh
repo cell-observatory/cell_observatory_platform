@@ -138,14 +138,14 @@ do_cleanup() {
 echo "Copying local database to head $head_node"
 blaunch -z $head_node "
     mkdir -p /scratch/$USER/
-    rsync -avz --stats $database_sandbox /scratch/$USER/sandbox.tar.gz
+    rsync -avz --stats $database_sandbox /scratch/$USER/sandbox.tar.zst
 " >/dev/null 2>&1 &
 rsync_bg_pid=$!
 wait "$rsync_bg_pid"
 
 echo "Unpacking local database on head $head_node"
 blaunch -z $head_node "
-    tar -Sxzvf /scratch/$USER/sandbox.tar.gz
+    tar -Sxzvf /scratch/$USER/sandbox.tar.zst
 " >/dev/null 2>&1 &
 tar_bg_pid=$!
 wait "$tar_bg_pid"
@@ -194,14 +194,14 @@ if [ ${nodes} -gt 1 ]; then
         echo "Copying local database to $host"
         blaunch -z $host "
             mkdir -p /scratch/$USER/
-            rsync -avz --stats $database_sandbox/ /scratch/$USER/sandbox.tar.gz
+            rsync -avz --stats $database_sandbox/ /scratch/$USER/sandbox.tar.zst
         " >/dev/null 2>&1 &
         rsync_bg_pid=$!
         wait "$rsync_bg_pid"
 
         echo "Unpacking local database on $host"
         blaunch -z $host "
-            tar -Sxzvf /scratch/$USER/sandbox.tar.gz
+            tar -Sxzvf /scratch/$USER/sandbox.tar.zst
         " >/dev/null 2>&1 &
         tar_bg_pid=$!
         wait "$tar_bg_pid"

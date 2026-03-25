@@ -51,8 +51,8 @@ export cluster_address
 ############################## START HEAD NODE
 
 echo "Copying local database to head $head_node"
-rsync -avz --stats $database_sandbox $scratch/sandbox.tar.gz >/dev/null 2>&1 &
-tar -Sxzvf $scratch/sandbox.tar.gz >/dev/null 2>&1 &
+rsync -avz --stats $database_sandbox $scratch/sandbox.tar.zst >/dev/null 2>&1 &
+tar -Sxzvf $scratch/sandbox.tar.zst >/dev/null 2>&1 &
 
 apptainer exec --userns --nv \
     --bind $storage_server \
