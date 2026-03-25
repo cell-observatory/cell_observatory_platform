@@ -7,7 +7,7 @@ from typing import Literal, Optional, Tuple, Dict, Any, List, Callable
 import ray
 import numpy as np
 from cell_observatory_platform.data.io import save_masks, save_scores, save_labels, save_boxes
-from cell_observatory_platform.data.datasets.buffers import BufferManager, slot_info_to_view
+from cell_observatory_platform.data.datasets.buffers import BufferManager
 from pathlib import Path
 import os
 
@@ -18,32 +18,32 @@ def input_format_to_output_format(
     output_format = {}
     if task == "instance_segmentation":
         if input_format == "TZYXC":
-            output_format["instance_masks"] = "TZYX"
-            output_format["instance_scores"] = "TN"
-            output_format["instance_labels"] = "TN"
-            output_format["instance_boxes"] = "TN6"
+            output_format["masks"] = "TZYXC"
+            output_format["scores"] = "TN"
+            output_format["labels"] = "TN"
+            output_format["boxes"] = "TN6"
         elif input_format == "ZYXC":
-            output_format["instance_masks"] = "ZYXC"
-            output_format["instance_scores"] = "N"
-            output_format["instance_labels"] = "N"
-            output_format["instance_boxes"] = "N6"
+            output_format["masks"] = "ZYXC"
+            output_format["scores"] = "N"
+            output_format["labels"] = "N"
+            output_format["boxes"] = "N6"
         else:
             raise ValueError(f"Unknown input format: {input_format}")
     elif task == "semantic_segmentation":
         if input_format == "TZYXC":
-            output_format["semantic_masks"] = "TZYXC"
-            output_format["semantic_labels"] = "TN"
+            output_format["masks"] = "TZYXC"
+            output_format["labels"] = "TN"
         else:
             raise ValueError(f"Unknown input format: {input_format}")
     elif task == "detection":
         if input_format == "TZYXC":
-            output_format["detection_scores"] = "TN"
-            output_format["detection_labels"] = "TN"
-            output_format["detection_boxes"] = "TN6"
+            output_format["scores"] = "TN"
+            output_format["labels"] = "TN"
+            output_format["boxes"] = "TN6"
         elif input_format == "ZYXC":
-            output_format["detection_scores"] = "N"
-            output_format["detection_labels"] = "N"
-            output_format["detection_boxes"] = "N6"
+            output_format["scores"] = "N"
+            output_format["labels"] = "N"
+            output_format["boxes"] = "N6"
         else:
             raise ValueError(f"Unknown input format: {input_format}")
     else:
@@ -51,163 +51,68 @@ def input_format_to_output_format(
     return output_format
 
 
-def save_instance_predictions(
+def save_predictions(
     image_path: str,
+    model_name: str,
     preds: Dict[str, Any],
+    task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
     input_format: Literal["TZYXC", "ZYXC"],
-    save_mode: Literal["overwrite", "append", "new_image"],
+    save_mode: Literal["overwrite", "append"],
     shard_cube_shape: Optional[Tuple[int, int, int]] = None,
     chunk_shape: Optional[Tuple[int, int, int]] = None,
 ) -> None:
-    instance_masks = preds.get("instance_masks", None)
-    instance_scores = preds.get("instance_scores", None)
-    instance_labels = preds.get("instance_labels", None)
-    instance_boxes = preds.get("instance_boxes", None)
-    preds_formats = input_format_to_output_format(input_format, "instance_segmentation")
-    if instance_masks is not None:
+    preds_formats = input_format_to_output_format(input_format, task)
+    for name, output_format in preds_formats.items():
         try:
-            masks_format = preds_formats["instance_masks"]
-            save_masks(
-                image_path=image_path,
-                masks=instance_masks,
-                task="instance_segmentation",
-                input_format=masks_format,
-                save_mode=save_mode,
-                chunk_shape=chunk_shape,
-                shard_cube_shape=shard_cube_shape,
-            )
-        except Exception as e:
-            ray.logger.error(f"Failed to save instance masks: {e}")
-    if instance_scores is not None:
+            data = preds[name]
+        except KeyError as e:
+            ray.logger.error(f"Prediction {name} not found in preds: {e}")
+            continue
         try:
-            scores_format = preds_formats["instance_scores"]
-            save_scores(
-                image_path=image_path,
-                scores=instance_scores,
-                task="instance_segmentation",
-                input_format=scores_format,
-                save_mode=save_mode,
-            )
+            if name == "masks":
+                save_masks(
+                    image_path=image_path,
+                    model_name=model_name,
+                    masks=data,
+                    input_format=output_format,
+                    task=task,
+                    save_mode=save_mode,
+                    chunk_shape=chunk_shape,
+                    shard_cube_shape=shard_cube_shape,
+                )
+            elif name == "scores":
+                save_scores(
+                    image_path=image_path,
+                    model_name=model_name,
+                    scores=data,
+                    task=task,
+                    input_format=output_format,
+                    save_mode=save_mode,
+                )
+            elif name == "labels":
+                save_labels(
+                    image_path=image_path,
+                    model_name=model_name,
+                    labels=data,
+                    task=task,
+                    input_format=output_format,
+                    save_mode=save_mode,
+                    chunk_shape=chunk_shape,
+                    shard_cube_shape=shard_cube_shape,
+                )
+            elif name == "boxes":
+                save_boxes(
+                    image_path=image_path,
+                    model_name=model_name,
+                    boxes=data,
+                    task=task,
+                    input_format=output_format,
+                    save_mode=save_mode,
+                    chunk_shape=chunk_shape,
+                    shard_cube_shape=shard_cube_shape,
+                )
         except Exception as e:
-            ray.logger.error(f"Failed to save instance scores: {e}")
-    if instance_labels is not None:
-        try:
-            labels_format = preds_formats["instance_labels"]
-            label_names = preds["label_names"]
-            save_labels(
-                image_path=image_path,
-                labels=instance_labels,
-                label_names=label_names,
-                task="instance_segmentation",
-                input_format=labels_format,
-                save_mode=save_mode,
-            )
-        except Exception as e:
-            ray.logger.error(f"Failed to save instance labels: {e}")
-    if instance_boxes is not None:
-        try:
-            boxes_format = preds_formats["instance_boxes"]
-            save_boxes(
-                image_path=image_path,
-                boxes=instance_boxes,
-                task="instance_segmentation",
-                input_format=boxes_format,
-                save_mode=save_mode,
-            )
-        except Exception as e:
-            ray.logger.error(f"Failed to save instance boxes: {e}")
-
-
-def save_semantic_predictions(
-    image_path: str,
-    preds: Dict[str, Any],
-    input_format: Literal["TZYXC", "ZYXC"],
-    save_mode: Literal["overwrite", "append", "new_image"],
-    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
-    chunk_shape: Optional[Tuple[int, int, int]] = None,
-) -> None:
-    semantic_masks = preds.get("semantic_masks", None)
-    semantic_labels = preds.get("semantic_labels", None)
-    preds_formats = input_format_to_output_format(input_format, "semantic_segmentation")
-    if semantic_masks is not None:
-        try:
-            masks_format = preds_formats["semantic_masks"]
-            save_masks(
-                image_path=image_path,
-                masks=semantic_masks,
-                task="semantic_segmentation",
-                input_format=masks_format,
-                save_mode=save_mode,
-                chunk_shape=chunk_shape,
-                shard_cube_shape=shard_cube_shape,
-            )
-        except Exception as e:
-            ray.logger.error(f"Failed to save semantic masks: {e}")
-    if semantic_labels is not None:
-        try:
-            labels_format = preds_formats["semantic_labels"]
-            label_names = preds["label_names"]
-            save_labels(
-                image_path=image_path,
-                labels=semantic_labels,
-                label_names=label_names,
-                task="semantic_segmentation",
-                input_format=labels_format,
-                save_mode=save_mode,
-            )
-        except Exception as e:
-            ray.logger.error(f"Failed to save semantic labels: {e}")
-
-
-def save_detection_predictions(
-    image_path: str,
-    preds: Dict[str, Any],
-    input_format: Literal["TZYXC", "ZYXC"],
-    save_mode: Literal["overwrite", "append", "new_image"],
-) -> None:
-    detection_scores = preds.get("detection_scores", None)
-    detection_labels = preds.get("detection_labels", None)
-    detection_boxes = preds.get("detection_boxes", None)
-    preds_formats = input_format_to_output_format(input_format, "detection")
-    if detection_scores is not None:
-        try:
-            scores_format = preds_formats["detection_scores"]
-            save_scores(
-                image_path=image_path,
-                scores=detection_scores,
-                task="detection",
-                input_format=scores_format,
-                save_mode=save_mode,
-            )
-        except Exception as e:
-            ray.logger.error(f"Failed to save detection scores: {e}")
-    if detection_labels is not None:
-        try:
-            labels_format = preds_formats["detection_labels"]
-            label_names = preds["label_names"]
-            save_labels(
-                image_path=image_path,
-                labels=detection_labels,
-                label_names=label_names,
-                task="detection",
-                input_format=labels_format,
-                save_mode=save_mode,
-            )
-        except Exception as e:
-            ray.logger.error(f"Failed to save detection labels: {e}")
-    if detection_boxes is not None:
-        try:
-            boxes_format = preds_formats["detection_boxes"]
-            save_boxes(
-                image_path=image_path,
-                boxes=detection_boxes,
-                task="detection",
-                input_format=boxes_format,
-                save_mode=save_mode,
-            )
-        except Exception as e:
-            ray.logger.error(f"Failed to save detection boxes: {e}")
-
+            ray.logger.error(f"Failed to save {name}: {e}")
 @ray.remote(namespace="saver", lifetime="detached", num_cpus=0)
 class SaveWorker:
     """
@@ -218,9 +123,7 @@ class SaveWorker:
     def __init__(
         self,
         buffer_manager: BufferManager,
-        # TODO: Support threading with retries for each save operation
-        # max_retries: int = 3,
-        # retry_backoff_s: float = 0.5,
+        save_mode: Literal["overwrite", "append"],
         max_workers: int = 4,
         columns: List[str] = [
             "x_start",
@@ -238,16 +141,14 @@ class SaveWorker:
             "prepared_id",
             "mask_bbox_dict",
         ],
+        shard_cube_shape: Optional[Tuple[int, int, int]] = None,
+        chunk_shape: Optional[Tuple[int, int, int]] = None,
     ):
         self.buffer_manager = buffer_manager
+        self.save_mode = save_mode
         self.columns = columns
-        # TODO: Support threading with retries for each save operation
-        # self.max_retries = max_retries
-        # if max_retries > 0:
-        #     ray.logger.warning("Saving with retries is not supported yet")
-        # self.retry_backoff_s = retry_backoff_s
         self.thread_pool = ThreadPoolExecutor(
-            max_workers=max_workers, 
+            max_workers=max_workers,
             thread_name_prefix=f"save_worker_rank_{buffer_manager.global_rank}"
         )
         self._save_metrics = {
@@ -255,6 +156,8 @@ class SaveWorker:
             "save_successes": 0,
             "save_failures": 0,
         }
+        self.shard_cube_shape = shard_cube_shape
+        self.chunk_shape = chunk_shape
     
     def get_metrics(self) -> Dict[str, Any]:
         return self._save_metrics.copy()
@@ -269,10 +172,6 @@ class SaveWorker:
     def save(
         self, 
         inference_outputs: Dict[str, Any], 
-        save_mode: Literal["overwrite", "append", "new_image"],
-        shard_cube_shape: Optional[Tuple[int, int, int]] = None,
-        chunk_shape: Optional[Tuple[int, int, int]] = None,
-        save_dir: Optional[Path | str] = None,
     ) -> None:
         output_arrays = {}
         slots_to_free = []
@@ -287,7 +186,7 @@ class SaveWorker:
                 if isinstance(slot_info, np.ndarray):
                     output_arrays[name] = slot_info
                     continue
-                output_array = slot_info_to_view(slot_info)
+                output_array = self.buffer_manager.slot_info_to_view(slot_info)
                 output_arrays[name] = output_array
                 slots_to_free.append(slot_info)
 
@@ -295,52 +194,27 @@ class SaveWorker:
             for b in range(batch_size):
                 preds_element = {}
                 metadata_element = {col: sample_metainfo[col][b] for col in self.columns}
-                if save_mode == "overwrite" or save_mode == "append":
-                    image_path = os.path.join(
-                        metadata_element["server_folder"],
-                        metadata_element["output_folder"],
-                        metadata_element["tile_name"],
-                    )
-                    if not os.path.exists(image_path):
-                        raise ValueError(f"Save mode is {save_mode} but image path {image_path} does not exist")
-                elif save_mode == "new_image":
-                    if save_dir is None:
-                        raise ValueError("save_dir is required for new_image mode")
-                    image_path: Path = Path(save_dir) / metadata_element["output_folder"] / metadata_element["tile_name"]
-                    image_path.resolve()
-                    image_path.parent.mkdir(parents=True, exist_ok=True)
+                image_path = os.path.join(
+                    metadata_element["server_folder"],
+                    metadata_element["output_folder"],
+                    metadata_element["tile_name"],
+                )
+                if not os.path.exists(image_path):
+                    raise ValueError(f"Save mode is {self.save_mode} but image path {image_path} does not exist")
                 for name, output_array in output_arrays.items():
                     preds_element[name] = output_array[b]
-                if task == "instance_segmentation":
-                    batch_futures.append(self.thread_pool.submit(
-                        save_instance_predictions,
-                        image_path=str(image_path),
-                        preds=preds_element,
-                        input_format=sample_metainfo["input_format"],
-                        save_mode=save_mode,
-                        chunk_shape=chunk_shape,
-                        shard_cube_shape=shard_cube_shape,
-                    ))
-                elif task == "semantic_segmentation":
-                    batch_futures.append(self.thread_pool.submit(
-                        save_semantic_predictions,
-                        image_path=str(image_path),
-                        preds=preds_element,
-                        input_format=sample_metainfo["input_format"],
-                        save_mode=save_mode,
-                        chunk_shape=chunk_shape,
-                        shard_cube_shape=shard_cube_shape,
-                    ))
-                elif task == "detection":
-                    batch_futures.append(self.thread_pool.submit(
-                        save_detection_predictions,
-                        image_path=str(image_path),
-                        preds=preds_element,
-                        input_format=sample_metainfo["input_format"],
-                        save_mode=save_mode,
-                    ))
-                else:
-                    raise ValueError(f"Unknown task: {task}")
+                
+                batch_futures.append(self.thread_pool.submit(
+                    save_predictions,
+                    image_path=str(image_path),
+                    model_name=sample_metainfo["model_name"],
+                    preds=preds_element,
+                    task=task,
+                    input_format=sample_metainfo["input_format"],
+                    save_mode=self.save_mode,
+                    chunk_shape=self.chunk_shape,
+                    shard_cube_shape=self.shard_cube_shape,
+                ))
 
             for future in as_completed(batch_futures):
                 try:
