@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import logging
 import functools
 from pathlib import Path
@@ -10,6 +11,8 @@ import torch
 # from torch import distributed as dist
 from ray.actor import ActorHandle
 
+import cupy as cp
+from cupy.cuda import runtime as cudart
 import numpy as np
 # import pandas as pd
 # import connectorx as cx
@@ -22,7 +25,7 @@ from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.inference.amg import postprocess_sam_preds
 from cell_observatory_platform.utils.context import barrier, get_world_size, process_rank
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
-from cell_observatory_platform.data.datasets.buffers import slot_info_to_view, BufferManager
+from cell_observatory_platform.data.datasets.buffers import BufferManager
 # from cell_observatory_platform.inference.utils import (
 #     stable_key_owner, 
 #     tile_hash, 
@@ -146,6 +149,15 @@ class InferencerWorker:
 
         self.buffer_manager = buffer_manager
 
+        device_idx = torch.cuda.current_device()
+        self.device = torch.device(f"cuda:{device_idx}")
+        with cp.cuda.Device(device_idx):
+            self._cp_d2h_stream = cp.cuda.Stream(non_blocking=True)
+        self._d2h_stream = torch.cuda.ExternalStream(
+            int(self._cp_d2h_stream.ptr), device=self.device
+        )
+        self.buffer_manager.pin_buffers()
+
         self.decoder_head_type = decoder_head_type
         # TODO: remove this when we implement stitching / sliding window inference
         # self.feature_viz_type = feature_viz_type
@@ -226,6 +238,11 @@ class InferencerWorker:
         #     self.rank, self.world_size = process_rank(), get_world_size()
 
         self.rank, self.world_size = process_rank(), get_world_size()
+
+        self._metrics = {
+            "predict_time_ms": List[float],
+            "transfer_time_ms": List[float],
+        }
 
         # ray.logger.info(f"Inference Database: {self.prediction_df}")
         # ray.logger.info(f"Data types to save: {self.data_types}")
@@ -1073,8 +1090,9 @@ class InferencerWorker:
 
             X = data_sample["data_tensor"]
             metadata = data_sample["metainfo"]
-
+            t0 = time.perf_counter()
             preds = self._predict(X, data_sample)
+            self._metrics["predict_time_ms"].append((time.perf_counter() - t0) * 1000)
 
             # targets may be absent in pure inference; normalize to per-record list[dict]
             B = len(metadata["prepared_id"])
@@ -1150,28 +1168,6 @@ class InferencerWorker:
             #     raise ValueError(f"Unknown aggregate_mode: {self.aggregate_mode}")
         
 
-    def _to_cpu_detached(self, x: Any) -> Any:
-        if isinstance(x, torch.Tensor):
-            return x.detach().cpu()
-        if isinstance(x, dict):
-            return {k: self._to_cpu_detached(v) for k, v in x.items()}
-        if isinstance(x, list):
-            return [self._to_cpu_detached(v) for v in x]
-        if isinstance(x, tuple):
-            return tuple(self._to_cpu_detached(v) for v in x)
-        return x
-
-    def _to_cpu_detached(self, x: Any) -> Any:
-        if isinstance(x, torch.Tensor):
-            return x.detach().cpu()
-        if isinstance(x, dict):
-            return {k: self._to_cpu_detached(v) for k, v in x.items()}
-        if isinstance(x, list):
-            return [self._to_cpu_detached(v) for v in x]
-        if isinstance(x, tuple):
-            return tuple(self._to_cpu_detached(v) for v in x)
-        return x
-
     def _prepare_outputs_for_saving(self, data_sample: dict, preds: dict) -> Tuple[dict, dict]:
         """
         Prepare data sample for saving
@@ -1202,6 +1198,15 @@ class InferencerWorker:
             return np.random.rand() < self.viz_sampling_policy["fraction"]
         return False
 
+    def _copy_d2h(self, dst: np.ndarray, src: torch.Tensor) -> None:
+        """Async device-to-host memcpy via CuPy, mirroring CollatorActor.copy_h2d."""
+        dst_ptr = dst.__array_interface__["data"][0]
+        src_ptr = src.data_ptr()
+        cudart.memcpyAsync(
+            dst_ptr, src_ptr, src.nelement() * src.element_size(),
+            cudart.memcpyDeviceToHost, int(self._cp_d2h_stream.ptr),
+        )
+
     def _save_inference_outputs(self, data_sample: dict, preds: dict) -> None:
         """
         Prepare data sample for saving
@@ -1229,30 +1234,60 @@ class InferencerWorker:
             sample_metainfo["targets"] = targets
             data_sample["targets"] = targets
 
-        for output_name in self.outputs_metadata["save_tensors"]:
-            if output_name in preds.keys():
-                output_tensor = preds[output_name]
-            elif output_name in data_sample.keys():
-                output_tensor = data_sample[output_name]
-            else:
-                raise ValueError(f"Tensor {output_name} not found in preds or data_sample")
-            
-            if output_tensor is None:
-                continue
+        should_visualize = self._should_visualize(data_sample, preds)
+        t0 = time.perf_counter()
+        with torch.cuda.stream(self._d2h_stream):
+            for output_name in self.outputs_metadata["save_tensors"]:
+                if output_name in preds.keys():
+                    output_tensor = preds[output_name]
+                elif output_name in data_sample.keys():
+                    output_tensor = data_sample[output_name]
+                else:
+                    raise ValueError(f"Tensor {output_name} not found in preds or data_sample")
 
-            save_buffer = self.buffer_manager.get_buffer(f"{output_name}_save")
-            if self.block_on_save:
-                slot_info = ray.get(save_buffer.get_free.remote())
-                if slot_info is None:
-                    raise RuntimeError(f"No free slot found for {output_name}")
-            else:
-                slot_info = ray.get(save_buffer.try_get_free.remote())
+                if output_tensor is None:
+                    continue
 
-            if slot_info is not None:
-                dest_array = slot_info_to_view(slot_info)
-                dest_array[:] = preds[output_name].cpu().numpy()
-                save_outputs[output_name] = slot_info
-        
+                save_buffer = self.buffer_manager.get_buffer(f"{output_name}_save")
+                if self.block_on_save:
+                    slot_info = ray.get(save_buffer.get_free.remote())
+                    if slot_info is None:
+                        raise RuntimeError(f"No free slot found for {output_name}")
+                else:
+                    slot_info = ray.get(save_buffer.try_get_free.remote())
+
+                if slot_info is not None:
+                    dest_array = self.buffer_manager.slot_info_to_view(slot_info)
+                    self._copy_d2h(dst=dest_array, src=output_tensor)
+                    save_outputs[output_name] = slot_info
+
+            if should_visualize:
+                for output_name in self.outputs_metadata["visualize_tensors"]:
+                    if output_name in preds.keys():
+                        output_tensor = preds[output_name]
+                    elif output_name in data_sample.keys():
+                        output_tensor = data_sample[output_name]
+                    else:
+                        raise ValueError(f"Output {output_name} not found in preds or data_sample")
+
+                    if output_tensor is None:
+                        continue
+
+                    viz_buffer = self.buffer_manager.get_buffer(f"{output_name}_viz")
+                    if self.block_on_viz:
+                        slot_info = ray.get(viz_buffer.get_free.remote())
+                        if slot_info is None:
+                            raise RuntimeError(f"No free slot found for {output_name}")
+                    else:
+                        slot_info = ray.get(viz_buffer.try_get_free.remote())
+
+                    if slot_info is not None:
+                        dest_array = self.buffer_manager.slot_info_to_view(slot_info)
+                        self._copy_d2h(dst=dest_array, src=output_tensor)
+                        viz_outputs[output_name] = slot_info
+
+        self._cp_d2h_stream.synchronize()
+        self._metrics["transfer_time_ms"].append((time.perf_counter() - t0) * 1000)
         if self.save_outputs:
             if self.save_worker is None:
                 raise RuntimeError("Attempting to save outputs but save_worker is None")
@@ -1262,35 +1297,7 @@ class InferencerWorker:
                 save_dir=self.inference_save_dir,
             )
 
-        should_visualize = self._should_visualize(data_sample, preds)
-        if not should_visualize:
-            return
-
-        for output_name in self.outputs_metadata["visualize_tensors"]:
-            if output_name in preds.keys():
-                output_tensor = preds[output_name]
-            elif output_name in data_sample.keys():
-                output_tensor = data_sample[output_name]
-            else:
-                raise ValueError(f"Output {output_name} not found in preds or data_sample")
-            
-            if output_tensor is None:
-                continue
-            
-            viz_buffer = self.buffer_manager.get_buffer(f"{output_name}_viz")
-            if self.block_on_viz:
-                slot_info = ray.get(viz_buffer.get_free.remote())
-                if slot_info is None:
-                    raise RuntimeError(f"No free slot found for {output_name}")
-            else:
-                slot_info = ray.get(viz_buffer.try_get_free.remote())
-
-            if slot_info is not None:
-                dest_array = slot_info_to_view(slot_info)
-                dest_array[:] = output_tensor.cpu().numpy()
-                viz_outputs[output_name] = slot_info
-
-        if self.vizualize_outputs:
+        if should_visualize and self.vizualize_outputs:
             if self.viz_worker is None:
                 raise RuntimeError("Attempting to visualize outputs but viz_worker is None")
             self.viz_worker.visualize.remote(
@@ -1305,7 +1312,10 @@ class InferencerWorker:
         """
         buffer_metrics = self.buffer_manager.get_metrics()
         self.buffer_manager.clear_metrics()
-        metrics = {}
+        metrics = {
+            "avg_predict_time_ms": sum(self._metrics["predict_time_ms"])/len(self._metrics["predict_time_ms"]),
+            "avg_d2h_transfer_time_ms": sum(self._metrics["transfer_time_ms"])/len(self._metrics["transfer_time_ms"]),
+        }
         for pool_name, pool_metrics in buffer_metrics.items():
             metrics[f"{pool_name}_avg_get_free_wait_time_s"] = pool_metrics["get_free_wait_time_s"] / pool_metrics["get_free_count"]
             metrics[f"{pool_name}_avg_put_free_wait_time_s"] = pool_metrics["put_free_wait_time_s"] / pool_metrics["put_free_count"]
