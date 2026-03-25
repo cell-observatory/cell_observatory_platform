@@ -170,3 +170,6 @@ src/LV_auto_batch.bat_predict_rois
 pytests/
 .specstory/
 .cursorignore
+scripts/db/sandbox/
+scripts/db/*.tar.gz
+scripts/db/*.tar.zst
