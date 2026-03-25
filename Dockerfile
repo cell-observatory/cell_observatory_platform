@@ -70,6 +70,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   software-properties-common \
   postgresql-client \
   rsync \
+  zstd \
+  pigz \
   && rm -rf /var/lib/apt/lists/*
 
 
