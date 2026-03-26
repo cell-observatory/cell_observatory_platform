@@ -15,34 +15,48 @@ def input_format_to_output_format(
     input_format: Literal["TZYXC", "ZYXC"],
     task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
 ) -> Dict[str, Literal["TZYXC", "ZYXC", "TN6", "N6", "TN", "N"]]:
+    """
+    Convert input format to output format.
+
+    Here, semantically:
+    - T is time
+    - Z is depth
+    - Y is height
+    - X is width
+    - C is channels
+    - N is number of objects / queries
+    - M is number of classes
+
+    """
+
     output_format = {}
     if task == "instance_segmentation":
         if input_format == "TZYXC":
             output_format["masks"] = "TZYXC"
             output_format["scores"] = "TN"
-            output_format["labels"] = "TN"
+            output_format["labels"] = "TNM"
             output_format["boxes"] = "TN6"
         elif input_format == "ZYXC":
             output_format["masks"] = "ZYXC"
             output_format["scores"] = "N"
-            output_format["labels"] = "N"
+            output_format["labels"] = "NM"
             output_format["boxes"] = "N6"
         else:
             raise ValueError(f"Unknown input format: {input_format}")
     elif task == "semantic_segmentation":
         if input_format == "TZYXC":
             output_format["masks"] = "TZYXC"
-            output_format["labels"] = "TN"
+            output_format["labels"] = "TNM"
         else:
             raise ValueError(f"Unknown input format: {input_format}")
     elif task == "detection":
         if input_format == "TZYXC":
             output_format["scores"] = "TN"
-            output_format["labels"] = "TN"
+            output_format["labels"] = "TNM"
             output_format["boxes"] = "TN6"
         elif input_format == "ZYXC":
             output_format["scores"] = "N"
-            output_format["labels"] = "N"
+            output_format["labels"] = "NM"
             output_format["boxes"] = "N6"
         else:
             raise ValueError(f"Unknown input format: {input_format}")
@@ -97,8 +111,6 @@ def save_predictions(
                     task=task,
                     input_format=output_format,
                     save_mode=save_mode,
-                    chunk_shape=chunk_shape,
-                    shard_cube_shape=shard_cube_shape,
                 )
             elif name == "boxes":
                 save_boxes(
@@ -108,8 +120,6 @@ def save_predictions(
                     task=task,
                     input_format=output_format,
                     save_mode=save_mode,
-                    chunk_shape=chunk_shape,
-                    shard_cube_shape=shard_cube_shape,
                 )
         except Exception as e:
             ray.logger.error(f"Failed to save {name}: {e}")
@@ -151,8 +161,9 @@ class SaveWorker:
             max_workers=max_workers,
             thread_name_prefix=f"save_worker_rank_{buffer_manager.global_rank}"
         )
-        self._save_metrics = {
+        self._metrics = {
             "save_time_ms": 0.0,
+            "save_calls": 0,
             "save_successes": 0,
             "save_failures": 0,
         }
@@ -160,11 +171,12 @@ class SaveWorker:
         self.chunk_shape = chunk_shape
     
     def get_metrics(self) -> Dict[str, Any]:
-        return self._save_metrics.copy()
+        return self._metrics.copy()
 
     def clear_metrics(self) -> None:
-        self._save_metrics = {
+        self._metrics = {
             "save_time_ms": 0.0,
+            "save_calls": 0,
             "save_successes": 0,
             "save_failures": 0,
         }
@@ -219,60 +231,61 @@ class SaveWorker:
             for future in as_completed(batch_futures):
                 try:
                     future.result()
-                    self._save_metrics["save_successes"] += 1
+                    self._metrics["save_successes"] += 1
                 except Exception as e:
                     ray.logger.error(f"Failed to save batch element: {e}", exc_info=True)
-                    self._save_metrics["save_failures"] += 1
+                    self._metrics["save_failures"] += 1
                     continue
-            self._save_metrics["save_time_ms"] += (time.perf_counter() - t0) * 1000
         except Exception as e:
             ray.logger.error(f"Failed to save: {e}", exc_info=True)
         finally:
+            self._metrics["save_time_ms"] += (time.perf_counter() - t0) * 1000
+            self._metrics["save_calls"] += 1
             for slot_info in slots_to_free:
                 self.buffer_manager.free_slot(slot_info)
 
+# TODO: Consider using this retry logic
+# def submit_with_state(executor: ThreadPoolExecutor, fn: Callable, arg: Any, attempt: int, future_state: Dict[Future, Dict[str, Any]]):
+#     fut = executor.submit(fn, arg)
+#     future_state[fut] = {
+#         "fn": fn,
+#         "arg": arg,
+#         "attempt": attempt,
+#     }
+#     return fut
 
-def submit_with_state(executor: ThreadPoolExecutor, fn: Callable, arg: Any, attempt: int, future_state: Dict[Future, Dict[str, Any]]):
-    fut = executor.submit(fn, arg)
-    future_state[fut] = {
-        "fn": fn,
-        "arg": arg,
-        "attempt": attempt,
-    }
-    return fut
+# def run_with_retries(fn: Callable, args: List[Any], thread_pool: ThreadPoolExecutor, max_retries: int = 3, backoff_base: float = 0.1):
+#     results = {}
+#     errors = {}
 
-def run_with_retries(fn: Callable, args: List[Any], thread_pool: ThreadPoolExecutor, max_retries: int = 3, backoff_base: float = 0.1):
-    results = {}
-    errors = {}
+#     with thread_pool as executor:
+#         future_state = {}
+#         for arg in args:
+#             submit_with_state(executor, fn, arg, attempt=0, future_state=future_state)
 
-    with thread_pool as executor:
-        future_state = {}
-        for arg in args:
-            submit_with_state(executor, fn, arg, attempt=0, future_state=future_state)
+#         while future_state:
+#             for fut in as_completed(list(future_state.keys())):
+#                 state = future_state.pop(fut)
+#                 arg = state["arg"]
+#                 attempt = state["attempt"]
 
-        while future_state:
-            for fut in as_completed(list(future_state.keys())):
-                state = future_state.pop(fut)
-                arg = state["arg"]
-                attempt = state["attempt"]
+#                 exc = fut.exception()
+#                 if exc is None:
+#                     results[arg] = fut.result()
+#                     continue
 
-                exc = fut.exception()
-                if exc is None:
-                    results[arg] = fut.result()
-                    continue
+#                 if attempt < max_retries:
+#                     delay = backoff_base * (2 ** attempt)
+#                     time.sleep(delay)
+#                     submit_with_state(
+#                         executor,
+#                         state["fn"],
+#                         arg,
+#                         attempt=attempt + 1,
+#                         future_state=future_state,
+#                     )
+#                 else:
+#                     errors[arg] = exc
 
-                if attempt < max_retries:
-                    delay = backoff_base * (2 ** attempt)
-                    time.sleep(delay)
-                    submit_with_state(
-                        executor,
-                        state["fn"],
-                        arg,
-                        attempt=attempt + 1,
-                        future_state=future_state,
-                    )
-                else:
-                    errors[arg] = exc
-
-    return results, errors
+#     return results, errors
 
