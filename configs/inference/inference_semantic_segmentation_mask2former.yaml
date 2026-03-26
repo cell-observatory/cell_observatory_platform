@@ -34,7 +34,7 @@ memory:
     save: 0.7
     viz: 0.1
 
-# "create" = write to pred_{roi}_{tile}.zarr; "append_channel" = extend existing zarr at server_folder/output_folder/tile_name
+# "create" = write to pred_{roi}_{tile}.zarr; "overwrite" = overwrite label array in labels group
 save_mode: "create"
 
 # plotting parameters
@@ -48,13 +48,13 @@ pmax: 99.0
 
 # TIFF OPTION:
 # save_format: "tiff"
-# zarr_chunk_shape: null
-# zarr_shard_shape: null
+# zarr_chunk_spatial_shape: null
+# zarr_shard_spatial_shape: null
 
 # ZARR OPTION:
 save_format: "zarr"
-zarr_chunk_shape: [32, 32, 32]
-zarr_shard_shape: [128, 128, 128]
+zarr_chunk_spatial_shape: [32, 32, 32]
+zarr_shard_spatial_shape: [128, 128, 128]
 
 outputs_metadata:
   predictions:

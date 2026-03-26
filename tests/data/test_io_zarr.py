@@ -40,8 +40,8 @@ from cell_observatory_platform.data.io import (
 # Helpers & fixtures
 # ---------------------------------------------------------------------------
 
-SHARD_CUBE = (4, 4, 4)
-CHUNK_SHAPE = (2, 2, 2)
+SHARD_SPATIAL_SHAPE = (4, 4, 4)
+CHUNK_SPATIAL_SHAPE = (2, 2, 2)
 SPATIAL = (8, 16, 16)  # Z, Y, X
 ZARR_DRIVER = "zarr3"
 DTYPE = "uint16"
@@ -129,8 +129,8 @@ class TestSpecConstruction:
             zarr_version=ZARR_DRIVER,
             path="/p.zarr",
             input_format=input_format,
-            shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
             dtype=DTYPE,
         )
         assert tuple(spec["metadata"]["shape"]) == tuple(data.shape)
@@ -150,8 +150,8 @@ class TestSaveAndReadZarrData:
         save_zarr_data(
             image_path=zarr_path,
             data=data,
-            shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
             input_format=input_format,
             zarr_driver=ZARR_DRIVER,
             dtype=DTYPE,
@@ -168,8 +168,8 @@ class TestSaveAndReadZarrData:
         save_zarr_data(
             image_path=zarr_path,
             data=data,
-            shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
             input_format=input_format,
             zarr_driver=ZARR_DRIVER,
             dtype=DTYPE,
@@ -179,8 +179,8 @@ class TestSaveAndReadZarrData:
             save_zarr_data(
                 image_path=zarr_path,
                 data=data,
-                shard_cube_shape=SHARD_CUBE,
-                chunk_shape=CHUNK_SHAPE,
+                shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+                chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
                 input_format=input_format,
                 zarr_driver=ZARR_DRIVER,
                 dtype=DTYPE,
@@ -196,8 +196,8 @@ class TestUpdateZarrAppend:
         save_zarr_data(
             image_path=zarr_path,
             data=data,
-            shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
             input_format=input_format,
             zarr_driver=ZARR_DRIVER,
             dtype=DTYPE,
@@ -332,8 +332,8 @@ class TestUpdateZarrOverwrite:
         save_zarr_data(
             image_path=zarr_path,
             data=data,
-            shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
             input_format=input_format,
             zarr_driver=ZARR_DRIVER,
             dtype=DTYPE,
@@ -429,8 +429,8 @@ class TestUpdateZarrOverwrite:
         zarr_path = str(tmp_path / "img.zarr")
         data = _make_data(input_format, n_channels=2, n_timepoints=n_t)
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         mask_all = _make_mask(input_format, n_channels=1, n_timepoints=n_t)
@@ -536,8 +536,8 @@ class TestLabelExists:
         data = _make_data(input_format)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         assert label_exists(zarr_path, "mymodel", "semantic_masks", ZARR_DRIVER) is False
@@ -547,16 +547,16 @@ class TestLabelExists:
         data = _make_data(input_format)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         mask = _make_mask(input_format, n_channels=1)
         save_zarr_labels(
             image_path=zarr_path, data=mask, source_name="mymodel",
             label_name="semantic_masks", input_format=input_format,
-            save_mode="create", shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         assert label_exists(zarr_path, "mymodel", "semantic_masks", ZARR_DRIVER) is True
 
@@ -571,8 +571,8 @@ class TestSaveZarrLabels:
         data = _make_data(input_format)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
@@ -580,8 +580,8 @@ class TestSaveZarrLabels:
         save_zarr_labels(
             image_path=zarr_path, data=mask, source_name="modelA",
             label_name="instance_masks", input_format=input_format,
-            save_mode="create", shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         stored = _read_label(zarr_path, "modelA", "instance_masks")
@@ -592,8 +592,8 @@ class TestSaveZarrLabels:
         data = _make_data(input_format)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
@@ -601,16 +601,16 @@ class TestSaveZarrLabels:
         save_zarr_labels(
             image_path=zarr_path, data=mask, source_name="modelA",
             label_name="instance_masks", input_format=input_format,
-            save_mode="create", shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         with pytest.raises(ValueError, match="already exists"):
             save_zarr_labels(
                 image_path=zarr_path, data=mask, source_name="modelA",
                 label_name="instance_masks", input_format=input_format,
-                save_mode="create", shard_cube_shape=SHARD_CUBE,
-                chunk_shape=CHUNK_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+                save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+                chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             )
 
     @FORMAT_PARAMS
@@ -618,8 +618,8 @@ class TestSaveZarrLabels:
         data = _make_data(input_format)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
@@ -627,8 +627,8 @@ class TestSaveZarrLabels:
         save_zarr_labels(
             image_path=zarr_path, data=mask1, source_name="modelA",
             label_name="semantic_masks", input_format=input_format,
-            save_mode="create", shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         mask2 = (_make_mask(input_format, n_channels=1) + 7).astype(np.uint16)
@@ -646,8 +646,8 @@ class TestSaveZarrLabels:
         data = _make_data(input_format)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
@@ -668,8 +668,8 @@ class TestSaveZarrLabels:
         data = _make_data(input_format, n_channels=2, n_timepoints=n_t)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
@@ -677,8 +677,8 @@ class TestSaveZarrLabels:
         save_zarr_labels(
             image_path=zarr_path, data=mask_all, source_name="modelA",
             label_name="instance_masks", input_format=input_format,
-            save_mode="create", shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         subset_t = [1, 3]
@@ -699,8 +699,8 @@ class TestSaveZarrLabels:
         zarr_path = str(tmp_path / "img.zarr")
         data = _make_data("TZYXC")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format="TZYXC",
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format="TZYXC",
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         mask = _make_mask("TZYXC", n_channels=1)
@@ -708,16 +708,16 @@ class TestSaveZarrLabels:
             save_zarr_labels(
                 image_path=zarr_path, data=mask, source_name="bad/name",
                 label_name="masks", input_format="TZYXC",
-                save_mode="create", shard_cube_shape=SHARD_CUBE,
-                chunk_shape=CHUNK_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+                save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+                chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             )
 
     def test_invalid_label_name_raises(self, tmp_path):
         zarr_path = str(tmp_path / "img.zarr")
         data = _make_data("TZYXC")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format="TZYXC",
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format="TZYXC",
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         mask = _make_mask("TZYXC", n_channels=1)
@@ -725,8 +725,8 @@ class TestSaveZarrLabels:
             save_zarr_labels(
                 image_path=zarr_path, data=mask, source_name="modelA",
                 label_name="bad/label", input_format="TZYXC",
-                save_mode="create", shard_cube_shape=SHARD_CUBE,
-                chunk_shape=CHUNK_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+                save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+                chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             )
 
     @FORMAT_PARAMS
@@ -735,8 +735,8 @@ class TestSaveZarrLabels:
         data = _make_data(input_format)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
@@ -746,14 +746,14 @@ class TestSaveZarrLabels:
         save_zarr_labels(
             image_path=zarr_path, data=mask_a, source_name="modelA",
             label_name="instance_masks", input_format=input_format,
-            save_mode="create", shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         save_zarr_labels(
             image_path=zarr_path, data=mask_b, source_name="modelB",
             label_name="instance_masks", input_format=input_format,
-            save_mode="create", shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         stored_a = _read_label(zarr_path, "modelA", "instance_masks")
@@ -773,8 +773,8 @@ class TestSaveMasks:
         data = _make_data(input_format, n_channels=2)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
@@ -786,7 +786,7 @@ class TestSaveMasks:
             image_path=zarr_path, masks=mask, input_format=input_format,
             task=task, model_name=model_name, save_mode="append",
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
-            shard_cube_shape=SHARD_CUBE, chunk_shape=CHUNK_SHAPE,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE, chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
         )
 
         root = _read_root(zarr_path)
@@ -802,8 +802,8 @@ class TestSaveMasks:
         data = _make_data(input_format, n_channels=2)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
@@ -812,7 +812,7 @@ class TestSaveMasks:
             image_path=zarr_path, masks=mask1, input_format=input_format,
             task="semantic_segmentation", model_name="modelX",
             save_mode="append", zarr_driver=ZARR_DRIVER, dtype=DTYPE,
-            shard_cube_shape=SHARD_CUBE, chunk_shape=CHUNK_SHAPE,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE, chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
         )
 
         mask2 = (_make_mask(input_format, n_channels=1) + 9).astype(np.uint16)
@@ -907,8 +907,8 @@ class TestDataIntegrity:
         data = _make_data(input_format, n_channels=3)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         original_data = _read_root(zarr_path).copy()
@@ -933,8 +933,8 @@ class TestDataIntegrity:
         data = _make_data(input_format, n_channels=2)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         mask = _make_mask(input_format, n_channels=2)
@@ -965,8 +965,8 @@ class TestDataIntegrity:
         data = _make_data(input_format, n_channels=2)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         original = _read_root(zarr_path).copy()
@@ -975,8 +975,8 @@ class TestDataIntegrity:
         save_zarr_labels(
             image_path=zarr_path, data=mask, source_name="modelA",
             label_name="instance_masks", input_format=input_format,
-            save_mode="create", shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         after = _read_root(zarr_path)
@@ -987,8 +987,8 @@ class TestDataIntegrity:
         data = _make_data(input_format, n_channels=2)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format=input_format,
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
@@ -1003,8 +1003,8 @@ class TestDataIntegrity:
         data = _make_data("TZYXC")
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_cube_shape=SHARD_CUBE,
-            chunk_shape=CHUNK_SHAPE, input_format="TZYXC",
+            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format="TZYXC",
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         mask = _make_mask("TZYXC", n_channels=1)

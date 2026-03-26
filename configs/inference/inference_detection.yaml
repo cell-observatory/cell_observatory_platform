@@ -40,13 +40,13 @@ pmax: 99.0
 
 # TIFF OPTION:
 # save_format: "tiff"
-# zarr_chunk_shape: null
-# zarr_shard_shape: null
+# zarr_chunk_spatial_shape: null
+# zarr_shard_spatial_shape: null
 
 # ZARR OPTION:
 save_format: "zarr"
-zarr_chunk_shape: [32, 32, 32]
-zarr_shard_shape: [128, 128, 128]
+zarr_chunk_spatial_shape: [32, 32, 32]
+zarr_shard_spatial_shape: [128, 128, 128]
 
 # --- not used for detection ---
 
