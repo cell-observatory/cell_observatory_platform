@@ -152,8 +152,15 @@ class HostMemoryBuffer:
         self._metrics["get_free_count"] += 1
         self._metrics["get_free_wait_time_s"] += t1 - t0
         self._metrics["in_use_current"] += 1
-        return {"slot": slot, "name": self.name, "slot_bytes": self.slot_bytes,
-                "batch_shape": self.batch_shape, "dtype": self.dtype, "capacity": self.cap}
+        return {
+            "slot": slot,
+            "name": self.name,
+            "actor_name": self.actor_name,
+            "slot_bytes": self.slot_bytes,
+            "batch_shape": self.batch_shape,
+            "dtype": self.dtype,
+            "capacity": self.cap,
+        }
 
     def try_get_free(self) -> Optional[Dict[str, Any]]:
         """Non-blocking get. Returns slot info dict or None if queue empty."""
@@ -169,8 +176,15 @@ class HostMemoryBuffer:
             self._metrics["try_get_free_drops"] += 1
         else:
             self._metrics["in_use_current"] += 1
-        return {"slot": slot, "name": self.name, "slot_bytes": self.slot_bytes,
-                "batch_shape": self.batch_shape, "dtype": self.dtype, "capacity": self.cap}
+        return {
+            "slot": slot,
+            "name": self.name,
+            "actor_name": self.actor_name,
+            "slot_bytes": self.slot_bytes,
+            "batch_shape": self.batch_shape,
+            "dtype": self.dtype,
+            "capacity": self.cap,
+        }
 
     async def put_free(self, slot: int):
         t0 = time.perf_counter()
@@ -208,7 +222,7 @@ def set_buffers(
     global_rank: int,
     numa_node: int,
     dtype: str,
-    batch_size: tuple,
+    batch_size: int,
     input_shape: tuple,
     buffer_type: str,
     buffer_capacity: int,
@@ -227,7 +241,7 @@ def set_buffers(
     if buffer_type == "host_memory":
         name = get_buffer_name(pool_name, numa_node, global_rank)
         namespace = f"buffers_node_{node_id}"
-        expected_batch_shape = (int(batch_size[0]), *tuple(input_shape))
+        expected_batch_shape = (int(batch_size), *tuple(input_shape))
 
         try:
             buffer: ActorHandle[HostMemoryBuffer] = ray.get_actor(name, namespace=namespace)
@@ -528,7 +542,7 @@ class BufferManager:
                 global_rank=self.global_rank,
                 numa_node=self.numa_node,
                 dtype=buffer_dtype,
-                batch_size=(batch_size,),
+                batch_size=batch_size,
                 input_shape=input_shape,
                 buffer_type=buffer_type,
                 buffer_capacity=buffer_capacity,
@@ -587,9 +601,8 @@ class BufferManager:
         """
         Convert slot info to a view of the slot.
         """
-        buffer_name = slot_info["name"]
-        pool_name = parse_buffer_name(buffer_name)["pool_name"]
-        buffer_actor = self.get_buffer(pool_name)
+        pool_name = parse_buffer_name(slot_info["actor_name"])["pool_name"]
+        self.get_buffer(pool_name)
         return slot_info_to_view(slot_info, self._buffer_shms[pool_name])
 
     def free_slot(self, slot_info: Dict[str, Any]) -> None:
@@ -597,12 +610,14 @@ class BufferManager:
         Free a slot.
         """
         try:
-            buffer_name = slot_info["name"]
-            pool_name = parse_buffer_name(buffer_name)["pool_name"]
+            pool_name = parse_buffer_name(slot_info["actor_name"])["pool_name"]
             buffer_actor = self.get_buffer(pool_name)
             buffer_actor.put_free.remote(slot_info["slot"])
         except Exception as e:
-            logger.error(f"Failed to free slot {slot_info['slot']} for pool {slot_info['name']}: {e}")            
+            logger.error(
+                f"Failed to free slot {slot_info['slot']} for pool "
+                f"{slot_info.get('actor_name', slot_info.get('name'))}: {e}"
+            )
 
     def get_metrics(self) -> Dict[str, Dict[str, float | int]]:
         """Get the metrics for the BufferManager."""
