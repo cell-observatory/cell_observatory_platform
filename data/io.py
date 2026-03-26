@@ -29,8 +29,6 @@ def save_scores(
     task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
     input_format: Literal["TN", "N"],
     save_mode: Literal["overwrite", "append"],
-    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
-    chunk_shape: Optional[Tuple[int, int, int]] = None,
     timepoint_idxs: Optional[List[int]] = None,
 ) -> None:
     raise NotImplementedError("save_instance_scores is not implemented")
@@ -40,13 +38,22 @@ def save_labels(
     model_name: str,
     labels: np.ndarray,
     task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
-    input_format: Literal["TN", "N"],
+    input_format: Literal["TNM", "NM"],
     save_mode: Literal["overwrite", "append"],
-    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
-    chunk_shape: Optional[Tuple[int, int, int]] = None,
     timepoint_idxs: Optional[List[int]] = None,
 ) -> None:
     raise NotImplementedError("save_instance_labels is not implemented")
+
+def save_boxes(
+    image_path: str,
+    model_name: str,
+    boxes: np.ndarray,
+    input_format: Literal["TN6", "N6"],
+    task: Literal["instance_segmentation", "detection"],
+    save_mode: Literal["overwrite", "append"],
+    timepoint_idxs: Optional[List[int]] = None,
+) -> None:
+    raise NotImplementedError("save_instance_boxes is not implemented")
 
 def save_masks(
     image_path: str,
@@ -120,19 +127,6 @@ def save_masks(
     except Exception as e:
         logger.error(f"Failed to save zarr labels at {image_path}/{model_name}/{label_name}: {e}")
         raise e
-
-def save_boxes(
-    image_path: str,
-    model_name: str,
-    boxes: np.ndarray,
-    input_format: Literal["TN6", "N6"],
-    task: Literal["instance_segmentation", "detection"],
-    save_mode: Literal["overwrite", "append"],
-    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
-    chunk_shape: Optional[Tuple[int, int, int]] = None,
-    timepoint_idxs: Optional[List[int]] = None,
-) -> None:
-    raise NotImplementedError("save_instance_boxes is not implemented")
 
 def read_npy(image_path: str, dtype: Optional[NUMPY_DTYPES | str] = None) -> np.ndarray:
     if isinstance(image_path, torch.Tensor):

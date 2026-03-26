@@ -947,12 +947,15 @@ class Inferencer(BaseTrainer):
             self.save_worker = SaveWorker.options(name=f"save_worker_rank_{process_rank()}").remote(
                 buffer_manager=self.buffer_manager,
                 max_workers=cfg.inference.num_save_workers,
+                save_mode=cfg.inference.save_mode,
             )
         else:
             self.save_worker = None
         if cfg.inference.vizualize_outputs:
             self.viz_worker = VizWorker.options(name=f"viz_worker_rank_{process_rank()}").remote(
-                buffer_manager=self.buffer_manager
+                buffer_manager=self.buffer_manager,
+                output_dir=cfg.inference.save_dir,
+                handler_configs=cfg.inference.viz_handler_configs,
             )
         else:
             self.viz_worker = None
@@ -960,7 +963,6 @@ class Inferencer(BaseTrainer):
         self.inferencer_worker: InferencerWorker = instantiate(
             cfg.inference, 
             model=self.model, 
-            # database=database_df,
             buffer_manager=self.buffer_manager,
             save_worker=self.save_worker,
             viz_worker=self.viz_worker,
