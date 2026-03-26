@@ -22,6 +22,7 @@ from cell_observatory_platform.inference.utils import (
     )
 import ray
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 @ray.remote(namespace="visualizer", lifetime="detached", num_cpus=0)
@@ -30,14 +31,33 @@ class VizWorker:
     Pure component that dispatches to visualization handlers based on output_type.viz.handler.
     """
 
-    def __init__(self, buffer_manager: BufferManager) -> None:
+    def __init__(
+        self, 
+        buffer_manager: BufferManager,
+        output_dir: str | Path,
+        handler_configs: Dict[str, Any],
+        max_workers: int = 4,
+    ) -> None:
         self.buffer_manager = buffer_manager
         self.global_rank = buffer_manager.global_rank
+        self.handler_configs = handler_configs
+        self.output_dir = Path(output_dir).resolve()
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self._handlers: Dict[str, Callable[..., None]] = {}
         self._register_default_handlers()
+        self.thread_pool = ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix=f"visualizer_worker_rank_{buffer_manager.global_rank}"
+        )
+        for handler_name, kwargs in self.handler_configs.items():
+            if handler_name not in self._handlers:
+                raise ValueError(
+                    f"Unknown viz.handler: {handler_name}. Registered: {list(self._handlers.keys())}"
+                )
+
         self._metrics: Dict[str, float | int] = {
-            "visualize_count": 0.0,
-            "visualize_wait_time_s": 0.0,
+            "visualize_time_ms": 0.0,
+            "visualize_calls": 0.0,
             "visualize_successes": 0.0,
             "visualize_failures": 0.0,
         }
@@ -56,11 +76,17 @@ class VizWorker:
         save_dir: str,
         **kwargs: Any,
     ) -> None:
+        base_sample_name = self._get_base_sample_name(inference_outputs)
+        targets = inference_outputs.pop("targets")
+        targets_unpacked = unpack_batched_tensors(targets)
+        data_tensor = inference_outputs.pop("data_tensor")
+        data_tensor_unpacked = list(data_tensor.unbind(0))
+        unpacked_inference_outputs = unpack_batched_tensors(inference_outputs, skip_keys={"metainfo"})
 
         save_semantic_predictions(
-            name=inference_outputs["name"],
-            pred_semantic=inference_outputs["semantic_masks"].unsqueeze(1),
-            images=inference_outputs["data_tensor"].unsqueeze(1),
+            name=base_sample_name,
+            preds=unpacked_inference_outputs,
+            images=data_tensor_unpacked,
             save_dir=save_dir,
             **kwargs,
         )
@@ -97,8 +123,10 @@ class VizWorker:
         save_dir: str,
         **kwargs: Any,
     ) -> None:
+        base_sample_name = self._get_base_sample_name(inference_outputs)
         save_predictions(
-            predictions=inference_outputs["predictions"],
+            name=base_sample_name,
+            predictions=inference_outputs,
             save_dir=save_dir,
             **kwargs,
         )
@@ -110,9 +138,10 @@ class VizWorker:
         **kwargs: Dict[str, Any],
     ) -> None:
 
+        base_sample_name = self._get_base_sample_name(inference_outputs)
         save_feature_visualizations(
-            name=str(name),
-            predictions=inference_outputs["predictions"],
+            name=base_sample_name,
+            predictions=inference_outputs,
             save_dir=save_dir,
             **kwargs,
         )
@@ -141,6 +170,15 @@ class VizWorker:
             **{k: v for k, v in context.items() if k in ("z_step", "pmin", "pmax")},
         )
 
+
+    def _get_base_sample_name(self, inference_outputs: dict[str, Any]) -> str:
+        try:
+            base = str(inference_outputs["metainfo"]["output_folder"])
+        except KeyError:
+            base = f"inference_roi{inference_outputs.get('metainfo', {}).get('id', 'unknown')}"
+        base_sample_name = base.replace("/", "_") + "_" + inference_outputs["metainfo"]["tile_name"]
+        base_sample_name = base_sample_name.replace(".zarr", "").replace(".tiff", "")
+        return base_sample_name
 
     def _prepare_regions_and_identifiers(self, metadata: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[str]]:
         B = len(metadata["prepared_id"])
@@ -190,8 +228,8 @@ class VizWorker:
 
     def clear_metrics(self) -> None:
         self._metrics = {
-            "visualize_count": 0.0,
-            "visualize_wait_time_s": 0.0,
+            "visualize_time_ms": 0.0,
+            "visualize_calls": 0.0,
             "visualize_successes": 0.0,
             "visualize_failures": 0.0,
         }
@@ -199,8 +237,6 @@ class VizWorker:
     def visualize(
         self,
         inference_outputs: Dict[str, Any],
-        save_dir: str,
-        handler_configs: Dict[str, Any],
     ) -> None:
         """
         Dispatch to the appropriate handler based on output_type.viz.handler.
@@ -216,24 +252,29 @@ class VizWorker:
                 output_array = self.buffer_manager.slot_info_to_view(slot_info)
                 inference_outputs[name] = output_array
                 slots_to_free.append(slot_info)
-
-            for handler_name, kwargs in handler_configs.items():
-                if handler_name not in self._handlers:
-                    raise ValueError(
-                        f"Unknown viz.handler: {handler_name}. Registered: {list(self._handlers.keys())}"
+            futures = []
+            for handler_name, kwargs in self.handler_configs.items():
+                futures.append(
+                    self.thread_pool.submit(
+                        self._handlers[handler_name],
+                        inference_outputs=inference_outputs,
+                        save_dir=self.output_dir,
+                        **kwargs,
                     )
-                self._handlers[handler_name](
-                    inference_outputs=inference_outputs,
-                    save_dir=save_dir,
-                    **kwargs,
                 )
-            end_time = time.perf_counter()
-            self._metrics["visualize_wait_time_s"] = end_time - start_time
-            self._metrics["visualize_successes"] += 1
+
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                    self._metrics["visualize_successes"] += 1
+                except Exception as e:
+                    ray.logger.error(f"Failed to execute viz handler: {e}", exc_info=True)
+                    self._metrics["visualize_failures"] += 1
+                    continue
         except Exception as e:
                 ray.logger.error(f"Failed to visualize: {e}", exc_info=True)
-                self._metrics["visualize_failures"] += 1
         finally:
-            self._metrics["visualize_count"] += 1
+            self._metrics["visualize_time_ms"] += (time.perf_counter() - start_time) * 1000
+            self._metrics["visualize_calls"] += 1
             for slot_info in slots_to_free:
                 self.buffer_manager.free_slot(slot_info)
