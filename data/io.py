@@ -605,12 +605,12 @@ def update_zarr_data(
     image_path: str,
     data: np.ndarray,
     input_format: Literal["TZYXC", "ZYXC"],
+    data_channel_idxs: List[int],
+    mask_channel_idxs: Optional[List[int]] = None,
+    timepoint_idxs: Optional[List[int]] = None,
+    mode: Literal["append", "overwrite"] = "append",
     zarr_driver: str = "zarr3",
     dtype: str = "uint16",
-    timepoint_idxs: Optional[List[int]] = None,
-    data_channel_idxs: Optional[List[int]] = None,
-    mask_channel_idxs: Optional[List[int]] = None,
-    mode: Literal["append", "overwrite"] = "append",
 ) -> None:
     """Append or overwrite data in an existing zarr array.
 
@@ -663,6 +663,7 @@ def update_zarr_data(
         n_new = data.shape[channel_dim]
         start_c = old_channel_count
         end_c = old_channel_count + n_new
+        assert start_c > max(data_channel_idxs), f"Attempting to overwrite data channels: {start_c=} <= {max(data_channel_idxs)=}."
         with ts.Transaction() as txn:
             txn_store = ds.with_transaction(txn)
             txn_store.resize(exclusive_max=tuple(new_shape), expand_only=True).result()
