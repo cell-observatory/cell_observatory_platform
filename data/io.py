@@ -562,8 +562,8 @@ def save_zarr_annotations(
 def save_zarr_data(
     image_path: str,
     data: np.ndarray,
-    shard_cube_shape: Tuple[int, int, int],
-    chunk_shape: Tuple[int, int, int],
+    shard_spatial_shape: Tuple[int, int, int],
+    chunk_spatial_shape: Tuple[int, int, int],
     input_format: str,
     zarr_driver: str = "zarr3",
     dtype: str = "uint16",
@@ -578,8 +578,8 @@ def save_zarr_data(
         zarr_version=zarr_driver,
         path=image_path,
         input_format=input_format,
-        shard_cube_shape=shard_cube_shape,
-        chunk_shape=chunk_shape,
+        shard_spatial_shape=shard_spatial_shape,
+        chunk_spatial_shape=chunk_spatial_shape,
         dtype=dtype,
     )
 
