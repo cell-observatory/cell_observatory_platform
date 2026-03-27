@@ -39,25 +39,33 @@ def tile_hash(tile_name: str) -> int:
 
 
 def unpack_batched_tensors(
-    tensors: Dict[str, Tensor],
+    tensors: Dict[str, Tensor | ArrayLike],
     skip_keys: Optional[set[str]] = None,
-) -> List[Dict[str, Tensor]]:
+) -> List[Dict[str, Tensor | ArrayLike]]:
     """
-    Unpack batch dimension of a dictionary of tensors: 
+    Unpack batch dimension of a dictionary of torch tensors or numpy arrays: 
     Dict[str, Tensor BZYX] -> List[Dict[str, Tensor ZYX]] with len B.
-
-    Uses unbind(0) (no copy) and zip. Entries whose values have no .unbind are skipped.
+    Non-tensor/non-array entries are skipped.
+    Uses unbind(0) or np.split(0) (both no copy) and zip.
+    Returns a list of dictionaries, one for each batch element.
     """
     skip_keys = skip_keys or set()
     tensor_items = [
         (k, v)
         for k, v in tensors.items()
-        if k not in skip_keys and getattr(v, "unbind", None) is not None
+        if k not in skip_keys and (
+            isinstance(v, torch.Tensor) 
+            or isinstance(v, np.ndarray)
+        )
     ]
     if not tensor_items:
         return []
     keys = [k for k, _ in tensor_items]
-    unbound = [t.unbind(0) for _, t in tensor_items]
+    unbound = [
+        t.unbind(0) if isinstance(t, torch.Tensor) 
+        else np.split(t, t.shape[0], axis=0)
+        for _, t in tensor_items
+    ]
     return [dict(zip(keys, batch_slice)) for batch_slice in zip(*unbound)]
 
 def _normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
@@ -328,8 +336,8 @@ def _save_zarr_volume(
     axes: Literal["TCZYX", "CZYX"],
     save_dir: Path,
     name: str,
-    zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
-    zarr_shard_shape: Optional[Tuple[int, ...]] = None,
+    zarr_chunk_spatial_shape: Optional[Tuple[int, ...]] = None,
+    zarr_shard_spatial_shape: Optional[Tuple[int, ...]] = None,
 ):
     """
     Save as Zarr, also standardized to TCZYX or CZYX.
@@ -343,8 +351,8 @@ def _save_zarr_volume(
     save_file(
         save_path,
         arr,
-        chunk_shape=zarr_chunk_shape,
-        shard_cube_shape=zarr_shard_shape,
+        chunk_spatial_shape=zarr_chunk_spatial_shape,
+        shard_spatial_shape=zarr_shard_spatial_shape,
         input_format=axes,  # axes string encodes layout
         dtype="float16",
     )
@@ -666,6 +674,7 @@ def save_feature_visualizations(
 def save_predictions(
     name: str,
     predictions: ArrayLike | dict[str, ArrayLike],
+    save_tensors: List[str],
     save_dir: Path | str,
     save_as_volume: bool,
     save_as_pdf: bool,
@@ -673,8 +682,8 @@ def save_predictions(
     filetype: Literal["tiff", "zarr"],
     pmin: float = 1.0,
     pmax: float = 99.0,
-    zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
-    zarr_shard_shape: Optional[Tuple[int, ...]] = None,
+    zarr_chunk_spatial_shape: Optional[Tuple[int, ...]] = None,
+    zarr_shard_spatial_shape: Optional[Tuple[int, ...]] = None,
 ):
     """
     Central helper for saving predictions.
@@ -700,7 +709,8 @@ def save_predictions(
         arr_map: dict[str, np.ndarray] = {}
         axes_map: dict[str, str] = {}
 
-        for key, arr in predictions.items():
+        for key in save_tensors:
+            arr = predictions[key]
             arr_tzyxc = _ensure_numpy_tzyxc(arr)
             arr_tc_or_czyx, axes = _tzyxc_to_tczyx_or_czyx(arr_tzyxc)
             arr_map[key] = arr_tc_or_czyx
@@ -732,8 +742,8 @@ def save_predictions(
                         axes=axes,
                         save_dir=save_dir,
                         name=subname,
-                        zarr_chunk_shape=zarr_chunk_shape,
-                        zarr_shard_shape=zarr_shard_shape,
+                        zarr_chunk_spatial_shape=zarr_chunk_spatial_shape,
+                        zarr_shard_spatial_shape=zarr_shard_spatial_shape,
                     )
                 else:
                     raise ValueError(f"Unsupported save format: {filetype!r}")
@@ -759,8 +769,8 @@ def save_predictions(
                 axes=axes,
                 save_dir=save_dir,
                 name=name,
-                zarr_chunk_shape=zarr_chunk_shape,
-                zarr_shard_shape=zarr_shard_shape,
+                zarr_chunk_spatial_shape=zarr_chunk_spatial_shape,
+                zarr_shard_spatial_shape=zarr_shard_spatial_shape,
             )
         else:
             raise ValueError(f"Unsupported save format: {filetype!r}")
@@ -1390,8 +1400,8 @@ def save_semantic_predictions(
     z_step_pdf: int,
     filetype: Literal["tiff", "zarr"],
     targets: Sequence[Dict[str, ArrayLike]] | None = None,
-    zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
-    zarr_shard_shape: Optional[Tuple[int, ...]] = None,
+    zarr_chunk_spatial_shape: Optional[Tuple[int, ...]] = None,
+    zarr_shard_spatial_shape: Optional[Tuple[int, ...]] = None,
     pmin: float = 1.0,
     pmax: float = 99.0,
     mip_depth: int = 20,
@@ -1418,8 +1428,8 @@ def save_semantic_predictions(
         filetype: Volume file format ("tiff" or "zarr")
         targets: List of target dicts (one per batch element)
         data_sample: Data sample dict for extracting GT and auxiliary outputs
-        zarr_chunk_shape: Chunk shape for Zarr files
-        zarr_shard_shape: Shard shape for Zarr files
+        zarr_chunk_spatial_shape: Chunk shape for Zarr files
+        zarr_shard_spatial_shape: Shard shape for Zarr files
         pmin: Percentile for normalization (lower bound)
         pmax: Percentile for normalization (upper bound)
         mip_depth: Depth for max-intensity projection
@@ -1459,8 +1469,8 @@ def save_semantic_predictions(
                 filetype=filetype,
                 pmin=pmin,
                 pmax=pmax,
-                zarr_chunk_shape=zarr_chunk_shape,
-                zarr_shard_shape=zarr_shard_shape,
+                zarr_chunk_spatial_shape=zarr_chunk_spatial_shape,
+                zarr_shard_spatial_shape=zarr_shard_spatial_shape,
             )
         
         # Save semantic visualization PDF if requested (pred_np is already probabilities from reducer)
