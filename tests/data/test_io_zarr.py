@@ -9,7 +9,7 @@ Tests cover the full zarr IO lifecycle:
   - Creating label arrays under <source>/<label> groups (save_zarr_labels)
   - Overwriting label arrays (save_zarr_labels mode="overwrite")
   - High-level save_masks orchestration
-  - Existence checks (label_exists)
+  - Existence checks (annotation_exists)
   - Shape normalization helpers (normalize_data_shape, normalize_idxs)
 
 All spatial tests are parameterized for both ZYXC (3D+C) and TZYXC (4D+C) layouts.
@@ -26,13 +26,13 @@ from cell_observatory_platform.data.io import (
     _make_read_zarr_spec,
     _make_write_zarr_spec,
     create_zarr_spec,
-    label_exists,
+    annotation_exists,
     normalize_data_shape,
     normalize_idxs,
     read_zarr,
     save_masks,
     save_zarr_data,
-    save_zarr_labels,
+    save_zarr_annotations,
     update_zarr_data,
 )
 
@@ -77,9 +77,9 @@ def _read_root(path: str) -> np.ndarray:
     return ds.read().result()
 
 
-def _read_label(path: str, source: str, label: str) -> np.ndarray:
+def _read_annotation(path: str, source: str, annotation: str) -> np.ndarray:
     ds = ts.open(
-        _make_read_zarr_spec(path, subpath=f"{source}/{label}", driver=ZARR_DRIVER),
+        _make_read_zarr_spec(path, subpath=f"{source}/{annotation}", driver=ZARR_DRIVER),
         read=True,
     ).result()
     return ds.read().result()
@@ -527,10 +527,10 @@ class TestUpdateZarrOverwrite:
 
 
 # ===========================================================================
-# 5. label_exists
+# 5. annotation_exists
 # ===========================================================================
 
-class TestLabelExists:
+class TestAnnotationExists:
     @FORMAT_PARAMS
     def test_returns_false_when_missing(self, tmp_path, input_format):
         data = _make_data(input_format)
@@ -540,7 +540,7 @@ class TestLabelExists:
             chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
-        assert label_exists(zarr_path, "mymodel", "semantic_masks", ZARR_DRIVER) is False
+        assert annotation_exists(zarr_path, "mymodel", "semantic_masks", ZARR_DRIVER) is False
 
     @FORMAT_PARAMS
     def test_returns_true_after_creation(self, tmp_path, input_format):
@@ -552,22 +552,22 @@ class TestLabelExists:
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         mask = _make_mask(input_format, n_channels=1)
-        save_zarr_labels(
+        save_zarr_annotations(
             image_path=zarr_path, data=mask, source_name="mymodel",
-            label_name="semantic_masks", input_format=input_format,
+            annotation_name="semantic_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
             chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
-        assert label_exists(zarr_path, "mymodel", "semantic_masks", ZARR_DRIVER) is True
+        assert annotation_exists(zarr_path, "mymodel", "semantic_masks", ZARR_DRIVER) is True
 
 
 # ===========================================================================
-# 6. save_zarr_labels — create & overwrite
+# 6. save_zarr_annotations — create & overwrite
 # ===========================================================================
 
-class TestSaveZarrLabels:
+class TestSaveZarrAnnotations:
     @FORMAT_PARAMS
-    def test_create_label_array(self, tmp_path, input_format):
+    def test_create_annotation_array(self, tmp_path, input_format):
         data = _make_data(input_format)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
@@ -577,14 +577,14 @@ class TestSaveZarrLabels:
         )
 
         mask = _make_mask(input_format, n_channels=1)
-        save_zarr_labels(
+        save_zarr_annotations(
             image_path=zarr_path, data=mask, source_name="modelA",
-            label_name="instance_masks", input_format=input_format,
+            annotation_name="instance_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
             chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
-        stored = _read_label(zarr_path, "modelA", "instance_masks")
+        stored = _read_annotation(zarr_path, "modelA", "instance_masks")
         np.testing.assert_array_equal(stored, mask.astype(np.uint16))
 
     @FORMAT_PARAMS
@@ -598,23 +598,23 @@ class TestSaveZarrLabels:
         )
 
         mask = _make_mask(input_format, n_channels=1)
-        save_zarr_labels(
+        save_zarr_annotations(
             image_path=zarr_path, data=mask, source_name="modelA",
-            label_name="instance_masks", input_format=input_format,
+            annotation_name="instance_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
             chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         with pytest.raises(ValueError, match="already exists"):
-            save_zarr_labels(
+            save_zarr_annotations(
                 image_path=zarr_path, data=mask, source_name="modelA",
-                label_name="instance_masks", input_format=input_format,
+                annotation_name="instance_masks", input_format=input_format,
                 save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
                 chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             )
 
     @FORMAT_PARAMS
-    def test_overwrite_label_array(self, tmp_path, input_format):
+    def test_overwrite_annotation_array(self, tmp_path, input_format):
         data = _make_data(input_format)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
@@ -624,21 +624,21 @@ class TestSaveZarrLabels:
         )
 
         mask1 = _make_mask(input_format, n_channels=1)
-        save_zarr_labels(
+        save_zarr_annotations(
             image_path=zarr_path, data=mask1, source_name="modelA",
-            label_name="semantic_masks", input_format=input_format,
+            annotation_name="semantic_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
             chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         mask2 = (_make_mask(input_format, n_channels=1) + 7).astype(np.uint16)
-        save_zarr_labels(
+        save_zarr_annotations(
             image_path=zarr_path, data=mask2, source_name="modelA",
-            label_name="semantic_masks", input_format=input_format,
+            annotation_name="semantic_masks", input_format=input_format,
             save_mode="overwrite", zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
-        stored = _read_label(zarr_path, "modelA", "semantic_masks")
+        stored = _read_annotation(zarr_path, "modelA", "semantic_masks")
         np.testing.assert_array_equal(stored, mask2.astype(np.uint16))
 
     @FORMAT_PARAMS
@@ -653,9 +653,9 @@ class TestSaveZarrLabels:
 
         mask = _make_mask(input_format, n_channels=1)
         with pytest.raises(ValueError, match="does not exist"):
-            save_zarr_labels(
+            save_zarr_annotations(
                 image_path=zarr_path, data=mask, source_name="modelA",
-                label_name="semantic_masks", input_format=input_format,
+                annotation_name="semantic_masks", input_format=input_format,
                 save_mode="overwrite", zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             )
 
@@ -674,23 +674,23 @@ class TestSaveZarrLabels:
         )
 
         mask_all = _make_mask(input_format, n_channels=1, n_timepoints=n_t)
-        save_zarr_labels(
+        save_zarr_annotations(
             image_path=zarr_path, data=mask_all, source_name="modelA",
-            label_name="instance_masks", input_format=input_format,
+            annotation_name="instance_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
             chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         subset_t = [1, 3]
         mask_sub = (_make_mask(input_format, n_channels=1, n_timepoints=len(subset_t)) + 42).astype(np.uint16)
-        save_zarr_labels(
+        save_zarr_annotations(
             image_path=zarr_path, data=mask_sub, source_name="modelA",
-            label_name="instance_masks", input_format=input_format,
+            annotation_name="instance_masks", input_format=input_format,
             save_mode="overwrite", timepoint_idxs=subset_t,
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
-        stored = _read_label(zarr_path, "modelA", "instance_masks")
+        stored = _read_annotation(zarr_path, "modelA", "instance_masks")
         for i, t in enumerate(subset_t):
             np.testing.assert_array_equal(stored[t], mask_sub[i].astype(np.uint16))
         np.testing.assert_array_equal(stored[0], mask_all[0].astype(np.uint16))
@@ -705,9 +705,9 @@ class TestSaveZarrLabels:
         )
         mask = _make_mask("TZYXC", n_channels=1)
         with pytest.raises(ValueError, match="Invalid source name"):
-            save_zarr_labels(
+            save_zarr_annotations(
                 image_path=zarr_path, data=mask, source_name="bad/name",
-                label_name="masks", input_format="TZYXC",
+                annotation_name="masks", input_format="TZYXC",
                 save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
                 chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             )
@@ -722,16 +722,16 @@ class TestSaveZarrLabels:
         )
         mask = _make_mask("TZYXC", n_channels=1)
         with pytest.raises(ValueError, match="Invalid label name"):
-            save_zarr_labels(
+            save_zarr_annotations(
                 image_path=zarr_path, data=mask, source_name="modelA",
-                label_name="bad/label", input_format="TZYXC",
+                annotation_name="bad/label", input_format="TZYXC",
                 save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
                 chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             )
 
     @FORMAT_PARAMS
     def test_multiple_models_independent(self, tmp_path, input_format):
-        """Two models writing to the same zarr should produce independent label arrays."""
+        """Two models writing to the same zarr should produce independent annotation arrays."""
         data = _make_data(input_format)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
@@ -743,21 +743,21 @@ class TestSaveZarrLabels:
         mask_a = _make_mask(input_format, n_channels=1)
         mask_b = (_make_mask(input_format, n_channels=1) + 3).astype(np.uint16)
 
-        save_zarr_labels(
+        save_zarr_annotations(
             image_path=zarr_path, data=mask_a, source_name="modelA",
-            label_name="instance_masks", input_format=input_format,
+            annotation_name="instance_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
             chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
-        save_zarr_labels(
+        save_zarr_annotations(
             image_path=zarr_path, data=mask_b, source_name="modelB",
-            label_name="instance_masks", input_format=input_format,
+            annotation_name="instance_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
             chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
-        stored_a = _read_label(zarr_path, "modelA", "instance_masks")
-        stored_b = _read_label(zarr_path, "modelB", "instance_masks")
+        stored_a = _read_annotation(zarr_path, "modelA", "instance_masks")
+        stored_b = _read_annotation(zarr_path, "modelB", "instance_masks")
         np.testing.assert_array_equal(stored_a, mask_a.astype(np.uint16))
         np.testing.assert_array_equal(stored_b, mask_b.astype(np.uint16))
 
@@ -768,8 +768,8 @@ class TestSaveZarrLabels:
 
 class TestSaveMasks:
     @FORMAT_PARAMS
-    @pytest.mark.parametrize("task", ["semantic_segmentation", "instance_segmentation"])
-    def test_save_masks_append_creates_root_and_label(self, tmp_path, input_format, task):
+    @pytest.mark.parametrize("annotation_name", ["semantic_masks", "instance_masks"])
+    def test_save_masks_append_creates_root_and_annotation(self, tmp_path, input_format, annotation_name):
         data = _make_data(input_format, n_channels=2)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
@@ -780,11 +780,11 @@ class TestSaveMasks:
 
         mask = _make_mask(input_format, n_channels=1)
         model_name = "my_model"
-        expected_label = "semantic_masks" if task == "semantic_segmentation" else "instance_masks"
+        expected_annotation = "semantic_masks" if annotation_name == "semantic_masks" else "instance_masks"
 
         save_masks(
             image_path=zarr_path, masks=mask, input_format=input_format,
-            task=task, model_name=model_name, save_mode="append",
+            model_name=model_name, save_mode="append",
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             shard_spatial_shape=SHARD_SPATIAL_SHAPE, chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
         )
@@ -793,12 +793,12 @@ class TestSaveMasks:
         assert root.shape[-1] == 3  # 2 data + 1 appended
         np.testing.assert_array_equal(root[..., :2], data.astype(np.uint16))
 
-        label = _read_label(zarr_path, model_name, expected_label)
-        np.testing.assert_array_equal(label, mask.astype(np.uint16))
+        annotation = _read_annotation(zarr_path, model_name, expected_annotation)
+        np.testing.assert_array_equal(annotation, mask.astype(np.uint16))
 
     @FORMAT_PARAMS
     def test_save_masks_overwrite_rerun_same_model(self, tmp_path, input_format):
-        """Re-running the same model overwrites the label array and updates root."""
+        """Re-running the same model overwrites the annotation array and updates root."""
         data = _make_data(input_format, n_channels=2)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
@@ -810,7 +810,7 @@ class TestSaveMasks:
         mask1 = _make_mask(input_format, n_channels=1)
         save_masks(
             image_path=zarr_path, masks=mask1, input_format=input_format,
-            task="semantic_segmentation", model_name="modelX",
+            model_name="modelX",
             save_mode="append", zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             shard_spatial_shape=SHARD_SPATIAL_SHAPE, chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
         )
@@ -818,7 +818,7 @@ class TestSaveMasks:
         mask2 = (_make_mask(input_format, n_channels=1) + 9).astype(np.uint16)
         save_masks(
             image_path=zarr_path, masks=mask2, input_format=input_format,
-            task="semantic_segmentation", model_name="modelX",
+            model_name="modelX",
             save_mode="overwrite", zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             data_channel_idxs=[0, 1], mask_channel_idxs=[2],
         )
@@ -829,8 +829,8 @@ class TestSaveMasks:
             err_msg="Data channels corrupted by save_masks overwrite",
         )
 
-        label = _read_label(zarr_path, "modelX", "semantic_masks")
-        np.testing.assert_array_equal(label, mask2.astype(np.uint16))
+        annotation = _read_annotation(zarr_path, "modelX", "semantic_masks")
+        np.testing.assert_array_equal(annotation, mask2.astype(np.uint16))
 
 
 # ===========================================================================
@@ -960,8 +960,8 @@ class TestDataIntegrity:
         )
 
     @FORMAT_PARAMS
-    def test_label_creation_does_not_affect_root(self, tmp_path, input_format):
-        """Creating label groups must not change the root array at all."""
+    def test_annotation_creation_does_not_affect_root(self, tmp_path, input_format):
+        """Creating annotation groups must not change the root array at all."""
         data = _make_data(input_format, n_channels=2)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
@@ -972,15 +972,15 @@ class TestDataIntegrity:
         original = _read_root(zarr_path).copy()
 
         mask = _make_mask(input_format, n_channels=1)
-        save_zarr_labels(
+        save_zarr_annotations(
             image_path=zarr_path, data=mask, source_name="modelA",
-            label_name="instance_masks", input_format=input_format,
+            annotation_name="instance_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
             chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         after = _read_root(zarr_path)
-        np.testing.assert_array_equal(after, original, err_msg="Root array corrupted by label creation")
+        np.testing.assert_array_equal(after, original, err_msg="Root array corrupted by annotation creation")
 
     @FORMAT_PARAMS
     def test_dimension_mismatch_raises(self, tmp_path, input_format):
@@ -1011,5 +1011,5 @@ class TestDataIntegrity:
         with pytest.raises(ValueError, match="Invalid mode"):
             update_zarr_data(
                 image_path=zarr_path, data=mask, input_format="TZYXC",
-                zarr_driver=ZARR_DRIVER, dtype=DTYPE, mode="bad_mode",
+                zarr_driver=ZARR_DRIVER, dtype=DTYPE, mode="overwrite",
             )
