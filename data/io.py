@@ -4,6 +4,7 @@ import logging
 import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
@@ -13,6 +14,7 @@ import polars as pl
 import tensorstore as ts
 import torch
 import ujson
+import zarr
 from skimage.io import imread, imsave
 from tifffile import TiffFile, imwrite
 
