@@ -224,11 +224,16 @@ def _make_write_zarr_spec(
     data_shape: Tuple[int, ...],
     zarr_version: str,
     path: str,
-    shard_shape: Tuple[int, int, int] | Tuple[int, int, int, int],
-    chunk_shape: Tuple[int, int, int] | Tuple[int, int, int, int],
+    chunk_shape: Tuple[int, ...],
+    shard_shape: Optional[Tuple[int, ...]] = None,
     subpath: Optional[str] = None,
     dtype: NUMPY_DTYPES | str = "uint16",
 ) -> Dict[str, Any]:
+    if len(data_shape) != len(chunk_shape):
+        raise ValueError(f"Data shape and chunk shape must have the same number of dimensions but got {len(data_shape)=} and {len(chunk_shape)=}")
+    if shard_shape is not None:
+        if len(data_shape) != len(shard_shape):
+            raise ValueError(f"Data shape and shard shape must have the same number of dimensions but got {len(data_shape)=} and {len(shard_shape)=}")
     if zarr_version == "zarr3":
         zarr_spec = {
             "driver": zarr_version,
@@ -237,38 +242,61 @@ def _make_write_zarr_spec(
             "metadata": {
                 "data_type": str(dtype),
                 "shape": data_shape,
-                "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": shard_shape}},
-                "codecs": [
-                    {
-                        "name": "sharding_indexed",
-                        "configuration": {
-                            "chunk_shape": chunk_shape,
-                            "codecs": [
-                                {"name": "bytes", "configuration": {"endian": "little"}},
-                                {
-                                    "name": "blosc",
-                                    "configuration": {
-                                        "cname": "zstd",
-                                        "clevel": 1,
-                                        "blocksize": 0,
-                                        "shuffle": "shuffle",
-                                    },
-                                },
-                            ],
-                            "index_codecs": [
-                                {"name": "bytes", "configuration": {"endian": "little"}},
-                                {"name": "crc32c"},
-                            ],
-                            "index_location": "end",
-                        },
-                    }
-                ],
                 "fill_value": 0,
             },
             "create": True,
-            "delete_existing": True,
+            "delete_existing": True,            
         }
+        if shard_shape is None: # Unsharded zarr array
+            zarr_spec["metadata"]["chunk_grid"] = {
+                "name": "regular", 
+                "configuration": {"chunk_shape": chunk_shape},
+            }
+            zarr_spec["metadata"]["codecs"] = [
+                {"name": "bytes", "configuration": {"endian": "little"}},
+                {
+                    "name": "blosc",
+                    "configuration": {
+                        "cname": "zstd",
+                        "clevel": 1,
+                        "blocksize": 0,
+                        "shuffle": "shuffle",
+                    },
+                },
+            ]
+        else: # Sharded zarr array
+            zarr_spec["metadata"]["chunk_grid"] = {
+                "name": "regular",
+                "configuration": {"chunk_shape": shard_shape},
+            }
+            zarr_spec["metadata"]["codecs"] = [
+                {
+                    "name": "sharding_indexed",
+                    "configuration": {
+                        "chunk_shape": chunk_shape,
+                        "codecs": [
+                            {"name": "bytes", "configuration": {"endian": "little"}},
+                            {
+                                "name": "blosc",
+                                "configuration": {
+                                    "cname": "zstd",
+                                    "clevel": 1,
+                                    "blocksize": 0,
+                                    "shuffle": "shuffle",
+                                },
+                            },
+                        ],
+                        "index_codecs": [
+                            {"name": "bytes", "configuration": {"endian": "little"}},
+                            {"name": "crc32c"},
+                        ],
+                        "index_location": "end",
+                    },
+                }
+            ]
     else:
+        if shard_shape is not None:
+            raise ValueError(f"Shard shape is not supported for {zarr_version=} but got {shard_shape=}")
         zarr_spec = {
             "driver": zarr_version,
             "kvstore": {"driver": "file", "path": path},
@@ -276,7 +304,7 @@ def _make_write_zarr_spec(
             "metadata": {
                 "dtype": "<u2",
                 "shape": data_shape,
-                "chunks": chunk_shape,
+                "chunks": chunk_shape if chunk_shape is not None else data_shape,
                 "compressor": {"blocksize": 0, "clevel": 1, "cname": "zstd", "id": "blosc", "shuffle": 1},
                 "fill_value": 0,
                 "order": "C",
