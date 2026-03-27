@@ -6,7 +6,7 @@ from typing import Literal, Optional, Tuple, Dict, Any, List, Callable
 
 import ray
 import numpy as np
-from cell_observatory_platform.data.io import save_masks, save_scores, save_labels, save_boxes
+from cell_observatory_platform.data.io import save_masks, save_sparse_annotations, save_annotations_metadata
 from cell_observatory_platform.data.datasets.buffers import BufferManager
 from pathlib import Path
 import os
@@ -72,57 +72,77 @@ def save_predictions(
     task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
     input_format: Literal["TZYXC", "ZYXC"],
     save_mode: Literal["overwrite", "append"],
-    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
-    chunk_shape: Optional[Tuple[int, int, int]] = None,
+    zarr_driver: str = "zarr3",
+    timepoint_idxs: Optional[List[int]] = None,
+    data_channel_idxs: Optional[List[int]] = None,
+    mask_channel_idxs: Optional[List[int]] = None,
+    shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
 ) -> None:
     preds_formats = input_format_to_output_format(input_format, task)
-    for name, output_format in preds_formats.items():
+    dtypes = preds["metainfo"]["save_tensors_dtypes"]
+    exceptions = {}
+    metadata = {
+        "task": task,
+        "mask_channel_idxs": mask_channel_idxs,
+    }
+    for output_name, output_format in preds_formats.items():
         try:
-            data = preds[name]
+            data = preds[output_name]
         except KeyError as e:
-            ray.logger.error(f"Prediction {name} not found in preds: {e}")
+            ray.logger.error(f"Prediction {output_name} not found in preds: {e}")
             continue
         try:
-            if name == "masks":
+            dtype = dtypes[output_name]
+        except KeyError as e:
+            ray.logger.error(f"Dtype for {output_name} not found in save_tensors_dtypes: {e}")
+            continue
+        try:
+            
+            if output_name == "masks":
+                assert output_format in ["TZYXC", "ZYXC"], f"Invalid output format: {output_format}"
                 save_masks(
                     image_path=image_path,
                     model_name=model_name,
                     masks=data,
                     input_format=output_format,
-                    task=task,
                     save_mode=save_mode,
-                    chunk_shape=chunk_shape,
-                    shard_cube_shape=shard_cube_shape,
+                    chunk_spatial_shape=chunk_spatial_shape,
+                    shard_spatial_shape=shard_spatial_shape,
+                    timepoint_idxs=timepoint_idxs,
+                    data_channel_idxs=data_channel_idxs,
+                    mask_channel_idxs=mask_channel_idxs,
+                    zarr_driver=zarr_driver,
+                    dtype=dtype,
                 )
-            elif name == "scores":
-                save_scores(
+            else:
+                save_sparse_annotations(
                     image_path=image_path,
                     model_name=model_name,
-                    scores=data,
-                    task=task,
+                    data=data,
+                    annotation_name=output_name,
                     input_format=output_format,
                     save_mode=save_mode,
-                )
-            elif name == "labels":
-                save_labels(
-                    image_path=image_path,
-                    model_name=model_name,
-                    labels=data,
-                    task=task,
-                    input_format=output_format,
-                    save_mode=save_mode,
-                )
-            elif name == "boxes":
-                save_boxes(
-                    image_path=image_path,
-                    model_name=model_name,
-                    boxes=data,
-                    task=task,
-                    input_format=output_format,
-                    save_mode=save_mode,
+                    timepoint_idxs=timepoint_idxs,
+                    zarr_driver=zarr_driver,
+                    dtype=dtype,
                 )
         except Exception as e:
-            ray.logger.error(f"Failed to save {name}: {e}")
+            ray.logger.error(f"Failed to save {output_name}: {e}", exc_info=True)
+            exceptions[output_name] = e
+    try:
+        save_annotations_metadata(
+            image_path=image_path,
+            model_name=model_name,
+            timepoint_idxs=timepoint_idxs,
+            metadata=metadata,
+        )
+    except Exception as e:
+        ray.logger.error(f"Failed to save metadata for {model_name} at {image_path}: {e}", exc_info=True)
+        exceptions["metadata"] = e
+    if len(exceptions) > 0:
+        raise Exception(f"Failed to save {exceptions.keys()}", list(exceptions.values()))
+
 @ray.remote(namespace="saver", lifetime="detached", num_cpus=0)
 class SaveWorker:
     """
@@ -151,8 +171,8 @@ class SaveWorker:
             "prepared_id",
             "mask_bbox_dict",
         ],
-        shard_cube_shape: Optional[Tuple[int, int, int]] = None,
-        chunk_shape: Optional[Tuple[int, int, int]] = None,
+        shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
+        chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
     ):
         self.buffer_manager = buffer_manager
         self.save_mode = save_mode
@@ -167,8 +187,8 @@ class SaveWorker:
             "save_successes": 0,
             "save_failures": 0,
         }
-        self.shard_cube_shape = shard_cube_shape
-        self.chunk_shape = chunk_shape
+        self.shard_spatial_shape = shard_spatial_shape
+        self.chunk_spatial_shape = chunk_spatial_shape
     
     def get_metrics(self) -> Dict[str, Any]:
         return self._metrics.copy()
@@ -189,18 +209,25 @@ class SaveWorker:
         slots_to_free = []
         t0 = time.perf_counter()
         try:
-            sample_metainfo = inference_outputs["metainfo"]
-            task = sample_metainfo["task"]
-            batch_size = sample_metainfo["batch_size_actual"]
+            # Do this first so that we can ensure slots get freed even
+            # if inference_outputs has incomplete metadata
             for name, slot_info in inference_outputs.items():
                 if name == "metainfo":
                     continue
                 if isinstance(slot_info, np.ndarray):
                     output_arrays[name] = slot_info
+                    ray.logger.warning(f"Inference output being passed through the ray plasma store: {name}")
                     continue
                 output_array = self.buffer_manager.slot_info_to_view(slot_info)
                 output_arrays[name] = output_array
                 slots_to_free.append(slot_info)
+            sample_metainfo = inference_outputs["metainfo"]
+            task = sample_metainfo["task"]
+            batch_size = sample_metainfo["batch_size_actual"]
+            save_tensors_dtypes = sample_metainfo["save_tensors_dtypes"]
+            data_channel_idxs = sample_metainfo["data_channel_idxs"]
+            mask_channel_idxs = sample_metainfo.get("mask_channel_idxs", None)
+            timepoint_idxs = sample_metainfo.get("timepoint_idxs", None)
 
             batch_futures: List[Future] = []
             for b in range(batch_size):
@@ -215,6 +242,9 @@ class SaveWorker:
                     raise ValueError(f"Save mode is {self.save_mode} but image path {image_path} does not exist")
                 for name, output_array in output_arrays.items():
                     preds_element[name] = output_array[b]
+                preds_element["metainfo"] = {
+                    "save_tensors_dtypes": save_tensors_dtypes,
+                }
                 
                 batch_futures.append(self.thread_pool.submit(
                     save_predictions,
@@ -224,8 +254,11 @@ class SaveWorker:
                     task=task,
                     input_format=sample_metainfo["input_format"],
                     save_mode=self.save_mode,
-                    chunk_shape=self.chunk_shape,
-                    shard_cube_shape=self.shard_cube_shape,
+                    timepoint_idxs=timepoint_idxs,
+                    data_channel_idxs=data_channel_idxs,
+                    mask_channel_idxs=mask_channel_idxs,
+                    chunk_spatial_shape=self.chunk_spatial_shape,
+                    shard_spatial_shape=self.shard_spatial_shape,
                 ))
 
             for future in as_completed(batch_futures):
@@ -239,10 +272,10 @@ class SaveWorker:
         except Exception as e:
             ray.logger.error(f"Failed to save: {e}", exc_info=True)
         finally:
-            self._metrics["save_time_ms"] += (time.perf_counter() - t0) * 1000
-            self._metrics["save_calls"] += 1
             for slot_info in slots_to_free:
                 self.buffer_manager.free_slot(slot_info)
+            self._metrics["save_time_ms"] += (time.perf_counter() - t0) * 1000
+            self._metrics["save_calls"] += 1
 
 # TODO: Consider using this retry logic
 # def submit_with_state(executor: ThreadPoolExecutor, fn: Callable, arg: Any, attempt: int, future_state: Dict[Future, Dict[str, Any]]):
