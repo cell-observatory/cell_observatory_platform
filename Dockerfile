@@ -68,12 +68,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   docbook-xsl \
   libnuma-dev \
   software-properties-common \
-  postgresql-client \
   rsync \
   zstd \
   pigz \
   && rm -rf /var/lib/apt/lists/*
 
+# postgres:17 needs to match the version in the sandbox.md and supabase.co
+RUN echo "Install postgresql-client-17"
+RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg && \
+    echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | tee /etc/apt/sources.list.d/pgdg.list && \
+    apt-get update && apt-get install -y postgresql-client-17 pgcopydb && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN echo "Install apptainer"
 RUN add-apt-repository -y ppa:apptainer/ppa
