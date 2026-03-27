@@ -24,75 +24,116 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s -
 logger = logging.getLogger(__name__)
 
 
-def save_scores(
+def verify_channel_metadata(
     image_path: str,
-    model_name: str,
-    scores: np.ndarray,
-    task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
-    input_format: Literal["TN", "N"],
-    save_mode: Literal["overwrite", "append"],
-    timepoint_idxs: Optional[List[int]] = None,
+    data_channel_idxs: Optional[List[int]] = None,
+    mask_channel_idxs: Optional[List[int]] = None,
 ) -> None:
-    raise NotImplementedError("save_instance_scores is not implemented")
+    """Verify that the channel metadata is consistent with the data."""
+    store = zarr.open_group(image_path, mode="r")
+    store_data_channel_idxs = store.attrs.get("data_channel_idxs", [])
+    store_mask_channel_idxs = store.attrs.get("mask_channel_idxs", [])
+    if data_channel_idxs is not None:
+        if store_data_channel_idxs != data_channel_idxs:
+            raise ValueError(f"Data channel indices do not match existing array metadata: {store_data_channel_idxs=} != {data_channel_idxs=}")
+    if mask_channel_idxs is not None:
+        if store_mask_channel_idxs != mask_channel_idxs:
+            raise ValueError(f"Mask channel indices do not match existing array metadata: {store_mask_channel_idxs=} != {mask_channel_idxs=}")
 
-def save_labels(
+def save_annotations_metadata(
     image_path: str,
     model_name: str,
-    labels: np.ndarray,
-    task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
-    input_format: Literal["TNM", "NM"],
-    save_mode: Literal["overwrite", "append"],
+    metadata: Dict[str, Any],
     timepoint_idxs: Optional[List[int]] = None,
 ) -> None:
-    raise NotImplementedError("save_instance_labels is not implemented")
+    """Save metadata for a sparse annotation array at <image_path>/<model_name>/<annotation_name>."""
+    try:
+        store = zarr.open_group(image_path, mode="a")
+        group = store[model_name]
+        old_metadata = group.attrs.get("metadata", {})
+        previous_timepoint_idxs = old_metadata.get("timepoint_idxs", [])
+        if timepoint_idxs is not None:
+            previous_timepoint_idxs.extend(timepoint_idxs)
+        metadata["timepoint_idxs"] = previous_timepoint_idxs
+        metadata["last_saved_at"] = datetime.now().isoformat()
+        group.attrs["metadata"] = metadata
+    except Exception as e:
+        logger.error(f"Failed to save metadata for {model_name} at {image_path}: {e}")
+        raise e
 
-def save_boxes(
+def save_sparse_annotations(
     image_path: str,
     model_name: str,
-    boxes: np.ndarray,
-    input_format: Literal["TN6", "N6"],
-    task: Literal["instance_segmentation", "detection"],
+    data: np.ndarray,
+    annotation_name: Literal["scores", "labels", "boxes"],
+    input_format: Literal["TNM", "TN6", "TN", "NM", "N6", "N"],
     save_mode: Literal["overwrite", "append"],
     timepoint_idxs: Optional[List[int]] = None,
+    zarr_driver: str = "zarr3",
+    dtype: str = "uint16",
 ) -> None:
-    raise NotImplementedError("save_instance_boxes is not implemented")
+
+    # If we are appending masks, that means they don't already exist, so we need to create them.
+    # If we are overwriting masks, that means we are either running a new model or re-running the same model.
+    # If we are running a new model, we need to create the labels array.
+    # If we are re-running the same model, we need to overwrite the old labels array.
+    if save_mode == "append":
+        annotation_save_mode = "create"
+    elif save_mode == "overwrite":
+        exists = annotation_exists(image_path, model_name, annotation_name, zarr_driver)
+        if exists:
+            annotation_save_mode = "overwrite"
+        else:
+            annotation_save_mode = "create"
+    else:
+        raise ValueError(f"Invalid save_mode: {save_mode}")
+    try:
+        save_zarr_annotations(
+            image_path=image_path,
+            data=data,
+            source_name=model_name,
+            annotation_name=annotation_name,
+            input_format=input_format,
+            save_mode=annotation_save_mode,
+            timepoint_idxs=timepoint_idxs,
+            zarr_driver=zarr_driver,
+            dtype=dtype,
+        )
+    except Exception as e:
+        logger.error(f"Failed to save zarr annotations at {image_path}/{model_name}/{annotation_name}: {e}")
+        raise e
+
 
 def save_masks(
     image_path: str,
     model_name: str,
     masks: np.ndarray,
     input_format: Literal["TZYXC", "ZYXC"],
-    task: Literal["instance_segmentation", "semantic_segmentation"],
     save_mode: Literal["overwrite", "append"],
     zarr_driver: str = "zarr3",
     dtype: str = "uint16",
-    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
-    chunk_shape: Optional[Tuple[int, int, int]] = None,
-    timepoint_idxs: Optional[List[int]] = None,
     data_channel_idxs: Optional[List[int]] = None,
+    timepoint_idxs: Optional[List[int]] = None,
     mask_channel_idxs: Optional[List[int]] = None,
+    shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
 ) -> None:
-    """Save masks to a separate zarr labels group at <image_path>/labels/<label_name>."""
-    if save_mode == "create" and (shard_cube_shape is None or chunk_shape is None):
-        raise ValueError("shard_cube_shape and chunk_shape are required when creating new labels")
-    if task == "instance_segmentation":
-        label_name = "instance_masks"
-    elif task == "semantic_segmentation":
-        label_name = "semantic_masks"
-    else:
-        raise ValueError(f"Unsupported task for save_masks: {task}")
+    """Save masks to a separate zarr annotations group at <image_path>/annotations/<annotation_name>."""
+    if save_mode == "create" and (shard_spatial_shape is None or chunk_spatial_shape is None):
+        raise ValueError("shard_spatial_shape and chunk_spatial_shape are required when creating new annotations")
+    annotation_name = "masks"
     # If we are appending masks, that means they don't already exist, so we need to create them.
     # If we are overwriting masks, that means we are either running a new model or re-running the same model.
     # If we are running a new model, we need to create the labels array.
     # If we are re-running the same model, we need to overwrite the old labels array.
     if save_mode == "append":
-        label_save_mode = "create"
+        annotation_save_mode = "create"
     elif save_mode == "overwrite":
-        exists = label_exists(image_path, model_name, label_name, zarr_driver)
+        exists = annotation_exists(image_path, model_name, annotation_name, zarr_driver)
         if exists:
-            label_save_mode = "overwrite"
+            annotation_save_mode = "overwrite"
         else:
-            label_save_mode = "create"
+            annotation_save_mode = "create"
     else:
         raise ValueError(f"Invalid save_mode: {save_mode}")
 
@@ -113,21 +154,21 @@ def save_masks(
         raise e
     
     try:
-        save_zarr_labels(
+        save_zarr_annotations(
             image_path=image_path,
             data=masks,
             source_name=model_name,
-            label_name=label_name,
+            annotation_name=annotation_name,
             input_format=input_format,
-            shard_cube_shape=shard_cube_shape,
-            chunk_shape=chunk_shape,
-            save_mode=label_save_mode,
+            shard_spatial_shape=shard_spatial_shape,
+            chunk_spatial_shape=chunk_spatial_shape,
+            save_mode=annotation_save_mode,
             timepoint_idxs=timepoint_idxs,
             zarr_driver=zarr_driver,
             dtype=dtype,
         )
     except Exception as e:
-        logger.error(f"Failed to save zarr labels at {image_path}/{model_name}/{label_name}: {e}")
+        logger.error(f"Failed to save zarr annotations at {image_path}/{model_name}/{annotation_name}: {e}")
         raise e
 
 def read_npy(image_path: str, dtype: Optional[NUMPY_DTYPES | str] = None) -> np.ndarray:
@@ -332,84 +373,99 @@ def create_zarr_spec(
     zarr_version: str,
     path: str,
     input_format: str,
-    shard_cube_shape: Tuple[int, int, int],
-    chunk_shape: Tuple[int, int, int],
+    chunk_spatial_shape: Tuple[int, int, int],
+    shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
     source_name: Optional[str] = None,
-    label_name: Optional[str] = None,
+    annotation_name: Optional[str] = None,
     dtype: NUMPY_DTYPES | str = "uint16",
 ) -> Dict[str, Any]:
     # NOTE: currently zarr saving format assumes time dimension is present
     #       always, we should consider changing this in the future
-    if zarr_version == "zarr3":
-        if input_format == "TZYXC":
-            num_timepoints_per_image, num_channels = data_shape[0], data_shape[-1]
-            shard_shape = [
+    if input_format == "TZYXC":
+        num_timepoints_per_image, num_channels = data_shape[0], data_shape[-1]
+        if shard_spatial_shape is not None:
+            shard_shape = tuple([
                 num_timepoints_per_image,
-                shard_cube_shape[0],
-                shard_cube_shape[1],
-                shard_cube_shape[2],
+                shard_spatial_shape[0],
+                shard_spatial_shape[1],
+                shard_spatial_shape[2],
                 num_channels,
-            ]
-            chunk_shape = [1, chunk_shape[0], chunk_shape[1], chunk_shape[2], num_channels]
-
-        elif input_format == "TCZYX":
-            num_timepoints_per_image, num_channels = data_shape[0], data_shape[1]
-            shard_shape = [
-                num_timepoints_per_image,
-                num_channels,
-                shard_cube_shape[0],
-                shard_cube_shape[1],
-                shard_cube_shape[2],
-            ]
-            chunk_shape = [1, num_channels, chunk_shape[0], chunk_shape[1], chunk_shape[2]]
-
-        elif input_format == "ZYXC":
-            num_channels = data_shape[-1]
-            shard_shape = [
-                shard_cube_shape[0],
-                shard_cube_shape[1],
-                shard_cube_shape[2],
-                num_channels,
-            ]
-            chunk_shape = [chunk_shape[0], chunk_shape[1], chunk_shape[2], num_channels]
-
-        elif input_format == "CZYX":
-            num_channels = data_shape[0]
-            shard_shape = [
-                num_channels,
-                shard_cube_shape[0],
-                shard_cube_shape[1],
-                shard_cube_shape[2],
-            ]
-            chunk_shape = [num_channels, chunk_shape[0], chunk_shape[1], chunk_shape[2]]
-
+            ])
         else:
-            raise ValueError(f"Unsupported data shape length: {len(data_shape)}")
-        
-        subpath = None
-        if source_name is not None and source_name != "" and source_name != "/":
-            if label_name is None or label_name == "" or label_name == "/":
-                raise ValueError("label_name is required when source_name is provided")
-            subpath = f"{source_name}/{label_name}"
-        
-        zarr_spec = _make_write_zarr_spec(
-            data_shape=data_shape,
-            zarr_version=zarr_version,
-            path=path,
-            shard_shape=shard_shape,
-            chunk_shape=chunk_shape,
-            dtype=dtype,
-            subpath=subpath,
-        )
+            shard_shape = None
+        chunk_shape = tuple([1, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2], num_channels])
+
+    elif input_format == "TCZYX":
+        num_timepoints_per_image, num_channels = data_shape[0], data_shape[1]
+        if shard_spatial_shape is not None:
+                shard_shape = tuple([
+                num_timepoints_per_image,
+                num_channels,
+                shard_spatial_shape[0],
+                shard_spatial_shape[1],
+                shard_spatial_shape[2],
+            ])
+        else:
+            shard_shape = None
+        chunk_shape = tuple([1, num_channels, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2]])
+
+    elif input_format == "ZYXC":
+        num_channels = data_shape[-1]
+        if shard_spatial_shape is not None:
+            shard_shape = tuple([
+                shard_spatial_shape[0],
+                shard_spatial_shape[1],
+                shard_spatial_shape[2],
+                num_channels,
+            ])
+        else:
+            shard_shape = None
+        chunk_shape = tuple([chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2], num_channels])
+
+    elif input_format == "CZYX":
+        num_channels = data_shape[0]
+        if shard_spatial_shape is not None:
+            shard_shape = tuple([
+                num_channels,
+                shard_spatial_shape[0],
+                shard_spatial_shape[1],
+                shard_spatial_shape[2],
+            ])
+        else:
+            shard_shape = None
+        chunk_shape = tuple([num_channels, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2]])
+
+    elif input_format in ["TN", "TNM", "TN6", "N", "NM", "N6"]:
+        shard_shape = None # No sharding for sparse labels
+        chunk_shape = tuple(data_shape)
+
+    else:
+        raise ValueError(f"Unsupported input format: {input_format}")
+    
+    subpath = None
+    if source_name is not None and source_name != "" and source_name != "/":
+        if annotation_name is None or annotation_name == "" or annotation_name == "/":
+            raise ValueError("annotation_name is required when source_name is provided")
+        subpath = f"{source_name}/{annotation_name}"
+    
+    zarr_spec = _make_write_zarr_spec(
+        data_shape=data_shape,
+        zarr_version=zarr_version,
+        path=path,
+        chunk_shape=chunk_shape,
+        shard_shape=shard_shape,
+        dtype=dtype,
+        subpath=subpath,
+    )
     return zarr_spec
 
 
-def label_exists(image_path: str, source_name: str, label_name: str, zarr_driver: str) -> bool:
+def annotation_exists(image_path: str, source_name: str, annotation_name: str, zarr_driver: str) -> bool:
     """
-    Returns True if the Zarr label array at `label_name` inside the store
+    Returns True if the Zarr annotation array at `annotation_name` inside the store
     at `image_path` already exists, False otherwise.
     """
-    spec = _make_read_zarr_spec(image_path, subpath=f"{source_name}/{label_name}", driver=zarr_driver)
+    spec = _make_read_zarr_spec(image_path, subpath=f"{source_name}/{annotation_name}", driver=zarr_driver)
     try:
         ts.open(spec, open=True, create=False).result()
         return True
@@ -438,45 +494,45 @@ def normalize_data_shape(data: np.ndarray, input_format: str) -> np.ndarray:
     return data
 
 VALID_SOURCE_NAME = re.compile(r"^[^\/\\]+$")
-VALID_LABEL_NAME = re.compile(r"^[a-zA-Z0-9_]+$")
+VALID_ANNOTATION_NAME = re.compile(r"^[a-zA-Z0-9_]+$")
 
-def save_zarr_labels(
+def save_zarr_annotations(
     image_path: str,
     data: np.ndarray,
     source_name: str,
-    label_name: str,
+    annotation_name: str,
     input_format: str,
     save_mode: Literal["overwrite", "create"] = "create",
-    shard_cube_shape: Optional[Tuple[int, int, int]] = None,
-    chunk_shape: Optional[Tuple[int, int, int]] = None,
+    shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
     timepoint_idxs: Optional[List[int]] = None,
     zarr_driver: str = "zarr3",
     dtype: str = "uint16",
 ) -> None:
-    """Create or overwrite a label array at <image_path>/<source_name>/<label_name>."""
+    """Create or overwrite a zarr annotation array at <image_path>/<source_name>/<annotation_name>."""
     if not Path(image_path).resolve().exists():
         raise FileNotFoundError(f"Image path {image_path} does not exist")
     if not VALID_SOURCE_NAME.match(source_name):
         raise ValueError(f"Invalid source name: {source_name}. Source name must be a string and not contain any slashes.")
-    if not VALID_LABEL_NAME.match(label_name):
-        raise ValueError(f"Invalid label name: {label_name}. Label name must be an alphanumeric + underscore string and not contain any slashes.")
-    if save_mode == "create" and (shard_cube_shape is None or chunk_shape is None):
-        raise ValueError("shard_cube_shape and chunk_shape are required when creating new labels")
+    if not VALID_ANNOTATION_NAME.match(annotation_name):
+        raise ValueError(f"Invalid annotation name: {annotation_name}. Annotation name must be an alphanumeric + underscore string and not contain any slashes.")
+    if save_mode == "create" and ("ZYX" in input_format) and (shard_spatial_shape is None or chunk_spatial_shape is None):
+        raise ValueError("shard_spatial_shape and chunk_spatial_shape are required when creating new dense annotations (ZYX input format)")
     if source_name is None or source_name == "":
         raise ValueError(f"source_name is required but got {source_name}")
-    if label_name is None or label_name == "":
-        raise ValueError(f"label_name is required but got {label_name}")
+    if annotation_name is None or annotation_name == "":
+        raise ValueError(f"annotation_name is required but got {annotation_name}")
 
     data = normalize_data_shape(data, input_format)
     if timepoint_idxs is not None:
         if len(timepoint_idxs) != data.shape[0]:
             raise ValueError(f"timepoint_idxs must have the same length as the time dimension of the data but got: {len(timepoint_idxs)=}, {data.shape[0]=}")
     
-    exists = label_exists(image_path, source_name, label_name, zarr_driver)
+    exists = annotation_exists(image_path, source_name, annotation_name, zarr_driver)
     if exists and save_mode == "create":
-        raise ValueError(f"Label {label_name} already exists at {image_path}")
+        raise ValueError(f"Annotation {annotation_name} already exists at {image_path}")
     elif not exists and save_mode == "overwrite":
-        raise ValueError(f"Label {label_name} does not exist at {image_path}. Use save_mode='create' to create it.")
+        raise ValueError(f"Annotation {annotation_name} does not exist at {image_path}. Use save_mode='create' to create it.")
 
     if save_mode == "create":
         spec = create_zarr_spec(
@@ -484,14 +540,14 @@ def save_zarr_labels(
             zarr_version=zarr_driver,
             path=image_path,
             input_format=input_format,
-            shard_cube_shape=shard_cube_shape,
-            chunk_shape=chunk_shape,
+            shard_spatial_shape=shard_spatial_shape,
+            chunk_spatial_shape=chunk_spatial_shape if chunk_spatial_shape is not None else data.shape,
             source_name=source_name,
-            label_name=label_name,
+            annotation_name=annotation_name,
             dtype=dtype,
         )
     elif save_mode == "overwrite":
-        spec = _make_read_zarr_spec(image_path, subpath=f"{source_name}/{label_name}", driver=zarr_driver)
+        spec = _make_read_zarr_spec(image_path, subpath=f"{source_name}/{annotation_name}", driver=zarr_driver)
     else:
         raise ValueError(f"Invalid save_mode: {save_mode}")
 
