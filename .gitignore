@@ -173,3 +173,4 @@ pytests/
 scripts/db/sandbox/
 scripts/db/*.tar.gz
 scripts/db/*.tar.zst
+scripts/db/*.backup
