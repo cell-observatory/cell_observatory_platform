@@ -1,0 +1,391 @@
+from __future__ import annotations
+
+import time
+import uuid
+from pathlib import Path
+
+import numpy as np
+import pytest
+import ray
+
+from tests.ray_init_helpers import init_ray_like_training
+
+from cell_observatory_platform.inference.visualizer import VizWorker
+
+
+# ---------------------------------------------------------------------------
+# Fixtures (aligned with test_buffer_manager.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def ray_ctx():
+    """Local Ray cluster for VizWorker + BufferManager tests."""
+    init_ray_like_training(num_cpus=4, num_gpus=0)
+    yield
+    ray.shutdown()
+
+
+@pytest.fixture
+def ray_node_id(ray_ctx):
+    return ray.nodes()[0]["NodeID"]
+
+
+@pytest.fixture
+def unique_suffix():
+    return uuid.uuid4().hex[:8]
+
+
+def _make_buffer_manager(ray_node_id, **kwargs):
+    from cell_observatory_platform.data.datasets.buffers import BufferManager
+
+    kw = dict(
+        local_rank=0,
+        global_rank=0,
+        node_id=ray_node_id,
+        numa_node=0,
+        rank_memory_budget_gb=1.0,
+        max_concurrent_calls=10,
+        safety_margin=0.0,
+    )
+    kw.update(kwargs)
+    return BufferManager(**kw)
+
+
+def _kill_safe(handle):
+    try:
+        ray.kill(handle)
+    except Exception:
+        pass
+
+
+def _wait_buffer_in_use_zero(buffer_actor, *, timeout_s: float = 5.0, poll_s: float = 0.05) -> None:
+    """Wait until ``in_use_current`` is 0 on the buffer actor.
+
+    ``BufferManager.free_slot`` fires ``put_free`` without ``ray.get`` for lower
+    latency; metrics update once the actor completes the async handler.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        m = ray.get(buffer_actor.get_metrics.remote())
+        if m["in_use_current"] == 0:
+            return
+        time.sleep(poll_s)
+    m = ray.get(buffer_actor.get_metrics.remote())
+    assert m["in_use_current"] == 0, f"Expected in_use_current==0 within {timeout_s}s, got {m!r}"
+
+
+def _viz_handler_kwargs():
+    """Kwargs for ``inference.utils.save_predictions`` that write a real TIFF."""
+    return {
+        "save_tensors": ["pred"],
+        "save_as_volume": True,
+        "save_as_pdf": False,
+        "z_step_pdf": 1,
+        "filetype": "tiff",
+    }
+
+
+def _viz_handler_kwargs_failing():
+    """Handler kwargs that trigger a KeyError inside save_predictions."""
+    return {
+        "save_tensors": ["nonexistent_key"],
+        "save_as_volume": True,
+        "save_as_pdf": False,
+        "z_step_pdf": 1,
+        "filetype": "tiff",
+    }
+
+
+def _expected_tiff_name() -> str:
+    """File name produced by save_predictions with _metainfo_for_viz() defaults."""
+    return "pred_out_folder_tile001_pred.tiff"
+
+
+def _metainfo_for_viz():
+    return {
+        "output_folder": "out/folder",
+        "tile_name": "tile001",
+    }
+
+
+def _build_inference_outputs_with_slot(
+    bm,
+    pool_name: str,
+    *,
+    fill: float = 1.0,
+) -> tuple[dict, dict]:
+    """Acquire one slot, fill the buffer view, return (inference_outputs, slot_info)."""
+    buffer_actor = bm._buffer_actors[pool_name]
+    slot_info = ray.get(buffer_actor.get_free.remote())
+    view = bm.slot_info_to_view(slot_info)
+    view[...] = fill
+    inference_outputs = {
+        "pred": slot_info,
+        "metainfo": _metainfo_for_viz(),
+    }
+    return inference_outputs, slot_info
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+class TestVizWorkerRay:
+    def test_viz_worker_init_and_metrics(self, ray_ctx, ray_node_id, unique_suffix, tmp_path):
+        bm = _make_buffer_manager(ray_node_id)
+        actor = None
+        viz = None
+        try:
+            actor, _ = bm.set_buffer(
+                pool_name=f"vz_{unique_suffix}",
+                batch_size=1,
+                input_shape=(2, 2, 2, 1),
+                dtype="float32",
+                buffer_type="host_memory",
+                buffer_capacity=2,
+                pin_to_numa_node=False,
+            )
+            viz = VizWorker.options(name=f"viz_init_{unique_suffix}").remote(
+                buffer_manager=bm,
+                output_dir=str(tmp_path),
+                handler_configs={"save_predictions": _viz_handler_kwargs()},
+            )
+            m = ray.get(viz.get_metrics.remote())
+            assert m["visualize_calls"] == 0.0
+            assert m["visualize_successes"] == 0.0
+            assert m["visualize_failures"] == 0.0
+            assert m["visualize_time_ms"] == 0.0
+        finally:
+            if viz is not None:
+                _kill_safe(viz)
+            bm.shutdown()
+            if actor is not None:
+                _kill_safe(actor)
+
+    def test_viz_worker_init_unknown_handler_raises(self, ray_ctx, ray_node_id, unique_suffix, tmp_path):
+        bm = _make_buffer_manager(ray_node_id)
+        actor = None
+        viz = None
+        try:
+            actor, _ = bm.set_buffer(
+                pool_name=f"vz_uh_{unique_suffix}",
+                batch_size=1,
+                input_shape=(2, 2, 2, 1),
+                dtype="float32",
+                buffer_type="host_memory",
+                buffer_capacity=2,
+                pin_to_numa_node=False,
+            )
+            viz = VizWorker.options(name=f"viz_bad_{unique_suffix}").remote(
+                buffer_manager=bm,
+                output_dir=str(tmp_path),
+                handler_configs={"not_a_real_handler": {}},
+            )
+            # Actor __init__ failure surfaces as ActorDiedError; task errors use RayTaskError.
+            with pytest.raises(
+                (ray.exceptions.ActorDiedError, ray.exceptions.RayTaskError),
+                match="Unknown viz.handler",
+            ):
+                ray.get(viz.get_metrics.remote())
+        finally:
+            if viz is not None:
+                _kill_safe(viz)
+            bm.shutdown()
+            if actor is not None:
+                _kill_safe(actor)
+
+    def test_viz_worker_visualize_resolves_slot_and_frees(
+        self, ray_ctx, ray_node_id, unique_suffix, tmp_path
+    ):
+        pool = f"vz_slot_{unique_suffix}"
+        bm = _make_buffer_manager(ray_node_id)
+        actor = None
+        viz = None
+        try:
+            actor, _ = bm.set_buffer(
+                pool_name=pool,
+                batch_size=1,
+                input_shape=(2, 2, 2, 1),
+                dtype="float32",
+                buffer_type="host_memory",
+                buffer_capacity=2,
+                pin_to_numa_node=False,
+            )
+            inference_outputs, _ = _build_inference_outputs_with_slot(bm, pool, fill=3.14)
+            buf = bm._buffer_actors[pool]
+            assert ray.get(buf.get_metrics.remote())["in_use_current"] == 1
+
+            viz = VizWorker.options(name=f"viz_rs_{unique_suffix}").remote(
+                buffer_manager=bm,
+                output_dir=str(tmp_path),
+                handler_configs={"save_predictions": _viz_handler_kwargs()},
+            )
+            ray.get(viz.visualize.remote(inference_outputs))
+
+            assert (tmp_path / _expected_tiff_name()).exists()
+            _wait_buffer_in_use_zero(buf)
+
+            m = ray.get(viz.get_metrics.remote())
+            assert m["visualize_calls"] == 1.0
+            assert m["visualize_successes"] == 1.0
+            assert m["visualize_failures"] == 0.0
+        finally:
+            if viz is not None:
+                _kill_safe(viz)
+            bm.shutdown()
+            if actor is not None:
+                _kill_safe(actor)
+
+    def test_viz_worker_visualize_handles_raw_ndarray_input(
+        self, ray_ctx, ray_node_id, unique_suffix, tmp_path
+    ):
+        pool = f"vz_nd_{unique_suffix}"
+        bm = _make_buffer_manager(ray_node_id)
+        actor = None
+        viz = None
+        try:
+            actor, _ = bm.set_buffer(
+                pool_name=pool,
+                batch_size=1,
+                input_shape=(2, 2, 2, 1),
+                dtype="float32",
+                buffer_type="host_memory",
+                buffer_capacity=2,
+                pin_to_numa_node=False,
+            )
+            arr = np.zeros((1, 2, 2, 2, 1), dtype=np.float32)
+            inference_outputs = {
+                "pred": arr,
+                "metainfo": _metainfo_for_viz(),
+            }
+            viz = VizWorker.options(name=f"viz_nd_{unique_suffix}").remote(
+                buffer_manager=bm,
+                output_dir=str(tmp_path),
+                handler_configs={"save_predictions": _viz_handler_kwargs()},
+            )
+            ray.get(viz.visualize.remote(inference_outputs))
+            assert (tmp_path / _expected_tiff_name()).exists()
+            buf = bm._buffer_actors[pool]
+            _wait_buffer_in_use_zero(buf)
+        finally:
+            if viz is not None:
+                _kill_safe(viz)
+            bm.shutdown()
+            if actor is not None:
+                _kill_safe(actor)
+
+    def test_viz_worker_metrics_accumulate(self, ray_ctx, ray_node_id, unique_suffix, tmp_path):
+        pool = f"vz_m_{unique_suffix}"
+        bm = _make_buffer_manager(ray_node_id)
+        actor = None
+        viz = None
+        try:
+            actor, _ = bm.set_buffer(
+                pool_name=pool,
+                batch_size=1,
+                input_shape=(2, 2, 2, 1),
+                dtype="float32",
+                buffer_type="host_memory",
+                buffer_capacity=4,
+                pin_to_numa_node=False,
+            )
+            viz = VizWorker.options(name=f"viz_met_{unique_suffix}").remote(
+                buffer_manager=bm,
+                output_dir=str(tmp_path),
+                handler_configs={"save_predictions": _viz_handler_kwargs()},
+            )
+            for _ in range(2):
+                inference_outputs, _ = _build_inference_outputs_with_slot(bm, pool, fill=1.0)
+                ray.get(viz.visualize.remote(inference_outputs))
+
+            m = ray.get(viz.get_metrics.remote())
+            assert m["visualize_calls"] == 2.0
+            assert m["visualize_successes"] == 2.0
+            ray.get(viz.clear_metrics.remote())
+            m2 = ray.get(viz.get_metrics.remote())
+            assert m2["visualize_calls"] == 0.0
+            assert m2["visualize_successes"] == 0.0
+        finally:
+            if viz is not None:
+                _kill_safe(viz)
+            bm.shutdown()
+            if actor is not None:
+                _kill_safe(actor)
+
+    def test_viz_worker_handler_failure_records_failure_metric(
+        self, ray_ctx, ray_node_id, unique_suffix, tmp_path
+    ):
+        pool = f"vz_fail_{unique_suffix}"
+        bm = _make_buffer_manager(ray_node_id)
+        actor = None
+        viz = None
+        try:
+            actor, _ = bm.set_buffer(
+                pool_name=pool,
+                batch_size=1,
+                input_shape=(2, 2, 2, 1),
+                dtype="float32",
+                buffer_type="host_memory",
+                buffer_capacity=2,
+                pin_to_numa_node=False,
+            )
+            inference_outputs, _ = _build_inference_outputs_with_slot(bm, pool)
+            buf = bm._buffer_actors[pool]
+            viz = VizWorker.options(name=f"viz_fl_{unique_suffix}").remote(
+                buffer_manager=bm,
+                output_dir=str(tmp_path),
+                handler_configs={"save_predictions": _viz_handler_kwargs_failing()},
+            )
+            ray.get(viz.visualize.remote(inference_outputs))
+            m = ray.get(viz.get_metrics.remote())
+            assert m["visualize_failures"] == 1.0
+            assert m["visualize_successes"] == 0.0
+            _wait_buffer_in_use_zero(buf)
+        finally:
+            if viz is not None:
+                _kill_safe(viz)
+            bm.shutdown()
+            if actor is not None:
+                _kill_safe(actor)
+
+    def test_viz_worker_slot_resolution_failure_records_call_only(
+        self, ray_ctx, ray_node_id, unique_suffix, tmp_path
+    ):
+        """Failure in slot resolution is caught by the outer try/except; only
+        ``visualize_calls`` increments (neither success nor failure)."""
+        pool = f"vz_sr_{unique_suffix}"
+        bm = _make_buffer_manager(ray_node_id)
+        actor = None
+        viz = None
+        try:
+            actor, _ = bm.set_buffer(
+                pool_name=pool,
+                batch_size=1,
+                input_shape=(2, 2, 2, 1),
+                dtype="float32",
+                buffer_type="host_memory",
+                buffer_capacity=2,
+                pin_to_numa_node=False,
+            )
+            inference_outputs = {
+                "pred": {"invalid": "slot_info"},
+                "metainfo": _metainfo_for_viz(),
+            }
+            viz = VizWorker.options(name=f"viz_sr_{unique_suffix}").remote(
+                buffer_manager=bm,
+                output_dir=str(tmp_path),
+                handler_configs={"save_predictions": _viz_handler_kwargs()},
+            )
+            ray.get(viz.visualize.remote(inference_outputs))
+            m = ray.get(viz.get_metrics.remote())
+            assert m["visualize_calls"] == 1.0
+            assert m["visualize_successes"] == 0.0
+            assert m["visualize_failures"] == 0.0
+        finally:
+            if viz is not None:
+                _kill_safe(viz)
+            bm.shutdown()
+            if actor is not None:
+                _kill_safe(actor)
