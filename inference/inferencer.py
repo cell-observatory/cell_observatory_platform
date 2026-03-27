@@ -41,7 +41,6 @@ class InferencerWorker:
         decoder_head_type: str,
         save_dir: Path | str,
         buffer_manager: BufferManager,
-        save_mode: Literal["overwrite", "append", "new_image"],
         save_outputs: bool,
         block_on_save: bool,
         save_worker: ActorHandle[SaveWorker],
@@ -83,7 +82,6 @@ class InferencerWorker:
 
         self.vizualize_outputs = vizualize_outputs
         self.save_outputs = save_outputs
-        self.save_mode = save_mode
         self.block_on_save = block_on_save
         self.block_on_viz = block_on_viz
         self.save_worker = save_worker
@@ -372,54 +370,54 @@ class InferencerWorker:
         should_visualize = self._should_visualize(data_sample, preds)
         t0 = time.perf_counter()
         with torch.cuda.stream(self._d2h_stream):
-            for output_name in self.outputs_metadata["save_tensors"]:
-                if output_name in preds.keys():
-                    output_tensor = preds[output_name]
-                elif output_name in data_sample.keys():
-                    output_tensor = data_sample[output_name]
+            for output_tensor_name in self.outputs_metadata["save_tensors"]:
+                if output_tensor_name in preds.keys():
+                    output_tensor = preds[output_tensor_name]
+                elif output_tensor_name in data_sample.keys():
+                    output_tensor = data_sample[output_tensor_name]
                 else:
-                    raise ValueError(f"Tensor {output_name} not found in preds or data_sample")
+                    raise ValueError(f"Tensor {output_tensor_name} not found in preds or data_sample")
 
                 if output_tensor is None:
                     continue
 
-                save_buffer = self.buffer_manager.get_buffer(f"{output_name}_save")
+                save_buffer = self.buffer_manager.get_buffer(f"{output_tensor_name}_save")
                 if self.block_on_save:
                     slot_info = ray.get(save_buffer.get_free.remote())
                     if slot_info is None:
-                        raise RuntimeError(f"No free slot found for {output_name}")
+                        raise RuntimeError(f"No free slot found for {output_tensor_name}")
                 else:
                     slot_info = ray.get(save_buffer.try_get_free.remote())
 
                 if slot_info is not None:
                     dest_array = self.buffer_manager.slot_info_to_view(slot_info)
                     self._copy_d2h(dst=dest_array, src=output_tensor)
-                    save_outputs[output_name] = slot_info
+                    save_outputs[output_tensor_name] = slot_info
 
             if should_visualize:
-                for output_name in self.outputs_metadata["visualize_tensors"]:
-                    if output_name in preds.keys():
-                        output_tensor = preds[output_name]
-                    elif output_name in data_sample.keys():
-                        output_tensor = data_sample[output_name]
+                for output_tensor_name in self.outputs_metadata["visualize_tensors"]:
+                    if output_tensor_name in preds.keys():
+                        output_tensor = preds[output_tensor_name]
+                    elif output_tensor_name in data_sample.keys():
+                        output_tensor = data_sample[output_tensor_name]
                     else:
-                        raise ValueError(f"Output {output_name} not found in preds or data_sample")
+                        raise ValueError(f"Output {output_tensor_name} not found in preds or data_sample")
 
                     if output_tensor is None:
                         continue
 
-                    viz_buffer = self.buffer_manager.get_buffer(f"{output_name}_viz")
+                    viz_buffer = self.buffer_manager.get_buffer(f"{output_tensor_name}_viz")
                     if self.block_on_viz:
                         slot_info = ray.get(viz_buffer.get_free.remote())
                         if slot_info is None:
-                            raise RuntimeError(f"No free slot found for {output_name}")
+                            raise RuntimeError(f"No free slot found for {output_tensor_name}")
                     else:
                         slot_info = ray.get(viz_buffer.try_get_free.remote())
 
                     if slot_info is not None:
                         dest_array = self.buffer_manager.slot_info_to_view(slot_info)
                         self._copy_d2h(dst=dest_array, src=output_tensor)
-                        viz_outputs[output_name] = slot_info
+                        viz_outputs[output_tensor_name] = slot_info
 
         self._cp_d2h_stream.synchronize()
         self._metrics["transfer_time_ms"].append((time.perf_counter() - t0) * 1000)
@@ -428,8 +426,6 @@ class InferencerWorker:
                 raise RuntimeError("Attempting to save outputs but save_worker is None")
             self.save_worker.save.remote(
                 inference_outputs=save_outputs,
-                save_mode=self.save_mode,
-                save_dir=self.inference_save_dir,
             )
 
         if should_visualize and self.vizualize_outputs:
@@ -437,8 +433,6 @@ class InferencerWorker:
                 raise RuntimeError("Attempting to visualize outputs but viz_worker is None")
             self.viz_worker.visualize.remote(
                 inference_outputs=viz_outputs,
-                save_dir=self.inference_save_dir,
-                handler_configs=self.viz_handlers_configs,
             )
 
     def get_step_metrics(self) -> Dict[str, Any]:
@@ -515,8 +509,8 @@ class InferencerWorker:
 #         max_hypercubes: Optional[int] = None,
 #         max_partitions: int = 10,
 #         save_format: Literal["tiff", "zarr"] = "tiff",
-#         zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
-#         zarr_shard_shape: Optional[Tuple[int, ...]] = None,
+#         zarr_chunk_spatial_shape: Optional[Tuple[int, ...]] = None,
+#         zarr_shard_spatial_shape: Optional[Tuple[int, ...]] = None,
 #         auxiliary_outputs: Optional[Any] = None,
 #         pmin: float = 1.0,
 #         pmax: float = 99.0,
@@ -589,8 +583,8 @@ class InferencerWorker:
 
 #         self.inference_save_dir = save_dir
 #         self.inference_save_format = save_format
-#         self.inference_zarr_chunk_shape = zarr_chunk_shape
-#         self.inference_zarr_shard_shape = zarr_shard_shape
+#         self.inference_zarr_chunk_shape = zarr_chunk_spatial_shape
+#         self.inference_zarr_shard_shape = zarr_shard_spatial_shape
 
 #         self.dbname = dbname
 #         self.verbose = verbose
@@ -1353,8 +1347,8 @@ class InferencerWorker:
 #                 save_as_pdf=self.save_as_pdf,
 #                 z_step_pdf=self.z_step_pdf,
 #                 filetype=self.inference_save_format,
-#                 zarr_chunk_shape=self.inference_zarr_chunk_shape,
-#                 zarr_shard_shape=self.inference_zarr_shard_shape,
+#                 zarr_chunk_spatial_shape=self.inference_zarr_chunk_shape,
+#                 zarr_shard_spatial_shape=self.inference_zarr_shard_shape,
 #                 pmin=self.pmin,
 #                 pmax=self.pmax,
 #             )
