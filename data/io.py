@@ -699,26 +699,56 @@ def save_zarr_data(
     input_format: str,
     zarr_driver: str = "zarr3",
     dtype: str = "uint16",
+    channel_names: Optional[Dict[int, str]] = None,
+    time_dim_size: Optional[int] = None,
+    timepoint_idxs: Optional[List[int]] = None,
 ) -> None:
-    """Create a zarr data array at <image_path> in the root of the zarr store."""
+    """Create a zarr data array at <image_path> in the root of the zarr store.
+
+    For non-T formats (e.g. ``ZYXC``), the data is treated as a single time slice.
+    ``timepoint_idxs`` (default ``[0]``) selects which time index to write into, and
+    ``time_dim_size`` (default ``1``) sets the full extent of the time axis on disk.
+    """
     if image_path is None:
         raise ValueError("image_path is required")
     if Path(image_path).resolve().exists():
         raise FileExistsError(f"Image path {image_path} already exists. If you want to update the data, use update_zarr_data instead.")
+
+    if "T" not in input_format:
+        has_tds = time_dim_size is not None
+        has_tpi = timepoint_idxs is not None
+        if has_tds != has_tpi:
+            raise ValueError(
+                f"For non-time-bearing format {input_format!r}, time_dim_size and "
+                f"timepoint_idxs must both be provided or both omitted, but got "
+                f"{time_dim_size=}, {timepoint_idxs=}."
+            )
+        if not has_tds:
+            time_dim_size = 1
+            timepoint_idxs = [0]
+
+    data, disk_format, timepoint_idxs = _normalize_to_time_bearing(data, input_format, timepoint_idxs)
+
     zarr_spec = create_zarr_spec(
         data_shape=data.shape,
         zarr_version=zarr_driver,
         path=image_path,
-        input_format=input_format,
+        input_format=disk_format,
         shard_spatial_shape=shard_spatial_shape,
         chunk_spatial_shape=chunk_spatial_shape,
+        time_dim_size=time_dim_size,
         dtype=dtype,
     )
 
     Path(image_path).mkdir(parents=True, exist_ok=True)
     ds = ts.open(zarr_spec).result()
     with ts.Transaction() as txn:
-        ds.with_transaction(txn)[:] = data.astype(dtype)
+        if timepoint_idxs is not None:
+            ds.with_transaction(txn)[timepoint_idxs, ...] = data.astype(dtype)
+        else:
+            ds.with_transaction(txn)[:] = data.astype(dtype)
+    if channel_names is not None:
+        update_root_channel_names(image_path, channel_names)
 
 def normalize_idxs(idxs: Iterable[int | float], shape_size: int) -> List[int]:
     """Normalize a list of indices to be within the bounds of the shape size. Converts negative indices to positive indices."""

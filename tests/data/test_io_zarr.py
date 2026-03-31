@@ -174,7 +174,7 @@ class TestSaveAndReadZarrData:
         )
 
         stored = _read_root(zarr_path)
-        np.testing.assert_array_equal(stored, data.astype(np.uint16))
+        np.testing.assert_array_equal(stored, _to_disk(data, input_format).astype(np.uint16))
 
     @FORMAT_PARAMS
     def test_create_refuses_existing_path(self, tmp_path, input_format):
@@ -201,6 +201,66 @@ class TestSaveAndReadZarrData:
                 zarr_driver=ZARR_DRIVER,
                 dtype=DTYPE,
             )
+    
+
+
+# ===========================================================================
+# 2b. save_zarr_data — time_dim_size / timepoint_idxs validation
+# ===========================================================================
+
+class TestSaveZarrDataTimeArgs:
+    def test_zyxc_only_time_dim_size_raises(self, tmp_path):
+        data = _make_data("ZYXC")
+        with pytest.raises(ValueError, match="both be provided or both omitted"):
+            save_zarr_data(
+                image_path=str(tmp_path / "a.zarr"), data=data,
+                shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+                chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+                input_format="ZYXC", time_dim_size=5,
+            )
+
+    def test_zyxc_only_timepoint_idxs_raises(self, tmp_path):
+        data = _make_data("ZYXC")
+        with pytest.raises(ValueError, match="both be provided or both omitted"):
+            save_zarr_data(
+                image_path=str(tmp_path / "a.zarr"), data=data,
+                shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+                chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+                input_format="ZYXC", timepoint_idxs=[2],
+            )
+
+    def test_zyxc_both_provided_ok(self, tmp_path):
+        data = _make_data("ZYXC")
+        save_zarr_data(
+            image_path=str(tmp_path / "a.zarr"), data=data,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+            input_format="ZYXC", time_dim_size=5, timepoint_idxs=[2],
+        )
+        stored = _read_root(str(tmp_path / "a.zarr"))
+        assert stored.shape[0] == 5
+
+    def test_zyxc_neither_provided_defaults_unitary(self, tmp_path):
+        data = _make_data("ZYXC")
+        save_zarr_data(
+            image_path=str(tmp_path / "a.zarr"), data=data,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+            input_format="ZYXC",
+        )
+        stored = _read_root(str(tmp_path / "a.zarr"))
+        assert stored.shape[0] == 1
+
+    def test_tzyxc_time_dim_size_alone_ok(self, tmp_path):
+        """T-bearing formats should not enforce the both-or-neither rule."""
+        n_t = 3
+        data = _make_data("TZYXC", n_timepoints=n_t)
+        save_zarr_data(
+            image_path=str(tmp_path / "a.zarr"), data=data,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+            input_format="TZYXC", time_dim_size=n_t,
+        )
 
 
 # ===========================================================================
