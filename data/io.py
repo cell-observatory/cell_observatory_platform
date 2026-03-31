@@ -492,17 +492,41 @@ def create_zarr_spec(
     input_format: str,
     chunk_spatial_shape: Tuple[int, int, int],
     shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    time_dim_size: Optional[int] = None,
     source_name: Optional[str] = None,
     annotation_name: Optional[str] = None,
     dtype: NUMPY_DTYPES | str = "uint16",
 ) -> Dict[str, Any]:
-    # NOTE: currently zarr saving format assumes time dimension is present
-    #       always, we should consider changing this in the future
+    # NOTE: currently zarr saving format assumes time dimension is present in the root zarr array
+    # If that array exists, we read the time dimension size from it directly.
+    # If it does not exist and we are creating the base array, we allow the user to specify the time dimension size.
+    # Explicity with the time_dim_size parameter or implicitly by the input format / data shape.
+    # If we are creating an annotation array, we force the time dimension size to be the same as the base array.
+    if not Path(path).exists():
+        if annotation_name is not None:
+            raise ValueError(f"Cannot create a zarr spec for annotation {annotation_name} at image path {path} because the image path does not exist")
+        if time_dim_size is None:
+            if "T" not in input_format:
+                raise ValueError(f"Time dimension is required when creating a new zarr array but is not present in the input format and {time_dim_size=}")
+            else:
+                time_dim_size = data_shape[input_format.upper().index("T")]
+        elif "T" in input_format and time_dim_size < data_shape[input_format.upper().index("T")]:
+            data_time_dim_size = data_shape[input_format.upper().index("T")]
+            raise ValueError(f"time_dim_size must be at least as large as the time dimension size of the data but got {time_dim_size=} and {data_time_dim_size=}")
+    else:
+        if annotation_name is not None:
+            if time_dim_size is not None:
+                logger.warning(f"time_dim_size is provided for annotation {annotation_name} at image path {path} but will be overridden by the time dimension size of the base array")
+            time_dim_size = read_shape(path, driver=zarr_version)[0]
+        if time_dim_size is None:
+            time_dim_size = read_shape(path, driver=zarr_version)[0]
+
     if input_format == "TZYXC":
-        num_timepoints_per_image, num_channels = data_shape[0], data_shape[-1]
+        data_shape_with_time = (time_dim_size, *data_shape[1:])
+        num_channels = data_shape[-1]
         if shard_spatial_shape is not None:
-            shard_shape = tuple([
-                num_timepoints_per_image,
+            shard_shape = tuple[int, ...]([
+                time_dim_size,
                 shard_spatial_shape[0],
                 shard_spatial_shape[1],
                 shard_spatial_shape[2],
@@ -513,10 +537,11 @@ def create_zarr_spec(
         chunk_shape = tuple([1, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2], num_channels])
 
     elif input_format == "TCZYX":
-        num_timepoints_per_image, num_channels = data_shape[0], data_shape[1]
+        data_shape_with_time = (time_dim_size, *data_shape[1:])
+        num_channels = data_shape[1]
         if shard_spatial_shape is not None:
-                shard_shape = tuple([
-                num_timepoints_per_image,
+            shard_shape = tuple[int, ...]([
+                time_dim_size,
                 num_channels,
                 shard_spatial_shape[0],
                 shard_spatial_shape[1],
@@ -524,12 +549,14 @@ def create_zarr_spec(
             ])
         else:
             shard_shape = None
-        chunk_shape = tuple([1, num_channels, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2]])
+        chunk_shape = tuple[int, ...]([1, num_channels, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2]])
 
     elif input_format == "ZYXC":
+        data_shape_with_time = (time_dim_size, *data_shape)
         num_channels = data_shape[-1]
         if shard_spatial_shape is not None:
-            shard_shape = tuple([
+            shard_shape = tuple[int, ...]([
+                time_dim_size,
                 shard_spatial_shape[0],
                 shard_spatial_shape[1],
                 shard_spatial_shape[2],
@@ -537,12 +564,14 @@ def create_zarr_spec(
             ])
         else:
             shard_shape = None
-        chunk_shape = tuple([chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2], num_channels])
+        chunk_shape = tuple[int, ...]([1, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2], num_channels])
 
     elif input_format == "CZYX":
+        data_shape_with_time = (time_dim_size, *data_shape)
         num_channels = data_shape[0]
         if shard_spatial_shape is not None:
-            shard_shape = tuple([
+            shard_shape = tuple[int, ...]([
+                time_dim_size,
                 num_channels,
                 shard_spatial_shape[0],
                 shard_spatial_shape[1],
@@ -550,11 +579,16 @@ def create_zarr_spec(
             ])
         else:
             shard_shape = None
-        chunk_shape = tuple([num_channels, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2]])
+        chunk_shape = tuple[int, ...]([1, num_channels, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2]])
 
     elif input_format in ["TN", "TNM", "TN6", "N", "NM", "N6"]:
         shard_shape = None # No sharding for sparse labels
-        chunk_shape = tuple(data_shape)
+        if "T" in input_format.upper():
+            data_shape_with_time = tuple[int, ...]([time_dim_size, *data_shape[1:]])
+            chunk_shape = tuple[int, ...]([1, *data_shape[1:]])
+        else:
+            data_shape_with_time = tuple[int, ...]([time_dim_size, *data_shape])
+            chunk_shape = tuple[int, ...]([1, *data_shape])
 
     else:
         raise ValueError(f"Unsupported input format: {input_format}")
@@ -566,7 +600,7 @@ def create_zarr_spec(
         subpath = f"{source_name}/{annotation_name}"
     
     zarr_spec = _make_write_zarr_spec(
-        data_shape=data_shape,
+        data_shape=data_shape_with_time,
         zarr_version=zarr_version,
         path=path,
         chunk_shape=chunk_shape,

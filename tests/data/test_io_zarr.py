@@ -138,17 +138,19 @@ class TestSpecConstruction:
     @FORMAT_PARAMS
     def test_create_zarr_spec_roundtrip(self, input_format):
         data = _make_data(input_format)
+        disk_data = _to_disk(data, input_format)
+        disk_format = f"T{input_format}" if "T" not in input_format else input_format
         spec = create_zarr_spec(
-            data_shape=data.shape,
+            data_shape=disk_data.shape,
             zarr_version=ZARR_DRIVER,
             path="/p.zarr",
-            input_format=input_format,
+            input_format=disk_format,
             shard_spatial_shape=SHARD_SPATIAL_SHAPE,
             chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
             dtype=DTYPE,
         )
-        assert tuple(spec["metadata"]["shape"]) == tuple(data.shape)
-        assert len(spec["metadata"]["chunk_grid"]["configuration"]["chunk_shape"]) == len(data.shape)
+        assert tuple(spec["metadata"]["shape"]) == tuple(disk_data.shape)
+        assert len(spec["metadata"]["chunk_grid"]["configuration"]["chunk_shape"]) == len(disk_data.shape)
 
 
 # ===========================================================================
