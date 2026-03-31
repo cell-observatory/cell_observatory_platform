@@ -40,6 +40,7 @@
 
 FROM nvcr.io/nvidia/pytorch:26.01-py3 AS base
 ENV RUNNING_IN_DOCKER=TRUE
+ENV PATH="/workspace/cell_observatory_platform:${PATH}"
 
 # Make bash colorful https://www.baeldung.com/linux/docker-container-colored-bash-output   https://ss64.com/nt/syntax-ansi.html 
 ENV TERM=xterm-256color
@@ -113,7 +114,7 @@ RUN echo "Install additional dependencies"
 FROM pip_install AS torch_26_01
 RUN pip install --ignore-installed cryptography
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt --progress-bar off --root-user-action=ignore --cache-dir /root/.cache/pip
+    pip install -r requirements.txt --ignore-installed --progress-bar off --root-user-action=ignore --cache-dir /root/.cache/pip
 
 RUN echo "Install ops3d kernels"
 RUN BUILD_ARCH=$(uname -m) && \
