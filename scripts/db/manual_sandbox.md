@@ -9,7 +9,19 @@ source .env
 # Good ref: https://postgres.ai/docs/postgres-howtos/database-administration/backup-recovery/how-to-speed-up-pg-dump#:~:text=Monitoring%20Dump%20Progress%E2%80%8B,%7C%20gzip%20.
 
 # 91m32.398s
-# time pg_dump -Fd --host=db.$SUPABASE_PROD_ID.supabase.co --port=5432 --dbname=postgres --username=postgres --file=scripts/db/$(date +%Y_%m_%d)_production.backup -Z3 --data-only --schema=public  --large-objects --no-sync --verbose --jobs=4
+# time pg_dump -Fd \
+#   --host=db.$SUPABASE_PROD_ID.supabase.co \
+#   --port=5432 \
+#   --dbname=postgres \
+#   --username=postgres \
+#   --file=scripts/db/$(date +%Y_%m_%d)_production.backup \
+#   -Z3 \
+#   --data-only \
+#   --schema=public \
+#   --large-objects \
+#   --no-sync \
+#   --verbose \
+#   --jobs=4
 
 # 56m57.809s with no compression
 time pg_dump -Fd \
