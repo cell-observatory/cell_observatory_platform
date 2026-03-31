@@ -866,33 +866,53 @@ class TestSaveZarrAnnotations:
 
 class TestSaveMasks:
     @FORMAT_PARAMS
-    @pytest.mark.parametrize("annotation_name", ["semantic_masks", "instance_masks"])
-    def test_save_masks_append_creates_root_and_annotation(self, tmp_path, input_format, annotation_name):
+    @pytest.mark.parametrize(
+        "task, mask_root_name",
+        [
+            ("semantic_segmentation", "semantic_masks"),
+            ("instance_segmentation", "instance_masks"),
+        ],
+    )
+    def test_save_masks_append_creates_root_and_annotation(
+        self, tmp_path, input_format, task, mask_root_name
+    ):
         data = _make_data(input_format, n_channels=2)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
-            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
-            zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            image_path=zarr_path,
+            data=data,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+            input_format=input_format,
+            zarr_driver=ZARR_DRIVER,
+            dtype=DTYPE,
+            channel_names={0: "d0", 1: "d1"},
         )
 
         mask = _make_mask(input_format, n_channels=1)
         model_name = "my_model"
-        expected_annotation = "semantic_masks" if annotation_name == "semantic_masks" else "instance_masks"
 
         save_masks(
-            image_path=zarr_path, masks=mask, input_format=input_format,
-            model_name=model_name, save_mode="append",
-            zarr_driver=ZARR_DRIVER, dtype=DTYPE,
-            shard_spatial_shape=SHARD_SPATIAL_SHAPE, chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+            image_path=zarr_path,
+            masks=mask,
+            task=task,
+            existing_channel_names={0: "d0", 1: "d1"},
+            input_format=input_format,
+            model_name=model_name,
+            save_mode="append",
+            zarr_driver=ZARR_DRIVER,
+            dtype=DTYPE,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+            timepoint_idxs=_tp(input_format),
         )
 
         root = _read_root(zarr_path)
         assert root.shape[-1] == 3  # 2 data + 1 appended
-        np.testing.assert_array_equal(root[..., :2], data.astype(np.uint16))
-
-        annotation = _read_annotation(zarr_path, model_name, expected_annotation)
-        np.testing.assert_array_equal(annotation, mask.astype(np.uint16))
+        np.testing.assert_array_equal(root[..., :2], _to_disk(data, input_format).astype(np.uint16))
+        assert read_channel_names(zarr_path)[2] == mask_root_name
+        annotation = _read_annotation(zarr_path, model_name, "masks")
+        np.testing.assert_array_equal(annotation, _to_disk(mask, input_format).astype(np.uint16))
 
     @FORMAT_PARAMS
     def test_save_masks_overwrite_rerun_same_model(self, tmp_path, input_format):
@@ -900,75 +920,61 @@ class TestSaveMasks:
         data = _make_data(input_format, n_channels=2)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(
-            image_path=zarr_path, data=data, shard_spatial_shape=SHARD_SPATIAL_SHAPE,
-            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, input_format=input_format,
-            zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            image_path=zarr_path,
+            data=data,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+            input_format=input_format,
+            zarr_driver=ZARR_DRIVER,
+            dtype=DTYPE,
+            channel_names={0: "d0", 1: "d1"},
         )
 
         mask1 = _make_mask(input_format, n_channels=1)
         save_masks(
-            image_path=zarr_path, masks=mask1, input_format=input_format,
+            image_path=zarr_path,
+            masks=mask1,
+            task="semantic_segmentation",
+            existing_channel_names={0: "d0", 1: "d1"},
+            input_format=input_format,
             model_name="modelX",
-            save_mode="append", zarr_driver=ZARR_DRIVER, dtype=DTYPE,
-            shard_spatial_shape=SHARD_SPATIAL_SHAPE, chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+            save_mode="append",
+            zarr_driver=ZARR_DRIVER,
+            dtype=DTYPE,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+            timepoint_idxs=_tp(input_format),
         )
 
         mask2 = (_make_mask(input_format, n_channels=1) + 9).astype(np.uint16)
         save_masks(
-            image_path=zarr_path, masks=mask2, input_format=input_format,
+            image_path=zarr_path,
+            masks=mask2,
+            task="semantic_segmentation",
+            existing_channel_names={0: "d0", 1: "d1", 2: "semantic_masks"},
+            input_format=input_format,
             model_name="modelX",
-            save_mode="overwrite", zarr_driver=ZARR_DRIVER, dtype=DTYPE,
-            data_channel_idxs=[0, 1], mask_channel_idxs=[2],
+            save_mode="overwrite",
+            zarr_driver=ZARR_DRIVER,
+            dtype=DTYPE,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+            timepoint_idxs=_tp(input_format),
         )
 
         root = _read_root(zarr_path)
         np.testing.assert_array_equal(
-            root[..., :2], data.astype(np.uint16),
+            root[..., :2],
+            _to_disk(data, input_format).astype(np.uint16),
             err_msg="Data channels corrupted by save_masks overwrite",
         )
 
-        annotation = _read_annotation(zarr_path, "modelX", "semantic_masks")
-        np.testing.assert_array_equal(annotation, mask2.astype(np.uint16))
+        annotation = _read_annotation(zarr_path, "modelX", "masks")
+        np.testing.assert_array_equal(annotation, _to_disk(mask2, input_format).astype(np.uint16))
 
 
 # ===========================================================================
-# 8. normalize_data_shape
-# ===========================================================================
-
-class TestNormalizeDataShape:
-    def test_3d_to_tzyxc(self):
-        arr = np.zeros((8, 16, 16))
-        result = normalize_data_shape(arr, "TZYXC")
-        assert result.shape == (1, 8, 16, 16, 1)
-
-    def test_3d_to_zyxc(self):
-        arr = np.zeros((8, 16, 16))
-        result = normalize_data_shape(arr, "ZYXC")
-        assert result.shape == (8, 16, 16, 1)
-
-    def test_4d_zyxc_passthrough(self):
-        arr = np.zeros((8, 16, 16, 2))
-        result = normalize_data_shape(arr, "ZYXC")
-        assert result is arr
-
-    def test_5d_tzyxc_passthrough(self):
-        arr = np.zeros((2, 8, 16, 16, 3))
-        result = normalize_data_shape(arr, "TZYXC")
-        assert result is arr
-
-    def test_4d_with_5d_format_raises(self):
-        arr = np.zeros((2, 8, 16, 16))
-        with pytest.raises(NotImplementedError):
-            normalize_data_shape(arr, "TZYXC")
-
-    def test_2d_raises(self):
-        arr = np.zeros((16, 16))
-        with pytest.raises(ValueError):
-            normalize_data_shape(arr, "TZYXC")
-
-
-# ===========================================================================
-# 9. normalize_idxs
+# 8. normalize_idxs
 # ===========================================================================
 
 class TestNormalizeIdxs:

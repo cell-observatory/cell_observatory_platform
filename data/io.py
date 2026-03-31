@@ -243,36 +243,55 @@ def save_masks(
     image_path: str,
     model_name: str,
     masks: np.ndarray,
+    task: str,
+    existing_channel_names: Dict[int, str],
     input_format: Literal["TZYXC", "ZYXC"],
     save_mode: Literal["overwrite", "append"],
     zarr_driver: str = "zarr3",
     dtype: str = "uint16",
-    data_channel_idxs: Optional[List[int]] = None,
     timepoint_idxs: Optional[List[int]] = None,
-    mask_channel_idxs: Optional[List[int]] = None,
     shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
     chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
-) -> None:
-    """Save masks to a separate zarr annotations group at <image_path>/annotations/<annotation_name>."""
-    if save_mode == "create" and (shard_spatial_shape is None or chunk_spatial_shape is None):
-        raise ValueError("shard_spatial_shape and chunk_spatial_shape are required when creating new annotations")
-    annotation_name = "masks"
-    # If we are appending masks, that means they don't already exist, so we need to create them.
-    # If we are overwriting masks, that means we are either running a new model or re-running the same model.
-    # If we are running a new model, we need to create the labels array.
-    # If we are re-running the same model, we need to overwrite the old labels array.
-    if save_mode == "append":
-        annotation_save_mode = "create"
-    elif save_mode == "overwrite":
-        exists = annotation_exists(image_path, model_name, annotation_name, zarr_driver)
-        if exists:
-            annotation_save_mode = "overwrite"
-        else:
-            annotation_save_mode = "create"
-    else:
-        raise ValueError(f"Invalid save_mode: {save_mode}")
+) -> Dict[int, str]:
+    """Save masks to root array and ``<model_name>/masks``; update per-array ``channel_names`` attrs.
 
-    try:
+    ``existing_channel_names`` is relative to the **root** array. In ``append`` mode it must contain only
+    data channels (no entries in :data:`TASK_MASK_CHANNEL_NAMES[task]`). In ``overwrite`` mode it must
+    include both data and mask channel entries for this model's slice of the root array.
+
+    Returns the full root-level ``existing_channel_names`` mapping after this save.
+    """
+    annotation_name = "masks"
+    data_cn = {i: n for i, n in existing_channel_names.items() if n not in TASK_MASK_CHANNEL_NAMES[task]}
+    mask_cn = {i: n for i, n in existing_channel_names.items() if n in TASK_MASK_CHANNEL_NAMES[task]}
+
+    if save_mode == "append":
+        if mask_cn:
+            raise ValueError(
+                f"In append mode, existing_channel_names must not include mask channel names {TASK_MASK_CHANNEL_NAMES[task]}; got {mask_cn!r}"
+            )
+        if not data_cn:
+            raise ValueError("existing_channel_names must include at least one data channel in append mode")
+        data_idxs = sorted(data_cn.keys())
+        root_cn = read_channel_names(image_path)
+        if not root_cn:
+            update_root_channel_names(image_path, data_cn)
+            root_cn = read_channel_names(image_path)
+        _verify_root_channel_names_match(data_cn, root_cn)
+
+        mask_names = TASK_MASK_CHANNEL_NAMES[task]
+        n_mask = int(masks.shape[-1])
+        if not mask_names and n_mask > 0:
+            raise ValueError(f"Task {task!r} produces no mask channel names but masks have {n_mask} channel(s)")
+        while len(mask_names) < n_mask:
+            mask_names.append(f"mask_ch_{len(mask_names)}")
+        mask_names = mask_names[:n_mask]
+
+        read_spec = _make_read_zarr_spec(image_path, subpath=None, driver=zarr_driver)
+        ds = ts.open(read_spec).result()
+        old_channel_count = int(ds.shape[-1])
+        new_mask_entries = {old_channel_count + i: mask_names[i] for i in range(n_mask)}
+
         update_zarr_data(
             image_path=image_path,
             data=masks,
@@ -280,14 +299,65 @@ def save_masks(
             zarr_driver=zarr_driver,
             dtype=dtype,
             timepoint_idxs=timepoint_idxs,
-            data_channel_idxs=data_channel_idxs,
-            mask_channel_idxs=mask_channel_idxs,
-            mode=save_mode,
+            data_channel_idxs=data_idxs,
+            mask_channel_idxs=None,
+            mode="append",
         )
-    except Exception as e:
-        logger.error(f"Failed to update zarr masks in root of zarr store at {image_path}: {e}")
-        raise e
-    
+
+        annotation_save_mode = "create"
+    elif save_mode == "overwrite":
+        if not data_cn or not mask_cn:
+            raise ValueError(
+                f"In overwrite mode, channel_names must include both data and mask channels; "
+                f"got data={data_cn!r}, mask={mask_cn!r}"
+            )
+        data_idxs = sorted(data_cn.keys())
+        mask_idxs = sorted(mask_cn.keys())
+        root_cn = read_channel_names(image_path)
+        _verify_root_channel_names_match(existing_channel_names, root_cn)
+        if root_cn != existing_channel_names:
+            # Require full agreement on keys and values
+            if set(root_cn.keys()) != set(existing_channel_names.keys()) or any(
+                root_cn.get(k) != existing_channel_names[k] for k in existing_channel_names
+            ):
+                raise ValueError(
+                    f"Root channel_names must match incoming exactly: on_disk={root_cn!r}, incoming={existing_channel_names!r}"
+                )
+
+        expected_masks_local = {i: mask_cn[k] for i, k in enumerate(mask_idxs)}
+        on_disk_masks = read_masks_channel_names(image_path, model_name)
+        if on_disk_masks and on_disk_masks != expected_masks_local:
+            raise ValueError(
+                f"Masks array channel_names mismatch: on_disk={on_disk_masks!r}, expected={expected_masks_local!r}"
+            )
+
+        update_zarr_data(
+            image_path=image_path,
+            data=masks,
+            input_format=input_format,
+            zarr_driver=zarr_driver,
+            dtype=dtype,
+            timepoint_idxs=timepoint_idxs,
+            data_channel_idxs=data_idxs,
+            mask_channel_idxs=mask_idxs,
+            mode="overwrite",
+        )
+
+        exists = annotation_exists(image_path, model_name, annotation_name, zarr_driver)
+        annotation_save_mode = "overwrite" if exists else "create"
+        new_mask_entries = {}
+    else:
+        raise ValueError(f"Invalid save_mode: {save_mode}")
+
+    if save_mode == "append" and (
+        "ZYX" in input_format
+        and (shard_spatial_shape is None or chunk_spatial_shape is None)
+        and annotation_save_mode == "create"
+    ):
+        raise ValueError(
+            "shard_spatial_shape and chunk_spatial_shape are required when creating new dense annotations (ZYX input format)"
+        )
+
     try:
         save_zarr_annotations(
             image_path=image_path,
@@ -305,6 +375,17 @@ def save_masks(
     except Exception as e:
         logger.error(f"Failed to save zarr annotations at {image_path}/{model_name}/{annotation_name}: {e}")
         raise e
+
+    if save_mode == "append":
+        update_root_channel_names(image_path, new_mask_entries)
+        masks_local = {i: mask_names[i] for i in range(len(mask_names))}
+        save_masks_channel_names(image_path, model_name, masks_local)
+
+    elif save_mode == "overwrite":
+        masks_local = {i: mask_cn[k] for i, k in enumerate(sorted(mask_cn.keys()))}
+        save_masks_channel_names(image_path, model_name, masks_local)
+
+    return read_channel_names(image_path)
 
 def read_npy(image_path: str, dtype: Optional[NUMPY_DTYPES | str] = None) -> np.ndarray:
     if isinstance(image_path, torch.Tensor):
