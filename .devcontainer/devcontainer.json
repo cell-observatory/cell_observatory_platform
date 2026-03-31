@@ -32,7 +32,8 @@
     "--privileged",
     "--shm-size=64g",
     "--gpus=all",
-    "-p=55555:5432"
+    "-p=55555:5432",
+    "--network=host"
   ],
   "mounts": [
     "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached",
