@@ -163,16 +163,34 @@ def save_annotations_metadata(
     metadata: Dict[str, Any],
     timepoint_idxs: Optional[List[int]] = None,
 ) -> None:
-    """Save metadata for a sparse annotation array at <image_path>/<model_name>/<annotation_name>."""
+    """Merge model-group metadata at ''<image_path>/<model_name>/.zattrs'' (task, timepoints, timestamps)."""
     try:
-        store = zarr.open_group(image_path, mode="a")
-        group = store[model_name]
-        old_metadata = group.attrs.get("metadata", {})
-        previous_timepoint_idxs = old_metadata.get("timepoint_idxs", [])
+        gpath = Path(image_path) / model_name
+        gpath.mkdir(parents=True, exist_ok=True)
+        group = zarr.open_group(str(gpath), mode="a")
+        old_metadata = dict(group.attrs.get("metadata", {}))
+
+        incoming_task = metadata.get("task")
+        if old_metadata:
+            old_task = old_metadata.get("task")
+            if old_task and incoming_task and old_task != incoming_task:
+                raise ValueError(
+                    f"Task mismatch for model {model_name!r}: on_disk={old_task!r}, incoming={incoming_task!r}"
+                )
+            prev_tp = set(old_metadata.get("timepoints_processed", []))
+            metadata.setdefault("created_at", old_metadata.get("created_at", ""))
+        else:
+            prev_tp = set()
+            metadata["created_at"] = datetime.now().isoformat()
+
         if timepoint_idxs is not None:
-            previous_timepoint_idxs.extend(timepoint_idxs)
-        metadata["timepoint_idxs"] = previous_timepoint_idxs
+            prev_tp.update(timepoint_idxs)
+
+        metadata["timepoints_processed"] = sorted(prev_tp)
         metadata["last_saved_at"] = datetime.now().isoformat()
+        metadata["schema_version"] = 1
+        if incoming_task is not None:
+            metadata["task"] = incoming_task
         group.attrs["metadata"] = metadata
     except Exception as e:
         logger.error(f"Failed to save metadata for {model_name} at {image_path}: {e}")
