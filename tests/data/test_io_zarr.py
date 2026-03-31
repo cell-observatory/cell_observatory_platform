@@ -645,7 +645,8 @@ class TestAnnotationExists:
             image_path=zarr_path, data=mask, source_name="mymodel",
             annotation_name="semantic_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
-            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, timepoint_idxs=_tp(input_format),
+            zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         assert annotation_exists(zarr_path, "mymodel", "semantic_masks", ZARR_DRIVER) is True
 
@@ -670,11 +671,12 @@ class TestSaveZarrAnnotations:
             image_path=zarr_path, data=mask, source_name="modelA",
             annotation_name="instance_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
-            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, timepoint_idxs=_tp(input_format),
+            zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         stored = _read_annotation(zarr_path, "modelA", "instance_masks")
-        np.testing.assert_array_equal(stored, mask.astype(np.uint16))
+        np.testing.assert_array_equal(stored, _to_disk(mask, input_format).astype(np.uint16))
 
     @FORMAT_PARAMS
     def test_create_duplicate_raises(self, tmp_path, input_format):
@@ -691,7 +693,8 @@ class TestSaveZarrAnnotations:
             image_path=zarr_path, data=mask, source_name="modelA",
             annotation_name="instance_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
-            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, timepoint_idxs=_tp(input_format),
+            zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         with pytest.raises(ValueError, match="already exists"):
@@ -699,7 +702,8 @@ class TestSaveZarrAnnotations:
                 image_path=zarr_path, data=mask, source_name="modelA",
                 annotation_name="instance_masks", input_format=input_format,
                 save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
-                chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+                chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, timepoint_idxs=_tp(input_format),
+                zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             )
 
     @FORMAT_PARAMS
@@ -717,18 +721,20 @@ class TestSaveZarrAnnotations:
             image_path=zarr_path, data=mask1, source_name="modelA",
             annotation_name="semantic_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
-            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, timepoint_idxs=_tp(input_format),
+            zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         mask2 = (_make_mask(input_format, n_channels=1) + 7).astype(np.uint16)
         save_zarr_annotations(
             image_path=zarr_path, data=mask2, source_name="modelA",
             annotation_name="semantic_masks", input_format=input_format,
-            save_mode="overwrite", zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            save_mode="overwrite", timepoint_idxs=_tp(input_format),
+            zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         stored = _read_annotation(zarr_path, "modelA", "semantic_masks")
-        np.testing.assert_array_equal(stored, mask2.astype(np.uint16))
+        np.testing.assert_array_equal(stored, _to_disk(mask2, input_format).astype(np.uint16))
 
     @FORMAT_PARAMS
     def test_overwrite_nonexistent_raises(self, tmp_path, input_format):
@@ -745,13 +751,14 @@ class TestSaveZarrAnnotations:
             save_zarr_annotations(
                 image_path=zarr_path, data=mask, source_name="modelA",
                 annotation_name="semantic_masks", input_format=input_format,
-                save_mode="overwrite", zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+                save_mode="overwrite", timepoint_idxs=_tp(input_format),
+                zarr_driver=ZARR_DRIVER, dtype=DTYPE,
             )
 
     @FORMAT_PARAMS
     def test_overwrite_with_timepoint_idxs(self, tmp_path, input_format):
         if input_format == "ZYXC":
-            pytest.skip("timepoint_idxs only applicable to TZYXC")
+            pytest.skip("multi-timepoint subset indexing only applicable to TZYXC")
 
         n_t = 4
         data = _make_data(input_format, n_channels=2, n_timepoints=n_t)
@@ -836,19 +843,21 @@ class TestSaveZarrAnnotations:
             image_path=zarr_path, data=mask_a, source_name="modelA",
             annotation_name="instance_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
-            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, timepoint_idxs=_tp(input_format),
+            zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         save_zarr_annotations(
             image_path=zarr_path, data=mask_b, source_name="modelB",
             annotation_name="instance_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
-            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, timepoint_idxs=_tp(input_format),
+            zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         stored_a = _read_annotation(zarr_path, "modelA", "instance_masks")
         stored_b = _read_annotation(zarr_path, "modelB", "instance_masks")
-        np.testing.assert_array_equal(stored_a, mask_a.astype(np.uint16))
-        np.testing.assert_array_equal(stored_b, mask_b.astype(np.uint16))
+        np.testing.assert_array_equal(stored_a, _to_disk(mask_a, input_format).astype(np.uint16))
+        np.testing.assert_array_equal(stored_b, _to_disk(mask_b, input_format).astype(np.uint16))
 
 
 # ===========================================================================
@@ -1068,7 +1077,8 @@ class TestDataIntegrity:
             image_path=zarr_path, data=mask, source_name="modelA",
             annotation_name="instance_masks", input_format=input_format,
             save_mode="create", shard_spatial_shape=SHARD_SPATIAL_SHAPE,
-            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, timepoint_idxs=_tp(input_format),
+            zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
 
         after = _read_root(zarr_path)

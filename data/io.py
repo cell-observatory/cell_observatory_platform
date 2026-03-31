@@ -654,12 +654,14 @@ def save_zarr_annotations(
         raise ValueError(f"source_name is required but got {source_name}")
     if annotation_name is None or annotation_name == "":
         raise ValueError(f"annotation_name is required but got {annotation_name}")
+    if data.ndim != len(input_format):
+        raise ValueError(f"data.shape and input_format must have the same number of dimensions but got: {len(data.shape)=}, {len(input_format)=}")
 
-    data = normalize_data_shape(data, input_format)
-    if timepoint_idxs is not None:
-        if len(timepoint_idxs) != data.shape[0]:
-            raise ValueError(f"timepoint_idxs must have the same length as the time dimension of the data but got: {len(timepoint_idxs)=}, {data.shape[0]=}")
-    
+    data, disk_format, timepoint_idxs = _normalize_to_time_bearing(data, input_format, timepoint_idxs)
+    time_dim = disk_format.index("T")
+    if time_dim != 0:
+        raise NotImplementedError("Only time dimension at the first position is currently supported for appending channels.")
+
     exists = annotation_exists(image_path, source_name, annotation_name, zarr_driver)
     if exists and save_mode == "create":
         raise ValueError(f"Annotation {annotation_name} already exists at {image_path}")
@@ -671,7 +673,7 @@ def save_zarr_annotations(
             data_shape=data.shape,
             zarr_version=zarr_driver,
             path=image_path,
-            input_format=input_format,
+            input_format=disk_format,
             shard_spatial_shape=shard_spatial_shape,
             chunk_spatial_shape=chunk_spatial_shape if chunk_spatial_shape is not None else data.shape,
             source_name=source_name,
@@ -684,6 +686,16 @@ def save_zarr_annotations(
         raise ValueError(f"Invalid save_mode: {save_mode}")
 
     ds = ts.open(spec).result()
+
+    if timepoint_idxs is not None:
+        if len(timepoint_idxs) != data.shape[0]:
+            raise ValueError(f"timepoint_idxs must have the same length as the time dimension of the data but got: {len(timepoint_idxs)=}, {data.shape[0]=}")
+        if len(timepoint_idxs) > ds.shape[time_dim]:
+            raise ValueError(f"timepoint_idxs must have less than or equal to the time dimension size of the data but got: {len(timepoint_idxs)=}, {ds.shape[time_dim]=}")
+    else:
+        if data.shape[time_dim] != ds.shape[time_dim]:
+            raise ValueError(f"Time dimension mismatch: got data.shape[{time_dim}] != store_shape[{time_dim}] for dimension T with input_format={input_format}.")
+
     with ts.Transaction() as txn:
         if timepoint_idxs is not None:
             ds.with_transaction(txn)[timepoint_idxs, ...] = data.astype(dtype)
