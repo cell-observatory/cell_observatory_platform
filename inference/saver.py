@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
-from typing import Literal, Optional, Tuple, Dict, Any, List, Callable
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
 
-import ray
 import numpy as np
-from cell_observatory_platform.data.io import save_masks, save_sparse_annotations, save_annotations_metadata
+import ray
+
 from cell_observatory_platform.data.datasets.buffers import BufferManager
-from pathlib import Path
-import os
+from cell_observatory_platform.data.io import (
+    save_annotations_metadata,
+    save_masks,
+    save_sparse_annotations,
+)
 
 def input_format_to_output_format(
     input_format: Literal["TZYXC", "ZYXC"],

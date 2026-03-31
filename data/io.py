@@ -18,27 +18,144 @@ import zarr
 from skimage.io import imread, imsave
 from tifffile import TiffFile, imwrite
 
-from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
+from cell_observatory_platform.data.data_types import (
+    NUMPY_DTYPES,
+    TENSORSTORE_DTYPES,
+    TORCH_DTYPES,
+)
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+TASK_MASK_CHANNEL_NAMES: Dict[str, List[str]] = {
+    "instance_segmentation": ["instance_masks"],
+    "semantic_segmentation": ["semantic_masks"],
+    "detection": [],
+}
 
-def verify_channel_metadata(
-    image_path: str,
-    data_channel_idxs: Optional[List[int]] = None,
-    mask_channel_idxs: Optional[List[int]] = None,
-) -> None:
-    """Verify that the channel metadata is consistent with the data."""
-    store = zarr.open_group(image_path, mode="r")
-    store_data_channel_idxs = store.attrs.get("data_channel_idxs", [])
-    store_mask_channel_idxs = store.attrs.get("mask_channel_idxs", [])
-    if data_channel_idxs is not None:
-        if store_data_channel_idxs != data_channel_idxs:
-            raise ValueError(f"Data channel indices do not match existing array metadata: {store_data_channel_idxs=} != {data_channel_idxs=}")
-    if mask_channel_idxs is not None:
-        if store_mask_channel_idxs != mask_channel_idxs:
-            raise ValueError(f"Mask channel indices do not match existing array metadata: {store_mask_channel_idxs=} != {mask_channel_idxs=}")
+def _open_root_zarr_for_attrs(image_path: str, mode: str):
+    """Open the root zarr node (array or group) for attribute read/write (TensorStore root is often an array)."""
+    try:
+        return zarr.open_array(image_path, mode=mode)
+    except Exception:
+        return zarr.open_group(image_path, mode=mode)
+
+
+def read_channel_names(image_path: str) -> Dict[int, str]:
+    """Read root array ``channel_names`` from ``<image>.zarr/.zattrs`` (indices relative to root array)."""
+    node = _open_root_zarr_for_attrs(image_path, mode="r")
+    raw = node.attrs.get("channel_names", {})
+    return {int(k): str(v) for k, v in raw.items()}
+
+def read_shape(image_path: str, driver: str = "zarr3") -> Tuple[int, ...]:
+    """Read the time dimension size from the root zarr array."""
+    read_spec = _make_read_zarr_spec(image_path, subpath=None, driver=driver)
+    ds = ts.open(read_spec).result()
+    return tuple(ds.shape)
+
+
+def update_root_channel_names(image_path: str, new_entries: Dict[int, str]) -> None:
+    """Merge ``new_entries`` into root ``channel_names``. Raises if an index already maps to a different name."""
+    node = _open_root_zarr_for_attrs(image_path, mode="a")
+    existing = {int(k): str(v) for k, v in node.attrs.get("channel_names", {}).items()}
+    for idx, name in new_entries.items():
+        if idx in existing and existing[idx] != name:
+            raise ValueError(
+                f"Channel index {idx} already has name {existing[idx]!r}, cannot set to {name!r}"
+            )
+    existing.update(new_entries)
+    node.attrs["channel_names"] = {str(k): v for k, v in sorted(existing.items())}
+
+
+def read_model_group_metadata(image_path: str, model_name: str) -> Optional[Dict[str, Any]]:
+    """Read ``metadata`` from ``<image>.zarr/<model_name>/.zattrs``, or None if the group is missing."""
+    gpath = Path(image_path) / model_name
+    if not gpath.exists():
+        return None
+    try:
+        group = zarr.open_group(str(gpath), mode="r")
+        meta = group.attrs.get("metadata")
+        return dict(meta) if meta else None
+    except (KeyError, ValueError, OSError):
+        return None
+
+
+def _masks_zarr_path(image_path: str, model_name: str) -> Path:
+    return Path(image_path) / model_name / "masks"
+
+
+def save_masks_channel_names(image_path: str, model_name: str, channel_names: Dict[int, str]) -> None:
+    """Write ``channel_names`` to ``<image>.zarr/<model_name>/masks/.zattrs`` (indices relative to the masks array)."""
+    path = _masks_zarr_path(image_path, model_name)
+    if not path.exists():
+        raise FileNotFoundError(f"Masks array path does not exist: {path}")
+    arr = zarr.open_array(str(path), mode="a")
+    arr.attrs["channel_names"] = {str(k): v for k, v in sorted(channel_names.items())}
+
+
+def read_masks_channel_names(image_path: str, model_name: str) -> Dict[int, str]:
+    """Read ``channel_names`` from the model ``masks`` array attrs."""
+    path = _masks_zarr_path(image_path, model_name)
+    if not path.exists():
+        return {}
+    arr = zarr.open_array(str(path), mode="r")
+    raw = arr.attrs.get("channel_names", {})
+    return {int(k): str(v) for k, v in raw.items()}
+
+
+_FORMAT_WITH_TIME = {
+    "ZYXC": "TZYXC",
+    "CZYX": "TCZYX",
+    "N": "TN",
+    "NM": "TNM",
+    "N6": "TN6",
+}
+
+
+def _normalize_to_time_bearing(
+    data: np.ndarray,
+    input_format: str,
+    timepoint_idxs: Optional[List[int]],
+) -> Tuple[np.ndarray, str, Optional[List[int]]]:
+    """If *input_format* has no T, prepend T=1 to *data* and upgrade the format string.
+
+    Returns ``(data_5d, format_with_T, timepoint_idxs)`` ready for on-disk writes.
+    Raises when *timepoint_idxs* is missing or has length != 1 for non-T formats.
+    """
+    if "T" in input_format:
+        return data, input_format, timepoint_idxs
+
+    if timepoint_idxs is None:
+        raise ValueError(
+            f"Must specify timepoint_idxs when time dimension is not present "
+            f"in the input format but got timepoint_idxs=None for {input_format=}."
+        )
+    if len(timepoint_idxs) != 1:
+        raise ValueError(
+            f"timepoint_idxs must have length 1 when time dimension is not present "
+            f"in the input format but got {len(timepoint_idxs)=} for {input_format=}."
+        )
+
+    data = data[np.newaxis, ...]
+    new_format = _FORMAT_WITH_TIME.get(input_format)
+    if new_format is None:
+        raise ValueError(
+            f"Cannot add time dimension to unknown format {input_format!r}. "
+            f"Known non-T formats: {list(_FORMAT_WITH_TIME.keys())}"
+        )
+    return data, new_format, timepoint_idxs
+
+
+def _verify_root_channel_names_match(incoming: Dict[int, str], on_disk: Dict[int, str]) -> None:
+    """Require every key in ``incoming`` to match ``on_disk``."""
+    for idx, name in incoming.items():
+        if idx not in on_disk:
+            continue
+        if on_disk[idx] != name:
+            raise ValueError(
+                f"Root channel_names mismatch at index {idx}: on_disk={on_disk[idx]!r}, incoming={name!r}"
+            )
+
 
 def save_annotations_metadata(
     image_path: str,
@@ -473,25 +590,6 @@ def annotation_exists(image_path: str, source_name: str, annotation_name: str, z
         if "NOT_FOUND" in str(e) or "does not exist" in str(e):
             return False
         raise
-
-def normalize_data_shape(data: np.ndarray, input_format: str) -> np.ndarray:
-    """Normalize the data shape to the expected format"""
-    if data.ndim == len(input_format):
-        return data
-    if data.ndim == 3:
-        new_axes = []
-        if "T" in input_format.upper():
-            new_axes.append(input_format.upper().index("T"))
-        if "C" in input_format.upper():
-            new_axes.append(input_format.upper().index("C"))
-        data = np.expand_dims(data, axis=new_axes)
-    elif data.ndim == 4:
-        raise NotImplementedError("4D data is not supported for reformatting yet")
-    elif data.ndim == 5:
-        return data
-    else:
-        raise ValueError(f"Unsupported data shape: {data.shape}")
-    return data
 
 VALID_SOURCE_NAME = re.compile(r"^[^\/\\]+$")
 VALID_ANNOTATION_NAME = re.compile(r"^[a-zA-Z0-9_]+$")

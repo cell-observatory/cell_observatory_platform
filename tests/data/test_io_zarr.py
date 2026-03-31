@@ -16,7 +16,7 @@ All spatial tests are parameterized for both ZYXC (3D+C) and TZYXC (4D+C) layout
 """
 import re
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import pytest
@@ -25,10 +25,10 @@ import tensorstore as ts
 from cell_observatory_platform.data.io import (
     _make_read_zarr_spec,
     _make_write_zarr_spec,
-    create_zarr_spec,
     annotation_exists,
-    normalize_data_shape,
+    create_zarr_spec,
     normalize_idxs,
+    read_channel_names,
     read_zarr,
     save_masks,
     save_zarr_data,
@@ -83,6 +83,20 @@ def _read_annotation(path: str, source: str, annotation: str) -> np.ndarray:
         read=True,
     ).result()
     return ds.read().result()
+
+
+def _to_disk(arr: np.ndarray, input_format: str) -> np.ndarray:
+    """Expand a non-T array to its expected on-disk (T-bearing) shape for comparison."""
+    if "T" in input_format:
+        return arr
+    return arr[np.newaxis, ...]
+
+
+def _tp(input_format: str) -> Optional[list]:
+    """Return ``timepoint_idxs`` required for non-T formats, else ``None``."""
+    if "T" in input_format:
+        return None
+    return [0]
 
 
 # ---------------------------------------------------------------------------
@@ -721,7 +735,7 @@ class TestSaveZarrAnnotations:
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         mask = _make_mask("TZYXC", n_channels=1)
-        with pytest.raises(ValueError, match="Invalid label name"):
+        with pytest.raises(ValueError, match="Invalid annotation name"):
             save_zarr_annotations(
                 image_path=zarr_path, data=mask, source_name="modelA",
                 annotation_name="bad/label", input_format="TZYXC",
