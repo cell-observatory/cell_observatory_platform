@@ -12,6 +12,127 @@ from cell_observatory_platform.data.transforms.noise import (
 )
 
 
+SEED = 42
+
+# -----------------------------------------------------------------------------
+# Helper functions from https://github.com/cell-observatory/synthetic_data_generation_pipelines/blob/f3b4d13eb5c322d35d4992ec69873f234782d03f/src_code/membrane_simulation_pipeline/semi_synthetic_membrane_sim_cubes.py
+# to test the noise transform for correctness against the original implementation
+
+def photons2electrons(image, quantum_efficiency=.82):
+    return image * quantum_efficiency
+
+
+def electrons2photons(image, quantum_efficiency=.82):
+    return image / quantum_efficiency
+
+
+def electrons2counts(image, electrons_per_count=.22):
+    return image / electrons_per_count
+
+
+def counts2electrons(image, electrons_per_count=.22):
+    return image * electrons_per_count
+
+
+def photons2counts(image, quantum_efficiency=.82, electrons_per_count=.22):
+    return electrons2counts(photons2electrons(image))
+
+
+def counts2photons(image, quantum_efficiency=.82, electrons_per_count=.22):
+    return electrons2photons(counts2electrons(image))
+
+
+def randuniform(var, rng: np.random.Generator):
+    if np.isscalar(var):
+        return var
+    else:
+        return rng.uniform(*var)
+
+def normal_noise(mean: float, sigma: float, size: tuple, rng: np.random.Generator) -> np.array:
+    mean = randuniform(mean, rng)
+    sigma = randuniform(sigma, rng)
+    return rng.normal(loc=mean, scale=sigma, size=size).astype(np.float32)
+
+def poisson_noise(image: np.ndarray, rng: np.random.Generator) -> np.array:
+    image = np.nan_to_num(image, nan=0)
+    return rng.poisson(lam=image).astype(np.float32) - image
+
+def noise_ref(image, mean_background_offset=100, sigma_background_noise=40, quantum_efficiency=.82, electrons_per_count=.22):
+    """
+    Args:
+        image: noise-free image in photons
+        mean_background_offset: camera background offset
+        sigma_background_noise: read noise from the camera
+        quantum_efficiency: quantum efficiency of the camera
+        electrons_per_count: conversion factor to go from electrons to counts
+    Returns:
+        noisy image in counts
+    """
+    rng = np.random.default_rng(SEED)
+    image = photons2electrons(image, quantum_efficiency=quantum_efficiency)
+    sigma_background_noise *= electrons_per_count  # electrons;  40 counts = 40 * .22 electrons per count
+    shot_noise = poisson_noise(image, rng=rng)   # shot noise in electrons
+    dark_read_noise = normal_noise(mean=0, sigma=sigma_background_noise, size=image.shape, rng=rng)  # dark image in electrons
+    print("image[0]\n", image[0])
+    print("shot_noise[0]\n", shot_noise[0])
+    print("dark_read_noise[0]\n", dark_read_noise[0])
+
+    image += shot_noise + dark_read_noise
+    image = electrons2counts(image, electrons_per_count=electrons_per_count)
+
+    # image += mean_background_offset    # add camera offset (camera offset in counts)
+    image[image < 0] = 0
+    return image.astype(np.float32)
+
+def noise_efficient(image, mean_background_offset=100, sigma_background_noise=40, quantum_efficiency=.82, electrons_per_count=.22):
+    rng = np.random.default_rng(SEED)
+    original_dtype = image.dtype
+    image_batch = image.astype(np.float32)
+    qe = quantum_efficiency
+    epc = electrons_per_count
+    mean_offset = mean_background_offset
+    sigma_bg = sigma_background_noise
+    # sensor pipeline with noise: photons → noisy counts
+    # 1. Convert photons → electrons
+    image_batch *= qe
+
+    # 2. Compute shot noised electrons (Poisson thinned by QE) 
+    # Shot noise alone should be done in photon space (e.g. photons arrival ~ Poisson(irradiance))
+    # However, we actually want to sample from the total random process (photon arrival AND detection).
+    # Because photon arrival is a hidden variable
+    # we can sample from the marginal distribution of detection as a Poisson thinning process.        
+    # Where detected photons = Poisson(n_photons_arrived * QE) = Poisson(electrons)
+    # https://stats.libretexts.org/Bookshelves/Probability_Theory/Probability_Mathematical_Statistics_and_Stochastic_Processes_(Siegrist)/14%3A_The_Poisson_Process/14.05%3A_Thinning_and_Superpositon
+    photons_detected = rng.poisson(image_batch)
+    # 3. Compute dark/read noise (Gaussian) in electron space
+    dark_read_noise = rng.normal(
+        loc=0,
+        scale=sigma_bg * epc,
+        size=image_batch.shape, 
+    )
+    # ) * sigma_bg * epc
+    print("image_batch[0]")
+    print(image_batch[0])
+    print("photons_detected[0]")
+    print(photons_detected[0])
+    print("dark_read_noise[0]")
+    print(dark_read_noise[0])
+    # 4. electrons = detected photons + dark/read noise
+    image_batch = photons_detected + dark_read_noise
+    
+    # 5. Convert electrons → counts
+    image_batch /= epc
+    
+    # Add camera background offset
+    # image_batch += mean_offset
+    
+    # Clip to valid range [0, 65535] for uint16
+    # TODO: Should we clamp to 0-65535 or just min=0?
+    image_batch = np.clip(image_batch, a_min=0, a_max=65535)
+    return image_batch.astype(original_dtype)
+
+# -----------------------------------------------------------------------------
+
 def _scipy_gaussian_filter_3d_ref(arr: np.ndarray, sigma: float, radius: int) -> np.ndarray:
     """Reference 3D Gaussian blur via scipy. arr shape (Z,Y,X).
     Uses constant (zero) padding to match GaussianBlur3d."""
@@ -58,6 +179,25 @@ def _full_3d_gaussian_conv_ref(
     out = F_nn.conv3d(x_pad, w, groups=C)
     return out
 
+
+# -----------------------------------------------------------------------------
+# MixedPoissonGaussianNoise tests
+# -----------------------------------------------------------------------------
+
+def test_mixed_poisson_gaussian_noise_correctness_vs_ref():
+    inputs = torch.full((2, 1, 4, 4), 12.0)
+    kwargs = dict(
+        quantum_efficiency=0.62,
+        electrons_per_count=2.5,
+        sigma_background_noise=0.2,
+        mean_background_offset=4.0,
+    )
+    # noise = MixedPoissonGaussianNoise(**kwargs)
+    # out = noise(inputs)
+    ref = noise_ref(inputs.numpy(), **kwargs)
+    efficient_out = noise_efficient(inputs.numpy(), **kwargs)
+    # assert efficient_out == ref, "Noise is not the same as reference"
+    assert np.allclose(efficient_out, ref), "Noise is not the same as reference"
 
 def test_mixed_poisson_gaussian_noise_reproducible_with_seed():
     inputs = torch.full((2, 1, 4, 4), 12.0)
