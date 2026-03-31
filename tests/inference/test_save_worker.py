@@ -80,11 +80,10 @@ def _wait_buffer_in_use_zero(buffer_actor, *, timeout_s: float = 5.0, poll_s: fl
     assert m["in_use_current"] == 0, f"Expected in_use_current==0 within {timeout_s}s, got {m!r}"
 
 
-def _create_zarr_semantic_tile_store(tmp_path: Path) -> dict:
+def _create_zarr_semantic_tile_store(tmp_path: Path, *, tile_name: str = "tile.zarr") -> dict:
     """Create a zarr3 root array (TZYXC) so ``save_masks(..., save_mode='append')`` can run end-to-end."""
     server_folder = tmp_path / "srv"
     output_folder = "ds_out"
-    tile_name = "tile.zarr"
     image_path = server_folder / output_folder / tile_name
     image_path.parent.mkdir(parents=True, exist_ok=True)
     assert not image_path.exists()
@@ -99,6 +98,7 @@ def _create_zarr_semantic_tile_store(tmp_path: Path) -> dict:
         input_format="TZYXC",
         zarr_driver="zarr3",
         dtype="uint16",
+        channel_names={0: "channel_0"},
     )
     return {
         "server_folder": str(server_folder),
@@ -126,6 +126,8 @@ def _make_save_metainfo_from_store(store: dict, *, batch_size: int = 1) -> dict:
         "batch_size_actual": batch_size,
         "input_format": "TZYXC",
         "model_name": "unit_test_model",
+        "save_tensors_dtypes": {"masks": "uint16"},
+        "channel_names": {0: "channel_0"},
         "server_folder": col(store["server_folder"]),
         "output_folder": col(store["output_folder"]),
         "tile_name": col(store["tile_name"]),
@@ -200,9 +202,10 @@ class TestInputFormatToOutputFormat:
         assert o["labels"] == "NM"
         assert o["boxes"] == "N6"
 
-    def test_semantic_zyxc_raises(self):
-        with pytest.raises(ValueError, match="Unknown input format"):
-            input_format_to_output_format("ZYXC", "semantic_segmentation")
+    def test_semantic_zyxc(self):
+        o = input_format_to_output_format("ZYXC", "semantic_segmentation")
+        assert o["masks"] == "ZYXC"
+        assert o["labels"] == "NM"
 
 
 class TestSaverSavePredictions:
@@ -216,10 +219,12 @@ class TestSaverSavePredictions:
             task="semantic_segmentation",
             input_format="TZYXC",
             save_mode="append",
+            save_tensors_dtypes={"masks": "uint16"},
+            existing_channel_names={0: "channel_0"},
             shard_spatial_shape=store["shard_spatial_shape"],
             chunk_spatial_shape=store["chunk_spatial_shape"],
         )
-        assert annotation_exists(store["image_path"], "m1", "semantic_masks", "zarr3")
+        assert annotation_exists(store["image_path"], "m1", "masks", "zarr3")
 
     def test_dispatches_masks_and_labels_semantic(self, tmp_path):
         """When both masks and labels are provided, both are saved."""
@@ -235,10 +240,12 @@ class TestSaverSavePredictions:
             task="semantic_segmentation",
             input_format="TZYXC",
             save_mode="append",
+            save_tensors_dtypes={"masks": "uint16", "labels": "float32"},
+            existing_channel_names={0: "channel_0"},
             shard_spatial_shape=store["shard_spatial_shape"],
             chunk_spatial_shape=store["chunk_spatial_shape"],
         )
-        assert annotation_exists(store["image_path"], "m1", "semantic_masks", "zarr3")
+        assert annotation_exists(store["image_path"], "m1", "masks", "zarr3")
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +307,7 @@ class TestSaveWorkerRay:
             assert annotation_exists(
                 zarr_semantic_tile["image_path"],
                 "unit_test_model",
-                "semantic_masks",
+                "masks",
                 "zarr3",
             )
             _wait_buffer_in_use_zero(buf)
@@ -347,7 +354,7 @@ class TestSaveWorkerRay:
             assert annotation_exists(
                 zarr_semantic_tile["image_path"],
                 "unit_test_model",
-                "semantic_masks",
+                "masks",
                 "zarr3",
             )
             buf = bm._buffer_actors[pool]
@@ -406,10 +413,12 @@ class TestSaveWorkerRay:
                 _kill_safe(actor)
 
     def test_save_worker_save_multi_batch(
-        self, ray_ctx, ray_node_id, unique_suffix, zarr_semantic_tile
+        self, ray_ctx, ray_node_id, unique_suffix, tmp_path
     ):
-        """Batch loop processes multiple elements; all per-batch successes are counted."""
+        """Batch of 2 elements, each writing to its own file path -- successes counted per element."""
         pool = f"sv_mb_{unique_suffix}"
+        store_a = _create_zarr_semantic_tile_store(tmp_path, tile_name="tile_a.zarr")
+        store_b = _create_zarr_semantic_tile_store(tmp_path, tile_name="tile_b.zarr")
         bm = _make_buffer_manager(ray_node_id)
         actor = None
         sw = None
@@ -424,23 +433,29 @@ class TestSaveWorkerRay:
                 pin_to_numa_node=False,
             )
             masks = np.ones((2, 1, 2, 2, 2, 1), dtype=np.float32)
+            meta = _make_save_metainfo_from_store(store_a, batch_size=1)
+            meta_b = _make_save_metainfo_from_store(store_b, batch_size=1)
+            for key in meta:
+                if isinstance(meta[key], list):
+                    meta[key] = meta[key] + meta_b[key]
+            meta["batch_size_actual"] = 2
             inference_outputs = {
                 "masks": masks,
-                "metainfo": _make_save_metainfo_from_store(zarr_semantic_tile, batch_size=2),
+                "metainfo": meta,
             }
-            # Serialize per-batch saves: parallel writes to the same zarr path are unsafe.
             sw = SaveWorker.options(name=f"sw_mb_{unique_suffix}").remote(
                 buffer_manager=bm,
                 save_mode="append",
-                max_workers=1,
-                shard_spatial_shape=zarr_semantic_tile["shard_spatial_shape"],
-                chunk_spatial_shape=zarr_semantic_tile["chunk_spatial_shape"],
+                shard_spatial_shape=store_a["shard_spatial_shape"],
+                chunk_spatial_shape=store_a["chunk_spatial_shape"],
             )
             ray.get(sw.save.remote(inference_outputs))
             m = ray.get(sw.get_metrics.remote())
             assert m["save_calls"] == 1
             assert m["save_successes"] == 2
             assert m["save_failures"] == 0
+            assert annotation_exists(store_a["image_path"], "unit_test_model", "masks", "zarr3")
+            assert annotation_exists(store_b["image_path"], "unit_test_model", "masks", "zarr3")
         finally:
             if sw is not None:
                 _kill_safe(sw)
@@ -451,7 +466,7 @@ class TestSaveWorkerRay:
     def test_save_worker_nonexistent_image_path_no_batch_success(
         self, ray_ctx, ray_node_id, unique_suffix, zarr_semantic_tile
     ):
-        """Missing ``image_path`` raises before futures run; metrics record a call but no per-batch success."""
+        """Missing ``image_path`` is caught per-element; metrics record a call and one failure."""
         pool = f"sv_np_{unique_suffix}"
         bm = _make_buffer_manager(ray_node_id)
         actor = None
@@ -486,7 +501,7 @@ class TestSaveWorkerRay:
             m = ray.get(sw.get_metrics.remote())
             assert m["save_calls"] == 1
             assert m["save_successes"] == 0
-            assert m["save_failures"] == 0
+            assert m["save_failures"] == 1
             _wait_buffer_in_use_zero(buffer_actor)
         finally:
             if sw is not None:

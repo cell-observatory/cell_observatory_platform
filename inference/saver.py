@@ -51,6 +51,9 @@ def input_format_to_output_format(
         if input_format == "TZYXC":
             output_format["masks"] = "TZYXC"
             output_format["labels"] = "TNM"
+        elif input_format == "ZYXC":
+            output_format["masks"] = "ZYXC"
+            output_format["labels"] = "NM"
         else:
             raise ValueError(f"Unknown input format: {input_format}")
     elif task == "detection":
@@ -69,6 +72,36 @@ def input_format_to_output_format(
     return output_format
 
 
+def _expand_channel_names_for_batch(
+    channel_names: Union[Dict[int, str], List[Dict[int, str]]],
+    batch_size: int,
+) -> List[Dict[int, str]]:
+    if isinstance(channel_names, dict):
+        return [channel_names] * batch_size
+    if len(channel_names) != batch_size:
+        raise ValueError(
+            f"channel_names list length {len(channel_names)} must equal batch_size {batch_size}"
+        )
+    return list(channel_names)
+
+
+def _timepoint_idxs_for_batch_idx(
+    timepoint_idxs: Optional[Any],
+    batch_index: int,
+    batch_size: int,
+) -> Optional[List[int]]:
+    if timepoint_idxs is None:
+        return None
+    if (
+        isinstance(timepoint_idxs, list)
+        and len(timepoint_idxs) == batch_size
+        and timepoint_idxs
+        and isinstance(timepoint_idxs[0], list)
+    ):
+        return timepoint_idxs[batch_index]
+    return timepoint_idxs
+
+
 def save_predictions(
     image_path: str,
     model_name: str,
@@ -76,20 +109,16 @@ def save_predictions(
     task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
     input_format: Literal["TZYXC", "ZYXC"],
     save_mode: Literal["overwrite", "append"],
+    save_tensors_dtypes: Dict[str, str],
+    existing_channel_names: Dict[int, str],
     zarr_driver: str = "zarr3",
     timepoint_idxs: Optional[List[int]] = None,
-    data_channel_idxs: Optional[List[int]] = None,
-    mask_channel_idxs: Optional[List[int]] = None,
     shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
     chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
 ) -> None:
     preds_formats = input_format_to_output_format(input_format, task)
-    dtypes = preds["metainfo"]["save_tensors_dtypes"]
     exceptions = {}
-    metadata = {
-        "task": task,
-        "mask_channel_idxs": mask_channel_idxs,
-    }
+    metadata = {"task": task}
     for output_name, output_format in preds_formats.items():
         try:
             data = preds[output_name]
@@ -97,25 +126,25 @@ def save_predictions(
             ray.logger.error(f"Prediction {output_name} not found in preds: {e}")
             continue
         try:
-            dtype = dtypes[output_name]
+            dtype = save_tensors_dtypes[output_name]
         except KeyError as e:
             ray.logger.error(f"Dtype for {output_name} not found in save_tensors_dtypes: {e}")
             continue
         try:
-            
+
             if output_name == "masks":
                 assert output_format in ["TZYXC", "ZYXC"], f"Invalid output format: {output_format}"
                 save_masks(
                     image_path=image_path,
                     model_name=model_name,
                     masks=data,
-                    input_format=output_format,
+                    task=task,
+                    existing_channel_names=existing_channel_names,
+                    input_format=cast(Literal["TZYXC", "ZYXC"], output_format),
                     save_mode=save_mode,
                     chunk_spatial_shape=chunk_spatial_shape,
                     shard_spatial_shape=shard_spatial_shape,
                     timepoint_idxs=timepoint_idxs,
-                    data_channel_idxs=data_channel_idxs,
-                    mask_channel_idxs=mask_channel_idxs,
                     zarr_driver=zarr_driver,
                     dtype=dtype,
                 )
@@ -124,8 +153,11 @@ def save_predictions(
                     image_path=image_path,
                     model_name=model_name,
                     data=data,
-                    annotation_name=output_name,
-                    input_format=output_format,
+                    annotation_name=cast(Literal["scores", "labels", "boxes"], output_name),
+                    input_format=cast(
+                        Literal["TNM", "TN6", "TN", "NM", "N6", "N"],
+                        output_format,
+                    ),
                     save_mode=save_mode,
                     timepoint_idxs=timepoint_idxs,
                     zarr_driver=zarr_driver,
@@ -193,7 +225,7 @@ class SaveWorker:
         }
         self.shard_spatial_shape = shard_spatial_shape
         self.chunk_spatial_shape = chunk_spatial_shape
-    
+
     def get_metrics(self) -> Dict[str, Any]:
         return self._metrics.copy()
 
@@ -226,16 +258,28 @@ class SaveWorker:
                 output_arrays[name] = output_array
                 slots_to_free.append(slot_info)
             sample_metainfo = inference_outputs["metainfo"]
+            required = (
+                "task",
+                "batch_size_actual",
+                "input_format",
+                "model_name",
+                "save_tensors_dtypes",
+                "channel_names",
+            )
+            for key in required:
+                if key not in sample_metainfo:
+                    raise KeyError(f"metainfo missing required key {key!r}")
             task = sample_metainfo["task"]
             batch_size = sample_metainfo["batch_size_actual"]
             save_tensors_dtypes = sample_metainfo["save_tensors_dtypes"]
-            data_channel_idxs = sample_metainfo["data_channel_idxs"]
-            mask_channel_idxs = sample_metainfo.get("mask_channel_idxs", None)
-            timepoint_idxs = sample_metainfo.get("timepoint_idxs", None)
+            timepoint_idxs_raw = sample_metainfo.get("timepoint_idxs", None)
+            channel_names_list = _expand_channel_names_for_batch(
+                sample_metainfo["channel_names"], batch_size
+            )
 
             batch_futures: List[Future] = []
-            for b in range(batch_size):
-                preds_element = {}
+
+            def _save_batch_element(b: int) -> None:
                 metadata_element = {col: sample_metainfo[col][b] for col in self.columns}
                 image_path = os.path.join(
                     metadata_element["server_folder"],
@@ -243,27 +287,35 @@ class SaveWorker:
                     metadata_element["tile_name"],
                 )
                 if not os.path.exists(image_path):
-                    raise ValueError(f"Save mode is {self.save_mode} but image path {image_path} does not exist")
-                for name, output_array in output_arrays.items():
-                    preds_element[name] = output_array[b]
-                preds_element["metainfo"] = {
-                    "save_tensors_dtypes": save_tensors_dtypes,
-                }
-                
-                batch_futures.append(self.thread_pool.submit(
-                    save_predictions,
+                    raise ValueError(
+                        f"Save mode is {self.save_mode} but image path {image_path} does not exist"
+                    )
+                preds_element = {name: output_arrays[name][b] for name in output_arrays}
+                save_predictions(
                     image_path=str(image_path),
                     model_name=sample_metainfo["model_name"],
                     preds=preds_element,
-                    task=task,
-                    input_format=sample_metainfo["input_format"],
-                    save_mode=self.save_mode,
-                    timepoint_idxs=timepoint_idxs,
-                    data_channel_idxs=data_channel_idxs,
-                    mask_channel_idxs=mask_channel_idxs,
+                    task=cast(
+                        Literal[
+                            "instance_segmentation",
+                            "semantic_segmentation",
+                            "detection",
+                        ],
+                        task,
+                    ),
+                    input_format=cast(Literal["TZYXC", "ZYXC"], sample_metainfo["input_format"]),
+                    save_mode=cast(Literal["overwrite", "append"], self.save_mode),
+                    save_tensors_dtypes=save_tensors_dtypes,
+                    existing_channel_names=channel_names_list[b],
+                    timepoint_idxs=_timepoint_idxs_for_batch_idx(
+                        timepoint_idxs_raw, b, batch_size
+                    ),
                     chunk_spatial_shape=self.chunk_spatial_shape,
                     shard_spatial_shape=self.shard_spatial_shape,
-                ))
+                )
+
+            for b in range(batch_size):
+                batch_futures.append(self.thread_pool.submit(_save_batch_element, b))
 
             for future in as_completed(batch_futures):
                 try:
@@ -274,6 +326,7 @@ class SaveWorker:
                     self._metrics["save_failures"] += 1
                     continue
         except Exception as e:
+            self._metrics["save_failures"] += 1
             ray.logger.error(f"Failed to save: {e}", exc_info=True)
         finally:
             for slot_info in slots_to_free:
