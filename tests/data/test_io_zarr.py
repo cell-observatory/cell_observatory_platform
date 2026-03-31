@@ -292,13 +292,14 @@ class TestUpdateZarrAppend:
             input_format=input_format,
             zarr_driver=ZARR_DRIVER,
             dtype=DTYPE,
+            timepoint_idxs=_tp(input_format),
             mode="append",
         )
 
         stored = _read_root(zarr_path)
         assert stored.shape[-1] == 3  # 2 data + 1 mask
-        np.testing.assert_array_equal(stored[..., :2], data.astype(np.uint16))
-        np.testing.assert_array_equal(stored[..., 2:], mask.astype(np.uint16))
+        np.testing.assert_array_equal(stored[..., :2], _to_disk(data, input_format).astype(np.uint16))
+        np.testing.assert_array_equal(stored[..., 2:], _to_disk(mask, input_format).astype(np.uint16))
 
     @FORMAT_PARAMS
     def test_append_multiple_mask_channels(self, tmp_path, input_format):
@@ -313,18 +314,19 @@ class TestUpdateZarrAppend:
             input_format=input_format,
             zarr_driver=ZARR_DRIVER,
             dtype=DTYPE,
+            timepoint_idxs=_tp(input_format),
             mode="append",
         )
 
         stored = _read_root(zarr_path)
         assert stored.shape[-1] == 5
-        np.testing.assert_array_equal(stored[..., :2], data.astype(np.uint16))
-        np.testing.assert_array_equal(stored[..., 2:], mask.astype(np.uint16))
+        np.testing.assert_array_equal(stored[..., :2], _to_disk(data, input_format).astype(np.uint16))
+        np.testing.assert_array_equal(stored[..., 2:], _to_disk(mask, input_format).astype(np.uint16))
 
     @FORMAT_PARAMS
     def test_append_with_timepoint_idxs(self, tmp_path, input_format):
         if input_format == "ZYXC":
-            pytest.skip("timepoint_idxs only applicable to TZYXC")
+            pytest.skip("multi-timepoint subset indexing only applicable to TZYXC")
 
         n_t = 5
         data = _make_data(input_format, n_channels=2, n_timepoints=n_t)
@@ -363,6 +365,7 @@ class TestUpdateZarrAppend:
                 zarr_driver=ZARR_DRIVER,
                 dtype=DTYPE,
                 mask_channel_idxs=[2],
+                timepoint_idxs=_tp(input_format),
                 mode="append",
             )
 
@@ -381,6 +384,7 @@ class TestUpdateZarrAppend:
                 input_format=input_format,
                 zarr_driver=ZARR_DRIVER,
                 dtype=DTYPE,
+                timepoint_idxs=_tp(input_format),
                 mode="append",
             )
 
@@ -421,9 +425,10 @@ class TestUpdateZarrOverwrite:
             input_format=input_format,
             zarr_driver=ZARR_DRIVER,
             dtype=DTYPE,
+            timepoint_idxs=_tp(input_format),
             mode="append",
         )
-        return data.astype(np.uint16), mask.astype(np.uint16)
+        return _to_disk(data, input_format).astype(np.uint16), _to_disk(mask, input_format).astype(np.uint16)
 
     @FORMAT_PARAMS
     def test_overwrite_last_mask_channel_only(self, tmp_path, input_format):
@@ -442,6 +447,7 @@ class TestUpdateZarrOverwrite:
             dtype=DTYPE,
             data_channel_idxs=[0, 1],
             mask_channel_idxs=[3],
+            timepoint_idxs=_tp(input_format),
             mode="overwrite",
         )
 
@@ -449,7 +455,7 @@ class TestUpdateZarrOverwrite:
         assert stored.shape[-1] == total_ch
         np.testing.assert_array_equal(stored[..., :2], orig_data, err_msg="Data channels corrupted")
         np.testing.assert_array_equal(stored[..., 2], orig_mask[..., 0], err_msg="First mask channel corrupted")
-        np.testing.assert_array_equal(stored[..., 3], new_mask[..., 0], err_msg="Last mask channel not updated")
+        np.testing.assert_array_equal(stored[..., 3], _to_disk(new_mask, input_format)[..., 0], err_msg="Last mask channel not updated")
 
     @FORMAT_PARAMS
     def test_overwrite_first_mask_channel_only(self, tmp_path, input_format):
@@ -467,12 +473,13 @@ class TestUpdateZarrOverwrite:
             dtype=DTYPE,
             data_channel_idxs=[0, 1],
             mask_channel_idxs=[2],
+            timepoint_idxs=_tp(input_format),
             mode="overwrite",
         )
 
         stored = _read_root(zarr_path)
         np.testing.assert_array_equal(stored[..., :2], orig_data, err_msg="Data channels corrupted")
-        np.testing.assert_array_equal(stored[..., 2], new_mask[..., 0], err_msg="First mask channel not updated")
+        np.testing.assert_array_equal(stored[..., 2], _to_disk(new_mask, input_format)[..., 0], err_msg="First mask channel not updated")
         np.testing.assert_array_equal(stored[..., 3], orig_mask[..., 1], err_msg="Second mask channel corrupted")
 
     @FORMAT_PARAMS
@@ -489,17 +496,18 @@ class TestUpdateZarrOverwrite:
             dtype=DTYPE,
             data_channel_idxs=[0, 1],
             mask_channel_idxs=[2, 3],
+            timepoint_idxs=_tp(input_format),
             mode="overwrite",
         )
 
         stored = _read_root(zarr_path)
         np.testing.assert_array_equal(stored[..., :2], orig_data, err_msg="Data channels corrupted")
-        np.testing.assert_array_equal(stored[..., 2:], new_masks, err_msg="Mask channels not updated")
+        np.testing.assert_array_equal(stored[..., 2:], _to_disk(new_masks, input_format), err_msg="Mask channels not updated")
 
     @FORMAT_PARAMS
     def test_overwrite_with_timepoint_idxs(self, tmp_path, input_format):
         if input_format == "ZYXC":
-            pytest.skip("timepoint_idxs only applicable to TZYXC")
+            pytest.skip("multi-timepoint subset indexing only applicable to TZYXC")
 
         n_t = 4
         zarr_path = str(tmp_path / "img.zarr")
@@ -547,6 +555,7 @@ class TestUpdateZarrOverwrite:
                 dtype=DTYPE,
                 data_channel_idxs=[0, 1, 2],
                 mask_channel_idxs=[1],
+                timepoint_idxs=_tp(input_format),
                 mode="overwrite",
             )
 
@@ -561,6 +570,7 @@ class TestUpdateZarrOverwrite:
                 image_path=zarr_path, data=mask, input_format=input_format,
                 zarr_driver=ZARR_DRIVER, dtype=DTYPE,
                 data_channel_idxs=None, mask_channel_idxs=[2],
+                timepoint_idxs=_tp(input_format),
                 mode="overwrite",
             )
         with pytest.raises(ValueError):
@@ -568,6 +578,7 @@ class TestUpdateZarrOverwrite:
                 image_path=zarr_path, data=mask, input_format=input_format,
                 zarr_driver=ZARR_DRIVER, dtype=DTYPE,
                 data_channel_idxs=[0, 1], mask_channel_idxs=None,
+                timepoint_idxs=_tp(input_format),
                 mode="overwrite",
             )
 
@@ -583,6 +594,7 @@ class TestUpdateZarrOverwrite:
                 image_path=zarr_path, data=big_mask, input_format=input_format,
                 zarr_driver=ZARR_DRIVER, dtype=DTYPE,
                 data_channel_idxs=[0, 1], mask_channel_idxs=[2, 3, 4],
+                timepoint_idxs=_tp(input_format),
                 mode="overwrite",
             )
 
@@ -598,6 +610,7 @@ class TestUpdateZarrOverwrite:
                 image_path=zarr_path, data=mask, input_format=input_format,
                 zarr_driver=ZARR_DRIVER, dtype=DTYPE,
                 data_channel_idxs=[0, 1], mask_channel_idxs=[2, 3],
+                timepoint_idxs=_tp(input_format),
                 mode="overwrite",
             )
 
@@ -993,7 +1006,8 @@ class TestDataIntegrity:
             mask = _make_mask(input_format, n_channels=1)
             update_zarr_data(
                 image_path=zarr_path, data=mask, input_format=input_format,
-                zarr_driver=ZARR_DRIVER, dtype=DTYPE, mode="append",
+                zarr_driver=ZARR_DRIVER, dtype=DTYPE, timepoint_idxs=_tp(input_format),
+                mode="append",
             )
 
         stored = _read_root(zarr_path)
@@ -1016,7 +1030,8 @@ class TestDataIntegrity:
         mask = _make_mask(input_format, n_channels=2)
         update_zarr_data(
             image_path=zarr_path, data=mask, input_format=input_format,
-            zarr_driver=ZARR_DRIVER, dtype=DTYPE, mode="append",
+            zarr_driver=ZARR_DRIVER, dtype=DTYPE, timepoint_idxs=_tp(input_format),
+            mode="append",
         )
         original_data = _read_root(zarr_path)[..., :2].copy()
 
@@ -1026,6 +1041,7 @@ class TestDataIntegrity:
                 image_path=zarr_path, data=new_mask, input_format=input_format,
                 zarr_driver=ZARR_DRIVER, dtype=DTYPE,
                 data_channel_idxs=[0, 1], mask_channel_idxs=[2, 3],
+                timepoint_idxs=_tp(input_format),
                 mode="overwrite",
             )
 
@@ -1084,7 +1100,7 @@ class TestDataIntegrity:
             zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
         mask = _make_mask("TZYXC", n_channels=1)
-        with pytest.raises(ValueError, match="Invalid mode"):
+        with pytest.raises(ValueError, match="must be specified for overwriting"):
             update_zarr_data(
                 image_path=zarr_path, data=mask, input_format="TZYXC",
                 zarr_driver=ZARR_DRIVER, dtype=DTYPE, mode="overwrite",

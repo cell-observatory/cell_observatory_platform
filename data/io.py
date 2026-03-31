@@ -767,7 +767,7 @@ def update_zarr_data(
     image_path: str,
     data: np.ndarray,
     input_format: Literal["TZYXC", "ZYXC"],
-    data_channel_idxs: List[int],
+    data_channel_idxs: Optional[List[int]] = None,
     mask_channel_idxs: Optional[List[int]] = None,
     timepoint_idxs: Optional[List[int]] = None,
     mode: Literal["append", "overwrite"] = "append",
@@ -787,16 +787,15 @@ def update_zarr_data(
         raise FileNotFoundError(f"Image path {image_path} does not exist")
     if not len(data.shape) == len(input_format):
         raise ValueError(f"data.shape and input_format must have the same number of dimensions but got: {len(data.shape)=}, {len(input_format)=}")
-    channel_dim = input_format.index("C") if "C" in input_format else None
-    if channel_dim is None:
-        raise ValueError(f"Channel dimension is not present in the {input_format=}.")
-    if channel_dim != len(input_format) - 1:
+
+    data, disk_format, timepoint_idxs = _normalize_to_time_bearing(data, input_format, timepoint_idxs)
+
+    channel_dim = disk_format.index("C")
+    if channel_dim != len(disk_format) - 1:
         raise NotImplementedError("Only channel-last input_formats are currently supported for appending channels.")
-    time_dim = input_format.index("T") if "T" in input_format else None
-    if time_dim is not None and time_dim != 0:
+    time_dim = disk_format.index("T")
+    if time_dim != 0:
         raise NotImplementedError("Only time dimension at the first position is currently supported for appending channels.")
-    if time_dim is None and timepoint_idxs is not None:
-        raise ValueError(f"Got {timepoint_idxs=} but time dimension is not present in the {input_format=}.")
 
     read_zarr_spec = _make_read_zarr_spec(image_path, subpath=None, driver=zarr_driver)
     ds = ts.open(read_zarr_spec).result()
@@ -804,22 +803,25 @@ def update_zarr_data(
     if len(ds.shape) != len(data.shape):
         raise ValueError(f"data.shape and store.shape must have the same number of dimensions but got: {len(data.shape)=}, {len(ds.shape)=}")
     for spatial_dim in ["Z", "Y", "X"]:
-        dim_idx = input_format.index(spatial_dim)
+        dim_idx = disk_format.index(spatial_dim)
         if data.shape[dim_idx] != ds.shape[dim_idx]:
             raise ValueError(f"Data and store have different spatial dimensions: got data.shape[{dim_idx}] != store_shape[{dim_idx}] for dimension {spatial_dim} with input_format={input_format}.")
-    if time_dim is not None:
-        if timepoint_idxs is not None:
-            if len(timepoint_idxs) != data.shape[time_dim]:
-                raise ValueError(f"timepoint_idxs must have the same length as the time dimension of the data but got: {len(timepoint_idxs)=}, {data.shape[time_dim]=}")
-        else:
-            if data.shape[time_dim] != ds.shape[time_dim]:
-                raise ValueError(f"Time dimension mismatch: got data.shape[{time_dim}] != store_shape[{time_dim}] for dimension T with input_format={input_format}.")
+    if timepoint_idxs is not None:
+        if len(timepoint_idxs) != data.shape[time_dim]:
+            raise ValueError(f"timepoint_idxs must have the same length as the time dimension of the data but got: {len(timepoint_idxs)=}, {data.shape[time_dim]=}")
+        if len(timepoint_idxs) > ds.shape[time_dim]:
+            raise ValueError(f"timepoint_idxs must have less than or equal to the time dimension size of the data but got: {len(timepoint_idxs)=}, {ds.shape[time_dim]=}")
+    else:
+        if data.shape[time_dim] != ds.shape[time_dim]:
+            raise ValueError(f"Time dimension mismatch: got data.shape[{time_dim}] != store_shape[{time_dim}] for dimension T with input_format={input_format}.")
 
 
     if mode == "append":
         if mask_channel_idxs is not None:
             raise ValueError(f"Got {mask_channel_idxs=} but mode is 'append'. Specifying custom mask channel indices is not supported for appending.")
         old_channel_count = ds.shape[channel_dim]
+        if data_channel_idxs is None:
+            data_channel_idxs = list(range(old_channel_count))
         new_shape = list[Any](ds.shape).copy()
         new_shape[channel_dim] = new_shape[channel_dim] + data.shape[channel_dim]
         n_new = data.shape[channel_dim]
