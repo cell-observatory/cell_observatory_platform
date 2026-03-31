@@ -174,3 +174,4 @@ scripts/db/sandbox/
 scripts/db/*.tar.gz
 scripts/db/*.tar.zst
 scripts/db/*.backup
+scripts/db/pgcopydb_work/
