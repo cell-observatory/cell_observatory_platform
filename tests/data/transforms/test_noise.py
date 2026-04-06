@@ -107,10 +107,8 @@ def noise_efficient(image, mean_background_offset=100, sigma_background_noise=40
     # 3. Compute dark/read noise (Gaussian) in electron space
     dark_read_noise = rng.normal(
         loc=0,
-        scale=sigma_bg * epc,
         size=image_batch.shape, 
-    )
-    # ) * sigma_bg * epc
+    ) * sigma_bg * epc
     print("image_batch[0]")
     print(image_batch[0])
     print("photons_detected[0]")
