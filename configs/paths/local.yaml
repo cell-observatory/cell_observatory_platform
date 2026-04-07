@@ -1,6 +1,7 @@
 docker_image: null
-apptainer_image: ~/apptainer_images/develop_torch_26_01.sif
-database_sandbox: ~/databases/db/2026_03_25/sandbox.tar.zst
+# apptainer_image: ~/apptainer_images/develop_torch_26_01.sif
+apptainer_image: /groups/betzig/betziglab/hph/containers/cell_observatory_platform_feature-local_db_caches_torch_26_01.sif
+database_sandbox: ${oc.env:DATABASE_SANDBOX}
 
 # No need to change anything below
 # --------------------------------------------------------------------------------

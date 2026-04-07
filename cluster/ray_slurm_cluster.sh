@@ -139,7 +139,7 @@ wait "$rsync_bg_pid"
 
 echo "Unpacking local database on head $head_node"
 srun -n1 -N1 -w $head_node "
-    tar -Sxzvf /scratch/$USER/sandbox.tar.zst
+    tar --zstd -xf /local/$USER/sandbox.tar.zst -C /local/$USER
 " >/dev/null 2>&1 &
 tar_bg_pid=$!
 wait "$tar_bg_pid"
@@ -150,7 +150,7 @@ srun -n1 -N1 -w $head_node "
         --bind $workspace \
         --bind $bind \
         --bind $outdir:$tmpdir \
-        --bind /local/$USER:/local \
+        --bind /local/$USER:/scratch \
         $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
         -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory
 " &
@@ -178,14 +178,14 @@ if [ ${nodes} -gt 1 ]; then
         echo "Copying local database to $host"
         srun -n1 -N1 -w $host "
             mkdir -p /local/$USER/
-            rsync -avz --stats $database_sandbox/ /local/$USER/sandbox.tar.zst
+            rsync -avz --stats $database_sandbox /local/$USER/sandbox.tar.zst
         " >/dev/null 2>&1 &
         rsync_bg_pid=$!
         wait "$rsync_bg_pid"
 
         echo "Unpacking local database on $host"
         srun -n1 -N1 -w $host "
-            tar -Sxzvf /local/$USER/sandbox.tar.zst
+            tar --zstd -xf /local/$USER/sandbox.tar.zst -C /local/$USER
         " >/dev/null 2>&1 &
         tar_bg_pid=$!
         wait "$tar_bg_pid"
@@ -197,7 +197,7 @@ if [ ${nodes} -gt 1 ]; then
                 --bind $workspace \
                 --bind $bind \
                 --bind $outdir/ray_worker_$i:$tmpdir \
-                --bind /local/$USER:/local \
+                --bind /local/$USER:/scratch \
                 $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
                 -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i
         " &
@@ -220,7 +220,7 @@ srun -n1 -N1 -w $head_node "
         --bind $workspace \
         --bind $bind \
         --bind $outdir:$tmpdir \
-        --bind /local/$USER:/local \
+        --bind /local/$USER:/scratch \
         $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
         -a $cluster_address -r $nodes 
 "
@@ -238,7 +238,7 @@ apptainer exec --userns --nv \
     --bind $workspace \
     --bind $bind \
     --bind $outdir:$tmpdir \
-    --bind /local/$USER:/local \
+    --bind /local/$USER:/scratch \
     $env $tasks
 
 

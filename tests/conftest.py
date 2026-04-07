@@ -31,6 +31,25 @@ logger = logging.getLogger(__name__)
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", verbose=True)
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-localdb",
+        action="store_true",
+        default=False,
+        help="run tests marked localdb",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-localdb"):
+        return
+
+    skip_localdb = pytest.mark.skip(reason="need --run-localdb to execute localdb tests")
+    for item in items:
+        if "localdb" in item.keywords:
+            item.add_marker(skip_localdb)
+
+
 def _sdpa_kernel_with_math_fallback(backends):
     """Add MATH fallback for tests when Flash Attention isn't available."""
     from torch.nn.attention import SDPBackend, sdpa_kernel as _sdpa_kernel

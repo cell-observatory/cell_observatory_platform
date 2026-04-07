@@ -1,11 +1,13 @@
 docker_image: null
-apptainer_image: /groups/betzig/betziglab/CellObservatoryData/apptainer_images/develop_torch_26_01.sif
-database_sandbox: /groups/betzig/betziglab/CellObservatoryData/databases/db/2026_03_25/sandbox.tar.zst
+# apptainer_image: /groups/betzig/betziglab/CellObservatoryData/apptainer_images/develop_torch_26_01.sif
+apptainer_image: /groups/betzig/betziglab/hph/containers/cell_observatory_platform_feature-local_db_caches_torch_26_01.sif
+database_sandbox: ${oc.env:DATABASE_SANDBOX}
 
 # No need to change anything below
 # --------------------------------------------------------------------------------
 repo_path: ${oc.env:REPO_DIR}
-data_path: /groups/betzig/betziglab/thayer
+data_path: /groups/betzig/betziglab/hph/cell_observatory_project
+# data_path: /groups/betzig/betziglab/thayer
 server_folder_path: /groups/betzig/betziglab/CellObservatoryData
 workdir: /workspace/${oc.env:REPO_NAME} # mapping your repo path to this path inside the container
 

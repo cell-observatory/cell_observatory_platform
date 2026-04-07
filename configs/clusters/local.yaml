@@ -51,9 +51,9 @@ torch_config:
 
 scaling_config:
   use_gpu: true
-  num_workers: 1
+  num_workers: ${clusters.total_gpus}
   resources_per_worker:
-    CPU: 0 # Ray allocates cpus automatically
+    CPU: 0
     GPU: 1
 
 env: # NCCL settings optimized for ethernet without infiniBand

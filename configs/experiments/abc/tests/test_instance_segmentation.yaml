@@ -126,7 +126,7 @@ datasets:
       - "output_folder"
       - "tile_name"
       - "prepared_id"
-      - "mask_bbox_dict"
+      - "annotations_metadata"
 
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: /clusterfs/nvme/hph/git_managed/databases/new_prepared_16_128_128_128_2_hypercube_view.csv

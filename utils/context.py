@@ -1,6 +1,7 @@
 import os
 import re
 import ctypes
+import socket
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 
@@ -70,6 +71,46 @@ def node_id() -> str:
         raise NotImplementedError("Unable to get node ID from Ray runtime context")
     
     return nid
+
+
+def _socket_node_ip() -> str:
+    explicit_host = os.environ.get("SUPABASE_LOCAL_HOST")
+    if explicit_host:
+        return explicit_host
+
+    candidates = []
+    try:
+        hostname = socket.gethostname()
+        for family, _, _, _, sockaddr in socket.getaddrinfo(hostname, None, family=socket.AF_INET):
+            ip = sockaddr[0]
+            if ip and not ip.startswith("127."):
+                candidates.append(ip)
+    except socket.gaierror:
+        pass
+
+    if candidates:
+        return candidates[0]
+
+    return "127.0.0.1"
+
+
+def node_ip() -> str:
+    """Return the routable IPv4 address for the current process' node."""
+    explicit_host = os.environ.get("SUPABASE_LOCAL_HOST")
+    if explicit_host:
+        return explicit_host
+
+    if ray.is_initialized():
+        current_node_id = node_id()
+        for node in ray.nodes():
+            if not node.get("Alive", False):
+                continue
+            if node.get("NodeID") == current_node_id:
+                node_addr = node.get("NodeManagerAddress")
+                if node_addr:
+                    return str(node_addr)
+
+    return _socket_node_ip()
 
 
 def get_context_manager():

@@ -139,7 +139,7 @@ datasets:
       - "output_folder"
       - "tile_name"
       - "prepared_id"
-      - "mask_bbox_dict"
+      - "annotations_metadata"
 
 # schedulers
 schedulers:

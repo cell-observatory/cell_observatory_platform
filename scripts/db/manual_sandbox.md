@@ -1,140 +1,187 @@
-# Create a postgresql sandbox database
+# Create a Postgres sandbox database from a backup file
 
+This is the manual restore path for creating a `sandbox.tar.zst` that can be
+copied to the cluster filesystem and loaded by the training launch scripts.
 
-## Download the backup file from the production database
+## First copy the repo to scratch
+
+Run this workflow from a repo copy under `/scratch`, not from `/groups`.
+
+```shell
+# Example only; adjust paths as needed.
+cd /scratch/$USER
+rsync -av /groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform/ ./cell_observatory_platform/
+cd /scratch/$USER/cell_observatory_platform
+```
+
+## Optional: stage the backup under `scripts/db`
 
 ```shell
 source .env
 
-# Good ref: https://postgres.ai/docs/postgres-howtos/database-administration/backup-recovery/how-to-speed-up-pg-dump#:~:text=Monitoring%20Dump%20Progress%E2%80%8B,%7C%20gzip%20.
-
-# 91m32.398s
-# time pg_dump -Fd \
-#   --host=db.$SUPABASE_PROD_ID.supabase.co \
-#   --port=5432 \
-#   --dbname=postgres \
-#   --username=postgres \
-#   --file=scripts/db/$(date +%Y_%m_%d)_production.backup \
-#   -Z3 \
-#   --data-only \
-#   --schema=public \
-#   --large-objects \
-#   --no-sync \
-#   --verbose \
-#   --jobs=4
-
-# 56m57.809s with no compression
-time pg_dump -Fd \
-  --host=db.$SUPABASE_PROD_ID.supabase.co \
-  --port=5432 \
-  --username=postgres \
-  --dbname=postgres \
-  --file=scripts/db/$(date +%Y_%m_%d)_production.backup \
-  -Z0 \
-  -j 4 \
-  --data-only \
-  --schema=public \
-  --large-objects \
-  --no-sync \
-  --verbose
-
-# 1m6.688s
-time tar -I 'zstd -3 -T0' -cvf scripts/db/$(date +%Y_%m_%d)_production.backup.tar.zst scripts/db/$(date +%Y_%m_%d)_production.backup/
-
-mkdir -p $DATABASE_DIR/$(date +%Y_%m_%d) && cp scripts/db/$(date +%Y_%m_%d)_production.backup/ $DATABASE_DIR/$(date +%Y_%m_%d)_production.backup/
-
-# or copy from the shared storage if it exists
-# cp $DATABASE_DIR/$(date +%Y_%m_%d)_production.backup/ scripts/db/$(date +%Y_%m_%d)_production.backup/ 
-
+# Example copy from shared storage to the repo for a one-off restore.
+# cp "${DATABASE_DIR}/YYYY_MM_DD/production.backup" scripts/db/
+# cp -r "${DATABASE_DIR}/YYYY_MM_DD/production.backup.dir" scripts/db/
 ```
 
-## Create an emtpy sandbox database from scripts/db/my-postgres.conf file
+## Build an empty sandbox image
+
 ```shell
+source .env
 
-# 0m9.057s
-# postgres:17 needs to match the version in the Dockerfile and supabase.co
-time apptainer build --bind /groups/betzig/betziglab:/groups/betzig/betziglab -F --sandbox scripts/db/sandbox/ docker://postgres:17 \
-    && cp --force /workspace/cell_observatory_platform/scripts/db/my-postgres.conf scripts/db/sandbox/etc/postgresql/postgresql.conf 
+# postgres:17 needs to match the production major version.
+time apptainer build --bind /groups/betzig/betziglab:/groups/betzig/betziglab \
+  -F --sandbox scripts/db/sandbox/ docker://postgres:17
 
-# start the sandbox database
-apptainer run --writable \
+# Apptainer on this cluster auto-binds /groups for writable runs.
+mkdir -p scripts/db/sandbox/groups
+
+cp --force scripts/db/my-postgres.conf scripts/db/sandbox/etc/postgresql/postgresql.conf
+```
+
+## Start the sandbox Postgres server
+
+Run this in a dedicated terminal and leave it running during restore.
+
+```shell
+apptainer run --no-mount bind-paths --writable \
   --pwd /var/lib/postgresql \
   --env POSTGRES_PASSWORD=postgres \
-  scripts/db/sandbox/ -c 'port=5433' -c 'config_file=/etc/postgresql/postgresql.conf'
-
+  scripts/db/sandbox/ \
+  -c 'port=5433' \
+  -c 'config_file=/etc/postgresql/postgresql.conf'
 ```
 
-## In a separate terminal, run the following commands to import the backup file into the sandbox database
+## Prepare roles and extensions
+
 ```shell
+source .env
 
-# 0m0.313s to create the roles and extensions
-source .env && time apptainer exec scripts/db/sandbox/ psql -h localhost -p 5433 -U postgres -d postgres --command="
-  CREATE ROLE anon; 
-  CREATE ROLE authenticated;
-  CREATE ROLE authenticator;
-  CREATE ROLE authenticated_role; 
-  CREATE ROLE service_role;  
-  DROP SCHEMA public CASCADE; CREATE SCHEMA public;
-  CREATE EXTENSION IF NOT EXISTS intarray;
-  CREATE EXTENSION IF NOT EXISTS cube;
-  CREATE EXTENSION IF NOT EXISTS pgcrypto; CREATE EXTENSION IF NOT EXISTS hstore;
-"
+time apptainer exec scripts/db/sandbox/ \
+  psql -h localhost -p 5433 -U postgres -d postgres --command="
+    CREATE ROLE anon;
+    CREATE ROLE authenticated;
+    CREATE ROLE authenticator;
+    CREATE ROLE authenticated_role;
+    CREATE ROLE service_role;
+    DROP SCHEMA public CASCADE;
+    CREATE SCHEMA public;
+    CREATE EXTENSION IF NOT EXISTS intarray;
+    CREATE EXTENSION IF NOT EXISTS cube;
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    CREATE EXTENSION IF NOT EXISTS hstore;
+  "
+```
 
-# 0m1.027s to build the schema
+## Restore the backup
+
+Use exactly one of the following commands depending on the backup format.
+
+```shell
+# Option A: pg_dump -Fc custom-format backup file
+# time apptainer exec --bind /groups/betzig/betziglab:/groups/betzig/betziglab scripts/db/sandbox/ \
+#   pg_restore -h localhost -p 5433 -U postgres -d postgres \
+#   --no-owner --no-privileges \
+#   scripts/db/production.backup
+
+# Option B: pg_dump -Fd directory-format backup
 time apptainer exec --bind /groups/betzig/betziglab:/groups/betzig/betziglab scripts/db/sandbox/ \
-  pg_restore -h localhost -p 5433 -U postgres -d postgres --no-owner --no-privileges -F d --section=pre-data \
-  scripts/db/$(date +%Y_%m_%d)_production.backup/
-
-# 0m0.353s to restore the prepared table first because everything else depends on it
-time apptainer exec --bind /groups/betzig/betziglab:/groups/betzig/betziglab scripts/db/sandbox/ \
-  pg_restore -h localhost -p 5433 -U postgres -d postgres -F d --table prepared \
-  scripts/db/$(date +%Y_%m_%d)_production.backup/
-
-# 3m16.973s to restore the rest of the data in parallel -j16 (~5GB for 2026_03_05_full_backup_production_postgres_db_custom.backup)
-time apptainer exec --bind /groups/betzig/betziglab:/groups/betzig/betziglab scripts/db/sandbox/ \
-  pg_restore -h localhost -p 5433 -U postgres -d postgres -F d -j16 \
-  scripts/db/$(date +%Y_%m_%d)_production.backup/
-  
+  pg_restore -h localhost -p 5433 -U postgres -d postgres -F d -j 16 \
+  --no-owner --no-privileges \
+  scripts/db/production.backup.dir/
 ```
 
-## Verify the database is restored correctly
+## Verify the newer training-table schema
+
+List the restored training relations:
 
 ```shell
-
-# 0m19.421s -> 34467912 rows
-time apptainer exec scripts/db/sandbox/ psql -h localhost -p 5433 -U postgres --command="SELECT COUNT(*) FROM PREPARED_CUBES;"
-
-# 9m11.176s to create the prepared tiles view table
-time apptainer exec scripts/db/sandbox/ psql -h localhost -p 5433 -U postgres --command="SELECT ID, REFRESH_PREPARED_TILES_VIEW_TABLE (ID) FROM PREPARED;"
-
-#  0m0.286s to test prepared tiles view table with 5426 rows
-time apptainer exec scripts/db/sandbox/ psql -h localhost -p 5433 -U postgres --command="SELECT 'PREPARED_TILES_VIEW_TABLE' name, count(*) row_count from PREPARED_tiles_view_table;"
-
+time apptainer exec scripts/db/sandbox/ \
+  psql -P pager=off -h localhost -p 5433 -U postgres -d postgres --command="
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND (
+        table_name LIKE 'prepared_cube\_%_agg\_%' ESCAPE '\'
+        OR table_name LIKE 'prepared_tile\_%_agg\_%' ESCAPE '\'
+      )
+    ORDER BY table_name;
+  "
 ```
 
-## Populate materialized views
+Check that the expected metadata columns exist on the restored tables:
 
 ```shell
-
-# 42m10.787s
-time apptainer exec scripts/db/sandbox/ psql -h localhost -p 5433 -U postgres --file=scripts/db/populate_mviews.sql
-
-# 8m20.130s
-time apptainer exec scripts/db/sandbox/ psql -h localhost -p 5433 -U postgres --command="ANALYZE;"
-
-# 0m52.998s
-time apptainer exec scripts/db/sandbox/ psql -h localhost -p 5433 -U postgres --file=scripts/db/SQLtest.sql
-
+time apptainer exec scripts/db/sandbox/ \
+  psql -P pager=off -h localhost -p 5433 -U postgres -d postgres --command="
+    SELECT table_name, column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND (
+        table_name LIKE 'prepared_cube\_%_agg\_%' ESCAPE '\'
+        OR table_name LIKE 'prepared_tile\_%_agg\_%' ESCAPE '\'
+      )
+      AND column_name IN (
+        'prepared_id',
+        'tile_name',
+        'time_start',
+        'z_start',
+        'y_start',
+        'x_start',
+        'is_test_split',
+        'channel_mapping',
+        'channels_metadata',
+        'annotations_metadata',
+        'annotation_count',
+        'has_annotations'
+      )
+    ORDER BY table_name, ordinal_position;
+  "
 ```
 
-## Archive the sandbox database to use for training sessions
-
+Optional: inspect one representative restored table directly:
 
 ```shell
+# Replace the table name below with one of the restored relations from the query above.
+# time apptainer exec scripts/db/sandbox/ \
+#   psql -P pager=off -h localhost -p 5433 -U postgres -d postgres --command="
+#     SELECT *
+#     FROM public.prepared_cube_channel_agg_16_128_128_128
+#     LIMIT 5;
+#   "
+```
 
-# 2m28.913s (~5GB for 2026_03_25_production.backup)
-time tar -I 'zstd -3 -T0' -cvf scripts/db/$(date +%Y_%m_%d)_sandbox.tar.zst scripts/db/sandbox/
+Collect fresh planner stats after restore:
 
-mkdir -p $DATABASE_DIR/$(date +%Y_%m_%d) && cp scripts/db/$(date +%Y_%m_%d)_sandbox.tar.zst $DATABASE_DIR/$(date +%Y_%m_%d)/sandbox.tar.zst
+```shell
+time apptainer exec scripts/db/sandbox/ \
+  psql -P pager=off -h localhost -p 5433 -U postgres -d postgres --command="ANALYZE;"
+```
 
+## Archive the sandbox for training sessions
+
+```shell
+source .env
+
+time tar -I 'zstd -3 -T0' -cvf scripts/db/$(date +%Y_%m_%d)_sandbox.tar.zst \
+  -C scripts/db sandbox
+
+mkdir -p "${DATABASE_DIR}/$(date +%Y_%m_%d)"
+cp scripts/db/$(date +%Y_%m_%d)_sandbox.tar.zst \
+  "${DATABASE_DIR}/$(date +%Y_%m_%d)/sandbox.tar.zst"
+```
+
+## Clean up the scratch working copy
+
+Only do this after:
+- the sandbox Postgres process has been stopped
+- the tarball exists where you copied it under `${DATABASE_DIR}`
+
+```shell
+# Optional sanity check before cleanup.
+ls -lh "${DATABASE_DIR}/$(date +%Y_%m_%d)/sandbox.tar.zst"
+
+# Remove the scratch working copy when you are done.
+cd /scratch/$USER
+rm -rf /scratch/$USER/cell_observatory_platform
 ```

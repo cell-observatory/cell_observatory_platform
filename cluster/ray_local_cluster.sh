@@ -12,8 +12,10 @@ source "$DIR/args_parser.sh"
 tmpdir=/tmp/symlink_$(uuidgen | cut -d "-" -f5)
 echo "Create symlink: $outdir -> $tmpdir"
 
-scratch=/scratch/$USER/
-mkdir -p $scratch
+scratch_root=/scratch/$USER
+training_scratch="${scratch_root}/training"
+sandbox_dir="${scratch_root}/pgdb/sandbox"
+mkdir -p "$training_scratch" "${scratch_root}/pgdb"
 
 ############################## SETUP PORTS
 # for debugging
@@ -48,18 +50,67 @@ export head_node
 export head_node_ip
 export cluster_address
 
+: "${SUPABASE_LOCAL_PORT:?SUPABASE_LOCAL_PORT must be set in the environment}"
+
+wait_for_local_db_from_training_image() {
+    local host=$1
+    local port=$2
+    local uri=$3
+    local attempts=${4:-30}
+
+    for ((attempt=1; attempt<=attempts; attempt++)); do
+        if apptainer exec --userns --nv \
+            --bind $storage_server \
+            --bind $workspace \
+            --bind $bind \
+            --bind $outdir:$tmpdir \
+            --bind $training_scratch:/scratch \
+            $env bash -lc "pg_isready -h \"$host\" -p \"$port\" -d postgres >/dev/null 2>&1 && psql \"$uri\" --command='SELECT 1;'" >/dev/null 2>&1; then
+            return 0
+        fi
+        echo "Waiting for local database from training image at ${host}:${port} (attempt ${attempt}/${attempts})"
+        sleep 2
+    done
+
+    echo "Training image could not reach local database at ${host}:${port}" >&2
+    apptainer exec --userns --nv \
+        --bind $storage_server \
+        --bind $workspace \
+        --bind $bind \
+        --bind $outdir:$tmpdir \
+        --bind $training_scratch:/scratch \
+        $env bash -lc "pg_isready -h \"$host\" -p \"$port\" -d postgres || true; psql \"$uri\" --command='SELECT 1;' || true" || true
+    exit 1
+}
+
 ############################## START HEAD NODE
 
 echo "Copying local database to head $head_node"
-rsync -avz --stats $database_sandbox $scratch/sandbox.tar.zst >/dev/null 2>&1 &
-tar -Sxzvf $scratch/sandbox.tar.zst >/dev/null 2>&1 &
+rsync -avz --stats "$database_sandbox" "${scratch_root}/pgdb/sandbox.tar.zst"
+tar --zstd -xf "${scratch_root}/pgdb/sandbox.tar.zst" -C "${scratch_root}/pgdb"
+
+SUPABASE_LOCAL_HOST="$head_node_ip"
+SUPABASE_LOCAL_URI="postgresql://postgres:postgres@${SUPABASE_LOCAL_HOST}:${SUPABASE_LOCAL_PORT}/postgres"
+export SUPABASE_LOCAL_HOST
+export SUPABASE_LOCAL_URI
+
+echo "Starting local database from ray_local_cluster.sh"
+apptainer instance stop mysql >/dev/null 2>&1 || true
+apptainer instance start --no-mount proc --writable --env POSTGRES_PASSWORD=postgres "$sandbox_dir" mysql
+apptainer exec instance://mysql postgres \
+    -c "listen_addresses=0.0.0.0" \
+    -c "port=${SUPABASE_LOCAL_PORT}" \
+    -c 'config_file=/etc/postgresql/postgresql.conf' &
+db_pid=$!
+wait_for_local_db_from_training_image "$SUPABASE_LOCAL_HOST" "$SUPABASE_LOCAL_PORT" "$SUPABASE_LOCAL_URI"
+echo "Training image can reach local database at ${SUPABASE_LOCAL_HOST}:${SUPABASE_LOCAL_PORT}"
 
 apptainer exec --userns --nv \
     --bind $storage_server \
     --bind $workspace \
     --bind $bind \
     --bind /dev/shm:/dev/shm \
-    --bind $scratch:/scratch \
+    --bind $training_scratch:/scratch \
     --bind $outdir:$tmpdir \
     $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
     -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $gpus -t $tmpdir -q $object_store_memory &
@@ -69,7 +120,7 @@ check_headnode="apptainer exec --nv \
     --bind $storage_server --bind $workspace \
     --bind $bind \
     --bind $outdir:$tmpdir \
-    --bind $scratch:/scratch \
+    --bind $training_scratch:/scratch \
     $env ray status --address $head_node_ip:$port"
 while ! $check_headnode; do
     echo "Waiting for head node..."
@@ -94,6 +145,7 @@ cleanup() {
         done
         kill -KILL "$head_pid" 2>/dev/null || true
     fi
+    apptainer instance stop mysql >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 trap 'exit 143' SIGTERM SIGINT
@@ -105,9 +157,24 @@ echo apptainer exec --userns --nv \
     --bind $workspace \
     --bind $bind \
     --bind $outdir:$tmpdir \
-    --bind $scratch:/scratch \
+    --bind $training_scratch:/scratch \
     $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
     -a $cluster_address -r 1
+
+############################## PRE-TRAINING DB HEALTH CHECK
+
+echo "=== Active Apptainer instances ==="
+apptainer instance list
+echo "=== DB reachability check before training ==="
+if apptainer exec --userns --nv \
+    --bind $storage_server --bind $workspace --bind $bind \
+    --bind $outdir:$tmpdir --bind $training_scratch:/scratch \
+    $env bash -lc "pg_isready -h \"$SUPABASE_LOCAL_HOST\" -p \"$SUPABASE_LOCAL_PORT\" -d postgres"; then
+    echo "DB is reachable at ${SUPABASE_LOCAL_HOST}:${SUPABASE_LOCAL_PORT}"
+else
+    echo "WARNING: DB is NOT reachable at ${SUPABASE_LOCAL_HOST}:${SUPABASE_LOCAL_PORT}" >&2
+    apptainer instance list
+fi
 
 ############################## RUN WORKLOAD
 
@@ -118,5 +185,5 @@ apptainer exec --userns --nv \
     --bind $workspace \
     --bind $bind \
     --bind $outdir:$tmpdir \
-    --bind $scratch:/scratch \
+    --bind $training_scratch:/scratch \
     $env $tasks

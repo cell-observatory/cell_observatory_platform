@@ -51,10 +51,9 @@ done
 
 _cleaned=0
 cleanup() {
+    (( _cleaned )) && return
     _cleaned=1
     echo "Running head node cleanup..."
-    apptainer instance stop mysql >/dev/null 2>&1 || true
-    echo "Successfully stopped local database"
     ray stop --force >/dev/null 2>&1 || true
     echo "Successfully stopped ray head node"
     python3 /workspace/cell_observatory_platform/utils/cleanup.py
@@ -69,6 +68,11 @@ trap 'cleanup; exit 143' TERM INT
 mkdir -p /tmp/ray
 cluster_address="$ip:$port"
 
+: "${SUPABASE_LOCAL_PORT:?SUPABASE_LOCAL_PORT must be set in the environment}"
+: "${NODE_LOCAL_STORE_ROOT:?NODE_LOCAL_STORE_ROOT must be set in the environment}"
+
+mkdir -p "$NODE_LOCAL_STORE_ROOT"
+
 pick_agent_port() {
     local p=$((dashboard_port + 1))
     # if port lands inside the worker range, bump it out
@@ -78,23 +82,6 @@ pick_agent_port() {
     echo "$p"
 }
 DASHBOARD_AGENT_PORT=$(pick_agent_port)
-
-############################## START LOCAL DATABASE
-
-echo "Starting local database"
-apptainer instance run --no-mount proc --writable --env POSTGRES_PASSWORD=postgres /scratch/sandbox mysql -c 'config_file=/etc/postgresql/postgresql.conf' >/dev/null 2>&1 &
-db_pid=$!
-sleep 10
-
-echo "Testing database connection"
-psql postgresql://postgres@localhost/postgres --command="SELECT COUNT(*) NUMBER_OF_ROWS_IN_PREPARED FROM PREPARED;" >/dev/null 2>&1
-rc=$?
-if [ $rc -ne 0 ]; then
-    echo "Database connection failed"
-    exit 1
-fi
-echo "Database connection successful"
-
 
 ############################## START RAY
 

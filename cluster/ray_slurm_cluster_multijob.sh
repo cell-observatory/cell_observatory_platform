@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+# NOTE: This multijob launcher does not currently stage or unpack the local
+# sandbox database tarball on worker nodes, so tar-backed local DB training is
+# not supported here yet.
+
 export NCCL_DEBUG=INFO
 export NCCL_DEBUG_SUBSYS=GRAPH
 export RAY_DEDUP_LOGS=0

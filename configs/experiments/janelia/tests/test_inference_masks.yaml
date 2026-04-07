@@ -148,7 +148,7 @@ datasets:
       - "output_folder"
       - "tile_name"
       - "prepared_id"
-      - "mask_bbox_dict"
+      - "annotations_metadata"
 
   preserve_order: false # only matters for TP
   callback_strategy: grpc # grpc, queue
