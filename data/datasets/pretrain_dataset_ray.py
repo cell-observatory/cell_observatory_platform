@@ -32,6 +32,7 @@ from cell_observatory_platform.utils.context import (
     local_rank,
     node_id,
     process_rank,
+    ray_assigned_gpu_to_torch_ordinal,
     torch_gpu_to_numa,
 )
 from cell_observatory_platform.utils.profiling import pprof_class, pprof_func
@@ -132,7 +133,7 @@ class FinetuneCollatorActor:
         self.bbox_data_format = bbox_data_format
         self.bbox_output_format = bbox_output_format
 
-        self.numa_node = torch_gpu_to_numa(self.local_rank)["numa_node"]
+        self.numa_node = torch_gpu_to_numa(self._get_device_index())["numa_node"]
         if pin_numa_node:
             bind_current_process_to_node(self.numa_node)
 
@@ -255,7 +256,7 @@ class FinetuneCollatorActor:
     def _get_device_index(self) -> int:
         gpu_ids = ray.get_gpu_ids()
         if gpu_ids:
-            return int(gpu_ids[0])
+            return ray_assigned_gpu_to_torch_ordinal(gpu_ids)
         # Fallback for debug mode (running outside Ray Train workers)
         elif self.debug_device_idx is not None:
             ray.logger.warning(f"Using debug device index {self.debug_device_idx}. If not debugging this could lead to unexpected behavior.")
@@ -436,7 +437,8 @@ class FinetuneCollatorActor:
                 if k in batch:
                     meta_cpu[k] = batch[k]
             if "batch_size_actual" in batch:
-                meta_cpu["batch_size_actual"] = batch["batch_size_actual"]
+                bsa = batch["batch_size_actual"]
+                meta_cpu["batch_size_actual"] = int(np.asarray(bsa).ravel()[0])
             if "valid_mask" in batch:
                 meta_cpu["valid_mask"] = batch["valid_mask"]
 
@@ -612,7 +614,7 @@ class CollatorActor:
         self.input_shape = tuple(input_shape)
         self.device_buffer_capacity = device_buffer_capacity
 
-        self.numa_node = torch_gpu_to_numa(self.local_rank)["numa_node"]
+        self.numa_node = torch_gpu_to_numa(self._get_device_index())["numa_node"]
         if pin_numa_node:
             bind_current_process_to_node(self.numa_node)
 
@@ -695,7 +697,7 @@ class CollatorActor:
     def _get_device_index(self) -> int:
         gpu_ids = ray.get_gpu_ids()
         if gpu_ids:
-            return int(gpu_ids[0])
+            return ray_assigned_gpu_to_torch_ordinal(gpu_ids)
         # Fallback for debug mode (running outside Ray Train workers)
         elif self.debug_device_idx is not None:
             ray.logger.warning(f"Using debug device index {self.debug_device_idx}. If not debugging this could lead to unexpected behavior.")
@@ -786,7 +788,8 @@ class CollatorActor:
                 if k in batch:
                     metainfo[k] = batch[k]
             if "batch_size_actual" in batch:
-                metainfo["batch_size_actual"] = batch["batch_size_actual"]
+                bsa = batch["batch_size_actual"]
+                metainfo["batch_size_actual"] = int(np.asarray(bsa).ravel()[0])
             if "valid_mask" in batch:
                 metainfo["valid_mask"] = batch["valid_mask"]
 
@@ -823,7 +826,7 @@ class LoaderActor:
         channels_subset: Optional[List[int]] = None,
         pad_mode: Literal["zero"] = "zero",
         last_batch_policy: str = "drop",
-        save_mode: str = "create",
+        save_mode: Optional[Literal["overwrite", "append"]] = None,
     ):
         self.dim = dim
         self.input_format = input_format.upper()
@@ -833,6 +836,7 @@ class LoaderActor:
 
         self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
         self.driver_process_numa_node = numa_node
+        self.numa_node = numa_node  # default; replaced by scheduler when pin_numa_node
         if pin_numa_node:
             self.actor_scheduler = ray.get_actor(
                 f"numa_node_affinity_scheduler_node_{self.node_id}", namespace="schedulers"
@@ -1017,7 +1021,8 @@ class LoaderActor:
 
         batch["buffer_name"] = np.array([buffer["name"]] * self.batch_size)
         batch["buffer_idx"] = np.full((self.batch_size,), buffer["slot"], dtype=np.int32)
-        batch["batch_size_actual"] = actual_len
+        # Ray map_batches requires dict values to be list or ndarray (not Python int).
+        batch["batch_size_actual"] = np.full((self.batch_size,), actual_len, dtype=np.int64)
         batch["valid_mask"] = np.array([i < actual_len for i in range(self.batch_size)], dtype=bool)
 
         if self.save_mode == "append_channel":
@@ -1065,6 +1070,24 @@ def set_data_context(cfg: DictConfig):
 
 
 def get_context_spec(cfg: DictConfig) -> Dict[str, Any]:
+    """Build a :class:`tensorstore.Context` JSON spec from ``cfg.datasets.context``.
+
+    **Stripping:** Keys whose value is ``None`` (Hydra ``null``) are **omitted**, so TensorStore
+    uses its **default** resource for that id (see TensorStore "Context framework" docs).
+
+    **TensorStore (google.github.io/tensorstore/context.html):**
+
+    - ``cache_pool``: ``{"total_bytes_limit": N}`` — LRU cache soft cap in bytes. Default ``N`` is
+      ``0`` (no cached bytes). Raising this can reuse decoded chunks across reads (memory tradeoff).
+    - ``data_copy_concurrency``: ``{"limit": <int>}`` or ``{"limit": "shared"}`` — cap on CPU cores
+      used for encode/decode/copy; ``"shared"`` uses all host cores/threads.
+    - ``file_io_concurrency``: ``{"limit": <int>}`` — cap on concurrent file I/O ops (same pattern).
+
+    **Ray Data (this file, ``map_batches``):** Parallelism across batches is mostly
+    ``num_actors_min`` / ``num_actors_max`` (separate process pool), not these TensorStore limits.
+
+    LoaderActor passes ``ctx_spec`` to ``tensorstore.Context`` and ``read_zarr(..., context=...)``.
+    """
     ts_ctx = OmegaConf.to_container(cfg.datasets.context, resolve=True)
     ctx_spec = {k: v for k, v in ts_ctx.items() if v is not None}
     return ctx_spec
@@ -1238,6 +1261,10 @@ def get_dataset_ray(
         node_id=node_id(),
         soft=False,
     )
+    if "inference" in cfg.keys():
+        save_mode = cfg.inference.save_worker.save_mode
+    else:
+        save_mode = None
     dataset = dataset.map_batches(
         LoaderActor,
         scheduling_strategy=scheduling_strategy,
@@ -1260,7 +1287,7 @@ def get_dataset_ray(
             "dim": get_data_dim(cfg.dataset_layout_order),
             "input_format": cfg.dataset_layout_order,
             "last_batch_policy": cfg.datasets.last_batch_policy,
-            "save_mode": cfg.inference.save_mode,
+            "save_mode": save_mode,
         },
         compute=ray.data.ActorPoolStrategy(min_size=cfg.datasets.num_actors_min, max_size=cfg.datasets.num_actors_max),
     )

@@ -214,6 +214,39 @@ def get_visible_devices():
     return [int(d) for d in devices if d.isdigit()]
 
 
+def ray_assigned_gpu_to_torch_ordinal(gpu_ids: List[int]) -> int:
+    """
+    Map Ray's GPU assignment to the PyTorch ``cuda:i`` ordinal in *this* process.
+
+    ``ray.get_gpu_ids()`` returns **physical** GPU indices on the node.  After
+    ``CUDA_VISIBLE_DEVICES`` is applied, CUDA renumbers visible devices as
+    ``0 .. N-1`` in list order.  Calling ``torch.cuda.set_device`` with the
+    physical id fails when it is greater than ``N-1`` (typical single-GPU
+    workers: visible list is one physical id, logical ordinal is always ``0``).
+    """
+    if not gpu_ids:
+        raise RuntimeError("ray_assigned_gpu_to_torch_ordinal: empty gpu_ids")
+    physical = int(gpu_ids[0])
+    vis = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if not vis:
+        return physical
+    parts = [p.strip() for p in vis.split(",") if p.strip()]
+    try:
+        visible_phys = [int(p) for p in parts]
+    except ValueError:
+        # UUID / MIG identifiers — single visible device per process is typical
+        return 0
+    try:
+        return visible_phys.index(physical)
+    except ValueError:
+        if len(visible_phys) == 1:
+            return 0
+        raise RuntimeError(
+            f"Physical GPU id {physical} from ray.get_gpu_ids()={gpu_ids!r} is not "
+            f"listed in CUDA_VISIBLE_DEVICES={vis!r}; cannot map to a torch device."
+        ) from None
+
+
 def get_local_numa_nodes(worker_numa_node: int):
     if not dist.is_initialized():
         return {0: worker_numa_node}

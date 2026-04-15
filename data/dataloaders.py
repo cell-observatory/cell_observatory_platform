@@ -1,11 +1,8 @@
 import logging
-import os
 import sys
-from pathlib import Path
 from typing import Optional
 
-import torch
-from hydra.utils import get_method, instantiate
+from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 if hasattr(OmegaConf, "has_resolver") and not OmegaConf.has_resolver("eval"):
@@ -58,7 +55,23 @@ def get_dataloader(
             df = db.hypercubes_dataframe
 
             if not {"z_size", "y_size", "x_size"}.issubset(df.columns):
-                raise ValueError("Tile-level training requires z_size, y_size, x_size columns in tiles dataframe.")
+                required = {"z_size", "y_size", "x_size"}
+                missing = sorted(required - set(df.columns))
+                cols = list(df.columns)
+                n = len(df)
+                sample_block = (
+                    df.head(5).to_string()
+                    if n
+                    else "(empty dataframe)"
+                )
+                msg = (
+                    "Tile-level training requires z_size, y_size, x_size columns in tiles dataframe. "
+                    f"Missing columns: {missing}. "
+                    f"Dataframe shape: {df.shape}, columns ({len(cols)}): {cols}\n"
+                    f"--- tiles dataframe head (up to 5 rows) ---\n{sample_block}"
+                )
+                logger.error(msg)
+                raise ValueError(msg)
 
             max_z = int(df["z_size"].max())
             max_y = int(df["y_size"].max())
@@ -121,10 +134,10 @@ def get_dataloader(
             global_rank=process_rank(),
             buffer_type="host_memory",
             batch_size=config.clusters.batch_size_per_gpu,
-            input_shape=buffer_input_shape,
+            input_shape=tuple(collator_input_shape),
             dtype=config.storage_dtype,
             buffer_capacity=config.datasets.buffer_capacity,
-            pin_to_numa_node=config.datasets.pin_numa_node,
+            pin_numa_node=config.datasets.pin_numa_node,
             max_concurrent_calls=config.datasets.max_concurrent_calls,
             node_id=node_id(),
             pool_name="loader",
@@ -143,6 +156,7 @@ def get_dataloader(
             "database": db,
             "dp_degree": dp_degree,
             "dp_rank": dp_rank,
+            "collator_input_shape": tuple(collator_input_shape),
         }
         train_dataloader, val_dataloader, database_df = get_dataloader_ray(
             cfg=config,
