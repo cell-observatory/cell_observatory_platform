@@ -10,6 +10,7 @@ from omegaconf import DictConfig, open_dict
 from ray.train import report, Checkpoint
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
+from cell_observatory_platform.training.checkpoint_metadata import build_metadata
 from cell_observatory_platform.utils.context import is_main_process
 
 
@@ -58,8 +59,21 @@ def _test_ckpt_dist(config: DictConfig):
     # start_epoch, start_iter, and best_metric are all 42
     # TODO: add check to ensure weights are identical
     if config.save_checkpoint:
+        meta = build_metadata(
+            model=model,
+            cfg=config,
+            epoch=42,
+            iter_=42,
+            best_loss=42.0,
+            wandb_run_id=None,
+            wandb_entity=None,
+        )
         trainer_per_worker.checkpoint_manager.save(
-            prefix=config.checkpoint.checkpoint_manager.checkpoint_tag, save_epoch=42, save_best_loss=42, save_step=42
+            prefix=config.checkpoint.checkpoint_manager.checkpoint_tag,
+            save_epoch=42,
+            save_best_loss=42,
+            save_step=42,
+            metadata=meta,
         )
         metrics = {"success": True}
     else:

@@ -11,6 +11,11 @@ import torch
 from deepspeed.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
 
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
+from cell_observatory_platform.training.checkpoint_metadata import (
+    metadata_path_for_tag,
+    read_metadata_json,
+    write_metadata_json,
+)
 from cell_observatory_platform.utils.context import barrier, is_main_process
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -84,12 +89,23 @@ class CheckpointManager:
         save_epoch: int = None,
         save_step: int = None,
         save_best_loss: Optional[float] = None,
+        metadata: Optional[Dict] = None,
     ):
         self.save_checkpointdir.mkdir(parents=True, exist_ok=True)
         if self.backend == "DEEPSPEED":
-            client_state = {"epoch": save_epoch, "iter": save_step, "best_loss": save_best_loss}
+            if metadata is None:
+                raise ValueError(
+                    "CheckpointManager.save() requires `metadata` dict "
+                    "(use training.checkpoint_metadata.build_metadata)."
+                )
+            client_state = dict(metadata)
             self.model.save_checkpoint(self.save_checkpointdir, client_state=client_state, tag=prefix)
+            meta_path = metadata_path_for_tag(self.save_checkpointdir, prefix)
+            if is_main_process():
+                write_metadata_json(meta_path, metadata)
+            barrier()
         else:
+            # When implementing TORCH/plain save, write checkpoint_meta.json atomically next to weights.
             raise NotImplementedError("Saving checkpoints for " "other backends not implemented yet.")
 
     def load(self):
@@ -131,7 +147,7 @@ class CheckpointManager:
         # `load_universal_checkpoint` to False and `resume_checkpointdir` to a valid path
         # we can load the checkpoint directly with the load_checkpoint API
         if self.resume_checkpointdir is not None and not self.load_universal_checkpoint:
-            ckpt_path, client_state = self._load_checkpoint(tag=self.checkpoint_tag, custom_load_fn=custom_load_fn)
+            ckpt_path, _ = self._load_checkpoint(tag=self.checkpoint_tag, custom_load_fn=custom_load_fn)
 
         # if we are resuming from a checkpoint that has a different zero configuration
         # we first attempt to find an existing universal checkpoint to load.
@@ -176,7 +192,7 @@ class CheckpointManager:
 
             barrier()
 
-            ckpt_path, client_state = self._load_checkpoint(
+            ckpt_path, _ = self._load_checkpoint(
                 tag=f"{self.checkpoint_tag}_universal", custom_load_fn=custom_load_fn
             )
 
@@ -185,7 +201,9 @@ class CheckpointManager:
             module = getattr(self.model, "module", self.model)
             module.to(TORCH_DTYPES[self.load_dtype].value)
 
-        return ckpt_path, client_state
+        meta_path = metadata_path_for_tag(self.load_checkpointdir, self.checkpoint_tag)
+        checkpoint_meta = read_metadata_json(meta_path)
+        return ckpt_path, checkpoint_meta
 
     def _load_torch(self, checkpoint: str = "mp_rank_00_model_states.pt"):
         tag_dir = self.load_checkpointdir / self.checkpoint_tag
@@ -221,8 +239,9 @@ class CheckpointManager:
         if self.load_dtype is not None:
             dst_module.to(TORCH_DTYPES[self.load_dtype].value)
 
-        client_state = {}
-        return str(pt_path), client_state
+        meta_path = metadata_path_for_tag(self.load_checkpointdir, self.checkpoint_tag)
+        checkpoint_meta = read_metadata_json(meta_path)
+        return str(pt_path), checkpoint_meta
 
     def _load_checkpoint(self, tag: str, custom_load_fn=None):
         return self.model.load_checkpoint(

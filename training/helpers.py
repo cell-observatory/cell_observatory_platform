@@ -193,11 +193,11 @@ def resume_model_state(config: DictConfig, checkpoint_manager):
             f"Checkpoint directory must be populated " \
             f"with a valid checkpoint to resume training."
         
-        ckpt_path, client_state = checkpoint_manager.load()
+        _ckpt_path, checkpoint_meta = checkpoint_manager.load()
 
-        # get metadata from client state
-        best_loss = client_state["best_loss"]
-        starting_epoch, starting_iter = client_state["epoch"], client_state["iter"]
+        # lineage from checkpoint_meta.json (mirrors former DeepSpeed client_state)
+        best_loss = checkpoint_meta["best_loss"]
+        starting_epoch, starting_iter = checkpoint_meta["epoch"], checkpoint_meta["iter"]
         epochs_left = config.schedulers.epochs - starting_epoch
 
         if epochs_left <= 0:
