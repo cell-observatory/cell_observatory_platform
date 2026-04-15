@@ -1,106 +1,92 @@
-_target_: cell_observatory_platform.inference.inferencer.InferencerWorker
+inferencer_worker:
+  _target_: cell_observatory_platform.inference.inferencer.InferencerWorker
+  aggregate_mode: "none"
+  inference_mode: "tile"
+  task: instance_segmentation
+  # Required when save_outputs is true: root zarr channel index -> name for data you write.
+  channel_names:
+    0: membrane
+  # Configures which tensors get passed to the viz / save workers
+  outputs_metadata:
+    buffer_tensors:
+      - masks
+    visualize_tensors:
+      - masks
+      # - scores
+      - labels
+      - boxes
+    save_tensors:
+      - masks
+      # - scores
+      - labels
+      - boxes
+    save_tensors_dtypes:
+      masks: ${dataset_dtype}
+      # scores: ${dataset_dtype}
+      labels: ${dataset_dtype}
+      boxes: ${dataset_dtype}
 
-inference_mode: "hypercube"
-aggregate_mode: null
+  # Data shape configuration
+  input_format: ${dataset_layout_order}
+  input_shape: ${datasets.input_shape}
+  patch_shape: ${datasets.patch_shape}
+  decoder_head_type: "maskdino"
 
-# use_cached_hypercubes_dataframe: ${datasets.databases.use_cached_hypercubes_dataframe}
-# hypercubes_dataframe_path: ${datasets.databases.hypercubes_dataframe_path}
+  # Toggle viz / save workers
+  save_outputs: true
+  block_on_save: false
+  vizualize_outputs: true
+  block_on_viz: false
 
-input_format: ${dataset_layout_order} 
-input_shape: ${datasets.input_shape}
-patch_shape: ${datasets.patch_shape}
-timepoint_list: ${datasets.databases.timepoint_list}
-
-task: instance_segmentation
-decoder_head_type: "maskdino"
-feature_viz_type: null
-
-scale_gt_boxes: true
-
-# roi_tile_list: null
-
-# protocol: ${datasets.databases.protocol}
-# dotenv_path: null
-# dbname: ${datasets.databases.dbname}
-# server_folder_path: ${paths.server_folder_path}
-# verbose: false
-# max_hypercubes: null
-# max_partitions: 10
-
-save_dir: ${paths.outdir}/inference_instance_segmentation
-
-# plotting parameters
-vizualize_outputs: true
-save_outputs: false
-save_mode: "overwrite"
-
-
-# TIFF OPTION:
-# save_format: "tiff"
-# zarr_chunk_spatial_shape: null
-# zarr_shard_spatial_shape: null
-
-# ZARR OPTION:
-save_format: "zarr"
-zarr_chunk_spatial_shape: [32, 32, 32]
-zarr_shard_spatial_shape: [128, 128, 128]
-
-# --- not used for detection ---
-
-outputs_metadata:
-  visualize_tensors:
-    - masks
-    - scores
-    - labels
-    - boxes
-  save_tensors:
-    - masks
-    - scores
-    - labels
-    - boxes
-
-viz_sampling_policy:
-  - name: by_tile
-  - tile_names: ["tile_0000000000000000000000000000000000000000"]
-
-  # - name: random_sample
-  # - fraction: 0.01
+  # InferencerWorker expects a single mapping: { name, tile_names } or { name, fraction }.
+  # by_tile: only tiles listed get visualization (saves GPU / disk). Set to null to visualize every batch.
+  viz_sampling_policy:
+    name: by_tile
+    tile_names:
+      - "000x_000y_000z.zarr"
 
 
-z_step_pdf: 10
-pmin: 1.0
-pmax: 99.0
-pred_boxes_format: xyzxyz
-gt_boxes_format: cxcyczwhd
+save_worker:
+  max_workers: 2
+  save_mode: "append"
+  shard_spatial_shape: [128, 128, 128]
+  chunk_spatial_shape: [32, 32, 32]
 
-viz_handlers_configs:
-  instance_overlay:
-    pred_boxes_format: xyzxyz
-    gt_boxes_format: cxcyczwhd
-    z_step: 10
-    pmin: 1.0
-    pmax: 99.0
-    scale_gt_boxes: true
-    input_format: ZYXC
-    ortho: true
+viz_worker:
+  max_workers: 2
+  output_dir: ${paths.outdir}/visualizations
+  # Configures what visualization handlers to use
+  handler_configs:
+    instance_overlay:
+      pred_boxes_format: xyzxyz
+      gt_boxes_format: cxcyczwhd
+      z_step: 10
+      pmin: 1.0
+      pmax: 99.0
+      scale_gt_boxes: true
+      input_format: ZYXC
+      ortho: true
 
-  feature_viz:
-    gt_key: data_tensor
-    feat_key: ${inference.main_output_name}
-    z_step_pdf: 10
-    pmin: 1.0
-    pmax: 99.0
-    fit: per_t
-    sample_voxels: 50000
-    viz: pca
+    feature_viz:
+      gt_key: data_tensor
+      # Must match a key in model predictions (MaskDINO: masks, boxes, labels, scores)
+      feat_key: masks
+      z_step_pdf: 10
+      pmin: 1.0
+      pmax: 99.0
+      fit: per_t
+      sample_voxels: 50000
+      viz: pca
 
-  save_predictions:
-    save_as_volume: true
-    save_as_pdf: true
-    z_step_pdf: 10
-    filetype: "tiff"
-    zarr_chunk_spatial_shape: [32, 32, 32]
-    zarr_shard_spatial_shape: [128, 128, 128]
-    pmin: 1.0
-    pmax: 99.0
+    save_predictions:
+      save_as_volume: false
+      save_as_pdf: true
+      z_step_pdf: 10
+      filetype: "tiff"
+      # zarr_chunk_spatial_shape: [32, 32, 32]
+      # zarr_shard_spatial_shape: [128, 128, 128]
+      pmin: 1.0
+      pmax: 99.0
+
+
 

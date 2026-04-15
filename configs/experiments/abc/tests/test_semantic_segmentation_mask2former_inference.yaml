@@ -1,9 +1,13 @@
 # @package _global_
 defaults:
   - /tasks/semantic_segmentation             # configs/tasks/semantic_segmentation.yaml
-  - /paths/abc                         # configs/paths/coreweave.yaml
-  - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
-  - /clusters/local                  # configs/clusters/coreweave_h100.yaml
+  - /paths/local                              # configs/paths/coreweave.yaml
+  - /hydra/overrides                        # configs/hydra/overrides.yaml (not working)
+  - /clusters/local                         # configs/clusters/coreweave_h100.yaml
+  - /datasets/databases/base_database        # Loads configs/datasets/databases/base_database.yaml
+  - /datasets/masking/mask_generator         # Loads configs/datasets/masking/mask_generator.yaml
+  - /datasets/transforms/ray_transforms      # Loads configs/datasets/transforms/ray_transforms.yaml
+  - /datasets/preprocessor/ray_preprocessor  # Loads configs/datasets/preprocessor/ray_preprocessor.yaml
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
   - /datasets/preprocessor/semantic_segmentation_preprocessor # configs/datasets/preprocessor/semantic_segmentation_preprocessor.yaml
   - /models/BUILD_mask2former                  # configs/models/BUILD_mask2former.yaml
@@ -26,7 +30,7 @@ defaults:
   - _self_
 
 # experiment name (used for logging)
-experiment_name: inference_twoclass_semantic_segmentation_mask2former_vitdet_pred_stride_4_transformer_in_features_1_2_3_queries_20
+experiment_name: inference_semantic_segmentation_mask2former_vit_large_vit_det_sdpa_stride_8_16_32_pred_stride_4_TEST_NEW_INFERENCE_CODE
 wandb_project: testing
 
 # debug_mode: true
@@ -69,14 +73,34 @@ models:
         num_classes: 2
       criterion_args:
         num_classes: 2
+  heads:
+    pixel_decoder:
+      use_deform_attention: false
 
 deepspeed:
   checkpoint:
     load_universal: true
 
 inference:
-  roi_tile_list:
-  - [653, "000x_002y_001z.zarr"]
+  inferencer_worker:
+    aggregate_mode: "none"
+    inference_mode: "tile"
+    channel_names:
+      0: membrane
+      1: nucleus
+      2: masks_labelmap
+    # Toggle viz / save workers
+    save_outputs: true
+    block_on_save: true
+    vizualize_outputs: false
+    block_on_viz: false
+
+  viz_worker:
+    viz_sampling_policy:
+      name: by_tile
+      tile_names:
+        - "000x_000y_000z.zarr"
+        - "000x_000y_001z.zarr"
 
 # clusters
 clusters:
@@ -85,23 +109,31 @@ clusters:
   gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 4 # number of cpu cores per gpu
   mem_per_cpu: 31000 # ram per cpu core
-  ray_queue_memory: 0.2
+  ray_queue_memory: 0.5
 
 #paths:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/results/inference/${experiment_name}
+  server_folder_path: /clusterfs/nvme/segment_3d/tests/datasets
   resume_checkpointdir: null 
-  pretrained_checkpointdir: /clusterfs/nvme/martinalvarez/segment_3d/pretrained_models/test_twoclass_semantic_segmentation_mask2former_vitdet_pred_stride_4_transformer_in_features_1_2_3_queries_20/checkpoints
+  pretrained_checkpointdir: /clusterfs/nvme/martinalvarez/segment_3d/pretrained_models/profiling_semantic_segmentation_mask2former_vit_large_vit_det_sdpa_stride_8_16_32_pred_stride_4/checkpoints
+
+
 
 # data
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-  train_shape: [128, 256, 512, 1]
-  input_shape: [128, 256, 512, 2]
+  
+  train_shape: [128, 384, 3328, 1]
+  input_shape: [128, 384, 3328, 1]
+  # train_shape: [128, 256, 512, 1]
+  # input_shape: [128, 256, 512, 1]
   patch_shape: [16, 16, 16, null]
+  mask_channel_idx: null
   occupancy_threshold: 0.9
+  channels_subset: [0]
 
   split: 0.0
   return_dataloader: true
@@ -112,29 +144,37 @@ datasets:
   num_actors_max: 12
 
 
-  use_cached_hypercubes_dataframe: true
-  # hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
-  hypercubes_dataframe_path:  /clusterfs/nvme/segment_4d/databases/prepared_1_128_128_128_2_hypercube_view.csv
+  # use_cached_hypercubes_dataframe: true
+  # hypercubes_dataframe_path:  /clusterfs/nvme/segment_4d/databases/prepared_1_128_128_128_2_hypercube_view.csv
+  use_cached_hypercubes_dataframe: false
+  hypercubes_dataframe_path: /clusterfs/nvme/segment_3d/tests/databases/prepared_tile_view_06132026.csv
+  # tile_list:
+    # - "000x_005y_001z.zarr"
+    # - "000x_005y_000z.zarr"
 
   databases:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
-    roi_list: [653]
-    tile_list: ["000x_002y_001z.zarr"]
+    # roi_list: [276] # for prepared_1_128_128_128_2_hypercube_view.csv 
+    roi_list: [103] # for prepared_tile_view.csv
+    # tile_list:
+    #   - "000x_000y_000z.zarr"
+    #   - "000x_000y_001z.zarr"
     timepoint_list: [0]
 
     cdf_threshold: null
     occupancy_threshold_filter_type: 'min_ch0'
-    synthetic_only: true
-    has_annotations: true
+    synthetic_only: false
+    has_annotations: false
     # server_folder_path: ${paths.server_folder_path}/synthetic
-    server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
-    with_hypercubes_dataframe: true
-    mask_channel_idx: 1
+    server_folder_path: /clusterfs/nvme/segment_3d/tests/datasets
+    with_hypercubes_dataframe: false
+    mask_channel_idx: ${datasets.mask_channel_idx}
 
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
+    require_targets: false
     dtype: ${dataset_dtype}
     buffer_dtype: ${storage_dtype}
     batch_size: ${clusters.batch_size_per_gpu}
@@ -179,3 +219,5 @@ hooks:
     backend: DEEPSPEED
   - _target_: cell_observatory_platform.training.hooks.IterationTimer
   - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  - _target_: cell_observatory_platform.training.hooks.InferenceMetricsHook
+    log_every_n_steps: 10

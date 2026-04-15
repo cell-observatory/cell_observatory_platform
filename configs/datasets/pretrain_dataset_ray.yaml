@@ -75,6 +75,7 @@ dataset:
 
 use_arrow_tensor_v2: true # use Arrow Tensor v2
 locality_with_output: true # whether to use locality with output for the Ray tasks
+# Ray Dataset block size (rows per block). Smaller blocks = more tasks; often match batch_size_per_gpu.
 rows_per_block: ${clusters.batch_size_per_gpu} # ${clusters.batch_size} # number of rows per block for the Ray dataset
 buffer_capacity: 24
 pin_numa_node: true
@@ -82,17 +83,31 @@ pin_memory: true
 max_concurrent_calls: 512
 numa_node_affinity_policy: "distance"
 numa_oversub_factor: 2.0
+# map_batches CPU request is 1/actor_oversub_factor per actor; higher = more actors share one CPU slot (Ray scheduling).
 actor_oversub_factor: 2.0
 
 channels_subset: null # subset of channels to use, e.g. [0, 1] for first two channels
+# LoaderActor pool size (Ray). More actors = more parallel batches; each actor pays separate init + buffer pool cost.
 num_actors_min: 12
 num_actors_max: 12
 with_batched_api: true
+# Passed to tensorstore.Context (see get_context_spec in pretrain_dataset_ray.py). TensorStore docs: context.html
 context:
-  file_io_concurrency: null # concurrency for file I/O operations
-  data_copy_concurrency: null # concurrency for data copy operations
-  cache_pool: 
+  # null => omit key => TensorStore default for that resource
+  file_io_concurrency: null
+  # Example: { limit: 32 }  # cap concurrent file I/O operations
+  data_copy_concurrency: null
+  # Example: { limit: 8 }   # or limit: "shared" for all host cores for encode/decode/copy
+  cache_pool:
+    # LRU byte budget for TensorStore in-process cache; 0 = default (no retained cache bytes per TensorStore docs).
+    # Example: 1e9–4e9 if repeated reads of the same zarr chunks should hit RAM (memory tradeoff).
     total_bytes_limit: 0
+
+# BufferManager / output pools (training/loops.Inferencer expects cfg.datasets.buffers)
+buffers:
+  rank_memory_budget_gb: ${clusters.mem_per_worker}
+  max_concurrent_calls: 256
+  safety_margin: 0.05
 
 debug: false
 

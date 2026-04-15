@@ -1,6 +1,0 @@
-defaults:
-  - _self_
-
-rank_memory_budget_gb: ${clusters.mem_per_worker}
-max_concurrent_calls: 256
-safety_margin: 0.05

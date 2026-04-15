@@ -4,7 +4,7 @@ with_masking: false
 mask_generator: null
 dtype: ${quantization}
 
-# transforms_list:
+transforms_list: []
 #   # 1) Resize to Z=128, Y=256, X=512
 #   - _target_: cell_observatory_platform.data.transforms.resize.Resize
 #     input_format: ${dataset_layout_order}          # e.g. "ZYXC"

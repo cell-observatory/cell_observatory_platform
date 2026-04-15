@@ -1,69 +1,96 @@
-_target_: cell_observatory_platform.inference.inferencer.InferencerWorker
+inferencer_worker:
+  _target_: cell_observatory_platform.inference.inferencer.InferencerWorker
+  aggregate_mode: "none"
+  inference_mode: "tile"
+  task: semantic_segmentation
+  # Required when save_outputs is true: root zarr channel index -> name for data you write.
+  channel_names:
+    0: membrane
+  # Configures which tensors get passed to the viz / save workers
+  outputs_metadata:
+    tensor_info:
+      data_tensor:
+        shape: ${datasets.input_shape}
+        dtype: ${dataset_dtype}
+    buffer_tensors:
+      - pred_masks
+      - data_tensor
+      - masks_labelmap
+    visualize_tensors:
+      - pred_masks
+      # - pred_scores
+      - pred_classes
+      - data_tensor
+      - masks_labelmap
+      - class_labels
+      # - pred_boxes
+    save_tensors:
+      masks_labelmap:
+        name: semantic_masks
+        dtype: ${storage_dtype}
+        annotation_type: dense
+        data_format: ZYXC
+      class_labels:
+        name: labels
+        dtype: ${storage_dtype}
+        annotation_type: sparse
+        data_format: N
+ 
+  # Data shape configuration
+  input_format: ${dataset_layout_order}
+  input_shape: ${datasets.input_shape}
+  patch_shape: ${datasets.patch_shape}
+  decoder_head_type: "mask2former"
 
-aggregate_mode: save_local
+save_worker:
+  max_workers: 2
+  save_mode: "create"
+  shard_spatial_shape: [128, 128, 128]
+  chunk_spatial_shape: [32, 32, 32]
 
-use_cached_hypercubes_dataframe: ${datasets.databases.use_cached_hypercubes_dataframe}
-hypercubes_dataframe_path: ${datasets.databases.hypercubes_dataframe_path}
+viz_worker:
+  max_workers: 2
+  output_dir: ${paths.outdir}/visualizations
+  # Configures what visualization handlers to use
+  handler_configs:
+    # instance_overlay:
+    #   pred_boxes_format: xyzxyz
+    #   gt_boxes_format: cxcyczwhd
+    #   z_step: 10
+    #   pmin: 1.0
+    #   pmax: 99.0
+    #   scale_gt_boxes: true
+    #   input_format: ZYXC
+    #   ortho: true
 
-input_format: ${dataset_layout_order} 
-input_shape: ${datasets.input_shape}
-patch_shape: ${datasets.patch_shape}
-timepoint_list: ${datasets.databases.timepoint_list}
+    # feature_viz:
+    #   gt_key: data_tensor
+    #   # Must match a key in model predictions (MaskDINO: masks, boxes, labels, scores)
+    #   feat_key: masks
+    #   z_step_pdf: 10
+    #   pmin: 1.0
+    #   pmax: 99.0
+    #   fit: per_t
+    #   sample_voxels: 50000
+    #   viz: pca
 
-task: semantic_segmentation
-decoder_head_type: "mask2former"
-feature_viz_type: null
+    # save_predictions:
+    #   save_tensors: ["pred_masks"]
+    #   save_as_volume: false
+    #   save_as_pdf: true
+    #   z_step_pdf: 10
+    #   filetype: "tiff"
+    #   # zarr_chunk_spatial_shape: [32, 32, 32]
+    #   # zarr_shard_spatial_shape: [128, 128, 128]
+    #   pmin: 1.0
+    #   pmax: 99.0
 
-roi_tile_list: null
-
-protocol: ${datasets.databases.protocol}
-dotenv_path: null
-dbname: ${datasets.databases.dbname}
-server_folder_path: ${paths.server_folder_path}
-verbose: false
-max_hypercubes: null
-max_partitions: 10
-num_save_workers: 2
-
-# BufferManager memory budget (Phase 0B). Phase 6 will roll out to all configs.
-memory:
-  rank_memory_budget_gb: 64
-  fractions:
-    pre: 0.1
-    post: 0.1
-    save: 0.7
-    viz: 0.1
-
-# "create" = write to pred_{roi}_{tile}.zarr; "overwrite" = overwrite label array in labels group
-save_mode: "create"
-
-# plotting parameters
-save_dir: ${paths.outdir}/inference_semantic_segmentation
-save_as_pdf: true
-save_as_volume: false
-z_step_pdf: 1
-mip_depth: 1
-pmin: 1.0
-pmax: 99.0
-
-# TIFF OPTION:
-# save_format: "tiff"
-# zarr_chunk_spatial_shape: null
-# zarr_shard_spatial_shape: null
-
-# ZARR OPTION:
-save_format: "zarr"
-zarr_chunk_spatial_shape: [32, 32, 32]
-zarr_shard_spatial_shape: [128, 128, 128]
-
-outputs_metadata:
-  predictions:
-    activation: null
-    num_output_channels: 1
-
-auxiliary_outputs:
-  - name: data_tensor
-    path: data_tensor
-    num_output_channels: ${datasets.input_shape[3]}
-    activation: null
-    patchified: false
+    semantic_map:
+      save_as_volume: false
+      save_as_pdf: true
+      z_step_pdf: 10
+      filetype: "tiff"
+      pmin: 1.0
+      pmax: 99.0
+      mip_depth: 1
+      class_names: ["boundary", "interior"]

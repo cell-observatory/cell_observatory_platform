@@ -12,6 +12,7 @@
 
 # USAGE: bash /work/cell_observatory_platform/scripts/utils/inference.sh
 
+# CFG="experiments/abc/tests/test_instance_segmentation_maskdino_inference_fish1_roi1.yaml"
 CFG="experiments/abc/tests/test_semantic_segmentation_mask2former_inference.yaml"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
