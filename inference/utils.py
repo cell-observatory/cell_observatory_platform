@@ -61,11 +61,14 @@ def unpack_batched_tensors(
     if not tensor_items:
         return []
     keys = [k for k, _ in tensor_items]
-    unbound = [
-        t.unbind(0) if isinstance(t, torch.Tensor) 
-        else np.split(t, t.shape[0], axis=0)
-        for _, t in tensor_items
-    ]
+    unbound = []
+    for _, t in tensor_items:
+        if isinstance(t, torch.Tensor):
+            unbound.append(t.unbind(0))
+        else:
+            # np.split keeps a length-1 batch axis; match torch.unbind(0) by dropping it
+            chunks = np.split(t, t.shape[0], axis=0)
+            unbound.append(tuple(np.squeeze(c, axis=0) for c in chunks))
     return [dict(zip(keys, batch_slice)) for batch_slice in zip(*unbound)]
 
 def _normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
@@ -110,11 +113,14 @@ def _ensure_numpy_tzyxc(preds: ArrayLike) -> np.ndarray:
     """
     arr = _ensure_numpy(preds)
 
-    if arr.ndim == 4:  # Z,Y,X,C
+    if arr.ndim == 3:  # ZYX -> add T=1, C=1
+        arr = arr[None, ..., None]
+    elif arr.ndim == 4:  # ZYXC -> add T=1
         arr = arr[None, ...]
-
-    if arr.ndim != 5:
-        raise ValueError(f"Expected 4D ZYXC or 5D TZYXC, got shape {arr.shape}")
+    elif arr.ndim == 5:  # TZYXC -> no-op
+        pass
+    else:
+        raise ValueError(f"Expected 3D ZYX, 4D ZYXC, or 5D TZYXC, got shape {arr.shape}")
 
     return arr
 
@@ -1277,13 +1283,13 @@ def visualize_semantic_labels(
     mip_depth: int = 20,
 ) -> None:
     """
-    Visualize semantic segmentation labels with per-class columns.
+    Visualize semantic segmentation labels with per-class columns, plus a column with merged integer labels.
 
     Prediction: if pred_is_probabilities is False (default), values are treated as logits
     and sigmoid is applied; if True, values are already in [0, 1] and only clipped.
     GT is clipped to [0, 1]. Only the image column uses percentile normalization (raw image data).
 
-    Layout: Image | Pred_class_0 | ... | Pred_class_K | GT_class_0 | ... | GT_class_K
+    Layout: Image | Pred_class_0 | ... | Pred_class_K | GT_class_0 | ... | GT_class_K | Merged
 
     Args:
         image: TZYXC or ZYXC array - real input image
@@ -1298,22 +1304,24 @@ def visualize_semantic_labels(
     """
     # Normalize inputs to TZYXC
     image_tzyxc = _ensure_numpy_tzyxc(image)
-    pred_masks = _ensure_numpy_tzyxc(pred["masks"])
-    pred_labels = _ensure_numpy_tnc(pred["labels"])
+    pred_masks = _ensure_numpy_tzyxc(pred["pred_masks"])
+    pred_labels = _ensure_numpy_tnc(pred["pred_classes"])
+    masks_labelmap = _ensure_numpy_tzyxc(pred["masks_labelmap"])
+    class_labels = _ensure_numpy_tnc(pred["class_labels"])
     num_classes = pred_labels.shape[-1]
 
     
     
     T, Z, Y, X, C_img = image_tzyxc.shape
     T_pred, Z_pred, Y_pred, X_pred, C_pred = pred_masks.shape
-    
+
     # Validate spatial dimensions match
     if (T, Z, Y, X) != (T_pred, Z_pred, Y_pred, X_pred):
         raise ValueError(
             f"Image and prediction must have same T,Z,Y,X. "
             f"Got image {(T,Z,Y,X)} vs pred {(T_pred,Z_pred,Y_pred,X_pred)}"
         )
-        
+
     # Handle gt_semantic
     if target is not None:
         gt_masks = _ensure_numpy_tzyxc(target["masks"])
@@ -1321,7 +1329,7 @@ def visualize_semantic_labels(
     else:
         gt_masks = np.zeros((T, Z, Y, X, C_pred), dtype=np.float32)
         gt_labels = np.zeros((T, Z, Y, X, num_classes), dtype=np.float32)
-    
+
     # Prepare class names
     if class_names is None:
         class_names = [f"class_{c}" for c in range(num_classes)]
@@ -1329,20 +1337,20 @@ def visualize_semantic_labels(
         raise ValueError(
             f"class_names length {len(class_names)} != num_classes {num_classes}"
         )
-    
+
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Layout: Image | Pred_c0 | ... | Pred_cK | GT_c0 | ... | GT_cK
-    num_cols = 1 + num_classes + num_classes  # Image + pred classes + GT classes
-    
+
+    # Layout: Image | Pred_c0 | ... | Pred_cK | GT_c0 | ... | GT_cK | Merged
+    num_cols = 1 + num_classes + num_classes + 1  # add 1 for merged mask labels column
+
     with PdfPages(out_path) as pdf:
         for t in range(T):
             for z0 in range(0, Z, z_step):
                 z1 = min(z0 + mip_depth, Z)
                 if z1 <= z0:
                     continue
-                
+
                 fig, axes_row = plt.subplots(
                     1,
                     num_cols,
@@ -1350,7 +1358,7 @@ def visualize_semantic_labels(
                     squeeze=False,
                 )
                 axes_row = axes_row[0, :]
-                
+
                 # Column 0: Image
                 img_block = image_tzyxc[t, z0:z1]  # [z_block, Y, X, C_img]
                 img_mip = img_block.max(axis=0)  # [Y, X, C_img]
@@ -1363,7 +1371,7 @@ def visualize_semantic_labels(
                 axes_row[0].imshow(img_norm, cmap="gray", interpolation="nearest")
                 axes_row[0].set_title(f"Image | T={t}  Z∈[{z0},{z1})")
                 axes_row[0].axis("off")
-                
+
                 # Columns 1 to num_classes: Pred per class (sigmoid already applied; clip to [0,1], no min-max)
                 for c in range(num_classes):
                     col_idx = 1 + c
@@ -1373,7 +1381,7 @@ def visualize_semantic_labels(
                     axes_row[col_idx].imshow(pred_display, cmap="viridis", interpolation="nearest")
                     axes_row[col_idx].set_title(f"Pred {class_names[c]}")
                     axes_row[col_idx].axis("off")
-                
+
                 # Columns num_classes+1 to 2*num_classes: GT per class (clip to [0,1], no min-max)
                 for c in range(num_classes):
                     col_idx = 1 + num_classes + c
@@ -1383,11 +1391,22 @@ def visualize_semantic_labels(
                     axes_row[col_idx].imshow(gt_display, cmap="viridis", interpolation="nearest")
                     axes_row[col_idx].set_title(f"GT {class_names[c]}")
                     axes_row[col_idx].axis("off")
-                
+
+                # New final column: merged integer labels using mask2former.py logic
+                # For pred_masks: 
+                # get mask_labels by taking argmax over channels (last axis) plus 1, times a foreground mask
+                # Ensure all ops are NumPy, not potentially torch
+                pred_block = np.asarray(masks_labelmap[t, z0:z1, ...])  # [z_block, Y, X]
+                mask_labels = np.max(pred_block, axis=0)  # [Y, X]
+
+                axes_row[-1].imshow(mask_labels, cmap="tab20", interpolation="nearest")  # Discrete color map
+                axes_row[-1].set_title(f"Masks labelmap: class labels {class_labels[t]}")
+                axes_row[-1].axis("off")
+       
+
                 fig.tight_layout()
                 pdf.savefig(fig)
                 plt.close(fig)
-
 
 
 def save_semantic_predictions(
@@ -1406,6 +1425,7 @@ def save_semantic_predictions(
     pmax: float = 99.0,
     mip_depth: int = 20,
     class_names: Sequence[str] | None = None,
+    names: Sequence[str] | None = None,
 ) -> None:
     """
     Save semantic segmentation predictions with dedicated visualization.
@@ -1434,34 +1454,39 @@ def save_semantic_predictions(
         pmax: Percentile for normalization (upper bound)
         mip_depth: Depth for max-intensity projection
         class_names: Optional list of class names for visualization
+        names: Optional per-element names (same length as preds); overrides ``name`` when set
     """
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    if targets is None:
-        targets = [{} for _ in range(len(preds))]
-    if not (len(preds) == len(images) == len(targets)):
+    if not (len(preds) == len(images) and (targets is None or len(targets) == len(preds))):
         raise ValueError("preds/image/targets must have same length")
+    if names is not None and len(names) != len(preds):
+        raise ValueError("names length must match preds when names is provided")
 
     images = list(images)
     preds = list(preds)
-    targets = list(targets)
+    if targets is not None:
+        targets = list(targets)
 
     for i in range(len(preds)):
+        label = names[i] if names is not None else name
 
         images[i] = _ensure_numpy(images[i])
 
         for key, arr in preds[i].items():
             preds[i][key] = _ensure_numpy(arr)
         
-        for key, arr in targets[i].items():
-            targets[i][key] = _ensure_numpy(arr)
+        if targets is not None:
+            for key, arr in targets[i].items():
+                targets[i][key] = _ensure_numpy(arr)
         
 
         # Save volume files (TIFF/Zarr) if requested
         if save_as_volume:
             save_predictions(
-                name=name,
+                name=label,
                 predictions=preds[i],
+                save_tensors=["pred_masks"],
                 save_dir=save_dir,
                 save_as_volume=True,
                 save_as_pdf=False,  # Use dedicated semantic visualization for PDF
@@ -1478,8 +1503,8 @@ def save_semantic_predictions(
             visualize_semantic_labels(
                 image=images[i],
                 pred=preds[i],
-                target=targets[i],
-                out_path=save_dir / f"pred_{name}_semantic_MIP.pdf",
+                target=targets[i] if targets is not None else None,
+                out_path=save_dir / f"pred_{label}_semantic_MIP.pdf",
                 class_names=class_names,
                 z_step=z_step_pdf,
                 pmin=pmin,
@@ -1496,7 +1521,7 @@ def reduce_queries_to_semantic_map(
     pred_logits: torch.Tensor,
     num_classes: int = 1,
     topk_per_image: int = 1,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Convert Mask2Former query-based outputs to a dense semantic map.
 
@@ -1508,6 +1533,7 @@ def reduce_queries_to_semantic_map(
 
     Returns:
         semantic_map: [B, D, H, W, num_classes] - channels-last dense semantic map (per-class)
+        average_probability: [B, num_classes] - average probability of the semantic map for each class
     """
     B, num_queries, D, H, W = pred_masks.shape
 
@@ -1527,7 +1553,8 @@ def reduce_queries_to_semantic_map(
         semantic = (topk_probs.view(B, topk_per_image, 1, 1, 1) * topk_masks).sum(1, keepdim=True)  # [B, 1, D, H, W]
         # Permute to channels-last: [B, D, H, W, 1]
         semantic = semantic.permute(0, 2, 3, 4, 1)  # [B, D, H, W, 1]
-        return semantic
+        average_probability = topk_probs.mean(dim=1)  # [B, 1]
+        return semantic, average_probability
     else:
         # Multi-class segmentation: produce per-class maps
         # pred_logits: [B, Q, num_classes + 1]; indices 0..num_classes-1 = semantic classes, last index = no-object (DETR/Mask2Former convention, see losses.py empty_weight[-1])
@@ -1535,6 +1562,7 @@ def reduce_queries_to_semantic_map(
         
         # For each class, combine masks from queries assigned to that class
         semantic_per_class = []
+        average_probability_per_class = []
         for c in range(num_classes):
             # Get probability of class c for each query: [B, Q]
             class_c_probs = class_probs[..., c]  # [B, Q]
@@ -1553,7 +1581,9 @@ def reduce_queries_to_semantic_map(
             weighted_masks = topk_probs.view(B, -1, 1, 1, 1) * topk_masks  # [B, K, D, H, W]
             class_map = weighted_masks.max(dim=1)[0]  # [B, D, H, W] - max over queries
             semantic_per_class.append(class_map)
+            average_probability_per_class.append(topk_probs.mean(dim=1))
         
         # Stack along channel dimension: [B, D, H, W, num_classes]
         semantic = torch.stack(semantic_per_class, dim=-1)  # [B, D, H, W, num_classes]
-        return semantic
+        average_probability = torch.stack(average_probability_per_class, dim=-1)  # [B, num_classes]
+        return semantic, average_probability
