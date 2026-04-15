@@ -171,3 +171,4 @@ pytests/
 .specstory/
 .cursorignore
 pyrightconfig.json
+.agents
