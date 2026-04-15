@@ -109,6 +109,15 @@ def _metainfo_for_viz():
     }
 
 
+def _metainfo_for_viz_batch2():
+    return {
+        "output_folder": np.array(["out/folder", "out/other"]),
+        "tile_name": np.array(["tile001", "tile002"]),
+        "batch_size_actual": 2,
+        "prepared_id": np.array([1, 2], dtype=np.int64),
+    }
+
+
 def _build_inference_outputs_with_slot(
     bm,
     pool_name: str,
@@ -145,7 +154,7 @@ class TestVizWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             viz = VizWorker.options(name=f"viz_init_{unique_suffix}").remote(
                 buffer_manager=bm,
@@ -154,9 +163,7 @@ class TestVizWorkerRay:
             )
             m = ray.get(viz.get_metrics.remote())
             assert m["visualize_calls"] == 0.0
-            assert m["visualize_successes"] == 0.0
-            assert m["visualize_failures"] == 0.0
-            assert m["visualize_time_ms"] == 0.0
+            assert m["visualize_time_ms"] == []
         finally:
             if viz is not None:
                 _kill_safe(viz)
@@ -176,7 +183,7 @@ class TestVizWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             viz = VizWorker.options(name=f"viz_bad_{unique_suffix}").remote(
                 buffer_manager=bm,
@@ -211,7 +218,7 @@ class TestVizWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             inference_outputs, _ = _build_inference_outputs_with_slot(bm, pool, fill=3.14)
             buf = bm._buffer_actors[pool]
@@ -229,8 +236,6 @@ class TestVizWorkerRay:
 
             m = ray.get(viz.get_metrics.remote())
             assert m["visualize_calls"] == 1.0
-            assert m["visualize_successes"] == 1.0
-            assert m["visualize_failures"] == 0.0
         finally:
             if viz is not None:
                 _kill_safe(viz)
@@ -253,7 +258,7 @@ class TestVizWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             arr = np.zeros((1, 2, 2, 2, 1), dtype=np.float32)
             inference_outputs = {
@@ -276,6 +281,31 @@ class TestVizWorkerRay:
             if actor is not None:
                 _kill_safe(actor)
 
+    def test_viz_worker_visualize_batched_metainfo_writes_two_tiffs(
+        self, ray_ctx, ray_node_id, unique_suffix, tmp_path
+    ):
+        """B=2: per-batch-element names and sliced (TZYXC) arrays -> two volume files."""
+        bm = _make_buffer_manager(ray_node_id)
+        viz = None
+        try:
+            arr = np.zeros((2, 1, 2, 2, 2, 1), dtype=np.float32)
+            inference_outputs = {
+                "pred": arr,
+                "metainfo": _metainfo_for_viz_batch2(),
+            }
+            viz = VizWorker.options(name=f"viz_b2_{unique_suffix}").remote(
+                buffer_manager=bm,
+                output_dir=str(tmp_path),
+                handler_configs={"save_predictions": _viz_handler_kwargs()},
+            )
+            ray.get(viz.visualize.remote(inference_outputs))
+            assert (tmp_path / "pred_out_folder_tile001_pred.tiff").is_file()
+            assert (tmp_path / "pred_out_other_tile002_pred.tiff").is_file()
+        finally:
+            if viz is not None:
+                _kill_safe(viz)
+            bm.shutdown()
+
     def test_viz_worker_metrics_accumulate(self, ray_ctx, ray_node_id, unique_suffix, tmp_path):
         pool = f"vz_m_{unique_suffix}"
         bm = _make_buffer_manager(ray_node_id)
@@ -289,7 +319,7 @@ class TestVizWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=4,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             viz = VizWorker.options(name=f"viz_met_{unique_suffix}").remote(
                 buffer_manager=bm,
@@ -302,11 +332,9 @@ class TestVizWorkerRay:
 
             m = ray.get(viz.get_metrics.remote())
             assert m["visualize_calls"] == 2.0
-            assert m["visualize_successes"] == 2.0
             ray.get(viz.clear_metrics.remote())
             m2 = ray.get(viz.get_metrics.remote())
             assert m2["visualize_calls"] == 0.0
-            assert m2["visualize_successes"] == 0.0
         finally:
             if viz is not None:
                 _kill_safe(viz)
@@ -329,7 +357,7 @@ class TestVizWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             inference_outputs, _ = _build_inference_outputs_with_slot(bm, pool)
             buf = bm._buffer_actors[pool]
@@ -340,8 +368,8 @@ class TestVizWorkerRay:
             )
             ray.get(viz.visualize.remote(inference_outputs))
             m = ray.get(viz.get_metrics.remote())
-            assert m["visualize_failures"] == 1.0
-            assert m["visualize_successes"] == 0.0
+            assert m["visualize_calls"] == 1.0
+            assert m["visualize_successful"] == [False]
             _wait_buffer_in_use_zero(buf)
         finally:
             if viz is not None:
@@ -354,7 +382,7 @@ class TestVizWorkerRay:
         self, ray_ctx, ray_node_id, unique_suffix, tmp_path
     ):
         """Failure in slot resolution is caught by the outer try/except; only
-        ``visualize_calls`` increments (neither success nor failure)."""
+        ``visualize_calls`` increments (per-handler success list stays empty)."""
         pool = f"vz_sr_{unique_suffix}"
         bm = _make_buffer_manager(ray_node_id)
         actor = None
@@ -367,7 +395,7 @@ class TestVizWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             inference_outputs = {
                 "pred": {"invalid": "slot_info"},
@@ -381,8 +409,7 @@ class TestVizWorkerRay:
             ray.get(viz.visualize.remote(inference_outputs))
             m = ray.get(viz.get_metrics.remote())
             assert m["visualize_calls"] == 1.0
-            assert m["visualize_successes"] == 0.0
-            assert m["visualize_failures"] == 0.0
+            assert m["visualize_successful"] == []
         finally:
             if viz is not None:
                 _kill_safe(viz)

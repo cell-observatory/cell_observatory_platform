@@ -16,13 +16,71 @@ from cell_observatory_platform.inference.utils import (
     save_semantic_predictions,
     save_feature_visualizations,
     save_instance_predictions,
-    save_bbox_overlay,
     save_predictions,
     unpack_batched_tensors,
     )
 import ray
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def _infer_batch_size(metainfo: Dict[str, Any]) -> int:
+    """Batch size from metainfo; scalar string fields imply B=1."""
+    if "batch_size_actual" in metainfo:
+        return int(metainfo["batch_size_actual"])
+    if "prepared_id" in metainfo:
+        pid = metainfo["prepared_id"]
+        if isinstance(pid, np.ndarray):
+            return int(pid.shape[0])
+        return len(pid)
+    tn = metainfo.get("tile_name")
+    if isinstance(tn, str):
+        return 1
+    if isinstance(tn, (np.ndarray, list, tuple)):
+        return len(tn)
+    return 1
+
+
+def _metainfo_scalar_at(metainfo: Dict[str, Any], key: str, b: int) -> Any:
+    """Value for batch index ``b``, or the scalar if not batched."""
+    v = metainfo.get(key)
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return v
+    if isinstance(v, bytes):
+        return v.decode()
+    if isinstance(v, np.ndarray):
+        if v.ndim == 0:
+            return v.item()
+        return v[b]
+    if isinstance(v, (list, tuple)):
+        return v[b]
+    return v
+
+
+def _get_base_sample_name_for_index(metainfo: Dict[str, Any], b: int) -> str:
+    try:
+        folder = _metainfo_scalar_at(metainfo, "output_folder", b)
+        if folder is None:
+            raise KeyError
+        base = str(folder).replace("/", "_")
+    except (KeyError, IndexError):
+        id_raw = metainfo.get("id", "unknown")
+        if isinstance(id_raw, (np.ndarray, list, tuple)) and not isinstance(id_raw, (str, bytes)):
+            try:
+                idv = id_raw[b]
+            except (IndexError, TypeError):
+                idv = "unknown"
+        else:
+            idv = id_raw
+        base = f"inference_roi{idv}"
+    tn = _metainfo_scalar_at(metainfo, "tile_name", b)
+    if tn is None:
+        tn = "unknown"
+    tile_name = str(tn)
+    base_sample_name = base + "_" + tile_name
+    return base_sample_name.replace(".zarr", "").replace(".tiff", "")
 
 
 @ray.remote(namespace="visualizer", lifetime="detached", num_cpus=0)
@@ -35,7 +93,7 @@ class VizWorker:
         self, 
         buffer_manager: BufferManager,
         output_dir: str | Path,
-        handler_configs: Dict[str, Any],
+        handler_configs: Dict[str, Dict[str, Any]],
         max_workers: int = 4,
     ) -> None:
         self.buffer_manager = buffer_manager
@@ -55,11 +113,10 @@ class VizWorker:
                     f"Unknown viz.handler: {handler_name}. Registered: {list(self._handlers.keys())}"
                 )
 
-        self._metrics: Dict[str, float | int] = {
-            "visualize_time_ms": 0.0,
+        self._metrics: Dict[str, float | int | List[float | bool]] = {
+            "visualize_time_ms": [],
+            "visualize_successful": [],
             "visualize_calls": 0.0,
-            "visualize_successes": 0.0,
-            "visualize_failures": 0.0,
         }
 
     def _register_default_handlers(self) -> None:
@@ -76,18 +133,32 @@ class VizWorker:
         save_dir: str,
         **kwargs: Any,
     ) -> None:
-        base_sample_name = self._get_base_sample_name(inference_outputs)
-        targets = inference_outputs.pop("targets")
-        targets_unpacked = unpack_batched_tensors(targets)
+        metainfo = inference_outputs["metainfo"]
+        if "targets" in inference_outputs:
+            targets = inference_outputs.pop("targets")
+            targets_unpacked = unpack_batched_tensors(targets)
+        else:
+            targets_unpacked = None
         data_tensor = inference_outputs.pop("data_tensor")
-        data_tensor_unpacked = list(data_tensor.unbind(0))
+        data_tensor_unpacked = [np.squeeze(chunk, axis=0) for chunk in np.split(data_tensor, data_tensor.shape[0], axis=0)]
         unpacked_inference_outputs = unpack_batched_tensors(inference_outputs, skip_keys={"metainfo"})
+        bsz = len(unpacked_inference_outputs)
+        if bsz == 0:
+            return
+        inferred = _infer_batch_size(metainfo)
+        if inferred != bsz:
+            raise ValueError(
+                f"metainfo batch ({inferred}) != unpacked preds batch ({bsz})"
+            )
+        names = [_get_base_sample_name_for_index(metainfo, b) for b in range(bsz)]
 
         save_semantic_predictions(
-            name=base_sample_name,
+            name=names[0],
             preds=unpacked_inference_outputs,
+            targets=targets_unpacked,
             images=data_tensor_unpacked,
             save_dir=save_dir,
+            names=names,
             **kwargs,
         )
 
@@ -107,6 +178,11 @@ class VizWorker:
         data_tensor = inference_outputs.pop("data_tensor")
         data_tensor_unpacked = list(data_tensor.unbind(0))
         unpacked_inference_outputs = unpack_batched_tensors(inference_outputs, skip_keys={"metainfo"})
+        bu = len(data_tensor_unpacked)
+        if bu != len(regions) or bu != len(identifiers):
+            raise ValueError(
+                f"Batch mismatch: tensors={bu}, regions={len(regions)}, identifiers={len(identifiers)}"
+            )
         save_instance_predictions(
             save_dir=save_dir,
             images=data_tensor_unpacked,
@@ -123,13 +199,23 @@ class VizWorker:
         save_dir: str,
         **kwargs: Any,
     ) -> None:
-        base_sample_name = self._get_base_sample_name(inference_outputs)
-        save_predictions(
-            name=base_sample_name,
-            predictions=inference_outputs,
-            save_dir=save_dir,
-            **kwargs,
-        )
+        metainfo = inference_outputs["metainfo"]
+        save_tensors: List[str] = kwargs["save_tensors"]
+        tensor_dict = {k: inference_outputs[k] for k in save_tensors}
+        unpacked = unpack_batched_tensors(tensor_dict)
+        bsz = _infer_batch_size(metainfo)
+        if len(unpacked) != bsz:
+            raise ValueError(
+                f"metainfo batch ({bsz}) != unpacked tensor batch ({len(unpacked)})"
+            )
+        for b, preds_b in enumerate(unpacked):
+            name_b = _get_base_sample_name_for_index(metainfo, b)
+            save_predictions(
+                name=name_b,
+                predictions=preds_b,
+                save_dir=save_dir,
+                **kwargs,
+            )
 
     def _handle_feature_viz(
         self,
@@ -137,48 +223,40 @@ class VizWorker:
         save_dir: str,
         **kwargs: Dict[str, Any],
     ) -> None:
-
-        base_sample_name = self._get_base_sample_name(inference_outputs)
-        save_feature_visualizations(
-            name=base_sample_name,
-            predictions=inference_outputs,
-            save_dir=save_dir,
-            **kwargs,
-        )
+        metainfo = inference_outputs["metainfo"]
+        feat_key = kwargs.get("feat_key")
+        if feat_key is None:
+            raise ValueError("feat_key must be specified for feature visualization")
+        gt_key = kwargs.get("gt_key", "data_tensor")
+        tensor_dict = {
+            gt_key: inference_outputs[gt_key],
+            feat_key: inference_outputs[feat_key],
+        }
+        unpacked = unpack_batched_tensors(tensor_dict)
+        bsz = _infer_batch_size(metainfo)
+        if len(unpacked) != bsz:
+            raise ValueError(
+                f"metainfo batch ({bsz}) != unpacked tensor batch ({len(unpacked)})"
+            )
+        for b, preds_b in enumerate(unpacked):
+            name_b = _get_base_sample_name_for_index(metainfo, b)
+            save_feature_visualizations(
+                name=name_b,
+                predictions=preds_b,
+                save_dir=save_dir,
+                **kwargs,
+            )
 
     def _handle_bbox_overlay(
         self,
-        output_name: str,
-        output_type_cfg: Dict[str, Any],
-        data: np.ndarray,
-        context: Dict[str, Any],
+        inference_outputs: dict[str, Any],
+        save_dir: str,
         **kwargs: Any,
     ) -> None:
-
-        image = context.get("image")
-        save_dir = context.get("save_dir", kwargs.get("save_dir", "."))
-        identifier = context.get("identifier") or output_name
-        if isinstance(identifier, (list, tuple)):
-            identifier = identifier[0] if identifier else output_name
-        if image is None:
-            raise ValueError("bbox_overlay handler requires context['image']")
-        save_bbox_overlay(
-            pred_boxes_xyzxyz=data,
-            image=image,
-            save_dir=save_dir,
-            identifier=str(identifier),
-            **{k: v for k, v in context.items() if k in ("z_step", "pmin", "pmax")},
+        raise NotImplementedError(
+            "bbox_overlay is not supported via VizWorker.visualize(); "
+            "use inference.utils.save_bbox_overlay with pred_boxes_xyzxyz, image, and save_dir."
         )
-
-
-    def _get_base_sample_name(self, inference_outputs: dict[str, Any]) -> str:
-        try:
-            base = str(inference_outputs["metainfo"]["output_folder"])
-        except KeyError:
-            base = f"inference_roi{inference_outputs.get('metainfo', {}).get('id', 'unknown')}"
-        base_sample_name = base.replace("/", "_") + "_" + inference_outputs["metainfo"]["tile_name"]
-        base_sample_name = base_sample_name.replace(".zarr", "").replace(".tiff", "")
-        return base_sample_name
 
     def _prepare_regions_and_identifiers(self, metadata: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[str]]:
         B = len(metadata["prepared_id"])
@@ -223,15 +301,14 @@ class VizWorker:
         
         return regions, identifiers
 
-    def get_metrics(self) -> Dict[str, float | int]:
+    def get_metrics(self) -> Dict[str, List[float | bool]]:
         return self._metrics.copy()
 
     def clear_metrics(self) -> None:
         self._metrics = {
-            "visualize_time_ms": 0.0,
+            "visualize_time_ms": [],
+            "visualize_successful": [],
             "visualize_calls": 0.0,
-            "visualize_successes": 0.0,
-            "visualize_failures": 0.0,
         }
 
     def visualize(
@@ -241,18 +318,20 @@ class VizWorker:
         """
         Dispatch to the appropriate handler based on output_type.viz.handler.
         """
+        self._metrics["visualize_calls"] += 1.0
         slots_to_free = []
         start_time = time.perf_counter()
+        futures = []
         try:
             for name, slot_info in inference_outputs.items():
                 if name == "metainfo":
                     continue
                 if isinstance(slot_info, np.ndarray):
+                    ray.logger.warning(f"Inference output being passed through the ray plasma store: {name}")
                     continue
                 output_array = self.buffer_manager.slot_info_to_view(slot_info)
                 inference_outputs[name] = output_array
                 slots_to_free.append(slot_info)
-            futures = []
             for handler_name, kwargs in self.handler_configs.items():
                 futures.append(
                     self.thread_pool.submit(
@@ -266,15 +345,14 @@ class VizWorker:
             for future in as_completed(futures):
                 try:
                     future.result()
-                    self._metrics["visualize_successes"] += 1
+                    self._metrics["visualize_successful"].append(True)
                 except Exception as e:
                     ray.logger.error(f"Failed to execute viz handler: {e}", exc_info=True)
-                    self._metrics["visualize_failures"] += 1
+                    self._metrics["visualize_successful"].append(False)
                     continue
         except Exception as e:
-                ray.logger.error(f"Failed to visualize: {e}", exc_info=True)
+            ray.logger.error(f"Failed to visualize: {e}", exc_info=True)
         finally:
-            self._metrics["visualize_time_ms"] += (time.perf_counter() - start_time) * 1000
-            self._metrics["visualize_calls"] += 1
+            self._metrics["visualize_time_ms"].append((time.perf_counter() - start_time) * 1000)
             for slot_info in slots_to_free:
                 self.buffer_manager.free_slot(slot_info)
