@@ -156,6 +156,9 @@ class ParentDatabase:
                 f"assuming filter will drop 40%-60% of the hypercubes"
             )
             max_hypercubes_before_cdf = int(max_hypercubes * 2.5) if max_hypercubes is not None else None
+        else:
+            # No CDF pass: do not oversample; keep consistent with tiles / non-hypercube paths below.
+            max_hypercubes_before_cdf = max_hypercubes
 
         if self.with_hypercubes_dataframe:
             if z_slices not in valid_z_sizes:
@@ -398,7 +401,13 @@ class ParentDatabase:
         occupancy_threshold: Optional[float] = None,
         occupancy_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
     ) -> pd.DataFrame:
-        t = 0.0 if occupancy_threshold is None else float(occupancy_threshold)
+        # None or <=0 means "no occupancy filter". Using >=0 would still drop rows where
+        # min_occupancy is NaN (NaN >= 0 is False in pandas), which emptied the dataframe
+        # when configs set occupancy_threshold: 0 after aggregation produced NaNs.
+        if occupancy_threshold is None or float(occupancy_threshold) <= 0:
+            return df
+
+        t = float(occupancy_threshold)
 
         if occupancy_threshold_filter_type == "min_all":
             df = df[(df["min_occupancy_ratios_ch_0"] >= t) & (df["min_occupancy_ratios_ch_1"] >= t)]
@@ -421,7 +430,10 @@ class ParentDatabase:
         cdf_target: Literal["80", "90", "95", "99"] = "90",
         cdf_threshold_filter_type: Literal["min_all", "min_ch0", "min_ch1"] = "min_ch0",
     ) -> pd.DataFrame:
-        t = 0.0 if cdf_threshold is None else float(cdf_threshold)
+        if cdf_threshold is None or float(cdf_threshold) <= 0:
+            return df
+
+        t = float(cdf_threshold)
 
         if cdf_threshold_filter_type == "min_all":
             df = df[(df[f"cdf_{cdf_target}_ch_0"] >= t) & (df[f"cdf_{cdf_target}_ch_1"] >= t)]
@@ -529,19 +541,39 @@ class ParentDatabase:
         For tile-based training, if num_timepoints == 1 but the tiles in the
         dataframe have time_size > 1, duplicate each tile row once per
         timepoint and:
-          - set time_start = base_time_start + t
+          - set time_start = base_time_start + t  for t in 0 .. time_size - 1
           - set time_size = 1
-        TODO: support num_timepoints > 1 case
+
+        Downstream :data:`timepoint_list` then filters to the requested ``time_start`` values.
         """
         if "time_size" not in df.columns:
             raise ValueError("Dataframe must have a time_size column to expand timepoints.")
         if self.num_timepoints != 1:
             raise ValueError("Currently tile based training only supports num_timepoints=1.")
 
-        if all(df["time_size"] == 1):
+        df = df.copy()
+        if "time_start" not in df.columns:
+            df["time_start"] = 0
+
+        if (df["time_size"] == 1).all():
             return df
-        else:
-            raise NotImplementedError("Expanding tiles for time_size > 1 is not implemented yet.")
+
+        out_rows: list[pd.Series] = []
+        for _, row in df.iterrows():
+            ts = int(row["time_size"])
+            if ts < 1:
+                raise ValueError(
+                    f"time_size must be >= 1, got {ts} for row tile_name={row.get('tile_name', '?')!r}"
+                )
+            base_raw = row["time_start"]
+            base_t = 0 if pd.isna(base_raw) else int(base_raw)
+            for dt in range(ts):
+                new_row = row.copy()
+                new_row["time_start"] = base_t + dt
+                new_row["time_size"] = 1
+                out_rows.append(new_row)
+
+        return pd.DataFrame(out_rows).reset_index(drop=True)
 
     def _get_slices_from_layout_order(self, input_format: str, input_shape: tuple):
         if input_format == "TZYXC":
@@ -560,7 +592,21 @@ class ParentDatabase:
 
     def get_rois_dataframe(self) -> pd.DataFrame:
         roi_csv = self.hypercubes_dataframe_path.with_name(f"{self.hypercubes_dataframe_path.stem}_rois.csv")
-        if (not self.use_cached_hypercubes_dataframe) or (not roi_csv.exists()):
+        need_supabase_query = (not self.use_cached_hypercubes_dataframe) or (not roi_csv.exists())
+        logger.info(
+            "get_rois_dataframe: roi_csv=%s exists=%s use_cached_hypercubes=%s -> %s",
+            roi_csv,
+            roi_csv.exists(),
+            self.use_cached_hypercubes_dataframe,
+            "execute_query(prepared)" if need_supabase_query else f"read_csv({roi_csv})",
+        )
+        if need_supabase_query and self.use_cached_hypercubes_dataframe and (not roi_csv.exists()):
+            logger.warning(
+                "Cached hypercube CSV is enabled but %s is missing; running live DB query for ROIs "
+                "(can be slow or block if the database is unreachable).",
+                roi_csv,
+            )
+        if need_supabase_query:
             query = f"""
                 SELECT id,
                     x_start, y_start, z_start,
@@ -583,10 +629,12 @@ class ParentDatabase:
                 }
             )
 
+            roi_csv.parent.mkdir(parents=True, exist_ok=True)
             rois_df.to_csv(roi_csv, index=True, header=True)
             print(f"Saved roi dataframe to {roi_csv}")
 
         else:
+            logger.info("get_rois_dataframe: reading ROIs from %s", roi_csv)
             rois_df = pd.read_csv(roi_csv, index_col=0)
 
         return rois_df
