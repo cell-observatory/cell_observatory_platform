@@ -12,6 +12,11 @@ pixel_decoder_args: ${models.heads.pixel_decoder}
 # Query decoder (Mask2FormerTransformerDecoder)
 decoder_args: ${models.heads.mask2former_decoder}
 
+input_shape: ${datasets.input_shape}
+input_fmt: ${dataset_layout_order}
+topk_queries: 10
+num_classes: 2
+
 # Matcher
 matcher_args:
   BUILD: cell_observatory_platform.models.utils.matchers.HungarianMatcher.BUILD

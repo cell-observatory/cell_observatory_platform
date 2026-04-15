@@ -53,12 +53,12 @@ class MaskDINO(nn.Module):
                     "dtype": "uint16",
                 },
                 "boxes": {
-                    "shape": (num_queries, 6),
+                    "shape": (topk_per_image, 6),
                     "dtype": "float32",
                 },
                 "labels": {
-                    "shape": (num_queries, 1),
-                    "dtype": "int64",
+                    "shape": (topk_per_image,),
+                    "dtype": "float32",
                 },
             },
         })
@@ -130,6 +130,40 @@ class MaskDINO(nn.Module):
     @torch.jit.ignore
     def get_output_metadata(self):
         return self.output_metadata
+
+    @torch.jit.ignore
+    def validate_outputs(self, preds: Dict[str, torch.Tensor]) -> None:
+        """Verify that prediction keys and per-sample shapes match tensor_info.
+
+        Raises ``ValueError`` with a detailed message on any mismatch so
+        shape/key bugs surface immediately instead of silently corrupting
+        downstream buffers.
+        """
+        tensor_info = self.output_metadata["tensor_info"]
+        expected_keys = set(tensor_info.keys())
+        actual_keys = set(preds.keys())
+
+        missing = expected_keys - actual_keys
+        extra = actual_keys - expected_keys
+        parts: List[str] = []
+        if missing:
+            parts.append(f"missing keys {missing}")
+        if extra:
+            parts.append(f"unexpected keys {extra}")
+
+        for key in expected_keys & actual_keys:
+            expected_shape = tuple(tensor_info[key]["shape"])
+            actual_shape = tuple(preds[key].shape[1:])  # strip batch dim
+            if actual_shape != expected_shape:
+                parts.append(
+                    f"'{key}' shape mismatch: tensor_info declares "
+                    f"{expected_shape} but got {actual_shape} (batch shape {tuple(preds[key].shape)})"
+                )
+
+        if parts:
+            raise ValueError(
+                "Model output / tensor_info mismatch:\n  " + "\n  ".join(parts)
+            )
 
     @staticmethod
     def adjust_loss_weight_dict(
@@ -226,7 +260,7 @@ class MaskDINO(nn.Module):
 
         del outputs
 
-        predictions = []
+        per_sample_preds = []
         for predicted_label, predicted_mask, predicted_box, orig_image_size in zip(
             predicted_labels,
             predicted_masks,
@@ -236,11 +270,13 @@ class MaskDINO(nn.Module):
             depth, height, width = orig_image_size
             # scale postprocess boxes to original image size
             predicted_box = self.box_postprocess(predicted_box, depth, height, width)
+            per_sample_preds.append(self._predict(predicted_label, predicted_mask, predicted_box))
 
-            instance_predictions = self._predict(predicted_label, predicted_mask, predicted_box)
-            predictions.append(instance_predictions)
-
-        return predictions
+        batched = {
+            key: torch.stack([s[key] for s in per_sample_preds], dim=0)
+            for key in per_sample_preds[0]
+        }
+        return batched
 
     def _predict(self, predicted_labels, predicted_masks, predicted_boxes):
         # (num_queries, num_classes) -> (num_queries, num_classes)
@@ -255,25 +291,53 @@ class MaskDINO(nn.Module):
 
         predicted_masks = predicted_masks[topk_query_indices]
 
+        # binary masks: (topk_per_image, D, H, W)
+        binary_masks = (predicted_masks > 0).float()
         instance_predictions = {}
-        # predicted masks pre-sigmoid (0.5 threshold)
-        instance_predictions["masks"] = (predicted_masks > 0).float()
         instance_predictions["boxes"] = predicted_boxes[topk_query_indices]
 
-        # average mask confidence inside each mask
-        predicted_masks_flattened = instance_predictions["masks"].flatten(1)
-        predicted_masks_sigmoid_flattened = predicted_masks.sigmoid().flatten(1)
-        # keep probs only inside the predicted mask (all pixels > 0 times their prob)
-        mask_confidence_score = (predicted_masks_sigmoid_flattened * predicted_masks_flattened).sum(1) / (
-            predicted_masks_flattened.sum(1) + 1e-6
+        # per-instance confidence: avg sigmoid probability inside each mask
+        binary_flat = binary_masks.flatten(1)
+        sigmoid_flat = predicted_masks.sigmoid().flatten(1)
+        mask_confidence_score = (sigmoid_flat * binary_flat).sum(1) / (
+            binary_flat.sum(1) + 1e-6
         )
 
         if self.focus_on_boxes:
-            instance_predictions["predicted_labels"] = predicted_labels_topk
+            instance_predictions["labels"] = predicted_labels_topk
         else:
-            instance_predictions["predicted_labels"] = predicted_labels_topk * mask_confidence_score
+            instance_predictions["labels"] = predicted_labels_topk * mask_confidence_score
+
+        # collapse per-instance binary masks into a single label map
+        instance_predictions["masks"] = self.collapse_instance_masks(
+            binary_masks, scores=instance_predictions["labels"]
+        )
 
         return instance_predictions
+
+    @staticmethod
+    def collapse_instance_masks(
+        binary_masks: torch.Tensor, scores: torch.Tensor
+    ) -> torch.Tensor:
+        """Collapse per-instance binary masks into a single instance label map.
+
+        Args:
+            binary_masks: ``(K, *spatial)`` binary masks (one per instance).
+            scores: ``(K,)`` confidence score for each instance.
+
+        Returns:
+            ``(*spatial)`` uint16 label map.  Background = 0, instances are
+            labelled 1 .. N in ascending confidence order so that
+            higher-scoring instances overwrite lower-scoring ones in
+            overlapping regions.
+        """
+        label_map = torch.zeros(
+            binary_masks.shape[1:], dtype=torch.int32, device=binary_masks.device
+        )
+        order = scores.argsort()
+        for new_id, idx in enumerate(order, start=1):
+            label_map[binary_masks[idx] > 0] = new_id
+        return label_map.to(torch.uint16)
 
     def box_postprocess(self, bboxes, depth, height, width):
         # postprocess box height and width
@@ -425,4 +489,6 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
         instance_segmentation_flag=instance_segmentation_flag,
         topk_per_image=topk_per_image,
         focus_on_boxes=focus_on_boxes,
+        input_shape=cfg.datasets.train_shape,
+        input_fmt=cfg.dataset_layout_order,
     )

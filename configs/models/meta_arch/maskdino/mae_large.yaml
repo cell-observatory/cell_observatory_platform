@@ -55,11 +55,11 @@ focus_on_boxes: false
 output_metadata:
   tensor_info:
     masks:
-      dtype: ${datasets.dtype}
+      dtype: ${dataset_dtype}
     boxes:
-      dtype: ${datasets.dtype}
+      dtype: ${dataset_dtype}
     labels:
-      dtype: ${datasets.dtype}
+      dtype: ${dataset_dtype}
 
 
 # How to pick number of points?

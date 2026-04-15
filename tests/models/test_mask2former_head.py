@@ -74,7 +74,6 @@ def test_mask2former_head_forward_shapes_cuda():
     head = Mask2FormerHead(
         pixel_decoder=pixel_decoder,
         predictor=predictor,
-        num_classes=num_classes,
     ).cuda()
 
     features = {
