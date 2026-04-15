@@ -107,40 +107,52 @@ def save_predictions(
     model_name: str,
     preds: Dict[str, Any],
     task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
-    input_format: Literal["TZYXC", "ZYXC"],
-    save_mode: Literal["overwrite", "append"],
-    save_tensors_dtypes: Dict[str, str],
+    save_mode: Literal["overwrite", "create"],
+    save_tensors_metadata: Dict[str, Dict[str, Any]],
     existing_channel_names: Dict[int, str],
     zarr_driver: str = "zarr3",
     timepoint_idxs: Optional[List[int]] = None,
     shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
     chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
 ) -> None:
-    preds_formats = input_format_to_output_format(input_format, task)
     exceptions = {}
     metadata = {"task": task}
-    for output_name, output_format in preds_formats.items():
+    for output_name, output_metadata in save_tensors_metadata.items():
         try:
             data = preds[output_name]
         except KeyError as e:
-            ray.logger.error(f"Prediction {output_name} not found in preds: {e}")
+            ray.logger.error(f"Save tensor {output_name} not found in preds: {e}")
             continue
         try:
-            dtype = save_tensors_dtypes[output_name]
+            save_name = output_metadata["name"]
         except KeyError as e:
-            ray.logger.error(f"Dtype for {output_name} not found in save_tensors_dtypes: {e}")
+            ray.logger.error(f"Name for {output_name} not found in save_tensors_metadata: {e}")
             continue
         try:
-
-            if output_name == "masks":
-                assert output_format in ["TZYXC", "ZYXC"], f"Invalid output format: {output_format}"
+            dtype = output_metadata["dtype"]
+        except KeyError as e:
+            ray.logger.error(f"Dtype for {output_name} not found in save_tensors_metadata: {e}")
+            continue
+        try:
+            data_format = output_metadata["data_format"]
+        except KeyError as e:
+            ray.logger.error(f"Data format for {output_name} not found in save_tensors_metadata: {e}")
+            continue
+        try:
+            annotation_type = output_metadata["annotation_type"]
+        except KeyError as e:
+            ray.logger.error(f"Annotation type for {output_name} not found in save_tensors_metadata: {e}")
+            continue
+        try:
+            if annotation_type == "dense":
+                assert output_metadata["data_format"] in ["TZYXC", "ZYXC"], f"Invalid data format: {output_metadata['data_format']}"
                 save_masks(
                     image_path=image_path,
                     model_name=model_name,
                     masks=data,
-                    task=task,
+                    annotation_name=save_name,
                     existing_channel_names=existing_channel_names,
-                    input_format=cast(Literal["TZYXC", "ZYXC"], output_format),
+                    data_format=cast(Literal["TZYXC", "ZYXC"], data_format),
                     save_mode=save_mode,
                     chunk_spatial_shape=chunk_spatial_shape,
                     shard_spatial_shape=shard_spatial_shape,
@@ -148,23 +160,25 @@ def save_predictions(
                     zarr_driver=zarr_driver,
                     dtype=dtype,
                 )
-            else:
+            elif annotation_type == "sparse":
                 save_sparse_annotations(
                     image_path=image_path,
                     model_name=model_name,
                     data=data,
-                    annotation_name=cast(Literal["scores", "labels", "boxes"], output_name),
-                    input_format=cast(
+                    annotation_name=cast(Literal["scores", "labels", "boxes"], save_name),
+                    data_format=cast(
                         Literal["TNM", "TN6", "TN", "NM", "N6", "N"],
-                        output_format,
+                        data_format,
                     ),
                     save_mode=save_mode,
                     timepoint_idxs=timepoint_idxs,
                     zarr_driver=zarr_driver,
-                    dtype=dtype,
+                    dtype=dtype,   
                 )
+            else:
+                raise ValueError(f"Unknown annotation type: {annotation_type}")
         except Exception as e:
-            ray.logger.error(f"Failed to save {output_name}: {e}", exc_info=True)
+            ray.logger.error(f"Failed to save {annotation_type} annotation {output_name} with data format {data_format}: {e}", exc_info=True)
             exceptions[output_name] = e
     try:
         save_annotations_metadata(
@@ -189,23 +203,12 @@ class SaveWorker:
     def __init__(
         self,
         buffer_manager: BufferManager,
-        save_mode: Literal["overwrite", "append"],
+        save_mode: Literal["overwrite", "create"],
         max_workers: int = 4,
         columns: List[str] = [
-            "x_start",
-            "y_start",
-            "z_start",
-            "time_start",
-            "channel_size",
-            "z_size",
-            "y_size",
-            "x_size",
-            "time_size",
             "server_folder",
             "output_folder",
             "tile_name",
-            "prepared_id",
-            "mask_bbox_dict",
         ],
         shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
         chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
@@ -218,23 +221,24 @@ class SaveWorker:
             thread_name_prefix=f"save_worker_rank_{buffer_manager.global_rank}"
         )
         self._metrics = {
-            "save_time_ms": 0.0,
-            "save_calls": 0,
-            "save_successes": 0,
-            "save_failures": 0,
+            "save_time_ms": [],
+            "save_successful": []
         }
+        if shard_spatial_shape is None or chunk_spatial_shape is None:
+            raise ValueError(
+                "shard_spatial_shape and chunk_spatial_shape must be provided because dense annotation arrays (masks) may need to be created"
+            )
+        
         self.shard_spatial_shape = shard_spatial_shape
         self.chunk_spatial_shape = chunk_spatial_shape
 
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> Dict[str, List[float | bool]]:
         return self._metrics.copy()
 
     def clear_metrics(self) -> None:
         self._metrics = {
-            "save_time_ms": 0.0,
-            "save_calls": 0,
-            "save_successes": 0,
-            "save_failures": 0,
+            "save_time_ms": [],
+            "save_successful": []
         }
 
     def save(
@@ -261,9 +265,8 @@ class SaveWorker:
             required = (
                 "task",
                 "batch_size_actual",
-                "input_format",
+                "save_tensors_metadata",
                 "model_name",
-                "save_tensors_dtypes",
                 "channel_names",
             )
             for key in required:
@@ -271,11 +274,11 @@ class SaveWorker:
                     raise KeyError(f"metainfo missing required key {key!r}")
             task = sample_metainfo["task"]
             batch_size = sample_metainfo["batch_size_actual"]
-            save_tensors_dtypes = sample_metainfo["save_tensors_dtypes"]
             timepoint_idxs_raw = sample_metainfo.get("timepoint_idxs", None)
             channel_names_list = _expand_channel_names_for_batch(
                 sample_metainfo["channel_names"], batch_size
             )
+            save_tensors_metadata = sample_metainfo["save_tensors_metadata"]
 
             batch_futures: List[Future] = []
 
@@ -303,9 +306,8 @@ class SaveWorker:
                         ],
                         task,
                     ),
-                    input_format=cast(Literal["TZYXC", "ZYXC"], sample_metainfo["input_format"]),
-                    save_mode=cast(Literal["overwrite", "append"], self.save_mode),
-                    save_tensors_dtypes=save_tensors_dtypes,
+                    save_mode=cast(Literal["overwrite", "create"], self.save_mode),
+                    save_tensors_metadata=save_tensors_metadata,
                     existing_channel_names=channel_names_list[b],
                     timepoint_idxs=_timepoint_idxs_for_batch_idx(
                         timepoint_idxs_raw, b, batch_size
@@ -320,19 +322,18 @@ class SaveWorker:
             for future in as_completed(batch_futures):
                 try:
                     future.result()
-                    self._metrics["save_successes"] += 1
+                    self._metrics["save_successful"].append(True)
                 except Exception as e:
                     ray.logger.error(f"Failed to save batch element: {e}", exc_info=True)
-                    self._metrics["save_failures"] += 1
+                    self._metrics["save_successful"].append(False)
                     continue
         except Exception as e:
-            self._metrics["save_failures"] += 1
+            self._metrics["save_successful"].append(False)
             ray.logger.error(f"Failed to save: {e}", exc_info=True)
         finally:
             for slot_info in slots_to_free:
                 self.buffer_manager.free_slot(slot_info)
-            self._metrics["save_time_ms"] += (time.perf_counter() - t0) * 1000
-            self._metrics["save_calls"] += 1
+            self._metrics["save_time_ms"].append((time.perf_counter() - t0) * 1000)
 
 # TODO: Consider using this retry logic
 # def submit_with_state(executor: ThreadPoolExecutor, fn: Callable, arg: Any, attempt: int, future_state: Dict[Future, Dict[str, Any]]):

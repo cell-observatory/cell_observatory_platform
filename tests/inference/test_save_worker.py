@@ -64,6 +64,18 @@ def _kill_safe(handle):
         pass
 
 
+def _assert_save_worker_batch_outcomes(
+    m: dict,
+    *,
+    expected_successes: int,
+    expected_failures: int,
+) -> None:
+    """Assert ``SaveWorker`` metrics after ``save()`` (lists, one timing row per call)."""
+    assert m["save_successful"].count(True) == expected_successes
+    assert m["save_successful"].count(False) == expected_failures
+    assert len(m["save_time_ms"]) >= 1
+
+
 def _wait_buffer_in_use_zero(buffer_actor, *, timeout_s: float = 5.0, poll_s: float = 0.05) -> None:
     """Wait until ``in_use_current`` is 0 on the buffer actor.
 
@@ -95,7 +107,7 @@ def _create_zarr_semantic_tile_store(tmp_path: Path, *, tile_name: str = "tile.z
         data,
         shard_spatial_shape=shard_spatial_shape,
         chunk_spatial_shape=chunk_spatial_shape,
-        input_format="TZYXC",
+        data_format="TZYXC",
         zarr_driver="zarr3",
         dtype="uint16",
         channel_names={0: "channel_0"},
@@ -122,11 +134,10 @@ def _make_save_metainfo_from_store(store: dict, *, batch_size: int = 1) -> dict:
         return [v] * batch_size
 
     return {
-        "task": "semantic_segmentation",
         "batch_size_actual": batch_size,
-        "input_format": "TZYXC",
+        "task": "semantic_segmentation",
         "model_name": "unit_test_model",
-        "save_tensors_dtypes": {"masks": "uint16"},
+        "save_tensors_metadata": {"masks": {"dtype": "uint16", "data_format": "TZYXC", "annotation_type": "dense"}},
         "channel_names": {0: "channel_0"},
         "server_folder": col(store["server_folder"]),
         "output_folder": col(store["output_folder"]),
@@ -217,9 +228,8 @@ class TestSaverSavePredictions:
             model_name="m1",
             preds=preds,
             task="semantic_segmentation",
-            input_format="TZYXC",
-            save_mode="append",
-            save_tensors_dtypes={"masks": "uint16"},
+            save_mode="create",
+            save_tensors_metadata={"masks": {"dtype": "uint16", "data_format": "TZYXC", "annotation_type": "dense"}},
             existing_channel_names={0: "channel_0"},
             shard_spatial_shape=store["shard_spatial_shape"],
             chunk_spatial_shape=store["chunk_spatial_shape"],
@@ -238,9 +248,11 @@ class TestSaverSavePredictions:
             model_name="m1",
             preds=preds,
             task="semantic_segmentation",
-            input_format="TZYXC",
-            save_mode="append",
-            save_tensors_dtypes={"masks": "uint16", "labels": "float32"},
+            save_mode="create",
+            save_tensors_metadata={
+                "masks": {"dtype": "uint16", "data_format": "TZYXC", "annotation_type": "dense"},
+                "labels": {"dtype": "float32", "data_format": "TNM", "annotation_type": "sparse"},
+            },
             existing_channel_names={0: "channel_0"},
             shard_spatial_shape=store["shard_spatial_shape"],
             chunk_spatial_shape=store["chunk_spatial_shape"],
@@ -261,15 +273,16 @@ class TestSaveWorkerRay:
             sw = SaveWorker.options(name=f"sw_init_{unique_suffix}").remote(
                 buffer_manager=bm,
                 save_mode="overwrite",
+                shard_spatial_shape=(2, 2, 2),
+                chunk_spatial_shape=(1, 1, 1),
             )
             m = ray.get(sw.get_metrics.remote())
-            assert m["save_calls"] == 0
-            assert m["save_successes"] == 0
-            assert m["save_failures"] == 0
-            assert m["save_time_ms"] == 0.0
+            assert m["save_successful"] == []
+            assert m["save_time_ms"] == []
             ray.get(sw.clear_metrics.remote())
             m2 = ray.get(sw.get_metrics.remote())
-            assert m2["save_calls"] == 0
+            assert m2["save_successful"] == []
+            assert m2["save_time_ms"] == []
         finally:
             if sw is not None:
                 _kill_safe(sw)
@@ -290,7 +303,7 @@ class TestSaveWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             inference_outputs, _ = _build_masks_inference_with_slot(bm, pool, zarr_semantic_tile)
             buf = bm._buffer_actors[pool]
@@ -298,7 +311,7 @@ class TestSaveWorkerRay:
 
             sw = SaveWorker.options(name=f"sw_rs_{unique_suffix}").remote(
                 buffer_manager=bm,
-                save_mode="append",
+                save_mode="create",
                 shard_spatial_shape=zarr_semantic_tile["shard_spatial_shape"],
                 chunk_spatial_shape=zarr_semantic_tile["chunk_spatial_shape"],
             )
@@ -312,9 +325,8 @@ class TestSaveWorkerRay:
             )
             _wait_buffer_in_use_zero(buf)
             m = ray.get(sw.get_metrics.remote())
-            assert m["save_calls"] == 1
-            assert m["save_successes"] == 1
-            assert m["save_failures"] == 0
+            _assert_save_worker_batch_outcomes(m, expected_successes=1, expected_failures=0)
+            assert m["save_time_ms"][-1] >= 0.0
         finally:
             if sw is not None:
                 _kill_safe(sw)
@@ -337,7 +349,7 @@ class TestSaveWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             masks = np.zeros((1, 1, 2, 2, 2, 1), dtype=np.float32)
             inference_outputs = {
@@ -346,7 +358,7 @@ class TestSaveWorkerRay:
             }
             sw = SaveWorker.options(name=f"sw_nd_{unique_suffix}").remote(
                 buffer_manager=bm,
-                save_mode="append",
+                save_mode="create",
                 shard_spatial_shape=zarr_semantic_tile["shard_spatial_shape"],
                 chunk_spatial_shape=zarr_semantic_tile["chunk_spatial_shape"],
             )
@@ -382,7 +394,7 @@ class TestSaveWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             inference_outputs, _ = _build_masks_inference_with_slot(bm, pool, zarr_semantic_tile)
             buf = bm._buffer_actors[pool]
@@ -391,14 +403,13 @@ class TestSaveWorkerRay:
             zpath.write_bytes(b"not a zarr store")
             sw = SaveWorker.options(name=f"sw_fl_{unique_suffix}").remote(
                 buffer_manager=bm,
-                save_mode="append",
+                save_mode="create",
                 shard_spatial_shape=zarr_semantic_tile["shard_spatial_shape"],
                 chunk_spatial_shape=zarr_semantic_tile["chunk_spatial_shape"],
             )
             ray.get(sw.save.remote(inference_outputs))
             m = ray.get(sw.get_metrics.remote())
-            assert m["save_failures"] == 1
-            assert m["save_successes"] == 0
+            _assert_save_worker_batch_outcomes(m, expected_successes=0, expected_failures=1)
             _wait_buffer_in_use_zero(buf)
         finally:
             if zpath.exists():
@@ -430,7 +441,7 @@ class TestSaveWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             masks = np.ones((2, 1, 2, 2, 2, 1), dtype=np.float32)
             meta = _make_save_metainfo_from_store(store_a, batch_size=1)
@@ -445,15 +456,13 @@ class TestSaveWorkerRay:
             }
             sw = SaveWorker.options(name=f"sw_mb_{unique_suffix}").remote(
                 buffer_manager=bm,
-                save_mode="append",
+                save_mode="create",
                 shard_spatial_shape=store_a["shard_spatial_shape"],
                 chunk_spatial_shape=store_a["chunk_spatial_shape"],
             )
             ray.get(sw.save.remote(inference_outputs))
             m = ray.get(sw.get_metrics.remote())
-            assert m["save_calls"] == 1
-            assert m["save_successes"] == 2
-            assert m["save_failures"] == 0
+            _assert_save_worker_batch_outcomes(m, expected_successes=2, expected_failures=0)
             assert annotation_exists(store_a["image_path"], "unit_test_model", "masks", "zarr3")
             assert annotation_exists(store_b["image_path"], "unit_test_model", "masks", "zarr3")
         finally:
@@ -466,7 +475,7 @@ class TestSaveWorkerRay:
     def test_save_worker_nonexistent_image_path_no_batch_success(
         self, ray_ctx, ray_node_id, unique_suffix, zarr_semantic_tile
     ):
-        """Missing ``image_path`` is caught per-element; metrics record a call and one failure."""
+        """Missing ``image_path`` is caught per-element; metrics record one failed batch element."""
         pool = f"sv_np_{unique_suffix}"
         bm = _make_buffer_manager(ray_node_id)
         actor = None
@@ -479,7 +488,7 @@ class TestSaveWorkerRay:
                 dtype="float32",
                 buffer_type="host_memory",
                 buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             buffer_actor = bm._buffer_actors[pool]
             slot_info = ray.get(buffer_actor.get_free.remote())
@@ -493,15 +502,13 @@ class TestSaveWorkerRay:
             }
             sw = SaveWorker.options(name=f"sw_np_{unique_suffix}").remote(
                 buffer_manager=bm,
-                save_mode="append",
+                save_mode="create",
                 shard_spatial_shape=zarr_semantic_tile["shard_spatial_shape"],
                 chunk_spatial_shape=zarr_semantic_tile["chunk_spatial_shape"],
             )
             ray.get(sw.save.remote(inference_outputs))
             m = ray.get(sw.get_metrics.remote())
-            assert m["save_calls"] == 1
-            assert m["save_successes"] == 0
-            assert m["save_failures"] == 1
+            _assert_save_worker_batch_outcomes(m, expected_successes=0, expected_failures=1)
             _wait_buffer_in_use_zero(buffer_actor)
         finally:
             if sw is not None:
