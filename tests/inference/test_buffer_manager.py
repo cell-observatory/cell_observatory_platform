@@ -446,7 +446,7 @@ class TestBufferManagerSetGet:
                 dtype="uint16",
                 buffer_type="host_memory",
                 buffer_capacity=4,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             assert pool in bm._buffer_actors
             assert pool in bm._buffer_cfgs
@@ -470,13 +470,13 @@ class TestBufferManagerSetGet:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_to_numa_node=False,
+                buffer_capacity=2, pin_numa_node=False,
             )
             with pytest.raises(ValueError, match="already exists"):
                 bm.set_buffer(
                     pool_name=pool, batch_size=2, input_shape=(4,),
                     dtype="uint16", buffer_type="host_memory",
-                    buffer_capacity=2, pin_to_numa_node=False,
+                    buffer_capacity=2, pin_numa_node=False,
                 )
         finally:
             bm.shutdown()
@@ -491,7 +491,7 @@ class TestBufferManagerSetGet:
                 bm.set_buffer(
                     pool_name=pool, batch_size=2, input_shape=(1024, 1024),
                     dtype="float32", buffer_type="host_memory",
-                    buffer_capacity=4, pin_to_numa_node=False,
+                    buffer_capacity=4, pin_numa_node=False,
                 )
         finally:
             bm.shutdown()
@@ -504,7 +504,7 @@ class TestBufferManagerSetGet:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_to_numa_node=False,
+                buffer_capacity=2, pin_numa_node=False,
             )
             retrieved = bm.get_buffer(pool)
             assert retrieved is actor
@@ -557,7 +557,7 @@ class TestBufferManagerSetGet:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_to_numa_node=False,
+                buffer_capacity=2, pin_numa_node=False,
             )
             initial_bytes = bm._current_memory_usage_bytes
             bm.remove_buffer(pool)
@@ -590,7 +590,7 @@ class TestBufferManagerSlotOps:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4, 4),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=4, pin_to_numa_node=False,
+                buffer_capacity=4, pin_numa_node=False,
             )
             slot_info = ray.get(actor.get_free.remote())
             view = bm.slot_info_to_view(slot_info)
@@ -610,7 +610,7 @@ class TestBufferManagerSlotOps:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=1, pin_to_numa_node=False,
+                buffer_capacity=1, pin_numa_node=False,
             )
             slot_info = ray.get(actor.get_free.remote())
             bm.free_slot(slot_info)
@@ -629,7 +629,7 @@ class TestBufferManagerSlotOps:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_to_numa_node=False,
+                buffer_capacity=2, pin_numa_node=False,
             )
             ray.get(actor.get_free.remote())
             metrics = bm.get_metrics()
@@ -648,7 +648,7 @@ class TestBufferManagerSlotOps:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_to_numa_node=False,
+                buffer_capacity=2, pin_numa_node=False,
             )
             ray.get(actor.get_free.remote())
             bm.clear_metrics()
@@ -674,7 +674,7 @@ class TestBufferManagerSerialization:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_to_numa_node=False,
+                buffer_capacity=2, pin_numa_node=False,
             )
             data = pickle.dumps(bm)
             bm2 = pickle.loads(data)
@@ -700,7 +700,7 @@ class TestBufferManagerSerialization:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_to_numa_node=False,
+                buffer_capacity=2, pin_numa_node=False,
             )
             bm2 = pickle.loads(pickle.dumps(bm))
             bm2.shutdown()
@@ -721,7 +721,7 @@ class TestBufferManagerSerialization:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_to_numa_node=False,
+                buffer_capacity=2, pin_numa_node=False,
             )
             bm.shutdown()
             assert len(bm._buffer_actors) == 0
@@ -739,7 +739,7 @@ class TestBufferManagerSerialization:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_to_numa_node=False,
+                buffer_capacity=2, pin_numa_node=False,
             )
             bm.shutdown()
             bm.shutdown()  # must not raise
@@ -763,11 +763,12 @@ class TestInitOutputMemoryPools:
                 "tensor_info": {"seg": {"shape": (4,), "dtype": "uint16"}},
                 "save_tensors": ["seg"],
                 "visualize_tensors": [],
+                "buffer_tensors": ["seg"],
             }
             init_output_memory_pools(
                 buffer_manager=bm, output_metadata=meta, batch_size=2,
                 save=True, viz=False, save_buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             assert "seg_save" in bm._buffer_actors
             actors.append(bm._buffer_actors["seg_save"])
@@ -785,11 +786,12 @@ class TestInitOutputMemoryPools:
                 "tensor_info": {"conf": {"shape": (4,), "dtype": "float32"}},
                 "save_tensors": [],
                 "visualize_tensors": ["conf"],
+                "buffer_tensors": ["conf"],
             }
             init_output_memory_pools(
                 buffer_manager=bm, output_metadata=meta, batch_size=2,
                 save=False, viz=True, viz_buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             assert "conf_viz" in bm._buffer_actors
             actors.append(bm._buffer_actors["conf_viz"])
@@ -807,12 +809,13 @@ class TestInitOutputMemoryPools:
                 "tensor_info": {"out": {"shape": (4,), "dtype": "uint16"}},
                 "save_tensors": ["out"],
                 "visualize_tensors": ["out"],
+                "buffer_tensors": ["out"],
             }
             init_output_memory_pools(
                 buffer_manager=bm, output_metadata=meta, batch_size=2,
                 save=True, viz=True,
                 save_buffer_capacity=2, viz_buffer_capacity=2,
-                pin_to_numa_node=False,
+                pin_numa_node=False,
             )
             assert "out_save" in bm._buffer_actors
             assert "out_viz" in bm._buffer_actors
@@ -825,6 +828,26 @@ class TestInitOutputMemoryPools:
             for a in actors:
                 _kill_safe(a)
 
+    def test_empty_buffer_tensors_creates_no_pools(self, ray_ctx, ray_node_id, unique_suffix):
+        """Small tensors may be listed in save_tensors but omitted from buffer_tensors."""
+        rank = (hash(unique_suffix) % 10000) + 21000
+        bm = _make_buffer_manager(ray_node_id, global_rank=rank)
+        try:
+            meta = {
+                "tensor_info": {"tiny": {"shape": (2,), "dtype": "float32"}},
+                "save_tensors": ["tiny"],
+                "visualize_tensors": [],
+                "buffer_tensors": [],
+            }
+            init_output_memory_pools(
+                buffer_manager=bm, output_metadata=meta, batch_size=2,
+                save=True, viz=False, save_buffer_capacity=2,
+                pin_numa_node=False,
+            )
+            assert "tiny_save" not in bm._buffer_actors
+        finally:
+            bm.shutdown()
+
     def test_missing_tensor_info_raises(self, ray_ctx, ray_node_id, unique_suffix):
         rank = (hash(unique_suffix) % 10000) + 30000
         bm = _make_buffer_manager(ray_node_id, global_rank=rank)
@@ -833,12 +856,13 @@ class TestInitOutputMemoryPools:
                 "tensor_info": {},
                 "save_tensors": ["nonexistent"],
                 "visualize_tensors": [],
+                "buffer_tensors": ["nonexistent"],
             }
             with pytest.raises(ValueError, match="Tensor info for nonexistent"):
                 init_output_memory_pools(
                     buffer_manager=bm, output_metadata=meta, batch_size=2,
                     save=True, viz=False, save_buffer_capacity=2,
-                    pin_to_numa_node=False,
+                    pin_numa_node=False,
                 )
         finally:
             bm.shutdown()
@@ -848,7 +872,14 @@ class TestInitOutputMemoryPools:
         try:
             with pytest.raises(ValueError, match="at least one"):
                 init_output_memory_pools(
-                    buffer_manager=bm, output_metadata={}, batch_size=2,
+                    buffer_manager=bm,
+                    output_metadata={
+                        "tensor_info": {},
+                        "save_tensors": [],
+                        "visualize_tensors": [],
+                        "buffer_tensors": [],
+                    },
+                    batch_size=2,
                     save=False, viz=False,
                 )
         finally:
@@ -859,7 +890,14 @@ class TestInitOutputMemoryPools:
         try:
             with pytest.raises(ValueError, match="save_buffer_capacity"):
                 init_output_memory_pools(
-                    buffer_manager=bm, output_metadata={}, batch_size=2,
+                    buffer_manager=bm,
+                    output_metadata={
+                        "tensor_info": {},
+                        "save_tensors": [],
+                        "visualize_tensors": [],
+                        "buffer_tensors": [],
+                    },
+                    batch_size=2,
                     save=True, viz=False, save_buffer_capacity=None,
                 )
         finally:
@@ -870,7 +908,14 @@ class TestInitOutputMemoryPools:
         try:
             with pytest.raises(ValueError, match="viz_buffer_capacity"):
                 init_output_memory_pools(
-                    buffer_manager=bm, output_metadata={}, batch_size=2,
+                    buffer_manager=bm,
+                    output_metadata={
+                        "tensor_info": {},
+                        "save_tensors": [],
+                        "visualize_tensors": [],
+                        "buffer_tensors": [],
+                    },
+                    batch_size=2,
                     save=False, viz=True, viz_buffer_capacity=None,
                 )
         finally:
@@ -892,7 +937,7 @@ class TestSetBuffers:
                 local_rank=0, global_rank=0, numa_node=0,
                 dtype=np.uint16, batch_size=2,
                 input_shape=(4,), buffer_type="host_memory",
-                buffer_capacity=3, pin_to_numa_node=False,
+                buffer_capacity=3, pin_numa_node=False,
                 node_id=ray_node_id, pool_name=pool,
             )
             assert cfg["capacity"] == 3
@@ -909,14 +954,14 @@ class TestSetBuffers:
                 local_rank=0, global_rank=0, numa_node=0,
                 dtype=np.uint16, batch_size=2,
                 input_shape=(4,), buffer_type="host_memory",
-                buffer_capacity=3, pin_to_numa_node=False,
+                buffer_capacity=3, pin_numa_node=False,
                 node_id=ray_node_id, pool_name=pool,
             )
             _, cfg2 = set_buffers(
                 local_rank=0, global_rank=0, numa_node=0,
                 dtype=np.uint16, batch_size=2,
                 input_shape=(4,), buffer_type="host_memory",
-                buffer_capacity=3, pin_to_numa_node=False,
+                buffer_capacity=3, pin_numa_node=False,
                 node_id=ray_node_id, pool_name=pool,
             )
             assert cfg1["name"] == cfg2["name"]
@@ -932,7 +977,7 @@ class TestSetBuffers:
                 local_rank=0, global_rank=0, numa_node=0,
                 dtype=np.uint16, batch_size=2,
                 input_shape=(4,), buffer_type="host_memory",
-                buffer_capacity=3, pin_to_numa_node=False,
+                buffer_capacity=3, pin_numa_node=False,
                 node_id=ray_node_id, pool_name=pool,
             )
             with pytest.raises(ValueError, match="config does not match"):
@@ -941,7 +986,7 @@ class TestSetBuffers:
                     dtype=np.uint16, batch_size=2,
                     input_shape=(4,), buffer_type="host_memory",
                     buffer_capacity=99,
-                    pin_to_numa_node=False,
+                    pin_numa_node=False,
                     node_id=ray_node_id, pool_name=pool,
                 )
         finally:
@@ -954,7 +999,7 @@ class TestSetBuffers:
                 local_rank=0, global_rank=0, numa_node=0,
                 dtype=np.uint16, batch_size=2,
                 input_shape=(4,), buffer_type="gpu_memory",
-                buffer_capacity=3, pin_to_numa_node=False,
+                buffer_capacity=3, pin_numa_node=False,
                 node_id=ray_node_id, pool_name=f"sbfu_{unique_suffix}",
             )
 
@@ -976,7 +1021,7 @@ class TestLeakDetection:
             actor, cfg = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_to_numa_node=False,
+                buffer_capacity=2, pin_numa_node=False,
             )
             shm_name = cfg["name"]
 
@@ -1028,7 +1073,7 @@ class TestLeakDetection:
             actor, _ = bm.set_buffer(
                 pool_name=pool, batch_size=2, input_shape=(4,),
                 dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_to_numa_node=False,
+                buffer_capacity=2, pin_numa_node=False,
             )
             actor_name = get_buffer_name(pool, 0, 0)
             namespace = f"buffers_node_{ray_node_id}"

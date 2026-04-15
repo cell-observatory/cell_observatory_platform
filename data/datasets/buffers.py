@@ -119,13 +119,10 @@ class HostMemoryBuffer:
         total_bytes = self.cap * self.slot_bytes
         self._shm = shared_memory.SharedMemory(create=True, size=total_bytes)
         self.name = self._shm.name
-        self._metrics: Dict[str, float | int] = {
-            "get_free_count": 0.0,
-            "get_free_wait_time_s": 0.0,
-            "put_free_count": 0.0,
-            "put_free_wait_time_s": 0.0,
-            "try_get_free_count": 0.0,
-            "try_get_free_wait_time_s": 0.0,
+        self._metrics: Dict[str, float | int | list[float | int]] = {
+            "get_free_wait_time_ms": [],
+            "put_free_wait_time_ms": [],
+            "try_get_free_wait_time_ms": [],
             "try_get_free_drops": 0,
             "in_use_current": 0,
             "capacity": self.cap,
@@ -149,8 +146,7 @@ class HostMemoryBuffer:
         t0 = time.perf_counter()
         slot = await self.free.get()
         t1 = time.perf_counter()
-        self._metrics["get_free_count"] += 1
-        self._metrics["get_free_wait_time_s"] += t1 - t0
+        self._metrics["get_free_wait_time_ms"].append((t1 - t0) * 1000)
         self._metrics["in_use_current"] += 1
         return {
             "slot": slot,
@@ -170,8 +166,7 @@ class HostMemoryBuffer:
         except asyncio.QueueEmpty:
             return None
         t1 = time.perf_counter()
-        self._metrics["try_get_free_count"] += 1
-        self._metrics["try_get_free_wait_time_s"] += t1 - t0
+        self._metrics["try_get_free_wait_time_ms"].append((t1 - t0) * 1000)
         if slot is None:
             self._metrics["try_get_free_drops"] += 1
         else:
@@ -190,8 +185,7 @@ class HostMemoryBuffer:
         t0 = time.perf_counter()
         await self.free.put(int(slot))
         t1 = time.perf_counter()
-        self._metrics["put_free_count"] += 1
-        self._metrics["put_free_wait_time_s"] += t1 - t0
+        self._metrics["put_free_wait_time_ms"].append((t1 - t0) * 1000)
         self._metrics["in_use_current"] -= 1
         return True
 
@@ -199,17 +193,14 @@ class HostMemoryBuffer:
         return {"capacity": self.cap, "name": self.name, "slot_bytes": self.slot_bytes,
                 "batch_shape": self.batch_shape, "dtype": self.dtype}
 
-    def get_metrics(self) -> Dict[str, float | int]:
+    def get_metrics(self) -> Dict[str, float | int | list[float | int]]:
         return self._metrics.copy()
 
     def clear_metrics(self) -> None:
         self._metrics = {
-            "get_free_count": 0.0,
-            "get_free_wait_time_s": 0.0,
-            "put_free_count": 0.0,
-            "put_free_wait_time_s": 0.0,
-            "try_get_free_count": 0.0,
-            "try_get_free_wait_time_s": 0.0,
+            "get_free_wait_time_ms": [],
+            "put_free_wait_time_ms": [],
+            "try_get_free_wait_time_ms": [],
             "try_get_free_drops": 0,
             "in_use_current": 0,
             "capacity": self.cap,
@@ -226,7 +217,7 @@ def set_buffers(
     input_shape: tuple,
     buffer_type: str,
     buffer_capacity: int,
-    pin_to_numa_node: bool,
+    pin_numa_node: bool,
     node_id: int,
     pool_name: str,
     max_concurrent_calls: int = 256,
@@ -286,7 +277,7 @@ def set_buffers(
             capacity=buffer_capacity,
             batch_size=batch_size,
             input_shape=input_shape,
-            pin_numa_node=pin_to_numa_node,
+            pin_numa_node=pin_numa_node,
             numa_node=numa_node,
         )
         buffer_cfg = ray.get(buffer.get_config.remote())
@@ -336,7 +327,7 @@ def init_output_memory_pools(
     viz: Optional[bool] = False,
     save_buffer_capacity: Optional[int] = None,
     viz_buffer_capacity: Optional[int] = None,
-    pin_to_numa_node: Optional[bool] = True,
+    pin_numa_node: Optional[bool] = True,
 ) -> None:
     """
     Initialize output memory pools for save and viz.
@@ -366,6 +357,11 @@ def init_output_memory_pools(
             "tensor_name_2",
             ...
         ],
+        "buffer_tensors": [
+            "tensor_name_1",
+            "tensor_name_2",
+            ...
+        ],
     }
     """
     if save and save_buffer_capacity is None:
@@ -374,38 +370,35 @@ def init_output_memory_pools(
         raise ValueError("viz_buffer_capacity must be provided if viz is True")
     if not save and not viz:
         raise ValueError("at least one of save or viz must be True")
-    
-    for name in output_metadata["save_tensors"]:
-        try:
-            tensor_shape = output_metadata["tensor_info"][name]["shape"]
-            tensor_dtype = output_metadata["tensor_info"][name]["dtype"]
-        except KeyError as e:
-            raise ValueError(f"Tensor info for {name} not found in output_metadata: {e}")
-        buffer_manager.set_buffer(
-            pool_name=f"{name}_save",
-            batch_size=batch_size,
-            input_shape=tensor_shape,
-            dtype=tensor_dtype,
-            buffer_type="host_memory",
-            buffer_capacity=save_buffer_capacity,
-            pin_to_numa_node=pin_to_numa_node,
-        )
-    for name in output_metadata["visualize_tensors"]:
-        try:
-            tensor_shape = output_metadata["tensor_info"][name]["shape"]
-            tensor_dtype = output_metadata["tensor_info"][name]["dtype"]
-        except KeyError as e:
-            raise ValueError(f"Tensor info for {name} not found in output_metadata: {e}")
-        buffer_manager.set_buffer(
-            pool_name=f"{name}_viz",
-            batch_size=batch_size,
-            input_shape=tensor_shape,
-            dtype=tensor_dtype,
-            buffer_type="host_memory",
-            buffer_capacity=viz_buffer_capacity,
-            pin_to_numa_node=pin_to_numa_node,
-        )
 
+
+    for name in (output_metadata.get("buffer_tensors") or ()):
+        try:
+            tensor_shape = output_metadata["tensor_info"][name]["shape"]
+            tensor_dtype = output_metadata["tensor_info"][name]["dtype"]
+        except KeyError as e:
+            raise ValueError(f"Tensor info for {name} not found in output_metadata: {e}")
+
+        if name in output_metadata["save_tensors"]:
+            buffer_manager.set_buffer(
+                pool_name=f"{name}_save",
+                batch_size=batch_size,
+                input_shape=tensor_shape,
+                dtype=tensor_dtype,
+                buffer_type="host_memory",
+                buffer_capacity=save_buffer_capacity,
+                pin_numa_node=pin_numa_node,
+            )
+        if name in output_metadata["visualize_tensors"]:
+            buffer_manager.set_buffer(
+                pool_name=f"{name}_viz",
+                batch_size=batch_size,
+                input_shape=tensor_shape,
+                dtype=tensor_dtype,
+                buffer_type="host_memory",
+                buffer_capacity=viz_buffer_capacity,
+                pin_numa_node=pin_numa_node,
+            )
 
 
 class BufferManager:
@@ -522,7 +515,7 @@ class BufferManager:
         dtype: str,
         buffer_type: str,
         buffer_capacity: int,
-        pin_to_numa_node: bool,
+        pin_numa_node: bool,
     ) -> Tuple[ActorHandle[HostMemoryBuffer], Dict[str, Any]]:
         """
         Set a buffer for a given pool.
@@ -546,7 +539,7 @@ class BufferManager:
                 input_shape=input_shape,
                 buffer_type=buffer_type,
                 buffer_capacity=buffer_capacity,
-                pin_to_numa_node=pin_to_numa_node,
+                pin_numa_node=pin_numa_node,
                 node_id=self.node_id,
                 pool_name=pool_name,
                 max_concurrent_calls=self.max_concurrent_calls,
@@ -619,7 +612,7 @@ class BufferManager:
                 f"{slot_info.get('actor_name', slot_info.get('name'))}: {e}"
             )
 
-    def get_metrics(self) -> Dict[str, Dict[str, float | int]]:
+    def get_metrics(self) -> Dict[str, Dict[str, float | int | list[float | int]]]:
         """Get the metrics for the BufferManager."""
         metrics = {}
         for pool_name, buffer_actor in self._buffer_actors.items():
