@@ -120,6 +120,7 @@ class RayPreprocessor(torch.nn.Module):
                 "masking_time": masking_time,
                 "transform_time": transform_time if self.transforms is not None else -1,
                 **meta,
+                "idx": idx,
             }
             metainfo["spatial_kwargs"] = self._build_spatial_kwargs(
                 batch_size=inputs.shape[0], device=inputs.device,
@@ -132,6 +133,7 @@ class RayPreprocessor(torch.nn.Module):
                 "masking_time": -1.0,
                 "transform_time": transform_time if self.transforms is not None else -1,
                 **meta,
+                "idx": idx,
             }
             metainfo["spatial_kwargs"] = self._build_spatial_kwargs(
                 batch_size=inputs.shape[0], device=inputs.device,
@@ -564,6 +566,7 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         data_time: float,
         preprocess_t0: float,
         transform_time: float,
+        idx: int,
     ) -> dict:
         """Attach masking info and timing, returning the standard dict."""
 
@@ -584,6 +587,7 @@ class BaseFinetunePreprocessor(RayPreprocessor):
                     "data_time": data_time,
                     "masking_time": masking_time,
                     "transform_time": transform_time,
+                    "idx": idx,
                 },
             }
         else:
@@ -596,6 +600,7 @@ class BaseFinetunePreprocessor(RayPreprocessor):
                     "data_time": data_time,
                     "transform_time": transform_time,
                     "masking_time": -1.0,
+                    "idx": idx,
                 },
             }
 
@@ -683,7 +688,7 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
         
         return inputs_wo_mask, masks
 
-    def forward(self, data_sample: dict, data_time: float) -> dict:
+    def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         inputs, meta, preprocess_t0, data_time_value = self._common_pre(
             data_sample=data_sample,
             data_time=data_time,
@@ -712,6 +717,7 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
             data_time=data_time_value,
             preprocess_t0=preprocess_t0,
             transform_time=transform_time,
+            idx=idx,
         )
 
 
@@ -775,7 +781,7 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
         inputs_wo_mask = inputs[..., :-1]
         return inputs_wo_mask, masks
 
-    def forward(self, data_sample: dict, data_time: float) -> dict:
+    def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         inputs, meta, preprocess_t0, data_time_value = self._common_pre(
             data_sample=data_sample,
             data_time=data_time,
@@ -803,6 +809,7 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
             data_time=data_time_value,
             preprocess_t0=preprocess_t0,
             transform_time=transform_time,
+            idx=idx,
         )
 
 
@@ -874,7 +881,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             self.ideal_psf = None
             self.na_masks = None
 
-    def forward(self, data_sample: dict, data_time: float) -> dict:
+    def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         inputs, meta, preprocess_t0, data_time_value = self._common_pre(
             data_sample=data_sample,
             data_time=data_time,
@@ -887,14 +894,14 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             targets = self.pe_patchify(inputs, channels=self.channels)
 
             # pick one NA mask and downsample
-            idx = torch.randint(
+            na_mask_i = torch.randint(
                 low=0,
                 high=self.na_masks.shape[0],
                 size=(1,),
                 generator=self.rng,
             ).item()
             na_mask = resize_mask(
-                self.na_masks[idx],
+                self.na_masks[na_mask_i],
                 input_format=self.input_format,
                 channels=self.channels,
                 timepoints=self.timepoints,
@@ -920,6 +927,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             data_time=data_time_value,
             preprocess_t0=preprocess_t0,
             transform_time=transform_time,
+            idx=idx,
         )
 
 
@@ -1070,6 +1078,7 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
             data_time=data_time_value,
             preprocess_t0=t0,
             transform_time=transform_time,
+            idx=idx,
         )
 
     def _debug_visualize_batch(self, sample: dict) -> None:
@@ -1252,7 +1261,7 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
 
         return inputs_wo_mask, masks
 
-    def forward(self, data_sample: dict, data_time: float) -> dict:
+    def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         """
         Now expects `data_sample` coming from FinetuneCollatorActor, i.e.:
 
@@ -1313,6 +1322,7 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
             data_time=data_time_value,
             preprocess_t0=t0,
             transform_time=transform_time,
+            idx=idx,
         )
 
     def _debug_visualize_batch(self, sample: dict) -> None:
@@ -1480,7 +1490,7 @@ class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
 
         return inputs_wo_mask, masks
 
-    def forward(self, data_sample: dict, data_time: float) -> dict:
+    def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         """
         Now expects `data_sample` coming from FinetuneCollatorActor, i.e.:
 
@@ -1524,6 +1534,7 @@ class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
             data_time=data_time_value,
             preprocess_t0=t0,
             transform_time=transform_time,
+            idx=idx,
         )
 
     def _debug_visualize_batch(self, sample: dict) -> None:
@@ -1798,5 +1809,6 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
                 "preprocess_time": time.time() - preprocess_t0,
                 "data_time": data_time,
                 "transform_time": transform_time,
+                "idx": idx,
             },
         }
