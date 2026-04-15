@@ -27,11 +27,6 @@ from cell_observatory_platform.data.data_types import (
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-TASK_MASK_CHANNEL_NAMES: Dict[str, List[str]] = {
-    "instance_segmentation": ["instance_masks"],
-    "semantic_segmentation": ["semantic_masks"],
-    "detection": [],
-}
 
 def _open_root_zarr_for_attrs(image_path: str, mode: str):
     """Open the root zarr node (array or group) for attribute read/write (TensorStore root is often an array)."""
@@ -80,22 +75,33 @@ def read_model_group_metadata(image_path: str, model_name: str) -> Optional[Dict
         return None
 
 
-def _masks_zarr_path(image_path: str, model_name: str) -> Path:
-    return Path(image_path) / model_name / "masks"
+def _masks_zarr_path(image_path: str, model_name: str, annotation_name: str) -> Path:
+    return Path(image_path) / model_name / annotation_name
 
 
-def save_masks_channel_names(image_path: str, model_name: str, channel_names: Dict[int, str]) -> None:
-    """Write ``channel_names`` to ``<image>.zarr/<model_name>/masks/.zattrs`` (indices relative to the masks array)."""
-    path = _masks_zarr_path(image_path, model_name)
+def _validate_dense_mask_annotation_name(annotation_name: str) -> None:
+    if "mask" not in annotation_name.lower():
+        raise ValueError(
+            f"dense mask annotation_name must contain 'mask' (e.g. 'semantic_masks'); got {annotation_name!r}"
+        )
+
+
+def save_masks_channel_names(
+    image_path: str, model_name: str, annotation_name: str, channel_names: Dict[int, str]
+) -> None:
+    """Write ``channel_names`` to ``<image>.zarr/<model_name>/<annotation_name>/.zattrs``."""
+    _validate_dense_mask_annotation_name(annotation_name)
+    path = _masks_zarr_path(image_path, model_name, annotation_name)
     if not path.exists():
         raise FileNotFoundError(f"Masks array path does not exist: {path}")
     arr = zarr.open_array(str(path), mode="a")
     arr.attrs["channel_names"] = {str(k): v for k, v in sorted(channel_names.items())}
 
 
-def read_masks_channel_names(image_path: str, model_name: str) -> Dict[int, str]:
-    """Read ``channel_names`` from the model ``masks`` array attrs."""
-    path = _masks_zarr_path(image_path, model_name)
+def read_masks_channel_names(image_path: str, model_name: str, annotation_name: str) -> Dict[int, str]:
+    """Read ``channel_names`` from the dense mask array at ``<model_name>/<annotation_name>``."""
+    _validate_dense_mask_annotation_name(annotation_name)
+    path = _masks_zarr_path(image_path, model_name, annotation_name)
     if not path.exists():
         return {}
     arr = zarr.open_array(str(path), mode="r")
@@ -114,33 +120,33 @@ _FORMAT_WITH_TIME = {
 
 def _normalize_to_time_bearing(
     data: np.ndarray,
-    input_format: str,
+    data_format: str,
     timepoint_idxs: Optional[List[int]],
 ) -> Tuple[np.ndarray, str, Optional[List[int]]]:
-    """If *input_format* has no T, prepend T=1 to *data* and upgrade the format string.
+    """If *data_format* has no T, prepend T=1 to *data* and upgrade the format string.
 
     Returns ``(data_5d, format_with_T, timepoint_idxs)`` ready for on-disk writes.
     Raises when *timepoint_idxs* is missing or has length != 1 for non-T formats.
     """
-    if "T" in input_format:
-        return data, input_format, timepoint_idxs
+    if "T" in data_format:
+        return data, data_format, timepoint_idxs
 
     if timepoint_idxs is None:
         raise ValueError(
             f"Must specify timepoint_idxs when time dimension is not present "
-            f"in the input format but got timepoint_idxs=None for {input_format=}."
+            f"in the input format but got timepoint_idxs=None for {data_format=}."
         )
     if len(timepoint_idxs) != 1:
         raise ValueError(
             f"timepoint_idxs must have length 1 when time dimension is not present "
-            f"in the input format but got {len(timepoint_idxs)=} for {input_format=}."
+            f"in the input format but got {len(timepoint_idxs)=} for {data_format=}."
         )
 
     data = data[np.newaxis, ...]
-    new_format = _FORMAT_WITH_TIME.get(input_format)
+    new_format = _FORMAT_WITH_TIME.get(data_format)
     if new_format is None:
         raise ValueError(
-            f"Cannot add time dimension to unknown format {input_format!r}. "
+            f"Cannot add time dimension to unknown format {data_format!r}. "
             f"Known non-T formats: {list(_FORMAT_WITH_TIME.keys())}"
         )
     return data, new_format, timepoint_idxs
@@ -201,26 +207,14 @@ def save_sparse_annotations(
     model_name: str,
     data: np.ndarray,
     annotation_name: Literal["scores", "labels", "boxes"],
-    input_format: Literal["TNM", "TN6", "TN", "NM", "N6", "N"],
-    save_mode: Literal["overwrite", "append"],
+    data_format: Literal["TNM", "TN6", "TN", "NM", "N6", "N"],
+    save_mode: Literal["overwrite", "create"],
     timepoint_idxs: Optional[List[int]] = None,
     zarr_driver: str = "zarr3",
     dtype: str = "uint16",
 ) -> None:
-
-    # If we are appending masks, that means they don't already exist, so we need to create them.
-    # If we are overwriting masks, that means we are either running a new model or re-running the same model.
-    # If we are running a new model, we need to create the labels array.
-    # If we are re-running the same model, we need to overwrite the old labels array.
-    if save_mode == "append":
-        annotation_save_mode = "create"
-    elif save_mode == "overwrite":
-        exists = annotation_exists(image_path, model_name, annotation_name, zarr_driver)
-        if exists:
-            annotation_save_mode = "overwrite"
-        else:
-            annotation_save_mode = "create"
-    else:
+    # Dense/sparse annotation create vs overwrite is handled in save_zarr_annotations (overwrite upserts).
+    if save_mode not in ("overwrite", "create"):
         raise ValueError(f"Invalid save_mode: {save_mode}")
     try:
         save_zarr_annotations(
@@ -228,8 +222,8 @@ def save_sparse_annotations(
             data=data,
             source_name=model_name,
             annotation_name=annotation_name,
-            input_format=input_format,
-            save_mode=annotation_save_mode,
+            data_format=data_format,
+            save_mode=save_mode,
             timepoint_idxs=timepoint_idxs,
             zarr_driver=zarr_driver,
             dtype=dtype,
@@ -243,35 +237,62 @@ def save_masks(
     image_path: str,
     model_name: str,
     masks: np.ndarray,
-    task: str,
+    annotation_name: str,
     existing_channel_names: Dict[int, str],
-    input_format: Literal["TZYXC", "ZYXC"],
-    save_mode: Literal["overwrite", "append"],
+    data_format: Literal["TZYXC", "ZYXC"],
+    save_mode: Literal["overwrite", "create"],
     zarr_driver: str = "zarr3",
     dtype: str = "uint16",
     timepoint_idxs: Optional[List[int]] = None,
     shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
     chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
 ) -> Dict[int, str]:
-    """Save masks to root array and ``<model_name>/masks``; update per-array ``channel_names`` attrs.
+    """Save masks to root array and ``<model_name>/<annotation_name>``; update per-array ``channel_names`` attrs.
 
-    ``existing_channel_names`` is relative to the **root** array. In ``append`` mode it must contain only
-    data channels (no entries in :data:`TASK_MASK_CHANNEL_NAMES[task]`). In ``overwrite`` mode it must
-    include both data and mask channel entries for this model's slice of the root array.
+    ``annotation_name`` is the on-disk array name under the model group; it must contain the substring
+    ``mask`` (case-insensitive), e.g. ``semantic_masks``.
+
+    ``existing_channel_names`` is relative to the **root** array. For the first write of a mask, it must
+    list at least one data channel. On subsequent writes, when ``annotation_name`` already appears in the
+    root array's ``channel_names``, ``overwrite`` mode must list both data and mask channel indices.
+
+    When ``save_mode`` is ``overwrite`` but ``annotation_name`` is not yet a root channel name, this
+    function appends that mask channel and creates the dense sidecar (same as ``create``).
 
     Returns the full root-level ``existing_channel_names`` mapping after this save.
     """
-    annotation_name = "masks"
-    data_cn = {i: n for i, n in existing_channel_names.items() if n not in TASK_MASK_CHANNEL_NAMES[task]}
-    mask_cn = {i: n for i, n in existing_channel_names.items() if n in TASK_MASK_CHANNEL_NAMES[task]}
+    _validate_dense_mask_annotation_name(annotation_name)
 
-    if save_mode == "append":
-        if mask_cn:
+    data_cn = {i: n for i, n in existing_channel_names.items() if "mask" not in n}
+    mask_cn = {i: n for i, n in existing_channel_names.items() if "mask" in n}
+
+    if masks.shape[-1] != 1:
+        raise ValueError("Cannot save more than one mask channel at a time")
+
+    annotation_in_root = annotation_name in read_channel_names(image_path).values()
+
+    if save_mode == "create" and annotation_in_root:
+        raise ValueError(
+            f"In create mode, root channel_names already include {annotation_name!r}; "
+            f"use save_mode='overwrite' to update that mask channel."
+        )
+
+    append_mask_channel = save_mode == "create" or (save_mode == "overwrite" and not annotation_in_root)
+
+    if append_mask_channel:
+        if annotation_name in mask_cn.values():
             raise ValueError(
-                f"In append mode, existing_channel_names must not include mask channel names {TASK_MASK_CHANNEL_NAMES[task]}; got {mask_cn!r}"
+                f"Cannot add a mask channel whose name is already listed in existing_channel_names as a mask; "
+                f"got {annotation_name=} with {existing_channel_names=}"
+            )
+        if shard_spatial_shape is None or chunk_spatial_shape is None:
+            raise ValueError(
+                "shard_spatial_shape and chunk_spatial_shape are required when creating new dense annotations (ZYX input format)"
             )
         if not data_cn:
-            raise ValueError("existing_channel_names must include at least one data channel in append mode")
+            raise ValueError(
+                "existing_channel_names must include at least one data channel when appending a new mask channel"
+            )
         data_idxs = sorted(data_cn.keys())
         root_cn = read_channel_names(image_path)
         if not root_cn:
@@ -279,23 +300,15 @@ def save_masks(
             root_cn = read_channel_names(image_path)
         _verify_root_channel_names_match(data_cn, root_cn)
 
-        mask_names = TASK_MASK_CHANNEL_NAMES[task]
-        n_mask = int(masks.shape[-1])
-        if not mask_names and n_mask > 0:
-            raise ValueError(f"Task {task!r} produces no mask channel names but masks have {n_mask} channel(s)")
-        while len(mask_names) < n_mask:
-            mask_names.append(f"mask_ch_{len(mask_names)}")
-        mask_names = mask_names[:n_mask]
-
         read_spec = _make_read_zarr_spec(image_path, subpath=None, driver=zarr_driver)
         ds = ts.open(read_spec).result()
         old_channel_count = int(ds.shape[-1])
-        new_mask_entries = {old_channel_count + i: mask_names[i] for i in range(n_mask)}
+        new_mask_entries = {old_channel_count: annotation_name}
 
         update_zarr_data(
             image_path=image_path,
             data=masks,
-            input_format=input_format,
+            data_format=data_format,
             zarr_driver=zarr_driver,
             dtype=dtype,
             timepoint_idxs=timepoint_idxs,
@@ -304,7 +317,28 @@ def save_masks(
             mode="append",
         )
 
-        annotation_save_mode = "create"
+        try:
+            save_zarr_annotations(
+                image_path=image_path,
+                data=masks,
+                source_name=model_name,
+                annotation_name=annotation_name,
+                data_format=data_format,
+                shard_spatial_shape=shard_spatial_shape,
+                chunk_spatial_shape=chunk_spatial_shape,
+                save_mode=save_mode,
+                timepoint_idxs=timepoint_idxs,
+                zarr_driver=zarr_driver,
+                dtype=dtype,
+            )
+        except Exception as e:
+            logger.error(f"Failed to save zarr annotations at {image_path}/{model_name}/{annotation_name}: {e}")
+            raise e
+
+        update_root_channel_names(image_path, new_mask_entries)
+        masks_local = {0: annotation_name}
+        save_masks_channel_names(image_path, model_name, annotation_name, masks_local)
+
     elif save_mode == "overwrite":
         if not data_cn or not mask_cn:
             raise ValueError(
@@ -325,7 +359,7 @@ def save_masks(
                 )
 
         expected_masks_local = {i: mask_cn[k] for i, k in enumerate(mask_idxs)}
-        on_disk_masks = read_masks_channel_names(image_path, model_name)
+        on_disk_masks = read_masks_channel_names(image_path, model_name, annotation_name)
         if on_disk_masks and on_disk_masks != expected_masks_local:
             raise ValueError(
                 f"Masks array channel_names mismatch: on_disk={on_disk_masks!r}, expected={expected_masks_local!r}"
@@ -334,7 +368,7 @@ def save_masks(
         update_zarr_data(
             image_path=image_path,
             data=masks,
-            input_format=input_format,
+            data_format=data_format,
             zarr_driver=zarr_driver,
             dtype=dtype,
             timepoint_idxs=timepoint_idxs,
@@ -343,47 +377,29 @@ def save_masks(
             mode="overwrite",
         )
 
-        exists = annotation_exists(image_path, model_name, annotation_name, zarr_driver)
-        annotation_save_mode = "overwrite" if exists else "create"
-        new_mask_entries = {}
+        try:
+            save_zarr_annotations(
+                image_path=image_path,
+                data=masks,
+                source_name=model_name,
+                annotation_name=annotation_name,
+                data_format=data_format,
+                shard_spatial_shape=shard_spatial_shape,
+                chunk_spatial_shape=chunk_spatial_shape,
+                save_mode="overwrite",
+                timepoint_idxs=timepoint_idxs,
+                zarr_driver=zarr_driver,
+                dtype=dtype,
+            )
+        except Exception as e:
+            logger.error(f"Failed to save zarr annotations at {image_path}/{model_name}/{annotation_name}: {e}")
+            raise e
+
+        masks_local = {i: mask_cn[k] for i, k in enumerate(sorted(mask_cn.keys()))}
+        save_masks_channel_names(image_path, model_name, annotation_name, masks_local)
+
     else:
         raise ValueError(f"Invalid save_mode: {save_mode}")
-
-    if save_mode == "append" and (
-        "ZYX" in input_format
-        and (shard_spatial_shape is None or chunk_spatial_shape is None)
-        and annotation_save_mode == "create"
-    ):
-        raise ValueError(
-            "shard_spatial_shape and chunk_spatial_shape are required when creating new dense annotations (ZYX input format)"
-        )
-
-    try:
-        save_zarr_annotations(
-            image_path=image_path,
-            data=masks,
-            source_name=model_name,
-            annotation_name=annotation_name,
-            input_format=input_format,
-            shard_spatial_shape=shard_spatial_shape,
-            chunk_spatial_shape=chunk_spatial_shape,
-            save_mode=annotation_save_mode,
-            timepoint_idxs=timepoint_idxs,
-            zarr_driver=zarr_driver,
-            dtype=dtype,
-        )
-    except Exception as e:
-        logger.error(f"Failed to save zarr annotations at {image_path}/{model_name}/{annotation_name}: {e}")
-        raise e
-
-    if save_mode == "append":
-        update_root_channel_names(image_path, new_mask_entries)
-        masks_local = {i: mask_names[i] for i in range(len(mask_names))}
-        save_masks_channel_names(image_path, model_name, masks_local)
-
-    elif save_mode == "overwrite":
-        masks_local = {i: mask_cn[k] for i, k in enumerate(sorted(mask_cn.keys()))}
-        save_masks_channel_names(image_path, model_name, masks_local)
 
     return read_channel_names(image_path)
 
@@ -588,7 +604,7 @@ def create_zarr_spec(
     data_shape: Tuple[int, ...],
     zarr_version: str,
     path: str,
-    input_format: str,
+    data_format: str,
     chunk_spatial_shape: Tuple[int, int, int],
     shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
     time_dim_size: Optional[int] = None,
@@ -605,12 +621,12 @@ def create_zarr_spec(
         if annotation_name is not None:
             raise ValueError(f"Cannot create a zarr spec for annotation {annotation_name} at image path {path} because the image path does not exist")
         if time_dim_size is None:
-            if "T" not in input_format:
+            if "T" not in data_format:
                 raise ValueError(f"Time dimension is required when creating a new zarr array but is not present in the input format and {time_dim_size=}")
             else:
-                time_dim_size = data_shape[input_format.upper().index("T")]
-        elif "T" in input_format and time_dim_size < data_shape[input_format.upper().index("T")]:
-            data_time_dim_size = data_shape[input_format.upper().index("T")]
+                time_dim_size = data_shape[data_format.upper().index("T")]
+        elif "T" in data_format and time_dim_size < data_shape[data_format.upper().index("T")]:
+            data_time_dim_size = data_shape[data_format.upper().index("T")]
             raise ValueError(f"time_dim_size must be at least as large as the time dimension size of the data but got {time_dim_size=} and {data_time_dim_size=}")
     else:
         if annotation_name is not None:
@@ -620,7 +636,7 @@ def create_zarr_spec(
         if time_dim_size is None:
             time_dim_size = read_shape(path, driver=zarr_version)[0]
 
-    if input_format == "TZYXC":
+    if data_format == "TZYXC":
         data_shape_with_time = (time_dim_size, *data_shape[1:])
         num_channels = data_shape[-1]
         if shard_spatial_shape is not None:
@@ -635,7 +651,7 @@ def create_zarr_spec(
             shard_shape = None
         chunk_shape = tuple([1, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2], num_channels])
 
-    elif input_format == "TCZYX":
+    elif data_format == "TCZYX":
         data_shape_with_time = (time_dim_size, *data_shape[1:])
         num_channels = data_shape[1]
         if shard_spatial_shape is not None:
@@ -650,7 +666,7 @@ def create_zarr_spec(
             shard_shape = None
         chunk_shape = tuple[int, ...]([1, num_channels, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2]])
 
-    elif input_format == "ZYXC":
+    elif data_format == "ZYXC":
         data_shape_with_time = (time_dim_size, *data_shape)
         num_channels = data_shape[-1]
         if shard_spatial_shape is not None:
@@ -665,7 +681,7 @@ def create_zarr_spec(
             shard_shape = None
         chunk_shape = tuple[int, ...]([1, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2], num_channels])
 
-    elif input_format == "CZYX":
+    elif data_format == "CZYX":
         data_shape_with_time = (time_dim_size, *data_shape)
         num_channels = data_shape[0]
         if shard_spatial_shape is not None:
@@ -680,9 +696,9 @@ def create_zarr_spec(
             shard_shape = None
         chunk_shape = tuple[int, ...]([1, num_channels, chunk_spatial_shape[0], chunk_spatial_shape[1], chunk_spatial_shape[2]])
 
-    elif input_format in ["TN", "TNM", "TN6", "N", "NM", "N6"]:
+    elif data_format in ["TN", "TNM", "TN6", "N", "NM", "N6"]:
         shard_shape = None # No sharding for sparse labels
-        if "T" in input_format.upper():
+        if "T" in data_format.upper():
             data_shape_with_time = tuple[int, ...]([time_dim_size, *data_shape[1:]])
             chunk_shape = tuple[int, ...]([1, *data_shape[1:]])
         else:
@@ -690,7 +706,7 @@ def create_zarr_spec(
             chunk_shape = tuple[int, ...]([1, *data_shape])
 
     else:
-        raise ValueError(f"Unsupported input format: {input_format}")
+        raise ValueError(f"Unsupported data format: {data_format}")
     
     subpath = None
     if source_name is not None and source_name != "" and source_name != "/":
@@ -732,7 +748,7 @@ def save_zarr_annotations(
     data: np.ndarray,
     source_name: str,
     annotation_name: str,
-    input_format: str,
+    data_format: str,
     save_mode: Literal["overwrite", "create"] = "create",
     shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
     chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
@@ -740,23 +756,26 @@ def save_zarr_annotations(
     zarr_driver: str = "zarr3",
     dtype: str = "uint16",
 ) -> None:
-    """Create or overwrite a zarr annotation array at <image_path>/<source_name>/<annotation_name>."""
+    """Create or overwrite a zarr annotation array at <image_path>/<source_name>/<annotation_name>.
+
+    With ``save_mode="overwrite"``, an existing array is opened and written in place; if the array
+    does not exist yet, it is created (same shard/chunk requirements as ``save_mode="create"`` for
+    new dense ZYX layouts).
+    """
     if not Path(image_path).resolve().exists():
         raise FileNotFoundError(f"Image path {image_path} does not exist")
     if not VALID_SOURCE_NAME.match(source_name):
         raise ValueError(f"Invalid source name: {source_name}. Source name must be a string and not contain any slashes.")
     if not VALID_ANNOTATION_NAME.match(annotation_name):
         raise ValueError(f"Invalid annotation name: {annotation_name}. Annotation name must be an alphanumeric + underscore string and not contain any slashes.")
-    if save_mode == "create" and ("ZYX" in input_format) and (shard_spatial_shape is None or chunk_spatial_shape is None):
-        raise ValueError("shard_spatial_shape and chunk_spatial_shape are required when creating new dense annotations (ZYX input format)")
     if source_name is None or source_name == "":
         raise ValueError(f"source_name is required but got {source_name}")
     if annotation_name is None or annotation_name == "":
         raise ValueError(f"annotation_name is required but got {annotation_name}")
-    if data.ndim != len(input_format):
-        raise ValueError(f"data.shape and input_format must have the same number of dimensions but got: {len(data.shape)=}, {len(input_format)=}")
+    if data.ndim != len(data_format):
+        raise ValueError(f"data.shape and data_format must have the same number of dimensions but got: {len(data.shape)=}, {len(data_format)=}")
 
-    data, disk_format, timepoint_idxs = _normalize_to_time_bearing(data, input_format, timepoint_idxs)
+    data, disk_format, timepoint_idxs = _normalize_to_time_bearing(data, data_format, timepoint_idxs)
     time_dim = disk_format.index("T")
     if time_dim != 0:
         raise NotImplementedError("Only time dimension at the first position is currently supported for appending channels.")
@@ -764,15 +783,17 @@ def save_zarr_annotations(
     exists = annotation_exists(image_path, source_name, annotation_name, zarr_driver)
     if exists and save_mode == "create":
         raise ValueError(f"Annotation {annotation_name} already exists at {image_path}")
-    elif not exists and save_mode == "overwrite":
-        raise ValueError(f"Annotation {annotation_name} does not exist at {image_path}. Use save_mode='create' to create it.")
 
-    if save_mode == "create":
+    needs_create = not exists
+    if needs_create and ("ZYX" in disk_format) and (shard_spatial_shape is None or chunk_spatial_shape is None):
+        raise ValueError("shard_spatial_shape and chunk_spatial_shape are required when creating new dense annotations (ZYX input format)")
+
+    if needs_create:
         spec = create_zarr_spec(
             data_shape=data.shape,
             zarr_version=zarr_driver,
             path=image_path,
-            input_format=disk_format,
+            data_format=disk_format,
             shard_spatial_shape=shard_spatial_shape,
             chunk_spatial_shape=chunk_spatial_shape if chunk_spatial_shape is not None else data.shape,
             source_name=source_name,
@@ -793,7 +814,7 @@ def save_zarr_annotations(
             raise ValueError(f"timepoint_idxs must have less than or equal to the time dimension size of the data but got: {len(timepoint_idxs)=}, {ds.shape[time_dim]=}")
     else:
         if data.shape[time_dim] != ds.shape[time_dim]:
-            raise ValueError(f"Time dimension mismatch: got data.shape[{time_dim}] != store_shape[{time_dim}] for dimension T with input_format={input_format}.")
+            raise ValueError(f"Time dimension mismatch: got data.shape[{time_dim}] != store_shape[{time_dim}] for dimension T with disk_format={disk_format}.")
 
     with ts.Transaction() as txn:
         if timepoint_idxs is not None:
@@ -807,7 +828,7 @@ def save_zarr_data(
     data: np.ndarray,
     shard_spatial_shape: Tuple[int, int, int],
     chunk_spatial_shape: Tuple[int, int, int],
-    input_format: str,
+    data_format: str,
     zarr_driver: str = "zarr3",
     dtype: str = "uint16",
     channel_names: Optional[Dict[int, str]] = None,
@@ -825,12 +846,12 @@ def save_zarr_data(
     if Path(image_path).resolve().exists():
         raise FileExistsError(f"Image path {image_path} already exists. If you want to update the data, use update_zarr_data instead.")
 
-    if "T" not in input_format:
+    if "T" not in data_format:
         has_tds = time_dim_size is not None
         has_tpi = timepoint_idxs is not None
         if has_tds != has_tpi:
             raise ValueError(
-                f"For non-time-bearing format {input_format!r}, time_dim_size and "
+                f"For non-time-bearing format {data_format!r}, time_dim_size and "
                 f"timepoint_idxs must both be provided or both omitted, but got "
                 f"{time_dim_size=}, {timepoint_idxs=}."
             )
@@ -838,13 +859,13 @@ def save_zarr_data(
             time_dim_size = 1
             timepoint_idxs = [0]
 
-    data, disk_format, timepoint_idxs = _normalize_to_time_bearing(data, input_format, timepoint_idxs)
+    data, disk_format, timepoint_idxs = _normalize_to_time_bearing(data, data_format, timepoint_idxs)
 
     zarr_spec = create_zarr_spec(
         data_shape=data.shape,
         zarr_version=zarr_driver,
         path=image_path,
-        input_format=disk_format,
+        data_format=disk_format,
         shard_spatial_shape=shard_spatial_shape,
         chunk_spatial_shape=chunk_spatial_shape,
         time_dim_size=time_dim_size,
@@ -877,7 +898,7 @@ def normalize_idxs(idxs: Iterable[int | float], shape_size: int) -> List[int]:
 def update_zarr_data(
     image_path: str,
     data: np.ndarray,
-    input_format: Literal["TZYXC", "ZYXC"],
+    data_format: Literal["TZYXC", "ZYXC"],
     data_channel_idxs: Optional[List[int]] = None,
     mask_channel_idxs: Optional[List[int]] = None,
     timepoint_idxs: Optional[List[int]] = None,
@@ -892,14 +913,14 @@ def update_zarr_data(
     """
     if mode not in ["append", "overwrite"]:
         raise ValueError(f"Invalid mode: {mode}. Must be one of ['append', 'overwrite'].")
-    if input_format not in ["TZYXC", "ZYXC"]:
-        raise ValueError(f"Invalid input_format: {input_format}. Must be one of ['TZYXC', 'ZYXC'].")
+    if data_format not in ["TZYXC", "ZYXC"]:
+        raise ValueError(f"Invalid data_format: {data_format}. Must be one of ['TZYXC', 'ZYXC'].")
     if not Path(image_path).resolve().exists():
         raise FileNotFoundError(f"Image path {image_path} does not exist")
-    if not len(data.shape) == len(input_format):
-        raise ValueError(f"data.shape and input_format must have the same number of dimensions but got: {len(data.shape)=}, {len(input_format)=}")
+    if not len(data.shape) == len(data_format):
+        raise ValueError(f"data.shape and data_format must have the same number of dimensions but got: {len(data.shape)=}, {len(data_format)=}")
 
-    data, disk_format, timepoint_idxs = _normalize_to_time_bearing(data, input_format, timepoint_idxs)
+    data, disk_format, timepoint_idxs = _normalize_to_time_bearing(data, data_format, timepoint_idxs)
 
     channel_dim = disk_format.index("C")
     if channel_dim != len(disk_format) - 1:
@@ -916,7 +937,7 @@ def update_zarr_data(
     for spatial_dim in ["Z", "Y", "X"]:
         dim_idx = disk_format.index(spatial_dim)
         if data.shape[dim_idx] != ds.shape[dim_idx]:
-            raise ValueError(f"Data and store have different spatial dimensions: got data.shape[{dim_idx}] != store_shape[{dim_idx}] for dimension {spatial_dim} with input_format={input_format}.")
+            raise ValueError(f"Data and store have different spatial dimensions: got data.shape[{dim_idx}] != store_shape[{dim_idx}] for dimension {spatial_dim} with disk_format={disk_format}.")
     if timepoint_idxs is not None:
         if len(timepoint_idxs) != data.shape[time_dim]:
             raise ValueError(f"timepoint_idxs must have the same length as the time dimension of the data but got: {len(timepoint_idxs)=}, {data.shape[time_dim]=}")
@@ -924,7 +945,7 @@ def update_zarr_data(
             raise ValueError(f"timepoint_idxs must have less than or equal to the time dimension size of the data but got: {len(timepoint_idxs)=}, {ds.shape[time_dim]=}")
     else:
         if data.shape[time_dim] != ds.shape[time_dim]:
-            raise ValueError(f"Time dimension mismatch: got data.shape[{time_dim}] != store_shape[{time_dim}] for dimension T with input_format={input_format}.")
+            raise ValueError(f"Time dimension mismatch: got data.shape[{time_dim}] != store_shape[{time_dim}] for dimension T with disk_format={disk_format}.")
 
 
     if mode == "append":
@@ -1203,10 +1224,10 @@ def load_hypercubes_dataframe(
     if not p.exists():
         raise FileNotFoundError(p)
 
-    t0 = time.perf_counter()
+    t_read = time.perf_counter()
     df = pl.read_csv(p, null_values=["NULL", "null", "NaN", ""])
-    t1 = time.perf_counter()
-    logger.info(f"Loaded hypercubes dataframe in {t1 - t0:.2f} s; shape={df.shape}")
+    read_s = time.perf_counter() - t_read
+    logger.info(f"Loaded hypercubes dataframe in {read_s:.2f} s; shape={df.shape}")
 
     # NOTE: database is currently not updated to reflect storage server status
     #       remove this once the database is updated
@@ -1221,7 +1242,6 @@ def load_hypercubes_dataframe(
 
     df = create_channel_metadata_columns(df)
 
-    t0 = time.perf_counter()
     df = apply_hypercubes_dataframe_selections(
         df,
         max_rois=max_rois,
@@ -1232,8 +1252,6 @@ def load_hypercubes_dataframe(
         tile_list=tile_list,
         timepoint_list=timepoint_list,
     )
-    t1 = time.perf_counter()
-    logger.info(f"Applied selections in {t1 - t0:.2f} s; shape={df.shape}")
 
     try:
         with open(p.with_suffix(".json"), "r") as f:
