@@ -16,9 +16,10 @@ import operator
 from collections import Counter
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, Sequence, Union
 
 import torch
+import ray
 from fvcore.common.timer import Timer
 from ray.train import Checkpoint, report
 from torch.profiler import ProfilerActivity
@@ -36,7 +37,8 @@ from cell_observatory_platform.utils.memory import (
     bytes_gb,
     ray_memory_summary,
 )
-from cell_observatory_platform.training.loggers import EventWriter
+from cell_observatory_platform.training.checkpoint_metadata import build_metadata
+from cell_observatory_platform.training.loggers import EventWriter, WandBEventWriter
 from cell_observatory_platform.training.helpers import log_data_timings
 from cell_observatory_platform.training.schedulers import CosineScheduler
 from cell_observatory_platform.utils.context import gather_and_reduce, is_main_process, process_rank
@@ -53,6 +55,16 @@ class HOOK_PRIORITY(Enum):
     MEDIUM = 2
     HIGH = 3
     VERY_HIGH = 4
+
+
+def _wandb_run_info(trainer: Any) -> tuple[Optional[str], Optional[str]]:
+    """Rank-0 W&B run id/entity if WandBEventWriter is active; else (None, None)."""
+    ewl = getattr(trainer, "event_writers_list", None)
+    if ewl is not None and hasattr(ewl, "writers"):
+        for w in ewl.writers:
+            if isinstance(w, WandBEventWriter) and getattr(w, "run", None) is not None:
+                return w.run.id, getattr(w.run, "entity", None)
+    return None, None
 
 
 class HookBase:
@@ -476,16 +488,37 @@ class IterationTimer(HookBase):
         self._total_timer.pause()
 
 
+def _inference_batch_size_from_sample(data_sample: Optional[Dict[str, Any]]) -> int:
+    """Tile/batch count for throughput; 0 if unknown."""
+    if not data_sample:
+        return 0
+    meta = data_sample.get("metainfo")
+    if meta is None:
+        return 0
+    if "batch_size_actual" in meta:
+        return int(meta["batch_size_actual"])
+    pid = meta.get("prepared_id")
+    if pid is None:
+        return 1
+    if hasattr(pid, "__len__") and not isinstance(pid, (str, bytes)):
+        return len(pid)
+    return 1
+
+
 class InferenceMetricsHook(HookBase):
     """
-    Collect inference metrics from InferencerWorker, SaveWorker, VizWorker
-    and forward to EventRecorder with prefix='inference_'.
+    Pull raw metric lists from InferencerWorker, BufferManager, SaveWorker, VizWorker,
+    append to EventRecorder via put_scalar_batch / put_scalar; EventWriter reduces and logs.
     Runs only when trainer has inferencer_worker (i.e. Inferencer).
-    """     
+    """
 
     PRIORITY = HOOK_PRIORITY.MEDIUM
 
     trainer: "Inferencer"
+
+    _RM_TIME = ["median", "mean", "max"]
+    _RM_MEAN = ["mean"]
+    _RM_GAUGE = ["median"]
 
     def __init__(self, log_every_n_steps: int = 100):
         self._log_every_n_steps = log_every_n_steps
@@ -495,26 +528,133 @@ class InferenceMetricsHook(HookBase):
         self._inference_start_time = time.perf_counter()
         self._inference_total_samples = 0
 
+    def before_test_step(self):
+        self._step_start_time = time.perf_counter()
+
     def after_test_step(self, data_sample, outputs, loss_dict):
+        self._step_time_ms = (time.perf_counter() - self._step_start_time) * 1000
+        
         if not hasattr(self.trainer, "inferencer_worker"):
             return
         
+        iw = self.trainer.inferencer_worker
+        rec = self.trainer.event_recorder
+        rec.put_scalar(
+            "inference/step_time_ms",
+            self._step_time_ms,
+            scope="step",
+            reduce_method=self._RM_TIME,
+        )
+        m = iw.get_metrics()
+        iw.clear_metrics()
+        for k, v in m.items():
+            rec.put_scalar(
+                f"inference/{k}",
+                v,
+                scope="step",
+                reduce_method=self._RM_TIME,
+            )
+
+        self._inference_total_samples += _inference_batch_size_from_sample(data_sample)
+
         if self.trainer._iter - self._last_logged_step >= self._log_every_n_steps:
-            self._log_metrics()
+            self._collect_and_record()
             self._last_logged_step = self.trainer._iter
 
-    def _log_metrics(self):
-        metrics = self.trainer.inferencer_worker.get_step_metrics()
-        if metrics:
-            self.trainer.event_recorder.put_scalars(
-                scope="step",
-                prefix="inference_",
-                **metrics,
-            )
+    def _collect_and_record(self) -> None:
+        iw = self.trainer.inferencer_worker
+        rec = self.trainer.event_recorder
+
+        buf = iw.buffer_manager.get_metrics()
+        iw.buffer_manager.clear_metrics()
+        for pool_name, pool_metrics in buf.items():
+            for metric_name, metric_value in pool_metrics.items():
+                if isinstance(metric_value, list) and metric_value:
+                    rec.put_scalar_batch(
+                        f"buffer/{pool_name}/{metric_name}",
+                        [float(x) for x in metric_value],
+                        scope="step",
+                        reduce_method=self._RM_TIME,
+                    )
+                elif not isinstance(metric_value, list) and metric_name in (
+                    "capacity",
+                    "slot_bytes",
+                    "in_use_current",
+                    "try_get_free_drops",
+                ):
+                    rec.put_scalar(
+                        f"buffer/{pool_name}/{metric_name}",
+                        float(metric_value),
+                        scope="step",
+                        reduce_method=self._RM_GAUGE if metric_name != "try_get_free_drops" else self._RM_MEAN,
+                    )
+            cap = int(pool_metrics.get("capacity", 0))
+            in_use = float(pool_metrics.get("in_use_current", 0))
+            if cap > 0:
+                rec.put_scalar(
+                    f"buffer/{pool_name}/pct_in_use_current",
+                    100.0 * in_use / float(cap),
+                    scope="step",
+                    reduce_method=self._RM_GAUGE,
+                )
+            else:
+                rec.put_scalar(
+                    f"buffer/{pool_name}/pct_in_use_current",
+                    0.0,
+                    scope="step",
+                    reduce_method=self._RM_GAUGE,
+                )
+
+        if iw.save_worker is not None:
+            sm = ray.get(iw.save_worker.get_metrics.remote())
+            iw.save_worker.clear_metrics.remote()
+            if sm.get("save_time_ms"):
+                rec.put_scalar_batch(
+                    "save/time_ms",
+                    [float(x) for x in sm["save_time_ms"]],
+                    scope="step",
+                    reduce_method=self._RM_TIME,
+                )
+            ss = sm.get("save_successful") or []
+            if ss:
+                rec.put_scalar_batch(
+                    "save/successful",
+                    [1.0 if x else 0.0 for x in ss],
+                    scope="step",
+                    reduce_method=self._RM_MEAN,
+                )
+
+        if iw.viz_worker is not None:
+            vm = ray.get(iw.viz_worker.get_metrics.remote())
+            iw.viz_worker.clear_metrics.remote()
+            if vm.get("visualize_time_ms"):
+                rec.put_scalar_batch(
+                    "viz/time_ms",
+                    [float(x) for x in vm["visualize_time_ms"]],
+                    scope="step",
+                    reduce_method=self._RM_TIME,
+                )
+            vs = vm.get("visualize_successful") or []
+            if vs:
+                rec.put_scalar_batch(
+                    "viz/successful",
+                    [1.0 if x else 0.0 for x in vs],
+                    scope="step",
+                    reduce_method=self._RM_MEAN,
+                )
+            calls = vm.get("visualize_calls")
+            if calls is not None and float(calls) > 0:
+                rec.put_scalar(
+                    "viz/calls",
+                    float(calls),
+                    scope="step",
+                    reduce_method=self._RM_MEAN,
+                )
 
     def after_test(self):
         if not hasattr(self.trainer, "inferencer_worker"):
             return
+        self._collect_and_record()
         if getattr(self, "_inference_total_samples", 0) <= 0:
             return
         duration_s = time.perf_counter() - getattr(
@@ -590,11 +730,22 @@ class PeriodicCheckpointer(HookBase):
         """
         if self.backend == "DEEPSPEED":
             if (self.trainer._epoch + 1) % self.period == 0:
+                wandb_run_id, wandb_entity = _wandb_run_info(self.trainer)
+                meta = build_metadata(
+                    model=self.trainer.model,
+                    cfg=self.trainer.cfg,
+                    epoch=self.trainer._epoch + 1,
+                    iter_=self.trainer._iter,
+                    best_loss=self.trainer._curr_val_metric,
+                    wandb_run_id=wandb_run_id,
+                    wandb_entity=wandb_entity,
+                )
                 self.trainer.checkpoint_manager.save(
                     prefix=self.file_prefix,
                     save_epoch=self.trainer._epoch + 1,
                     save_best_loss=self.trainer._curr_val_metric,
                     save_step=self.trainer._iter,
+                    metadata=meta,
                 )
         elif self.backend == "TORCHTITAN":
             self.trainer.checkpoint_manager.save(curr_step=self.trainer._iter, last_step=False)
@@ -607,11 +758,22 @@ class PeriodicCheckpointer(HookBase):
         """
         if self.backend == "DEEPSPEED":
             if self.trainer._epoch + 1 >= self.trainer._max_epochs:
+                wandb_run_id, wandb_entity = _wandb_run_info(self.trainer)
+                meta = build_metadata(
+                    model=self.trainer.model,
+                    cfg=self.trainer.cfg,
+                    epoch=self.trainer._epoch + 1,
+                    iter_=self.trainer._iter,
+                    best_loss=self.trainer._curr_val_metric,
+                    wandb_run_id=wandb_run_id,
+                    wandb_entity=wandb_entity,
+                )
                 self.trainer.checkpoint_manager.save(
                     prefix=self.file_prefix,
                     save_epoch=self.trainer._epoch + 1,
                     save_best_loss=self.trainer._curr_val_metric,
                     save_step=self.trainer._iter,
+                    metadata=meta,
                 )
         elif self.backend == "TORCHTITAN":
             self.trainer.checkpoint_manager.save(curr_step=self.trainer._iter, last_step=True)

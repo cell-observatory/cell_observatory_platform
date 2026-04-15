@@ -102,6 +102,7 @@ class BaseTrainer:
     """
 
     def __init__(self, config: DictConfig) -> None:
+        self.cfg = config
         # initialize event recorder
         self.event_recorder: EventRecorder = instantiate(_ensure_full_path(config.loggers.event_recorder))
 
@@ -376,7 +377,7 @@ class EpochBasedTrainer(BaseTrainer):
         )
 
         if cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir:
-            self.checkpoint_manager.load()
+            _, _ = self.checkpoint_manager.load()
 
         if cfg.optimizations.with_model_summary:
             rank = process_rank()
@@ -435,7 +436,7 @@ class EpochBasedTrainer(BaseTrainer):
         self.checkpoint_manager.model = self.model
 
         if cfg.checkpoint.checkpoint_manager.resume_checkpointdir:
-            self.checkpoint_manager.load()
+            _, _ = self.checkpoint_manager.load()
 
         # if resume job, gather the state from the checkpoint
         # else intialize outdir, logdir, and checkpointdir
@@ -775,7 +776,7 @@ class TestTrainer(BaseTrainer):
             cfg.checkpoint.checkpoint_manager,
             model=model
         )
-        self.checkpoint_manager.load()
+        _, _ = self.checkpoint_manager.load()
 
         # initialize optimizer (needed for deepspeed init)
         self.opt, _ = get_optimizer(
@@ -859,7 +860,7 @@ class TestTrainer(BaseTrainer):
 class Inferencer(BaseTrainer):
     def __init__(self, cfg: DictConfig) -> None:
         super().__init__(cfg)
-        
+
         self.ray_context = get_context()
         self.event_recorder._iter = 0
         self.event_recorder._epoch = 0
@@ -868,7 +869,7 @@ class Inferencer(BaseTrainer):
         self.with_grad_accumulation = False
 
         # initialize dataset and dataloader
-        self.test_dataloader, _, _, self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
+        self.test_dataloader, _, dataloader_config, self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
 
         self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
             config=cfg
@@ -876,96 +877,104 @@ class Inferencer(BaseTrainer):
 
         # initialize model
         BUILD = get_method(cfg.models.BUILD)
+        ray.logger.info(f"Building model with BUILD: {BUILD}")
         model = BUILD(cfg)
 
         with torch.no_grad():
-            model.init_model_weights(buffer_device="cuda")
+            model._init_model_weights(buffer_device="cuda")
 
+        ray.logger.info("initializing preprocessor...")
         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
         # initialize checkpoint manager and
         # load model state from checkpoint
+        ray.logger.info("initializing checkpoint manager...")
         self.checkpoint_manager = instantiate(
             cfg.checkpoint.checkpoint_manager,
             model=model
         )
-        self.checkpoint_manager.load()
+        _, checkpoint_meta = self.checkpoint_manager.load()
+        self.checkpoint_meta = checkpoint_meta
 
-        # initialize optimizer
-        self.opt, _ = get_optimizer(
-            params=model.parameters(),
-            config=cfg,
-            optimizer=cfg.optimizers.opt,
-            steps_per_epoch=self.steps_per_epoch
-        )
+        # TODO: add support for multi-GPU inference via deepspeed.init_inference()
+        #       when model sharding / tensor parallelism is needed.
 
-        # enable optimizations if specified
-        # includes setting Torch backend flags, 
-        # activation checkpointing, and torch Compile 
+        # torch backend flags (cudnn benchmark, tf32, etc.)
         if cfg.optimizations is not None:
             enable_optimizations(cfg=cfg)
         opt_cfg = get_model_optimizations_node(cfg)
-        if opt_cfg.activation_checkpoint.enable:
-            logger.info("[Trainer] Applying activation checkpointing...")
-            apply_activation_checkpointing(opt_cfg, model)
         if opt_cfg.torch_compile.enable:
-            logger.info("[Trainer] Applying torch.compile...")
+            logger.info("[Inferencer] Applying torch.compile...")
             model = apply_compile(opt_cfg, model)
 
-        # initialize deepspeed
-        self.model, self.optimizers, _, _ = initialize(
-            model=model,
-            optimizer=self.opt,
-            config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
-        )
+        # Checkpoint load uses map_location=cpu; dataloader tensors are CUDA — align model device.
+        _infer_dev = torch.device("cuda", local_rank())
+        model = model.to(_infer_dev)
+
+        self.model = model
+        self.model.eval()
 
         # Build Output Memory Pools
+        ray.logger.info("initializing buffer manager...")
         self.buffer_manager = BufferManager(
             local_rank=local_rank(),
             global_rank=process_rank(),
             node_id=node_id(),
             numa_node=torch_gpu_to_numa(local_rank())["numa_node"],
-            rank_memory_budget_gb=cfg.inference.memory.rank_memory_budget_gb,
-            max_concurrent_calls=cfg.inference.buffer_manager.max_concurrent_calls,
-            safety_margin=cfg.inference.buffer_manager.safety_margin,
+            rank_memory_budget_gb=cfg.datasets.buffers.rank_memory_budget_gb,
+            max_concurrent_calls=cfg.datasets.buffers.max_concurrent_calls,
+            safety_margin=cfg.datasets.buffers.safety_margin,
         )
 
         model_output_metadata = self.model.get_output_metadata()
-        inference_output_metadata: DictConfig = cfg.inference.outputs_metadata
-        inference_output_metadata.merge_with(model_output_metadata)
-        
+        with open_dict(cfg.inference.inferencer_worker.outputs_metadata):
+            cfg.inference.inferencer_worker.outputs_metadata.merge_with(model_output_metadata)            
+        ray.logger.info(f"Inference outputs_metadata merged:\n{cfg.inference.inferencer_worker.outputs_metadata}")
+
+        ray.logger.info("initializing output memory pools...")
         init_output_memory_pools(
             buffer_manager=self.buffer_manager,
-            output_metadata=inference_output_metadata,
+            output_metadata=cfg.inference.inferencer_worker.outputs_metadata,
             batch_size=cfg.clusters.batch_size_per_gpu,
-            save=cfg.inference.save_outputs,
-            viz=cfg.inference.vizualize_outputs,
-            save_buffer_capacity=cfg.inference.buffer_manager.save_buffer_capacity,
-            viz_buffer_capacity=cfg.inference.buffer_manager.viz_buffer_capacity,
+            save=cfg.inference.inferencer_worker.save_outputs,
+            viz=cfg.inference.inferencer_worker.vizualize_outputs,
+            save_buffer_capacity=cfg.datasets.buffer_capacity,
+            viz_buffer_capacity=cfg.datasets.buffer_capacity,
         )
-        if cfg.inference.save_outputs:
+        if cfg.inference.inferencer_worker.save_outputs:
+            ray.logger.info("initializing save worker...")
             self.save_worker = SaveWorker.options(name=f"save_worker_rank_{process_rank()}").remote(
                 buffer_manager=self.buffer_manager,
-                max_workers=cfg.inference.num_save_workers,
-                save_mode=cfg.inference.save_mode,
+                max_workers=cfg.inference.save_worker.max_workers,
+                save_mode=cfg.inference.save_worker.save_mode,
+                chunk_spatial_shape=cfg.inference.save_worker.chunk_spatial_shape,
+                shard_spatial_shape=cfg.inference.save_worker.shard_spatial_shape,
             )
         else:
             self.save_worker = None
-        if cfg.inference.vizualize_outputs:
+        if cfg.inference.inferencer_worker.vizualize_outputs:
+            ray.logger.info("initializing viz worker...")
             self.viz_worker = VizWorker.options(name=f"viz_worker_rank_{process_rank()}").remote(
                 buffer_manager=self.buffer_manager,
-                output_dir=cfg.inference.save_dir,
-                handler_configs=cfg.inference.viz_handler_configs,
+                output_dir=cfg.inference.viz_worker.output_dir,
+                handler_configs=cfg.inference.viz_worker.handler_configs,
             )
         else:
             self.viz_worker = None
-        # initialize inferencer_worker
+
+        ray.logger.info("initializing inferencer worker...")
+        _tp_cfg = OmegaConf.select(cfg, "datasets.databases.timepoint_list")
+        _timepoint_idxs_for_save = (
+            [int(x) for x in _tp_cfg] if _tp_cfg is not None else None
+        )
         self.inferencer_worker: InferencerWorker = instantiate(
-            cfg.inference, 
-            model=self.model, 
+            cfg.inference.inferencer_worker,
+            model=self.model,
             buffer_manager=self.buffer_manager,
             save_worker=self.save_worker,
             viz_worker=self.viz_worker,
+            model_name=checkpoint_meta["model_name_slug"],
+            timepoint_idxs_for_save=_timepoint_idxs_for_save,
         )
 
     def predict(self):

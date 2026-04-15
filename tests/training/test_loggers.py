@@ -13,8 +13,38 @@ from ray.train import report
 from ray.train import Checkpoint
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
-from cell_observatory_platform.training.loggers import LocalEventWriter
+from cell_observatory_platform.training.loggers import EventRecorder, EventWriterList, LocalEventWriter
 from cell_observatory_platform.utils.context import get_world_size, process_rank, is_main_process
+
+
+def test_put_scalar_batch_recorder_and_reduce():
+    """Multiple observations per step are stored and reduced like single put_scalar calls."""
+    rec = EventRecorder()
+    rec._iter, rec._epoch = 3, 0
+    rec.put_scalar_batch(
+        "loss",
+        [1.0, 2.0, 3.0],
+        scope="step",
+        reduce_method=["median", "mean", "max"],
+    )
+    loss_rows = rec.get_step_scalars()["loss"]
+    assert len(loss_rows) == 3
+    assert [t[0] for t in loss_rows] == [1.0, 2.0, 3.0]
+    assert all(t[1] == 3 and t[2] == 0 for t in loss_rows)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        lw = LocalEventWriter(
+            rec,
+            save_dir=tmpdir,
+            step_scalars_prefix="step_batch",
+            epoch_scalars_prefix="epoch_batch",
+        )
+        wlist = EventWriterList([lw])
+        step_scalars, _ = wlist.reduce_scalars()
+        assert "loss_median" in step_scalars
+        assert pytest.approx(step_scalars["loss_median"][0][0]) == 2.0
+        assert pytest.approx(step_scalars["loss_mean"][0][0]) == 2.0
+        assert pytest.approx(step_scalars["loss_max"][0][0]) == 3.0
 
 
 def _test_loggers_dist(cfg: DictConfig):

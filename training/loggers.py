@@ -52,7 +52,7 @@ class EventRecorder:
 
         self._tensors, self._histograms, self._traces = [], [], []
         
-        self._reduce_methods: dict[str, str] = {}
+        self._reduce_methods: dict[str, List[str] | None] = {}
 
     def put_scalar(
         self,
@@ -71,6 +71,26 @@ class EventRecorder:
             self._step_scalars[name].append((value, self._iter, self._epoch))
         elif scope == "epoch":
             self._epoch_scalars[name].append((value, self._iter, self._epoch))
+
+    def put_scalar_batch(
+        self,
+        name: str,
+        values: Sequence[float],
+        scope: Literal["step", "epoch"] = "step",
+        reduce_method: List[str] | None = ["median"],
+    ) -> None:
+        """Append multiple observations at the current (iter, epoch); used for raw sample lists."""
+        if not values:
+            return
+        if name not in self._reduce_methods:
+            self._reduce_methods[name] = reduce_method
+        store = self._step_scalars if scope == "step" else self._epoch_scalars
+        it, ep = self._iter, self._epoch
+        last_iter = store[name][-1][1] if store[name] else it
+        if last_iter + len(values) != it:
+            logger.warning("Given values do not match current iteration. Logs may be losing data and may appear inconsistent.")
+        for i, v in enumerate(values):
+            store[name].append((float(v), last_iter + i, ep))
 
     def put_scalars(
         self,
