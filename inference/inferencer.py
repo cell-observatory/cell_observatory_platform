@@ -3,7 +3,7 @@ import re
 import time
 import logging
 from pathlib import Path
-from typing import Callable, Iterable, List, Literal, Optional, Tuple, Any, Dict
+from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Optional, Tuple
 
 import ray
 import torch
@@ -13,12 +13,13 @@ import cupy as cp
 from cupy.cuda import runtime as cudart
 import numpy as np
 
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.inference.amg import postprocess_sam_preds
 from cell_observatory_platform.utils.context import barrier, get_world_size, process_rank
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
+from cell_observatory_platform.data.data_types import TORCH_DTYPES
 from cell_observatory_platform.data.datasets.buffers import BufferManager
 from cell_observatory_platform.inference.saver import SaveWorker
 from cell_observatory_platform.inference.visualizer import VizWorker
@@ -29,26 +30,26 @@ logging.basicConfig(level=logging.INFO)
 class InferencerWorker:
     def __init__(
         self,
-        aggregate_mode: Literal["stitch_volume", "save_local"],
-        inference_mode: Literal["sliding_window", "tile", "hypercube"],
+        aggregate_mode: Literal["stitch_volume", "none"],
+        inference_mode: Literal["tile", "cube"],
         task: Literal["detection", "instance_segmentation", "semantic_segmentation", "upsample_space", "channel_split"],
         outputs_metadata: dict,
-        viz_handlers_configs: Dict[str, Dict[str, Any]],
-        model: torch.nn.Module,
         input_format: str,
         input_shape: List[int],
         patch_shape: List[Optional[int]],
         decoder_head_type: str,
-        save_dir: Path | str,
-        buffer_manager: BufferManager,
+        model_name: str,
         save_outputs: bool,
         block_on_save: bool,
-        save_worker: ActorHandle[SaveWorker],
         vizualize_outputs: bool,
         block_on_viz: bool,
+        model: torch.nn.Module,
+        buffer_manager: BufferManager,
+        save_worker: ActorHandle[SaveWorker],
         viz_worker: ActorHandle[VizWorker],
         viz_sampling_policy: Optional[Dict[str, Any]] = None,
-        auxiliary_outputs: Optional[Any] = None,
+        channel_names: Optional[Dict[int, str]] = None,
+        timepoint_idxs_for_save: Optional[List[int]] = None,
     ):
 
         self.input_shape = input_shape
@@ -56,7 +57,7 @@ class InferencerWorker:
         self.input_format = input_format
 
         temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
-            input_format=self.input_format, patch_shape=list(*patch_shape)
+            input_format=self.input_format, patch_shape=list(patch_shape)
         )
         _, token_shape = calc_num_patches(
             input_fmt=self.input_format,
@@ -70,15 +71,16 @@ class InferencerWorker:
 
         self.model = model
 
+        if inference_mode == "cube" and save_outputs:
+            raise NotImplementedError("Saving outputs in cube mode not implemented")
+
         self.inference_mode = inference_mode
+
         self.task = task
+
+        if aggregate_mode != "none":
+            raise NotImplementedError("Aggregate mode not implemented for inference")
         self.aggregate_mode = aggregate_mode
-        if self.aggregate_mode == "save_local":
-            assert self.task in {"detection", "instance_segmentation", "semantic_segmentation"}, \
-                "save_local aggregate_mode only supported for detection and segmentation tasks"
-
-        self.stitch_volume = (self.aggregate_mode == "stitch_volume")
-
 
         self.vizualize_outputs = vizualize_outputs
         self.save_outputs = save_outputs
@@ -87,7 +89,30 @@ class InferencerWorker:
         self.save_worker = save_worker
         self.viz_worker = viz_worker
         self.viz_sampling_policy = viz_sampling_policy
-        self.viz_handlers_configs = viz_handlers_configs
+        self.model_name = model_name
+        def _normalize_channel_names(m: Mapping[Any, Any]) -> Dict[int, str]:
+            return {int(k): str(v) for k, v in m.items()}
+
+        if save_outputs:
+            if channel_names is None or not channel_names:
+                raise ValueError(
+                    "inferencer_worker.channel_names must be set to a non-empty dict "
+                    "(root zarr channel index -> name) when save_outputs is True. "
+                    "Configure it in your inference Hydra config."
+                )
+            self._inference_channel_names = _normalize_channel_names(dict(channel_names))
+        else:
+            self._inference_channel_names = (
+                None
+                if channel_names is None
+                else _normalize_channel_names(dict(channel_names))
+            )
+
+        self._save_timepoint_idxs = (
+            None
+            if timepoint_idxs_for_save is None
+            else [int(x) for x in timepoint_idxs_for_save]
+        )
 
         self.buffer_manager = buffer_manager
 
@@ -101,48 +126,21 @@ class InferencerWorker:
         self.buffer_manager.pin_buffers()
 
         self.decoder_head_type = decoder_head_type
-        self.inference_save_dir = save_dir
 
         assert outputs_metadata is not None, "outputs_metadata must be provided"
-        # DictConfig -> plain dict[str, dict]
-        self.outputs_metadata = {str(name): dict(meta) for name, meta in outputs_metadata.items()}
-
-        # Normalize auxiliary_outputs into dict[name -> spec]
-        if auxiliary_outputs is not None and not isinstance(auxiliary_outputs, (dict, list, tuple)):
-            # Hydra DictConfig/ListConfig -> plain container
-            auxiliary_outputs = OmegaConf.to_container(auxiliary_outputs, resolve=True)
-
-        if auxiliary_outputs:
-            if isinstance(auxiliary_outputs, dict):
-                self.auxiliary_outputs = {str(name): dict(spec) for name, spec in auxiliary_outputs.items()}
-            else:
-                aux: Dict[str, Dict[str, Any]] = {}
-                for item in auxiliary_outputs:
-                    if isinstance(item, (tuple, list)) and len(item) == 2:
-                        name, spec = item
-                        aux[str(name)] = dict(spec)
-                    else:
-                        # item is expected to be a mapping with "name"
-                        item = dict(item)
-                        aux[str(item["name"])] = item
-                self.auxiliary_outputs = aux
-        else:
-            self.auxiliary_outputs = {}
-
-        self.save_auxiliary_outputs = bool(self.auxiliary_outputs)
+        self.outputs_metadata = OmegaConf.to_container(outputs_metadata, resolve=True) \
+            if isinstance(outputs_metadata, DictConfig) else dict(outputs_metadata)
 
         # FIXME: enforce user naming main_output_name instead
-        # main prediction output name; assume first key in outputs_metadata
-        self.main_output_name = next(iter(self.outputs_metadata.keys()))
-        os.makedirs(self.inference_save_dir, exist_ok=True)
+        # main prediction output name; assume first key in tensor_info
+        self.main_output_name = next(iter(self.outputs_metadata["tensor_info"].keys()))
 
         self.rank, self.world_size = process_rank(), get_world_size()
 
-        self._metrics = {
-            "predict_time_ms": List[float],
-            "transfer_time_ms": List[float],
+        self._metrics: Dict[str, float] = {
         }
-        ray.logger.info(f"Auxiliary outputs: {self.auxiliary_outputs}")
+
+        self._tasks = []
         ray.logger.info(f"Main output metadata: {self.outputs_metadata}")
         ray.logger.info(f"Aggregate mode: {self.aggregate_mode}")
 
@@ -165,7 +163,7 @@ class InferencerWorker:
                         raise ValueError(f"Prediction returned unexpected type {type(preds)}")
             else:
                 raise NotImplementedError(
-                    f"Decoder head type {self.decoder_head_type} not supported for detection sliding window inference."
+                    f"Decoder head type {self.decoder_head_type} not supported for detection inference."
                 )
 
         elif self.task == "instance_segmentation":
@@ -178,16 +176,42 @@ class InferencerWorker:
                 )
             else:
                 raise NotImplementedError(
-                    f"Decoder head type {self.decoder_head_type} not supported for instance segmentation sliding window inference."
+                    f"Decoder head type {self.decoder_head_type} not supported for instance segmentation inference."
                 )
-
         elif self.task == "semantic_segmentation":
-            raise NotImplementedError("Semantic segmentation decoder head not yet supported for sliding window inference.")            
+            if self.decoder_head_type == "mask2former":
+                # Call model.predict() which already upsamples pred_masks to input resolution
+                preds = self.model.predict(data_sample)
+                
+                # # Extract pred_masks and pred_logits from outputs
+                # pred_masks = outputs["pred_masks"]  # [B, num_queries, D, H, W]
+                # pred_logits = outputs["pred_logits"]  # [B, num_queries, num_classes + 1]
+                
+                # # Get num_classes from model or infer from pred_logits shape
+                # num_classes = pred_logits.shape[-1] - 1  # subtract no-object class
+                
+                # # Convert query-based outputs to dense semantic map
+                # semantic_map = _reduce_mask2former_queries_to_semantic_map(
+                #     pred_masks=pred_masks,
+                #     pred_logits=pred_logits,
+                #     num_classes=num_classes,
+                # )  # [B, D, H, W, num_classes] or [B, D, H, W, 1] for binary
+                
+                # preds = {self.main_output_name: semantic_map}
+            elif self.decoder_head_type == "unet":
+                # UNet.predict returns (B, num_classes, D, H, W); inferencer expects channels-last
+                outputs = self.model.predict(data_sample)
+                pred_masks = outputs["pred_masks"]
+                preds = {self.main_output_name: pred_masks}
+            else:
+                raise NotImplementedError(
+                    f"Decoder head type {self.decoder_head_type} not supported for semantic segmentation sliding window inference."
+                )            
 
         elif self.task == "dense_prediction":
             if self.task not in {"upsample_space", "upsample_time", "upsample_space_time", "channel_split"}:
                 raise NotImplementedError(
-                    f"Task {self.task} not implemented for {self.decoder_head_type} sliding window inference."
+                    f"Task {self.task} not implemented for {self.decoder_head_type} inference."
                 )
             pred_hypercubes = self.model.predict(data_sample)
             preds = {self.main_output_name: pred_hypercubes}
@@ -221,8 +245,11 @@ class InferencerWorker:
 
         else:
             raise NotImplementedError(
-                f"Decoder head type {self.decoder_head_type} not supported for sliding window inference."
+                f"Task {self.task} with decoder head {self.decoder_head_type} not supported for inference."
             )
+
+        if hasattr(self.model, "validate_outputs"):
+            self.model.validate_outputs(preds)
 
         return preds
 
@@ -271,53 +298,32 @@ class InferencerWorker:
 
     def predict(self, data_sample: dict):
         """
-        Predict and save inference outputs for a single data sample
+        Run model prediction on a full tile and dispatch outputs to
+        save / viz workers.  Each data_sample is an entire tile (zarr image).
         """
-        if self.inference_mode == "full_tile" or self.inference_mode == "hypercube":
-            if self.aggregate_mode != "none":
-                ray.logger.warning("Full tile inference does not support aggregation.")
+        if self.aggregate_mode != "none":
+            ray.logger.warning("Full-tile inference does not support aggregation.")
 
-            X = data_sample["data_tensor"]
-            metadata = data_sample["metainfo"]
-            t0 = time.perf_counter()
-            preds = self._predict(X, data_sample)
-            self._metrics["predict_time_ms"].append((time.perf_counter() - t0) * 1000)
+        X = data_sample["data_tensor"]
+        metadata = data_sample["metainfo"]
+        t0_predict = time.perf_counter()
+        preds = self._predict(X, data_sample)
+        self._metrics["predict_time_ms"] = (time.perf_counter() - t0_predict) * 1000
 
-            # targets may be absent in pure inference; normalize to per-record list[dict]
-            B = len(metadata["prepared_id"])
-            targets = metadata.get("targets", None)
-            if targets is None:
-                targets = [{} for _ in range(B)]
-            elif isinstance(targets, dict):
-                targets = [targets for _ in range(B)]
-            elif isinstance(targets, (list, tuple)) and len(targets) == 1 and isinstance(targets[0], (list, tuple)):
-                # common pattern: targets wrapped once
-                targets = targets[0]
-            self._save_inference_outputs(
-                data_sample=data_sample,
-                preds=preds,
-            )
-
-        elif self.inference_mode == "sliding_window":
-            raise NotImplementedError("Sliding window inference is not implemented yet.")        
-
-    def _prepare_outputs_for_saving(self, data_sample: dict, preds: dict) -> Tuple[dict, dict]:
-        """
-        Prepare data sample for saving
-        """
-        if hasattr(self.model, "prepare_outputs_for_saving"):
-            return self.model.prepare_outputs_for_saving(data_sample, preds)
-        else:
-            return data_sample, preds
-
-    def _prepare_outputs_for_visualization(self, data_sample: dict, preds: dict) -> Tuple[dict, dict]:
-        """
-        Prepare data sample for visualization
-        """
-        if hasattr(self.model, "prepare_outputs_for_visualization"):
-            return self.model.prepare_outputs_for_visualization(data_sample, preds)
-        else:
-            return data_sample, preds
+        B = len(metadata["prepared_id"])
+        targets = metadata.get("targets", None)
+        if targets is None:
+            targets = [{} for _ in range(B)]
+        elif isinstance(targets, dict):
+            targets = [targets for _ in range(B)]
+        elif isinstance(targets, (list, tuple)) and len(targets) == 1 and isinstance(targets[0], (list, tuple)):
+            targets = targets[0]
+        t0_save = time.perf_counter()
+        self._save_inference_outputs(
+            data_sample=data_sample,
+            preds=preds,
+        )
+        self._metrics["save_inference_outputs_time_ms"] = (time.perf_counter() - t0_save) * 1000
 
     def _should_visualize(self, data_sample: dict, preds: dict) -> bool:
         """
@@ -340,14 +346,50 @@ class InferencerWorker:
             cudart.memcpyDeviceToHost, int(self._cp_d2h_stream.ptr),
         )
 
+    @staticmethod
+    def _tree_to_cpu_numpy(obj: Any) -> Any:
+        """Recursively detach every ``torch.Tensor`` to CPU NumPy for Ray IPC.
+
+        Ray cannot pickle CUDA tensors. Nested dicts, lists, tuples, and object
+        ndarrays are walked; buffer ``slot_info`` dicts only contain primitives
+        and pass through unchanged.
+        """
+        if torch.is_tensor(obj):
+            # Numpy doesn't support bFloat16, convert to float32
+            if obj.dtype == torch.bfloat16:
+                obj = obj.float()
+            return obj.detach().cpu().contiguous().numpy()
+        if isinstance(obj, dict):
+            return {k: InferencerWorker._tree_to_cpu_numpy(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            converted = [InferencerWorker._tree_to_cpu_numpy(x) for x in obj]
+            return type(obj)(converted)
+        if isinstance(obj, np.ndarray):
+            if obj.dtype == object:
+                flat = obj.ravel()
+                out = np.empty(flat.shape[0], dtype=object)
+                for i, x in enumerate(flat):
+                    out[i] = InferencerWorker._tree_to_cpu_numpy(x)
+                return out.reshape(obj.shape)
+            return obj
+        return obj
+
+    def _attach_save_worker_metainfo(self, metainfo_numpy: Dict[str, Any]) -> None:
+        """Populate keys required by ``SaveWorker.save`` (see ``saver.save_predictions``)."""
+        metainfo_numpy.setdefault("model_name", self.model_name)
+        metainfo_numpy.setdefault("task", self.task)
+        metainfo_numpy.setdefault("save_tensors_metadata", self.outputs_metadata["save_tensors"])
+        names = self._inference_channel_names
+        if names is None:
+            raise RuntimeError("InferencerWorker missing channel_names while saving outputs.")
+        metainfo_numpy["channel_names"] = dict(names)
+        if self._save_timepoint_idxs is not None:
+            metainfo_numpy.setdefault("timepoint_idxs", self._save_timepoint_idxs)
+
     def _save_inference_outputs(self, data_sample: dict, preds: dict) -> None:
         """
         Prepare data sample for saving
         """
-        if self.save_outputs:
-            data_sample, preds = self._prepare_outputs_for_saving(data_sample, preds)
-        if self.vizualize_outputs:
-            data_sample, preds = self._prepare_outputs_for_visualization(data_sample, preds)
         try:
             sample_metainfo: Dict[str, Any] = data_sample["metainfo"]
         except KeyError:
@@ -356,21 +398,63 @@ class InferencerWorker:
         # That way the dict has all heavy elements at the outer level
         # and we can freely pass metadata via IPC without worrying 
         # about serialization of huge tensors
-        targets = sample_metainfo.pop("targets", None) 
+        targets = sample_metainfo.pop("targets", None)
+        metainfo_numpy = self._tree_to_cpu_numpy(sample_metainfo)
+        if self.save_outputs:
+            self._attach_save_worker_metainfo(metainfo_numpy)
         save_outputs = {
-            "metainfo": sample_metainfo.copy(),
+            "metainfo": metainfo_numpy,
         }
         viz_outputs = {
-            "metainfo": sample_metainfo.copy(),
+            "metainfo": metainfo_numpy,
         }
+        #FIXME: Decide on where targets should be stored
         if targets is not None:
             sample_metainfo["targets"] = targets
             data_sample["targets"] = targets
 
         should_visualize = self._should_visualize(data_sample, preds)
-        t0 = time.perf_counter()
+
+        t0_buffer = time.perf_counter()
+        save_buffer_slots = {}
+        if self.save_outputs:
+            for output_tensor_name in self.outputs_metadata["save_tensors"].keys():
+                if output_tensor_name in (self.outputs_metadata.get("buffer_tensors") or ()):
+                    t0_buffer = time.perf_counter()
+                    save_buffer = self.buffer_manager.get_buffer(f"{output_tensor_name}_save")
+                    if self.block_on_save:
+                        slot_info = ray.get(save_buffer.get_free.remote())
+                        if slot_info is None:
+                            raise RuntimeError(f"No free slot found for {output_tensor_name}")
+                    else:
+                        slot_info = ray.get(save_buffer.try_get_free.remote())
+                    
+                    save_buffer_slots[output_tensor_name] = slot_info
+                    self._metrics[f"buffer_get_time_ms/{output_tensor_name}_save"] = (time.perf_counter() - t0_buffer) * 1000
+
+        viz_buffer_slots = {}
+        if should_visualize and self.vizualize_outputs:
+            t0_buffer = time.perf_counter()
+            for output_tensor_name in self.outputs_metadata["visualize_tensors"]:
+                if output_tensor_name in (self.outputs_metadata.get("buffer_tensors") or ()):
+                    viz_buffer = self.buffer_manager.get_buffer(f"{output_tensor_name}_viz")
+                    if self.block_on_viz:
+                        slot_info = ray.get(viz_buffer.get_free.remote())
+                        if slot_info is None:
+                            raise RuntimeError(f"No free slot found for {output_tensor_name}")
+                    else:
+                        slot_info = ray.get(viz_buffer.try_get_free.remote())
+
+                    if slot_info is None:
+                        ray.logger.warning(f"No free slot found for {output_tensor_name} in viz buffer. Skipping visualization.")
+                        should_visualize = False
+                        break
+                    viz_buffer_slots[output_tensor_name] = slot_info
+                    self._metrics[f"buffer_get_time_ms/{output_tensor_name}_viz"] = (time.perf_counter() - t0_buffer) * 1000
+        self._metrics["buffer_get_time_ms_total"] = (time.perf_counter() - t0_buffer) * 1000
+        t0_transfer = time.perf_counter()
         with torch.cuda.stream(self._d2h_stream):
-            for output_tensor_name in self.outputs_metadata["save_tensors"]:
+            for output_tensor_name in self.outputs_metadata["save_tensors"].keys():
                 if output_tensor_name in preds.keys():
                     output_tensor = preds[output_tensor_name]
                 elif output_tensor_name in data_sample.keys():
@@ -380,21 +464,20 @@ class InferencerWorker:
 
                 if output_tensor is None:
                     continue
+                
+                output_tensor_dtype_str = self.outputs_metadata["tensor_info"][output_tensor_name]["dtype"]
+                output_tensor_dtype = TORCH_DTYPES[output_tensor_dtype_str].value if isinstance(output_tensor_dtype_str, str) else output_tensor_dtype_str
+                output_tensor = output_tensor.to(dtype=output_tensor_dtype)
 
-                save_buffer = self.buffer_manager.get_buffer(f"{output_tensor_name}_save")
-                if self.block_on_save:
-                    slot_info = ray.get(save_buffer.get_free.remote())
-                    if slot_info is None:
-                        raise RuntimeError(f"No free slot found for {output_tensor_name}")
-                else:
-                    slot_info = ray.get(save_buffer.try_get_free.remote())
-
-                if slot_info is not None:
+                if output_tensor_name in save_buffer_slots.keys():
+                    slot_info = save_buffer_slots[output_tensor_name]
                     dest_array = self.buffer_manager.slot_info_to_view(slot_info)
                     self._copy_d2h(dst=dest_array, src=output_tensor)
                     save_outputs[output_tensor_name] = slot_info
+                else:
+                    save_outputs[output_tensor_name] = output_tensor
 
-            if should_visualize:
+            if should_visualize and self.vizualize_outputs:
                 for output_tensor_name in self.outputs_metadata["visualize_tensors"]:
                     if output_tensor_name in preds.keys():
                         output_tensor = preds[output_tensor_name]
@@ -406,75 +489,56 @@ class InferencerWorker:
                     if output_tensor is None:
                         continue
 
-                    viz_buffer = self.buffer_manager.get_buffer(f"{output_tensor_name}_viz")
-                    if self.block_on_viz:
-                        slot_info = ray.get(viz_buffer.get_free.remote())
-                        if slot_info is None:
-                            raise RuntimeError(f"No free slot found for {output_tensor_name}")
-                    else:
-                        slot_info = ray.get(viz_buffer.try_get_free.remote())
+                    output_tensor_dtype_str = self.outputs_metadata["tensor_info"][output_tensor_name]["dtype"]
+                    output_tensor_dtype = TORCH_DTYPES[output_tensor_dtype_str].value if isinstance(output_tensor_dtype_str, str) else output_tensor_dtype_str
+                    output_tensor = output_tensor.to(dtype=output_tensor_dtype)
 
-                    if slot_info is not None:
+                    if output_tensor_name in viz_buffer_slots.keys():
+                        slot_info = viz_buffer_slots[output_tensor_name]
                         dest_array = self.buffer_manager.slot_info_to_view(slot_info)
                         self._copy_d2h(dst=dest_array, src=output_tensor)
                         viz_outputs[output_tensor_name] = slot_info
+                    else:
+                        viz_outputs[output_tensor_name] = output_tensor
 
         self._cp_d2h_stream.synchronize()
-        self._metrics["transfer_time_ms"].append((time.perf_counter() - t0) * 1000)
+        self._metrics["buffer_transfer_time_ms"] = (time.perf_counter() - t0_transfer) * 1000
+        # TODO: Ideally we do this async with buffer tensors because if we block on a buffer
+        # get slot call we can still transfer these data in the meantime. 
+        # Final pass: any remaining nested CUDA tensors (e.g. in metainfo) and
+        # non-buffer prediction tensors must be CPU NumPy before Ray serialization.
+        t0_cpu = time.perf_counter()
+        save_outputs = self._tree_to_cpu_numpy(save_outputs)
+        viz_outputs = self._tree_to_cpu_numpy(viz_outputs)
+        self._metrics["tree_to_cpu_transfer_time_ms"] = (time.perf_counter() - t0_cpu) * 1000
+
         if self.save_outputs:
             if self.save_worker is None:
                 raise RuntimeError("Attempting to save outputs but save_worker is None")
-            self.save_worker.save.remote(
+            save_task = self.save_worker.save.remote(
                 inference_outputs=save_outputs,
             )
+            self._tasks.append(save_task)
 
         if should_visualize and self.vizualize_outputs:
             if self.viz_worker is None:
                 raise RuntimeError("Attempting to visualize outputs but viz_worker is None")
-            self.viz_worker.visualize.remote(
+            vis_task = self.viz_worker.visualize.remote(
                 inference_outputs=viz_outputs,
             )
+            self._tasks.append(vis_task)
 
-    def get_step_metrics(self) -> Dict[str, Any]:
-        """
-        Get metrics for the current step
-        """
-        buffer_metrics = self.buffer_manager.get_metrics()
-        self.buffer_manager.clear_metrics()
-        metrics = {
-            "avg_predict_time_ms": sum(self._metrics["predict_time_ms"])/len(self._metrics["predict_time_ms"]),
-            "avg_d2h_transfer_time_ms": sum(self._metrics["transfer_time_ms"])/len(self._metrics["transfer_time_ms"]),
+    def get_metrics(self) -> Dict[str, float]:
+        return self._metrics
+
+    def clear_metrics(self) -> None:
+        self._metrics = {
         }
-        for pool_name, pool_metrics in buffer_metrics.items():
-            metrics[f"{pool_name}_avg_get_free_wait_time_s"] = pool_metrics["get_free_wait_time_s"] / pool_metrics["get_free_count"]
-            metrics[f"{pool_name}_avg_put_free_wait_time_s"] = pool_metrics["put_free_wait_time_s"] / pool_metrics["put_free_count"]
-            metrics[f"{pool_name}_avg_try_get_free_wait_time_s"] = pool_metrics["try_get_free_wait_time_s"] / pool_metrics["try_get_free_count"]
-            if pool_metrics["try_get_free_count"] > 0:
-                metrics[f"{pool_name}_pct_try_get_free_drops"] = 100 * pool_metrics["try_get_free_drops"] / pool_metrics["try_get_free_count"]
-            else:
-                metrics[f"{pool_name}_pct_try_get_free_drops"] = 0
-            if pool_metrics["capacity"] > 0:
-                metrics[f"{pool_name}_pct_in_use_current"] = 100 * pool_metrics["in_use_current"] / pool_metrics["capacity"]
-            else:
-                metrics[f"{pool_name}_pct_in_use_current"] = 0
-
-        save_metrics = ray.get(self.save_worker.get_metrics.remote())
-        viz_metrics = ray.get(self.viz_worker.get_metrics.remote())
-        self.save_worker.clear_metrics.remote()
-        self.viz_worker.clear_metrics.remote()
-        save_total = save_metrics["save_successes"] + save_metrics["save_failures"]
-        viz_total = viz_metrics["visualize_successes"] + viz_metrics["visualize_failures"]
-        metrics["save_count"] = save_total
-        metrics["avg_save_time_ms"] = save_metrics["save_time_ms"] / save_total
-        metrics["pct_save_successes"] = 100 * save_metrics["save_successes"] / save_total
-        metrics["pct_save_failures"] = 100 * save_metrics["save_failures"] / save_total
-        metrics["visualize_count"] = viz_total
-        metrics["avg_visualize_time_ms"] = viz_metrics["visualize_time_ms"] / viz_total
-        metrics["pct_visualize_successes"] = 100 * viz_metrics["visualize_successes"] / viz_total
-        metrics["pct_visualize_failures"] = 100 * viz_metrics["visualize_failures"] / viz_total
-        return metrics
 
     def finalize(self):
+        ray.get(self._tasks)
+        self._tasks.clear()
+        torch.cuda.synchronize()
         barrier()
 
 
