@@ -109,15 +109,16 @@ class _StubSaveWorker:
 
     def __init__(self, buffer_manager):
         self._bm = buffer_manager
-        self._calls = 0
-        self._successes = 0
-        self._failures = 0
-        self._time_ms = 0.0
         self._received: List[dict] = []
+        # Mirror ``SaveWorker``: list batches cleared in ``get_metrics`` (no gap vs reset).
+        self._metrics: Dict[str, list] = {
+            "save_time_ms": [],
+            "save_successful": [],
+        }
 
     def save(self, inference_outputs: dict) -> None:
-        self._calls += 1
         t0 = time.perf_counter()
+        ok = False
         try:
             for key, val in inference_outputs.items():
                 if key == "metainfo":
@@ -128,28 +129,23 @@ class _StubSaveWorker:
                     self._bm.free_slot(val)
                 elif isinstance(val, np.ndarray):
                     self._received.append({key: val.copy()})
-            self._successes += 1
+            ok = True
         except Exception:
-            self._failures += 1
-        self._time_ms += (time.perf_counter() - t0) * 1000
+            ok = False
+        finally:
+            self._metrics["save_time_ms"].append((time.perf_counter() - t0) * 1000)
+            self._metrics["save_successful"].append(ok)
 
     def get_received(self) -> List[dict]:
         return self._received
 
     def get_metrics(self) -> dict:
-        return {
-            "save_calls": self._calls,
-            "save_successes": self._successes,
-            "save_failures": self._failures,
-            "save_time_ms": self._time_ms,
+        out = {
+            "save_time_ms": self._metrics["save_time_ms"].copy(),
+            "save_successful": self._metrics["save_successful"].copy(),
         }
-
-    def clear_metrics(self) -> None:
-        self._calls = 0
-        self._successes = 0
-        self._failures = 0
-        self._time_ms = 0.0
-        self._received.clear()
+        self._metrics = {"save_time_ms": [], "save_successful": []}
+        return out
 
 
 @ray.remote(namespace="visualizer", num_cpus=0)
@@ -158,13 +154,17 @@ class _StubVizWorker:
 
     def __init__(self, buffer_manager):
         self._bm = buffer_manager
-        self._calls = 0
-        self._time_ms = 0.0
         self._received: List[dict] = []
+        self._metrics: Dict[str, float | list] = {
+            "visualize_time_ms": [],
+            "visualize_successful": [],
+            "visualize_calls": 0.0,
+        }
 
     def visualize(self, inference_outputs: dict) -> None:
-        self._calls += 1
+        self._metrics["visualize_calls"] += 1.0
         t0 = time.perf_counter()
+        ok = False
         try:
             for key, val in inference_outputs.items():
                 if key == "metainfo":
@@ -175,24 +175,28 @@ class _StubVizWorker:
                     self._bm.free_slot(val)
                 elif isinstance(val, np.ndarray):
                     self._received.append({key: val.copy()})
+            ok = True
         except Exception:
-            pass
-        self._time_ms += (time.perf_counter() - t0) * 1000
+            ok = False
+        finally:
+            self._metrics["visualize_time_ms"].append((time.perf_counter() - t0) * 1000)
+            self._metrics["visualize_successful"].append(ok)
 
     def get_received(self) -> List[dict]:
         return self._received
 
     def get_metrics(self) -> dict:
-        return {
-            "visualize_calls": self._calls,
-            "visualize_time_ms": self._time_ms,
+        out = {
+            "visualize_time_ms": self._metrics["visualize_time_ms"].copy(),
+            "visualize_successful": self._metrics["visualize_successful"].copy(),
+            "visualize_calls": self._metrics["visualize_calls"],
         }
-
-    def clear_metrics(self) -> None:
-        self._calls = 0
-        self._time_ms = 0.0
-        self._received.clear()
-
+        self._metrics = {
+            "visualize_time_ms": [],
+            "visualize_successful": [],
+            "visualize_calls": 0.0,
+        }
+        return out
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -243,11 +247,11 @@ def _wait_buffer_in_use_zero(buffer_actor, *, timeout_s: float = 5.0, poll_s: fl
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         m = ray.get(buffer_actor.get_metrics.remote())
-        if m["in_use_current"] == 0:
+        if m["occupied_slots"][-1] == 0:
             return
         time.sleep(poll_s)
     m = ray.get(buffer_actor.get_metrics.remote())
-    assert m["in_use_current"] == 0, f"Expected in_use_current==0 within {timeout_s}s, got {m!r}"
+    assert m["occupied_slots"][-1] == 0, f"Expected occupied_slots==0 within {timeout_s}s, got {m!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -614,12 +618,11 @@ class TestInferencerWorkerPredict:
             worker.predict(data_sample)
 
             save_metrics = ray.get(sw.get_metrics.remote())
-            assert save_metrics["save_calls"] == 1
-            assert save_metrics["save_successes"] == 1
-            assert save_metrics["save_failures"] == 0
+            assert save_metrics["save_successful"] == [True]
+            assert save_metrics["save_successful"].count(False) == 0
 
             viz_metrics = ray.get(vw.get_metrics.remote())
-            assert viz_metrics["visualize_calls"] == 1
+            assert viz_metrics["visualize_calls"] == 1.0
 
             save_received = ray.get(sw.get_received.remote())
             assert len(save_received) > 0
@@ -671,8 +674,7 @@ class TestInferencerWorkerPredict:
             worker.predict(data_sample)
 
             save_metrics = ray.get(sw.get_metrics.remote())
-            assert save_metrics["save_calls"] == 1
-            assert save_metrics["save_successes"] == 1
+            assert save_metrics["save_successful"] == [True]
 
             save_received = ray.get(sw.get_received.remote())
             received_keys = set()
@@ -782,10 +784,10 @@ class TestInferencerWorkerVizPolicy:
             worker.predict(data_sample)
 
             viz_metrics = ray.get(vw.get_metrics.remote())
-            assert viz_metrics["visualize_calls"] == 0
+            assert viz_metrics["visualize_calls"] == 0.0
 
             save_metrics = ray.get(sw.get_metrics.remote())
-            assert save_metrics["save_calls"] == 1
+            assert save_metrics["save_successful"] == [True]
         finally:
             _kill_safe(sw)
             _kill_safe(vw)
@@ -830,7 +832,7 @@ class TestInferencerWorkerVizPolicy:
             worker.predict(data_sample)
 
             viz_metrics = ray.get(vw.get_metrics.remote())
-            assert viz_metrics["visualize_calls"] == 1
+            assert viz_metrics["visualize_calls"] == 1.0
         finally:
             _kill_safe(sw)
             _kill_safe(vw)
@@ -880,10 +882,10 @@ class TestInferencerWorkerSaveDisabled:
             worker.predict(data_sample)
 
             save_metrics = ray.get(sw.get_metrics.remote())
-            assert save_metrics["save_calls"] == 0
+            assert save_metrics["save_successful"] == []
 
             viz_metrics = ray.get(vw.get_metrics.remote())
-            assert viz_metrics["visualize_calls"] == 0
+            assert viz_metrics["visualize_calls"] == 0.0
         finally:
             _kill_safe(sw)
             _kill_safe(vw)
@@ -933,9 +935,9 @@ class TestInferencerWorkerMultiplePredictions:
                 worker.predict(data_sample)
 
             save_metrics = ray.get(sw.get_metrics.remote())
-            assert save_metrics["save_calls"] == n_iters
-            assert save_metrics["save_successes"] == n_iters
-            assert save_metrics["save_failures"] == 0
+            assert len(save_metrics["save_successful"]) == n_iters
+            assert save_metrics["save_successful"].count(True) == n_iters
+            assert save_metrics["save_successful"].count(False) == 0
 
             for tensor_name in outputs_meta["buffer_tensors"]:
                 if tensor_name in outputs_meta["save_tensors"]:

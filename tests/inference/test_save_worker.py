@@ -77,7 +77,7 @@ def _assert_save_worker_batch_outcomes(
 
 
 def _wait_buffer_in_use_zero(buffer_actor, *, timeout_s: float = 5.0, poll_s: float = 0.05) -> None:
-    """Wait until ``in_use_current`` is 0 on the buffer actor.
+    """Wait until ``occupied_slots`` is 0 on the buffer actor.
 
     ``BufferManager.free_slot`` fires ``put_free`` without ``ray.get`` for lower
     latency; metrics update once the actor completes the async handler.
@@ -85,11 +85,11 @@ def _wait_buffer_in_use_zero(buffer_actor, *, timeout_s: float = 5.0, poll_s: fl
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         m = ray.get(buffer_actor.get_metrics.remote())
-        if m["in_use_current"] == 0:
+        if m["occupied_slots"][-1] == 0:
             return
         time.sleep(poll_s)
     m = ray.get(buffer_actor.get_metrics.remote())
-    assert m["in_use_current"] == 0, f"Expected in_use_current==0 within {timeout_s}s, got {m!r}"
+    assert m["occupied_slots"][-1] == 0, f"Expected occupied_slots==0 within {timeout_s}s, got {m!r}"
 
 
 def _create_zarr_semantic_tile_store(tmp_path: Path, *, tile_name: str = "tile.zarr") -> dict:
@@ -279,7 +279,6 @@ class TestSaveWorkerRay:
             m = ray.get(sw.get_metrics.remote())
             assert m["save_successful"] == []
             assert m["save_time_ms"] == []
-            ray.get(sw.clear_metrics.remote())
             m2 = ray.get(sw.get_metrics.remote())
             assert m2["save_successful"] == []
             assert m2["save_time_ms"] == []
@@ -307,7 +306,7 @@ class TestSaveWorkerRay:
             )
             inference_outputs, _ = _build_masks_inference_with_slot(bm, pool, zarr_semantic_tile)
             buf = bm._buffer_actors[pool]
-            assert ray.get(buf.get_metrics.remote())["in_use_current"] == 1
+            assert ray.get(buf.get_metrics.remote())["occupied_slots"][-1] == 1
 
             sw = SaveWorker.options(name=f"sw_rs_{unique_suffix}").remote(
                 buffer_manager=bm,
@@ -370,7 +369,7 @@ class TestSaveWorkerRay:
                 "zarr3",
             )
             buf = bm._buffer_actors[pool]
-            assert ray.get(buf.get_metrics.remote())["in_use_current"] == 0
+            assert ray.get(buf.get_metrics.remote())["occupied_slots"][-1] == 0
         finally:
             if sw is not None:
                 _kill_safe(sw)

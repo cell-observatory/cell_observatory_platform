@@ -354,11 +354,11 @@ class TestHostMemoryBuffer:
             ray.get(actor.put_free.remote(slot["slot"]))
 
             metrics = ray.get(actor.get_metrics.remote())
-            assert metrics["get_free_count"] == 1
-            assert metrics["put_free_count"] == 1
-            assert metrics["in_use_current"] == 0
-            assert metrics["get_free_wait_time_s"] >= 0
-            assert metrics["put_free_wait_time_s"] >= 0
+            assert len(metrics["get_free_wait_time_ms"]) == 1
+            assert len(metrics["put_free_wait_time_ms"]) == 1
+            assert metrics["occupied_slots"][-1] == 0
+            assert sum(metrics["get_free_wait_time_ms"]) >= 0
+            assert sum(metrics["put_free_wait_time_ms"]) >= 0
         finally:
             _kill_safe(actor)
 
@@ -367,11 +367,14 @@ class TestHostMemoryBuffer:
         actor = _make_host_buffer(name, capacity=4)
         try:
             ray.get(actor.get_free.remote())
-            ray.get(actor.clear_metrics.remote())
 
+            # First call returns accumulated metrics AND clears
+            _ = ray.get(actor.get_metrics.remote())
+            # Second call returns the cleared (empty) state
             metrics = ray.get(actor.get_metrics.remote())
-            assert metrics["get_free_count"] == 0
-            assert metrics["put_free_count"] == 0
+            assert len(metrics["get_free_wait_time_ms"]) == 0
+            assert len(metrics["put_free_wait_time_ms"]) == 0
+            assert metrics["occupied_slots"] == []
             assert metrics["capacity"] == 4
         finally:
             _kill_safe(actor)
@@ -419,9 +422,9 @@ class TestHostMemoryBuffer:
                 ray.get(actor.put_free.remote(slot["slot"]))
 
             metrics = ray.get(actor.get_metrics.remote())
-            assert metrics["get_free_count"] == n_cycles
-            assert metrics["put_free_count"] == n_cycles
-            assert metrics["in_use_current"] == 0
+            assert len(metrics["get_free_wait_time_ms"]) == n_cycles
+            assert len(metrics["put_free_wait_time_ms"]) == n_cycles
+            assert metrics["occupied_slots"][-1] == 0
         finally:
             _kill_safe(actor)
 
@@ -634,7 +637,7 @@ class TestBufferManagerSlotOps:
             ray.get(actor.get_free.remote())
             metrics = bm.get_metrics()
             assert pool in metrics
-            assert metrics[pool]["get_free_count"] == 1
+            assert len(metrics[pool]["get_free_wait_time_ms"]) == 1
         finally:
             bm.shutdown()
             if actor:
@@ -651,12 +654,17 @@ class TestBufferManagerSlotOps:
                 buffer_capacity=2, pin_numa_node=False,
             )
             ray.get(actor.get_free.remote())
-            bm.clear_metrics()
+            # First call returns accumulated metrics AND clears
+            _ = ray.get(actor.get_metrics.remote())
+            # Second call returns the cleared (empty) state
             direct = ray.get(actor.get_metrics.remote())
-            assert direct["get_free_count"] == 0
-            assert direct["put_free_count"] == 0
+            assert len(direct["get_free_wait_time_ms"]) == 0
+            assert len(direct["put_free_wait_time_ms"]) == 0
+            assert direct["occupied_slots"] == []
+            # bm.get_metrics() also clears; subsequent call returns empty
+            _ = bm.get_metrics()
             metrics = bm.get_metrics()
-            assert metrics[pool]["get_free_count"] == 0
+            assert len(metrics[pool]["get_free_wait_time_ms"]) == 0
         finally:
             bm.shutdown()
             if actor:

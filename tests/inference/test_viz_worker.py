@@ -60,19 +60,21 @@ def _kill_safe(handle):
 
 
 def _wait_buffer_in_use_zero(buffer_actor, *, timeout_s: float = 5.0, poll_s: float = 0.05) -> None:
-    """Wait until ``in_use_current`` is 0 on the buffer actor.
+    """Wait until live occupancy is 0 (``occupied_slots_current``).
 
-    ``BufferManager.free_slot`` fires ``put_free`` without ``ray.get`` for lower
-    latency; metrics update once the actor completes the async handler.
+    ``get_metrics`` clears the batch log; use ``occupied_slots_current`` for polling.
+    ``BufferManager.free_slot`` fires ``put_free`` without ``ray.get``; wait until async put runs.
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         m = ray.get(buffer_actor.get_metrics.remote())
-        if m["in_use_current"] == 0:
+        if m.get("occupied_slots_current", 0) == 0:
             return
         time.sleep(poll_s)
     m = ray.get(buffer_actor.get_metrics.remote())
-    assert m["in_use_current"] == 0, f"Expected in_use_current==0 within {timeout_s}s, got {m!r}"
+    assert m.get("occupied_slots_current", 0) == 0, (
+        f"Expected occupied_slots_current==0 within {timeout_s}s, got {m!r}"
+    )
 
 
 def _viz_handler_kwargs():
@@ -222,7 +224,9 @@ class TestVizWorkerRay:
             )
             inference_outputs, _ = _build_inference_outputs_with_slot(bm, pool, fill=3.14)
             buf = bm._buffer_actors[pool]
-            assert ray.get(buf.get_metrics.remote())["in_use_current"] == 1
+            _slot_held = ray.get(buf.get_metrics.remote())
+            assert _slot_held["occupied_slots"][-1] == 1
+            assert _slot_held["occupied_slots_current"] == 1
 
             viz = VizWorker.options(name=f"viz_rs_{unique_suffix}").remote(
                 buffer_manager=bm,
@@ -332,7 +336,6 @@ class TestVizWorkerRay:
 
             m = ray.get(viz.get_metrics.remote())
             assert m["visualize_calls"] == 2.0
-            ray.get(viz.clear_metrics.remote())
             m2 = ray.get(viz.get_metrics.remote())
             assert m2["visualize_calls"] == 0.0
         finally:

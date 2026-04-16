@@ -85,16 +85,18 @@ class _BenchInstanceSegModel(nn.Module):
 
 @ray.remote(namespace="saver", num_cpus=0)
 class _StubSaveWorker:
+    """Mirror ``SaveWorker`` metrics: list batches, snapshot + clear in ``get_metrics``."""
+
     def __init__(self, buffer_manager):
         self._bm = buffer_manager
-        self._calls = 0
-        self._successes = 0
-        self._failures = 0
-        self._time_ms = 0.0
+        self._metrics: Dict[str, List] = {
+            "save_time_ms": [],
+            "save_successful": [],
+        }
 
     def save(self, inference_outputs: dict) -> None:
-        self._calls += 1
         t0 = time.perf_counter()
+        ok = False
         try:
             for key, val in inference_outputs.items():
                 if key == "metainfo":
@@ -102,36 +104,36 @@ class _StubSaveWorker:
                 if isinstance(val, dict) and "actor_name" in val:
                     self._bm.slot_info_to_view(val)
                     self._bm.free_slot(val)
-            self._successes += 1
+            ok = True
         except Exception:
-            self._failures += 1
-        self._time_ms += (time.perf_counter() - t0) * 1000
+            ok = False
+        finally:
+            self._metrics["save_time_ms"].append((time.perf_counter() - t0) * 1000)
+            self._metrics["save_successful"].append(ok)
 
     def get_metrics(self) -> dict:
-        return {
-            "save_calls": self._calls,
-            "save_successes": self._successes,
-            "save_failures": self._failures,
-            "save_time_ms": self._time_ms,
+        out = {
+            "save_time_ms": self._metrics["save_time_ms"].copy(),
+            "save_successful": self._metrics["save_successful"].copy(),
         }
-
-    def clear_metrics(self) -> None:
-        self._calls = 0
-        self._successes = 0
-        self._failures = 0
-        self._time_ms = 0.0
+        self._metrics = {"save_time_ms": [], "save_successful": []}
+        return out
 
 
 @ray.remote(namespace="visualizer", num_cpus=0)
 class _StubVizWorker:
     def __init__(self, buffer_manager):
         self._bm = buffer_manager
-        self._calls = 0
-        self._time_ms = 0.0
+        self._metrics: Dict[str, float | List] = {
+            "visualize_time_ms": [],
+            "visualize_successful": [],
+            "visualize_calls": 0.0,
+        }
 
     def visualize(self, inference_outputs: dict) -> None:
-        self._calls += 1
+        self._metrics["visualize_calls"] += 1.0
         t0 = time.perf_counter()
+        ok = False
         try:
             for key, val in inference_outputs.items():
                 if key == "metainfo":
@@ -139,20 +141,25 @@ class _StubVizWorker:
                 if isinstance(val, dict) and "actor_name" in val:
                     self._bm.slot_info_to_view(val)
                     self._bm.free_slot(val)
+            ok = True
         except Exception:
-            pass
-        self._time_ms += (time.perf_counter() - t0) * 1000
+            ok = False
+        finally:
+            self._metrics["visualize_time_ms"].append((time.perf_counter() - t0) * 1000)
+            self._metrics["visualize_successful"].append(ok)
 
     def get_metrics(self) -> dict:
-        return {
-            "visualize_calls": self._calls,
-            "visualize_time_ms": self._time_ms,
+        out = {
+            "visualize_time_ms": self._metrics["visualize_time_ms"].copy(),
+            "visualize_successful": self._metrics["visualize_successful"].copy(),
+            "visualize_calls": self._metrics["visualize_calls"],
         }
-
-    def clear_metrics(self) -> None:
-        self._calls = 0
-        self._time_ms = 0.0
-
+        self._metrics = {
+            "visualize_time_ms": [],
+            "visualize_successful": [],
+            "visualize_calls": 0.0,
+        }
+        return out
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -381,16 +388,18 @@ class TestTransferBenchmark:
 
                 # warmup
                 _run_predict_n(worker, spatial, device, WARMUP_ITERS)
-                ray.get(sw.clear_metrics.remote())
+                ray.get(sw.get_metrics.remote())
+                ray.get(vw.get_metrics.remote())
 
                 # timed
                 times = _run_predict_n(worker, spatial, device, BENCH_ITERS)
 
                 save_metrics = ray.get(sw.get_metrics.remote())
-                assert save_metrics["save_successes"] == BENCH_ITERS, (
+                assert len(save_metrics["save_successful"]) == BENCH_ITERS, (
                     f"{label}: expected {BENCH_ITERS} successful saves, "
                     f"got {save_metrics}"
                 )
+                assert save_metrics["save_successful"].count(True) == BENCH_ITERS
 
                 results[label] = {
                     "median_ms": statistics.median(times),

@@ -121,13 +121,13 @@ class HostMemoryBuffer:
         self.name = self._shm.name
 
         self._try_get_free_drops = 0
-        self._in_use_current = 0
+        self._occupied_slots = 0
         self._metrics: Dict[str, float | int | list[float | int]] = {
             "get_free_wait_time_ms": [],
             "put_free_wait_time_ms": [],
             "try_get_free_wait_time_ms": [],
             "try_get_free_drops": [],
-            "in_use_current": [],
+            "occupied_slots": [],
         }
 
         self.free = asyncio.Queue(self.cap)
@@ -148,8 +148,8 @@ class HostMemoryBuffer:
         slot = await self.free.get()
         t1 = time.perf_counter()
         self._metrics["get_free_wait_time_ms"].append((t1 - t0) * 1000)
-        self._in_use_current += 1
-        self._metrics["in_use_current"].append(self._in_use_current)
+        self._occupied_slots += 1
+        self._metrics["occupied_slots"].append(self._occupied_slots)
         return {
             "slot": slot,
             "name": self.name,
@@ -173,8 +173,8 @@ class HostMemoryBuffer:
             self._try_get_free_drops += 1
             self._metrics["try_get_free_drops"].append(self._try_get_free_drops)
         else:
-            self._in_use_current += 1
-            self._metrics["in_use_current"].append(self._in_use_current)
+            self._occupied_slots += 1
+            self._metrics["occupied_slots"].append(self._occupied_slots)
         return {
             "slot": slot,
             "name": self.name,
@@ -190,7 +190,8 @@ class HostMemoryBuffer:
         await self.free.put(int(slot))
         t1 = time.perf_counter()
         self._metrics["put_free_wait_time_ms"].append((t1 - t0) * 1000)
-        self._in_use_current -= 1
+        self._occupied_slots -= 1
+        self._metrics["occupied_slots"].append(self._occupied_slots)
         return True
 
     def get_config(self):
@@ -206,7 +207,7 @@ class HostMemoryBuffer:
             "put_free_wait_time_ms": [],
             "try_get_free_wait_time_ms": [],
             "try_get_free_drops": [],
-            "in_use_current": [],
+            "occupied_slots": [],
         }
         return metrics
 

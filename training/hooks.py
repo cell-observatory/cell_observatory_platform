@@ -577,7 +577,7 @@ class InferenceMetricsHook(HookBase):
                         scope="step",
                         reduce_method=self._RM_TIME if "time" in metric_name else self._RM_GAUGE,
                     )
-                    if metric_name == "in_use_current" and cap > 0:
+                    if metric_name == "occupied_slots" and cap > 0:
                         rec.put_scalar_batch(
                             f"buffer/{pool_name}/pct_{metric_name}",
                             [float(x)/cap*100 for x in metric_value],
