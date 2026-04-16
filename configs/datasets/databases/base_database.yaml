@@ -1,42 +1,19 @@
-# This gets overridden in tests/data/test_database.py to test both classes.
-_target_: cell_observatory_platform.data.databases.supabase_database.SupabaseDatabase # e.g. cell_observatory_platform.data.databases.trino_database.TrinoDatabase  
-dbname: 'prod'
-
+dbname: 'local' # or 'staging' or 'prod' for remote databases. local is for local postgres database.
 dotenv_path: ${paths.dotenv_path}
-
-timepoint_list: null # list of specific timepoints to filter
-
-input_shape: ${datasets.input_shape} # shape of the input data
-dataset_layout_order: ${dataset_layout_order} # dataset layout in the zarr files (e.g. ZYXC)
-
-max_rois: ${datasets.max_rois} # maximum number of ROIs (each ROI can have dozens of tiles)
-max_tiles: ${datasets.max_tiles} # maximum number of tiles (each tile can have thousands of hypercubes)
-max_hypercubes: ${datasets.max_hypercubes} # maximum number of hypercubes to return
-
-hpf_list: ${datasets.hpf_list} # list of specific HPFs (hours-post-fertilization in hours) to filter
-roi_list: ${datasets.roi_list} # list of specific ROIs to filter
-tile_list: ${datasets.tile_list} # list of specific tiles to filter
-
-synthetic_only: ${datasets.synthetic_only} # whether to use only synthetic data
-has_annotations: ${datasets.has_annotations} # whether the data has annotations
-
-occupancy_threshold: ${datasets.occupancy_threshold} # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
-occupancy_threshold_filter_type: 'min_ch0'
-
-cdf_threshold: ${datasets.cdf_threshold} # to filter our hypercubes with less than this CDF threshold
-cdf_target: ${datasets.cdf_target} # to filter our hypercubes with less than this CDF target
-cdf_threshold_filter_type: 'min_ch0'
+cdf_threshold_channel_localizations: null
+channel_count: null
+min_channel_count: null
+max_channel_count: null
+required_channel_key_patterns: null
+any_channel_patterns: null
+all_channel_patterns: null
+required_channel_localizations: null # required localizations that must all be present in channel_mapping and define the allowed loader subset universe
 
 verbose: true # to print debug messages
-hypercubes_dataframe_path: ${datasets.hypercubes_dataframe_path}
-use_cached_hypercubes_dataframe: ${datasets.use_cached_hypercubes_dataframe} # if True, will use the cached hypercubes dataframe from the given path
-fetch_hypercubes_dataframe: true
+diagnostic_verbose: false # run slow channel-mapping diagnostic query (can take 100s+ on large tables)
 protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
-server_folder_path: ${paths.server_folder_path}
-
-with_hypercubes_dataframe: true
-
-mask_channel_idx: ${datasets.mask_channel_idx} # index of the mask channel in the data (if any)
-base_cube_size_x: 128
-base_cube_size_y: 128
-base_cube_size_z: 128
+sample_type: null
+node_local_store_root: ${oc.env:NODE_LOCAL_STORE_ROOT}
+node_local_table_keys: {}
+required_locations: null
+holdout_split: null

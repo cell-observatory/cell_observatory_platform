@@ -40,6 +40,7 @@
 
 FROM nvcr.io/nvidia/pytorch:26.01-py3 AS base
 ENV RUNNING_IN_DOCKER=TRUE
+ENV PATH="/workspace/cell_observatory_platform:${PATH}"
 
 # Make bash colorful https://www.baeldung.com/linux/docker-container-colored-bash-output   https://ss64.com/nt/syntax-ansi.html 
 ENV TERM=xterm-256color
@@ -68,8 +69,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   docbook-xsl \
   libnuma-dev \
   software-properties-common \
+  rsync \
+  zstd \
+  pigz \
   && rm -rf /var/lib/apt/lists/*
 
+# postgres:17 needs to match the version in the sandbox.md and supabase.co
+RUN echo "Install postgresql-client-17"
+RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg && \
+    echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | tee /etc/apt/sources.list.d/pgdg.list && \
+    apt-get update && apt-get install -y postgresql-client-17 pgcopydb && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN echo "Install apptainer"
 RUN add-apt-repository -y ppa:apptainer/ppa
@@ -104,7 +114,7 @@ RUN echo "Install additional dependencies"
 FROM pip_install AS torch_26_01
 RUN pip install --ignore-installed cryptography
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt --progress-bar off --root-user-action=ignore --cache-dir /root/.cache/pip
+    pip install -r requirements.txt --ignore-installed --progress-bar off --root-user-action=ignore --cache-dir /root/.cache/pip
 
 RUN echo "Install ops3d kernels"
 RUN BUILD_ARCH=$(uname -m) && \

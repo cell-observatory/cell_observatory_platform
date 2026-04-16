@@ -66,3 +66,22 @@ scaling_config:
   resources_per_worker:
     CPU: 0 # Ray allocates cpus automatically
     GPU: 1
+
+env: # NCCL settings optimized for infiniBand
+  NCCL_DEBUG: "TRACE"           
+  NCCL_DEBUG_SUBSYS: "GRAPH"           
+  NCCL_CUMEM_ENABLE: null 
+  NCCL_CROSS_NIC: true
+  NCCL_P2P_LEVEL: "NVL"
+  NCCL_IB_DISABLE: 0
+  NCCL_IB_HCA: mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_6,mlx5_7,mlx5_8
+  NCCL_IB_QPS_PER_CONNECTION: 4
+  NCCL_IB_TIMEOUT: 22
+  NCCL_IB_RETRY_CNT: 7
+  NCCL_IB_ECE_ENABLE: 0
+  NCCL_NET_GDR_LEVEL: 2
+  NCCL_SOCKET_IFNAME: enp157s0np0
+  NCCL_P2P_DISABLE: 0
+  NCCL_SHM_DISABLE: 0
+  NCCL_BUFFSIZE: 8388608
+  CUDA_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7

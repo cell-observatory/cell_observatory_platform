@@ -2,6 +2,7 @@ import os
 import sys
 from pathlib import Path
 import tempfile
+from unittest import mock
 
 import pandas as pd
 import pytest
@@ -15,6 +16,29 @@ from ray.train import Checkpoint
 from cell_observatory_platform.tests.conftest import config, distributed_test
 from cell_observatory_platform.training.loggers import EventRecorder, EventWriterList, LocalEventWriter
 from cell_observatory_platform.utils.context import get_world_size, process_rank, is_main_process
+
+
+def _simple_dataloader(config: DictConfig):
+    with open_dict(config):
+        config.runtime = {
+            "train_steps_per_epoch": 1,
+            "val_steps_per_epoch": 1,
+            "n_train_rows": 2,
+            "n_val_rows": 1,
+        }
+
+    class _DummyDeviceBuffer:
+        def put_free(self, idx):
+            pass
+
+    dataloader_config = {
+        "cfg": config,
+        "batch_size": config.clusters.batch_size_per_gpu,
+        "drop_last": False,
+        "collate_fn": None,
+        "database": None,
+    }
+    return [], [], dataloader_config, None, _DummyDeviceBuffer(), pd.DataFrame()
 
 
 def test_put_scalar_batch_recorder_and_reduce():
@@ -53,7 +77,11 @@ def _test_loggers_dist(cfg: DictConfig):
     world = get_world_size()
 
     trainer_cls = get_class(cfg.trainer)
-    trainer = trainer_cls(cfg)
+    with mock.patch(
+        "cell_observatory_platform.training.loops.get_dataloader",
+        side_effect=_simple_dataloader,
+    ):
+        trainer = trainer_cls(cfg)
 
     recorder = trainer.event_recorder
     writers_list = trainer.event_writers_list

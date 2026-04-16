@@ -573,6 +573,28 @@
       "justMyCode": false
     },
     {
+      "name": "🧪 tests/data/test_database.py::test_1_128_128_128_2_hypercubes_database",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/data/test_database.py::test_1_128_128_128_2_hypercubes_database"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
       "name": "🧪 tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database",
       "type": "debugpy",
       "request": "launch",
@@ -586,6 +608,28 @@
         "--color=yes",
         "-r fEX",
         "tests/data/test_database.py::test_16_128_128_128_2_hypercubes_database"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "🧪 tests/data/test_database.py::test_local_vs_prod_hypercubes_database",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/data/test_database.py::test_local_vs_prod_hypercubes_database"
       ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",

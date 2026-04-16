@@ -20,6 +20,7 @@ Repository = "https://github.com/cell-observatory/cell_observatory_platform"
 
 [tool.setuptools.packages.find]
 where = ["."]
+exclude = ["scripts.db", "scripts.db.*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
@@ -33,6 +34,7 @@ python_files = ["test_*.py"]
 addopts = "--strict-markers -v"
 markers = [
     "cuda: marks tests as requiring CUDA",
+    "localdb: marks tests as requiring the local sandbox database",
 ]
 
 [tool.black]

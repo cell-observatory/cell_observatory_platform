@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -14,31 +15,39 @@ try:
 except ValueError:
     pass
 
+import ray
 from ray import cluster_resources, init
 from ray.runtime_env import RuntimeEnv
+from ray.util import list_named_actors
 from ray.train import CheckpointConfig, FailureConfig, RunConfig, ScalingConfig
 from ray.train.torch import TorchConfig, TorchTrainer
 
+from cell_observatory_platform.utils.cleanup import unlink_shared_memory
 from cell_observatory_platform.utils.container import get_container_info
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Update environment variables
-os.environ["HYDRA_FULL_ERROR"] = "1"
-os.environ["RAY_DEDUP_LOGS"] = "0"
-os.environ["NCCL_DEBUG"] = "TRACE"
-os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
-os.environ["NCCL_DEBUG_SUBSYS"] = "GRAPH"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-os.environ["NCCL_CUMEM_ENABLE"] = "0"
-os.environ["NCCL_CROSS_NIC"] = "1"
-os.environ["NCCL_P2P_LEVEL"] = "NVL"
-os.environ["TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC"] = "3600"
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["RAY_TRAIN_WORKER_GROUP_START_TIMEOUT_SEC"] = "3600"
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", verbose=True)
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-localdb",
+        action="store_true",
+        default=False,
+        help="run tests marked localdb",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--run-localdb"):
+        return
+
+    skip_localdb = pytest.mark.skip(reason="need --run-localdb to execute localdb tests")
+    for item in items:
+        if "localdb" in item.keywords:
+            item.add_marker(skip_localdb)
 
 
 def _sdpa_kernel_with_math_fallback(backends):
@@ -57,6 +66,25 @@ def patch_sdpa_for_tests(monkeypatch):
         "cell_observatory_platform.models.layers.attention.sdpa_kernel",
         _sdpa_kernel_with_math_fallback,
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_ray_and_cuda_before_test():
+    yield
+    # Teardown: run after each test to leave a clean slate for the next
+    if ray.is_initialized():
+        try:
+            ray.shutdown()
+        except Exception:
+            pass
+        time.sleep(2)
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        pass
 
 
 # keeping this until we migrate models
@@ -142,11 +170,34 @@ def config() -> DictConfig:
     return cfg
 
 
+def _cleanup_ray_test_actors():
+    if not ray.is_initialized():
+        return
+    try:
+        actors = list_named_actors(all_namespaces=True)
+    except Exception:
+        return
+    for entry in actors:
+        ns = entry.get("namespace") or entry.get("namespace", "")
+        name = entry.get("name") or entry.get("name", "")
+        if not name:
+            continue
+
+        if ns == "schedulers" or (isinstance(ns, str) and ns.startswith("buffers_node_")):
+            try:
+                handle = ray.get_actor(name, namespace=ns)
+                ray.kill(handle, no_restart=True)
+            except Exception:
+                pass
+
+
 def distributed_test(cfg: DictConfig, test: str):
     # test needs to be a string that can
     # be resolved to a callable to prevent
     # serialization issues
     test = get_method(test)
+
+    unlink_shared_memory()
 
     project_root = str(Path(__file__).resolve().parent.parent)
     if project_root not in sys.path:
@@ -161,35 +212,42 @@ def distributed_test(cfg: DictConfig, test: str):
         runtime_env=runtime_env,
         num_cpus=cfg.clusters.total_cpus + cfg.clusters.cpus_for_training_coordinator,
         num_gpus=cfg.clusters.total_gpus,
+        object_store_memory=cfg.clusters.object_store_memory,
         ignore_reinit_error=True,
     )
 
-    for resource, count in cluster_resources().items():
-        logger.info(f"{resource}: {count}")
+    try:
+        for resource, count in cluster_resources().items():
+            logger.info(f"{resource}: {count}")
 
-    scaling_config = ScalingConfig(
-        num_workers=cfg.clusters.scaling_config.num_workers,
-        resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
-        use_gpu=cfg.clusters.scaling_config.use_gpu,
-    )
+        scaling_config = ScalingConfig(
+            num_workers=cfg.clusters.scaling_config.num_workers,
+            resources_per_worker=cfg.clusters.scaling_config.resources_per_worker,
+            use_gpu=cfg.clusters.scaling_config.use_gpu,
+        )
 
-    checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
-    run_config = RunConfig(
-        checkpoint_config=checkpoint_config,
-        failure_config=FailureConfig(max_failures=0),
-        storage_path=cfg.clusters.run_config.storage_path,
-    )
+        checkpoint_config = CheckpointConfig(**cfg.checkpoint.ray_checkpoint_config)
+        run_config = RunConfig(
+            checkpoint_config=checkpoint_config,
+            failure_config=FailureConfig(max_failures=0),
+            storage_path=cfg.clusters.run_config.storage_path,
+        )
 
-    torch_config = TorchConfig(timeout_s=cfg.clusters.torch_config.timeout_s)
+        torch_config = TorchConfig(timeout_s=cfg.clusters.torch_config.timeout_s)
 
-    trainer = TorchTrainer(
-        train_loop_per_worker=test,
-        train_loop_config=cfg,
-        run_config=run_config,
-        scaling_config=scaling_config,
-        torch_config=torch_config,
-        datasets=None,
-    )
+        trainer = TorchTrainer(
+            train_loop_per_worker=test,
+            train_loop_config=cfg,
+            run_config=run_config,
+            scaling_config=scaling_config,
+            torch_config=torch_config,
+            datasets=None,
+        )
 
-    result = trainer.fit()
-    return result.metrics
+        result = trainer.fit()
+        _cleanup_ray_test_actors()
+        return result.metrics
+    finally:
+        ray.shutdown()
+        time.sleep(3)
+        unlink_shared_memory()

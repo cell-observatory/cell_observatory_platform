@@ -941,8 +941,9 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
     Task: instance segmentation
 
     Assumes upstream FinetuneCollatorActor has already:
-      - split off the mask channel (instance IDs),
-      - built binary masks and 3D bboxes from mask_bbox_dict,
+      - kept the dense instance-id labelmap in the last data channel,
+      - built per-instance targets from `annotations_metadata`,
+      - used `local_segmentation_id` to align targets with the dense last-channel labelmap,
       - populated metainfo["targets"] with per-element dicts:
           {
             "masks": (N_inst, Z, Y, X),
@@ -1025,13 +1026,13 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         Now expects `data_sample` coming from FinetuneCollatorActor, i.e.:
 
           data_sample = {
-            "data_tensor": (B, Z, Y, X, C_no_mask)   # already resized if Resize was used
+            "data_tensor": (B, Z, Y, X, C_full)   # dense labelmap remains in the last channel
             "metainfo": {
                 ...,
                 "image_sizes": (B, 3),
                 "orig_image_sizes": (B, 3),
                 "padding_mask": (B, Z, Y, X),
-                "targets": List[Dict[str, Tensor]],  # masks/boxes/mask_ids/labels
+                "targets": List[Dict[str, Tensor]],  # boxes/mask_ids/labels and masks or label_map
             }
           }
 
@@ -1181,8 +1182,9 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
     Task: semantic segmentation
 
     Assumes upstream FinetuneCollatorActor has already:
-      - split off the mask channel (instance IDs),
-      - built binary masks and 3D bboxes from mask_bbox_dict,
+      - kept the dense instance-id labelmap in the last data channel,
+      - built per-instance targets from `annotations_metadata`,
+      - used `local_segmentation_id` to align targets with the dense last-channel labelmap,
       - populated metainfo["targets"] with per-element dicts:
           {
             "masks": (N_inst, Z, Y, X),
@@ -1266,13 +1268,13 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         Now expects `data_sample` coming from FinetuneCollatorActor, i.e.:
 
           data_sample = {
-            "data_tensor": (B, Z, Y, X, C_no_mask)   # already resized if Resize was used
+            "data_tensor": (B, Z, Y, X, C_full)   # dense labelmap remains in the last channel
             "metainfo": {
                 ...,
                 "image_sizes": (B, 3),
                 "orig_image_sizes": (B, 3),
                 "padding_mask": (B, Z, Y, X),
-                "targets": List[Dict[str, Tensor]],  # masks/boxes/mask_ids/labels
+                "targets": List[Dict[str, Tensor]],  # boxes/mask_ids/labels and masks or label_map
             }
           }
 

@@ -8,7 +8,10 @@
 
 # CFG="experiments/janelia/exp_10_28_2025_test_pipeline/test_inference_pretrain.yaml"
 
-# python3 /groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform/manager.py --config-name=${CFG}
+# CFG="experiments/janelia/tests/test_sam2_inference.yaml"
+CFG="experiments/janelia/tests/test_sam2_inference_real.yaml"
+
+python3 /groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform/manager.py --config-name=${CFG}
 
 # USAGE: bash /work/cell_observatory_platform/scripts/utils/inference.sh
 

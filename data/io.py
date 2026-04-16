@@ -1046,274 +1046,277 @@ def record_init(fn):
     return wrapper
 
 
-def _coerce_bool_in(df: pl.DataFrame, col: str) -> pl.DataFrame:
-    _INT_TYPES = {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}
-    dt = df.schema.get(col)
+# def _coerce_bool_in(df: pl.DataFrame, col: str) -> pl.DataFrame:
+#     _INT_TYPES = {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}
+#     dt = df.schema.get(col)
 
-    if dt == pl.Boolean:
-        expr = pl.col(col).fill_null(False)
+#     if dt == pl.Boolean:
+#         expr = pl.col(col).fill_null(False)
 
-    elif dt in _INT_TYPES:
-        expr = (pl.col(col) != 0).fill_null(False)
+#     elif dt in _INT_TYPES:
+#         expr = (pl.col(col) != 0).fill_null(False)
 
-    else:
-        expr = pl.col(col).cast(pl.Utf8).str.strip_chars().str.to_lowercase().is_in(["t", "true", "1"]).fill_null(False)
+#     else:
+#         expr = pl.col(col).cast(pl.Utf8).str.strip_chars().str.to_lowercase().is_in(["t", "true", "1"]).fill_null(False)
 
-    return df.with_columns(expr.alias(col))
-
-
-def filter_hypercubes_dataframe_storage_server(df: pl.DataFrame, server_folder_path: str | None = None) -> pl.DataFrame:
-    if server_folder_path is None or str(server_folder_path).startswith("/clusterfs"):
-        flag = "exists"
-        df = _coerce_bool_in(df, flag).filter(pl.col(flag))
-        return df
-
-    if str(server_folder_path).startswith("/groups"):
-        flag = "exists_prfs"
-    elif str(server_folder_path).startswith("/aws") or str(server_folder_path).startswith(
-        "/workspace/CellObservatoryData"
-    ):
-        flag = "exists_aws"
-    elif str(server_folder_path).startswith("/lustre"):
-        flag = "exists_oak"
-    else:
-        raise ValueError(f"Unknown server_folder_path: {server_folder_path}")
-
-    df = (
-        _coerce_bool_in(df, flag)
-        .filter(pl.col(flag))
-        .with_columns(pl.lit(str(server_folder_path)).alias("server_folder"))
-    )
-
-    logger.info(f"Loaded hypercubes on server: {server_folder_path}; shape={df.shape}")
-    return df
+#     return df.with_columns(expr.alias(col))
 
 
-def apply_hypercubes_dataframe_selections(
-    df: pl.DataFrame,
-    max_rois: int | None = None,
-    max_tiles: int | None = None,
-    max_hypercubes: int | None = None,
-    hpf_list: list[int] | None = None,
-    roi_list: list[int] | None = None,
-    tile_list: list[str] | None = None,
-    timepoint_list: list[int] | None = None,
-) -> pl.DataFrame:
-    logger.info(
-        f"\nApplied selections:\n"
-        f"hpf_list={hpf_list}\n"
-        f"roi_list={roi_list}\n"
-        f"tile_list={tile_list}\n"
-        f"timepoint_list={timepoint_list}\n"
-        f"max_rois={max_rois}\n"
-        f"max_tiles={max_tiles}\n"
-        f"max_hypercubes={max_hypercubes}"
-    )
+# def filter_hypercubes_dataframe_storage_server(df: pl.DataFrame, server_folder_path: str | None = None) -> pl.DataFrame:
+#     if server_folder_path is None or str(server_folder_path).startswith("/clusterfs"):
+#         flag = "exists"
+#         df = _coerce_bool_in(df, flag).filter(pl.col(flag))
+#         return df
 
-    def _to_list_or_none(x):
-        if x is None or len(list(x)) == 0:
-            return None
-        else:
-            return list(x)
+#     if str(server_folder_path).startswith("/groups"):
+#         flag = "exists_prfs"
+#     elif str(server_folder_path).startswith("/aws") or str(server_folder_path).startswith(
+#         "/workspace/CellObservatoryData"
+#     ):
+#         flag = "exists_aws"
+#     elif str(server_folder_path).startswith("/lustre"):
+#         flag = "exists_oak"
+#     else:
+#         raise ValueError(f"Unknown server_folder_path: {server_folder_path}")
 
-    rois = _to_list_or_none(roi_list)
-    tiles = _to_list_or_none(tile_list)
-    hpfs = _to_list_or_none(hpf_list)
-    tps = _to_list_or_none(timepoint_list)
+#     df = (
+#         _coerce_bool_in(df, flag)
+#         .filter(pl.col(flag))
+#         .with_columns(pl.lit(str(server_folder_path)).alias("server_folder"))
+#     )
 
-    conds = []
-    if rois is not None and "prepared_id" in df.columns:
-        conds.append(pl.col("prepared_id").is_in(rois))
-    if tiles is not None and "tile_name" in df.columns:
-        conds.append(pl.col("tile_name").is_in(tiles))
-    if tps is not None and "time_start" in df.columns:
-        conds.append(pl.col("time_start").is_in(tps))
-
-    if conds:
-        cond = conds[0]
-        for c in conds[1:]:
-            cond = cond & c
-        df = df.filter(cond)
-
-    if hpfs is not None and "hpf" in df.columns:
-        df = df.filter(pl.col("hpf").is_in(hpfs))
-
-    if max_rois is not None and "prepared_id" in df.columns:
-        keep_rois = (
-            df.select(pl.col("prepared_id").unique())
-            .sort("prepared_id")
-            .select(pl.col("prepared_id").head(max_rois))
-            .to_series()
-            .to_list()
-        )
-        df = df.filter(pl.col("prepared_id").is_in(keep_rois))
-
-    if max_tiles is not None and "tile_name" in df.columns:
-        keep_tiles = (
-            df.select(pl.col("tile_name").unique())
-            .sort("tile_name")
-            .select(pl.col("tile_name").head(max_tiles))
-            .to_series()
-            .to_list()
-        )
-        df = df.filter(pl.col("tile_name").is_in(keep_tiles))
-
-    if max_hypercubes is not None:
-        df = df.sort(["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_start"]).head(max_hypercubes)
-
-    return df
+#     logger.info(f"Loaded hypercubes on server: {server_folder_path}; shape={df.shape}")
+#     return df
 
 
-def add_has_annotations_column(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    look for nested entries for each channel in the
-    pc_metadata_json col:  {'0': {'histogram': {...}}, '1': {'mask_bbox_dict': {...}}}
-    each key is a channel id mapping to a dict of metadata
-    """
-    if "has_annotations" in df.columns:
-        return df
-    if "pc_metadata_json" not in df.columns and "metadata_tile_json" not in df.columns:
-        return df.with_columns(pl.lit(False).alias("has_annotations"))
-    if "pc_metadata_json" in df.columns:
-        has_key = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"', literal=False)
-        empty_obj = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
-        expr = pl.col("pc_metadata_json").is_not_null() & has_key & (~empty_obj)
-        return df.with_columns(expr.alias("has_annotations"))
-    if "metadata_tile_json" in df.columns:
-        has_key = pl.col("metadata_tile_json").str.contains(r'"mask_bbox_dict"', literal=False)
-        empty_obj = pl.col("metadata_tile_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
-        expr = pl.col("metadata_tile_json").is_not_null() & has_key & (~empty_obj)
-        return df.with_columns(expr.alias("has_annotations"))
+# def apply_hypercubes_dataframe_selections(
+#     df: pl.DataFrame,
+#     max_rois: int | None = None,
+#     max_tiles: int | None = None,
+#     max_hypercubes: int | None = None,
+#     hpf_list: list[int] | None = None,
+#     roi_list: list[int] | None = None,
+#     tile_list: list[str] | None = None,
+#     timepoint_list: list[int] | None = None,
+# ) -> pl.DataFrame:
+#     logger.info(
+#         f"\nApplied selections:\n"
+#         f"hpf_list={hpf_list}\n"
+#         f"roi_list={roi_list}\n"
+#         f"tile_list={tile_list}\n"
+#         f"timepoint_list={timepoint_list}\n"
+#         f"max_rois={max_rois}\n"
+#         f"max_tiles={max_tiles}\n"
+#         f"max_hypercubes={max_hypercubes}"
+#     )
+
+#     def _to_list_or_none(x):
+#         if x is None or len(list(x)) == 0:
+#             return None
+#         else:
+#             return list(x)
+
+#     rois = _to_list_or_none(roi_list)
+#     tiles = _to_list_or_none(tile_list)
+#     hpfs = _to_list_or_none(hpf_list)
+#     tps = _to_list_or_none(timepoint_list)
+
+#     conds = []
+#     if rois is not None and "prepared_id" in df.columns:
+#         conds.append(pl.col("prepared_id").is_in(rois))
+#     if tiles is not None and "tile_name" in df.columns:
+#         conds.append(pl.col("tile_name").is_in(tiles))
+#     if tps is not None and "time_start" in df.columns:
+#         conds.append(pl.col("time_start").is_in(tps))
+
+#     if conds:
+#         cond = conds[0]
+#         for c in conds[1:]:
+#             cond = cond & c
+#         df = df.filter(cond)
+
+#     if hpfs is not None and "hpf" in df.columns:
+#         df = df.filter(pl.col("hpf").is_in(hpfs))
+
+#     if max_rois is not None and "prepared_id" in df.columns:
+#         keep_rois = (
+#             df.select(pl.col("prepared_id").unique())
+#             .sort("prepared_id")
+#             .select(pl.col("prepared_id").head(max_rois))
+#             .to_series()
+#             .to_list()
+#         )
+#         df = df.filter(pl.col("prepared_id").is_in(keep_rois))
+
+#     if max_tiles is not None and "tile_name" in df.columns:
+#         keep_tiles = (
+#             df.select(pl.col("tile_name").unique())
+#             .sort("tile_name")
+#             .select(pl.col("tile_name").head(max_tiles))
+#             .to_series()
+#             .to_list()
+#         )
+#         df = df.filter(pl.col("tile_name").is_in(keep_tiles))
+
+#     if max_hypercubes is not None:
+#         df = df.sort(["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_start"]).head(max_hypercubes)
+
+#     return df
 
 
-# FIXME: current nomenclature for metadata may be improved
-def create_channel_metadata_columns(df: pl.DataFrame, expected_channel_ids=["0", "1"]) -> pl.DataFrame:
-    new_columns = []
-    for ch in expected_channel_ids:
-        if f"histogram_ch_{ch}" not in df.columns:
-            new_columns.append(pl.lit(None).alias(f"histogram_ch_{ch}"))
-        if f"mask_bbox_dict_ch_{ch}" not in df.columns:
-            new_columns.append(pl.lit(None).alias(f"mask_bbox_dict_ch_{ch}"))
-    if new_columns:
-        df = df.with_columns(new_columns)
-    if "mask_bbox_dict" not in df.columns:
-        for ch in expected_channel_ids:
-            if f"mask_bbox_dict_ch_{ch}" in df.columns:
-                df = df.with_columns(pl.col(f"mask_bbox_dict_ch_{ch}").alias("mask_bbox_dict"))
-    # if "histograms" not in df.columns:
-    #     for ch in expected_channel_ids:
-    #         if f"histogram_ch_{ch}" in df.columns:
-    #             df = df.with_columns(pl.col(f"histogram_ch_{ch}").alias("histograms"))
-    return df
+# def add_has_annotations_column(df: pl.DataFrame) -> pl.DataFrame:
+#     """
+#     look for nested entries for each channel in the
+#     pc_metadata_json col:  {'0': {'histogram': {...}}, '1': {'mask_bbox_dict': {...}}}
+#     each key is a channel id mapping to a dict of metadata
+#     """
+#     if "has_annotations" in df.columns:
+#         return df
+#     if "pc_metadata_json" not in df.columns and "metadata_tile_json" not in df.columns:
+#         return df.with_columns(pl.lit(False).alias("has_annotations"))
+#     if "pc_metadata_json" in df.columns:
+#         has_key = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"', literal=False)
+#         empty_obj = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
+#         expr = pl.col("pc_metadata_json").is_not_null() & has_key & (~empty_obj)
+#         return df.with_columns(expr.alias("has_annotations"))
+#     if "metadata_tile_json" in df.columns:
+#         has_key = pl.col("metadata_tile_json").str.contains(r'"mask_bbox_dict"', literal=False)
+#         empty_obj = pl.col("metadata_tile_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
+#         expr = pl.col("metadata_tile_json").is_not_null() & has_key & (~empty_obj)
+#         return df.with_columns(expr.alias("has_annotations"))
 
 
-def load_hypercubes_dataframe(
-    hypercubes_dataframe_path: str | Path,
-    max_rois: int | None = None,
-    max_tiles: int | None = None,
-    max_hypercubes: int | None = None,
-    hpf_list: list[int] | None = None,
-    roi_list: list[int] | None = None,
-    tile_list: list[str] | None = None,
-    timepoint_list: list[int] | None = None,
-    server_folder_path: str | None = None,
-    synthetic_only: bool = False,
-    has_annotations: bool = False,
-) -> tuple[pl.DataFrame, dict]:
-    p = Path(hypercubes_dataframe_path)
-    if not p.exists():
-        raise FileNotFoundError(p)
-
-    t_read = time.perf_counter()
-    df = pl.read_csv(p, null_values=["NULL", "null", "NaN", ""])
-    read_s = time.perf_counter() - t_read
-    logger.info(f"Loaded hypercubes dataframe in {read_s:.2f} s; shape={df.shape}")
-
-    # NOTE: database is currently not updated to reflect storage server status
-    #       remove this once the database is updated
-    # df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
-    df = add_has_annotations_column(df)
-
-    if synthetic_only:
-        df = _coerce_bool_in(df, "is_synthetic").filter(pl.col("is_synthetic"))
-
-    if has_annotations:
-        df = _coerce_bool_in(df, "has_annotations").filter(pl.col("has_annotations"))
-
-    df = create_channel_metadata_columns(df)
-
-    df = apply_hypercubes_dataframe_selections(
-        df,
-        max_rois=max_rois,
-        max_tiles=max_tiles,
-        max_hypercubes=max_hypercubes,
-        hpf_list=hpf_list,
-        roi_list=roi_list,
-        tile_list=tile_list,
-        timepoint_list=timepoint_list,
-    )
-
-    try:
-        with open(p.with_suffix(".json"), "r") as f:
-            configs = ujson.load(f)
-    except FileNotFoundError:
-        configs = {}
-
-    return df.to_pandas(use_pyarrow_extension_array=True), configs
+# # FIXME: current nomenclature for metadata may be improved
+# def create_channel_metadata_columns(df: pl.DataFrame, expected_channel_ids=["0", "1"]) -> pl.DataFrame:
+#     new_columns = []
+#     for ch in expected_channel_ids:
+#         if f"histogram_ch_{ch}" not in df.columns:
+#             new_columns.append(pl.lit(None).alias(f"histogram_ch_{ch}"))
+#         if f"mask_bbox_dict_ch_{ch}" not in df.columns:
+#             new_columns.append(pl.lit(None).alias(f"mask_bbox_dict_ch_{ch}"))
+#     if new_columns:
+#         df = df.with_columns(new_columns)
+#     if "mask_bbox_dict" not in df.columns:
+#         for ch in expected_channel_ids:
+#             if f"mask_bbox_dict_ch_{ch}" in df.columns:
+#                 df = df.with_columns(pl.col(f"mask_bbox_dict_ch_{ch}").alias("mask_bbox_dict"))
+#     # if "histograms" not in df.columns:
+#     #     for ch in expected_channel_ids:
+#     #         if f"histogram_ch_{ch}" in df.columns:
+#     #             df = df.with_columns(pl.col(f"histogram_ch_{ch}").alias("histograms"))
+#     return df
 
 
-def load_tiles_dataframe(
-    hypercubes_dataframe_path: str | Path,
-    max_rois: int | None = None,
-    max_tiles: int | None = None,
-    hpf_list: list[int] | None = None,
-    roi_list: list[int] | None = None,
-    tile_list: list[str] | None = None,
-    timepoint_list: list[int] | None = None,
-    server_folder_path: str | None = None,
-    synthetic_only: bool = False,
-    has_annotations: bool = False,
-) -> tuple[pd.DataFrame, dict]:
-    p = Path(hypercubes_dataframe_path)
-    if not p.exists():
-        raise FileNotFoundError(p)
+# def load_hypercubes_dataframe(
+#     hypercubes_dataframe_path: str | Path,
+#     max_rois: int | None = None,
+#     max_tiles: int | None = None,
+#     max_hypercubes: int | None = None,
+#     hpf_list: list[int] | None = None,
+#     roi_list: list[int] | None = None,
+#     tile_list: list[str] | None = None,
+#     timepoint_list: list[int] | None = None,
+#     server_folder_path: str | None = None,
+#     synthetic_only: bool = False,
+#     has_annotations: bool = False,
+# ) -> tuple[pl.DataFrame, dict]:
+#     p = Path(hypercubes_dataframe_path)
+#     if not p.exists():
+#         raise FileNotFoundError(p)
 
-    t0 = time.perf_counter()
-    df = pl.read_csv(p)
-    t1 = time.perf_counter()
-    logger.info(f"Loaded tiles dataframe in {t1 - t0:.2f} s; shape={df.shape}")
+#     t_read = time.perf_counter()
+#     df = pl.read_csv(p, null_values=["NULL", "null", "NaN", ""])
+#     read_s = time.perf_counter() - t_read
+#     logger.info(f"Loaded hypercubes dataframe in {read_s:.2f} s; shape={df.shape}")
 
-    # NOTE: database is currently not updated to reflect storage server status
-    #       remove this once the database is updated
-    # df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
-    df = add_has_annotations_column(df)
+#     # NOTE: database is currently not updated to reflect storage server status
+#     #       remove this once the database is updated
+#     # df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
+#     df = add_has_annotations_column(df)
 
-    if synthetic_only and "is_synthetic" in df.columns:
-        df = _coerce_bool_in(df, "is_synthetic").filter(pl.col("is_synthetic"))
+#     if synthetic_only:
+#         df = _coerce_bool_in(df, "is_synthetic").filter(pl.col("is_synthetic"))
 
-    if has_annotations and "has_annotations" in df.columns:
-        df = _coerce_bool_in(df, "has_annotations").filter(pl.col("has_annotations"))
+#     if has_annotations:
+#         df = _coerce_bool_in(df, "has_annotations").filter(pl.col("has_annotations"))
 
-    df = create_channel_metadata_columns(df)
+#     df = create_channel_metadata_columns(df)
 
-    t0 = time.perf_counter()
-    df = apply_hypercubes_dataframe_selections(
-        df,
-        max_rois=max_rois,
-        max_tiles=max_tiles,
-        max_hypercubes=None,
-        hpf_list=hpf_list,
-        roi_list=roi_list,
-        tile_list=tile_list,
-        timepoint_list=timepoint_list,
-    )
-    t1 = time.perf_counter()
-    logger.info(f"Applied tile selections in {t1 - t0:.2f} s; shape={df.shape}")
+    # t0 = time.perf_counter()
+    # df = apply_hypercubes_dataframe_selections(
+    #     df,
+    #     max_rois=max_rois,
+    #     max_tiles=max_tiles,
+    #     max_hypercubes=max_hypercubes,
+    #     hpf_list=hpf_list,
+    #     roi_list=roi_list,
+    #     tile_list=tile_list,
+    #     timepoint_list=timepoint_list,
+    # )
+    # t1 = time.perf_counter()
+    # logger.info(f"Applied selections in {t1 - t0:.2f} s; shape={df.shape}")
 
-    try:
-        with open(p.with_suffix(".json"), "r") as f:
-            configs = ujson.load(f)
-    except FileNotFoundError:
-        configs = {}
+#     try:
+#         with open(p.with_suffix(".json"), "r") as f:
+#             configs = ujson.load(f)
+#     except FileNotFoundError:
+#         configs = {}
 
-    return df.to_pandas(use_pyarrow_extension_array=True), configs
+#     return df.to_pandas(use_pyarrow_extension_array=True), configs
+
+
+# def load_tiles_dataframe(
+#     hypercubes_dataframe_path: str | Path,
+#     max_rois: int | None = None,
+#     max_tiles: int | None = None,
+#     hpf_list: list[int] | None = None,
+#     roi_list: list[int] | None = None,
+#     tile_list: list[str] | None = None,
+#     timepoint_list: list[int] | None = None,
+#     server_folder_path: str | None = None,
+#     synthetic_only: bool = False,
+#     has_annotations: bool = False,
+# ) -> tuple[pd.DataFrame, dict]:
+#     p = Path(hypercubes_dataframe_path)
+#     if not p.exists():
+#         raise FileNotFoundError(p)
+
+#     t0 = time.perf_counter()
+#     df = pl.read_csv(p)
+#     t1 = time.perf_counter()
+#     logger.info(f"Loaded tiles dataframe in {t1 - t0:.2f} s; shape={df.shape}")
+
+#     # NOTE: database is currently not updated to reflect storage server status
+#     #       remove this once the database is updated
+#     # df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
+#     df = add_has_annotations_column(df)
+
+#     if synthetic_only and "is_synthetic" in df.columns:
+#         df = _coerce_bool_in(df, "is_synthetic").filter(pl.col("is_synthetic"))
+
+#     if has_annotations and "has_annotations" in df.columns:
+#         df = _coerce_bool_in(df, "has_annotations").filter(pl.col("has_annotations"))
+
+#     df = create_channel_metadata_columns(df)
+
+#     t0 = time.perf_counter()
+#     df = apply_hypercubes_dataframe_selections(
+#         df,
+#         max_rois=max_rois,
+#         max_tiles=max_tiles,
+#         max_hypercubes=None,
+#         hpf_list=hpf_list,
+#         roi_list=roi_list,
+#         tile_list=tile_list,
+#         timepoint_list=timepoint_list,
+#     )
+#     t1 = time.perf_counter()
+#     logger.info(f"Applied tile selections in {t1 - t0:.2f} s; shape={df.shape}")
+
+#     try:
+#         with open(p.with_suffix(".json"), "r") as f:
+#             configs = ujson.load(f)
+#     except FileNotFoundError:
+#         configs = {}
+
+#     return df.to_pandas(use_pyarrow_extension_array=True), configs

@@ -1,20 +1,20 @@
 defaults:
   - /clusters/local # configs/clusters/local.yaml
-  - /paths/local # configs/paths/local.yaml
+  - /paths/janelia # configs/paths/local.yaml
   - /datasets/databases/base_database
   - /datasets/preprocessor/ray_preprocessor
   - /datasets/pretrain_dataset_ray
   - /datasets/masking/mask_generator
   - /models/BUILD_MAE # configs/models/BUILD_MAE.yaml
-  - /models/meta_arch/mae/large # configs/models/meta_arch/mae/tiny.yaml
+  - /models/meta_arch/mae/tiny  # smaller model to avoid oom for github actions
   - /optimizations/optimizations # configs/optimizations/optimizations.yaml
   - /optimizations/models/jepa/large # configs/optimizations/models/jepa.yaml
   - /hooks/hooks_with_weight_decay # configs/hooks/hooks_with_weight_decay.yaml
   - /checkpoint/checkpoint # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator # configs/evaluation/base_evaluator.yaml
-  - /deepspeed/zero3 # configs/deepspeed/zero3.yaml
-  - /optimizers/lamb # configs/optimizers/lamb.yaml
+  - /deepspeed/zero2 # configs/deepspeed/zero2.yaml
+  - /optimizers/adamw_torch # lamb requires cuda jit which fails on the ubuntu machine running github actions
   - /schedulers/test_warmup_cosine_decay # configs/schedulers/test_warmup_cosine_decay.yaml
   - /profiling/profiling # configs/profiling/profiling.yaml
   - _self_
@@ -67,7 +67,7 @@ clusters:
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 1 # number of gpus per worker node
   cpus_per_gpu: 8 # number of cpu cores per gpu
-  mem_per_cpu: 16000 # ram per cpu core
+  mem_per_cpu: 1024 # ram per cpu core
   num_workers: 1 # number of workers per node
 
 datasets:
@@ -86,6 +86,10 @@ datasets:
   max_hypercubes: 100 # maximum number of hypercubes to return
   use_cached_hypercubes_dataframe: false
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
+
+  num_actors_min: 2
+  num_actors_max: 2
+  buffer_capacity: 4
 
   exec_async: true
   exec_pipelined: true

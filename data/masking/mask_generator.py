@@ -1,5 +1,6 @@
 import math
 import random
+from contextlib import contextmanager
 from enum import Enum
 from multiprocessing import Value
 from typing import Any, Dict, Literal, Optional, Sequence, Tuple, Union
@@ -38,6 +39,15 @@ class MaskModes(Enum):
     DINO_IBOT = "dino_ibot"
     HIERA_MU = "hiera_mu"
     HIERA_MU_BLOCKED = "hiera_mu_blocked"
+
+
+class _LocalCounter:
+    def __init__(self, initial: int = -1):
+        self.value = initial
+
+    @contextmanager
+    def get_lock(self):
+        yield
 
 
 def _scale_to_tuple(scale: tuple | list | float | int) -> tuple[float, float]:
@@ -155,7 +165,10 @@ class MaskGenerator(object):
         # that the block sizes are the same across
         # GPU workers however this is
         # the strategy utilized in V-JEPA
-        self._itr_counter = Value("i", -1)
+        try:
+            self._itr_counter = Value("i", -1)
+        except OSError:
+            self._itr_counter = _LocalCounter(-1)
 
         self.time, self.depth, self.height, self.width = self._get_input_shape_patches(
             input_shape=self.input_shape,

@@ -11,11 +11,37 @@ from ray.train import report, Checkpoint
 from cell_observatory_platform.tests.conftest import config, distributed_test
 from cell_observatory_platform.utils.cleanup import unlink_shared_memory
 from cell_observatory_platform.data.dataloaders import get_dataloader
+from cell_observatory_platform.data.datasets.utils import (
+    resolve_channel_localization_indices,
+)
 from cell_observatory_platform.utils.context import is_main_process
 
 def test_access_to_storage_server(config):
     if not Path(config.paths.server_folder_path).exists():
         raise FileNotFoundError(f"{config.paths.server_folder_path} does not exist")
+
+
+def test_resolve_channel_localization_indices_from_string_mapping():
+    mapping = '{"0":"tdmstaygold-membrane","1":"myonghong-histone"}'
+
+    indices = resolve_channel_localization_indices(mapping, ["histone", "membrane"])
+
+    assert indices == [1, 0]
+
+
+def test_resolve_channel_localization_indices_from_dict_mapping():
+    mapping = {"0": "tdmstaygold-membrane", "1": "myonghong-histone"}
+
+    indices = resolve_channel_localization_indices(mapping, ["membrane"])
+
+    assert indices == [0]
+
+
+def test_resolve_channel_localization_indices_raises_when_missing():
+    mapping = {"0": "tdmstaygold-membrane"}
+
+    with pytest.raises(ValueError, match="Unable to resolve requested channel localization"):
+        resolve_channel_localization_indices(mapping, ["histone"])
 
 
 def _test_dataloader_ray_dist(config):

@@ -62,7 +62,10 @@ do_cleanup() {
 
     srun -n1 -N1 -w $head_node bash -lc "
         apptainer exec --userns --nv \
-            --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+            --bind $storage_server \
+            --bind $workspace \
+            --bind $bind \
+            --bind $outdir:$tmpdir \
             $env bash -lc '
             pf=\"$tmpdir/cleanup_head.pid\"
             GRACE_SECONDS=60
@@ -88,7 +91,10 @@ do_cleanup() {
         for host in "${workers[@]}"; do
             srun -n1 -N1 -w $host bash -lc "
                 apptainer exec --userns --nv \
-                --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
+                --bind $storage_server \
+                --bind $workspace \
+                --bind $bind \
+                --bind $outdir/ray_worker_$i:$tmpdir \
                 $env bash -lc '
                     pf=\"$tmpdir/cleanup_${i}.pid\"
                     GRACE_SECONDS=60
@@ -123,16 +129,40 @@ do_cleanup() {
 
 ############################## START HEAD NODE
 
+echo "Copying local database to head $head_node"
+srun -n1 -N1 -w $head_node "
+    mkdir -p /local/$USER/
+    rsync -avz --stats $database_sandbox /local/$USER/sandbox.tar.zst
+" >/dev/null 2>&1 &
+rsync_bg_pid=$!
+wait "$rsync_bg_pid"
+
+echo "Unpacking local database on head $head_node"
+srun -n1 -N1 -w $head_node "
+    tar --zstd -xf /local/$USER/sandbox.tar.zst -C /local/$USER
+" >/dev/null 2>&1 &
+tar_bg_pid=$!
+wait "$tar_bg_pid"
+
 srun -n1 -N1 -w $head_node "
     apptainer exec --userns --nv \
-        --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+        --bind $storage_server \
+        --bind $workspace \
+        --bind $bind \
+        --bind $outdir:$tmpdir \
+        --bind /local/$USER:/scratch \
         $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
         -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory
 " &
 head_bg_pid=$!
 
 sleep 60
-check_headnode="apptainer exec --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env ray status --address $head_node_ip:$port"
+check_headnode="apptainer exec --nv \
+    --bind $storage_server \
+    --bind $workspace \
+    --bind $bind \
+    --bind $outdir:$tmpdir \
+    $env ray status --address $head_node_ip:$port"
 while ! $check_headnode; do
     echo "Waiting for head node..."
     sleep 3
@@ -145,10 +175,29 @@ workers=("${hosts[@]:1}")
 if [ ${nodes} -gt 1 ]; then
     i=0
     for host in "${workers[@]}"; do
+        echo "Copying local database to $host"
+        srun -n1 -N1 -w $host "
+            mkdir -p /local/$USER/
+            rsync -avz --stats $database_sandbox /local/$USER/sandbox.tar.zst
+        " >/dev/null 2>&1 &
+        rsync_bg_pid=$!
+        wait "$rsync_bg_pid"
+
+        echo "Unpacking local database on $host"
+        srun -n1 -N1 -w $host "
+            tar --zstd -xf /local/$USER/sandbox.tar.zst -C /local/$USER
+        " >/dev/null 2>&1 &
+        tar_bg_pid=$!
+        wait "$tar_bg_pid"
+
         echo "Starting worker on: $host"
         srun -n1 -N1 -w $host "
             apptainer exec --userns --nv \
-                --bind $storage_server --bind $workspace --bind $bind --bind $outdir/ray_worker_$i:$tmpdir \
+                --bind $storage_server \
+                --bind $workspace \
+                --bind $bind \
+                --bind $outdir/ray_worker_$i:$tmpdir \
+                --bind /local/$USER:/scratch \
                 $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
                 -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i
         " &
@@ -167,7 +216,11 @@ trap 'do_cleanup; exit 140' TERM # TERM_RUNLIMIT
 # CHECK CLUSTER STATUS
 srun -n1 -N1 -w $head_node " 
     apptainer exec --userns --nv \
-        --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir \
+        --bind $storage_server \
+        --bind $workspace \
+        --bind $bind \
+        --bind $outdir:$tmpdir \
+        --bind /local/$USER:/scratch \
         $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
         -a $cluster_address -r $nodes 
 "
@@ -180,7 +233,13 @@ fi
 
 echo "Running user tasks"
 echo $tasks
-apptainer exec --userns --nv --bind $storage_server --bind $workspace --bind $bind --bind $outdir:$tmpdir $env $tasks
+apptainer exec --userns --nv \
+    --bind $storage_server \
+    --bind $workspace \
+    --bind $bind \
+    --bind $outdir:$tmpdir \
+    --bind /local/$USER:/scratch \
+    $env $tasks
 
 
 ############################## CLEANUP

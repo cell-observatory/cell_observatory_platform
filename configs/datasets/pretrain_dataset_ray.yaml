@@ -5,10 +5,7 @@ defaults:
   # - preprocessor: ray_preprocessor    # Loads configs/datasets/preprocessor/ray_preprocessor.yaml
   - _self_
 
-# mainly used by other configs but determined here for ease of access
-batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
 input_shape: [16, 128, 128, 128, 2]
-train_shape: ${datasets.input_shape}
 patch_shape: [4, 16, 16, 16]
 mask_channel_idx: 1
 
@@ -19,6 +16,7 @@ max_hypercubes: null # maximum number of hypercubes to return
 hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
 roi_list: null # list of specific ROIs to filter
 tile_list: null # list of specific tiles to filter
+timepoint_list: null # list of specific timepoints to filter
 synthetic_only: False
 has_annotations: False
 
@@ -29,20 +27,13 @@ columns: [
   'tile_name', 'prepared_id',
 ]
 
-occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
 cdf_threshold: 150 # to filter our hypercubes with less than this CDF threshold
 cdf_target: 90 # to filter our hypercubes with less than this CDF target
 
-use_cached_hypercubes_dataframe: false # whether to use the cached hypercubes dataframe
 hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv # path to the hypercubes dataframe (path/to/repo/databases/default_hypercubes_dataframe.csv)
 server_folder_path: ${paths.server_folder_path}
 
 split: 0.2
-return_dataloader: true
-distributed_sampler: true
-prefetch_factor: 1 # prefetch factor for the dataloader
-num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
-
 # "drop" = drop last incomplete batch; "pad" = pad last batch with zeros, set batch_size_actual and valid_mask
 last_batch_policy: "drop"
 
@@ -58,17 +49,6 @@ collate_fn:
 
 dataset:
   _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.PretrainDatasourceRay
-  hypercubes_dataframe_path: ${datasets.hypercubes_dataframe_path}
-  server_folder_path: ${datasets.server_folder_path}
-  max_rois: ${datasets.max_rois}
-  max_tiles: ${datasets.max_tiles}
-  max_hypercubes: ${datasets.max_hypercubes}
-  hpf_list: ${datasets.hpf_list}
-  roi_list: ${datasets.roi_list}
-  tile_list: ${datasets.tile_list}
-  synthetic_only: ${datasets.synthetic_only}
-  has_annotations: ${datasets.has_annotations}
-  columns: ${datasets.columns}
   input_layout:
     _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}
@@ -86,8 +66,7 @@ numa_oversub_factor: 2.0
 # map_batches CPU request is 1/actor_oversub_factor per actor; higher = more actors share one CPU slot (Ray scheduling).
 actor_oversub_factor: 2.0
 
-channels_subset: null # subset of channels to use, e.g. [0, 1] for first two channels
-# LoaderActor pool size (Ray). More actors = more parallel batches; each actor pays separate init + buffer pool cost.
+selected_channel_localizations: null # preferred semantic channel selection for training/inference input construction
 num_actors_min: 12
 num_actors_max: 12
 with_batched_api: true
@@ -110,7 +89,3 @@ buffers:
   safety_margin: 0.05
 
 debug: false
-
-preserve_order: false # only matters for TP
-callback_strategy: grpc # grpc, queue
-async_device_copy: false
