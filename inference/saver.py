@@ -233,13 +233,12 @@ class SaveWorker:
         self.chunk_spatial_shape = chunk_spatial_shape
 
     def get_metrics(self) -> Dict[str, List[float | bool]]:
-        return self._metrics.copy()
-
-    def clear_metrics(self) -> None:
+        metrics = self._metrics.copy()
         self._metrics = {
             "save_time_ms": [],
             "save_successful": []
         }
+        return metrics
 
     def save(
         self, 

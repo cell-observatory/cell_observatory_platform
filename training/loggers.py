@@ -86,7 +86,7 @@ class EventRecorder:
             self._reduce_methods[name] = reduce_method
         store = self._step_scalars if scope == "step" else self._epoch_scalars
         it, ep = self._iter, self._epoch
-        last_iter = store[name][-1][1] if store[name] else it
+        last_iter = store[name][-1][1] if store[name] else 0
         if last_iter + len(values) != it:
             logger.warning("Given values do not match current iteration. Logs may be losing data and may appear inconsistent.")
         for i, v in enumerate(values):

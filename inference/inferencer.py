@@ -529,11 +529,10 @@ class InferencerWorker:
             self._tasks.append(vis_task)
 
     def get_metrics(self) -> Dict[str, float]:
-        return self._metrics
-
-    def clear_metrics(self) -> None:
+        metrics = self._metrics.copy()
         self._metrics = {
         }
+        return metrics
 
     def finalize(self):
         ray.get(self._tasks)

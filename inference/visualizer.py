@@ -302,14 +302,13 @@ class VizWorker:
         return regions, identifiers
 
     def get_metrics(self) -> Dict[str, List[float | bool]]:
-        return self._metrics.copy()
-
-    def clear_metrics(self) -> None:
+        metrics = self._metrics.copy()
         self._metrics = {
             "visualize_time_ms": [],
             "visualize_successful": [],
             "visualize_calls": 0.0,
         }
+        return metrics
 
     def visualize(
         self,

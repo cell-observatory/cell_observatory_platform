@@ -119,14 +119,15 @@ class HostMemoryBuffer:
         total_bytes = self.cap * self.slot_bytes
         self._shm = shared_memory.SharedMemory(create=True, size=total_bytes)
         self.name = self._shm.name
+
+        self._try_get_free_drops = 0
+        self._in_use_current = 0
         self._metrics: Dict[str, float | int | list[float | int]] = {
             "get_free_wait_time_ms": [],
             "put_free_wait_time_ms": [],
             "try_get_free_wait_time_ms": [],
-            "try_get_free_drops": 0,
-            "in_use_current": 0,
-            "capacity": self.cap,
-            "slot_bytes": self.slot_bytes,
+            "try_get_free_drops": [],
+            "in_use_current": [],
         }
 
         self.free = asyncio.Queue(self.cap)
@@ -147,7 +148,8 @@ class HostMemoryBuffer:
         slot = await self.free.get()
         t1 = time.perf_counter()
         self._metrics["get_free_wait_time_ms"].append((t1 - t0) * 1000)
-        self._metrics["in_use_current"] += 1
+        self._in_use_current += 1
+        self._metrics["in_use_current"].append(self._in_use_current)
         return {
             "slot": slot,
             "name": self.name,
@@ -168,9 +170,11 @@ class HostMemoryBuffer:
         t1 = time.perf_counter()
         self._metrics["try_get_free_wait_time_ms"].append((t1 - t0) * 1000)
         if slot is None:
-            self._metrics["try_get_free_drops"] += 1
+            self._try_get_free_drops += 1
+            self._metrics["try_get_free_drops"].append(self._try_get_free_drops)
         else:
-            self._metrics["in_use_current"] += 1
+            self._in_use_current += 1
+            self._metrics["in_use_current"].append(self._in_use_current)
         return {
             "slot": slot,
             "name": self.name,
@@ -186,7 +190,7 @@ class HostMemoryBuffer:
         await self.free.put(int(slot))
         t1 = time.perf_counter()
         self._metrics["put_free_wait_time_ms"].append((t1 - t0) * 1000)
-        self._metrics["in_use_current"] -= 1
+        self._in_use_current -= 1
         return True
 
     def get_config(self):
@@ -194,18 +198,18 @@ class HostMemoryBuffer:
                 "batch_shape": self.batch_shape, "dtype": self.dtype}
 
     def get_metrics(self) -> Dict[str, float | int | list[float | int]]:
-        return self._metrics.copy()
-
-    def clear_metrics(self) -> None:
+        metrics = self._metrics.copy()
+        metrics["capacity"] = self.cap
+        metrics["slot_bytes"] = self.slot_bytes
         self._metrics = {
             "get_free_wait_time_ms": [],
             "put_free_wait_time_ms": [],
             "try_get_free_wait_time_ms": [],
-            "try_get_free_drops": 0,
-            "in_use_current": 0,
-            "capacity": self.cap,
-            "slot_bytes": self.slot_bytes,
+            "try_get_free_drops": [],
+            "in_use_current": [],
         }
+        return metrics
+
 
 
 def set_buffers(
@@ -619,11 +623,6 @@ class BufferManager:
             metrics[pool_name] = ray.get(buffer_actor.get_metrics.remote())
         return metrics
     
-    def clear_metrics(self) -> None:
-        """Flush the metrics for the BufferManager."""
-        for pool_name, buffer_actor in self._buffer_actors.items():
-            buffer_actor.clear_metrics.remote()
-
     def log_metrics_at_shutdown(self) -> None:
         """Log BufferManager metrics at shutdown."""
         metrics = self.get_metrics()

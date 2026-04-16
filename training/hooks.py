@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, Sequence, Union
 
 import torch
+import numpy as np
 import ray
 from fvcore.common.timer import Timer
 from ray.train import Checkpoint, report
@@ -546,7 +547,6 @@ class InferenceMetricsHook(HookBase):
             reduce_method=self._RM_TIME,
         )
         m = iw.get_metrics()
-        iw.clear_metrics()
         for k, v in m.items():
             rec.put_scalar(
                 f"inference/{k}",
@@ -566,91 +566,58 @@ class InferenceMetricsHook(HookBase):
         rec = self.trainer.event_recorder
 
         buf = iw.buffer_manager.get_metrics()
-        iw.buffer_manager.clear_metrics()
         for pool_name, pool_metrics in buf.items():
+            cap = int(pool_metrics.pop("capacity", 0))
+            slot_bytes = float(pool_metrics.pop("slot_bytes", 0)) / 1e9
             for metric_name, metric_value in pool_metrics.items():
                 if isinstance(metric_value, list) and metric_value:
                     rec.put_scalar_batch(
                         f"buffer/{pool_name}/{metric_name}",
                         [float(x) for x in metric_value],
                         scope="step",
-                        reduce_method=self._RM_TIME,
+                        reduce_method=self._RM_TIME if "time" in metric_name else self._RM_GAUGE,
                     )
-                elif not isinstance(metric_value, list) and metric_name in (
-                    "capacity",
-                    "slot_bytes",
-                    "in_use_current",
-                    "try_get_free_drops",
-                ):
-                    rec.put_scalar(
-                        f"buffer/{pool_name}/{metric_name}",
-                        float(metric_value),
-                        scope="step",
-                        reduce_method=self._RM_GAUGE if metric_name != "try_get_free_drops" else self._RM_MEAN,
-                    )
-            cap = int(pool_metrics.get("capacity", 0))
-            in_use = float(pool_metrics.get("in_use_current", 0))
-            if cap > 0:
-                rec.put_scalar(
-                    f"buffer/{pool_name}/pct_in_use_current",
-                    100.0 * in_use / float(cap),
-                    scope="step",
-                    reduce_method=self._RM_GAUGE,
-                )
-            else:
-                rec.put_scalar(
-                    f"buffer/{pool_name}/pct_in_use_current",
-                    0.0,
-                    scope="step",
-                    reduce_method=self._RM_GAUGE,
-                )
-
+                    if metric_name == "in_use_current" and cap > 0:
+                        rec.put_scalar_batch(
+                            f"buffer/{pool_name}/pct_{metric_name}",
+                            [float(x)/cap*100 for x in metric_value],
+                            scope="step",
+                            reduce_method=self._RM_GAUGE,
+                        )
+                        rec.put_scalar_batch(
+                            f"buffer/{pool_name}/GB_{metric_name}",
+                            [float(x)*slot_bytes for x in metric_value],
+                            scope="step",
+                            reduce_method=self._RM_GAUGE,
+                        )
+        worker_metrics = {}
         if iw.save_worker is not None:
             sm = ray.get(iw.save_worker.get_metrics.remote())
-            iw.save_worker.clear_metrics.remote()
-            if sm.get("save_time_ms"):
-                rec.put_scalar_batch(
-                    "save/time_ms",
-                    [float(x) for x in sm["save_time_ms"]],
-                    scope="step",
-                    reduce_method=self._RM_TIME,
-                )
-            ss = sm.get("save_successful") or []
-            if ss:
-                rec.put_scalar_batch(
-                    "save/successful",
-                    [1.0 if x else 0.0 for x in ss],
-                    scope="step",
-                    reduce_method=self._RM_MEAN,
-                )
-
+            worker_metrics["save_worker"] = sm
+        
         if iw.viz_worker is not None:
             vm = ray.get(iw.viz_worker.get_metrics.remote())
-            iw.viz_worker.clear_metrics.remote()
-            if vm.get("visualize_time_ms"):
-                rec.put_scalar_batch(
-                    "viz/time_ms",
-                    [float(x) for x in vm["visualize_time_ms"]],
-                    scope="step",
-                    reduce_method=self._RM_TIME,
-                )
-            vs = vm.get("visualize_successful") or []
-            if vs:
-                rec.put_scalar_batch(
-                    "viz/successful",
-                    [1.0 if x else 0.0 for x in vs],
-                    scope="step",
-                    reduce_method=self._RM_MEAN,
-                )
-            calls = vm.get("visualize_calls")
-            if calls is not None and float(calls) > 0:
-                rec.put_scalar(
-                    "viz/calls",
-                    float(calls),
-                    scope="step",
-                    reduce_method=self._RM_MEAN,
-                )
+            worker_metrics["viz_worker"] = vm
 
+        for worker_name, worker_metrics in worker_metrics.items():
+            for metric_name, metric_value in worker_metrics.items():
+                if isinstance(metric_value, list) and metric_value:
+                    rec.put_scalar_batch(
+                        f"{worker_name}/{metric_name}",
+                        [float(x) for x in metric_value],
+                        scope="step",
+                        reduce_method=self._RM_TIME if "time" in metric_name else self._RM_GAUGE,
+                    )
+                elif np.isscalar(metric_value):
+                    rec.put_scalar(
+                        f"{worker_name}/{metric_name}",
+                        float(metric_value),
+                        scope="step",
+                        reduce_method=self._RM_TIME if "time" in metric_name else self._RM_GAUGE,
+                    )
+                else:
+                    logger.warning(f"Unknown metric value type: {type(metric_value)} for metric {metric_name} from worker {worker_name}")
+        
     def after_test(self):
         if not hasattr(self.trainer, "inferencer_worker"):
             return
