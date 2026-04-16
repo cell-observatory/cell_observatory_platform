@@ -137,7 +137,7 @@ def _make_save_metainfo_from_store(store: dict, *, batch_size: int = 1) -> dict:
         "batch_size_actual": batch_size,
         "task": "semantic_segmentation",
         "model_name": "unit_test_model",
-        "save_tensors_metadata": {"masks": {"dtype": "uint16", "data_format": "TZYXC", "annotation_type": "dense"}},
+        "save_tensors_metadata": {"masks": {"name": "masks", "dtype": "uint16", "data_format": "TZYXC", "annotation_type": "dense"}},
         "channel_names": {0: "channel_0"},
         "server_folder": col(store["server_folder"]),
         "output_folder": col(store["output_folder"]),
