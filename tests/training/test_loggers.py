@@ -34,7 +34,7 @@ def _simple_dataloader(config: DictConfig):
     dataloader_config = {
         "cfg": config,
         "batch_size": config.clusters.batch_size_per_gpu,
-        "drop_last": False,
+        "last_batch_policy": "pad",
         "collate_fn": None,
         "database": None,
     }

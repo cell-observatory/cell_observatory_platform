@@ -1075,7 +1075,7 @@ class SampleIndexPlanner:
         seed: Optional[int],
         shuffle: bool,
         batch_size: int,
-        drop_last: bool,
+        last_batch_policy: str,
     ) -> np.ndarray:
         row_ids = np.asarray(base_row_ids, dtype=np.int64).copy()
 
@@ -1089,7 +1089,7 @@ class SampleIndexPlanner:
         row_ids = row_ids[:usable]
         local = row_ids[self.rank :: self.world_size]
 
-        if drop_last:
+        if last_batch_policy == "drop":
             keep = (len(local) // batch_size) * batch_size
             local = local[:keep]
 

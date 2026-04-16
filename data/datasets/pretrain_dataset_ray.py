@@ -1201,7 +1201,7 @@ def get_dataset_ray(
     dp_rank: Optional[int] = None,
     selected_channel_localizations: Optional[List[str]] = None,
     shuffle: bool = False,
-    drop_last: bool = True,
+    last_batch_policy: str = "drop",
 ):
     if seed is not None and not shuffle:
         raise ValueError("Seed provided but shuffle is False.")
@@ -1236,7 +1236,7 @@ def get_dataset_ray(
         seed=seed,
         shuffle=shuffle,
         batch_size=cfg.clusters.batch_size_per_gpu,
-        drop_last=drop_last,
+        last_batch_policy=last_batch_policy,
     )
 
     local_table = sample_table.take(pa.array(local_row_ids, type=pa.int64()))
@@ -1258,7 +1258,7 @@ def get_dataloader_ray(
     batch_size: int,
     collate_fn: Optional[Callable],
     epoch: int = 0,
-    drop_last: bool = True,
+    last_batch_policy: str = "drop",
     sample_store_desc: Optional[MappedTableDescriptor] = None,
     dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
@@ -1321,7 +1321,7 @@ def get_dataloader_ray(
         dp_rank=dp_rank,
         selected_channel_localizations=selected_channel_localizations,
         shuffle=True,
-        drop_last=drop_last,
+        last_batch_policy=last_batch_policy,
     )
     record_dataset_len(cfg, train_dataset_len, 0)
 
