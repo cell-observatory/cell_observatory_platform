@@ -116,6 +116,7 @@ class VizWorker:
         self._metrics: Dict[str, float | int | List[float | bool]] = {
             "visualize_time_ms": [],
             "visualize_successful": [],
+            "queue_time_ms": [],
             "visualize_calls": 0.0,
         }
 
@@ -306,6 +307,7 @@ class VizWorker:
         self._metrics = {
             "visualize_time_ms": [],
             "visualize_successful": [],
+            "queue_time_ms": [],
             "visualize_calls": 0.0,
         }
         return metrics
@@ -313,10 +315,13 @@ class VizWorker:
     def visualize(
         self,
         inference_outputs: Dict[str, Any],
+        queue_t0: Optional[float] = None,
     ) -> None:
         """
         Dispatch to the appropriate handler based on output_type.viz.handler.
         """
+        if queue_t0 is not None:
+            self._metrics["queue_time_ms"].append((time.perf_counter() - queue_t0) * 1000)
         self._metrics["visualize_calls"] += 1.0
         slots_to_free = []
         start_time = time.perf_counter()

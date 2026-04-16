@@ -103,6 +103,7 @@ class FinetuneCollatorActor:
             "output_folder",
             "tile_name",
             "prepared_id",
+            "channel_mapping",
             "annotations_metadata",
         ],
         input_format: Literal["ZYXC", "TZYXC"] = "ZYXC",

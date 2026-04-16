@@ -379,10 +379,16 @@ class InferencerWorker:
         metainfo_numpy.setdefault("model_name", self.model_name)
         metainfo_numpy.setdefault("task", self.task)
         metainfo_numpy.setdefault("save_tensors_metadata", self.outputs_metadata["save_tensors"])
+
+        assert "channel_mapping" in metainfo_numpy, "channel_mapping must be in metainfo"
+        print(f"channel_mapping: {metainfo_numpy['channel_mapping']}")
+        # FIXME: this is a hack to get the channel names to the save worker during development
+        # In the future we should rely on the channel_mapping in the metainfo
         names = self._inference_channel_names
         if names is None:
             raise RuntimeError("InferencerWorker missing channel_names while saving outputs.")
         metainfo_numpy["channel_names"] = dict(names)
+
         if self._save_timepoint_idxs is not None:
             metainfo_numpy.setdefault("timepoint_idxs", self._save_timepoint_idxs)
 
@@ -517,6 +523,7 @@ class InferencerWorker:
                 raise RuntimeError("Attempting to save outputs but save_worker is None")
             save_task = self.save_worker.save.remote(
                 inference_outputs=save_outputs,
+                queue_t0=time.perf_counter(),
             )
             self._tasks.append(save_task)
 
@@ -525,6 +532,7 @@ class InferencerWorker:
                 raise RuntimeError("Attempting to visualize outputs but viz_worker is None")
             vis_task = self.viz_worker.visualize.remote(
                 inference_outputs=viz_outputs,
+                queue_t0=time.perf_counter(),
             )
             self._tasks.append(vis_task)
 

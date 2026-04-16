@@ -222,7 +222,8 @@ class SaveWorker:
         )
         self._metrics = {
             "save_time_ms": [],
-            "save_successful": []
+            "save_successful": [],
+            "queue_time_ms": [],
         }
         if shard_spatial_shape is None or chunk_spatial_shape is None:
             raise ValueError(
@@ -236,14 +237,18 @@ class SaveWorker:
         metrics = self._metrics.copy()
         self._metrics = {
             "save_time_ms": [],
-            "save_successful": []
+            "save_successful": [],
+            "queue_time_ms": [],
         }
         return metrics
 
     def save(
         self, 
         inference_outputs: Dict[str, Any], 
+        queue_t0: Optional[float] = None,
     ) -> None:
+        if queue_t0 is not None:
+            self._metrics["queue_time_ms"].append((time.perf_counter() - queue_t0) * 1000)
         output_arrays = {}
         slots_to_free = []
         t0 = time.perf_counter()
