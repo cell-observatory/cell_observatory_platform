@@ -264,9 +264,6 @@ def build_config(meta: dict, tmp_path: Path):
                 "databases": {
                     "sample_type": meta["sample_type"],
                     "node_local_store_root": str(tmp_path),
-                    "node_local_table_keys": {
-                        meta["selector_key"]: meta["source_key"],
-                    },
                     "cdf_threshold_channel_localizations": None,
                     "channel_count": None,
                     "min_channel_count": None,
