@@ -20,7 +20,7 @@ from __future__ import annotations
 import statistics
 import time
 import uuid
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from unittest.mock import patch
 
 import numpy as np
@@ -47,6 +47,9 @@ _PATCH_SHAPE = (4, 4)
 WARMUP_ITERS = 3
 BENCH_ITERS = 10
 BUFFER_CAPACITY = 4
+# Align with ``InferencerWorker._attach_save_worker_metainfo`` and ``saver.save_predictions`` (``name`` per tensor).
+_BENCH_CHANNEL_NAMES = {0: "benchmark_ch0"}
+_BENCH_CHANNEL_MAPPING = {str(i): name for i, name in _BENCH_CHANNEL_NAMES.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +97,7 @@ class _StubSaveWorker:
             "save_successful": [],
         }
 
-    def save(self, inference_outputs: dict) -> None:
+    def save(self, inference_outputs: dict, queue_t0: Optional[float] = None) -> None:
         t0 = time.perf_counter()
         ok = False
         try:
@@ -130,7 +133,7 @@ class _StubVizWorker:
             "visualize_calls": 0.0,
         }
 
-    def visualize(self, inference_outputs: dict) -> None:
+    def visualize(self, inference_outputs: dict, queue_t0: Optional[float] = None) -> None:
         self._metrics["visualize_calls"] += 1.0
         t0 = time.perf_counter()
         ok = False
@@ -232,16 +235,19 @@ def _make_outputs_metadata(spatial: Tuple[int, ...], *, use_buffer: bool):
     return {
         "save_tensors": {
             "masks": {
+                "name": "masks",
                 "dtype": "uint16",
                 "annotation_type": "dense",
                 "data_format": "ZYXC",
             },
             "boxes": {
+                "name": "boxes",
                 "dtype": "float32",
                 "annotation_type": "sparse",
                 "data_format": "N6",
             },
             "labels": {
+                "name": "labels",
                 "dtype": "float32",
                 "annotation_type": "sparse",
                 "data_format": "N",
@@ -289,6 +295,7 @@ def _make_data_sample(spatial: Tuple[int, ...], device: torch.device) -> dict:
             "prepared_id": [0],
             "tile_name": "bench_tile.zarr",
             "orig_image_sizes": [torch.tensor(spatial, device=device)],
+            "channel_mapping": dict(_BENCH_CHANNEL_MAPPING),
         },
     }
 
@@ -322,7 +329,7 @@ def _build_worker(
         buffer_manager=buffer_manager,
         save_worker=save_worker,
         viz_worker=viz_worker,
-        channel_names={0: "benchmark_ch0"},
+        channel_names=_BENCH_CHANNEL_NAMES,
     )
 
 
