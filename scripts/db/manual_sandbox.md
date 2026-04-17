@@ -9,9 +9,9 @@ Run this workflow from a repo copy under `/scratch`, not from `/groups`.
 
 ```shell
 # Example only; adjust paths as needed.
-cd /scratch/$USER
+cd $SCRATCH_ROOT
 rsync -av /groups/betzig/home/hamiltonh/git_managed/cell_observatory_platform/ ./cell_observatory_platform/
-cd /scratch/$USER/cell_observatory_platform
+cd $SCRATCH_ROOT/cell_observatory_platform
 ```
 
 ## Optional: stage the backup under `scripts/db`
@@ -182,6 +182,6 @@ Only do this after:
 ls -lh "${DATABASE_DIR}/$(date +%Y_%m_%d)/sandbox.tar.zst"
 
 # Remove the scratch working copy when you are done.
-cd /scratch/$USER
-rm -rf /scratch/$USER/cell_observatory_platform
+cd $SCRATCH_ROOT
+rm -rf $SCRATCH_ROOT/cell_observatory_platform
 ```

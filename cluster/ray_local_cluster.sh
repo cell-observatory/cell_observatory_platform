@@ -5,6 +5,9 @@ export NCCL_DEBUG_SUBSYS=GRAPH
 export RAY_DEDUP_LOGS=0
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+: "${SUPABASE_LOCAL_PORT:?SUPABASE_LOCAL_PORT must be set in the environment}"
+SCRATCH_ROOT="${SCRATCH_ROOT:-$(dirname "$NODE_LOCAL_STORE_ROOT")}"
+
 # parse args from `args_parser.sh` getopts
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$DIR/args_parser.sh"
@@ -12,10 +15,9 @@ source "$DIR/args_parser.sh"
 tmpdir=/tmp/symlink_$(uuidgen | cut -d "-" -f5)
 echo "Create symlink: $outdir -> $tmpdir"
 
-scratch_root=/scratch/$USER
-training_scratch="${scratch_root}/training"
-sandbox_dir="${scratch_root}/pgdb/sandbox"
-mkdir -p "$training_scratch" "${scratch_root}/pgdb"
+training_scratch="${SCRATCH_ROOT}/training"
+sandbox_dir="${SCRATCH_ROOT}/pgdb/sandbox"
+mkdir -p "$training_scratch" "${sandbox_dir}"
 
 ############################## SETUP PORTS
 # for debugging

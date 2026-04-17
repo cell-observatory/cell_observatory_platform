@@ -62,6 +62,7 @@ export RAY_GRAFANA_HOST="${head_node_ip}:3000"
 export RAY_PROMETHEUS_HOST="${head_node_ip}:9090"
 
 : "${SUPABASE_LOCAL_PORT:?SUPABASE_LOCAL_PORT must be set in the environment}"
+SCRATCH_ROOT="${SCRATCH_ROOT:-$(dirname "$NODE_LOCAL_STORE_ROOT")}"
 
 ########################### HELPER
 
@@ -71,7 +72,7 @@ start_local_db() {
     echo "Starting local database on $target_host"
     blaunch -z "$target_host" "
         apptainer instance stop mysql >/dev/null 2>&1 || true
-        apptainer instance start --no-mount proc --writable --env POSTGRES_PASSWORD=postgres /scratch/$USER/sandbox mysql
+        apptainer instance start --no-mount proc --writable --env POSTGRES_PASSWORD=postgres $SCRATCH_ROOT/sandbox mysql
         apptainer exec instance://mysql postgres \
             -c 'listen_addresses=0.0.0.0' \
             -c 'port=${SUPABASE_LOCAL_PORT}' \
@@ -167,15 +168,15 @@ do_cleanup() {
 
 echo "Copying local database to head $head_node"
 blaunch -z $head_node "
-    mkdir -p /scratch/$USER/
-    rsync -avz --stats $database_sandbox /scratch/$USER/sandbox.tar.zst
+    mkdir -p $SCRATCH_ROOT/
+    rsync -avz --stats $database_sandbox $SCRATCH_ROOT/sandbox.tar.zst
 " >/dev/null 2>&1 &
 rsync_bg_pid=$!
 wait "$rsync_bg_pid"
 
 echo "Unpacking local database on head $head_node"
 blaunch -z $head_node "
-    tar --zstd -xf /scratch/$USER/sandbox.tar.zst -C /scratch/$USER
+    tar --zstd -xf $SCRATCH_ROOT/sandbox.tar.zst -C $SCRATCH_ROOT
 " >/dev/null 2>&1 &
 tar_bg_pid=$!
 wait "$tar_bg_pid"
@@ -190,7 +191,7 @@ blaunch -z $head_node "
         --bind $workspace \
         --bind $bind \
         --bind $outdir:$tmpdir \
-        --bind /scratch/$USER:/scratch \
+        --bind $SCRATCH_ROOT:/scratch \
         $env /workspace/cell_observatory_platform/cluster/ray_start_cluster.sh \
             -i $head_node_ip -p $port -d $dashboard_port -c $head_cpus -g $head_gpus -t $tmpdir -q $object_store_memory
 " &
@@ -221,15 +222,15 @@ if [ ${nodes} -gt 1 ]; then
     for host in "${workers[@]}"; do
         echo "Copying local database to $host"
         blaunch -z $host "
-            mkdir -p /scratch/$USER/
-            rsync -avz --stats $database_sandbox /scratch/$USER/sandbox.tar.zst
+            mkdir -p $SCRATCH_ROOT/
+            rsync -avz --stats $database_sandbox $SCRATCH_ROOT/sandbox.tar.zst
         " >/dev/null 2>&1 &
         rsync_bg_pid=$!
         wait "$rsync_bg_pid"
 
         echo "Unpacking local database on $host"
         blaunch -z $host "
-            tar --zstd -xf /scratch/$USER/sandbox.tar.zst -C /scratch/$USER
+            tar --zstd -xf $SCRATCH_ROOT/sandbox.tar.zst -C $SCRATCH_ROOT
         " >/dev/null 2>&1 &
         tar_bg_pid=$!
         wait "$tar_bg_pid"
@@ -245,7 +246,7 @@ if [ ${nodes} -gt 1 ]; then
             --bind $workspace \
             --bind $bind \
             --bind $outdir/ray_worker_$i:$tmpdir \
-            --bind /scratch/$USER:/scratch \
+            --bind $SCRATCH_ROOT:/scratch \
             $env /workspace/cell_observatory_platform/cluster/ray_start_worker.sh \
                 -a $cluster_address -c $cpus -g $gpus -t $tmpdir -q $object_store_memory -w $i
         " &
@@ -266,7 +267,7 @@ blaunch -z $head_node "
         --bind $workspace \
         --bind $bind \
         --bind $outdir:$tmpdir \
-        --bind /scratch/$USER:/scratch \
+        --bind $SCRATCH_ROOT:/scratch \
         $env /workspace/cell_observatory_platform/cluster/ray_check_status.sh \
         -a $cluster_address -r $nodes 
 "
@@ -284,7 +285,7 @@ apptainer exec --userns --nv \
     --bind $workspace \
     --bind $bind \
     --bind $outdir:$tmpdir \
-    --bind /scratch/$USER:/scratch \
+    --bind $SCRATCH_ROOT:/scratch \
     $env $tasks
 
 ############################## CLEANUP
