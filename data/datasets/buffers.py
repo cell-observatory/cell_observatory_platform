@@ -122,6 +122,7 @@ class HostMemoryBuffer:
 
         self._try_get_free_drops = 0
         self._occupied_slots = 0
+        self._metrics_enabled = False
         self._metrics: Dict[str, float | int | list[float | int]] = {
             "get_free_wait_time_ms": [],
             "put_free_wait_time_ms": [],
@@ -147,9 +148,10 @@ class HostMemoryBuffer:
         t0 = time.perf_counter()
         slot = await self.free.get()
         t1 = time.perf_counter()
-        self._metrics["get_free_wait_time_ms"].append((t1 - t0) * 1000)
-        self._occupied_slots += 1
-        self._metrics["occupied_slots"].append(self._occupied_slots)
+        if self._metrics_enabled:
+            self._metrics["get_free_wait_time_ms"].append((t1 - t0) * 1000)
+            self._occupied_slots += 1
+            self._metrics["occupied_slots"].append(self._occupied_slots)
         return {
             "slot": slot,
             "name": self.name,
@@ -168,13 +170,14 @@ class HostMemoryBuffer:
         except asyncio.QueueEmpty:
             return None
         t1 = time.perf_counter()
-        self._metrics["try_get_free_wait_time_ms"].append((t1 - t0) * 1000)
-        if slot is None:
-            self._try_get_free_drops += 1
-            self._metrics["try_get_free_drops"].append(self._try_get_free_drops)
-        else:
-            self._occupied_slots += 1
-            self._metrics["occupied_slots"].append(self._occupied_slots)
+        if self._metrics_enabled:
+            self._metrics["try_get_free_wait_time_ms"].append((t1 - t0) * 1000)
+            if slot is None:
+                self._try_get_free_drops += 1
+                self._metrics["try_get_free_drops"].append(self._try_get_free_drops)
+            else:
+                self._occupied_slots += 1
+                self._metrics["occupied_slots"].append(self._occupied_slots)
         return {
             "slot": slot,
             "name": self.name,
@@ -189,13 +192,20 @@ class HostMemoryBuffer:
         t0 = time.perf_counter()
         await self.free.put(int(slot))
         t1 = time.perf_counter()
-        self._metrics["put_free_wait_time_ms"].append((t1 - t0) * 1000)
-        self._occupied_slots -= 1
+        if self._metrics_enabled:
+            self._metrics["put_free_wait_time_ms"].append((t1 - t0) * 1000)
+            self._occupied_slots -= 1
         return True
 
     def get_config(self):
         return {"capacity": self.cap, "name": self.name, "slot_bytes": self.slot_bytes,
                 "batch_shape": self.batch_shape, "dtype": self.dtype}
+
+    def enable_metrics_collection(self) -> None:
+        self._metrics_enabled = True
+
+    def disable_metrics_collection(self) -> None:
+        self._metrics_enabled = False
 
     def get_metrics(self) -> Dict[str, float | int | list[float | int]]:
         metrics = self._metrics.copy()
@@ -616,6 +626,18 @@ class BufferManager:
                 f"{slot_info.get('actor_name', slot_info.get('name'))}: {e}"
             )
 
+    def enable_metrics_collection(self) -> None:
+        """Enable metrics collection for the BufferManager."""
+        for pool_name, buffer_actor in self._buffer_actors.items():
+            ray.logger.info(f"[BufferManager] Enabling metrics collection for pool {pool_name}")
+            ray.get(buffer_actor.enable_metrics_collection.remote())
+
+    def disable_metrics_collection(self) -> None:
+        """Disable metrics collection for the BufferManager."""
+        for pool_name, buffer_actor in self._buffer_actors.items():
+            ray.logger.info(f"[BufferManager] Disabling metrics collection for pool {pool_name}")
+            ray.get(buffer_actor.disable_metrics_collection.remote())
+
     def get_metrics(self) -> Dict[str, Dict[str, float | int | list[float | int]]]:
         """Get the metrics for the BufferManager."""
         metrics = {}
@@ -628,7 +650,7 @@ class BufferManager:
         metrics = self.get_metrics()
         for pool_name, pool_metrics in metrics.items():
             ray.logger.info(
-                f"BufferManager shutdown metrics for pool {pool_name}: {pool_metrics}"
+                f"[BufferManager] Shutdown metrics for pool {pool_name}: {pool_metrics}"
             )
             
     def shutdown(self) -> None:

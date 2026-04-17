@@ -528,6 +528,11 @@ class InferenceMetricsHook(HookBase):
     def before_test(self):
         self._inference_start_time = time.perf_counter()
         self._inference_total_samples = 0
+        if hasattr(self.trainer, "inferencer_worker"):
+            self.trainer.inferencer_worker.buffer_manager.enable_metrics_collection()
+            ray.logger.info("[InferenceMetricsHook] Enabled metrics collection for BufferManager")
+        else:
+            ray.logger.info("[InferenceMetricsHook] No inferencer_worker found, skipping metrics collection")
 
     def before_test_step(self):
         self._step_start_time = time.perf_counter()
