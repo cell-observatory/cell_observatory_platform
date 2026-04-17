@@ -191,7 +191,6 @@ class HostMemoryBuffer:
         t1 = time.perf_counter()
         self._metrics["put_free_wait_time_ms"].append((t1 - t0) * 1000)
         self._occupied_slots -= 1
-        self._metrics["occupied_slots"].append(self._occupied_slots)
         return True
 
     def get_config(self):
