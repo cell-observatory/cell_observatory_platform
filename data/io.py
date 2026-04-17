@@ -233,6 +233,59 @@ def save_sparse_annotations(
         raise e
 
 
+def save_dense_annotations(
+    image_path: str,
+    model_name: str,
+    data: np.ndarray,
+    annotation_name: str,
+    channel_names: Dict[int, str],
+    data_format: Literal["TZYXC", "ZYXC"],
+    save_mode: Literal["overwrite", "create"],
+    zarr_driver: str = "zarr3",
+    dtype: str = "uint16",
+    timepoint_idxs: Optional[List[int]] = None,
+    shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
+) -> None:
+    """Save dense annotations to ``<image_path>/<model_name>/<annotation_name>``; update per-array ``channel_names`` attrs.
+
+    ``annotation_name`` is the on-disk array name under the model group; it must contain the substring
+    ``mask`` (case-insensitive), e.g. ``semantic_masks``.
+
+    """
+    # FIXME: Generalize this to work for all dense annotation types
+    _validate_dense_mask_annotation_name(annotation_name)
+    if save_mode in ("overwrite", "create"):
+        if save_mode == "create" and (shard_spatial_shape is None or chunk_spatial_shape is None):
+            raise ValueError(
+                "shard_spatial_shape and chunk_spatial_shape are required when creating new dense annotations (ZYX input format)"
+            )
+        try:
+            save_zarr_annotations(
+                image_path=image_path,
+                data=data,
+                source_name=model_name,
+                annotation_name=annotation_name,
+                data_format=data_format,
+                shard_spatial_shape=shard_spatial_shape,
+                chunk_spatial_shape=chunk_spatial_shape,
+                save_mode=save_mode,
+                timepoint_idxs=timepoint_idxs,
+                zarr_driver=zarr_driver,
+                dtype=dtype,
+            )
+        except Exception as e:
+            logger.error(f"Failed to save zarr annotations at {image_path}/{model_name}/{annotation_name}: {e}")
+            raise e
+        try:
+            save_masks_channel_names(image_path, model_name, annotation_name, channel_names)
+        except Exception as e:
+            logger.error(f"Failed to save masks channel names at {image_path}/{model_name}/{annotation_name}: {e}")
+            raise e
+
+    else:
+        raise ValueError(f"Invalid save_mode: {save_mode}")
+
 def save_masks(
     image_path: str,
     model_name: str,

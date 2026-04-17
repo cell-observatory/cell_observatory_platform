@@ -11,7 +11,7 @@ import ray
 from cell_observatory_platform.data.datasets.buffers import BufferManager
 from cell_observatory_platform.data.io import (
     save_annotations_metadata,
-    save_masks,
+    save_dense_annotations,
     save_sparse_annotations,
 )
 
@@ -146,12 +146,12 @@ def save_predictions(
         try:
             if annotation_type == "dense":
                 assert output_metadata["data_format"] in ["TZYXC", "ZYXC"], f"Invalid data format: {output_metadata['data_format']}"
-                save_masks(
+                save_dense_annotations(
                     image_path=image_path,
                     model_name=model_name,
-                    masks=data,
+                    data=data,
                     annotation_name=save_name,
-                    existing_channel_names=existing_channel_names,
+                    channel_names=existing_channel_names,
                     data_format=cast(Literal["TZYXC", "ZYXC"], data_format),
                     save_mode=save_mode,
                     chunk_spatial_shape=chunk_spatial_shape,
