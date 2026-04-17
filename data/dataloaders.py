@@ -18,6 +18,10 @@ from cell_observatory_platform.data.databases.local_metadata_store import (
 )
 from cell_observatory_platform.data.datasets.buffers import set_buffers
 from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
+from cell_observatory_platform.data.datasets.utils import (
+    agent_debug_log,
+    resolve_channel_localization_indices,
+)
 from cell_observatory_platform.data.datasets.schedulers import NumaNodeAffinityScheduler
 from cell_observatory_platform.utils.context import (
     barrier,
@@ -32,7 +36,7 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s -
 logger = logging.getLogger(__name__)
 
 
-def _shape_from_stats(base_shape, layout: str, stats) -> tuple[int, ...]:
+def _shape_from_stats(base_shape, layout: str, stats, selected_channel_localizations: Optional[tuple[str, ...]] = None) -> tuple[int, ...]:
     shape = list(base_shape)
     axis_to_max = {
         "T": int(stats.max_time_size),
@@ -43,13 +47,14 @@ def _shape_from_stats(base_shape, layout: str, stats) -> tuple[int, ...]:
     }
     dynamic_axes = set(stats.dynamic_axes)
     for axis, max_value in axis_to_max.items():
+        if axis == "C" and selected_channel_localizations is not None:
+            max_value = len(selected_channel_localizations)
         if axis in layout and max_value > 0:
             if dynamic_axes and axis not in dynamic_axes:
                 continue
             idx = layout.index(axis)
             shape[idx] = max(int(shape[idx]), max_value)
     return tuple(shape)
-
 
 def get_dataloader(
     config: DictConfig, 
@@ -99,8 +104,25 @@ def get_dataloader(
         tuple(config.datasets.input_shape),
         config.dataset_layout_order.upper(),
         sample_store_desc.stats,
+        selected_channel_localizations,
     )
     collator_input_shape = list(buffer_input_shape)
+    # region agent log
+    agent_debug_log(
+        "H5",
+        "dataloaders.py:get_dataloader",
+        "buffer shape vs loader channel selection",
+        {
+            "selected_channel_localizations": list(selected_channel_localizations)
+            if selected_channel_localizations
+            else None,
+            "buffer_input_shape": list(buffer_input_shape),
+            "config_input_shape": list(config.datasets.input_shape),
+            "stats_max_channel_size": int(sample_store_desc.stats.max_channel_size),
+            "post_fix_narrow": True,
+        },
+    )
+    # endregion
 
     if local_rank() == 0:
         ray.logger.info(f"Starting NumaNodeAffinityScheduler on node {node_id()}")

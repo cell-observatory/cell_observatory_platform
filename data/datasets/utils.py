@@ -47,18 +47,15 @@ def resolve_channel_localization_indices(
     resolved: List[int] = []
     for localization in requested_localizations:
         token = _normalize_channel_token(localization)
-        match_key = next(
-            (
-                key
-                for key, value in ordered
-                if token == value
-            ),
-            None,
-        )
-        if match_key is None:
+        matches = [
+            key
+            for key, value in ordered
+            if re.search(rf"\b{re.escape(token)}\b", value)
+        ]
+        if not matches:
             raise ValueError(
                 f"Unable to resolve requested channel localization {localization!r} "
                 f"from channel_mapping={mapping!r}"
             )
-        resolved.append(int(match_key))
+        resolved.extend(int(match_key) for match_key in matches)
     return resolved
