@@ -151,7 +151,6 @@ def save_predictions(
                     model_name=model_name,
                     data=data,
                     annotation_name=save_name,
-                    channel_names=existing_channel_names,
                     data_format=cast(Literal["TZYXC", "ZYXC"], data_format),
                     save_mode=save_mode,
                     chunk_spatial_shape=chunk_spatial_shape,

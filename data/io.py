@@ -238,7 +238,6 @@ def save_dense_annotations(
     model_name: str,
     data: np.ndarray,
     annotation_name: str,
-    channel_names: Dict[int, str],
     data_format: Literal["TZYXC", "ZYXC"],
     save_mode: Literal["overwrite", "create"],
     zarr_driver: str = "zarr3",
@@ -277,12 +276,6 @@ def save_dense_annotations(
         except Exception as e:
             logger.error(f"Failed to save zarr annotations at {image_path}/{model_name}/{annotation_name}: {e}")
             raise e
-        try:
-            save_masks_channel_names(image_path, model_name, annotation_name, channel_names)
-        except Exception as e:
-            logger.error(f"Failed to save masks channel names at {image_path}/{model_name}/{annotation_name}: {e}")
-            raise e
-
     else:
         raise ValueError(f"Invalid save_mode: {save_mode}")
 
