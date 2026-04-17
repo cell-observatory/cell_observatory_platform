@@ -504,7 +504,7 @@ class TestInferencerWorkerInit:
     def test_timepoint_idxs_for_save_attached_to_save_metainfo(
         self, ray_ctx, ray_node_id, unique_suffix
     ):
-        """datasets.databases.timepoint_list → worker → metainfo timepoint_idxs for N-format IO."""
+        """datasets.timepoint_list → worker → metainfo timepoint_idxs for N-format IO."""
         device = torch.device("cuda:0")
         bm = _make_buffer_manager(ray_node_id)
         actors = []

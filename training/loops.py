@@ -963,7 +963,7 @@ class Inferencer(BaseTrainer):
             self.viz_worker = None
 
         ray.logger.info("initializing inferencer worker...")
-        _tp_cfg = OmegaConf.select(cfg, "datasets.databases.timepoint_list")
+        _tp_cfg = OmegaConf.select(cfg, "datasets.timepoint_list")
         _timepoint_idxs_for_save = (
             [int(x) for x in _tp_cfg] if _tp_cfg is not None else None
         )
