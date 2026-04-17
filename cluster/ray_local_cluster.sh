@@ -88,8 +88,8 @@ wait_for_local_db_from_training_image() {
 ############################## START HEAD NODE
 
 echo "Copying local database to head $head_node"
-rsync -avz --stats "$database_sandbox" "${scratch_root}/pgdb/sandbox.tar.zst"
-tar --zstd -xf "${scratch_root}/pgdb/sandbox.tar.zst" -C "${scratch_root}/pgdb"
+rsync -avz --stats "$database_sandbox" "${SCRATCH_ROOT}/pgdb/sandbox.tar.zst"
+zstd -d -c "${SCRATCH_ROOT}/pgdb/sandbox.tar.zst" | tar -xf - -C "${SCRATCH_ROOT}/pgdb"
 
 SUPABASE_LOCAL_HOST="$head_node_ip"
 SUPABASE_LOCAL_URI="postgresql://postgres:postgres@${SUPABASE_LOCAL_HOST}:${SUPABASE_LOCAL_PORT}/postgres"
@@ -98,7 +98,24 @@ export SUPABASE_LOCAL_URI
 
 echo "Starting local database from ray_local_cluster.sh"
 apptainer instance stop mysql >/dev/null 2>&1 || true
-apptainer instance start --no-mount proc --writable --env POSTGRES_PASSWORD=postgres "$sandbox_dir" mysql
+# FIXME: all these are not needed
+bind_dests=(
+  "/global"
+  "/clusterfs"
+  "/scratch"
+  "/dev/shm"
+)
+
+for dest in "${bind_dests[@]}"; do
+  mkdir -p "${sandbox_dir}${dest}"
+done
+
+env -u APPTAINER_BIND \
+    -u APPTAINER_BINDPATH \
+    -u SINGULARITY_BIND \
+    -u SINGULARITY_BINDPATH \
+    apptainer instance start --no-mount proc --writable --env POSTGRES_PASSWORD=postgres "$sandbox_dir" mysql
+
 apptainer exec instance://mysql postgres \
     -c "listen_addresses=0.0.0.0" \
     -c "port=${SUPABASE_LOCAL_PORT}" \

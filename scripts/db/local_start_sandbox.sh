@@ -55,7 +55,7 @@ echo "Copying sandbox tarball to $sandbox_tar"
 rsync -av --progress "$DATABASE_SANDBOX" "$sandbox_tar"
 
 echo "Extracting sandbox under $scratch_root"
-tar --zstd -xf "$sandbox_tar" -C "$scratch_root"
+zstd -d -c "$sandbox_tar" | tar -xf - -C "$scratch_root"
 
 if [[ ! -d "$sandbox_dir" ]]; then
   echo "Expected extracted sandbox at $sandbox_dir but it was not found"
