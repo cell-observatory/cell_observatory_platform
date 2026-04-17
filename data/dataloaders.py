@@ -18,10 +18,6 @@ from cell_observatory_platform.data.databases.local_metadata_store import (
 )
 from cell_observatory_platform.data.datasets.buffers import set_buffers
 from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
-from cell_observatory_platform.data.datasets.utils import (
-    agent_debug_log,
-    resolve_channel_localization_indices,
-)
 from cell_observatory_platform.data.datasets.schedulers import NumaNodeAffinityScheduler
 from cell_observatory_platform.utils.context import (
     barrier,
@@ -107,22 +103,6 @@ def get_dataloader(
         selected_channel_localizations,
     )
     collator_input_shape = list(buffer_input_shape)
-    # region agent log
-    agent_debug_log(
-        "H5",
-        "dataloaders.py:get_dataloader",
-        "buffer shape vs loader channel selection",
-        {
-            "selected_channel_localizations": list(selected_channel_localizations)
-            if selected_channel_localizations
-            else None,
-            "buffer_input_shape": list(buffer_input_shape),
-            "config_input_shape": list(config.datasets.input_shape),
-            "stats_max_channel_size": int(sample_store_desc.stats.max_channel_size),
-            "post_fix_narrow": True,
-        },
-    )
-    # endregion
 
     if local_rank() == 0:
         ray.logger.info(f"Starting NumaNodeAffinityScheduler on node {node_id()}")
