@@ -29,41 +29,42 @@ defaults:
   - /inference/inference_semantic_segmentation_mask2former               # configs/inference/inference_semantic_segmentation_mask2former.yaml
   - _self_
 
-# experiment name (used for logging)
 experiment_name: inference_semantic_segmentation_mask2former_vit_large_vit_det_sdpa_stride_8_16_32_pred_stride_4_TEST_NEW_INFERENCE_CODE
 wandb_project: testing
 
 # debug_mode: true
-
 backend: DEEPSPEED
-
-# run type
+distributed_framework: ray
 run_type: single_run # single_run, multi_run, or tune
-
-# job type
 job_type: predict # train or test
-
-# trainer type
 trainer: cell_observatory_platform.training.loops.Inferencer
-
-# loop per worker script
 loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
 
-# training quantization
 quantization: bfloat16 # data type for training, options: float32, float16
-
 # NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model
 dataset_dtype: float16 # data type for loading data, options: float32, float16
 storage_dtype: uint16
-
-# dataset layout in the zarr files
 dataset_layout_order: ZYXC
-
-# seed
 seed: 42
 
 # overrides
 # --------------------------------------------------------------------------------
+
+clusters:
+  batch_size: 1 # total batch size
+  worker_nodes: 1 # number of worker nodes
+  gpus_per_worker: 1 # number of gpus per worker node
+  cpus_per_gpu: 4 # number of cpu cores per gpu
+  mem_per_cpu: 31000 # ram per cpu core
+  ray_queue_memory: 0.5
+
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/results/inference/${experiment_name}
+  server_folder_path: /clusterfs/nvme/segment_3d/tests/datasets
+  resume_checkpointdir: null 
+  pretrained_checkpointdir: /clusterfs/nvme/martinalvarez/segment_3d/pretrained_models/profiling_semantic_segmentation_mask2former_vit_large_vit_det_sdpa_stride_8_16_32_pred_stride_4/checkpoints
+
 
 # Two semantic classes (must match trained model)
 models:
@@ -75,7 +76,8 @@ models:
         num_classes: 2
   heads:
     pixel_decoder:
-      use_deform_attention: false
+      use_deform_attention: true
+      # use_deform_attention: false
 
 deepspeed:
   checkpoint:
@@ -88,7 +90,8 @@ inference:
     channel_names:
       0: membrane
       1: nucleus
-      2: masks_labelmap
+      2: dead
+      3: semantic_masks
     # Toggle viz / save workers
     save_outputs: true
     block_on_save: true
@@ -102,26 +105,10 @@ inference:
         - "000x_000y_000z.zarr"
         - "000x_000y_001z.zarr"
 
-# clusters
-clusters:
-  batch_size: 1 # total batch size
-  worker_nodes: 1 # number of worker nodes
-  gpus_per_worker: 1 # number of gpus per worker node
-  cpus_per_gpu: 4 # number of cpu cores per gpu
-  mem_per_cpu: 31000 # ram per cpu core
-  ray_queue_memory: 0.5
-
-#paths:
-paths:
-  # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.data_path}/results/inference/${experiment_name}
-  server_folder_path: /clusterfs/nvme/segment_3d/tests/datasets
-  resume_checkpointdir: null 
-  pretrained_checkpointdir: /clusterfs/nvme/martinalvarez/segment_3d/pretrained_models/profiling_semantic_segmentation_mask2former_vit_large_vit_det_sdpa_stride_8_16_32_pred_stride_4/checkpoints
+  save_worker:
+    save_mode: "overwrite"
 
 
-
-# data
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
@@ -132,13 +119,10 @@ datasets:
   # input_shape: [128, 256, 512, 1]
   patch_shape: [16, 16, 16, null]
   mask_channel_idx: null
-  occupancy_threshold: 0.9
-  channels_subset: [0]
 
   split: 0.0
   return_dataloader: true
   distributed_sampler: true
-
   buffer_capacity: 16
   num_actors_min: 4
   num_actors_max: 12
@@ -151,26 +135,22 @@ datasets:
   # tile_list:
     # - "000x_005y_001z.zarr"
     # - "000x_005y_000z.zarr"
+  roi_list: [103] # for prepared_tile_view.csv
+  timepoint_list: [0]
+  max_rows: null # maximum number of rows to query from the database
+  cdf_threshold: null
+  cdf_target: null
+  selected_channel_localizations: ["membrane"]
 
   databases:
-    max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
-    max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
-
-    # roi_list: [276] # for prepared_1_128_128_128_2_hypercube_view.csv 
-    roi_list: [103] # for prepared_tile_view.csv
-    # tile_list:
-    #   - "000x_000y_000z.zarr"
-    #   - "000x_000y_001z.zarr"
-    timepoint_list: [0]
-
-    cdf_threshold: null
-    occupancy_threshold_filter_type: 'min_ch0'
-    synthetic_only: false
-    has_annotations: false
-    # server_folder_path: ${paths.server_folder_path}/synthetic
-    server_folder_path: /clusterfs/nvme/segment_3d/tests/datasets
-    with_hypercubes_dataframe: false
-    mask_channel_idx: ${datasets.mask_channel_idx}
+    dbname: local
+    protocol: cursor
+    verbose: true
+    sample_type: tile
+    channel_count: 2
+    required_channel_key_patterns: {0: "membrane"}
+    required_channel_localizations: ["membrane"]
+    required_locations: ["exists_abc"]
 
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
@@ -205,6 +185,7 @@ datasets:
       - "output_folder"
       - "tile_name"
       - "prepared_id"
+      - "channel_mapping"
       - "annotations_metadata"
 
 # schedulers
