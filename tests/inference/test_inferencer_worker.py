@@ -16,7 +16,6 @@ the worker correctly without loading real model weights.
 from __future__ import annotations
 
 import time
-import uuid
 from typing import Dict, List, Optional, Tuple
 from unittest.mock import patch
 
@@ -25,8 +24,6 @@ import pytest
 import ray
 import torch
 import torch.nn as nn
-
-from tests.ray_init_helpers import init_ray_like_training
 
 _CUDA_AVAILABLE = torch.cuda.is_available()
 requires_cuda = pytest.mark.skipif(not _CUDA_AVAILABLE, reason="CUDA not available")
@@ -114,9 +111,12 @@ class _StubSaveWorker:
         self._metrics: Dict[str, list] = {
             "save_time_ms": [],
             "save_successful": [],
+            "queue_time_ms": [],
         }
 
-    def save(self, inference_outputs: dict) -> None:
+    def save(self, inference_outputs: dict, queue_t0: Optional[float] = None) -> None:
+        if queue_t0 is not None:
+            self._metrics["queue_time_ms"].append((time.perf_counter() - queue_t0) * 1000)
         t0 = time.perf_counter()
         ok = False
         try:
@@ -143,8 +143,13 @@ class _StubSaveWorker:
         out = {
             "save_time_ms": self._metrics["save_time_ms"].copy(),
             "save_successful": self._metrics["save_successful"].copy(),
+            "queue_time_ms": self._metrics["queue_time_ms"].copy(),
         }
-        self._metrics = {"save_time_ms": [], "save_successful": []}
+        self._metrics = {
+            "save_time_ms": [],
+            "save_successful": [],
+            "queue_time_ms": [],
+        }
         return out
 
 
@@ -158,10 +163,13 @@ class _StubVizWorker:
         self._metrics: Dict[str, float | list] = {
             "visualize_time_ms": [],
             "visualize_successful": [],
+            "queue_time_ms": [],
             "visualize_calls": 0.0,
         }
 
-    def visualize(self, inference_outputs: dict) -> None:
+    def visualize(self, inference_outputs: dict, queue_t0: Optional[float] = None) -> None:
+        if queue_t0 is not None:
+            self._metrics["queue_time_ms"].append((time.perf_counter() - queue_t0) * 1000)
         self._metrics["visualize_calls"] += 1.0
         t0 = time.perf_counter()
         ok = False
@@ -189,11 +197,13 @@ class _StubVizWorker:
         out = {
             "visualize_time_ms": self._metrics["visualize_time_ms"].copy(),
             "visualize_successful": self._metrics["visualize_successful"].copy(),
+            "queue_time_ms": self._metrics["queue_time_ms"].copy(),
             "visualize_calls": self._metrics["visualize_calls"],
         }
         self._metrics = {
             "visualize_time_ms": [],
             "visualize_successful": [],
+            "queue_time_ms": [],
             "visualize_calls": 0.0,
         }
         return out
@@ -202,22 +212,6 @@ class _StubVizWorker:
 # Fixtures
 # ---------------------------------------------------------------------------
 
-
-@pytest.fixture(scope="module")
-def ray_ctx():
-    init_ray_like_training(num_cpus=4, num_gpus=0)
-    yield
-    ray.shutdown()
-
-
-@pytest.fixture
-def ray_node_id(ray_ctx):
-    return ray.nodes()[0]["NodeID"]
-
-
-@pytest.fixture
-def unique_suffix():
-    return uuid.uuid4().hex[:8]
 
 
 def _make_buffer_manager(ray_node_id, **kwargs):
@@ -265,6 +259,8 @@ _PATCH_SHAPE = (4, 4)          # (axial, lateral) for ZYXC
 _INPUT_FORMAT = "ZYXC"
 _TOPK = 5
 _BATCH_SIZE = 1
+# Must match default channel_names in ``_build_inferencer_worker`` for ``channel_mapping`` assert.
+_CHANNEL_MAPPING_META = {"0": "test_channel_0"}
 
 
 def _make_outputs_metadata_instance_seg():
@@ -425,6 +421,7 @@ def _make_data_sample(device: torch.device, batch_size: int = 1) -> dict:
             # policy list, so use a string for single-element batches.
             "tile_name": tile_names[0] if batch_size == 1 else tile_names,
             "orig_image_sizes": [torch.tensor(_SPATIAL, device=device)] * batch_size,
+            "channel_mapping": dict(_CHANNEL_MAPPING_META),
         },
     }
 
@@ -526,10 +523,10 @@ class TestInferencerWorkerInit:
                     decoder_head_type="maskdino",
                     timepoint_idxs_for_save=[0],
                 )
-            mi = {}
+            mi = {"channel_mapping": dict(_CHANNEL_MAPPING_META)}
             worker._attach_save_worker_metainfo(mi)
             assert mi["timepoint_idxs"] == [0]
-            mi_existing = {"timepoint_idxs": [9]}
+            mi_existing = {"timepoint_idxs": [9], "channel_mapping": dict(_CHANNEL_MAPPING_META)}
             worker._attach_save_worker_metainfo(mi_existing)
             assert mi_existing["timepoint_idxs"] == [9]
         finally:

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import statistics
 import time
-import uuid
 from typing import Dict, List, Optional, Tuple
 from unittest.mock import patch
 
@@ -28,8 +27,6 @@ import pytest
 import ray
 import torch
 import torch.nn as nn
-
-from tests.ray_init_helpers import init_ray_like_training
 
 _CUDA_AVAILABLE = torch.cuda.is_available()
 requires_cuda = pytest.mark.skipif(not _CUDA_AVAILABLE, reason="CUDA not available")
@@ -167,23 +164,6 @@ class _StubVizWorker:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def ray_ctx():
-    init_ray_like_training(num_cpus=4, num_gpus=0)
-    yield
-    ray.shutdown()
-
-
-@pytest.fixture
-def ray_node_id(ray_ctx):
-    return ray.nodes()[0]["NodeID"]
-
-
-@pytest.fixture
-def unique_suffix():
-    return uuid.uuid4().hex[:8]
-
 
 def _make_buffer_manager(ray_node_id, **kwargs):
     from cell_observatory_platform.data.datasets.buffers import BufferManager

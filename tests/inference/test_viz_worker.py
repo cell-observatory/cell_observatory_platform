@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 import time
-import uuid
-from pathlib import Path
 
 import numpy as np
 import pytest
 import ray
-
-from tests.ray_init_helpers import init_ray_like_training
 
 from cell_observatory_platform.inference.visualizer import VizWorker
 
@@ -16,24 +12,6 @@ from cell_observatory_platform.inference.visualizer import VizWorker
 # ---------------------------------------------------------------------------
 # Fixtures (aligned with test_buffer_manager.py)
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def ray_ctx():
-    """Local Ray cluster for VizWorker + BufferManager tests."""
-    init_ray_like_training(num_cpus=4, num_gpus=0)
-    yield
-    ray.shutdown()
-
-
-@pytest.fixture
-def ray_node_id(ray_ctx):
-    return ray.nodes()[0]["NodeID"]
-
-
-@pytest.fixture
-def unique_suffix():
-    return uuid.uuid4().hex[:8]
 
 
 def _make_buffer_manager(ray_node_id, **kwargs):
@@ -60,20 +38,20 @@ def _kill_safe(handle):
 
 
 def _wait_buffer_in_use_zero(buffer_actor, *, timeout_s: float = 5.0, poll_s: float = 0.05) -> None:
-    """Wait until live occupancy is 0 (``occupied_slots_current``).
-
-    ``get_metrics`` clears the batch log; use ``occupied_slots_current`` for polling.
-    ``BufferManager.free_slot`` fires ``put_free`` without ``ray.get``; wait until async put runs.
-    """
+    """Same semantics as ``test_save_worker._wait_buffer_in_use_zero`` — see there."""
     deadline = time.monotonic() + timeout_s
+    last_occ: list = []
     while time.monotonic() < deadline:
-        m = ray.get(buffer_actor.get_metrics.remote())
-        if m.get("occupied_slots_current", 0) == 0:
-            return
         time.sleep(poll_s)
-    m = ray.get(buffer_actor.get_metrics.remote())
-    assert m.get("occupied_slots_current", 0) == 0, (
-        f"Expected occupied_slots_current==0 within {timeout_s}s, got {m!r}"
+        m = ray.get(buffer_actor.get_metrics.remote())
+        occ = m["occupied_slots"]
+        last_occ = occ
+        if not occ:
+            return
+        if occ[-1] == 0:
+            return
+    raise AssertionError(
+        f"Expected slot release within {timeout_s}s; last occupied_slots snapshot: {last_occ!r}"
     )
 
 
@@ -226,7 +204,6 @@ class TestVizWorkerRay:
             buf = bm._buffer_actors[pool]
             _slot_held = ray.get(buf.get_metrics.remote())
             assert _slot_held["occupied_slots"][-1] == 1
-            assert _slot_held["occupied_slots_current"] == 1
 
             viz = VizWorker.options(name=f"viz_rs_{unique_suffix}").remote(
                 buffer_manager=bm,

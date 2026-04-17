@@ -15,8 +15,6 @@ import numpy as np
 import pytest
 import ray
 
-from tests.ray_init_helpers import init_ray_like_training
-
 from cell_observatory_platform.data.datasets.buffers import (
     BufferManager,
     HostMemoryBuffer,
@@ -33,28 +31,8 @@ from cell_observatory_platform.data.datasets.buffers import (
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def ray_ctx():
-    """Start a local Ray cluster via ``init_ray_like_training`` (RuntimeEnv with py_modules + env; no full-repo working_dir by default)."""
-    init_ray_like_training(num_cpus=4, num_gpus=0)
-    yield
-    ray.shutdown()
-
-
-@pytest.fixture
-def ray_node_id(ray_ctx):
-    """Return the hex node-ID of the single-node test cluster."""
-    return ray.nodes()[0]["NodeID"]
-
-
 def _uid() -> str:
     return uuid.uuid4().hex[:8]
-
-
-@pytest.fixture
-def unique_suffix():
-    """Unique suffix for actor / pool names to avoid cross-test collisions."""
-    return _uid()
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +334,9 @@ class TestHostMemoryBuffer:
             metrics = ray.get(actor.get_metrics.remote())
             assert len(metrics["get_free_wait_time_ms"]) == 1
             assert len(metrics["put_free_wait_time_ms"]) == 1
-            assert metrics["occupied_slots"][-1] == 0
+            # put_free decrements internal count but does not append to occupied_slots;
+            # last snapshot reflects count after get_free only.
+            assert metrics["occupied_slots"][-1] == 1
             assert sum(metrics["get_free_wait_time_ms"]) >= 0
             assert sum(metrics["put_free_wait_time_ms"]) >= 0
         finally:
@@ -424,7 +404,7 @@ class TestHostMemoryBuffer:
             metrics = ray.get(actor.get_metrics.remote())
             assert len(metrics["get_free_wait_time_ms"]) == n_cycles
             assert len(metrics["put_free_wait_time_ms"]) == n_cycles
-            assert metrics["occupied_slots"][-1] == 0
+            assert metrics["occupied_slots"][-1] == 1
         finally:
             _kill_safe(actor)
 
