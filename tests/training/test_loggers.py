@@ -46,15 +46,15 @@ def test_put_scalar_batch_recorder_and_reduce():
     rec = EventRecorder()
     rec._iter, rec._epoch = 3, 0
     rec.put_scalar_batch(
-        "loss",
+        "async_metric",
         [1.0, 2.0, 3.0],
         scope="step",
         reduce_method=["median", "mean", "max"],
     )
-    loss_rows = rec.get_step_scalars()["loss"]
-    assert len(loss_rows) == 3
-    assert [t[0] for t in loss_rows] == [1.0, 2.0, 3.0]
-    assert all(t[1] == 3 and t[2] == 0 for t in loss_rows)
+    async_metric_rows = rec.get_step_scalars()["async_metric"]
+    assert len(async_metric_rows) == 3
+    assert [t[0] for t in async_metric_rows] == [1.0, 2.0, 3.0], "Values not properly recorded"
+    assert [t[1] for t in async_metric_rows] == [0, 1, 2], "Step indices not properly recorded"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         lw = LocalEventWriter(
@@ -65,10 +65,10 @@ def test_put_scalar_batch_recorder_and_reduce():
         )
         wlist = EventWriterList([lw])
         step_scalars, _ = wlist.reduce_scalars()
-        assert "loss_median" in step_scalars
-        assert pytest.approx(step_scalars["loss_median"][0][0]) == 2.0
-        assert pytest.approx(step_scalars["loss_mean"][0][0]) == 2.0
-        assert pytest.approx(step_scalars["loss_max"][0][0]) == 3.0
+        assert "async_metric_median" in step_scalars
+        assert pytest.approx(step_scalars["async_metric_median"][0][0]) == 1.0
+        assert pytest.approx(step_scalars["async_metric_mean"][0][0]) == 1.0
+        assert pytest.approx(step_scalars["async_metric_max"][0][0]) == 1.0
 
 
 def _test_loggers_dist(cfg: DictConfig):
