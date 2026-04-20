@@ -168,6 +168,8 @@ def test_maskdino_forward_train(monkeypatch):
         backbone=backbone,
         criterion=criterion,
         segmentation_head=head,
+        input_shape=(1, D_in, H_in, W_in),
+        input_fmt="CZYX",
         num_queries=num_queries,
         instance_segmentation_flag=True,
         topk_per_image=4,
@@ -327,6 +329,8 @@ def test_maskdino_predict():
         backbone=backbone,
         criterion=criterion,
         segmentation_head=head,
+        input_shape=(1, D_in, H_in, W_in),
+        input_fmt="CZYX",
         num_queries=num_queries,
         instance_segmentation_flag=True,
         topk_per_image=topk_per_image,
@@ -346,24 +350,21 @@ def test_maskdino_predict():
     }
 
     with torch.no_grad():
-        predictions = model.predict(data_sample)
+        pred = model.predict(data_sample)
 
-    assert len(predictions) == batch_size
-    pred = predictions[0]
 
     assert "masks" in pred
     assert "boxes" in pred
-    assert "predicted_labels" in pred
+    assert "labels" in pred
 
-    # masks: (topk, D, H, W) after upsampling
+    # masks: (B, D, H, W) after upsampling
     assert pred["masks"].dim() == 4
-    assert pred["masks"].shape[0] == topk_per_image
-    assert pred["masks"].shape[1:] == (D_in, H_in, W_in)
+    assert pred["masks"].shape == (batch_size, D_in, H_in, W_in)
 
-    # boxes: (topk, 6)
-    assert pred["boxes"].shape == (topk_per_image, 6)
+    # boxes: (B, topk, 6)
+    assert pred["boxes"].shape == (batch_size, topk_per_image, 6)
 
-    # scores: (topk,)
-    assert pred["predicted_labels"].dim() == 1
-    assert pred["predicted_labels"].shape[0] == topk_per_image
-    assert torch.isfinite(pred["predicted_labels"]).all()
+    # scores: (B, topk)
+    assert pred["labels"].dim() == 2
+    assert pred["labels"].shape == (batch_size, topk_per_image)
+    assert torch.isfinite(pred["labels"]).all()
