@@ -338,7 +338,7 @@ def test_denoising_preprocessor_noise_addition():
     inputs_clone = inputs.clone()
     inputs_clone = inputs_clone[..., :-1] # Remove mask channel
     sample = {"data_tensor": inputs, "metainfo": {}}
-    noisy_inputs = proc(sample, data_time=0.0)["data_tensor"]
+    noisy_inputs = proc(sample, data_time=0.0, idx=0)["data_tensor"]
     assert not torch.allclose(inputs_clone, noisy_inputs, atol=1e-6), "Noised inputs are the same as original inputs"
     assert noisy_inputs.shape == inputs_clone.shape, "Noised inputs have different shape than original inputs"
     assert torch.all(noisy_inputs >= 0), "Noised inputs are not in valid range [0, 65535]"
@@ -380,7 +380,7 @@ def test_denoising_preprocessor_noise_addition():
     inputs_clone = inputs_clone[..., :-1] # Remove mask channel
     targets_expected = proc.pe_patchify(inputs_clone, channels = CHANNELS - 1)
     sample = {"data_tensor": inputs, "metainfo": {}}
-    noisy_inputs = proc(sample, data_time=0.0)["data_tensor"]
+    noisy_inputs = proc(sample, data_time=0.0, idx=0)["data_tensor"]
 
     # Different batch elements should have different noise patterns
     batch_0_noise = noisy_inputs[0] - inputs_clone[0]
@@ -426,7 +426,7 @@ def test_denoising_preprocessor_forward():
     expected_targets = proc.pe_patchify(inputs_clone, channels = CHANNELS - 1)
     sample = {"data_tensor": inputs, "metainfo": {}}
 
-    output = proc(sample, data_time=0.1)
+    output = proc(sample, data_time=0.1, idx=0)
 
     assert "data_tensor" in output and "metainfo" in output, "data_tensor and metainfo are not in output"
     noisy_inputs = output["data_tensor"]
@@ -539,9 +539,9 @@ def test_denoising_preprocessor_reproducibility():
         mask_channel_idx=-1,
     )
 
-    output1 = proc1(sample1, data_time=0.0)
-    output2 = proc2(sample2, data_time=0.0)
-    output3 = proc3(sample3, data_time=0.0)
+    output1 = proc1(sample1, data_time=0.0, idx=0)
+    output2 = proc2(sample2, data_time=0.0, idx=0)
+    output3 = proc3(sample3, data_time=0.0, idx=0)
 
     # Same seed produces same results
     assert torch.allclose(output1["data_tensor"], output2["data_tensor"], atol=1e-6), "Same seed produces different results"
