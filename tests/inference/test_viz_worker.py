@@ -200,6 +200,7 @@ class TestVizWorkerRay:
                 buffer_capacity=2,
                 pin_numa_node=False,
             )
+            bm.enable_metrics_collection()
             inference_outputs, _ = _build_inference_outputs_with_slot(bm, pool, fill=3.14)
             buf = bm._buffer_actors[pool]
             _slot_held = ray.get(buf.get_metrics.remote())

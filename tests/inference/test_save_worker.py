@@ -308,6 +308,7 @@ class TestSaveWorkerRay:
                 buffer_capacity=2,
                 pin_numa_node=False,
             )
+            bm.enable_metrics_collection()
             inference_outputs, _ = _build_masks_inference_with_slot(bm, pool, zarr_semantic_tile)
             buf = bm._buffer_actors[pool]
             assert ray.get(buf.get_metrics.remote())["occupied_slots"][-1] == 1

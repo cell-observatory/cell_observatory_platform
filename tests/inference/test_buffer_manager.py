@@ -327,6 +327,7 @@ class TestHostMemoryBuffer:
     def test_metrics_tracking(self, ray_ctx, unique_suffix):
         name = f"hb_mt_{unique_suffix}"
         actor = _make_host_buffer(name, capacity=4)
+        ray.get(actor.enable_metrics_collection.remote())
         try:
             slot = ray.get(actor.get_free.remote())
             ray.get(actor.put_free.remote(slot["slot"]))
@@ -345,6 +346,7 @@ class TestHostMemoryBuffer:
     def test_clear_metrics(self, ray_ctx, unique_suffix):
         name = f"hb_cm_{unique_suffix}"
         actor = _make_host_buffer(name, capacity=4)
+        ray.get(actor.enable_metrics_collection.remote())
         try:
             ray.get(actor.get_free.remote())
 
@@ -395,6 +397,7 @@ class TestHostMemoryBuffer:
         """Repeatedly get and put the same slot to verify counter consistency."""
         name = f"hb_cyc_{unique_suffix}"
         actor = _make_host_buffer(name, capacity=1)
+        ray.get(actor.enable_metrics_collection.remote())
         n_cycles = 20
         try:
             for _ in range(n_cycles):
@@ -614,6 +617,7 @@ class TestBufferManagerSlotOps:
                 dtype="uint16", buffer_type="host_memory",
                 buffer_capacity=2, pin_numa_node=False,
             )
+            ray.get(actor.enable_metrics_collection.remote())
             ray.get(actor.get_free.remote())
             metrics = bm.get_metrics()
             assert pool in metrics
@@ -633,6 +637,7 @@ class TestBufferManagerSlotOps:
                 dtype="uint16", buffer_type="host_memory",
                 buffer_capacity=2, pin_numa_node=False,
             )
+            bm.enable_metrics_collection()
             ray.get(actor.get_free.remote())
             # First call returns accumulated metrics AND clears
             _ = ray.get(actor.get_metrics.remote())
