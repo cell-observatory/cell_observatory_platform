@@ -1,6 +1,6 @@
 defaults:
   - /clusters/local # configs/clusters/local.yaml
-  - /paths/janelia # configs/paths/local.yaml
+  - /paths/local # configs/paths/local.yaml
   - /datasets/databases/base_database
   - /datasets/preprocessor/ray_preprocessor
   - /datasets/pretrain_dataset_ray
