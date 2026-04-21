@@ -899,7 +899,7 @@ class MappedTable:
         self._table: Optional[pa.Table] = None
 
     @staticmethod
-    def _remap_server_folder(table: pa.Table, query: QuerySpec) -> pa.Table:
+    def _remap_server_folder(table: pa.Table, query: QuerySpec, server_path_override: Optional[str] = None) -> pa.Table:
         """Replace server_folder with the path for the target storage location."""
         if "server_folder" not in table.column_names:
             raise ValueError("server_folder column not found in table")
@@ -912,6 +912,8 @@ class MappedTable:
             )
         location_key = locations[0]
         server_path = LOCATION_SERVER_PATHS.get(location_key)
+        if server_path_override is not None:
+            server_path = server_path_override
         if server_path is None:
             raise ValueError(
                 f"No server path configured for location {location_key!r}. "
@@ -948,6 +950,7 @@ class MappedTable:
         node_id: str,
         local_rank: int,
         diagnostic_verbose: bool = False,
+        server_path_override: Optional[str] = None,
     ) -> "MappedTable":
         total_t0 = time.perf_counter()
         root = cls._root(node_id=node_id, resolved=resolved, query=query, store=store)
@@ -992,7 +995,7 @@ class MappedTable:
             sql = SqlQueryPlanner.build_sql(resolved, query)
             fetch_t0 = time.perf_counter()
             table = db_client.execute_arrow(sql)
-            table = cls._remap_server_folder(table, query)
+            table = cls._remap_server_folder(table, query, server_path_override=server_path_override)
             fetch_elapsed = time.perf_counter() - fetch_t0
             logger.info(
                 "[MappedTable] fetched %s rows from %s in %.2fs",
