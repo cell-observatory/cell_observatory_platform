@@ -61,7 +61,7 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/results/inference/${experiment_name}
-  server_folder_path: /clusterfs/nvme/segment_3d/tests/datasets
+  server_path_override: /clusterfs/nvme/segment_3d/tests/datasets
   resume_checkpointdir: null 
   pretrained_checkpointdir: /clusterfs/nvme/martinalvarez/segment_3d/pretrained_models/profiling_semantic_segmentation_mask2former_vit_large_vit_det_sdpa_stride_8_16_32_pred_stride_4/checkpoints
 
