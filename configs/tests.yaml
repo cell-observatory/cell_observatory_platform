@@ -74,6 +74,7 @@ datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
   input_shape: [16, 128, 256, 256, 2] # NOTE: important that this matches database hypercube shape
+  train_shape: [16, 128, 256, 256, 2]
   patch_shape: [4, 16, 16, 16]
 
   split: 0.1
