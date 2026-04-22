@@ -61,6 +61,7 @@ paths:
   outdir: ${paths.data_path}/pretrained_models/${wandb_project}/${experiment_name}
   # resume_checkpointdir: ${paths.data_path}/pretrained_models/${experiment_name}/checkpoints
   pretrained_checkpointdir: null
+  dotenv_path: null
 
 clusters:
   batch_size: 2 # total batch size
@@ -76,11 +77,14 @@ datasets:
   input_shape: [16, 128, 256, 256, 2] # NOTE: important that this matches database hypercube shape
   train_shape: [16, 128, 256, 256, 2]
   patch_shape: [4, 16, 16, 16]
+  mask_channel_idx: null
 
   split: 0.1
   return_dataloader: true
   distributed_sampler: true
-
+  buffer_capacity: 4
+  num_actors_min: 2
+  num_actors_max: 2
   prefetch_factor: 1 # prefetch factor for the dataloader
   num_workers: 4
 
@@ -88,16 +92,19 @@ datasets:
   use_cached_hypercubes_dataframe: false
   hypercubes_dataframe_path: ${paths.server_folder_path}/databases/hypercubes_dataframe.csv
 
-  num_actors_min: 2
-  num_actors_max: 2
-  buffer_capacity: 4
-
   exec_async: true
   exec_pipelined: true
 
   occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
   cdf_threshold: 150 # to filter our hypercubes with less than this CDF threshold
   cdf_target: 90 # to filter our hypercubes with less than this CDF target
+
+  databases:
+    dbname: local
+    protocol: cursor
+    verbose: true
+    sample_type: cube
+    channel_count: 2
 
 evaluation:
   val_begin: 0

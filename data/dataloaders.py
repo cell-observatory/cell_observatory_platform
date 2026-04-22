@@ -67,7 +67,7 @@ def get_dataloader(
 
     db = LocalArrowDatabase(
         dbname=str(config.datasets.databases.dbname),
-        dotenv_path=str(config.datasets.databases.dotenv_path),
+        dotenv_path=config.datasets.databases.dotenv_path,
         protocol=str(config.datasets.databases.protocol),
         verbose=bool(config.datasets.databases.verbose),
     )
