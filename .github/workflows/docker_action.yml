@@ -587,6 +587,15 @@ jobs:
             fi
           done
 
+      - name: Inspect sandbox tables
+        run: |
+          echo "=== prepared_cube_* ==="
+          psql "${SUPABASE_LOCAL_URI}" -c "\dt public.prepared_cube_*" || true
+          echo "=== prepared_tile_* ==="
+          psql "${SUPABASE_LOCAL_URI}" -c "\dt public.prepared_tile_*" || true
+          echo "=== all public tables ==="
+          psql "${SUPABASE_LOCAL_URI}" -c "\dt public.*" || true
+
       - name: List files in the repository
         run: |
           ls -lhXR ${{ github.workspace }}
