@@ -610,7 +610,7 @@ jobs:
         id: apptainer_run
         run: |
           rm -f test_results/* || true
-          echo "APPTAINER_RUN=apptainer exec --userns --no-home --env HOME=/tmp --env TRITON_CACHE_DIR=/tmp/.triton --env MPLCONFIGDIR=/tmp/.matplotlib --env XDG_CACHE_HOME=/tmp/.cache ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_RUN=apptainer exec --userns --home /tmp --env TRITON_CACHE_DIR=/tmp/.triton --env MPLCONFIGDIR=/tmp/.matplotlib --env XDG_CACHE_HOME=/tmp/.cache ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
 
       - name: print environment variables
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
