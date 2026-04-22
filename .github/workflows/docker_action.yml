@@ -531,8 +531,6 @@ jobs:
       SUPABASE_STAGING_URI: ${{ secrets.SUPABASE_STAGING_URI }}
       SUPABASE_PROD_URI: ${{ secrets.SUPABASE_PROD_URI }}
       SUPABASE_LOCAL_URI: ${{ secrets.SUPABASE_LOCAL_URI }}
-      SUPABASE_LOCAL_PORT: 54322
-      SUPABASE_LOCAL_HOST: 127.0.0.1
       NODE_LOCAL_STORE_ROOT: /tmp/node_local_store
       RAY_TMPDIR: /tmp/ray
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
@@ -550,6 +548,23 @@ jobs:
       #   with:
       #     path: ${{ env.TESTMON_DATAFILE }}
       #     key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}-branchname
+
+      - name: Parse local DB host and port from SUPABASE_LOCAL_URI
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_ENV"
+          import os
+          from urllib.parse import urlparse
+          uri = os.environ.get("SUPABASE_LOCAL_URI", "")
+          if not uri:
+              raise SystemExit("SUPABASE_LOCAL_URI is empty; set the secret")
+          u = urlparse(uri)
+          if not u.hostname or not u.port:
+              raise SystemExit(f"Could not parse host/port from URI: {uri!r}")
+          print(f"SUPABASE_LOCAL_HOST={u.hostname}")
+          print(f"SUPABASE_LOCAL_PORT={u.port}")
+          EOF
+          echo "Parsed SUPABASE_LOCAL_HOST=$(grep ^SUPABASE_LOCAL_HOST= "$GITHUB_ENV" | tail -1 | cut -d= -f2)"
+          echo "Parsed SUPABASE_LOCAL_PORT=$(grep ^SUPABASE_LOCAL_PORT= "$GITHUB_ENV" | tail -1 | cut -d= -f2)"
 
       - name: Copy postgres database ~/db_files/sandbox to repo
         run: |
