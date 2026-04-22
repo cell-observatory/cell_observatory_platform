@@ -151,9 +151,9 @@ def config() -> DictConfig:
         [print(f"\t{k}: {v}") for k, v in container_info["container_details"].items()]
 
         for k in ["outdir", "ray_script", "runner_script", "dotenv_path"]:
-            if cfg.paths[k] is None or not Path(cfg.paths[k]).exists():
+            if cfg.paths[k] is None:
                 cfg.paths[k] = None
-                logger.warning(f"Path {k} is not set in the config or does not exist, skipping")
+                logger.warning(f"Path {k} is not set in the config, skipping")
                 continue
             cfg.paths[k] = cfg.paths[k].replace(cfg.paths.repo_path, cfg.paths.workdir)
 
