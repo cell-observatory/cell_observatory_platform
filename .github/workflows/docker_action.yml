@@ -708,6 +708,11 @@ jobs:
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml tests/training
         timeout-minutes: 60
 
+      - name: pytest /tests/inference
+        if: ${{ env.TESTING }}
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_inference.xml tests/inference
+        timeout-minutes: 15
+
       - name: pytest /tests/evaluation
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_evaluation.xml tests/evaluation
