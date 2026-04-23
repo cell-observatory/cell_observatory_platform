@@ -905,7 +905,7 @@ class MappedTable:
             raise ValueError("server_folder column not found in table")
         locations = query.required_locations
         if not locations:
-            raise ValueError("server_folder remapping requires exactly one required_location, got {locations!r}")
+            raise ValueError(f"server_folder remapping requires exactly one required_location, got {locations!r}")
         if len(locations) != 1:
             raise ValueError(
                 f"server_folder remapping requires exactly one required_location, got {locations!r}"
