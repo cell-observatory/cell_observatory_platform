@@ -547,6 +547,17 @@ jobs:
       #     path: ${{ env.TESTMON_DATAFILE }}
       #     key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}-branchname
 
+      - name: Resolve per-user scratch paths
+        run: |
+          : "${USER:=$(id -un)}"
+          SCRATCH_ROOT="/scratch/${USER}"
+          NODE_LOCAL_STORE_ROOT="${SCRATCH_ROOT}/node_local_store"
+          mkdir -p "${NODE_LOCAL_STORE_ROOT}"
+          echo "SCRATCH_ROOT=${SCRATCH_ROOT}" >> "$GITHUB_ENV"
+          echo "NODE_LOCAL_STORE_ROOT=${NODE_LOCAL_STORE_ROOT}" >> "$GITHUB_ENV"
+          echo "Resolved SCRATCH_ROOT=${SCRATCH_ROOT}"
+          echo "Resolved NODE_LOCAL_STORE_ROOT=${NODE_LOCAL_STORE_ROOT}"
+
       - name: Parse local DB host and port from SUPABASE_LOCAL_URI
         run: |
           python3 - <<'EOF' >> "$GITHUB_ENV"
@@ -623,6 +634,14 @@ jobs:
             echo "/dev/shm: $SHM"
           fi
 
+      - name: Prepare SCRATCH_ROOT cache dirs
+        run: |
+          mkdir -p "${SCRATCH_ROOT}/home" \
+                   "${SCRATCH_ROOT}/.triton" \
+                   "${SCRATCH_ROOT}/.matplotlib" \
+                   "${SCRATCH_ROOT}/.cache" \
+                   "${NODE_LOCAL_STORE_ROOT}"
+
       - name: Set APPTAINER_BINDS
         id: apptainer_binds
         run: |
@@ -632,7 +651,7 @@ jobs:
         id: apptainer_run
         run: |
           rm -f test_results/* || true
-          echo "APPTAINER_RUN=apptainer exec --userns --home /tmp --env TRITON_CACHE_DIR=/tmp/.triton --env MPLCONFIGDIR=/tmp/.matplotlib --env XDG_CACHE_HOME=/tmp/.cache ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_RUN=apptainer exec --userns --home ${SCRATCH_ROOT}/home --env TRITON_CACHE_DIR=${SCRATCH_ROOT}/.triton --env MPLCONFIGDIR=${SCRATCH_ROOT}/.matplotlib --env XDG_CACHE_HOME=${SCRATCH_ROOT}/.cache --env SCRATCH_ROOT=${SCRATCH_ROOT} --env NODE_LOCAL_STORE_ROOT=${NODE_LOCAL_STORE_ROOT} ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
 
       - name: print environment variables
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
