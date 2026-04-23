@@ -531,8 +531,6 @@ jobs:
       SUPABASE_STAGING_URI: ${{ secrets.SUPABASE_STAGING_URI }}
       SUPABASE_PROD_URI: ${{ secrets.SUPABASE_PROD_URI }}
       SUPABASE_LOCAL_URI: ${{ secrets.SUPABASE_LOCAL_URI }}
-      NODE_LOCAL_STORE_ROOT: /tmp/node_local_store
-      RAY_TMPDIR: /tmp/ray
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
       WANDB_USERNAME: ${{ secrets.WANDB_USERNAME }}
       WANDB_DATA_DIR: ${{ github.workspace }}
