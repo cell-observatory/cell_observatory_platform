@@ -105,7 +105,7 @@ datasets:
     sample_type: cube
     channel_count: 2
     cdf_threshold_channel_localizations: null
-    required_locations: ["exists_prfs"]
+    required_locations: ["exists_abc"] # FIXME: change to exists_prfs once the database is updated
 
 evaluation:
   val_begin: 0
