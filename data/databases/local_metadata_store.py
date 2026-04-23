@@ -734,8 +734,8 @@ class SqlQueryPlanner:
             f"{alias}.is_test_split",
             f"{alias}.channel_mapping",
             f"{alias}.channels_metadata",
-            f"{alias}.annotation_count",
-            f"{alias}.has_annotations",
+            "0::integer AS annotation_count",
+            "false AS has_annotations",
             "NULL::jsonb AS annotations_metadata",
         ]
 
