@@ -52,8 +52,6 @@ EXPECTED_COLUMNS = {
         "is_test_split",
         "channel_mapping",
         "channels_metadata",
-        "annotation_count",
-        "has_annotations",
     },
     "cube_with_annotations": {
         "first_pc_id",
