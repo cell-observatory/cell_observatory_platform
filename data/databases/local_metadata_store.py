@@ -734,6 +734,8 @@ class SqlQueryPlanner:
             f"{alias}.is_test_split",
             f"{alias}.channel_mapping",
             f"{alias}.channels_metadata",
+            # FIXME: this is a temporary fix to avoid the error when the annotation_count column is not present
+            # We should remove this from the downstream schema entirely as it is not present in the upstream schema
             "0::integer AS annotation_count",
             "false AS has_annotations",
             "NULL::jsonb AS annotations_metadata",
@@ -829,6 +831,8 @@ class SqlQueryPlanner:
             f"{alias}.is_complete",
             f"{alias}.is_test_split",
             f"{alias}.channel_mapping",
+            # FIXME: this is a temporary fix to avoid the error when the annotation_count column is not present
+            # We should remove this from the downstream schema entirely as it is not present in the upstream schema
             "NULL::jsonb AS channels_metadata",
             "0::integer AS annotation_count",
             "false AS has_annotations",
