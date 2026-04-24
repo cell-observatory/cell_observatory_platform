@@ -95,6 +95,7 @@ datasets:
   exec_async: true
   exec_pipelined: true
 
+  roi_list: [17] 
   cdf_threshold: null
   cdf_target: null
 
