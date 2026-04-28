@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="/workspace/cell_observatory_platform"
+# NOTE: assumes you are already in apptainer image for example:
+# apptainer shell --nv --bind /tmp:/scratch --bind /dev/shm:/dev/shm --bind /clusterfs/nvme/hph/git_managed:/clusterfs/nvme/hph/git_managed /clusterfs/nvme/martinalvarez/apptainer_images/feature_local_db_torch_26_01.sif
+
+# RUN: bash /clusterfs/nvme/hph/git_managed/cell_observatory_platform/scripts/db/local_start_sandbox.sh
+
+DB_SANDBOX="/clusterfs/nvme/hph/git_managed/databases/2026_04_21_sandbox.tar.zst"
+
+pip install -r /clusterfs/nvme/hph/git_managed/ml-data-pipeline/requirements.txt
+repo_root="/clusterfs/nvme/hph/git_managed/cell_observatory_platform"
 cd "$repo_root"
 
 if [[ -f .env ]]; then
   source .env
 fi
 
-: "${DATABASE_SANDBOX:?DATABASE_SANDBOX must be set}"
+: "${DB_SANDBOX:?DB_SANDBOX must be set}"
 : "${SUPABASE_LOCAL_PORT:?SUPABASE_LOCAL_PORT must be set}"
 : "${REPO_DIR:?REPO_DIR must be set}"
 : "${DATA_DIR:?DATA_DIR must be set}"
@@ -52,7 +60,7 @@ echo "Removing old extracted sandbox: $sandbox_dir"
 # rm -rf "$sandbox_dir"
 
 echo "Copying sandbox tarball to $sandbox_tar"
-rsync -av --progress "$DATABASE_SANDBOX" "$sandbox_tar"
+rsync -av --no-group --progress "$DB_SANDBOX" "$sandbox_tar"
 
 echo "Extracting sandbox under $scratch_root"
 tar --zstd -xf "$sandbox_tar" -C "$scratch_root"
@@ -64,6 +72,8 @@ fi
 
 # FIXME: all these are not needed
 bind_dests=(
+  "/global"
+  "/clusterfs"
   "/workspace/cell_observatory_platform"
   "$DATA_DIR"
   "$STORAGE_SERVER_DIR"
