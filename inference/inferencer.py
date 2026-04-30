@@ -329,6 +329,9 @@ class InferencerWorker:
         """
         Check if the data sample should be visualized
         """
+        # TODO: Should this be moved to the viz worker?
+        # I'm leaving here because this way we don't have to flood the viz worker 
+        # with data samples if we are using a sampling policy.
         if self.viz_sampling_policy is None:
             return True
         if self.viz_sampling_policy["name"] == "by_tile":
