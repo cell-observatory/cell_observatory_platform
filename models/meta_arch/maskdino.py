@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Literal, Mapping, Optional
+from typing import Any, Dict, List, Literal, Mapping, Optional, Iterator, Sequence, Tuple
 
 import torch
 from hydra.utils import get_method
@@ -17,6 +17,158 @@ from cell_observatory_platform.training.helpers import get_input_data, get_npara
 from cell_observatory_platform.training.losses import DETR_Set_Loss
 from cell_observatory_platform.utils.shape_format import get_spatial_shape
 
+class MaskMaterializer:
+    """Chunked, per-image mask materializer for MaskDINO.
+
+    Args:
+        mask_embeddings: ``(Q, mask_dim)`` projected query embeddings for one
+            image (last decoder layer). May be in any floating dtype.
+        pixel_decoder_output: ``(mask_dim, d, h, w)`` finest pixel-decoder
+            feature map for the same image.
+        target_size: ``(D, H, W)`` spatial size to upsample masks to (typically
+            the original input image size).
+        chunk_size: maximum number of queries to materialize simultaneously.
+        upsample_dtype: dtype used inside the trilinear interpolate. Defaults
+            to ``torch.float32`` because trilinear in fp16 has noticeable
+            artefacts on small structures.
+
+    Chunked mask materialization for MaskDINO-style detectors.
+
+    MaskDINO produces ``num_queries`` object queries that, at the final decoder
+    layer, project to a ``mask_dim``-vector each. To turn each query into a 3D
+    binary mask the model evaluates::
+
+        low_res_mask[b, q] = einsum("bqc, bcdhw->bqdhw", mask_embeddings, pixel_decoder_output)
+        full_res_mask[b, q] = F.interpolate(low_res_mask[b, q], size=(D, H, W), mode="trilinear")
+
+    The interpolation step is the memory bottleneck for large 3D volumes: at
+    ``D = H = W = 256`` and ``topk_per_image = 100``, a single batch element costs
+    ``100 * 256**3 * 4 B = 6.7 GB`` in fp32 (3.3 GB in fp16) just for the mask
+    logits — before binarization, IoU computation, etc.
+
+    ``MaskMaterializer`` offers a single entry point — ``chunks(query_indices)`` —
+    that yields the upsampled mask logits for ``chunk_size`` queries at a time.
+    Callers (``MaskDINO.predict``, ``InstanceSegmentationEvaluator``) consume one
+    chunk, free it, and ask for the next. Peak memory drops from
+    ``topk * D*H*W`` to ``chunk_size * D*H*W``.
+
+    Notes:
+        * The chunked einsum is identical to the global one because the einsum is
+        parallelizable along the query axis.
+        * Per-chunk logits are produced in the model's compute dtype (typically
+        bf16/fp16 when AMP is active); upsample is forced to fp32 internally to
+        avoid trilinear precision issues, then cast back. Callers that need a
+        different dtype should cast on consumption.
+        * Bbox-cropped materialization is not implemented yet but is a natural
+        extension: take the union of ``pred_box`` and ``gt_box``, crop the
+        pixel-decoder feature map to the corresponding low-res region, and only
+        upsample within that crop. We expose enough state (the raw embeddings)
+        to add this without changing callers.
+    """
+
+    def __init__(
+        self,
+        mask_embeddings: torch.Tensor,
+        pixel_decoder_output: torch.Tensor,
+        target_size: Sequence[int],
+        chunk_size: int = 8,
+        upsample_dtype: torch.dtype = torch.float32,
+    ) -> None:
+        if mask_embeddings.dim() != 2:
+            raise ValueError(
+                f"mask_embeddings must be (Q, mask_dim); got {tuple(mask_embeddings.shape)}"
+            )
+        if pixel_decoder_output.dim() != 4:
+            raise ValueError(
+                f"pixel_decoder_output must be (mask_dim, d, h, w); got "
+                f"{tuple(pixel_decoder_output.shape)}"
+            )
+        if mask_embeddings.shape[1] != pixel_decoder_output.shape[0]:
+            raise ValueError(
+                "mask_dim mismatch: mask_embeddings has "
+                f"{mask_embeddings.shape[1]} channels but pixel_decoder_output has "
+                f"{pixel_decoder_output.shape[0]} channels"
+            )
+        if len(target_size) != 3:
+            raise ValueError(f"target_size must be 3D; got {tuple(target_size)}")
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive; got {chunk_size}")
+
+        self.mask_embeddings = mask_embeddings
+        self.pixel_decoder_output = pixel_decoder_output
+        self.target_size = tuple(int(s) for s in target_size)
+        self.chunk_size = int(chunk_size)
+        self.upsample_dtype = upsample_dtype
+
+    @property
+    def num_queries(self) -> int:
+        return int(self.mask_embeddings.shape[0])
+
+    @property
+    def mask_dim(self) -> int:
+        return int(self.mask_embeddings.shape[1])
+
+    @torch.no_grad()
+    def materialize(self, query_indices: torch.Tensor) -> torch.Tensor:
+        """Materialize the upsampled mask logits for ``query_indices`` at once.
+
+        Use sparingly — defeats the purpose of chunking when the index set is
+        large. Provided for parity with the legacy non-chunked path.
+        """
+        if query_indices.numel() == 0:
+            return self.mask_embeddings.new_zeros((0, *self.target_size))
+        embed = self.mask_embeddings.index_select(0, query_indices)
+        return self._materialize_from_embeds(embed)
+
+    @torch.no_grad()
+    def chunks(
+        self,
+        query_indices: torch.Tensor,
+        chunk_size: Optional[int] = None,
+    ) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
+        """Yield ``(chunk_query_indices, upsampled_mask_logits)`` per chunk.
+
+        ``upsampled_mask_logits`` has shape ``(k, D, H, W)`` where ``k`` is the
+        number of queries in this chunk (last chunk may be smaller). Logits are
+        in the model's mask-embedding dtype (no sigmoid applied).
+        """
+        if query_indices.numel() == 0:
+            return
+        cs = int(chunk_size) if chunk_size is not None else self.chunk_size
+        if cs <= 0:
+            raise ValueError(f"chunk_size must be positive; got {cs}")
+        n = int(query_indices.numel())
+        for start in range(0, n, cs):
+            end = min(start + cs, n)
+            chunk_idx = query_indices[start:end]
+            embed = self.mask_embeddings.index_select(0, chunk_idx)
+            yield chunk_idx, self._materialize_from_embeds(embed)
+
+    def _materialize_from_embeds(self, mask_embeds_chunk: torch.Tensor) -> torch.Tensor:
+        """Run einsum + trilinear upsample for one chunk of queries.
+
+        ``mask_embeds_chunk``: ``(k, mask_dim)``.
+        Returns: ``(k, D, H, W)`` logits at ``self.target_size``.
+        """
+        # Low-res einsum: (k, mask_dim) @ (mask_dim, d*h*w) -> (k, d, h, w).
+        # Using matmul on the flattened pixel decoder is slightly cheaper than
+        # einsum and easier to reason about for memory.
+        c, d, h, w = self.pixel_decoder_output.shape
+        low_res = mask_embeds_chunk @ self.pixel_decoder_output.reshape(c, d * h * w)
+        low_res = low_res.reshape(-1, d, h, w)  # (k, d, h, w)
+
+        # Trilinear upsample: F.interpolate expects (N, C, D, H, W); treat each
+        # query as its own "batch" item with C=1 so memory scales linearly.
+        original_dtype = low_res.dtype
+        low_res = low_res.to(self.upsample_dtype)
+        upsampled = F.interpolate(
+            low_res.unsqueeze(1),
+            size=self.target_size,
+            mode="trilinear",
+            align_corners=False,
+        ).squeeze(1)  # (k, D, H, W)
+        return upsampled.to(original_dtype)
+
 class MaskDINO(nn.Module):
     def __init__(
         self,
@@ -32,6 +184,7 @@ class MaskDINO(nn.Module):
         focus_on_boxes: bool = False,
         buffer_device: str = "cuda",
         output_metadata: Optional[Dict[str, Any]] = None,
+        mask_chunk_size: int = 8,
     ):
         super().__init__()
 
@@ -45,6 +198,9 @@ class MaskDINO(nn.Module):
         self.topk_per_image = topk_per_image
         self.instance_segmentation_flag = instance_segmentation_flag
         self.focus_on_boxes = focus_on_boxes
+        # Number of queries to materialize at full resolution simultaneously in
+        # `predict` / `predict_for_eval`. Tune down on tighter vRAM budgets.
+        self.mask_chunk_size = int(mask_chunk_size)
         spatial_shape = get_spatial_shape(input_shape, input_fmt)
         default_output_metadata = DictConfig({
             "tensor_info": {
@@ -240,37 +396,24 @@ class MaskDINO(nn.Module):
         return losses, outputs
 
     def predict(self, data_sample: dict):
-        features_dict = self.backbone(data_sample)
+        """Run inference and return per-sample collapsed instance predictions.
 
-        outputs, _ = self.segmentation_head(features_dict, targets=None)
-        predicted_labels, predicted_boxes, predicted_masks = [
-            outputs[key] for key in ("pred_logits", "pred_boxes", "pred_masks")
-        ]
+        Mask materialization is performed in chunks of ``self.mask_chunk_size``
+        queries to keep peak vRAM bounded; see :class:`MaskMaterializer` and
+        :meth:`predict_for_eval` for the underlying primitives. The returned
+        dict has the following keys / shapes:
 
-        orig_image_sizes = [tuple(int(x) for x in orig_img_size.tolist()) for orig_img_size in data_sample["metainfo"]["orig_image_sizes"]]
-
-        # upsample masks to original image size
-        predicted_masks = F.interpolate(
-            predicted_masks,
-            # see data/datasets/pretrain_dataset_ray.py for details on image_sizes
-            size=orig_image_sizes[0],
-            mode="trilinear",
-            align_corners=False,
-        )
-
-        del outputs
+            * ``boxes``: ``(B, topk, 6)`` in xyzxyz at original-image scale.
+            * ``labels``: ``(B, topk)`` per-instance scores (optionally
+              re-weighted by mean mask probability when ``focus_on_boxes`` is
+              False).
+            * ``masks``: ``(B, *orig_image_size)`` uint16 instance label maps.
+        """
+        intermediates = self.predict_for_eval(data_sample)
 
         per_sample_preds = []
-        for predicted_label, predicted_mask, predicted_box, orig_image_size in zip(
-            predicted_labels,
-            predicted_masks,
-            predicted_boxes,
-            orig_image_sizes,
-        ):
-            depth, height, width = orig_image_size
-            # scale postprocess boxes to original image size
-            predicted_box = self.box_postprocess(predicted_box, depth, height, width)
-            per_sample_preds.append(self._predict(predicted_label, predicted_mask, predicted_box))
+        for sample in intermediates:
+            per_sample_preds.append(self._collapse_sample_chunked(sample))
 
         batched = {
             key: torch.stack([s[key] for s in per_sample_preds], dim=0)
@@ -278,48 +421,146 @@ class MaskDINO(nn.Module):
         }
         return batched
 
-    def _predict(self, predicted_labels, predicted_masks, predicted_boxes):
-        # (num_queries, num_classes) -> (num_queries, num_classes)
-        predicted_labels = predicted_labels.sigmoid()
+    def predict_for_eval(self, data_sample: dict) -> List[Dict[str, Any]]:
+        """Return per-sample inference intermediates without collapsing masks.
 
-        # (num_queries, num_classes) -> (num_queries * num_classes,) -> Tuple(topk predicted labels, indices)
-        predicted_labels_topk, topk_indices = predicted_labels.flatten(0, 1).topk(self.topk_per_image, sorted=False)
+        Skips the global low-res einsum (``predict_mask=False``) so the caller
+        owns mask materialization (typically via :class:`MaskMaterializer`
+        chunked over the topk query indices).
 
-        # recover which query (0...Q-1) each top-K came from
-        # flattened index is q*C + c => integer-dividing by C retrieves q
-        topk_query_indices = topk_indices // self.segmentation_head.num_classes
-
-        predicted_masks = predicted_masks[topk_query_indices]
-
-        # binary masks: (topk_per_image, D, H, W)
-        binary_masks = (predicted_masks > 0).float()
-        instance_predictions = {}
-        instance_predictions["boxes"] = predicted_boxes[topk_query_indices]
-
-        # per-instance confidence: avg sigmoid probability inside each mask
-        binary_flat = binary_masks.flatten(1)
-        sigmoid_flat = predicted_masks.sigmoid().flatten(1)
-        mask_confidence_score = (sigmoid_flat * binary_flat).sum(1) / (
-            binary_flat.sum(1) + 1e-6
+        Each returned per-sample dict contains:
+            * ``mask_embeddings``: ``(Q, mask_dim)``.
+            * ``pixel_decoder_output``: ``(mask_dim, d, h, w)``.
+            * ``topk_query_indices``: ``(topk,)`` long, into ``Q``.
+            * ``topk_class_scores``: ``(topk,)`` float — max-class sigmoid
+              score per topk pick (the COCO-style class-aware ranking score).
+            * ``topk_class_ids``: ``(topk,)`` long — the predicted class id
+              corresponding to each topk pick.
+            * ``boxes``: ``(topk, 6)`` xyzxyz at original-image scale.
+            * ``orig_image_size``: ``(D, H, W)`` ints.
+        """
+        features_dict = self.backbone(data_sample)
+        outputs, _ = self.segmentation_head(
+            features_dict, targets=None, predict_mask=False
         )
+        pred_logits = outputs["pred_logits"]            # (B, Q, num_classes)
+        pred_boxes = outputs["pred_boxes"]              # (B, Q, 6) cxcyczwhd
+        mask_embeddings_b = outputs["mask_embeddings"]      # (B, Q, mask_dim)
+        pixel_decoder_output_b = outputs["pixel_decoder_output"]  # (B, mask_dim, d, h, w)
+
+        orig_image_sizes = [
+            tuple(int(x) for x in orig.tolist())
+            for orig in data_sample["metainfo"]["orig_image_sizes"]
+        ]
+
+        num_classes = self.segmentation_head.num_classes
+        per_sample: List[Dict[str, Any]] = []
+        for b, orig_size in enumerate(orig_image_sizes):
+            scores = pred_logits[b].sigmoid()                                 # (Q, C)
+            topk_scores, topk_idx = scores.flatten(0, 1).topk(
+                self.topk_per_image, sorted=False
+            )
+            # query/class recovery from the (Q*C,) flat index:
+            #   q = idx // C, c = idx % C
+            topk_query_idx = topk_idx // num_classes                          # (topk,)
+            topk_class_id = topk_idx % num_classes                            # (topk,)
+
+            depth, height, width = orig_size
+            boxes_topk = self.box_postprocess(
+                pred_boxes[b][topk_query_idx], depth, height, width
+            )
+
+            per_sample.append({
+                "mask_embeddings": mask_embeddings_b[b],
+                "pixel_decoder_output": pixel_decoder_output_b[b],
+                "topk_query_indices": topk_query_idx,
+                "topk_class_scores": topk_scores,
+                "topk_class_ids": topk_class_id,
+                "boxes": boxes_topk,
+                "orig_image_size": orig_size,
+            })
+        return per_sample
+
+    def _collapse_sample_chunked(self, sample: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        """Build a single-image instance prediction dict via chunked materialization.
+
+        Mirrors the legacy :meth:`_predict` semantics:
+
+            * Per-instance confidence score = ``predicted_labels_topk * mask_confidence``
+              (unless ``focus_on_boxes`` is True), where ``mask_confidence`` is
+              the mean sigmoid probability inside the binarized mask.
+            * Mask outputs are collapsed into a single uint16 label map with
+              instances 1 .. K assigned in ascending score order, so the
+              highest-confidence instance "wins" overlapping voxels.
+
+        Two passes through the chunked materializer: the first computes
+        mask-confidence so we know the final per-instance score; the second
+        re-materializes in ascending-score order to stamp label IDs. We trade
+        ~2x compute for keeping peak memory at ``mask_chunk_size * D*H*W``.
+        """
+        materializer = MaskMaterializer(
+            mask_embeddings=sample["mask_embeddings"],
+            pixel_decoder_output=sample["pixel_decoder_output"],
+            target_size=sample["orig_image_size"],
+            chunk_size=self.mask_chunk_size,
+        )
+        topk_query_idx = sample["topk_query_indices"]
+        topk_scores = sample["topk_class_scores"]
+
+        device = topk_query_idx.device
+        K = int(topk_query_idx.numel())
+        mask_confidence = torch.zeros(K, device=device, dtype=torch.float32)
+
+        # Pass 1: per-instance mask confidence in original topk order.
+        slot = 0
+        for chunk_idx, mask_logits in materializer.chunks(topk_query_idx):
+            k = int(chunk_idx.numel())
+            sigm = mask_logits.sigmoid()
+            binary = (mask_logits > 0)
+            sigm_inside = (sigm * binary.to(sigm.dtype)).flatten(1).sum(dim=1)
+            count_inside = binary.flatten(1).sum(dim=1).to(torch.float32)
+            mask_confidence[slot:slot + k] = sigm_inside.to(torch.float32) / torch.clamp(
+                count_inside, min=1.0
+            )
+            slot += k
 
         if self.focus_on_boxes:
-            instance_predictions["labels"] = predicted_labels_topk
+            scores_per_instance = topk_scores.to(torch.float32)
         else:
-            instance_predictions["labels"] = predicted_labels_topk * mask_confidence_score
+            scores_per_instance = topk_scores.to(torch.float32) * mask_confidence
 
-        # collapse per-instance binary masks into a single label map
-        instance_predictions["masks"] = self.collapse_instance_masks(
-            binary_masks, scores=instance_predictions["labels"]
+        # Pass 2: collapse per-instance binary masks into a label map in
+        # ascending-score order so highest-score instances overwrite earlier
+        # ones (matches `collapse_instance_masks` semantics).
+        order = scores_per_instance.argsort()  # ascending
+        label_map = torch.zeros(
+            sample["orig_image_size"], dtype=torch.int32, device=device
         )
+        ordered_query_idx = topk_query_idx[order]
+        # Label IDs 1..K assigned in iteration order = ascending-score order.
+        next_id = 1
+        for chunk_idx, mask_logits in materializer.chunks(ordered_query_idx):
+            k = int(chunk_idx.numel())
+            for i in range(k):
+                label_map[mask_logits[i] > 0] = next_id
+                next_id += 1
 
-        return instance_predictions
+        return {
+            "boxes": sample["boxes"],
+            "labels": scores_per_instance,
+            "masks": label_map.to(torch.uint16),
+        }
 
     @staticmethod
     def collapse_instance_masks(
         binary_masks: torch.Tensor, scores: torch.Tensor
     ) -> torch.Tensor:
         """Collapse per-instance binary masks into a single instance label map.
+
+        Kept for backward compatibility with callers that already hold the
+        materialized binary masks. New code paths should prefer
+        :meth:`predict` / :meth:`_collapse_sample_chunked`, which avoid ever
+        materializing all masks at once.
 
         Args:
             binary_masks: ``(K, *spatial)`` binary masks (one per instance).
@@ -479,6 +720,7 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
     instance_segmentation_flag = model_cfg.get("instance_segmentation_flag", True)
     topk_per_image = model_cfg["topk_per_image"]
     focus_on_boxes = model_cfg.get("focus_on_boxes", False)
+    mask_chunk_size = model_cfg.get("mask_chunk_size", 8)
 
     return MaskDINO(
         backbone=backbone,
@@ -489,6 +731,7 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
         instance_segmentation_flag=instance_segmentation_flag,
         topk_per_image=topk_per_image,
         focus_on_boxes=focus_on_boxes,
+        mask_chunk_size=mask_chunk_size,
         input_shape=cfg.datasets.train_shape,
         input_fmt=cfg.dataset_layout_order,
     )
