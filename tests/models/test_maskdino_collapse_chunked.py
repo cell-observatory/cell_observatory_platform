@@ -1,7 +1,7 @@
 import torch
 
 from cell_observatory_platform.models.meta_arch.maskdino import MaskDINO
-from cell_observatory_platform.models.meta_arch.maskdino_materializer import MaskMaterializer
+from cell_observatory_platform.models.meta_arch.maskdino import MaskMaterializer
 
 
 def _make_model(focus_on_boxes):

@@ -35,7 +35,7 @@ from cell_observatory_platform.evaluation.metrics import (
     MaskMAPMetric,
     MaskMIoUMetric,
 )
-from cell_observatory_platform.models.meta_arch.maskdino_materializer import MaskMaterializer
+from cell_observatory_platform.models.meta_arch.maskdino import MaskMaterializer
 
 
 # Tells the trainer dispatcher to call ``model.predict_for_eval`` instead of
