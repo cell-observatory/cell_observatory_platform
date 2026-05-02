@@ -497,18 +497,43 @@ class MaskDINODecoder(nn.Module):
         outputs_bboxes = torch.stack(outputs_bbox_list)
         return outputs_bboxes
 
-    def forward_prediction_heads(self, output_queries, pixel_decoder_output, predict_masks=True):
+    def forward_prediction_heads(
+        self,
+        output_queries,
+        pixel_decoder_output,
+        predict_masks=True,
+        return_mask_embeddings=False,
+    ):
+        """Run the per-layer prediction heads.
+
+        Args:
+            output_queries: ``(num_queries, bs, C)`` queries from a decoder layer.
+            pixel_decoder_output: ``(bs, mask_dim, d, h, w)`` finest pixel-decoder
+                feature map. Only consumed when ``predict_masks=True``.
+            predict_masks: if False, skip the per-pixel einsum entirely (the
+                caller is expected to materialize masks on its own, e.g. chunked
+                from the returned ``mask_embeddings``).
+            return_mask_embeddings: if True, return the projected mask
+                embeddings ``(bs, num_queries, mask_dim)`` so callers can
+                materialize masks lazily without re-running the MLP.
+        """
         decoder_output = self.decoder_norm(output_queries)
         decoder_output = decoder_output.transpose(0, 1)  # (bs, num_queries, C)
         outputs_class = self.class_predictor(decoder_output)  # (bs, num_queries, num_classes)
 
         outputs_mask = None
+        mask_embeddings = None
+        # Only project to mask space when we'll actually use it (loss/predict path
+        # or a downstream chunked materializer).
+        if predict_masks or return_mask_embeddings:
+            mask_embeddings = self.mask_embeddings(decoder_output)  # (bs, num_queries, mask_dim)
         if predict_masks:
-            mask_embeddings = self.mask_embeddings(decoder_output)
             # dot product between mask embeddings and pixel decoder output
             outputs_mask = torch.einsum(
                 "bqc, bcdhw->bqdhw", mask_embeddings, pixel_decoder_output
             )  # (bs, num_queries, d, h, w)
+        if return_mask_embeddings:
+            return outputs_class, outputs_mask, mask_embeddings
         return outputs_class, outputs_mask
 
     @torch.jit.unused
@@ -524,7 +549,7 @@ class MaskDINODecoder(nn.Module):
                 for a, b, c in zip(outputs_class[:-1], outputs_masks[:-1], out_bboxes[:-1])
             ]
 
-    def forward(self, x, pixel_decoder_output, masks, targets=None):
+    def forward(self, x, pixel_decoder_output, masks, targets=None, predict_mask: bool = True):
         assert len(x) == self.num_feature_levels, "The number of feature maps much match self.num_feature_levels"
         device = x[0].device
 
@@ -716,11 +741,32 @@ class MaskDINODecoder(nn.Module):
             target_mask=attn_mask,
         )
 
+        # Track the mask-projection of the last decoder layer so callers driving
+        # chunked materialization (see `MaskMaterializer`) can skip recomputing it.
+        last_mask_embeddings = None
         num_intermediates = len(intermediates)
         for idx, output in enumerate(intermediates):
-            outputs_class, outputs_mask = self.forward_prediction_heads(
-                output.transpose(0, 1), pixel_decoder_output, self.training or (idx == num_intermediates - 1)
-            )
+            is_last = (idx == num_intermediates - 1)
+            # Training: always compute low-res masks for deep supervision.
+            # Inference: by default still compute the last layer's masks (legacy
+            # callers depend on outputs["pred_masks"]); skip the einsum when
+            # `predict_mask=False` so a chunked materializer can drive it.
+            run_einsum = self.training or (is_last and predict_mask)
+            need_mask_embed = (not self.training) and is_last
+            if need_mask_embed:
+                outputs_class, outputs_mask, mask_embed = self.forward_prediction_heads(
+                    output.transpose(0, 1),
+                    pixel_decoder_output,
+                    predict_masks=run_einsum,
+                    return_mask_embeddings=True,
+                )
+                last_mask_embeddings = mask_embed
+            else:
+                outputs_class, outputs_mask = self.forward_prediction_heads(
+                    output.transpose(0, 1),
+                    pixel_decoder_output,
+                    predict_masks=run_einsum,
+                )
             predictions_class.append(outputs_class)
             predictions_mask.append(outputs_mask)
 
@@ -758,6 +804,13 @@ class MaskDINODecoder(nn.Module):
             "pred_boxes": predictions_boxes[-1],
             "auxiliary_outputs": self._set_aux_loss(predictions_class, predictions_mask, predictions_boxes),
         }
+
+        # Expose intermediates needed for chunked mask materialization at
+        # inference (e.g. `MaskMaterializer`). Cheap to keep around — they are
+        # the same tensors used by the einsum above; we just hold references.
+        if not self.training:
+            outputs["mask_embeddings"] = last_mask_embeddings  # (bs, num_queries, mask_dim)
+            outputs["pixel_decoder_output"] = pixel_decoder_output  # (bs, mask_dim, d, h, w)
 
         if self.two_stage_flag:
             outputs["intermediates"] = intermediate_outputs
