@@ -744,74 +744,81 @@ class EpochBasedTrainer(BaseTrainer):
 
 
 class TestTrainer(BaseTrainer):
+    """
+    Test loop that runs ``model.predict`` on a held-out dataset and feeds the
+    postprocessed predictions into a :class:`DatasetEvaluator`. Metrics are
+    computed on what the model actually predicts (not on raw forward outputs /
+    losses), so the evaluator sees tensors in the same space as the targets.
+
+    Aligned with :class:`Inferencer`: plain ``torch`` (no DeepSpeed). Rationale:
+      * ZeRO-1/2 shard optimizer state / gradients which do not exist at
+        inference time -> zero memory benefit, just adds engine overhead and
+        complicates checkpoint loading.
+      * ZeRO-3 shards parameters, which can help fit large models on a single
+        GPU, but the correct entrypoint for that is
+        ``deepspeed.init_inference()`` (not ``deepspeed.initialize``). Deferred
+        until a model actually requires sharded inference; tracked as a TODO.
+    """
+
     def __init__(self, cfg: DictConfig) -> None:
         super().__init__(cfg)
-        
+
         self.ray_context = get_context()
         self.event_recorder._iter = 0
         self.event_recorder._epoch = 0
-        self._iter, self.start_iter, self.start_epoch = 0, 0, 0
+        self._iter, self._epoch, self._val_iter = 0, 0, 0
+        self.start_iter, self.start_epoch = 0, 0
         # TODO: refactor hooks to avoid flag
         self.with_grad_accumulation = False
 
         # initialize dataset and dataloader
-        self.test_dataloader, _, _, self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
-
-        self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
-            config=cfg
-        )
+        self.test_dataloader, _, _, self.host_buffer_actor, self.device_buffer, _ = get_dataloader(cfg)
 
         # initialize model
         BUILD = get_method(cfg.models.BUILD)
         model = BUILD(cfg)
 
         with torch.no_grad():
-            model.init_model_weights(buffer_device="cuda")
+            model._init_model_weights(buffer_device="cuda")
 
         self.preprocessor = instantiate(cfg.datasets.preprocessor)
 
-        # initialize checkpoint manager and
-        # load model state from checkpoint
+        # initialize checkpoint manager and load weights into the unwrapped
+        # model (no DeepSpeed engine wrapper at inference time, so we load
+        # directly into the nn.Module).
         self.checkpoint_manager = instantiate(
             cfg.checkpoint.checkpoint_manager,
-            model=model
+            model=model,
         )
-        _, _ = self.checkpoint_manager.load()
+        if cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir:
+            _, checkpoint_meta = self.checkpoint_manager.load()
+            self.checkpoint_meta = checkpoint_meta
+        else:
+            self.checkpoint_meta = None
 
-        # initialize optimizer (needed for deepspeed init)
-        self.opt, _ = get_optimizer(
-            params=model.parameters(),
-            config=cfg,
-            optimizer=cfg.optimizers.opt,
-            steps_per_epoch=self.steps_per_epoch
-        )
-
-        # enable optimizations if specified
-        # includes setting Torch backend flags, 
-        # activation checkpointing, and torch Compile 
+        # torch backend flags (cudnn benchmark, tf32, etc.) and optional
+        # torch.compile. Activation checkpointing is intentionally skipped:
+        # it only saves memory during backward, which we never run here.
         if cfg.optimizations is not None:
             enable_optimizations(cfg=cfg)
         opt_cfg = get_model_optimizations_node(cfg)
-        if opt_cfg.activation_checkpoint.enable:
-            logger.info("[Trainer] Applying activation checkpointing...")
-            apply_activation_checkpointing(opt_cfg, model)
         if opt_cfg.torch_compile.enable:
-            logger.info("[Trainer] Applying torch.compile...")
+            logger.info("[TestTrainer] Applying torch.compile...")
             model = apply_compile(opt_cfg, model)
 
-        # initialize deepspeed
-        self.model, self.optimizers, _, _ = initialize(
-            model=model,
-            optimizer=self.opt,
-            config=OmegaConf.to_container(cfg.deepspeed, resolve=True)
-        )
+        # checkpoint_manager.load uses map_location=cpu; align device with the
+        # dataloader (CUDA tensors). Mirrors Inferencer.
+        _test_dev = torch.device("cuda", local_rank())
+        self.model = model.to(_test_dev)
+        self.model.eval()
 
         # initialize evaluator
         self.evaluator = instantiate(cfg.evaluation.evaluator)
 
     def test(self):
         """
-        Run Model testing.
+        Run model testing: iterate the test dataloader, call
+        ``model.predict`` per step, and aggregate metrics via the evaluator.
         """
         self.before_test()
 
@@ -823,10 +830,10 @@ class TestTrainer(BaseTrainer):
                     data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time, idx=idx)
                     self.run_test_step(idx, data_sample)
                     end = time.perf_counter()
-        
+
         metrics = self.evaluator.evaluate()
         self.event_recorder.put_scalars(
-            prefix="evaluator_",
+            prefix="test_",
             scope="epoch",
             **{k: (v.item() if torch.is_tensor(v) else v)
                 for k, v in metrics.items()
@@ -835,25 +842,46 @@ class TestTrainer(BaseTrainer):
         self.evaluator.reset()
 
         self.after_test()
-    
+
     def run_test_step(self, idx: int, data_sample: Sequence[dict]) -> None:
         """
-        Iterate one test step.
+        Iterate one test step: run prediction and feed postprocessed outputs to
+        the evaluator. ``loss_dict`` is ``None`` because ``model.predict`` does
+        not compute losses; evaluators that require losses must guard on this.
+
+        Evaluators may opt into a different model entrypoint by setting a
+        ``predict_method`` class/instance attribute (string method name on the
+        model). For example, :class:`InstanceSegmentationEvaluator` sets
+        ``predict_method = "predict_for_eval"`` so it receives raw mask
+        intermediates and can drive chunked materialization itself, instead of
+        the collapsed label-map dict that ``model.predict`` returns. Defaults
+        to ``"predict"``, preserving legacy behavior for all other evaluators.
         """
         self.before_test_step()
 
-        loss_dict, outputs = self.model(data_sample)
-        self.evaluator.process(data_sample, outputs, loss_dict)
+        predict_method = getattr(self.evaluator, "predict_method", "predict")
+        predict_fn = getattr(self.model, predict_method, None)
+        if predict_fn is None:
+            raise AttributeError(
+                f"evaluator requested model.{predict_method} but model "
+                f"{type(self.model).__name__} does not implement it"
+            )
+        preds = predict_fn(data_sample)
+        self.evaluator.process(data_sample, preds, loss_dict=None)
 
         # for short testing runs:
         # if idx > 25:
         #     raise RuntimeError(
         #         f"Test stopped at step {idx} for debugging."
         #     )
-        # logger.info(f"step_loss: {loss_dict['step_loss']}")
 
-        self.after_test_step(data_sample=data_sample, 
-                             outputs=outputs, loss_dict=loss_dict)
+        # only forward metainfo to hooks to avoid keeping prediction tensors
+        # alive across step boundaries
+        self.after_test_step(
+            data_sample={"metainfo": data_sample.get("metainfo")},
+            outputs=None,
+            loss_dict=None,
+        )
         self._iter += 1
 
 
