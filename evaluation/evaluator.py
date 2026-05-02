@@ -25,12 +25,23 @@ import abc
 class DatasetEvaluator(metaclass=abc.ABCMeta):
     """
     Base class for a dataset evaluator.
-    DatasetEvaluator processes inputs/outputs
-    during TestTrainer.test() loop.
 
-    This class will accumulate information of the
-    inputs/outputs (by :meth:`process`), and produce evaluation 
-    results in the end (by :meth:`evaluate`).
+    A ``DatasetEvaluator`` is fed by both flows:
+      * Validation (``EpochBasedTrainer.run_validation_step``): ``outputs`` are
+        raw ``model.forward`` outputs and ``loss_dict`` is the loss dict from
+        the same forward pass.
+      * Prediction-based test (``TestTrainer.run_test_step``): ``outputs`` are
+        postprocessed predictions from ``model.predict`` (in target space) and
+        ``loss_dict`` is ``None`` because ``predict`` does not compute losses.
+
+    Each evaluator decides which flow(s) it supports. Loss-based evaluators
+    (e.g. :class:`BaseEvaluator`) must reject ``loss_dict=None``. Prediction-
+    based evaluators (e.g. :class:`AutomatedBenchmarkEvaluator`) ignore
+    ``loss_dict`` and operate on ``outputs`` against
+    ``data_sample["metainfo"][target_key]``.
+
+    The class accumulates per-step state via :meth:`process` and produces the
+    final aggregated metrics via :meth:`evaluate`.
     """
 
     @abc.abstractmethod
@@ -44,13 +55,16 @@ class DatasetEvaluator(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def process(self, data_sample, outputs, loss_dict):
         """
-        Process the pair of inputs and outputs.
+        Process one (data_sample, outputs[, loss_dict]) tuple.
 
         Args:
-            data_sample (Datasample): the inputs that's
-                used to call the model.
-            outputs (list): the return value of `model(inputs)`
-            loss_dict (dict): a dictionary of losses
+            data_sample (dict): the inputs that were used to call the model.
+                Must contain ``metainfo`` for evaluators that need targets.
+            outputs: 
+                - validation flow -> raw return value of ``model(inputs)``
+                - test flow -> return value of ``model.predict(inputs)`` already
+                in target space.
+            loss_dict (Optional[dict]):a dictionary of losses
                 e.g. {"metric1": loss, "metric2": loss}
                 where each metric is a string and loss is a float.
         """
