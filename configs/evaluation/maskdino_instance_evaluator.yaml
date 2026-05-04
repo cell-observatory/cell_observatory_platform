@@ -1,0 +1,38 @@
+defaults:
+  - _self_
+
+# Used by the trainer to decide which checkpoint is "best". The evaluator
+# returns a flat metric dict; pick a key from `metrics` below.
+val_begin: 0
+val_interval: 1
+val_metric: mask_map
+val_mode: max  # 'min' or 'max'
+
+# InstanceSegmentationEvaluator drives chunked mask materialization through
+# MaskDINO.predict_for_eval. The trainer dispatches to that method via the
+# evaluator's `predict_method` class attribute, so no extra wiring needed.
+evaluator:
+  _target_: cell_observatory_platform.evaluation.instance_segmentation_evaluator.InstanceSegmentationEvaluator
+  # Number of MaskDINO queries materialized at full resolution at once. Trades
+  # compute (one extra einsum + interpolate per chunk) for peak GPU memory:
+  #   peak_bytes ~= mask_chunk_size * D*H*W * 4 (fp32 logits during upsample).
+  # Tune down on tighter vRAM budgets.
+  mask_chunk_size: 8
+  # Drop predictions below this score before metrics. 0.0 = use everything.
+  score_threshold: 0.0
+  # COCO-style: TP requires class match. Set False for class-agnostic mIoU.
+  match_labels: true
+  # Build per-instance GT masks from `target["label_map"]` + `target["mask_ids"]`
+  # (the default dataset format). Use "masks" if your dataset materializes
+  # binary masks upstream (memory-heavier).
+  gt_mask_source: label_map
+  target_key: targets
+
+  # Each entry is either a string naming a default factory or a Hydra dict
+  # with a `name` key plus `_target_` to instantiate a custom metric.
+  metrics:
+    - box_map
+    - box_miou
+    - box_f1
+    - mask_map
+    - mask_miou
