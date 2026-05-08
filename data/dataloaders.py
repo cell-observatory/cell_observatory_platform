@@ -158,7 +158,7 @@ def get_dataloader(
         "sample_store_desc": sample_store_desc,
         "dp_degree": dp_degree,
         "dp_rank": dp_rank,
-        "collator_input_shape": tuple(collator_input_shape),
+        # "collator_input_shape": tuple(collator_input_shape),
     }
     train_dataloader, val_dataloader, _ = get_dataloader_ray(
         cfg=config,
@@ -168,7 +168,7 @@ def get_dataloader(
         sample_store_desc=sample_store_desc,
         dp_degree=dp_degree,
         dp_rank=dp_rank,
-        selected_channel_localizations=selected_channel_localizations,
+        selected_channel_localizations=list(selected_channel_localizations),
     )
 
     return train_dataloader, val_dataloader, dataloader_config, buffer_actor, collate_fn.device_buffer, None
