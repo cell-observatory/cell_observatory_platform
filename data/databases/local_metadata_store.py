@@ -377,59 +377,118 @@ class FilterBuilder:
         )
 
     @classmethod
-    def build_non_channel_where_sql(cls, source: SourceSpec, query: QuerySpec, alias: str = "s") -> str:
-        query.validate()
-        clauses = ["1=1"]
+    def _labeled_non_channel_clauses(
+        cls, source: SourceSpec, query: QuerySpec, alias: str = "s"
+    ) -> list[tuple[str, str]]:
+        """Ordered (label, sql_clause) pairs for non-channel WHERE predicates.
+
+        Labels describe the filter for the diagnostic; clauses are the
+        actual SQL fragments. Single source of truth for which filters
+        get applied -- both build_non_channel_where_sql() and
+        build_filter_diagnostic_sql() consume this.
+        """
+        out: list[tuple[str, str]] = []
 
         if query.roi_list:
-            clauses.append(f"{alias}.prepared_id IN {cls._sql_list(query.roi_list)}")
+            out.append((
+                f"roi_list={list(query.roi_list)}",
+                f"{alias}.prepared_id IN {cls._sql_list(query.roi_list)}",
+            ))
 
         if query.tile_list:
-            clauses.append(f"{alias}.tile_name IN {cls._sql_list(query.tile_list)}")
+            out.append((
+                f"tile_list ({len(query.tile_list)} names)",
+                f"{alias}.tile_name IN {cls._sql_list(query.tile_list)}",
+            ))
 
         if query.timepoint_list:
-            clauses.append(f"{alias}.time_start IN {cls._sql_list(query.timepoint_list)}")
+            out.append((
+                f"timepoint_list={list(query.timepoint_list)}",
+                f"{alias}.time_start IN {cls._sql_list(query.timepoint_list)}",
+            ))
 
         if query.holdout_split == "train":
-            clauses.append(f"COALESCE({alias}.is_test_split, false) = false")
+            out.append((
+                "holdout_split=train",
+                f"COALESCE({alias}.is_test_split, false) = false",
+            ))
         elif query.holdout_split == "test":
-            clauses.append(f"COALESCE({alias}.is_test_split, false) = true")
+            out.append((
+                "holdout_split=test",
+                f"COALESCE({alias}.is_test_split, false) = true",
+            ))
 
         for location_key in query.required_locations or ():
-            clauses.append(f"COALESCE({alias}.{location_key}, false) = true")
+            out.append((
+                f"required_location={location_key}",
+                f"COALESCE({alias}.{location_key}, false) = true",
+            ))
 
         if query.synthetic_only:
-            clauses.append(f"COALESCE({alias}.is_synthetic, false) = true")
+            out.append((
+                "synthetic_only",
+                f"COALESCE({alias}.is_synthetic, false) = true",
+            ))
 
         if source.has_annotation_payload:
-            clauses.append(f"{alias}.annotation_count > 0")
+            out.append((
+                "annotation_count>0 (source has_annotation_payload)",
+                f"{alias}.annotation_count > 0",
+            ))
 
         if query.channel_count is not None:
-            clauses.append(f"COALESCE({alias}.channel_size, 0) = {int(query.channel_count)}")
+            out.append((
+                f"channel_count={int(query.channel_count)}",
+                f"COALESCE({alias}.channel_size, 0) = {int(query.channel_count)}",
+            ))
         if query.min_channel_count is not None:
-            clauses.append(f"COALESCE({alias}.channel_size, 0) >= {int(query.min_channel_count)}")
+            out.append((
+                f"min_channel_count={int(query.min_channel_count)}",
+                f"COALESCE({alias}.channel_size, 0) >= {int(query.min_channel_count)}",
+            ))
         if query.max_channel_count is not None:
-            clauses.append(f"COALESCE({alias}.channel_size, 0) <= {int(query.max_channel_count)}")
+            out.append((
+                f"max_channel_count={int(query.max_channel_count)}",
+                f"COALESCE({alias}.channel_size, 0) <= {int(query.max_channel_count)}",
+            ))
 
-        return " AND ".join(clauses)
+        return out
 
     @classmethod
-    def build_channel_where_clauses(cls, source: SourceSpec, query: QuerySpec, alias: str = "s") -> list[str]:
-        clauses: list[str] = []
+    def _labeled_channel_clauses(
+        cls, source: SourceSpec, query: QuerySpec, alias: str = "s"
+    ) -> list[tuple[str, str]]:
+        """Ordered (label, sql_clause) pairs for channel-mapping predicates."""
+        out: list[tuple[str, str]] = []
 
         for key, pattern in (query.required_channel_key_patterns or {}).items():
-            clauses.append(cls._channel_key_matches_clause(alias, key, pattern))
+            out.append((
+                f"required_channel_key_pattern[{key}]={pattern!r}",
+                cls._channel_key_matches_clause(alias, key, pattern),
+            ))
 
         for localization in query.required_channel_localizations or ():
-            clauses.append(cls._any_channel_matches_clause(alias, _literal_channel_pattern(localization)))
+            out.append((
+                f"required_channel_localization={localization!r}",
+                cls._any_channel_matches_clause(alias, _literal_channel_pattern(localization)),
+            ))
 
         if query.any_channel_patterns:
-            any_clauses = [cls._any_channel_matches_clause(alias, pattern) for pattern in query.any_channel_patterns]
-            clauses.append("(" + " OR ".join(any_clauses) + ")")
+            any_clauses = [
+                cls._any_channel_matches_clause(alias, pattern)
+                for pattern in query.any_channel_patterns
+            ]
+            out.append((
+                f"any_channel_patterns={list(query.any_channel_patterns)!r}",
+                "(" + " OR ".join(any_clauses) + ")",
+            ))
 
         if query.all_channel_patterns:
             for pattern in query.all_channel_patterns:
-                clauses.append(cls._any_channel_matches_clause(alias, pattern))
+                out.append((
+                    f"all_channel_pattern={pattern!r}",
+                    cls._any_channel_matches_clause(alias, pattern),
+                ))
 
         if query.cdf_threshold is not None:
             if not source.supports_metric_filters:
@@ -438,16 +497,46 @@ class FilterBuilder:
             if query.cdf_threshold_channel_localizations:
                 for localization in query.cdf_threshold_channel_localizations:
                     channel_key_sql = cls._channel_key_expr(alias, localization)
-                    clauses.append(f"{channel_key_sql} IS NOT NULL")
-                    clauses.append(
-                        f"{cls._channel_cdf_expr_for_key(alias, channel_key_sql, query.cdf_target)} >= {threshold}"
-                    )
+                    out.append((
+                        f"cdf_threshold channel resolved for {localization!r}",
+                        f"{channel_key_sql} IS NOT NULL",
+                    ))
+                    out.append((
+                        f"cdf_{query.cdf_target}>={threshold} for {localization!r}",
+                        f"{cls._channel_cdf_expr_for_key(alias, channel_key_sql, query.cdf_target)} >= {threshold}",
+                    ))
             else:
                 raise NotImplementedError(
                     "cdf_threshold_channel_localizations is required for cube metric filters"
                 )
 
-        return clauses
+        return out
+
+    @classmethod
+    def build_labeled_clauses(
+        cls, source: SourceSpec, query: QuerySpec, alias: str = "s"
+    ) -> list[tuple[str, str]]:
+        """All cumulative (label, clause) pairs in apply order.
+
+        Used by SqlQueryPlanner.build_filter_diagnostic_sql to produce a
+        per-step COUNT(*) breakdown.
+        """
+        return (
+            cls._labeled_non_channel_clauses(source, query, alias=alias)
+            + cls._labeled_channel_clauses(source, query, alias=alias)
+        )
+
+    @classmethod
+    def build_non_channel_where_sql(cls, source: SourceSpec, query: QuerySpec, alias: str = "s") -> str:
+        query.validate()
+        labeled = cls._labeled_non_channel_clauses(source, query, alias=alias)
+        if not labeled:
+            return "1=1"
+        return " AND ".join(clause for _, clause in labeled)
+
+    @classmethod
+    def build_channel_where_clauses(cls, source: SourceSpec, query: QuerySpec, alias: str = "s") -> list[str]:
+        return [clause for _, clause in cls._labeled_channel_clauses(source, query, alias=alias)]
 
     @classmethod
     def build_missing_channel_mapping_where_sql(
@@ -894,6 +983,42 @@ class SqlQueryPlanner:
             WHERE {where_sql}
         """
 
+    @classmethod
+    def build_filter_diagnostic_sql(
+        cls,
+        resolved: ResolvedSource,
+        query: QuerySpec,
+    ) -> tuple[str, list[str]]:
+        """Build a single SQL that returns one COUNT per cumulative filter step.
+
+        Returns ``(sql, labels)`` where the SQL produces rows of
+        ``(step int, n_rows bigint)`` ordered by step. Index 0 is the
+        unfiltered baseline; index i (1..N) is "all clauses up to and
+        including filter i applied". Pair the result row's ``step`` with
+        the matching index in ``labels`` to produce the human-readable
+        breakdown.
+        """
+        alias = "s"
+        labeled = FilterBuilder.build_labeled_clauses(resolved.source, query, alias=alias)
+        labels: list[str] = ["baseline (no filter)"]
+        parts: list[str] = [
+            f"SELECT 0 AS step, count(*)::bigint AS n_rows "
+            f"FROM public.{resolved.table_name} {alias}"
+        ]
+        cumulative: list[str] = []
+        for i, (label, clause) in enumerate(labeled, start=1):
+            cumulative.append(clause)
+            labels.append(label)
+            where = " AND ".join(cumulative)
+            parts.append(
+                f"SELECT {i} AS step, count(*)::bigint AS n_rows "
+                f"FROM public.{resolved.table_name} {alias} "
+                f"WHERE {where}"
+            )
+
+        sql = "\nUNION ALL\n".join(parts) + "\nORDER BY step"
+        return sql, labels
+
 
 class MappedTable:
     def __init__(self, descriptor: MappedTableDescriptor) -> None:
@@ -933,6 +1058,82 @@ class MappedTable:
             table.num_rows,
         )
         return table
+
+    @staticmethod
+    def _log_filter_narrowing(
+        db_client,
+        resolved: ResolvedSource,
+        query: QuerySpec,
+        triggered_by: str,
+    ) -> None:
+        """Run a per-filter COUNT breakdown and log it as a table.
+
+        Each step shows the cumulative row count after applying the
+        next filter clause. The first step where ``n_rows`` drops to 0
+        is the filter responsible for the empty result.
+        """
+        diag_sql, labels = SqlQueryPlanner.build_filter_diagnostic_sql(resolved, query)
+        if len(labels) <= 1:
+            logger.warning(
+                "[MappedTable] filter narrowing diagnostic skipped for %s "
+                "(no filters configured; trigger=%s)",
+                resolved.table_name,
+                triggered_by,
+            )
+            return
+
+        diag_t0 = time.perf_counter()
+        try:
+            diag_table = db_client.execute_arrow(diag_sql)
+        except Exception as exc:
+            logger.warning(
+                "[MappedTable] filter narrowing diagnostic for %s failed: %s",
+                resolved.table_name,
+                exc,
+            )
+            return
+        diag_elapsed = time.perf_counter() - diag_t0
+
+        # Materialize results into a {step -> n_rows} map; the SQL
+        # already orders by step but be defensive in case the backend
+        # reorders.
+        steps_col = diag_table["step"].to_pylist()
+        rows_col = diag_table["n_rows"].to_pylist()
+        step_to_rows = {int(s): int(r) for s, r in zip(steps_col, rows_col)}
+
+        baseline = step_to_rows.get(0, 0)
+        first_zero_step: Optional[int] = None
+        line_width = max(len(label) for label in labels)
+        lines = [
+            f"[MappedTable] filter narrowing for {resolved.table_name} "
+            f"(trigger={triggered_by}, diagnostic took {diag_elapsed:.2f}s):",
+            f"  {'step':>4} | {'n_rows':>10} | {'delta':>10} | filter",
+            f"  {'-' * 4}-+-{'-' * 10}-+-{'-' * 10}-+-{'-' * line_width}",
+        ]
+        prev_rows = baseline
+        for step_idx, label in enumerate(labels):
+            n_rows = step_to_rows.get(step_idx, 0)
+            delta = n_rows - prev_rows if step_idx > 0 else 0
+            delta_str = "" if step_idx == 0 else f"{delta:+d}"
+            marker = ""
+            if step_idx > 0 and prev_rows > 0 and n_rows == 0 and first_zero_step is None:
+                first_zero_step = step_idx
+                marker = "  <-- first 0-row step"
+            lines.append(
+                f"  {step_idx:>4} | {n_rows:>10} | {delta_str:>10} | {label}{marker}"
+            )
+
+        logger.warning("\n".join(lines))
+
+        if first_zero_step is not None:
+            logger.warning(
+                "[MappedTable] %s: filter step %d (%r) reduced row count from "
+                "%d to 0. Loosen or remove this filter to recover rows.",
+                resolved.table_name,
+                first_zero_step,
+                labels[first_zero_step],
+                step_to_rows.get(first_zero_step - 1, baseline),
+            )
 
     @staticmethod
     def _root(node_id: str, resolved: ResolvedSource, query: QuerySpec, store: StoreSpec) -> Path:
@@ -1007,6 +1208,17 @@ class MappedTable:
                 resolved.table_name,
                 fetch_elapsed,
             )
+
+            # Auto-trigger the per-filter narrowing diagnostic on empty
+            # results so the operator can see exactly which clause killed
+            # the row count. Also runs when diagnostic_verbose is set.
+            if table.num_rows == 0 or diagnostic_verbose:
+                cls._log_filter_narrowing(
+                    db_client=db_client,
+                    resolved=resolved,
+                    query=query,
+                    triggered_by="empty result" if table.num_rows == 0 else "diagnostic_verbose=true",
+                )
             write_t0 = time.perf_counter()
             with pa.OSFile(str(sample_path), "wb") as sink:
                 with pa_ipc.new_file(sink, table.schema) as writer:
