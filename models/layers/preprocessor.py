@@ -1627,7 +1627,7 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         input_format: str,
         input_shape: tuple[int, ...],
         seed: int | None = None,
-        mask_idx: int = -1,
+        mask_channel_idx: int = -1,
         expect_mask_channel: bool = True,
         max_masks: int | None = None,
         require_targets: bool = True,
@@ -1641,7 +1641,7 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             input_format=input_format,
             input_shape=input_shape,
             seed=seed,
-            mask_idx=mask_idx,
+            mask_channel_idx=mask_channel_idx,
         )
         if "T" not in self.input_format:
             raise ValueError(
