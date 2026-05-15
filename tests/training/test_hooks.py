@@ -123,7 +123,11 @@ def _test_hooks_dist(cfg):
     lr_hook.after_step(data_sample=None, outputs=None, loss_dict={})
 
     # pull out what got recorded
-    recorded = trainer.event_recorder.get_step_scalars().get("lr", [])
+    lr_metric_name = get_metric_full_name(
+        name="lr",
+        scope="step",
+    )
+    recorded = trainer.event_recorder.get_step_scalars().get(lr_metric_name, [])
     lrs = [val for val, it, ep in recorded]
     epochs = [ep for val, it, ep in recorded]
 
@@ -169,7 +173,11 @@ def _test_hooks_dist(cfg):
     wd_hook.after_step()
 
     # pull out what got recorded (only check the last two entries)
-    recorded_wd = trainer.event_recorder.get_step_scalars().get("wd", [])
+    wd_metric_name = get_metric_full_name(
+        name="wd",
+        scope="step",
+    )
+    recorded_wd = trainer.event_recorder.get_step_scalars().get(wd_metric_name, [])
     assert len(recorded_wd) >= 2, f"Expected at least 2 WD records, found {len(recorded_wd)}"
     tail = recorded_wd[-2:]
     wds = [val for val, it, ep in tail]
@@ -219,7 +227,13 @@ def _test_hooks_dist(cfg):
     timer.after_train()
 
     # step_time should be logged only for steps >= warmup
-    step_times = rec.get_step_scalars().get("step_time", [])
+    step_time_name = get_metric_full_name(
+        name="step_time",
+        scope="step",
+        category="timing",
+        units="sec",
+    )
+    step_times = rec.get_step_scalars().get(step_time_name, [])
     assert len(step_times) == max(0, 5 - warmup), f"expected {5 - warmup} step_time records, got {len(step_times)}"
     for v, *_ in step_times:
         assert 0.015 <= v <= 0.04
@@ -238,12 +252,26 @@ def _test_hooks_dist(cfg):
     time.sleep(0.1)  # pretend some extra val work
     timer.after_validation()
 
-    val_step_times = rec.get_step_scalars().get("val_step_time", [])
+    val_step_time_name = get_metric_full_name(
+        name="step_time",
+        prefix="val",
+        scope="step",
+        category="timing",
+        units="sec",
+    )
+    val_step_times = rec.get_step_scalars().get(val_step_time_name, [])
     assert len(val_step_times) == 3 and all(val > 0 for val, *_ in val_step_times)
     for v, *_ in val_step_times:
         assert 0.05 <= v <= 0.2
 
-    val_time = rec.get_epoch_scalars().get("val_time", [])
+    val_time_name = get_metric_full_name(
+        name="total_time",
+        prefix="val",
+        scope="epoch",
+        category="timing",
+        units="sec",
+    )
+    val_time = rec.get_epoch_scalars().get(val_time_name, [])
     assert len(val_time) == 1 and val_time[0][0] > 0
     assert (
         (0.05 * 3 + 0.1) <= val_time[0][0] <= (0.2 * 3 + 0.1)
@@ -264,7 +292,14 @@ def _test_hooks_dist(cfg):
         trainer._iter = tstep + 1
     timer.after_test()
 
-    test_step_times = rec.get_step_scalars().get("test_step_time", [])
+    test_step_time_name = get_metric_full_name(
+        name="step_time",
+        prefix="test",
+        scope="step",
+        category="timing",
+        units="sec",
+    )
+    test_step_times = rec.get_step_scalars().get(test_step_time_name, [])
 
     # warm-up also applies here
     assert len(test_step_times) == max(0, 4 - warmup)
@@ -277,7 +312,13 @@ def _test_hooks_dist(cfg):
     timer.before_epoch()
     time.sleep(0.15)
     timer.after_epoch()
-    epoch_time = rec.get_epoch_scalars().get("epoch_time", [])
+    epoch_time_name = get_metric_full_name(
+        name="epoch_time",
+        scope="epoch",
+        category="timing",
+        units="sec",
+    )
+    epoch_time = rec.get_epoch_scalars().get(epoch_time_name, [])
     assert len(epoch_time) == 1 and epoch_time[0][0] > 0
     assert 0.1 <= epoch_time[0][0] <= 0.3, f"Expected epoch time to be between 0.1 and 0.3, got {epoch_time[0][0]}"
 
@@ -350,11 +391,21 @@ def _test_hooks_dist(cfg):
     _ = torch.empty((1024, 1024), device="cuda")
     mem_hook.after_step(None, None, {})
     step_scalars = step_recorder.get_step_scalars()
-
-    keys_ok = all(k in step_scalars for k in ("allocated_mem", "reserved_mem", "max_allocated_mem", "max_reserved_mem"))
+    keys_ok = True
+    missing_keys = []
+    for k in ("allocated_mem", "reserved_mem", "max_allocated_mem", "max_reserved_mem"):
+        mem_step_name = get_metric_full_name(
+            name=k,
+            scope="step",
+            category="system",
+            units="GB",
+        )
+        if mem_step_name not in step_scalars:
+            keys_ok = False
+            missing_keys.append(k)
 
     if not keys_ok:
-        raise ValueError("TorchMemoryStats hook did not log expected step data. ")
+        raise ValueError(f"TorchMemoryStats hook did not log expected step data. Missing keys: {missing_keys}")
 
     # ------------------------------------------------------------------ #
     # EPOCH END  (epoch == 0)
@@ -378,12 +429,21 @@ def _test_hooks_dist(cfg):
     _ = torch.empty((512, 512), device="cuda")
     mem_hook.after_test_step(None, None, {})
     test_scalars = step_recorder.get_step_scalars()
-    test_keys_ok = all(
-        k in test_scalars for k in ("allocated_mem", "reserved_mem", "max_allocated_mem", "max_reserved_mem")
-    )
+    test_keys_ok = True
+    missing_keys = []
+    for k in ("allocated_mem", "reserved_mem", "max_allocated_mem", "max_reserved_mem"):
+        mem_step_name = get_metric_full_name(
+            name=k,
+            scope="step",
+            category="system",
+            units="GB",
+        )
+        if mem_step_name not in test_scalars:
+            test_keys_ok = False
+            missing_keys.append(k)
 
     if not test_keys_ok:
-        raise ValueError("TorchMemoryStats hook did not log expected test step data. ")
+        raise ValueError(f"TorchMemoryStats hook did not log expected test step data. Missing keys: {missing_keys}")
 
     # ------------------------------------------------------------------ #
     # TEST END
@@ -399,7 +459,7 @@ def _test_hooks_dist(cfg):
 
     # ---- ---- ---- BestMetricSaver tests ---- ---- ----
 
-    metric_name = saver.metric_name
+    metric_name = saver.metric_name.split("/")[-1] # remove the {scope}_{category} prefix
     recorder = trainer.event_recorder
 
     # clearout logs
@@ -483,7 +543,7 @@ def _test_hooks_dist(cfg):
 
     # ---- ---- ---- EarlyStopHook tests ---- ---- ----
 
-    metric = ehook.metric_name
+    metric = ehook.metric_name.split("/")[-1] # remove the {scope}_{category} prefix
     ehook.patience = 2
     threshold = ehook.stopping_threshold
 

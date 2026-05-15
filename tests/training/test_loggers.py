@@ -46,15 +46,26 @@ def test_put_scalar_batch_recorder_and_reduce():
     rec = EventRecorder()
     rec._iter, rec._epoch = 3, 0
     rec.put_scalar_batch(
-        "async_metric",
-        [1.0, 2.0, 3.0],
+        name="async_metric",
+        values=[1.0, 2.0, 3.0],
         scope="step",
         reduce_method=["median", "mean", "max"],
+        category="cat",
+        prefix="prefix",
+        units="units",
     )
-    async_metric_rows = rec.get_step_scalars()["async_metric"]
+    step_name = get_metric_full_name(
+        name="async_metric",
+        scope="step",
+        category="cat",
+        prefix="prefix",
+        units="units",
+    )
+    async_metric_rows = rec.get_step_scalars()[step_name]
     assert len(async_metric_rows) == 3
     assert [t[0] for t in async_metric_rows] == [1.0, 2.0, 3.0], "Values not properly recorded"
     assert [t[1] for t in async_metric_rows] == [0, 1, 2], "Step indices not properly recorded"
+    assert [t[2] for t in async_metric_rows] == [0, 0, 0], "Epoch indices not properly recorded"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         lw = LocalEventWriter(
@@ -65,10 +76,15 @@ def test_put_scalar_batch_recorder_and_reduce():
         )
         wlist = EventWriterList([lw])
         step_scalars, _ = wlist.reduce_scalars()
-        assert "async_metric_median" in step_scalars
-        assert pytest.approx(step_scalars["async_metric_median"][0][0]) == 1.0
-        assert pytest.approx(step_scalars["async_metric_mean"][0][0]) == 1.0
-        assert pytest.approx(step_scalars["async_metric_max"][0][0]) == 1.0
+        median_step_name = f"{step_name}_median"
+        mean_step_name = f"{step_name}_mean"
+        max_step_name = f"{step_name}_max"
+        assert median_step_name in step_scalars
+        assert mean_step_name in step_scalars
+        assert max_step_name in step_scalars
+        assert pytest.approx(step_scalars[median_step_name][0][0]) == 1.0
+        assert pytest.approx(step_scalars[mean_step_name][0][0]) == 2.0
+        assert pytest.approx(step_scalars[max_step_name][0][0]) == 1.0
 
 
 def _test_loggers_dist(cfg: DictConfig):

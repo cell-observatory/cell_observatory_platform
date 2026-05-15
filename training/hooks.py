@@ -40,7 +40,7 @@ from cell_observatory_platform.utils.memory import (
 )
 from cell_observatory_platform.training.checkpoint_metadata import build_metadata
 from cell_observatory_platform.training.loggers import EventWriter, WandBEventWriter
-from cell_observatory_platform.training.helpers import log_data_timings
+from cell_observatory_platform.training.helpers import log_data_timings, get_metric_full_name
 from cell_observatory_platform.training.schedulers import CosineScheduler
 from cell_observatory_platform.utils.context import gather_and_reduce, is_main_process, process_rank
 if TYPE_CHECKING:
@@ -375,7 +375,12 @@ class IterationTimer(HookBase):
         iter_done = self.trainer._iter - self.trainer.start_iter + 1
         if iter_done > self._warmup_iter:
             sec = self._step_timer.seconds()
-            self.trainer.event_recorder.put_scalars(step_time=sec)
+            self.trainer.event_recorder.put_scalars(
+                step_time=sec,
+                scope="step",
+                category="timing",
+                units="sec"
+            )
             log_data_timings(self.trainer, self.trainer._iter + 1, data_sample, loss_dict, type="train")
         else:
             # reset _total_timer and _start_time
@@ -395,11 +400,21 @@ class IterationTimer(HookBase):
 
     def after_epoch(self):
         sec = self._epoch_timer.seconds()
-        self.trainer.event_recorder.put_scalars(epoch_time=sec, scope="epoch")
+        self.trainer.event_recorder.put_scalars(
+            epoch_time=sec,
+            scope="epoch",
+            category="timing",
+            units="sec"
+        )
 
         remaining_epochs = self.trainer._max_epochs - (self.trainer._epoch + 1)
         eta = sec * remaining_epochs / 3600
-        self.trainer.event_recorder.put_scalars(eta=eta, scope="epoch")
+        self.trainer.event_recorder.put_scalars(
+            eta=eta,
+            scope="epoch",
+            category="timing",
+            units="hrs"
+        )
 
     def before_validation(self):
         # stop epoch timer
@@ -412,7 +427,13 @@ class IterationTimer(HookBase):
         # resume the epoch timer
         # after the validation loop
         sec = self._val_timer.seconds()
-        self.trainer.event_recorder.put_scalars(val_time=sec, scope="epoch")
+        self.trainer.event_recorder.put_scalars(
+            total_time=sec,
+            prefix="val",
+            scope="epoch",
+            category="timing",
+            units="sec"
+        )
         self._epoch_timer.resume()
 
     def before_val_step(self):
@@ -426,7 +447,13 @@ class IterationTimer(HookBase):
         Record the time spent on the validation step.
         """
         sec = self._val_step_timer.seconds()
-        self.trainer.event_recorder.put_scalars(val_step_time=sec)
+        self.trainer.event_recorder.put_scalars(
+            step_time=sec,
+            prefix="val",
+            scope="step",
+            category="timing",
+            units="sec"
+        )
 
         # Reset the timer for the next validation step
         self._val_step_timer.reset()
@@ -476,7 +503,13 @@ class IterationTimer(HookBase):
         iter_done = self.trainer._iter - self.trainer.start_iter + 1
         if iter_done > self._warmup_iter:
             sec = self._test_timer.seconds()
-            self.trainer.event_recorder.put_scalars(test_step_time=sec)
+            self.trainer.event_recorder.put_scalars(
+                step_time=sec,
+                scope="step",
+                prefix="test",
+                category="timing",
+                units="sec"
+            )
             log_data_timings(self.trainer, self.trainer._iter + 1, data_sample, loss_dict, type="test")
         else:
             # reset _total_timer and _start_time
@@ -636,9 +669,9 @@ class InferenceMetricsHook(HookBase):
             samples_per_sec = self._inference_total_samples / duration_s
             self.trainer.event_recorder.put_scalars(
                 scope="epoch",
-                prefix="inference_",
+                prefix="inference",
+                category="timing",
                 samples_per_sec=samples_per_sec,
-                tiles_per_sec=samples_per_sec,
             )
 
 
@@ -834,6 +867,9 @@ class TorchMemoryStats(HookBase):
                     reserved_mem=reserved_gb,
                     max_allocated_mem=max_allocated_gb,
                     allocated_mem=allocated_gb,
+                    scope="step",
+                    category="system",
+                    units="GB",
                 )
 
                 torch.cuda.reset_peak_memory_stats()
@@ -864,6 +900,9 @@ class TorchMemoryStats(HookBase):
                     reserved_mem=reserved_gb,
                     max_allocated_mem=max_allocated_gb,
                     allocated_mem=allocated_gb,
+                    scope="step",
+                    category="system",
+                    units="GB",
                 )
 
                 torch.cuda.reset_peak_memory_stats()
@@ -888,7 +927,11 @@ class BestMetricSaver(HookBase):
         period: int = 1,
     ):
         super().__init__()
-        self.metric_name = metric_name
+        self.metric_name = get_metric_full_name(
+            name=metric_name,
+            scope="epoch",
+            category="loss",
+        )
         self.compare_fn = operator.gt if compare_fn == "max" else operator.lt
 
         self.eval_after_validation = eval_after_validation
@@ -1023,9 +1066,9 @@ class TorchProfiler(HookBase):
             for a in (activities or (ProfilerActivity.CPU, ProfilerActivity.CUDA))
         )
 
-        self._wait, self._warmup = schedule.get("wait"), schedule.get("warmup")
-        self._active, self._repeat = schedule.get("active"), schedule.get("repeat")
-        self._skip_first = schedule.get("skip_first")
+        self._wait, self._warmup = schedule.get("wait", 0), schedule.get("warmup", 0)
+        self._active, self._repeat = schedule.get("active", 1), schedule.get("repeat", 1)
+        self._skip_first = schedule.get("skip_first", 0)
 
         self._output_dir = output_dir
         # Total steps until first trace: skip_first + (wait + warmup + active) per repeat
@@ -1126,7 +1169,11 @@ class EarlyStopHook(HookBase):
     ):
         super().__init__()
 
-        self.metric_name = metric_name
+        self.metric_name = get_metric_full_name(
+            name=metric_name,
+            scope="epoch",
+            category="loss",
+        )
         if mode == "min":
             self.compare_fn = operator.lt
         elif mode == "max":

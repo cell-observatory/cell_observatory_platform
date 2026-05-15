@@ -567,7 +567,10 @@ class EpochBasedTrainer(BaseTrainer):
 
         metrics = self.evaluator.evaluate()
         self.event_recorder.put_scalars(
-            scope="epoch", prefix="val_", **{k: (v.item() if torch.is_tensor(v) else v) for k, v in metrics.items()}
+            scope="epoch",
+            prefix="val",
+            category="loss",
+            **{k: (v.item() if torch.is_tensor(v) else v) for k, v in metrics.items()},
         )
         self.evaluator.reset()
 
@@ -833,7 +836,8 @@ class TestTrainer(BaseTrainer):
 
         metrics = self.evaluator.evaluate()
         self.event_recorder.put_scalars(
-            prefix="test_",
+            prefix="test",
+            category="loss",
             scope="epoch",
             **{k: (v.item() if torch.is_tensor(v) else v)
                 for k, v in metrics.items()
