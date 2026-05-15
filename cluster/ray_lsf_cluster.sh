@@ -121,10 +121,19 @@ start_local_db_on_node() {
     echo "Starting local database on $host"
     blaunch -z "$host" "
         apptainer instance stop mysql >/dev/null 2>&1 || true
+        # Defensive scrub: if a previous job died before pg_ctl stop could
+        # run, postmaster.pid will be left in the sandbox and the next
+        # postgres start will FATAL. Only safe to delete iff no postgres
+        # process is still alive on this node holding our port. Postgres
+        # is launched with '-c port=<N>', so match on that exact token.
+        if ! pgrep -f \"postgres .* port=$SUPABASE_LOCAL_PORT\" >/dev/null 2>&1; then
+            rm -f $sandbox_dir/var/lib/postgresql/data/postmaster.pid
+        fi
         mkdir -p $sandbox_dir/global \
                  $sandbox_dir/clusterfs \
                  $sandbox_dir/scratch \
-                 $sandbox_dir/dev/shm
+                 $sandbox_dir/dev/shm \
+                 $sandbox_dir/groups
         env -u APPTAINER_BIND -u APPTAINER_BINDPATH \
             -u SINGULARITY_BIND -u SINGULARITY_BINDPATH \
             apptainer instance start --no-mount proc --writable \
@@ -136,6 +145,24 @@ start_local_db_on_node() {
             -c 'config_file=/etc/postgresql/postgresql.conf'
     " &
     out_pid=$!
+}
+
+# stop_local_db_on_node <host> <out_pid_array>
+#   Gracefully shut down postgres inside the running mysql instance, then
+#   stop the apptainer instance itself. Without the pg_ctl step, `apptainer
+#   instance stop` only signals the instance's main process (the sandbox
+#   runscript); the exec'd postgres is reaped by namespace teardown, leaving
+#   postmaster.pid orphaned in the sandbox and blocking the next startup.
+stop_local_db_on_node() {
+    local host=$1
+    local -n out_pids=$2
+
+    blaunch -z "$host" "
+        apptainer exec instance://mysql pg_ctl -D /var/lib/postgresql/data -m fast stop -w -t 30 \
+            >/dev/null 2>&1 || true
+        apptainer instance stop mysql >/dev/null 2>&1 || true
+    " >/dev/null 2>&1 &
+    out_pids+=($!)
 }
 
 # wait_for_local_db_on_node <host> <host_ip>
@@ -232,6 +259,20 @@ run_user_task() {
 }
 
 # cleanup_node <host> <tmpdir_bindsrc> <pidfile_basename> <out_pid_array>
+#   Single responsibility: deliver SIGTERM to the head/worker pid written
+#   into the bind-mounted tmpdir and wait for that process's own EXIT trap
+#   (defined in ray_start_cluster.sh / ray_start_worker.sh) to run ray stop
+#   and the per-node scratch/shm scrub. After the grace window, SIGKILL.
+#
+#   We deliberately do NOT spawn a fresh `apptainer exec` here to re-run
+#   `ray stop`, `cleanup.py`, or `clean_shm.sh`:
+#     - `ray stop` from a separate container has no view of the original
+#       ray runtime sockets, so it would be a no-op.
+#     - cleanup.py and clean_shm.sh are already owned by the trapped cleanup
+#       inside the worker/head container (and by LSF `-Ep clean_shm.sh` as
+#       a post-exec belt-and-suspenders).
+#
+#   Postgres / apptainer instance shutdown is owned by stop_local_db_on_node.
 cleanup_node() {
     local host=$1
     local tmpdir_bindsrc=$2
@@ -239,51 +280,59 @@ cleanup_node() {
     local -n out_pids=$4
 
     blaunch -z "$host" "
-        apptainer exec --userns --nv \
-            --bind $storage_server \
-            --bind $workspace \
-            --bind $bind \
-            --bind $tmpdir_bindsrc:$tmpdir \
-            $env bash -lc '
-            pf=\"$tmpdir/$pidfile\"
-            GRACE_SECONDS=60
-            if [ -f \"\$pf\" ]; then
-                pid=\$(cat \"\$pf\")
-                kill -TERM \"\$pid\" 2>/dev/null || true
-                for ((i=0;i<GRACE_SECONDS;i++)); do
-                    kill -0 \"\$pid\" 2>/dev/null || break
-                    sleep 1
-                done
-            fi
-            python3 /workspace/cell_observatory_platform/utils/cleanup.py || true
-            bash /workspace/cell_observatory_platform/cluster/clean_shm.sh || true
-            ray stop --force >/dev/null 2>&1 || true
-            '
-        apptainer instance stop mysql >/dev/null 2>&1 || true
+        pf=\"$tmpdir_bindsrc/$pidfile\"
+        GRACE_SECONDS=60
+        if [ -f \"\$pf\" ]; then
+            pid=\$(cat \"\$pf\")
+            kill -TERM \"\$pid\" 2>/dev/null || true
+            for ((i=0;i<GRACE_SECONDS;i++)); do
+                kill -0 \"\$pid\" 2>/dev/null || break
+                sleep 1
+            done
+            kill -KILL \"\$pid\" 2>/dev/null || true
+        fi
     " >/dev/null 2>&1 &
     out_pids+=($!)
 }
 
 # do_cleanup
+#   Two-phase fan-out:
+#     1. Signal head + every worker (in parallel) and wait for their trapped
+#        cleanups to drain.
+#     2. Gracefully stop postgres + apptainer instance on every node.
+#   Idempotent via _ORCH_CLEANED guard so re-entry from a second TERM (or
+#   the LSF runlimit) does not double-fan-out and race the first round of
+#   blaunches into "Failed while waiting for tasks to finish".
+_ORCH_CLEANED=0
 do_cleanup() {
-    local cleanup_jobs=()
+    (( _ORCH_CLEANED )) && return
+    _ORCH_CLEANED=1
 
-    cleanup_node "$head_node" "$outdir" "cleanup_head.pid" cleanup_jobs
-
+    local out_pids=()
+    cleanup_node "$head_node" "$outdir" "cleanup_head.pid" out_pids
     local i=0
     for host in "${workers[@]:-}"; do
-        cleanup_node "$host" "$outdir/ray_worker_$i" "cleanup_${i}.pid" cleanup_jobs
+        cleanup_node "$host" "$outdir/ray_worker_$i" "cleanup_${i}.pid" out_pids
         i=$((i+1))
     done
+    for pid in "${out_pids[@]}"; do wait "$pid" || true; done
 
-    for pid in "${cleanup_jobs[@]}"; do
-        wait "$pid" || true
+    out_pids=()
+    stop_local_db_on_node "$head_node" out_pids
+    for host in "${workers[@]:-}"; do
+        stop_local_db_on_node "$host" out_pids
     done
+    for pid in "${out_pids[@]}"; do wait "$pid" || true; done
 
+    echo "Cleanup complete"
+
+    # Buffer for any straggling blaunch tear-downs, then hard-kill the LSF
+    # allocation. Without this, if anything in the orchestrator shell aborts
+    # (e.g. parse error from editing this script mid-run) the workers'
+    # backgrounded blaunches can keep the allocation in RUN until runlimit.
     sleep 120
-
     echo "Shutting down the job"
-    bkill $LSB_JOBID
+    bkill "$LSB_JOBID"
 }
 
 ############################## START HEAD NODE

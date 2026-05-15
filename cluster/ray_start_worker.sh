@@ -58,9 +58,6 @@ cleanup() {
 trap 'cleanup' EXIT
 trap 'cleanup; exit 143' TERM INT
 
-# remove any leftover shared memory segments
-python3 /workspace/cell_observatory_platform/utils/cleanup.py
-
 : "${SUPABASE_LOCAL_PORT:?SUPABASE_LOCAL_PORT must be set in the environment}"
 : "${NODE_LOCAL_STORE_ROOT:?NODE_LOCAL_STORE_ROOT must be set in the environment}"
 
@@ -68,7 +65,8 @@ mkdir -p "$NODE_LOCAL_STORE_ROOT"
 
 ############################## START RAY
 
-# remove any leftover shared memory segments
+# remove any leftover shared memory segments / scratch state from a prior
+# job on this node before bringing up the ray worker. 
 python3 /workspace/cell_observatory_platform/utils/cleanup.py
 
 echo "Starting ray worker @ $(hostname) with CPUs[$cpus] & GPUs [$gpus] => $cluster_address"
