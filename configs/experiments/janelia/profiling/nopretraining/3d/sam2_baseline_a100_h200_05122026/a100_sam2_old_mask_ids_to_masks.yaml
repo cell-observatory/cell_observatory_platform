@@ -3,7 +3,7 @@ defaults:
   - /tasks/instance_segmentation
   - /paths/local
   - /hydra/overrides
-  - /clusters/janelia_h200
+  - /clusters/janelia_a100
   - /datasets/databases/base_database
   - /datasets/transforms/ray_transforms
   - /datasets/preprocessor/ray_preprocessor
@@ -25,7 +25,7 @@ defaults:
   - /profiling/profiling
   - _self_
 
-experiment_name: profiling_h200_sam2_baseline_128x384x512_10_epoch_lr_0p0001_opt_adamw
+experiment_name: profiling_a100_sam2_baseline_128x384x512_old_mask_ids_to_masks
 wandb_project: testing
 
 # debug_mode: true
@@ -50,17 +50,11 @@ engine: deepspeed
 # --------------------------------------------------------------------------------
 
 clusters:
-  batch_size: 16 # set this equal to gpus_per_worker * worker_nodes
-  worker_nodes: 2 # number of worker nodes
-  # gpus_per_worker: 8 # number of gpus per worker node
-  # cpus_per_gpu: 12 # number of cpu cores per gpu
-  # mem_per_cpu: 40000 # ram per cpu core
-  # ray_queue_memory: 0.2
+  batch_size: 8 # gpus_per_worker (4) * worker_nodes (2)
+  worker_nodes: 2
 
 paths:
-  # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/testing/${experiment_name}
-  # server_path_override: /groups/betzig/betziglab/CellObservatoryData/synthetic_data/05052026_mem_cyto_1k_volumes_77_tiles/
   server_path_override: /groups/betzig/betziglab/CellObservatoryData/synthetic_data/fixed/05052026_mem_cyto_1k_volumes_77_tiles/
   resume_checkpointdir: null
   pretrained_checkpointdir: null
@@ -81,12 +75,7 @@ datasets:
   num_actors_max: 12
 
   use_cached_hypercubes_dataframe: false
-  # tile_list:
-  #   - "000x_005y_001z.zarr"
-    # - "000x_005y_000z.zarr"
-  # roi_list: [314]
-  # timepoint_list: [0]
-  max_rows: 1000 # maximum number of rows to query from the database
+  max_rows: null
   cdf_threshold: null
   cdf_target: null
   selected_channel_localizations: ["membrane", "cytosol"]
@@ -94,16 +83,17 @@ datasets:
   synthetic_only: true
 
   preprocessor:
-    max_masks: 48
+    max_masks: 24
+    # OLD path: build all binary masks on CPU in the collator.
+    defer_binary_masks: false
 
   databases:
     dbname: local
     protocol: cursor
     verbose: true
-    diagnostic_verbose: true
+    diagnostic_verbose: false
     sample_type: cube
     channel_count: 6
-    # required_channel_key_patterns: {0: "membrane"}
     required_channel_localizations: ["membrane", "cytosol"]
     required_locations: ["exists_abc"]
 
@@ -124,6 +114,7 @@ datasets:
     bbox_output_format: cxcyczwhd
     mask_channel_idx: ${datasets.mask_channel_idx}
     generate_binary_masks: true
+    defer_binary_masks: false
     debug: false
     debug_device_idx: 0
     normalize_bboxes: true
@@ -146,15 +137,12 @@ datasets:
       - "annotations_metadata"
 
 schedulers:
-  epochs: 1
-  # warmup: 30
-  # cooldown: 5
+  epochs: 10
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}
   lr: 1e-4
 
-# hooks
 hooks:
   hooks_list:
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
@@ -165,24 +153,3 @@ hooks:
   - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
     file_prefix: latest_model
     backend: DEEPSPEED
-  # - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-  #   checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  # - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
-  #   metric_name: ${evaluation.val_metric}
-  #   compare_fn: ${evaluation.val_mode}
-  #   eval_after_validation: true
-
-    # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
-    #   output_dir: ${paths.outdir}/profiler
-    #   schedule:
-    #     # skip_first: 10
-    #     warmup: 20
-    #     active: 2
-    #     repeat: 1
-    #     wait: 1
-    #   activities:
-    #     - CUDA
-    #     - CPU
-    #   save_tensorboard: true
-    #   shutdown_after_profile: true
-    #   save_memory_trace: true
