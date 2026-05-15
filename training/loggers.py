@@ -471,6 +471,8 @@ class WandBEventWriter(EventWriter):
         else:
             self.run = None
         
+        
+
     def _write_scalar_impl(
         self,
         scalar_dict,
