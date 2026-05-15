@@ -3,7 +3,7 @@ defaults:
   - /tasks/instance_segmentation
   - /paths/local
   - /hydra/overrides
-  - /clusters/janelia_h100
+  - /clusters/janelia_h200
   - /datasets/databases/base_database
   - /datasets/transforms/ray_transforms
   - /datasets/preprocessor/ray_preprocessor
@@ -25,7 +25,7 @@ defaults:
   - /profiling/profiling
   - _self_
 
-experiment_name: profiling_h100_sam2_baseline_128x384x512_old_mask_ids_to_masks
+experiment_name: profiling_h200_sam2_baseline_128x384x512_10_epoch_lr_0p0001_opt_adamw
 wandb_project: testing
 
 # debug_mode: true
@@ -50,8 +50,8 @@ engine: deepspeed
 # --------------------------------------------------------------------------------
 
 clusters:
-  batch_size: 8 # set this equal to gpus_per_worker * worker_nodes
-  worker_nodes: 1 # number of worker nodes
+  batch_size: 16 # set this equal to gpus_per_worker * worker_nodes
+  worker_nodes: 2 # number of worker nodes
   # gpus_per_worker: 8 # number of gpus per worker node
   # cpus_per_gpu: 12 # number of cpu cores per gpu
   # mem_per_cpu: 40000 # ram per cpu core
@@ -86,7 +86,7 @@ datasets:
     # - "000x_005y_000z.zarr"
   # roi_list: [314]
   # timepoint_list: [0]
-  max_rows: null # maximum number of rows to query from the database
+  max_rows: 1000 # maximum number of rows to query from the database
   cdf_threshold: null
   cdf_target: null
   selected_channel_localizations: ["membrane", "cytosol"]
@@ -94,9 +94,7 @@ datasets:
   synthetic_only: true
 
   preprocessor:
-    max_masks: 24 # For A100 / H100
-    # max_masks: 46 # For H200
-    defer_binary_masks: true # pairs with datasets.collate_fn.defer_binary_masks=true
+    max_masks: 48
 
   databases:
     dbname: local
@@ -126,9 +124,6 @@ datasets:
     bbox_output_format: cxcyczwhd
     mask_channel_idx: ${datasets.mask_channel_idx}
     generate_binary_masks: true
-    # Defer binary mask materialization to the model preprocessor (GPU,
-    # only K=max_masks slices). Pairs with datasets.preprocessor.defer_binary_masks=true.
-    defer_binary_masks: true
     debug: false
     debug_device_idx: 0
     normalize_bboxes: true
@@ -151,7 +146,7 @@ datasets:
       - "annotations_metadata"
 
 schedulers:
-  epochs: 10
+  epochs: 1
   # warmup: 30
   # cooldown: 5
 
@@ -177,17 +172,17 @@ hooks:
   #   compare_fn: ${evaluation.val_mode}
   #   eval_after_validation: true
 
-  # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
-  #   output_dir: ${paths.outdir}/profiler
-  #   schedule:
-  #     # skip_first: 10
-  #     warmup: 50
-  #     active: 2
-  #     repeat: 1
-  #     wait: 1
-  #   activities:
-  #     - CUDA
-  #     - CPU
-  #   save_tensorboard: true
-  #   shutdown_after_profile: true
-  #   save_memory_trace: true
+    # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+    #   output_dir: ${paths.outdir}/profiler
+    #   schedule:
+    #     # skip_first: 10
+    #     warmup: 20
+    #     active: 2
+    #     repeat: 1
+    #     wait: 1
+    #   activities:
+    #     - CUDA
+    #     - CPU
+    #   save_tensorboard: true
+    #   shutdown_after_profile: true
+    #   save_memory_trace: true
