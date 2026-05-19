@@ -9,13 +9,14 @@ from operator import attrgetter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union, Iterable
 
-# Wandb panel sections are derived from the metric category. Currently only
-# "timing" and "loss" get their own sections (e.g. ``step_timing/...``,
-# ``epoch_loss/...``). All other metrics pass ``category=None`` and land in
-# the default ``step``/``epoch`` sections. See
+# Wandb panel sections are derived from the metric category. Currently
+# "timing", "loss", and "system" get their own sections (e.g.
+# ``step_timing/...``, ``epoch_loss/...``). All other metrics pass
+# ``category=None`` and land in the default ``step``/``epoch`` sections. See
 # ``cell_observatory_platform.training.loggers.WandBEventWriter`` for how
 # this is consumed.
-METRIC_CATEGORIES = Literal["timing", "loss"]
+METRIC_CATEGORIES = Literal["timing", "loss", "system"]
+METRIC_CATEGORY_NAMES: tuple[METRIC_CATEGORIES, ...] = ("timing", "loss", "system")
 
 import numpy as np
 import polars as pl
@@ -388,6 +389,7 @@ def log_data_timings(
             scope="step",
             prefix=prefix,
             category="timing",
+            units="sec",
             data_time=data_time,
             reduce_method=["median", "max", "min"]
         )
@@ -398,6 +400,7 @@ def log_data_timings(
             scope="step",
             prefix=prefix,
             category="timing",
+            units="sec",
             get_item_time=get_item_time.mean().item(),
             reduce_method=["median", "max", "min"]
         )
@@ -408,6 +411,7 @@ def log_data_timings(
             scope="step",
             prefix=prefix,
             category="timing",
+            units="sec",
             preprocess_time=preprocess_time,
             reduce_method=["median", "max", "min"]
         )
@@ -418,6 +422,7 @@ def log_data_timings(
             scope="step",
             prefix=prefix,
             category="timing",
+            units="sec",
             masking_time=masking_time,
             reduce_method=["median", "max", "min"]
         )
@@ -428,6 +433,7 @@ def log_data_timings(
             scope="step",
             prefix=prefix,
             category="timing",
+            units="sec",
             collate_time=collate_time,
             reduce_method=["median", "max", "min"]
         )
@@ -438,6 +444,7 @@ def log_data_timings(
             scope="step",
             prefix=prefix,
             category="timing",
+            units="sec",
             slice_time=slice_time.mean().item() if \
                 isinstance(slice_time, torch.Tensor) else np.mean(slice_time),
             reduce_method=["median", "max", "min"]
@@ -449,6 +456,7 @@ def log_data_timings(
             scope="step",
             prefix=prefix,
             category="timing",
+            units="sec",
             transform_time=transform_time,
             reduce_method=["median", "max", "min"]
         )
@@ -483,6 +491,7 @@ def get_metric_full_name(
 ) -> str:
     section = f"{scope}_{category}" if category else scope
     name = f"{name}_{units}" if units else name
+    name = f"{prefix}/{name}" if prefix else name
     return f"{section}/{name}"
 
 def get_input_data(inputs, device: Optional[torch.device] = 'cuda'):

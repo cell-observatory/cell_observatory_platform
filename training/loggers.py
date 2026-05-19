@@ -18,6 +18,7 @@ from typing import Literal, Tuple, Dict, List, Any, Optional, Sequence
 
 import wandb
 import pandas as pd
+from omegaconf import OmegaConf
 
 import torch
 
@@ -27,6 +28,7 @@ from cell_observatory_platform.training.helpers import (
     aggregate_microbatch_losses,
     get_metric_full_name,
     METRIC_CATEGORIES,
+    METRIC_CATEGORY_NAMES,
 )
 from cell_observatory_platform.utils.context import (
     is_torch_dist_initialized, 
@@ -97,7 +99,7 @@ class EventRecorder:
         prefix: Optional[str] = None,
         units: Optional[str] = None,
     ) -> None:
-        """Append multiple observations at the current (iter, epoch); used for raw sample lists."""
+        """Append raw observations as consecutive synthetic step records."""
         if not values:
             return
         
@@ -108,15 +110,15 @@ class EventRecorder:
             prefix=prefix,
             units=units,
         )
-        if name not in self._reduce_methods:
+        if full_name not in self._reduce_methods:
             self._reduce_methods[full_name] = reduce_method
         store = self._step_scalars if scope == "step" else self._epoch_scalars
         it, ep = self._iter, self._epoch
-        last_recorded_iter = store[full_name][-1][2] if store[full_name] else 0
-        if last_recorded_iter + len(values) != it:
+        next_iter = store[full_name][-1][1] + 1 if store[full_name] else 0
+        if next_iter + len(values) != it:
             logger.warning("Given values do not match current iteration. Logs may be losing data and may appear inconsistent.")
         for i, v in enumerate(values):
-            store[full_name].append((float(v), last_recorded_iter + i, ep))
+            store[full_name].append((float(v), next_iter + i, ep))
 
     def put_scalars(
         self,
@@ -512,7 +514,7 @@ class WandBEventWriter(EventWriter):
             )
             self.run.define_metric(catchall_step_name,  step_metric="iter")
             self.run.define_metric(catchall_epoch_name, step_metric="epoch")
-            for cat in METRIC_CATEGORIES:
+            for cat in METRIC_CATEGORY_NAMES:
                 catchall_step_cat_name = get_metric_full_name(
                     name="*",
                     scope="step",
@@ -527,6 +529,25 @@ class WandBEventWriter(EventWriter):
                 self.run.define_metric(catchall_epoch_cat_name, step_metric="epoch")
         else:
             self.run = None
+
+    def save_config(self, cfg: Any, filename: str = "resolved_config.yaml") -> None:
+        """Save the resolved run config as a W&B file."""
+        if self.run is None or process_rank() != 0:
+            return
+
+        try:
+            run_dir = Path(self.run.dir)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            config_path = run_dir / filename
+            try:
+                config_yaml = OmegaConf.to_yaml(cfg, resolve=True)
+            except Exception:
+                logger.exception("Failed to fully resolve config; saving unresolved config instead.")
+                config_yaml = OmegaConf.to_yaml(cfg, resolve=False)
+            config_path.write_text(config_yaml, encoding="utf-8")
+            self.run.save(str(config_path), base_path=str(run_dir), policy="now")
+        except Exception:
+            logger.exception("Failed to save resolved config to W&B run files.")
         
     def _write_scalar_impl(
         self,
@@ -545,9 +566,9 @@ class WandBEventWriter(EventWriter):
                 it = int(rec["iter"])
                 ep = int(rec.get("epoch", 0))
                 payload = {
-                    "iter": it,            # required so step/* uses iter
+                    "iter": it,            # required so step metrics use iter
                     "epoch": ep,           # handy to see epoch with step logs
-                    **{f"step/{k}": v for k, v in rec.items() if k not in ("iter", "epoch")},
+                    **{k: v for k, v in rec.items() if k not in ("iter", "epoch")},
                 }
                 self.run.log(payload, commit=True)
 
@@ -556,8 +577,8 @@ class WandBEventWriter(EventWriter):
             for rec in df.to_dict(orient="records"):
                 ep = int(rec["epoch"])
                 payload = {
-                    "epoch": ep,           # required so epoch/* uses epoch
-                    **{f"epoch/{k}": v for k, v in rec.items() if k != "epoch"},
+                    "epoch": ep,           # required so epoch metrics use epoch
+                    **{k: v for k, v in rec.items() if k != "epoch"},
                 }
                 self.run.log(payload, commit=True)             
 
