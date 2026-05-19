@@ -6,7 +6,6 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 
 from queue import Queue
 from threading import Thread
-from multiprocessing import shared_memory
 
 import ray
 
@@ -28,7 +27,7 @@ from cell_observatory_platform.data.databases.local_metadata_store import (
     SampleIndexPlanner,
 )
 from cell_observatory_platform.data.io import read_zarr
-from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, get_buffers
+from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, attach_shared_memory, get_buffers
 from cell_observatory_platform.data.structures import convert_bbox_format, mask_ids_to_masks
 from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
 from cell_observatory_platform.data.datasets.utils import resolve_channel_localization_indices
@@ -113,6 +112,7 @@ class FinetuneCollatorActor:
         transforms_list: Optional[List[DictConfig]] = None,
         use_masks: bool = False,
         generate_binary_masks: bool = False,
+        defer_binary_masks: bool = False,
         require_targets: bool = True,
         # with_resize: bool = False,
         debug: bool = False,
@@ -160,7 +160,7 @@ class FinetuneCollatorActor:
         self.slot_bytes = int(cfg["slot_bytes"])
         self.batch_shape = tuple(cfg["batch_shape"])
         self.capacity = int(cfg["capacity"])
-        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+        self._shm = attach_shared_memory(cfg["name"])
 
         # original input shape (without batch) from host buffer
         # e.g. (Z_raw, Y_raw, X_raw, C_full)
@@ -229,6 +229,13 @@ class FinetuneCollatorActor:
 
         self.use_masks = use_masks
         self.generate_binary_masks = generate_binary_masks
+        # When True, defer per-instance binary mask materialization out of
+        # the CPU collator and into the model preprocessor (which can build
+        # only the K=max_masks slices it actually needs, on GPU). The
+        # labelmap rides on the last channel of data_tensor so no extra H2D
+        # is required. Caller is responsible for matching this with a
+        # downstream preprocessor that knows how to do the lazy build.
+        self.defer_binary_masks = defer_binary_masks
         self.require_targets = require_targets
         self.normalize_bboxes = normalize_bboxes
 
@@ -395,7 +402,7 @@ class FinetuneCollatorActor:
                 )
             bboxes_batch.append(box_tensor)
 
-        if self.use_masks and self.generate_binary_masks:
+        if self.use_masks and self.generate_binary_masks and not self.defer_binary_masks:
             if masks_labelmap is None or spatiotemporal_shape is None:
                 raise ValueError("generate_binary_masks=True requires a dense last-channel labelmap")
             binary_masks_batch = mask_ids_to_masks(
@@ -418,7 +425,11 @@ class FinetuneCollatorActor:
                 "labels": torch.as_tensor(labels, device=device, dtype=torch.long),
             }
             if self.use_masks:
-                if self.generate_binary_masks:
+                if self.defer_binary_masks:
+                    # Mask materialization is owned by the model preprocessor;
+                    # the labelmap rides on data_tensor's last channel.
+                    pass
+                elif self.generate_binary_masks:
                     t["masks"] = bm
                 elif masks_labelmap is not None:
                     t["label_map"] = masks_labelmap[b]
@@ -665,7 +676,7 @@ class CollatorActor:
         self.slot_bytes = int(cfg["slot_bytes"])
         self.batch_shape = tuple(cfg["batch_shape"])
         self.capacity = int(cfg["capacity"])
-        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+        self._shm = attach_shared_memory(cfg["name"])
 
         self.pin_pages = pin_pages
         if pin_pages:
@@ -923,7 +934,7 @@ class LoaderActor:
         cfg = ray.get(self.buffer_actor.get_config.remote())
         self.slot_bytes = int(cfg["slot_bytes"])
         self.batch_shape = tuple(cfg["batch_shape"])
-        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+        self._shm = attach_shared_memory(cfg["name"])
 
         ray.logger.info(
             f"LoaderActor on global rank {self.global_rank} and numa node {self.driver_process_numa_node} "

@@ -1627,10 +1627,11 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         input_format: str,
         input_shape: tuple[int, ...],
         seed: int | None = None,
-        mask_idx: int = -1,
+        mask_channel_idx: int = -1,
         expect_mask_channel: bool = True,
         max_masks: int | None = None,
         require_targets: bool = True,
+        defer_binary_masks: bool = False,
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -1641,7 +1642,7 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             input_format=input_format,
             input_shape=input_shape,
             seed=seed,
-            mask_idx=mask_idx,
+            mask_channel_idx=mask_channel_idx,
         )
         if "T" not in self.input_format:
             raise ValueError(
@@ -1650,6 +1651,19 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             )
         self.expect_mask_channel = expect_mask_channel
         self.max_masks = max_masks
+        # When True, build per-instance binary masks on-device from the
+        # labelmap (last channel of data_tensor) instead of consuming
+        # pre-built masks from targets[b]["masks"]. Pairs with the matching
+        # FinetuneCollatorActor flag of the same name. Only the K=max_masks
+        # slices that downstream actually uses get materialized.
+        self.defer_binary_masks = defer_binary_masks
+        if self.defer_binary_masks and not self.expect_mask_channel:
+            raise ValueError(
+                "defer_binary_masks=True requires expect_mask_channel=True "
+                "(the labelmap rides on the last channel of data_tensor)."
+            )
+        if self.defer_binary_masks and self.max_masks is None:
+            raise ValueError("defer_binary_masks=True requires max_masks to be set")
 
     # ------------------------------------------------------------------ #
     # Image transformations
@@ -1686,11 +1700,30 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         num_frames: int,
         num_videos: int,
         device: torch.device,
+        mask_labelmap: torch.Tensor | None = None,
     ) -> dict:
         """
         Build per-frame masks + flat object-to-image indices from per-batch targets.
         Returns dict ready to stash in data_sample["metainfo"]["data_views"].
+
+        Two modes:
+          - mask_labelmap is None (default, eager):
+              consume pre-built binary masks from targets[b]["masks"].
+          - mask_labelmap is not None (lazy, paired with defer_binary_masks=True):
+              materialize K=min(N_inst, max_masks) binary masks per (b,t)
+              on-device by comparing the labelmap to a sampled subset of
+              targets[b]["mask_ids"]. Avoids ever building (N_inst − max_masks)
+              masks that the head loop would only throw away.
         """
+        if mask_labelmap is not None:
+            return self._build_data_views_lazy(
+                targets=targets,
+                num_frames=num_frames,
+                num_videos=num_videos,
+                device=device,
+                mask_labelmap=mask_labelmap,
+            )
+
         B = num_videos
         T = num_frames
 
@@ -1767,6 +1800,90 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             "img_ids": out_img_ids,     # list[T] of (N_obj,) — flat index into data_tensor
         }
 
+    def _build_data_views_lazy(
+        self,
+        targets: list[dict],
+        num_frames: int,
+        num_videos: int,
+        device: torch.device,
+        mask_labelmap: torch.Tensor,  # (B, T, Z, Y, X) int32
+    ) -> dict:
+        """
+        Lazy path: materialize per-instance binary masks on-device from the
+        labelmap, using only the K=min(N_inst, max_masks) IDs we'll actually
+        keep after the per-frame cap. Same output contract as the eager path.
+
+        Sampling is per-VIDEO, not per-(video, frame): the same K IDs are
+        reused across all T frames so that a given object retains a stable
+        flat index across the tracking loop. Step 1 uses a deterministic
+        head-slice; random sampling will be added in a follow-up.
+        """
+        B = num_videos
+        T = num_frames
+        K_full = self.max_masks
+
+        if mask_labelmap.shape[0] != B or mask_labelmap.shape[1] != T:
+            raise ValueError(
+                f"mask_labelmap shape {tuple(mask_labelmap.shape)} does not match "
+                f"(B={B}, T={T}, Z, Y, X)"
+            )
+        spatial = mask_labelmap.shape[2:]  # (Z, Y, X)
+
+        # Per-video sampled ID subset. Default to empty so missing/short
+        # targets (e.g. inference, dropped samples) just produce all-pad rows.
+        empty_ids = torch.zeros(0, dtype=torch.long, device=device)
+        sampled_ids_per_b: list[torch.Tensor] = [empty_ids] * B
+        for b, tgt in enumerate(targets[:B]):
+            ids_b = tgt.get("mask_ids", None)
+            if ids_b is None or ids_b.numel() == 0:
+                continue
+            K = min(int(ids_b.numel()), K_full)
+            sampled_ids_per_b[b] = ids_b[:K]
+
+        out_masks: list[torch.Tensor] = []
+        out_img_ids: list[torch.Tensor] = []
+
+        for t in range(T):
+            seg_masks: list[torch.Tensor] = []
+            seg_ids: list[torch.Tensor] = []
+            for b in range(B):
+                sampled = sampled_ids_per_b[b]
+                K = sampled.numel()
+                flat_id = b * T + t
+
+                if K > 0:
+                    lm_bt = mask_labelmap[b, t]  # (Z, Y, X) int32
+                    # (K, Z, Y, X) bool; only K ≤ max_masks materialized.
+                    m = lm_bt.unsqueeze(0) == sampled.to(lm_bt.dtype).view(K, 1, 1, 1)
+                else:
+                    m = torch.zeros((0, *spatial), dtype=torch.bool, device=device)
+
+                ids = torch.full((K,), flat_id, dtype=torch.int32, device=device)
+
+                pad_n = K_full - K
+                if pad_n > 0:
+                    m = torch.cat(
+                        [m, torch.zeros((pad_n, *spatial), dtype=torch.bool, device=device)],
+                        dim=0,
+                    )
+                    ids = torch.cat(
+                        [ids, ids.new_full((pad_n,), flat_id)],
+                        dim=0,
+                    )
+
+                seg_masks.append(m)
+                seg_ids.append(ids)
+
+            out_masks.append(torch.cat(seg_masks, dim=0))
+            out_img_ids.append(torch.cat(seg_ids, dim=0))
+
+        return {
+            "num_frames": T,
+            "num_videos": B,
+            "masks": out_masks,
+            "img_ids": out_img_ids,
+        }
+
     # ------------------------------------------------------------------ #
     # forward
     # ------------------------------------------------------------------ #
@@ -1776,6 +1893,16 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
 
         inputs = data_sample["data_tensor"]
         meta = data_sample.get("metainfo", {})
+
+        # Snapshot the integer labelmap BEFORE the bf16 cast below. Segment
+        # IDs are stored as uint16 in data_tensor's last channel, so the
+        # source view is already a clean integer tensor — no copy needed.
+        # (Casting through bf16 would alias any ID > 256 on the downstream
+        # `==` comparison since bf16 has only an 8-bit mantissa.)
+        if self.defer_binary_masks:
+            mask_labelmap = inputs[..., -1]
+        else:
+            mask_labelmap = None
 
         if inputs.dtype != self.dtype:
             inputs = inputs.to(self.dtype)
@@ -1789,6 +1916,18 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         images = sample["data_tensor"]
         meta = sample["metainfo"]
 
+        # The lazy-mask path consumes `mask_labelmap` AFTER transforms run on
+        # `images`. Geometric transforms (resize, crop, flip) currently only
+        # touch `images`, so they would silently misalign the labelmap and
+        # the materialized binary masks. Detect via spatial-shape mismatch.
+        if mask_labelmap is not None and images.shape[1:-1] != mask_labelmap.shape[1:]:
+            raise RuntimeError(
+                f"defer_binary_masks=True is incompatible with geometric transforms: "
+                f"images spatial shape {tuple(images.shape[1:-1])} != labelmap spatial shape "
+                f"{tuple(mask_labelmap.shape[1:])}. Either disable geometric transforms or "
+                f"apply them to the labelmap as well."
+            )
+
         B, T = images.shape[0], images.shape[1]
 
         # --- flatten to (T*B, C, Z, Y, X) ---------------------
@@ -1801,6 +1940,7 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             num_frames=T,
             num_videos=B,
             device=flat_img_batch.device,
+            mask_labelmap=mask_labelmap,
         )
 
         return {

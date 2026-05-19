@@ -14,16 +14,22 @@ from pathlib import Path
 from abc import abstractmethod
 from dotenv import load_dotenv
 from collections import defaultdict
-from typing import Literal, Tuple, Dict, List, Any, Sequence
+from typing import Literal, Tuple, Dict, List, Any, Optional, Sequence
 
 import wandb
 import pandas as pd
+from omegaconf import OmegaConf
 
 import torch
 
 from cell_observatory_platform.training.optimizers import OptimizersContainer
 from cell_observatory_platform.training.schedulers import LRSchedulersContainer
-from cell_observatory_platform.training.helpers import aggregate_microbatch_losses
+from cell_observatory_platform.training.helpers import (
+    aggregate_microbatch_losses,
+    get_metric_full_name,
+    METRIC_CATEGORIES,
+    METRIC_CATEGORY_NAMES,
+)
 from cell_observatory_platform.utils.context import (
     is_torch_dist_initialized, 
     process_rank, 
@@ -54,23 +60,34 @@ class EventRecorder:
         
         self._reduce_methods: dict[str, List[str] | None] = {}
 
+
     def put_scalar(
         self,
         name,
         value,
         scope: Literal["step", "epoch"] = "step",
-        reduce_method: List[str] | None = ["median"]
+        reduce_method: List[str] | None = ["median"],
+        category: Optional[METRIC_CATEGORIES] = None,
+        prefix: Optional[str] = None,
+        units: Optional[str] = None,
     ):
+        full_name = get_metric_full_name(
+            name=name,
+            scope=scope,
+            category=category,
+            prefix=prefix,
+            units=units,
+        )
         # we need to reduce per rank and per step to get epoch averages
         # either we set this dynamically or we have a config with 
         # the reduce methods for each scalar but then we have
         # to specify each scalar we are expecting to record
-        if name not in self._reduce_methods:
-            self._reduce_methods[name] = reduce_method
+        if full_name not in self._reduce_methods:
+            self._reduce_methods[full_name] = reduce_method
         if scope == "step":
-            self._step_scalars[name].append((value, self._iter, self._epoch))
+            self._step_scalars[full_name].append((value, self._iter, self._epoch))
         elif scope == "epoch":
-            self._epoch_scalars[name].append((value, self._iter, self._epoch))
+            self._epoch_scalars[full_name].append((value, self._iter, self._epoch))
 
     def put_scalar_batch(
         self,
@@ -78,25 +95,38 @@ class EventRecorder:
         values: Sequence[float],
         scope: Literal["step", "epoch"] = "step",
         reduce_method: List[str] | None = ["median"],
+        category: Optional[METRIC_CATEGORIES] = None,
+        prefix: Optional[str] = None,
+        units: Optional[str] = None,
     ) -> None:
-        """Append multiple observations at the current (iter, epoch); used for raw sample lists."""
+        """Append raw observations as consecutive synthetic step records."""
         if not values:
             return
-        if name not in self._reduce_methods:
-            self._reduce_methods[name] = reduce_method
+        
+        full_name = get_metric_full_name(
+            name=name,
+            scope=scope,
+            category=category,
+            prefix=prefix,
+            units=units,
+        )
+        if full_name not in self._reduce_methods:
+            self._reduce_methods[full_name] = reduce_method
         store = self._step_scalars if scope == "step" else self._epoch_scalars
         it, ep = self._iter, self._epoch
-        last_recorded_iter = store[name][-1][1] if store[name] else 0
-        if last_recorded_iter + len(values) != it:
+        next_iter = store[full_name][-1][1] + 1 if store[full_name] else 0
+        if next_iter + len(values) != it:
             logger.warning("Given values do not match current iteration. Logs may be losing data and may appear inconsistent.")
         for i, v in enumerate(values):
-            store[name].append((float(v), last_recorded_iter + i, ep))
+            store[full_name].append((float(v), next_iter + i, ep))
 
     def put_scalars(
         self,
-        scope="step",
-        reduce_method=["median"],
-        prefix=None,
+        scope: Literal["step", "epoch"] = "step",
+        reduce_method: List[str] = ["median"],
+        category: Optional[METRIC_CATEGORIES] = None,
+        prefix: Optional[str] = None,
+        units: Optional[str] = None,
         **kwargs
     ):
         for k, v in kwargs.items():
@@ -108,8 +138,15 @@ class EventRecorder:
                     f"Non-finite value for key '{k}': {v}. "
                 )
                 # raise ValueError(f"Scalar value for key '{k}' is not finite: {v}")
-            k = f"{prefix}{k}" if prefix else k
-            self.put_scalar(k, v, scope=scope, reduce_method=reduce_method)
+            self.put_scalar(
+                name=k,
+                value=v,
+                scope=scope,
+                reduce_method=reduce_method,
+                category=category,
+                prefix=prefix,
+                units=units,
+            )
 
     def put_tensor(self, tensor_name, tensor, tensor_metadata):
         pass
@@ -264,8 +301,9 @@ class EventWriter:
                 for reduce_op in reduce_op_list:
                     metric_name = f"{metric}_{reduce_op}"
                     v = self._reduce(reduce_op, vals)
-                    merged[metric_name].append((v, self.event_recorder._iter,
-                                            self.event_recorder._epoch))
+                    merged[metric_name].append(
+                        (v, self.event_recorder._iter, self.event_recorder._epoch)
+                    )
                 
                 if keep_steps_data:
                     for reduce_op in reduce_op_list:
@@ -466,10 +504,50 @@ class WandBEventWriter(EventWriter):
             
             self.run.define_metric("iter")
             self.run.define_metric("epoch")
-            self.run.define_metric("step/*",  step_metric="iter")
-            self.run.define_metric("epoch/*", step_metric="epoch")
+            catchall_step_name = get_metric_full_name(
+                name="*",
+                scope="step",
+            )
+            catchall_epoch_name = get_metric_full_name(
+                name="*",
+                scope="epoch",
+            )
+            self.run.define_metric(catchall_step_name,  step_metric="iter")
+            self.run.define_metric(catchall_epoch_name, step_metric="epoch")
+            for cat in METRIC_CATEGORY_NAMES:
+                catchall_step_cat_name = get_metric_full_name(
+                    name="*",
+                    scope="step",
+                    category=cat,
+                )
+                catchall_epoch_cat_name = get_metric_full_name(
+                    name="*",
+                    scope="epoch",
+                    category=cat,
+                )
+                self.run.define_metric(catchall_step_cat_name, step_metric="iter")
+                self.run.define_metric(catchall_epoch_cat_name, step_metric="epoch")
         else:
             self.run = None
+
+    def save_config(self, cfg: Any, filename: str = "resolved_config.yaml") -> None:
+        """Save the resolved run config as a W&B file."""
+        if self.run is None or process_rank() != 0:
+            return
+
+        try:
+            run_dir = Path(self.run.dir)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            config_path = run_dir / filename
+            try:
+                config_yaml = OmegaConf.to_yaml(cfg, resolve=True)
+            except Exception:
+                logger.exception("Failed to fully resolve config; saving unresolved config instead.")
+                config_yaml = OmegaConf.to_yaml(cfg, resolve=False)
+            config_path.write_text(config_yaml, encoding="utf-8")
+            self.run.save(str(config_path), base_path=str(run_dir), policy="now")
+        except Exception:
+            logger.exception("Failed to save resolved config to W&B run files.")
         
     def _write_scalar_impl(
         self,
@@ -488,9 +566,9 @@ class WandBEventWriter(EventWriter):
                 it = int(rec["iter"])
                 ep = int(rec.get("epoch", 0))
                 payload = {
-                    "iter": it,            # required so step/* uses iter
+                    "iter": it,            # required so step metrics use iter
                     "epoch": ep,           # handy to see epoch with step logs
-                    **{f"step/{k}": v for k, v in rec.items() if k not in ("iter", "epoch")},
+                    **{k: v for k, v in rec.items() if k not in ("iter", "epoch")},
                 }
                 self.run.log(payload, commit=True)
 
@@ -499,8 +577,8 @@ class WandBEventWriter(EventWriter):
             for rec in df.to_dict(orient="records"):
                 ep = int(rec["epoch"])
                 payload = {
-                    "epoch": ep,           # required so epoch/* uses epoch
-                    **{f"epoch/{k}": v for k, v in rec.items() if k != "epoch"},
+                    "epoch": ep,           # required so epoch metrics use epoch
+                    **{k: v for k, v in rec.items() if k != "epoch"},
                 }
                 self.run.log(payload, commit=True)             
 

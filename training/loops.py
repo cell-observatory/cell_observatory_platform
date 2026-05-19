@@ -111,6 +111,10 @@ class BaseTrainer:
         self.event_writers_list = instantiate(
             _ensure_full_path(config.loggers.event_writers_list), writers=event_writers
         )
+        for writer in event_writers:
+            save_config = getattr(writer, "save_config", None)
+            if save_config is not None:
+                save_config(config)
 
         # intialize hooks
         hooks = self._build_hooks(config.hooks.hooks_list, self.event_writers_list)
@@ -191,6 +195,19 @@ class BaseTrainer:
             h.after_backward(data_sample=data_sample, 
                              loss_dict=loss_dict, 
                              outputs=outputs)
+
+    def before_backward(
+        self,
+        data_sample: Any,
+        loss_dict: Dict[str, Any],
+        outputs: Optional[Any] = None,
+    ):
+        for h in self._hooks:
+            h.before_backward(
+                data_sample=data_sample,
+                loss_dict=loss_dict,
+                outputs=outputs,
+            )
 
     def after_step(self,*args, **kwargs):
         for h in self._hooks:
@@ -527,6 +544,8 @@ class EpochBasedTrainer(BaseTrainer):
             for k, v in loss_dict.items()
         }
 
+        self.before_backward(data_sample=data_sample, loss_dict=loss_dict_log, outputs=None)
+
         outputs = None
         data_sample = None
         loss_dict = None
@@ -567,7 +586,10 @@ class EpochBasedTrainer(BaseTrainer):
 
         metrics = self.evaluator.evaluate()
         self.event_recorder.put_scalars(
-            scope="epoch", prefix="val_", **{k: (v.item() if torch.is_tensor(v) else v) for k, v in metrics.items()}
+            scope="epoch",
+            prefix="val",
+            category="loss",
+            **{k: (v.item() if torch.is_tensor(v) else v) for k, v in metrics.items()},
         )
         self.evaluator.reset()
 
@@ -833,7 +855,8 @@ class TestTrainer(BaseTrainer):
 
         metrics = self.evaluator.evaluate()
         self.event_recorder.put_scalars(
-            prefix="test_",
+            prefix="test",
+            category="loss",
             scope="epoch",
             **{k: (v.item() if torch.is_tensor(v) else v)
                 for k, v in metrics.items()

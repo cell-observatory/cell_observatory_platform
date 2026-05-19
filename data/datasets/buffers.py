@@ -17,7 +17,7 @@ import torch
 from collections import defaultdict
 import queue
 from threading import Lock
-from multiprocessing import shared_memory
+from multiprocessing import resource_tracker, shared_memory
 import time
 import re
 
@@ -36,6 +36,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BUFFER_NAME_REGEX = re.compile(r"host_pinned_shm_buffer_(?P<pool_name>.*)_numa_(?P<numa_node>\d+)_rank_(?P<global_rank>\d+)")
+
+
+def attach_shared_memory(name: str) -> shared_memory.SharedMemory:
+    """Attach to owner-managed shared memory without registering unlink cleanup.
+
+    Python's resource tracker treats every ``SharedMemory(name=...)`` attach as
+    something this process may clean up at exit. In this codebase the
+    HostMemoryBuffer actor owns unlinking, while loaders/collators only borrow
+    the segment. Unregister attachers so a short-lived Ray worker cannot unlink
+    the owner's segment out from under later workers.
+    """
+    try:
+        return shared_memory.SharedMemory(name=name, track=False)
+    except TypeError:
+        pass
+
+    shm = shared_memory.SharedMemory(name=name)
+    resource_tracker.unregister(shm._name, "shared_memory")
+    return shm
 
 def parse_buffer_name(buffer_name: str) -> Dict[str, str]:
     match = BUFFER_NAME_REGEX.match(buffer_name)
@@ -138,6 +157,9 @@ class HostMemoryBuffer:
         atexit.register(self._cleanup)
 
     def _cleanup(self):
+        if getattr(self, "_cleaned", False):
+            return
+        self._cleaned = True
         try: 
             self._shm.close()
             self._shm.unlink()
@@ -470,7 +492,7 @@ class BufferManager:
         self._pinned_ptrs = {}
         self._buffer_shms = {}
         for pool_name, cfg in self._buffer_cfgs.items():
-            self._buffer_shms[pool_name] = shared_memory.SharedMemory(name=cfg["name"])
+            self._buffer_shms[pool_name] = attach_shared_memory(cfg["name"])
         atexit.register(self._cleanup_shms)
 
     def pin_buffers(self) -> None:
@@ -560,7 +582,7 @@ class BufferManager:
             )
             self._buffer_actors[pool_name] = buffer_actor
             self._buffer_cfgs[pool_name] = buffer_cfg
-            self._buffer_shms[pool_name] = shared_memory.SharedMemory(name=buffer_cfg["name"])
+            self._buffer_shms[pool_name] = attach_shared_memory(buffer_cfg["name"])
         except Exception as e:
             raise RuntimeError(f"Failed to set buffer for pool {pool_name}: {e}")
         
@@ -589,7 +611,7 @@ class BufferManager:
                 raise ValueError(f"Additional memory usage {additional_memory_usage_bytes} exceeds max memory usage {self._max_memory_usage_bytes}")
             self._buffer_actors[pool_name] = buffer_actor
             self._buffer_cfgs[pool_name] = buffer_cfg
-            self._buffer_shms[pool_name] = shared_memory.SharedMemory(name=buffer_cfg["name"])
+            self._buffer_shms[pool_name] = attach_shared_memory(buffer_cfg["name"])
             self._current_memory_usage_bytes += additional_memory_usage_bytes
             return buffer_actor
     

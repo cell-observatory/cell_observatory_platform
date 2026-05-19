@@ -9,6 +9,8 @@ input_shape: [16, 128, 128, 128, 2]
 patch_shape: [4, 16, 16, 16]
 mask_channel_idx: 1
 
+max_rows: null # maximum number of rows to query from the database
+# FIXME: Are these not used?? If so, remove them.
 max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
 max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 max_hypercubes: null # maximum number of hypercubes to return

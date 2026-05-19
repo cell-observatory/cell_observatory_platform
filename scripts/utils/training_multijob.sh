@@ -15,8 +15,8 @@ set -euo pipefail
 
 # ---- ---- ---- ---- ---- ---- ---- ----
 
-# ---- ---- ---- ABC ---- ---- ---- ----
-CFG_DIR="experiments/abc/base_model_finetune_ablations"
+# ---- ---- ---- JANELIA ---- ---- ----
+: "${CFG_DIR:=experiments/janelia/profiling/allreduce_spike_experiment}"
 
 # ---- ---- ---- ---- ---- ---- ---- ----
 
@@ -63,7 +63,7 @@ run_python() {
 
 # Collect YAMLs from the given directory (path from configs root, not cwd)
 shopt -s nullglob
-mapfile -t yamls < <(find "$CFG_FULL" -maxdepth 1 -type f \( -name "*.yaml" -o -name "*.yml" \) | sort)
+mapfile -t yamls < <(find "$CFG_FULL" -maxdepth 1 -type f \( -name "*.yaml" -o -name "*.yml" \) ! -name "base_*.yaml" | sort)
 
 if [[ ${#yamls[@]} -eq 0 ]]; then
   echo "[training_multijob.sh] No YAML files found in: $CFG_FULL"

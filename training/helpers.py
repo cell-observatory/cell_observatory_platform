@@ -7,7 +7,16 @@ import random
 from collections import defaultdict
 from operator import attrgetter
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union, Iterable
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union, Iterable
+
+# Wandb panel sections are derived from the metric category. Currently
+# "timing", "loss", and "system" get their own sections (e.g.
+# ``step_timing/...``, ``epoch_loss/...``). All other metrics pass
+# ``category=None`` and land in the default ``step``/``epoch`` sections. See
+# ``cell_observatory_platform.training.loggers.WandBEventWriter`` for how
+# this is consumed.
+METRIC_CATEGORIES = Literal["timing", "loss", "system"]
+METRIC_CATEGORY_NAMES: tuple[METRIC_CATEGORIES, ...] = ("timing", "loss", "system")
 
 import numpy as np
 import polars as pl
@@ -362,9 +371,6 @@ def summarize_model(
         ujson.dump(model_logbook, f, indent=4, sort_keys=False, ensure_ascii=False, escape_forward_slashes=False)
 
 
-_LOG_PREFIX_BY_TYPE = {"train": None, "val": "val_", "test": "test_"}
-
-
 def log_data_timings(
     trainer,
     idx,
@@ -375,18 +381,15 @@ def log_data_timings(
     assert data_sample is not None, "data_sample is None"
     assert data_sample['metainfo'] is not None, "data_sample['metainfo'] is None"
 
-    if type not in _LOG_PREFIX_BY_TYPE:
-        raise ValueError(
-            f"log_data_timings type={type!r} not recognized; expected one of "
-            f"{list(_LOG_PREFIX_BY_TYPE.keys())}."
-        )
-    prefix = _LOG_PREFIX_BY_TYPE[type]
+    prefix = type if type != "train" else None
 
     data_time = data_sample['metainfo'].get('data_time', None)
     if data_time is not None:
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix=prefix,
+            category="timing",
+            units="sec",
             data_time=data_time,
             reduce_method=["median", "max", "min"]
         )
@@ -396,15 +399,19 @@ def log_data_timings(
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix=prefix,
+            category="timing",
+            units="sec",
             get_item_time=get_item_time.mean().item(),
             reduce_method=["median", "max", "min"]
         )
-    
+
     preprocess_time = data_sample['metainfo'].get('preprocess_time', None)
     if preprocess_time is not None:
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix=prefix,
+            category="timing",
+            units="sec",
             preprocess_time=preprocess_time,
             reduce_method=["median", "max", "min"]
         )
@@ -414,24 +421,30 @@ def log_data_timings(
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix=prefix,
+            category="timing",
+            units="sec",
             masking_time=masking_time,
             reduce_method=["median", "max", "min"]
         )
-    
+
     collate_time = data_sample['metainfo'].get('collate_time', None)
     if collate_time is not None:
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix=prefix,
+            category="timing",
+            units="sec",
             collate_time=collate_time,
             reduce_method=["median", "max", "min"]
         )
-    
+
     slice_time = data_sample['metainfo'].get('slice_time', None)
     if slice_time is not None:
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix=prefix,
+            category="timing",
+            units="sec",
             slice_time=slice_time.mean().item() if \
                 isinstance(slice_time, torch.Tensor) else np.mean(slice_time),
             reduce_method=["median", "max", "min"]
@@ -442,6 +455,8 @@ def log_data_timings(
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix=prefix,
+            category="timing",
+            units="sec",
             transform_time=transform_time,
             reduce_method=["median", "max", "min"]
         )
@@ -452,6 +467,7 @@ def log_data_timings(
             trainer.event_recorder.put_scalars(
                 scope="step",
                 prefix=prefix,
+                category="loss",
                 **{k: (v.item() if torch.is_tensor(v) else v)}
             )
 
@@ -460,11 +476,23 @@ def log_data_timings(
         trainer.event_recorder.put_scalars(
             scope="step",
             prefix=prefix,
+            category="loss",
             **{k: (v.item() if torch.is_tensor(v) else v)
             for k, v in loss_dict.items()
             }
         )
 
+def get_metric_full_name(
+    name: str,
+    scope: Literal["step", "epoch"],
+    category: Optional[METRIC_CATEGORIES] = None,
+    units: Optional[str] = None,
+    prefix: Optional[str] = None,
+) -> str:
+    section = f"{scope}_{category}" if category else scope
+    name = f"{name}_{units}" if units else name
+    name = f"{prefix}/{name}" if prefix else name
+    return f"{section}/{name}"
 
 def get_input_data(inputs, device: Optional[torch.device] = 'cuda'):
     input_data = ({"data_tensor": torch.randn(*inputs, device=device), "metainfo": {}},)
