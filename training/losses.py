@@ -29,7 +29,6 @@ from cell_observatory_platform.models.layers.utils import (
     batch_tensors,
     get_uncertain_point_coords_with_randomness,
     point_sample,
-    point_sample_labelmap_batched,
 )
 from cell_observatory_platform.models.ops.losses import (
     batch_dice_loss,
@@ -39,6 +38,9 @@ from cell_observatory_platform.models.ops.losses import (
     sigmoid_ce_loss,
     sigmoid_focal_loss,
     iou_loss
+)
+from cell_observatory_platform.models.ops.point_sampling import (
+    sample_uncertain_points_and_labelmap_labels,
 )
 from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.utils.context import get_world_size, is_torch_dist_initialized, process_rank
@@ -490,23 +492,15 @@ class DETR_Set_Loss(nn.Module):
         # stack labelmaps into a single tensor of shape (B, Z, Y, X)
         labelmap = torch.stack([target["label_map"] for target in targets])
 
-        with torch.no_grad():
-            # point_coords: [N, num_points, 3] normalized coords in [0, 1]
-            point_coords = get_uncertain_point_coords_with_randomness(
-                source_masks,
-                lambda logits: calculate_uncertainty(logits),
-                self.num_points,
-                self.oversample_ratio,
-                self.importance_sample_ratio,
-            )
-            
-            # Sample binary labels from labelmap
-            point_labels = point_sample_labelmap_batched(
-                labelmap=labelmap,
-                point_coords=point_coords,
-                batch_indices=batch_indices,
-                instance_ids=instance_ids,
-            )
+        point_coords, point_labels = sample_uncertain_points_and_labelmap_labels(
+            src_logits=source_masks,
+            labelmap=labelmap,
+            batch_indices=batch_indices,
+            instance_ids=instance_ids,
+            num_points=self.num_points,
+            oversample_ratio=self.oversample_ratio,
+            importance_sample_ratio=self.importance_sample_ratio,
+        )
 
         point_logits = point_sample(
             source_masks,
