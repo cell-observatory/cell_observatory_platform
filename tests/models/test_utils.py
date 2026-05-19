@@ -8,6 +8,8 @@ from cell_observatory_platform.models.layers.utils import (
     get_reference_points,
     get_uncertain_point_coords_with_randomness,
     point_sample,
+    point_sample_labelmap,
+    point_sample_labelmap_batched,
 )
 
 CUDA_AVAILABLE = torch.cuda.is_available()
@@ -135,6 +137,95 @@ def test_get_uncertain_point_coords_with_randomness_all_random():
     assert coords.shape == (N, num_points, 3)
     assert torch.all(coords >= 0.0)
     assert torch.all(coords <= 1.0)
+
+
+@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.parametrize("align_corners", [False, True])
+def test_point_sample_labelmap_batched_matches_grid_sample_nearest(align_corners):
+    # Regression test for the labelmap coord-order fix.
+    # point_sample_labelmap_batched must follow the same grid_sample convention
+    # as point_sample: coords[..., 0]=x (W), [..., 1]=y (H), [..., 2]=z (D).
+    # A non-symmetric labelmap is required so a swapped order would be detected.
+    device = torch.device("cuda")
+    Z, Y, X = 3, 5, 7
+
+    labelmap_single = (
+        torch.arange(Z * Y * X, dtype=torch.int32, device=device).reshape(Z, Y, X) + 1
+    )
+    labelmap = labelmap_single.unsqueeze(0)  # [1, Z, Y, X]
+
+    torch.manual_seed(0)
+    K = 256
+    coords = torch.rand(1, K, 3, device=device)
+
+    target_id = int(labelmap_single[1, 2, 4].item())
+    batch_indices = torch.zeros((1,), dtype=torch.long, device=device)
+    instance_ids = torch.tensor([target_id], dtype=torch.int64, device=device)
+
+    labels_helper = point_sample_labelmap_batched(
+        labelmap=labelmap,
+        point_coords=coords,
+        batch_indices=batch_indices,
+        instance_ids=instance_ids,
+        align_corners=align_corners,
+    ).squeeze(0)  # [K]
+
+    ref_input = (labelmap.float() == target_id).float().unsqueeze(1)  # [1, 1, Z, Y, X]
+    labels_ref = point_sample(
+        ref_input, coords, mode="nearest", align_corners=align_corners
+    ).squeeze(0).squeeze(0)  # [K]
+
+    assert torch.equal(labels_helper, labels_ref), (
+        f"point_sample_labelmap_batched disagrees with point_sample(mode='nearest') "
+        f"on a non-symmetric labelmap (align_corners={align_corners})."
+    )
+
+
+@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.parametrize("align_corners", [False, True])
+def test_point_sample_labelmap_matches_grid_sample_nearest(align_corners):
+    # Same regression contract for the single-batch matcher variant.
+    device = torch.device("cuda")
+    Z, Y, X = 3, 5, 7
+
+    labelmap_single = (
+        torch.arange(Z * Y * X, dtype=torch.int32, device=device).reshape(Z, Y, X) + 1
+    )
+
+    torch.manual_seed(1)
+    K = 256
+    coords = torch.rand(1, K, 3, device=device)
+
+    target_ids = torch.tensor(
+        [
+            int(labelmap_single[0, 0, 0].item()),
+            int(labelmap_single[1, 2, 4].item()),
+            int(labelmap_single[2, 4, 6].item()),
+        ],
+        dtype=torch.int64,
+        device=device,
+    )
+
+    labels_helper = point_sample_labelmap(
+        labelmap_single=labelmap_single,
+        point_coords=coords,
+        instance_ids=target_ids,
+        align_corners=align_corners,
+    )  # [M, K]
+
+    refs = []
+    for tid in target_ids.tolist():
+        ref_input = (labelmap_single.float() == tid).float().unsqueeze(0).unsqueeze(0)
+        labels_ref = point_sample(
+            ref_input, coords, mode="nearest", align_corners=align_corners
+        ).squeeze(0).squeeze(0)
+        refs.append(labels_ref)
+    labels_ref = torch.stack(refs, dim=0)  # [M, K]
+
+    assert torch.equal(labels_helper, labels_ref), (
+        f"point_sample_labelmap disagrees with point_sample(mode='nearest') "
+        f"on a non-symmetric labelmap (align_corners={align_corners})."
+    )
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")

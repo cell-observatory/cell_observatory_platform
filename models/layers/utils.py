@@ -485,7 +485,7 @@ def get_uncertain_point_coords_with_randomness(
 
 def point_sample_labelmap_batched(
     labelmap: torch.Tensor,      # [B, Z, Y, X] integer instance labelmap
-    point_coords: torch.Tensor,  # [N, K, 3] normalized coords in [0, 1]
+    point_coords: torch.Tensor,  # [N, K, 3] normalized coords in [0, 1], (x, y, z) order
     batch_indices: torch.Tensor, # [N] which batch each query belongs to
     instance_ids: torch.Tensor,  # [N] actual labelmap instance IDs to match
     align_corners: bool = False,
@@ -494,77 +494,73 @@ def point_sample_labelmap_batched(
     Sample binary mask labels directly from an integer labelmap.
     Uses direct integer indexing instead of grid_sample to avoid
     materializing [N, Z, Y, X] intermediate tensors.
+
+    Coordinate convention matches torch.nn.functional.grid_sample for 5D
+    inputs (N, C, D, H, W): point_coords[..., 0] indexes the W axis (x),
+    [..., 1] indexes the H axis (y), [..., 2] indexes the D axis (z).
     """
-    # NOTE: CUDA only supports int32 for indexing
     if labelmap.dtype in (torch.uint8, torch.uint16, torch.int8, torch.int16):
         labelmap = labelmap.to(torch.int32)
     N, K, _ = point_coords.shape
     B, Z, Y, X = labelmap.shape
-    device = labelmap.device
-    
-    # Convert normalized coords [0,1] to integer indices
-    # point_coords[:, :, 0] is z, [:, :, 1] is y, [:, :, 2] is x
+
     if align_corners:
-        z_idx = (point_coords[:, :, 0] * (Z - 1)).round().long().clamp(0, Z - 1)
+        x_idx = (point_coords[:, :, 0] * (X - 1)).round().long().clamp(0, X - 1)
         y_idx = (point_coords[:, :, 1] * (Y - 1)).round().long().clamp(0, Y - 1)
-        x_idx = (point_coords[:, :, 2] * (X - 1)).round().long().clamp(0, X - 1)
+        z_idx = (point_coords[:, :, 2] * (Z - 1)).round().long().clamp(0, Z - 1)
     else:
-        z_idx = (point_coords[:, :, 0] * Z).floor().long().clamp(0, Z - 1)
+        x_idx = (point_coords[:, :, 0] * X).floor().long().clamp(0, X - 1)
         y_idx = (point_coords[:, :, 1] * Y).floor().long().clamp(0, Y - 1)
-        x_idx = (point_coords[:, :, 2] * X).floor().long().clamp(0, X - 1)
-    
-    # Expand batch_indices to [N, K]
+        z_idx = (point_coords[:, :, 2] * Z).floor().long().clamp(0, Z - 1)
+
     b_idx = batch_indices.view(N, 1).expand(N, K)
-    
-    # Direct 4D indexing: labelmap[b, z, y, x] -> [N, K]
-    sampled = labelmap[b_idx, z_idx, y_idx, x_idx]  # [N, K] integers
-    
-    # Compare with instance IDs
+
+    sampled = labelmap[b_idx, z_idx, y_idx, x_idx]  # [N, K]
+
     instance_ids_expanded = instance_ids.view(N, 1).expand(N, K)
     binary_labels = (sampled == instance_ids_expanded).float()
-    
+
     return binary_labels
 
 
 def point_sample_labelmap(
     labelmap_single: torch.Tensor,  # [Z, Y, X] single batch labelmap
-    point_coords: torch.Tensor,     # [1, K, 3] or [K, 3] shared coords
+    point_coords: torch.Tensor,     # [1, K, 3] or [K, 3] shared coords, (x, y, z) order
     instance_ids: torch.Tensor,     # [M] instance IDs for M targets
     align_corners: bool = False,
 ) -> torch.Tensor:                  # [M, K] binary target masks at points
     """
     For matcher: sample target masks for all instances at shared point coords.
+
+    Coordinate convention matches torch.nn.functional.grid_sample for 5D
+    inputs (N, C, D, H, W): point_coords[..., 0] indexes the W axis (x),
+    [..., 1] indexes the H axis (y), [..., 2] indexes the D axis (z).
     """
-    # NOTE: CUDA only supports int32 for indexing
     if labelmap_single.dtype in (torch.uint8, torch.uint16, torch.int8, torch.int16):
         labelmap_single = labelmap_single.to(torch.int32)
-    
+
     Z, Y, X = labelmap_single.shape
     M = instance_ids.shape[0]
-    
-    # Handle both [1, K, 3] and [K, 3] input
+
     if point_coords.dim() == 3:
         point_coords = point_coords.squeeze(0)  # [K, 3]
     K = point_coords.shape[0]
-    
-    # Convert normalized coords to integer indices
+
     if align_corners:
-        z_idx = (point_coords[:, 0] * (Z - 1)).round().long().clamp(0, Z - 1)
+        x_idx = (point_coords[:, 0] * (X - 1)).round().long().clamp(0, X - 1)
         y_idx = (point_coords[:, 1] * (Y - 1)).round().long().clamp(0, Y - 1)
-        x_idx = (point_coords[:, 2] * (X - 1)).round().long().clamp(0, X - 1)
+        z_idx = (point_coords[:, 2] * (Z - 1)).round().long().clamp(0, Z - 1)
     else:
-        z_idx = (point_coords[:, 0] * Z).floor().long().clamp(0, Z - 1)
+        x_idx = (point_coords[:, 0] * X).floor().long().clamp(0, X - 1)
         y_idx = (point_coords[:, 1] * Y).floor().long().clamp(0, Y - 1)
-        x_idx = (point_coords[:, 2] * X).floor().long().clamp(0, X - 1)
-    
-    # Sample labelmap at K points: [K]
+        z_idx = (point_coords[:, 2] * Z).floor().long().clamp(0, Z - 1)
+
     sampled = labelmap_single[z_idx, y_idx, x_idx]  # [K]
-    
-    # Broadcast compare: [M, 1] == [1, K] -> [M, K]
+
     instance_ids_col = instance_ids.view(M, 1)
     sampled_row = sampled.view(1, K)
     binary_targets = (sampled_row == instance_ids_col).float()
-    
+
     return binary_targets
 
 
