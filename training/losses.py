@@ -1746,17 +1746,17 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         Args:
             outs_batch: list of per-frame outputs from SAM2 tracking.
             targets_batch: either
-                - dict (SAM2 target view): expected keys include `num_frames` and
-                    `masks: list[T] of [N_obj, Z, Y, X]`. The criterion stacks
-                    `masks` along T to recover the legacy `[T, N_obj, Z, Y, X]`
-                    tensor and proceeds; labelmap-native fields (labelmaps,
-                    instance_ids, valid, presence_t) are reserved for a
-                    follow-up that drops dense materialization.
+                - dict with `labelmaps` (SAM2 labelmap target view): point loss
+                    is computed against the integer labelmap; no dense
+                    `[N_obj, Z, Y, X]` GT mask is materialized in the loss.
+                - dict with only `masks` (eager target view): unpacked to the
+                    legacy `[T, N_obj, Z, Y, X]` tensor.
                 - tensor `[T, N_obj, Z, Y, X]` (legacy contract).
         """
+        if isinstance(targets_batch, dict) and "labelmaps" in targets_batch:
+            return self._forward_labelmap_path(outs_batch, targets_batch)
         if isinstance(targets_batch, dict):
-            target_view = targets_batch
-            targets_batch = torch.stack(target_view["masks"])
+            targets_batch = torch.stack(targets_batch["masks"])
         assert len(outs_batch) == len(targets_batch), "outs_batch and targets_batch must have the same length"
         num_objects = torch.tensor(
             (targets_batch.shape[1]), device=targets_batch.device, dtype=torch.float
@@ -1776,6 +1776,219 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
                 losses[k] += v
 
         return losses
+
+    # ------------------------------------------------------------------ #
+    # Labelmap-native loss path                                           #
+    # ------------------------------------------------------------------ #
+
+    def _forward_labelmap_path(self, outs_batch: List[Dict], target_view: Dict):
+        """Compute focal/dice/sampled-soft-IoU + obj-score on labelmap targets.
+
+        Replaces the dense `_forward` path for SAM2: GT labels are sampled
+        directly from `target_view["labelmaps"]` at uncertain points; no
+        `[N_obj, Z, Y, X]` target tensor is built. Per-row terms are gated
+        by `valid & presence_t` (mask losses) or `valid` (object-score) and
+        normalized by the total gated row count across the world.
+        """
+        T = int(target_view["num_frames"])
+        assert len(outs_batch) == T, "outs_batch length must match num_frames"
+
+        labelmaps: torch.Tensor = target_view["labelmaps"]      # [B*T, Z, Y, X]
+        img_ids_list: List[torch.Tensor] = target_view["img_ids"]
+        instance_ids_list: List[torch.Tensor] = target_view["instance_ids"]
+        valid_list: List[torch.Tensor] = target_view["valid"]
+        presence_list: List[torch.Tensor] = target_view["presence_t"]
+
+        device = labelmaps.device
+
+        # Aggregate per-row gates across T frames -> scalar denominators.
+        # mask losses divide by (valid & presence_t) count; obj-score by valid count.
+        mask_gate_total = torch.zeros((), device=device, dtype=torch.float)
+        cls_gate_total = torch.zeros((), device=device, dtype=torch.float)
+        for v_t, p_t in zip(valid_list, presence_list):
+            mask_gate_total = mask_gate_total + (v_t & p_t).sum().to(torch.float)
+            cls_gate_total = cls_gate_total + v_t.sum().to(torch.float)
+        if is_torch_dist_initialized():
+            dist.all_reduce(mask_gate_total)
+            dist.all_reduce(cls_gate_total)
+        mask_denom = mask_gate_total.clamp_min(1.0)
+        cls_denom = cls_gate_total.clamp_min(1.0)
+
+        losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
+        for t in range(T):
+            outs = outs_batch[t]
+            img_ids = img_ids_list[t]
+            instance_ids = instance_ids_list[t]
+            valid = valid_list[t]
+            presence = presence_list[t]
+
+            if self.activation_checkpoint:
+                cur = checkpoint(
+                    self._frame_loss_labelmap,
+                    outs, labelmaps, img_ids, instance_ids, valid, presence,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
+            else:
+                cur = self._frame_loss_labelmap(
+                    outs, labelmaps, img_ids, instance_ids, valid, presence,
+                )
+            for k, v in cur.items():
+                losses[k] += v
+
+        # Single normalization by gated-row counts.
+        losses["loss_mask"] = losses["loss_mask"] / mask_denom
+        losses["loss_dice"] = losses["loss_dice"] / mask_denom
+        losses["loss_iou"] = losses["loss_iou"] / mask_denom
+        losses["loss_class"] = losses["loss_class"] / cls_denom
+
+        losses[self.core_loss_key] = self.reduce_loss(losses)
+        # Match prediction dtype for backward consistency.
+        pred_dtype = outs_batch[0]["multistep_pred_multimasks_high_res"][0].dtype
+        losses[self.core_loss_key] = losses[self.core_loss_key].to(pred_dtype)
+        return losses
+
+    def _frame_loss_labelmap(
+        self,
+        outputs: Dict,
+        labelmaps: torch.Tensor,        # [B*T, Z, Y, X]
+        img_ids: torch.Tensor,          # [N]
+        instance_ids: torch.Tensor,     # [N], -1 for pad
+        valid: torch.Tensor,            # [N], bool
+        presence: torch.Tensor,         # [N], bool
+    ) -> Dict[str, torch.Tensor]:
+        """Return undivided gated sums for one frame across multi-step outputs."""
+        src_masks_list = outputs["multistep_pred_multimasks_high_res"]
+        ious_list = outputs["multistep_pred_ious"]
+        obj_logits_list = outputs["multistep_object_score_logits"]
+
+        frame_losses = {
+            "loss_mask": src_masks_list[0].new_zeros(()),
+            "loss_dice": src_masks_list[0].new_zeros(()),
+            "loss_iou": src_masks_list[0].new_zeros(()),
+            "loss_class": src_masks_list[0].new_zeros(()),
+        }
+        for src_masks, pred_ious, obj_logits in zip(
+            src_masks_list, ious_list, obj_logits_list
+        ):
+            self._update_losses_labelmap(
+                frame_losses, src_masks, labelmaps, img_ids, instance_ids,
+                valid, presence, pred_ious, obj_logits,
+            )
+        return frame_losses
+
+    def _update_losses_labelmap(
+        self,
+        losses: Dict[str, torch.Tensor],
+        src_masks: torch.Tensor,          # [N, M, Z, Y, X] logits
+        labelmaps: torch.Tensor,          # [B*T, Z, Y, X]
+        img_ids: torch.Tensor,            # [N]
+        instance_ids: torch.Tensor,       # [N]
+        valid: torch.Tensor,              # [N]
+        presence: torch.Tensor,           # [N]
+        pred_ious: torch.Tensor,          # [N, M]
+        object_score_logits: torch.Tensor,  # [N, 1] or [N]
+    ) -> None:
+        N, M, Z, Y, X = src_masks.shape
+        P = self.num_points
+        if P <= 0:
+            raise ValueError("num_points must be > 0 for labelmap point loss")
+
+        # Replicate per-row metadata across M predicted masks so each (n, m)
+        # pair samples its own uncertain points / labels independently. The
+        # labelmap helper looks up the same labelmap frame for all M
+        # candidates of a given row.
+        src_flat = src_masks.detach().reshape(N * M, 1, Z, Y, X)
+        img_ids_nm = img_ids.to(torch.long).repeat_interleave(M)
+        instance_ids_nm = instance_ids.to(torch.int64).repeat_interleave(M)
+
+        point_coords_flat, point_labels_flat = (
+            sample_uncertain_points_and_labelmap_labels(
+                src_logits=src_flat,
+                labelmap=labelmaps,
+                batch_indices=img_ids_nm,
+                instance_ids=instance_ids_nm,
+                num_points=P,
+                oversample_ratio=self.oversample_ratio,
+                importance_sample_ratio=self.importance_sample_ratio,
+            )
+        )  # [N*M, P, 3], [N*M, P]
+
+        # Re-sample predicted logits at the same coords (graph-connected this time).
+        src_flat_grad = src_masks.reshape(N * M, 1, Z, Y, X)
+        point_logits_flat = point_sample(
+            src_flat_grad, point_coords_flat, align_corners=False
+        ).squeeze(1)  # [N*M, P]
+        point_logits = point_logits_flat.view(N, M, P)
+        point_labels = point_labels_flat.view(N, M, P).to(point_logits.dtype)
+
+        # Per-row focal and dice; pass num_boxes=1 so the helper does not
+        # divide internally — we divide once by the gated row count outside.
+        loss_multimask = sigmoid_focal_loss(
+            point_logits, point_labels, num_boxes=1.0,
+            alpha=self.focal_alpha, gamma=self.focal_gamma,
+            loss_on_multimask=True,
+        )  # [N, M]
+        loss_multidice = dice_loss(
+            point_logits, point_labels, num_masks=1.0,
+            loss_on_multimask=True,
+        )  # [N, M]
+
+        # Sampled soft IoU as the actual-IoU target for the IoU head. Detach
+        # the target so the IoU head learns to mimic the mask head's
+        # sigmoid-binarized prediction, not to bend the mask head via the
+        # IoU loss.
+        with torch.no_grad():
+            probs = point_logits.sigmoid()
+            inter = (probs * point_labels).sum(-1)
+            union = probs.sum(-1) + point_labels.sum(-1) - inter
+            actual_ious = inter / union.clamp_min(1e-6)  # [N, M]
+        if self.iou_use_l1_loss:
+            loss_multiiou = F.l1_loss(pred_ious, actual_ious, reduction="none")
+        else:
+            loss_multiiou = F.mse_loss(pred_ious, actual_ious, reduction="none")
+
+        # Best-mask selection (unchanged): pick the multimask candidate with
+        # the lowest focal+dice combo for mask/dice; gate IoU per-config.
+        if M > 1:
+            combo = (
+                loss_multimask * float(self.weight_dict["loss_mask"])
+                + loss_multidice * float(self.weight_dict["loss_dice"])
+            )
+            best = torch.argmin(combo, dim=-1)  # [N]
+            b = torch.arange(combo.size(0), device=combo.device)
+            loss_mask_row = loss_multimask[b, best]
+            loss_dice_row = loss_multidice[b, best]
+            if self.supervise_all_iou:
+                loss_iou_row = loss_multiiou.mean(dim=-1)
+            else:
+                loss_iou_row = loss_multiiou[b, best]
+        else:
+            loss_mask_row = loss_multimask.squeeze(1)
+            loss_dice_row = loss_multidice.squeeze(1)
+            loss_iou_row = loss_multiiou.squeeze(1)
+
+        mask_gate = (valid & presence).to(loss_mask_row.dtype)  # [N]
+        losses["loss_mask"] = losses["loss_mask"] + (loss_mask_row * mask_gate).sum()
+        losses["loss_dice"] = losses["loss_dice"] + (loss_dice_row * mask_gate).sum()
+        losses["loss_iou"] = losses["loss_iou"] + (loss_iou_row * mask_gate).sum()
+
+        # Object-score loss: target_obj = valid (presence-independent so the
+        # head learns to predict "absent" for occluded frames). Mask the loss
+        # by valid only; padded rows contribute zero.
+        if self.pred_obj_scores:
+            # reshape to [N, 1, 1] so sigmoid_focal_loss(loss_on_multimask=True)
+            # accepts it (it asserts dim >= 3) and returns [N, 1] per-row losses.
+            obj_logits_nm1 = object_score_logits.reshape(N, 1, 1)
+            target_obj_nm1 = valid.to(obj_logits_nm1.dtype).reshape(N, 1, 1)
+            loss_class_row = sigmoid_focal_loss(
+                obj_logits_nm1, target_obj_nm1, num_boxes=1.0,
+                alpha=self.focal_alpha_obj_score,
+                gamma=self.focal_gamma_obj_score,
+                loss_on_multimask=True,
+            ).squeeze(-1)  # [N]
+            cls_gate = valid.to(loss_class_row.dtype)
+            losses["loss_class"] = losses["loss_class"] + (loss_class_row * cls_gate).sum()
 
     @torch.no_grad()
     def _sample_points_and_labels(
