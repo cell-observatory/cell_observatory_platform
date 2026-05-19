@@ -69,9 +69,12 @@ paths:
   resume_checkpointdir: null
   pretrained_checkpointdir: null
 
+# data
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  train_shape: [128, 384, 512, 5]
+  input_shape: [128, 384, 512, 6]
   train_shape: [128, 384, 512, 5]
   input_shape: [128, 384, 512, 6]
   patch_shape: [16, 16, 16, null]
@@ -81,6 +84,7 @@ datasets:
   split: 0.0
   return_dataloader: true
   distributed_sampler: true
+
   buffer_capacity: 16
   num_actors_min: 4
   num_actors_max: 12

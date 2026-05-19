@@ -36,8 +36,8 @@ criterion_args:
     loss_mask: 5.0
     loss_dice: 5.0
   no_object_loss_weight: 0.1
-  # losses: ["labels", "boxes", "masks"]
-  losses: ["labels", "boxes"]
+  losses: ["labels", "boxes", "masks"]
+  # losses: ["labels", "boxes"]
   oversample_ratio: 3.0
   importance_sample_ratio: 0.75
   denoise: false
