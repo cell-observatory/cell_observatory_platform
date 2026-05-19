@@ -1632,6 +1632,7 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         max_masks: int | None = None,
         require_targets: bool = True,
         defer_binary_masks: bool = False,
+        bbox_format: str = "zyxzyx",
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -1664,6 +1665,10 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             )
         if self.defer_binary_masks and self.max_masks is None:
             raise ValueError("defer_binary_masks=True requires max_masks to be set")
+        # Box format emitted by the collator; recorded in the target view so
+        # downstream consumers (SAM2 box-prompt sampler) convert at the boundary
+        # without inferring silently.
+        self.bbox_format = bbox_format
 
     # ------------------------------------------------------------------ #
     # Image transformations
@@ -1811,12 +1816,27 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         """
         Lazy path: materialize per-instance binary masks on-device from the
         labelmap, using only the K=min(N_inst, max_masks) IDs we'll actually
-        keep after the per-frame cap. Same output contract as the eager path.
+        keep after the per-frame cap. Same output contract as the eager path,
+        plus labelmap-native fields for point-loss criterion and prompt
+        sampling consumers (no dense `[N_obj, Z, Y, X]` GT mask required).
 
         Sampling is per-VIDEO, not per-(video, frame): the same K IDs are
         reused across all T frames so that a given object retains a stable
         flat index across the tracking loop. Step 1 uses a deterministic
         head-slice; random sampling will be added in a follow-up.
+
+        Extra fields (per-frame lists, each of length T, each tensor `[B*K_full, ...]`):
+        - `labelmaps`: flat `[B*T, Z, Y, X]` int32 view of mask_labelmap, indexed
+            by `img_ids[t]` (flat_id = b*T + t).
+        - `instance_ids[t]`: int64, real labelmap id per row, `-1` for padded
+            rows. Pad sentinel avoids collision with background `0`.
+        - `valid[t]`: bool, True iff the row is a real selected object.
+        - `presence_t[t]`: bool, True iff the object's id appears in frame `t`.
+            Computed via `torch.isin` against `torch.unique(labelmap_b_t)`,
+            avoiding the `[K, Z, Y, X]` materialization that `masks` uses.
+        - `boxes[t]`: float32 `[B*K_full, 6]`, padded zeros, aligned with
+            `instance_ids[t]`. Format declared in `box_format`.
+        - `box_format`: string from preprocessor config (e.g. "zyxzyx").
         """
         B = num_videos
         T = num_frames
@@ -1833,30 +1853,76 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         # targets (e.g. inference, dropped samples) just produce all-pad rows.
         empty_ids = torch.zeros(0, dtype=torch.long, device=device)
         sampled_ids_per_b: list[torch.Tensor] = [empty_ids] * B
+        sampled_boxes_per_b: list[torch.Tensor | None] = [None] * B
         for b, tgt in enumerate(targets[:B]):
             ids_b = tgt.get("mask_ids", None)
             if ids_b is None or ids_b.numel() == 0:
                 continue
             K = min(int(ids_b.numel()), K_full)
             sampled_ids_per_b[b] = ids_b[:K]
+            tgt_boxes = tgt.get("boxes", None)
+            if tgt_boxes is not None and tgt_boxes.numel() > 0:
+                sampled_boxes_per_b[b] = tgt_boxes[:K]
 
         out_masks: list[torch.Tensor] = []
         out_img_ids: list[torch.Tensor] = []
+        out_instance_ids: list[torch.Tensor] = []
+        out_valid: list[torch.Tensor] = []
+        out_presence: list[torch.Tensor] = []
+        out_boxes: list[torch.Tensor] = []
+
+        sentinel_pad_id = -1
 
         for t in range(T):
             seg_masks: list[torch.Tensor] = []
             seg_ids: list[torch.Tensor] = []
+            seg_instance: list[torch.Tensor] = []
+            seg_valid: list[torch.Tensor] = []
+            seg_presence: list[torch.Tensor] = []
+            seg_boxes: list[torch.Tensor] = []
             for b in range(B):
                 sampled = sampled_ids_per_b[b]
                 K = sampled.numel()
                 flat_id = b * T + t
 
+                lm_bt = mask_labelmap[b, t]  # (Z, Y, X) int32
+
                 if K > 0:
-                    lm_bt = mask_labelmap[b, t]  # (Z, Y, X) int32
                     # (K, Z, Y, X) bool; only K ≤ max_masks materialized.
+                    # Kept for the eager-mask criterion path; point-loss
+                    # consumers should ignore this field.
                     m = lm_bt.unsqueeze(0) == sampled.to(lm_bt.dtype).view(K, 1, 1, 1)
+                    instance_b_t = sampled.to(torch.int64)
+                    valid_b_t = torch.ones(K, dtype=torch.bool, device=device)
+                    # cheap per-object presence: ids actually present in lm_bt
+                    unique_ids = torch.unique(lm_bt)
+                    presence_b_t = torch.isin(
+                        sampled.to(unique_ids.dtype), unique_ids
+                    )
+                    boxes_src = sampled_boxes_per_b[b]
+                    if boxes_src is not None:
+                        boxes_b_t = boxes_src.to(
+                            device=device, dtype=torch.float32
+                        )
+                        if boxes_b_t.shape[0] != K:
+                            # collator emitted fewer boxes than mask_ids; pad
+                            # the missing slots with zeros so the row count
+                            # matches instance_ids.
+                            pad_box_n = K - boxes_b_t.shape[0]
+                            boxes_b_t = torch.cat(
+                                [boxes_b_t, boxes_b_t.new_zeros(pad_box_n, 6)],
+                                dim=0,
+                            )
+                    else:
+                        boxes_b_t = torch.zeros(
+                            (K, 6), dtype=torch.float32, device=device
+                        )
                 else:
                     m = torch.zeros((0, *spatial), dtype=torch.bool, device=device)
+                    instance_b_t = torch.zeros(0, dtype=torch.int64, device=device)
+                    valid_b_t = torch.zeros(0, dtype=torch.bool, device=device)
+                    presence_b_t = torch.zeros(0, dtype=torch.bool, device=device)
+                    boxes_b_t = torch.zeros((0, 6), dtype=torch.float32, device=device)
 
                 ids = torch.full((K,), flat_id, dtype=torch.int32, device=device)
 
@@ -1870,18 +1936,52 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
                         [ids, ids.new_full((pad_n,), flat_id)],
                         dim=0,
                     )
+                    instance_b_t = torch.cat(
+                        [instance_b_t, instance_b_t.new_full((pad_n,), sentinel_pad_id)],
+                        dim=0,
+                    )
+                    valid_b_t = torch.cat(
+                        [valid_b_t, torch.zeros(pad_n, dtype=torch.bool, device=device)],
+                        dim=0,
+                    )
+                    presence_b_t = torch.cat(
+                        [presence_b_t, torch.zeros(pad_n, dtype=torch.bool, device=device)],
+                        dim=0,
+                    )
+                    boxes_b_t = torch.cat(
+                        [boxes_b_t, boxes_b_t.new_zeros(pad_n, 6)],
+                        dim=0,
+                    )
 
                 seg_masks.append(m)
                 seg_ids.append(ids)
+                seg_instance.append(instance_b_t)
+                seg_valid.append(valid_b_t)
+                seg_presence.append(presence_b_t)
+                seg_boxes.append(boxes_b_t)
 
             out_masks.append(torch.cat(seg_masks, dim=0))
             out_img_ids.append(torch.cat(seg_ids, dim=0))
+            out_instance_ids.append(torch.cat(seg_instance, dim=0))
+            out_valid.append(torch.cat(seg_valid, dim=0))
+            out_presence.append(torch.cat(seg_presence, dim=0))
+            out_boxes.append(torch.cat(seg_boxes, dim=0))
+
+        # Flatten (B, T, Z, Y, X) -> (B*T, Z, Y, X). With img_ids[t][i] = b*T + t,
+        # mask_labelmap.reshape(B*T, ...) is indexed by flat_id without permutation.
+        flat_labelmaps = mask_labelmap.reshape(B * T, *spatial).to(torch.int32)
 
         return {
             "num_frames": T,
             "num_videos": B,
             "masks": out_masks,
             "img_ids": out_img_ids,
+            "labelmaps": flat_labelmaps,
+            "instance_ids": out_instance_ids,
+            "valid": out_valid,
+            "presence_t": out_presence,
+            "boxes": out_boxes,
+            "box_format": self.bbox_format,
         }
 
     # ------------------------------------------------------------------ #
