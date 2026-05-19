@@ -3,7 +3,7 @@ defaults:
   - /tasks/instance_segmentation
   - /paths/local
   - /hydra/overrides
-  - /clusters/janelia_a100
+  - /clusters/janelia_h200
   - /datasets/databases/base_database
   - /datasets/transforms/ray_transforms
   - /datasets/preprocessor/ray_preprocessor
@@ -25,10 +25,9 @@ defaults:
   - /profiling/profiling
   - _self_
 
-experiment_name: profiling_a100_sam2_baseline_128x384x512_new_mask_ids_to_masks
+experiment_name: allreduce_spike_h200_base
 wandb_project: testing
 
-# debug_mode: true
 backend: DEEPSPEED
 distributed_framework: ray
 run_type: single_run
@@ -46,21 +45,17 @@ task: finetuning
 network: baseline
 engine: deepspeed
 
-# overrides
-# --------------------------------------------------------------------------------
+allreduce_spike:
+  # null, before_forward, or before_backward. Variants only change this value.
+  sync_at: null
 
 clusters:
-  batch_size: 8 # gpus_per_worker (4) * worker_nodes (2)
-  worker_nodes: 2 # number of worker nodes
-  # gpus_per_worker: 8 # number of gpus per worker node
-  # cpus_per_gpu: 12 # number of cpu cores per gpu
-  # mem_per_cpu: 40000 # ram per cpu core
-  # ray_queue_memory: 0.2
+  # One H200 node: 8 GPUs total, per-GPU batch size = 1.
+  batch_size: 8
+  worker_nodes: 1
 
 paths:
-  # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/testing/${experiment_name}
-  # server_path_override: /groups/betzig/betziglab/CellObservatoryData/synthetic_data/05052026_mem_cyto_1k_volumes_77_tiles/
   server_path_override: /groups/betzig/betziglab/CellObservatoryData/synthetic_data/fixed/05052026_mem_cyto_1k_volumes_77_tiles/
   resume_checkpointdir: null
   pretrained_checkpointdir: null
@@ -81,12 +76,8 @@ datasets:
   num_actors_max: 12
 
   use_cached_hypercubes_dataframe: false
-  # tile_list:
-  #   - "000x_005y_001z.zarr"
-    # - "000x_005y_000z.zarr"
-  # roi_list: [314]
-  # timepoint_list: [0]
-  max_rows: 104 # quick A100 smoke test of the new defer_binary_masks path
+  # Enough steps to expose repeated allreduce spikes without making the ablation long.
+  max_rows: 1024
   cdf_threshold: null
   cdf_target: null
   selected_channel_localizations: ["membrane", "cytosol"]
@@ -94,17 +85,16 @@ datasets:
   synthetic_only: true
 
   preprocessor:
-    max_masks: 26 # For A100 / H100
-    defer_binary_masks: true # pairs with datasets.collate_fn.defer_binary_masks=true
+    max_masks: 48
+    defer_binary_masks: true
 
   databases:
     dbname: local
     protocol: cursor
     verbose: true
-    diagnostic_verbose: true
+    diagnostic_verbose: false
     sample_type: cube
     channel_count: 6
-    # required_channel_key_patterns: {0: "membrane"}
     required_channel_localizations: ["membrane", "cytosol"]
     required_locations: ["exists_abc"]
 
@@ -125,8 +115,6 @@ datasets:
     bbox_output_format: cxcyczwhd
     mask_channel_idx: ${datasets.mask_channel_idx}
     generate_binary_masks: true
-    # Defer binary mask materialization to the model preprocessor (GPU,
-    # only K=max_masks slices). Pairs with datasets.preprocessor.defer_binary_masks=true.
     defer_binary_masks: true
     debug: false
     debug_device_idx: 0
@@ -150,15 +138,12 @@ datasets:
       - "annotations_metadata"
 
 schedulers:
-  epochs: 1
-  # warmup: 30
-  # cooldown: 5
+  epochs: 3
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}
   lr: 1e-4
 
-# hooks
 hooks:
   hooks_list:
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
@@ -169,24 +154,3 @@ hooks:
   - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
     file_prefix: latest_model
     backend: DEEPSPEED
-  # - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-  #   checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  # - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
-  #   metric_name: ${evaluation.val_metric}
-  #   compare_fn: ${evaluation.val_mode}
-  #   eval_after_validation: true
-
-  - _target_: cell_observatory_platform.training.hooks.TorchProfiler
-    output_dir: ${paths.outdir}/profiler
-    schedule:
-      # skip_first: 10
-      warmup: 4
-      active: 2
-      repeat: 1
-      wait: 1
-    activities:
-      - CUDA
-      - CPU
-    save_tensorboard: true
-    shutdown_after_profile: true
-    save_memory_trace: true
