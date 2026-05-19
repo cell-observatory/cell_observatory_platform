@@ -2,7 +2,9 @@ import pytest
 import torch
 
 from cell_observatory_platform.models.ops.point_sampling import (
+    gt_masks_from_labelmap,
     sample_box_points_from_boxes,
+    sample_prompt_point_from_labelmap,
     sample_uncertain_points_and_labelmap_labels,
 )
 from cell_observatory_platform.models.layers.utils import (
@@ -235,4 +237,109 @@ def test_sample_box_points_from_boxes_rejects_bad_shape():
     with pytest.raises(ValueError):
         sample_box_points_from_boxes(
             boxes=boxes, box_format="xyzxyz", image_shape=(4, 5, 6),
+        )
+
+
+# ----------------------------------------------------------------------------- #
+# gt_masks_from_labelmap
+# ----------------------------------------------------------------------------- #
+
+
+def test_gt_masks_from_labelmap_matches_dense_reference():
+    device = torch.device("cpu")
+    B, Z, Y, X = 2, 3, 4, 5
+    labelmap = torch.zeros((B, Z, Y, X), dtype=torch.int32, device=device)
+    labelmap[0, 1, 2, 3] = 7
+    labelmap[0, 2, 3, 4] = 7  # two voxels with the same id in batch 0
+    labelmap[1, 0, 0, 0] = 11
+
+    img_ids = torch.tensor([0, 0, 1, 0], dtype=torch.int64, device=device)
+    instance_ids = torch.tensor([7, 11, 11, -1], dtype=torch.int64, device=device)
+
+    masks = gt_masks_from_labelmap(labelmap, img_ids, instance_ids)
+    assert masks.shape == (4, 1, Z, Y, X)
+    assert masks.dtype == torch.bool
+
+    # Row 0: id=7 in batch 0 -> 2 True voxels.
+    assert masks[0, 0].sum().item() == 2
+    # Row 1: id=11 in batch 0 -> 0 True voxels (id 11 lives in batch 1).
+    assert masks[1, 0].sum().item() == 0
+    # Row 2: id=11 in batch 1 -> 1 True voxel.
+    assert masks[2, 0].sum().item() == 1
+    # Row 3: sentinel -1 -> all False.
+    assert masks[3, 0].sum().item() == 0
+
+
+# ----------------------------------------------------------------------------- #
+# sample_prompt_point_from_labelmap
+# ----------------------------------------------------------------------------- #
+
+
+def test_sample_prompt_point_from_labelmap_uniform_returns_xy_z_points():
+    torch.manual_seed(0)
+    device = torch.device("cpu")
+    B, Z, Y, X = 1, 4, 6, 8
+    labelmap = torch.zeros((B, Z, Y, X), dtype=torch.int32, device=device)
+    labelmap[0, 1, 2, 3] = 5
+
+    img_ids = torch.tensor([0, 0], dtype=torch.int64, device=device)
+    instance_ids = torch.tensor([5, -1], dtype=torch.int64, device=device)
+
+    points, labels = sample_prompt_point_from_labelmap(
+        labelmap=labelmap,
+        img_ids=img_ids,
+        instance_ids=instance_ids,
+        pred_masks=None,
+        input_fmt="TZYXC",
+        time_separable=True,
+        method="uniform",
+        num_pt=1,
+    )
+    assert points.shape == (2, 1, 3)
+    assert labels.shape == (2, 1)
+    # Row 0: positive click should land on the id=5 voxel.
+    x, y, z = points[0, 0].tolist()
+    assert (int(x), int(y), int(z)) == (3, 2, 1), (x, y, z)
+    assert labels[0, 0].item() == 1
+    # Row 1: sentinel pad -> all-zero gt -> sampler chooses background w/ label 0.
+    assert labels[1, 0].item() == 0
+
+
+def test_sample_prompt_point_from_labelmap_center_falls_back_to_uniform_training():
+    # method="center" with exact_edt_for_eval=False must not invoke scipy
+    # (scipy is CPU and slow). Verify by running on CPU with no scipy import
+    # path triggered -- behavior must equal "uniform".
+    torch.manual_seed(42)
+    device = torch.device("cpu")
+    B, Z, Y, X = 1, 2, 3, 4
+    labelmap = torch.zeros((B, Z, Y, X), dtype=torch.int32, device=device)
+    labelmap[0, 1, 2, 3] = 4
+
+    img_ids = torch.tensor([0], dtype=torch.int64, device=device)
+    instance_ids = torch.tensor([4], dtype=torch.int64, device=device)
+
+    torch.manual_seed(99)
+    pts_center, lbls_center = sample_prompt_point_from_labelmap(
+        labelmap=labelmap, img_ids=img_ids, instance_ids=instance_ids,
+        pred_masks=None, input_fmt="TZYXC", method="center",
+        exact_edt_for_eval=False, num_pt=1,
+    )
+    torch.manual_seed(99)
+    pts_uniform, lbls_uniform = sample_prompt_point_from_labelmap(
+        labelmap=labelmap, img_ids=img_ids, instance_ids=instance_ids,
+        pred_masks=None, input_fmt="TZYXC", method="uniform", num_pt=1,
+    )
+    assert torch.equal(pts_center, pts_uniform)
+    assert torch.equal(lbls_center, lbls_uniform)
+
+
+def test_sample_prompt_point_from_labelmap_center_exact_rejects_multi_pt():
+    device = torch.device("cpu")
+    labelmap = torch.zeros((1, 2, 2, 2), dtype=torch.int32, device=device)
+    img_ids = torch.tensor([0], dtype=torch.int64, device=device)
+    instance_ids = torch.tensor([1], dtype=torch.int64, device=device)
+    with pytest.raises(ValueError):
+        sample_prompt_point_from_labelmap(
+            labelmap=labelmap, img_ids=img_ids, instance_ids=instance_ids,
+            method="center", exact_edt_for_eval=True, num_pt=2,
         )

@@ -34,7 +34,9 @@ from cell_observatory_platform.models.layers.utils import (
     concat_points
 )
 from cell_observatory_platform.models.ops.point_sampling import (
+    gt_masks_from_labelmap,
     sample_box_points_from_boxes,
+    sample_prompt_point_from_labelmap,
 )
 from cell_observatory_platform.data.structures import (
     box_volume,
@@ -1220,12 +1222,30 @@ class SAM2(SAM2Base):
         # }
         data_views = data_sample["metainfo"]["targets"]
 
-        # Per-frame GT masks from the preprocessor's SAM2 view
-        # sam2["masks"][t] is (N_obj, Z, Y, X) bool
-        gt_masks_per_frame = {
-            t: m.unsqueeze(1)          # -> (N_obj, 1, Z, Y, X)
-            for t, m in enumerate(data_views["masks"])
-        }
+        # Per-frame GT masks. Preferred path: derive from the labelmap target
+        # view so the preprocessor can eventually stop emitting dense per-row
+        # masks entirely. Falls back to the eager `masks` field for configs
+        # that have not migrated.
+        has_labelmap = (
+            "labelmaps" in data_views
+            and "instance_ids" in data_views
+            and "img_ids" in data_views
+        )
+        if has_labelmap:
+            labelmaps = data_views["labelmaps"]
+            gt_masks_per_frame = {
+                t: gt_masks_from_labelmap(
+                    labelmap=labelmaps,
+                    img_ids=data_views["img_ids"][t],
+                    instance_ids=data_views["instance_ids"][t],
+                )
+                for t in range(int(data_views["num_frames"]))
+            }
+        else:
+            gt_masks_per_frame = {
+                t: m.unsqueeze(1)          # -> (N_obj, 1, Z, Y, X)
+                for t, m in enumerate(data_views["masks"])
+            }
         backbone_out["gt_masks_per_frame"] = gt_masks_per_frame
         num_frames = data_views["num_frames"]
         backbone_out["num_frames"] = num_frames
@@ -1315,17 +1335,31 @@ class SAM2(SAM2Base):
                             masks=gt_masks_per_frame[t],
                         )
                 else:
-                    # (here we only sample **one initial point** on initial conditioning frames from the
-                    # ground-truth mask; we may sample more correction points on the fly)
-                    points, labels = get_next_point(
-                        input_fmt=self.input_fmt,
-                        time_separable=True,
-                        gt_masks=gt_masks_per_frame[t],
-                        pred_masks=None,
-                        method=(
-                            "uniform" if self.training else self.pt_sampling_for_eval
-                        ),
-                    )
+                    # Initial-prompt site: sample one click from the GT mask.
+                    # When the labelmap target view is available, route through
+                    # the labelmap-first helper so we do not depend on
+                    # `data_views["masks"]`. Training: GPU-friendly uniform
+                    # sampling. Eval: opt into exact scipy EDT when method=center.
+                    method = "uniform" if self.training else self.pt_sampling_for_eval
+                    if has_labelmap:
+                        points, labels = sample_prompt_point_from_labelmap(
+                            labelmap=data_views["labelmaps"],
+                            img_ids=data_views["img_ids"][t],
+                            instance_ids=data_views["instance_ids"][t],
+                            pred_masks=None,
+                            input_fmt=self.input_fmt,
+                            time_separable=True,
+                            method=method,
+                            exact_edt_for_eval=not self.training,
+                        )
+                    else:
+                        points, labels = get_next_point(
+                            input_fmt=self.input_fmt,
+                            time_separable=True,
+                            gt_masks=gt_masks_per_frame[t],
+                            pred_masks=None,
+                            method=method,
+                        )
 
                 point_inputs = {"point_coords": points, "point_labels": labels}
                 backbone_out["point_inputs_per_frame"][t] = point_inputs

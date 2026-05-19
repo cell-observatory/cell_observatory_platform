@@ -23,10 +23,13 @@ import torch
 from cell_observatory_platform.models.layers.utils import (
     get_uncertain_point_coords_with_randomness,
     point_sample_labelmap_batched,
+    sample_one_point_from_error_center,
+    sample_random_points_from_errors,
 )
 from cell_observatory_platform.models.ops.losses import calculate_uncertainty
 
 BoxFormat = Literal["xyzxyz", "zyxzyx", "cxcyczwhd"]
+PromptMethod = Literal["uniform", "center"]
 
 
 @torch.no_grad()
@@ -164,3 +167,105 @@ def sample_box_points_from_boxes(
         labels = labels.masked_fill(invalid[:, None], 0)
 
     return points, labels
+
+
+def gt_masks_from_labelmap(
+    labelmap: torch.Tensor,        # [B, Z, Y, X] integer instance labelmap
+    img_ids: torch.Tensor,         # [N] index into labelmap's batch axis
+    instance_ids: torch.Tensor,    # [N] labelmap id per row (-1 = pad)
+) -> torch.Tensor:                 # [N, 1, Z, Y, X] bool
+    """Materialize per-row binary GT masks from the labelmap target view.
+
+    The SAM2 loss path samples labels directly from the labelmap without
+    materializing dense GT. The SAM2 prompt path (initial click + error-region
+    correction click) still expects `[N, 1, Z, Y, X]` dense masks because
+    `sample_random_points_from_errors` / `sample_one_point_from_error_center`
+    reason about FP/FN regions per voxel. This helper bridges the two so the
+    preprocessor can stop emitting `data_views["masks"]` once the prompt
+    helpers consume labelmap-driven inputs end to end.
+
+    Pad rows (`instance_ids == -1`) yield all-False masks because the sentinel
+    cannot match any non-negative labelmap voxel.
+    """
+    if labelmap.dim() != 4:
+        raise ValueError(f"labelmap must be [B, Z, Y, X], got {tuple(labelmap.shape)}")
+    if img_ids.shape != instance_ids.shape:
+        raise ValueError(
+            f"img_ids {tuple(img_ids.shape)} and instance_ids "
+            f"{tuple(instance_ids.shape)} must match"
+        )
+    per_row = labelmap[img_ids.to(torch.long)]
+    return (per_row == instance_ids.to(per_row.dtype)[:, None, None, None]).unsqueeze(1)
+
+
+def sample_prompt_point_from_labelmap(
+    labelmap: torch.Tensor,         # [B, Z, Y, X]
+    img_ids: torch.Tensor,          # [N]
+    instance_ids: torch.Tensor,     # [N], -1 for pad
+    pred_masks: Optional[torch.Tensor] = None,  # [N, 1, Z, Y, X] bool, or None
+    *,
+    input_fmt: str = "TZYXC",
+    time_separable: bool = True,
+    method: PromptMethod = "uniform",
+    num_pt: int = 1,
+    exact_edt_for_eval: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Sample SAM2 prompt clicks driven by the labelmap target view.
+
+    Replaces the dense-GT call to `get_next_point` at SAM2 prompt sites
+    with a labelmap-first interface. GT masks are materialized internally
+    via `gt_masks_from_labelmap` (cheap: this is a small slice the SAM
+    decoder consumes anyway), then the existing point-sampling primitives
+    run on top.
+
+    Args:
+        method: "uniform" samples a uniformly random voxel inside the error
+            region (`gt XOR pred`); "center" picks the voxel with the largest
+            distance from the error-region boundary.
+        exact_edt_for_eval: only consulted when `method == "center"`. When
+            False (training default), the center request is downgraded to
+            "uniform" to keep the prompt path on GPU. When True, scipy's
+            `distance_transform_edt` runs on CPU per row to produce the exact
+            center -- preferred at eval where determinism dominates throughput.
+
+    Returns:
+        points: [N, num_pt, 3] pixel (x, y, z) float coords.
+        labels: [N, num_pt] int32 click labels (1 positive / 0 negative).
+    """
+    gt_masks = gt_masks_from_labelmap(labelmap, img_ids, instance_ids)
+    if pred_masks is None:
+        pred_masks = torch.zeros_like(gt_masks)
+
+    if method == "uniform":
+        return sample_random_points_from_errors(
+            input_fmt=input_fmt,
+            gt_masks=gt_masks,
+            pred_masks=pred_masks,
+            time_separable=time_separable,
+            num_pt=num_pt,
+        )
+    if method == "center":
+        if not exact_edt_for_eval:
+            # Training path: pass `num_pt=1` and route through the uniform
+            # sampler. scipy distance_transform_edt is a CPU host->device round
+            # trip per row, which dominates step time inside the tracking loop.
+            return sample_random_points_from_errors(
+                input_fmt=input_fmt,
+                gt_masks=gt_masks,
+                pred_masks=pred_masks,
+                time_separable=time_separable,
+                num_pt=max(1, num_pt),
+            )
+        # Eval path: exact center via scipy EDT; only num_pt=1 supported.
+        if num_pt != 1:
+            raise ValueError(
+                f"method='center' with exact_edt_for_eval=True only supports "
+                f"num_pt=1, got num_pt={num_pt}"
+            )
+        return sample_one_point_from_error_center(
+            input_fmt=input_fmt,
+            gt_masks=gt_masks,
+            pred_masks=pred_masks,
+            time_separable=time_separable,
+        )
+    raise ValueError(f"unknown method {method!r}; expected 'uniform' or 'center'")
