@@ -14,7 +14,13 @@ from ray.train import report
 from ray.train import Checkpoint
 
 from cell_observatory_platform.tests.conftest import config, distributed_test
-from cell_observatory_platform.training.helpers import METRIC_CATEGORY_NAMES, get_metric_full_name, log_data_timings
+from cell_observatory_platform.training.helpers import (
+    METRIC_CATEGORY_NAMES,
+    get_metric_full_name,
+    log_data_sample_metrics,
+    log_loss_dict,
+    make_timing_metric,
+)
 from cell_observatory_platform.training.loggers import EventRecorder, EventWriterList, LocalEventWriter, WandBEventWriter
 from cell_observatory_platform.utils.context import get_world_size, process_rank, is_main_process
 
@@ -36,27 +42,26 @@ def test_metric_full_name_uses_prefix_and_system_category():
     assert "system" in METRIC_CATEGORY_NAMES
 
 
-def test_log_data_timings_adds_second_units():
+def test_log_data_sample_metrics_adds_second_units():
+    """Timing records under metainfo['metrics'] resolve to _sec keys with timing reductions."""
     class _Trainer:
         event_recorder = EventRecorder()
 
-    log_data_timings(
-        _Trainer(),
-        idx=0,
-        data_sample={
-            "metainfo": {
-                "data_time": 0.1,
-                "get_item_time": torch.tensor([0.2, 0.4]),
-                "preprocess_time": 0.3,
-                "masking_time": 0.4,
-                "collate_time": 0.5,
-                "slice_time": torch.tensor([0.6, 0.8]),
-                "transform_time": 0.7,
-            }
+    data_sample = {
+        "metainfo": {
+            "metrics": [
+                make_timing_metric("data_time", 0.1),
+                make_timing_metric("get_item_time", torch.tensor([0.2, 0.4])),
+                make_timing_metric("preprocess_time", 0.3),
+                make_timing_metric("masking_time", 0.4),
+                make_timing_metric("collate_time", 0.5),
+                make_timing_metric("slice_time", torch.tensor([0.6, 0.8])),
+                make_timing_metric("transform_time", 0.7),
+            ],
         },
-        loss_dict=None,
-        type="val",
-    )
+    }
+
+    log_data_sample_metrics(_Trainer(), data_sample, default_phase="validation")
 
     expected = {
         get_metric_full_name(name=name, scope="step", category="timing", prefix="val", units="sec")
@@ -70,7 +75,192 @@ def test_log_data_timings_adds_second_units():
             "transform_time",
         )
     }
-    assert expected.issubset(_Trainer.event_recorder.get_step_scalars().keys())
+    recorded = _Trainer.event_recorder.get_step_scalars()
+    assert expected.issubset(recorded.keys())
+    # Reductions on each record should be timing-style (median/max/min)
+    for full_name in expected:
+        assert _Trainer.event_recorder.get_reduce_op(full_name) == ["median", "max", "min"]
+    # Tensor get_item_time was reduced by mean to a scalar before logging
+    got_full = get_metric_full_name(
+        name="get_item_time", scope="step", category="timing", prefix="val", units="sec",
+    )
+    assert recorded[got_full][0][0] == pytest.approx(0.3)
+
+
+def test_log_data_sample_metrics_phase_mapping():
+    """phase canonical names map to expected prefixes; training has no prefix."""
+    class _Trainer:
+        event_recorder = EventRecorder()
+
+    sample = {
+        "metainfo": {
+            "metrics": [
+                {
+                    "metric_name": "data_time",
+                    "value": 0.1,
+                    "category": "timing",
+                    "phase": "training",
+                    "reduce_method": ["median"],
+                },
+                {
+                    "metric_name": "data_time",
+                    "value": 0.2,
+                    "category": "timing",
+                    "phase": "validation",
+                    "reduce_method": ["median"],
+                },
+                {
+                    "metric_name": "data_time",
+                    "value": 0.3,
+                    "category": "timing",
+                    "phase": "testing",
+                    "reduce_method": ["median"],
+                },
+                {
+                    "metric_name": "data_time",
+                    "value": 0.4,
+                    "category": "timing",
+                    "phase": "inference",
+                    "reduce_method": ["median"],
+                },
+            ],
+        },
+    }
+    log_data_sample_metrics(_Trainer(), sample)
+
+    keys = set(_Trainer.event_recorder.get_step_scalars().keys())
+    assert get_metric_full_name(
+        name="data_time", scope="step", category="timing", units="sec",
+    ) in keys
+    assert get_metric_full_name(
+        name="data_time", scope="step", category="timing", prefix="val", units="sec",
+    ) in keys
+    assert get_metric_full_name(
+        name="data_time", scope="step", category="timing", prefix="test", units="sec",
+    ) in keys
+    assert get_metric_full_name(
+        name="data_time", scope="step", category="timing", prefix="inference", units="sec",
+    ) in keys
+
+
+def test_log_data_sample_metrics_value_normalization():
+    """Python numbers, scalar tensors, multi-element tensors, and lists all reduce to a float."""
+    class _Trainer:
+        event_recorder = EventRecorder()
+
+    sample = {
+        "metainfo": {
+            "metrics": [
+                {"metric_name": "py_float", "value": 1.5, "category": "timing",
+                 "phase": "training", "reduce_method": ["median"]},
+                {"metric_name": "scalar_tensor", "value": torch.tensor(2.0), "category": "timing",
+                 "phase": "training", "reduce_method": ["median"]},
+                {"metric_name": "vec_tensor", "value": torch.tensor([1.0, 3.0]), "category": "timing",
+                 "phase": "training", "reduce_method": ["median"]},
+                {"metric_name": "py_list", "value": [2.0, 4.0], "category": "timing",
+                 "phase": "training", "reduce_method": ["median"]},
+            ],
+        },
+    }
+    log_data_sample_metrics(_Trainer(), sample)
+    recorded = _Trainer.event_recorder.get_step_scalars()
+
+    def _val(name):
+        full = get_metric_full_name(
+            name=name, scope="step", category="timing", units="sec",
+        )
+        return recorded[full][0][0]
+
+    assert _val("py_float") == pytest.approx(1.5)
+    assert _val("scalar_tensor") == pytest.approx(2.0)
+    assert _val("vec_tensor") == pytest.approx(2.0)
+    assert _val("py_list") == pytest.approx(3.0)
+
+
+def test_log_data_sample_metrics_skips_invalid_records():
+    """Missing required fields or unnormalizable values are skipped, not raised."""
+    class _Trainer:
+        event_recorder = EventRecorder()
+
+    sample = {
+        "metainfo": {
+            "metrics": [
+                # missing reduce_method
+                {"metric_name": "no_reduce", "value": 1.0, "category": "timing"},
+                # empty reduce_method
+                {"metric_name": "empty_reduce", "value": 1.0, "category": "timing",
+                 "reduce_method": []},
+                # missing metric_name
+                {"value": 1.0, "category": "timing", "reduce_method": ["median"]},
+                # unnormalizable value
+                {"metric_name": "bad_value", "value": object(), "category": "timing",
+                 "reduce_method": ["median"]},
+                # valid record passes through
+                {"metric_name": "ok", "value": 1.0, "category": "timing",
+                 "phase": "training", "reduce_method": ["median"]},
+            ],
+        },
+    }
+    log_data_sample_metrics(_Trainer(), sample)
+    keys = set(_Trainer.event_recorder.get_step_scalars().keys())
+    ok_key = get_metric_full_name(
+        name="ok", scope="step", category="timing", units="sec",
+    )
+    assert ok_key in keys
+    assert len(keys) == 1
+
+
+def test_log_data_sample_metrics_loss_category_records():
+    """Records with category='loss' are routed to the loss section without timing units."""
+    class _Trainer:
+        event_recorder = EventRecorder()
+
+    sample = {
+        "metainfo": {
+            "metrics": [
+                {"metric_name": "aux_loss", "value": 0.42, "category": "loss",
+                 "phase": "training", "reduce_method": ["mean"]},
+            ],
+        },
+    }
+    log_data_sample_metrics(_Trainer(), sample)
+    expected_key = get_metric_full_name(
+        name="aux_loss", scope="step", category="loss",
+    )
+    assert expected_key in _Trainer.event_recorder.get_step_scalars()
+
+
+def test_log_loss_dict_uses_phase_prefix():
+    """log_loss_dict routes losses under the loss category with the resolved prefix."""
+    class _Trainer:
+        event_recorder = EventRecorder()
+
+    log_loss_dict(_Trainer(), {"step_loss": torch.tensor(1.25), "ce": 0.5}, phase="validation")
+
+    expected_step_loss = get_metric_full_name(
+        name="step_loss", scope="step", category="loss", prefix="val",
+    )
+    expected_ce = get_metric_full_name(
+        name="ce", scope="step", category="loss", prefix="val",
+    )
+    recorded = _Trainer.event_recorder.get_step_scalars()
+    assert expected_step_loss in recorded
+    assert expected_ce in recorded
+    assert recorded[expected_step_loss][0][0] == pytest.approx(1.25)
+
+
+def test_log_data_sample_metrics_empty_inputs_are_noop():
+    """None / empty / missing metrics list should not raise and should record nothing."""
+    class _Trainer:
+        event_recorder = EventRecorder()
+
+    log_data_sample_metrics(_Trainer(), None)
+    log_data_sample_metrics(_Trainer(), {})
+    log_data_sample_metrics(_Trainer(), {"metainfo": {}})
+    log_data_sample_metrics(_Trainer(), {"metainfo": {"metrics": []}})
+    assert _Trainer.event_recorder.get_step_scalars() == {} or all(
+        len(v) == 0 for v in _Trainer.event_recorder.get_step_scalars().values()
+    )
 
 
 def test_wandb_writer_preserves_scoped_metric_names():

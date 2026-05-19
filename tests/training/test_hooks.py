@@ -282,15 +282,32 @@ def _test_hooks_dist(cfg):
     # ------------------------------------------------------------------ #
 
     # reset counters for clean test section
+    from cell_observatory_platform.training.helpers import make_timing_metric
+
     trainer._iter = 0
     timer.before_test()
     for tstep in range(4):
         timer.before_test_step()
         time.sleep(0.15)
-        dummy_data_sample = {"metainfo": {"data_time": 0.05}}
+        dummy_data_sample = {
+            "metainfo": {"metrics": [make_timing_metric("data_time", 0.05)]}
+        }
         timer.after_test_step(dummy_data_sample, None, None)
         trainer._iter = tstep + 1
     timer.after_test()
+
+    # data_time from metainfo['metrics'] should now appear under the
+    # test-prefixed step_timing section, in seconds units.
+    test_data_time_name = get_metric_full_name(
+        name="data_time",
+        prefix="test",
+        scope="step",
+        category="timing",
+        units="sec",
+    )
+    test_data_times = rec.get_step_scalars().get(test_data_time_name, [])
+    assert len(test_data_times) == max(0, 4 - warmup)
+    assert all(abs(val - 0.05) < 1e-6 for val, *_ in test_data_times)
 
     test_step_time_name = get_metric_full_name(
         name="step_time",
