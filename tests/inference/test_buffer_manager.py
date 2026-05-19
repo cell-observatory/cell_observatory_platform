@@ -10,6 +10,7 @@ import pickle
 import time
 import uuid
 from multiprocessing import shared_memory
+from unittest import mock
 
 import numpy as np
 import pytest
@@ -18,6 +19,7 @@ import ray
 from cell_observatory_platform.data.datasets.buffers import (
     BufferManager,
     HostMemoryBuffer,
+    attach_shared_memory,
     get_buffer_name,
     get_slot_bytes,
     init_output_memory_pools,
@@ -102,6 +104,27 @@ def _make_shm(n_slots: int, shape: tuple, dtype):
     total = slot_bytes * n_slots
     shm = shared_memory.SharedMemory(create=True, size=total)
     return shm, slot_bytes
+
+
+def test_attach_shared_memory_unregisters_resource_tracker():
+    fake_shm = mock.Mock(_name="/psm_test_segment")
+    with (
+        mock.patch(
+            "cell_observatory_platform.data.datasets.buffers.shared_memory.SharedMemory",
+            side_effect=[TypeError("track is unsupported"), fake_shm],
+        ) as shared_memory_ctor,
+        mock.patch(
+            "cell_observatory_platform.data.datasets.buffers.resource_tracker.unregister",
+        ) as unregister,
+    ):
+        shm = attach_shared_memory("psm_test_segment")
+
+    assert shm is fake_shm
+    assert shared_memory_ctor.call_args_list == [
+        mock.call(name="psm_test_segment", track=False),
+        mock.call(name="psm_test_segment"),
+    ]
+    unregister.assert_called_once_with("/psm_test_segment", "shared_memory")
 
 
 # ===========================================================================
@@ -362,7 +385,7 @@ class TestHostMemoryBuffer:
             _kill_safe(actor)
 
     def test_driver_attaches_shared_memory_using_actor_config(self, ray_ctx, unique_suffix):
-        """Driver opens ``SharedMemory(name=cfg['name'])`` for the segment created in the actor (same attach path as BufferManager)."""
+        """Driver borrows the actor-owned segment without taking unlink ownership."""
         name = f"hb_sm_{unique_suffix}"
         actor = _make_host_buffer(
             name, capacity=2, input_shape=(4,), batch_size=1, dtype="uint16"
@@ -370,10 +393,14 @@ class TestHostMemoryBuffer:
         local_shm = None
         try:
             cfg = ray.get(actor.get_config.remote())
-            local_shm = shared_memory.SharedMemory(name=cfg["name"])
+            local_shm = attach_shared_memory(cfg["name"])
             arr = np.ndarray((1, 4), dtype=np.uint16, buffer=local_shm.buf)
             arr[:] = 42
             assert (arr == 42).all()
+            local_shm.close()
+            local_shm = None
+            probe = attach_shared_memory(cfg["name"])
+            probe.close()
         finally:
             if local_shm is not None:
                 local_shm.close()

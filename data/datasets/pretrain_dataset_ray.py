@@ -6,7 +6,6 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 
 from queue import Queue
 from threading import Thread
-from multiprocessing import shared_memory
 
 import ray
 
@@ -28,7 +27,7 @@ from cell_observatory_platform.data.databases.local_metadata_store import (
     SampleIndexPlanner,
 )
 from cell_observatory_platform.data.io import read_zarr
-from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, get_buffers
+from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, attach_shared_memory, get_buffers
 from cell_observatory_platform.data.structures import convert_bbox_format, mask_ids_to_masks
 from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
 from cell_observatory_platform.data.datasets.utils import resolve_channel_localization_indices
@@ -161,7 +160,7 @@ class FinetuneCollatorActor:
         self.slot_bytes = int(cfg["slot_bytes"])
         self.batch_shape = tuple(cfg["batch_shape"])
         self.capacity = int(cfg["capacity"])
-        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+        self._shm = attach_shared_memory(cfg["name"])
 
         # original input shape (without batch) from host buffer
         # e.g. (Z_raw, Y_raw, X_raw, C_full)
@@ -677,7 +676,7 @@ class CollatorActor:
         self.slot_bytes = int(cfg["slot_bytes"])
         self.batch_shape = tuple(cfg["batch_shape"])
         self.capacity = int(cfg["capacity"])
-        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+        self._shm = attach_shared_memory(cfg["name"])
 
         self.pin_pages = pin_pages
         if pin_pages:
@@ -935,7 +934,7 @@ class LoaderActor:
         cfg = ray.get(self.buffer_actor.get_config.remote())
         self.slot_bytes = int(cfg["slot_bytes"])
         self.batch_shape = tuple(cfg["batch_shape"])
-        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+        self._shm = attach_shared_memory(cfg["name"])
 
         ray.logger.info(
             f"LoaderActor on global rank {self.global_rank} and numa node {self.driver_process_numa_node} "
