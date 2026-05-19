@@ -106,6 +106,12 @@ class HookBase:
         """
         pass
 
+    def before_backward(self, data_sample, outputs, loss_dict):
+        """
+        Called after forward and before backward of each iteration.
+        """
+        pass
+
     def after_step(self, data_sample, outputs, loss_dict):
         """
         Called after each iteration.
@@ -1360,6 +1366,35 @@ class WeightDecayScheduleHook(HookBase):
                 self.event_recorder.put_scalars(scope="step", wd=wd0)
         else:
             raise NotImplementedError(f"Backend {self.backend} not supported.")
+
+
+class CudaSynchronizeHook(HookBase):
+    """Diagnostic hook to force CUDA stream alignment at selected train boundaries."""
+
+    def __init__(self, sync_at: Optional[Literal["before_forward", "before_backward"]] = None):
+        super().__init__()
+        self.sync_at = sync_at
+
+    def _sync(self, metric_name: str) -> None:
+        if self.sync_at is None or not torch.cuda.is_available():
+            return
+        t0 = time.perf_counter()
+        torch.cuda.synchronize()
+        self.trainer.event_recorder.put_scalars(
+            scope="step",
+            category="timing",
+            units="sec",
+            reduce_method=["median", "max", "min"],
+            **{metric_name: time.perf_counter() - t0},
+        )
+
+    def before_step(self):
+        if self.sync_at == "before_forward":
+            self._sync("cuda_sync_before_forward_time")
+
+    def before_backward(self, data_sample, outputs, loss_dict):
+        if self.sync_at == "before_backward":
+            self._sync("cuda_sync_before_backward_time")
 
 
 class FreeDeviceBufferHook(HookBase):
