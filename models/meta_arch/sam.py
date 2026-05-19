@@ -33,6 +33,9 @@ from cell_observatory_platform.models.layers.utils import (
     sample_box_points,
     concat_points
 )
+from cell_observatory_platform.models.ops.point_sampling import (
+    sample_box_points_from_boxes,
+)
 from cell_observatory_platform.data.structures import (
     box_volume,
     is_box_near_crop_edge_3d,
@@ -1292,11 +1295,25 @@ class SAM2(SAM2Base):
                 # During training # P(box) = prob_to_use_pt_input * prob_to_use_box_input
                 use_box_input = self.rng.random() < prob_to_use_box_input
                 if use_box_input:
-                    points, labels = sample_box_points(
-                        input_fmt=self.input_fmt,
-                        time_separable=True,
-                        masks=gt_masks_per_frame[t],
-                    )
+                    target_boxes_t = data_views.get("boxes")
+                    box_format = data_views.get("box_format")
+                    if target_boxes_t is not None and box_format is not None:
+                        # Labelmap target view supplies per-row boxes already;
+                        # avoid recomputing them from dense masks. Image shape
+                        # comes from the flat labelmaps tensor (B*T, Z, Y, X).
+                        Z, Y, X = data_views["labelmaps"].shape[-3:]
+                        points, labels = sample_box_points_from_boxes(
+                            boxes=target_boxes_t[t],
+                            box_format=box_format,
+                            image_shape=(Z, Y, X),
+                            valid=data_views["valid"][t],
+                        )
+                    else:
+                        points, labels = sample_box_points(
+                            input_fmt=self.input_fmt,
+                            time_separable=True,
+                            masks=gt_masks_per_frame[t],
+                        )
                 else:
                     # (here we only sample **one initial point** on initial conditioning frames from the
                     # ground-truth mask; we may sample more correction points on the fly)
