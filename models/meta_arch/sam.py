@@ -1168,8 +1168,12 @@ class SAM2(SAM2Base):
             backbone_out = {"backbone_fpn": None, "vision_pos_enc": None}
         backbone_out = self.prepare_prompt_inputs(backbone_out, data_sample)
         previous_stages_out = self.forward_tracking(backbone_out, data_sample)
-        gt_masks = torch.stack(data_sample["metainfo"]["targets"]["masks"]) 
-        loss = self.criterion(previous_stages_out, gt_masks)
+        # Pass the structured target view (labelmaps, instance_ids, valid,
+        # presence_t, boxes, masks, ...) directly to the criterion. The
+        # criterion picks the labelmap-native or legacy dense-mask path based
+        # on which fields the view exposes.
+        target_view = data_sample["metainfo"]["targets"]
+        loss = self.criterion(previous_stages_out, target_view)
         return loss, previous_stages_out
 
     def _prepare_backbone_features_per_frame(self, data_sample, img_ids):

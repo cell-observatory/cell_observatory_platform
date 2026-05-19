@@ -1741,7 +1741,22 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         self.oversample_ratio = oversample_ratio
         self.importance_sample_ratio = importance_sample_ratio
 
-    def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
+    def forward(self, outs_batch: List[Dict], targets_batch):
+        """
+        Args:
+            outs_batch: list of per-frame outputs from SAM2 tracking.
+            targets_batch: either
+                - dict (SAM2 target view): expected keys include `num_frames` and
+                    `masks: list[T] of [N_obj, Z, Y, X]`. The criterion stacks
+                    `masks` along T to recover the legacy `[T, N_obj, Z, Y, X]`
+                    tensor and proceeds; labelmap-native fields (labelmaps,
+                    instance_ids, valid, presence_t) are reserved for a
+                    follow-up that drops dense materialization.
+                - tensor `[T, N_obj, Z, Y, X]` (legacy contract).
+        """
+        if isinstance(targets_batch, dict):
+            target_view = targets_batch
+            targets_batch = torch.stack(target_view["masks"])
         assert len(outs_batch) == len(targets_batch), "outs_batch and targets_batch must have the same length"
         num_objects = torch.tensor(
             (targets_batch.shape[1]), device=targets_batch.device, dtype=torch.float
