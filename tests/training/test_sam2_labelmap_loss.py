@@ -39,10 +39,14 @@ def _make_criterion(
 
 
 def _make_outs(N: int, M: int, Z: int, Y: int, X: int, device, dtype=torch.float32):
+    # The labelmap loss path reads multistep_pred_multimasks (low-res) and
+    # ignores multistep_pred_multimasks_high_res; we keep both populated so
+    # downstream consumers (memory encoder, eval) still see the high-res key.
     src = torch.randn(N, M, Z, Y, X, device=device, dtype=dtype, requires_grad=True)
     pred_ious = torch.rand(N, M, device=device, dtype=dtype)
     obj_logits = torch.randn(N, 1, device=device, dtype=dtype)
     return {
+        "multistep_pred_multimasks": [src],
         "multistep_pred_multimasks_high_res": [src],
         "multistep_pred_ious": [pred_ious],
         "multistep_object_score_logits": [obj_logits],
@@ -136,6 +140,7 @@ def test_labelmap_path_pad_rows_are_invariant():
 
     outs_real = [
         {
+            "multistep_pred_multimasks": [src_real[t]],
             "multistep_pred_multimasks_high_res": [src_real[t]],
             "multistep_pred_ious": [ious_real[t]],
             "multistep_object_score_logits": [obj_real[t]],
@@ -144,6 +149,7 @@ def test_labelmap_path_pad_rows_are_invariant():
     ]
     outs_full = [
         {
+            "multistep_pred_multimasks": [src_full[t]],
             "multistep_pred_multimasks_high_res": [src_full[t]],
             "multistep_pred_ious": [ious_full[t]],
             "multistep_object_score_logits": [obj_full[t]],
@@ -271,7 +277,9 @@ def test_labelmap_path_backprops_to_predictions():
 
     criterion = _make_criterion(num_points=128).to(device)
     outs = _make_outs(K, M=3, Z=Z, Y=Y, X=X, device=device)
-    src = outs["multistep_pred_multimasks_high_res"][0]
+    # The labelmap loss path consumes multistep_pred_multimasks (low-res);
+    # in this test _make_outs aliases low-res and high-res to the same tensor.
+    src = outs["multistep_pred_multimasks"][0]
     losses = criterion([outs], target_view)
     losses[criterion.core_loss_key].backward()
     assert src.grad is not None

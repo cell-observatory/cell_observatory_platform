@@ -1843,8 +1843,10 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         losses["loss_class"] = losses["loss_class"] / cls_denom
 
         losses[self.core_loss_key] = self.reduce_loss(losses)
-        # Match prediction dtype for backward consistency.
-        pred_dtype = outs_batch[0]["multistep_pred_multimasks_high_res"][0].dtype
+        # Match prediction dtype for backward consistency. Low-res
+        # multimasks suffice -- point_sample uses normalized coords so the
+        # underlying resolution is the same once we look up the labelmap.
+        pred_dtype = outs_batch[0]["multistep_pred_multimasks"][0].dtype
         losses[self.core_loss_key] = losses[self.core_loss_key].to(pred_dtype)
         return losses
 
@@ -1857,8 +1859,16 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         valid: torch.Tensor,            # [N], bool
         presence: torch.Tensor,         # [N], bool
     ) -> Dict[str, torch.Tensor]:
-        """Return undivided gated sums for one frame across multi-step outputs."""
-        src_masks_list = outputs["multistep_pred_multimasks_high_res"]
+        """Return undivided gated sums for one frame across multi-step outputs.
+
+        Reads the LOW-RES `multistep_pred_multimasks` stream (not
+        `_high_res`). Point sampling uses normalized `(x, y, z)` coords, so
+        the predicted logit at a given normalized coord is interpolated from
+        whichever resolution we sample from -- the labelmap lookup runs at
+        the full-resolution target either way. Avoiding the high-res tensor
+        saves the upsampling memory along the criterion path.
+        """
+        src_masks_list = outputs["multistep_pred_multimasks"]
         ious_list = outputs["multistep_pred_ious"]
         obj_logits_list = outputs["multistep_object_score_logits"]
 
