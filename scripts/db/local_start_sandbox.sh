@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="/workspace/cell_observatory_platform"
+# Derive the repo root from this script's own location so the same script
+# works both from a host shell (local testing on a GPU node) and from inside
+# the apptainer image (where the repo is bind-mounted to
+# /workspace/cell_observatory_platform). The previous hardcoded container
+# path made host-side execution impossible, which forced local runs through
+# the SLURM-only `ray_local_cluster.sh` apptainer wrap.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
 cd "$repo_root"
 
 if [[ -f .env ]]; then
