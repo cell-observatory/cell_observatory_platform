@@ -4,11 +4,29 @@ Lives outside of `models/layers/utils.py` and `models/ops/losses.py` because it
 composes primitives from both modules into a single PointRend-style helper, so
 mask decoders do not each re-implement the same boilerplate.
 
-Coordinate convention follows `torch.nn.functional.grid_sample` for 5D inputs
-(N, C, D, H, W): normalized `point_coords[..., 0]` indexes the W axis (x),
-`[..., 1]` indexes the H axis (y), `[..., 2]` indexes the D axis (z). See
-[`models/layers/utils.py`](../layers/utils.py) `point_sample`,
-`point_sample_labelmap_batched`.
+============================================================================
+!! AXIS ORDER !! point_coords last dim is (x, y, z) = (W, H, D), NOT (z,y,x).
+----------------------------------------------------------------------------
+PyTorch grid_sample for 5D input (N, C, D, H, W) reads the grid's last dim
+as (x, y, z) -> (W, H, D):
+    point_coords[..., 0] -> W axis (x)
+    point_coords[..., 1] -> H axis (y)
+    point_coords[..., 2] -> D axis (z)
+
+Our tensors store spatial axes (Z, Y, X) (so D=Z, H=Y, W=X), but the point
+representation STILL goes (x, y, z). This mirrors numpy.meshgrid's
+`indexing="xy"` (Cartesian) vs `indexing="ij"` (matrix / tensor-order) split;
+PyTorch picks the Cartesian "xy" flavour for grid_sample. Mixing the two is
+a silent bug on anisotropic volumes (was the point_sample_labelmap_* bug,
+fixed in 9355cf4).
+
+Refs:
+  https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+  https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
+
+See [`models/layers/utils.py`](../layers/utils.py) `point_sample`,
+`point_sample_labelmap_batched` for the underlying primitives.
+============================================================================
 
 Box-prompt sampler emits pixel `(x, y, z)` corners to match SAM2's prompt
 encoder convention; format conversion happens at the boundary so callers do
@@ -62,6 +80,28 @@ def sample_uncertain_points_and_labelmap_labels(
         point_coords: `[N, num_points, 3]` normalized `(x, y, z)` coords.
         point_labels: `[N, num_points]` float, 1 where the sampled labelmap voxel
             equals the row's `instance_ids` value, 0 elsewhere.
+
+    ============================================================================
+    !! AXIS ORDER !! point_coords last dim is (x, y, z) = (W, H, D), NOT (z,y,x).
+    ----------------------------------------------------------------------------
+    PyTorch grid_sample for 5D input (N, C, D, H, W) reads the grid's last dim
+    as (x, y, z) -> (W, H, D):
+        point_coords[..., 0] -> W axis (x)
+        point_coords[..., 1] -> H axis (y)
+        point_coords[..., 2] -> D axis (z)
+    
+    Our tensors store spatial axes (Z, Y, X) (so D=Z, H=Y, W=X), but the point
+    representation STILL goes (x, y, z). This mirrors numpy.meshgrid's
+    `indexing="xy"` (Cartesian) vs `indexing="ij"` (matrix / tensor-order) split;
+    PyTorch picks the Cartesian "xy" flavour for grid_sample. Mixing the two is
+    a silent bug on anisotropic volumes (was the point_sample_labelmap_* bug,
+    fixed in 9355cf4).
+    
+    Refs:
+      https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+      https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
+    ============================================================================
+
     """
     point_coords = get_uncertain_point_coords_with_randomness(
         src_logits,

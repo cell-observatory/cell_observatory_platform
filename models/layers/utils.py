@@ -383,12 +383,34 @@ def point_sample(input, point_coords, **kwargs):
     Args:
         input (Tensor): A tensor of shape (N, C, D, H, W) that contains features map on a D x H x W grid.
         point_coords (Tensor): A tensor of shape (N, P, 3) or (N, Dgrid, Wgrid, Hgrid, 3) that contains
-        [0, 1] x [0, 1] x [0, 1] normalized point coordinates.
+        [0, 1] x [0, 1] x [0, 1] normalized point coordinates. Last dim is (x, y, z) = (W, H, D);
+        see !! AXIS ORDER !! below. Same convention as `numpy.meshgrid(indexing="xy")`.
 
     Returns:
         output (Tensor): A tensor of shape (N, C, P) or (N, C, Dgrid, Wgrid, Hgrid) that contains
             features for points in `point_coords`. The features are obtained via trilinear
             interplation from `input` the same way as :function:`torch.nn.functional.grid_sample`.
+
+    ============================================================================
+    !! AXIS ORDER !! point_coords last dim is (x, y, z) = (W, H, D), NOT (z,y,x).
+    ----------------------------------------------------------------------------
+    PyTorch grid_sample for 5D input (N, C, D, H, W) reads the grid's last dim
+    as (x, y, z) -> (W, H, D):
+        point_coords[..., 0] -> W axis (x)
+        point_coords[..., 1] -> H axis (y)
+        point_coords[..., 2] -> D axis (z)
+    
+    Our tensors store spatial axes (Z, Y, X) (so D=Z, H=Y, W=X), but the point
+    representation STILL goes (x, y, z). This mirrors numpy.meshgrid's
+    `indexing="xy"` (Cartesian) vs `indexing="ij"` (matrix / tensor-order) split;
+    PyTorch picks the Cartesian "xy" flavour for grid_sample. Mixing the two is
+    a silent bug on anisotropic volumes (was the point_sample_labelmap_* bug,
+    fixed in 9355cf4).
+    
+    Refs:
+      https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+      https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
+    ============================================================================
     """
     add_dim = False
     if point_coords.dim() == 3:
@@ -430,6 +452,27 @@ def get_uncertain_point_coords_with_randomness(
     Returns:
         point_coords (Tensor): A tensor of shape (N, P, 3) that contains the coordinates of P
             sampled points.
+
+    ============================================================================
+    !! AXIS ORDER !! point_coords last dim is (x, y, z) = (W, H, D), NOT (z,y,x).
+    ----------------------------------------------------------------------------
+    PyTorch grid_sample for 5D input (N, C, D, H, W) reads the grid's last dim
+    as (x, y, z) -> (W, H, D):
+        point_coords[..., 0] -> W axis (x)
+        point_coords[..., 1] -> H axis (y)
+        point_coords[..., 2] -> D axis (z)
+    
+    Our tensors store spatial axes (Z, Y, X) (so D=Z, H=Y, W=X), but the point
+    representation STILL goes (x, y, z). This mirrors numpy.meshgrid's
+    `indexing="xy"` (Cartesian) vs `indexing="ij"` (matrix / tensor-order) split;
+    PyTorch picks the Cartesian "xy" flavour for grid_sample. Mixing the two is
+    a silent bug on anisotropic volumes (was the point_sample_labelmap_* bug,
+    fixed in 9355cf4).
+    
+    Refs:
+      https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+      https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
+    ============================================================================
     """
     assert oversample_ratio >= 1, "oversample_ratio must be >= 1"
     assert importance_sample_ratio <= 1 and importance_sample_ratio >= 0, "importance_sample_ratio must be in [0, 1]"
@@ -498,6 +541,24 @@ def point_sample_labelmap_batched(
     Coordinate convention matches torch.nn.functional.grid_sample for 5D
     inputs (N, C, D, H, W): point_coords[..., 0] indexes the W axis (x),
     [..., 1] indexes the H axis (y), [..., 2] indexes the D axis (z).
+
+    ============================================================================
+    !! AXIS ORDER !! point_coords last dim is (x, y, z) = (W, H, D), NOT (z,y,x).
+    ----------------------------------------------------------------------------
+    Mirrors PyTorch grid_sample 5D convention (see banner above `point_sample`):
+        point_coords[..., 0] -> W axis (x)
+        point_coords[..., 1] -> H axis (y)
+        point_coords[..., 2] -> D axis (z)
+    The `labelmap` tensor itself is laid out (B, Z, Y, X) — the indexing
+    `labelmap[b, z_idx, y_idx, x_idx]` flips the order back to tensor-order.
+    Same Cartesian convention as `numpy.meshgrid(indexing="xy")`; the alternate
+    matrix convention `indexing="ij"` would give (z, y, x) — DO NOT mix them.
+    
+    Refs:
+      https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+      https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
+    ============================================================================
+
     """
     if labelmap.dtype in (torch.uint8, torch.uint16, torch.int8, torch.int16):
         labelmap = labelmap.to(torch.int32)
@@ -535,6 +596,23 @@ def point_sample_labelmap(
     Coordinate convention matches torch.nn.functional.grid_sample for 5D
     inputs (N, C, D, H, W): point_coords[..., 0] indexes the W axis (x),
     [..., 1] indexes the H axis (y), [..., 2] indexes the D axis (z).
+
+    ============================================================================
+    !! AXIS ORDER !! point_coords last dim is (x, y, z) = (W, H, D), NOT (z,y,x).
+    ----------------------------------------------------------------------------
+    Mirrors PyTorch grid_sample 5D convention (see banner above `point_sample`):
+        point_coords[..., 0] -> W axis (x)
+        point_coords[..., 1] -> H axis (y)
+        point_coords[..., 2] -> D axis (z)
+    The `labelmap_single` tensor itself is laid out (Z, Y, X) — the indexing
+    `labelmap_single[z_idx, y_idx, x_idx]` flips the order back to tensor-order.
+    Same Cartesian convention as `numpy.meshgrid(indexing="xy")`; the alternate
+    matrix convention `indexing="ij"` would give (z, y, x) — DO NOT mix them.
+    
+    Refs:
+      https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+      https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
+    ============================================================================
     """
     if labelmap_single.dtype in (torch.uint8, torch.uint16, torch.int8, torch.int16):
         labelmap_single = labelmap_single.to(torch.int32)
