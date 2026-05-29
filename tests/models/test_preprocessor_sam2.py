@@ -1,9 +1,13 @@
 """Tests for SAM2VideoPreprocessor target-view fields (labelmap-native path).
 
-`_build_data_views_lazy` adds labelmap, instance_ids (with sentinel -1 for pad),
-valid, presence_t, boxes, and box_format alongside the legacy `masks`/`img_ids`
-contract. These tests exercise it through the class directly, bypassing the
-base preprocessor `__init__` which expects a Ray-style runtime config.
+`_build_data_views` materializes a random K=max_masks subset of binary masks
+on-device and adds labelmap, instance_ids (with sentinel -1 for pad), valid,
+presence_t, boxes, and box_format alongside the `masks`/`img_ids` contract.
+These tests exercise it through the class directly, bypassing the base
+preprocessor `__init__` which expects a Ray-style runtime config.
+
+The K-subset is drawn via `pp.rng` (torch.Generator), so per-row order is not
+deterministic; assertions are written set-/membership-wise rather than by row.
 """
 from __future__ import annotations
 
@@ -14,10 +18,12 @@ from cell_observatory_platform.models.layers.preprocessor import SAM2VideoPrepro
 
 
 def _make_preprocessor(max_masks: int, bbox_format: str = "zyxzyx") -> SAM2VideoPreprocessor:
-    # Bypass __init__: the lazy data-view builder only needs max_masks and bbox_format.
+    # Bypass __init__: the data-view builder only needs max_masks, bbox_format, rng.
     pp = SAM2VideoPreprocessor.__new__(SAM2VideoPreprocessor)
     pp.max_masks = max_masks
     pp.bbox_format = bbox_format
+    pp.rng = torch.Generator()
+    pp.rng.manual_seed(0)
     return pp
 
 
@@ -53,7 +59,7 @@ def test_lazy_data_view_fields_shapes_and_pad_sentinel():
     ]
 
     pp = _make_preprocessor(max_masks=K_full, bbox_format="zyxzyx")
-    view = pp._build_data_views_lazy(
+    view = pp._build_data_views(
         targets=targets,
         num_frames=T,
         num_videos=B,
@@ -92,7 +98,8 @@ def test_lazy_data_view_fields_shapes_and_pad_sentinel():
             )
 
     # Padding sentinels: video 0 has 2 real ids (K=2), pads 2; video 1 has 1
-    # real id (K=1), pads 3. Pad rows must have instance_ids=-1, valid=False,
+    # real id (K=1), pads 3. Real rows carry the sampled ids (order is random,
+    # so assert set-wise); pad rows must have instance_ids=-1, valid=False,
     # presence_t=False, boxes=0.
     for t in range(T):
         inst = view["instance_ids"][t]
@@ -100,17 +107,17 @@ def test_lazy_data_view_fields_shapes_and_pad_sentinel():
         presence = view["presence_t"][t]
         boxes = view["boxes"][t]
 
-        # video 0 slots: rows 0..K_full-1
-        assert torch.equal(inst[:2], torch.tensor([7, 11], dtype=torch.int64))
+        # video 0 slots: rows 0..K_full-1 (2 real, 2 pad). Real ids = {7, 11}.
+        assert set(inst[:2].tolist()) == {7, 11}
         assert torch.all(valid[:2])
         assert torch.equal(inst[2:K_full], torch.full((K_full - 2,), -1, dtype=torch.int64))
         assert not torch.any(valid[2:K_full])
         assert not torch.any(presence[2:K_full])
         assert torch.all(boxes[2:K_full] == 0)
 
-        # video 1 slots: rows K_full..2*K_full-1
+        # video 1 slots: rows K_full..2*K_full-1 (1 real, 3 pad).
         offset = K_full
-        assert torch.equal(inst[offset : offset + 1], torch.tensor([13], dtype=torch.int64))
+        assert inst[offset].item() == 13
         assert valid[offset]
         assert torch.equal(inst[offset + 1 : 2 * K_full], torch.full((K_full - 1,), -1, dtype=torch.int64))
         assert not torch.any(valid[offset + 1 : 2 * K_full])
@@ -138,7 +145,7 @@ def test_lazy_data_view_presence_tracks_frame_membership():
     ]
 
     pp = _make_preprocessor(max_masks=K_full)
-    view = pp._build_data_views_lazy(
+    view = pp._build_data_views(
         targets=targets,
         num_frames=T,
         num_videos=B,
@@ -146,12 +153,18 @@ def test_lazy_data_view_presence_tracks_frame_membership():
         mask_labelmap=labelmap,
     )
 
+    # The sampled subset (ids 5 and 7) is stable across frames, so locate each
+    # id's row once; row order itself is random.
+    inst0 = view["instance_ids"][0]
+    row5 = int((inst0 == 5).nonzero().item())
+    row7 = int((inst0 == 7).nonzero().item())
+
     # Frame 0: id 5 present, id 7 absent.
-    assert torch.equal(view["presence_t"][0], torch.tensor([True, False]))
+    assert view["presence_t"][0][row5] and not view["presence_t"][0][row7]
     # Frame 1: id 5 absent, id 7 present.
-    assert torch.equal(view["presence_t"][1], torch.tensor([False, True]))
+    assert (not view["presence_t"][1][row5]) and view["presence_t"][1][row7]
     # Frame 2: both absent.
-    assert torch.equal(view["presence_t"][2], torch.tensor([False, False]))
+    assert not view["presence_t"][2][row5] and not view["presence_t"][2][row7]
 
     # valid stays True for both rows regardless of frame membership.
     for t in range(T):
@@ -168,7 +181,7 @@ def test_lazy_data_view_empty_targets_all_pad():
     targets: list[dict] = [{}]  # no mask_ids
 
     pp = _make_preprocessor(max_masks=K_full)
-    view = pp._build_data_views_lazy(
+    view = pp._build_data_views(
         targets=targets,
         num_frames=T,
         num_videos=B,
@@ -180,3 +193,145 @@ def test_lazy_data_view_empty_targets_all_pad():
     assert not torch.any(view["valid"][0])
     assert not torch.any(view["presence_t"][0])
     assert torch.all(view["boxes"][0] == 0)
+
+
+# --------------------------------------------------------------------------- #
+# forward(): single-source labelmap split off the data_tensor channel
+# --------------------------------------------------------------------------- #
+
+
+def _make_forward_pp(max_masks: int, expect_mask_channel: bool = True) -> SAM2VideoPreprocessor:
+    pp = SAM2VideoPreprocessor.__new__(SAM2VideoPreprocessor)
+    pp.max_masks = max_masks
+    pp.bbox_format = "zyxzyx"
+    pp.rng = torch.Generator()
+    pp.rng.manual_seed(0)
+    pp.expect_mask_channel = expect_mask_channel
+    pp.dtype = torch.float32
+    pp.transforms = None
+    return pp
+
+
+def test_forward_splits_labelmap_from_channel_and_builds_views():
+    # The labelmap rides the last data_tensor channel; forward must split it
+    # (int32, pre-cast), attach it per-target, and build views off of it.
+    device = torch.device("cpu")
+    B, T, Z, Y, X, C = 1, 2, 2, 3, 4, 2
+
+    img = torch.randn(B, T, Z, Y, X, C, device=device)
+    lm = torch.zeros(B, T, Z, Y, X, device=device)
+    lm[0, 0, 0, 0, 0] = 7
+    lm[0, 1, 1, 2, 3] = 11
+    inputs = torch.cat([img, lm.unsqueeze(-1)], dim=-1)  # (B,T,Z,Y,X,C+1)
+
+    targets = [
+        {
+            "mask_ids": torch.tensor([7, 11], dtype=torch.long, device=device),
+            "boxes": torch.zeros((2, 6), dtype=torch.float32, device=device),
+        }
+    ]
+
+    pp = _make_forward_pp(max_masks=4)
+    out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": targets}}, 0.0, 0)
+    dv = out["metainfo"]["targets"]
+
+    # Image channel was stripped: flat batch is (T*B, C, Z, Y, X).
+    assert out["data_tensor"].shape == (T * B, C, Z, Y, X)
+
+    # The flat labelmaps must equal the int32 channel, frame by frame.
+    for b in range(B):
+        for t in range(T):
+            assert torch.equal(dv["labelmaps"][b * T + t], lm[b, t].to(torch.int32))
+
+    # The per-target label_map was attached from the channel (mutated in place).
+    assert "label_map" in targets[0]
+    assert torch.equal(targets[0]["label_map"], lm[0].to(torch.int32))
+
+    # Real instances were materialized into the views.
+    assert any(bool(torch.any(dv["valid"][t])) for t in range(T))
+
+
+def test_forward_no_mask_channel_emits_empty_views():
+    device = torch.device("cpu")
+    B, T, Z, Y, X, C = 1, 2, 2, 3, 4, 2
+    inputs = torch.randn(B, T, Z, Y, X, C, device=device)  # no labelmap channel
+
+    pp = _make_forward_pp(max_masks=4, expect_mask_channel=False)
+    out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": [{}]}}, 0.0, 0)
+    dv = out["metainfo"]["targets"]
+
+    assert out["data_tensor"].shape == (T * B, C, Z, Y, X)
+    assert dv["num_frames"] == T and dv["num_videos"] == B
+    assert not any(bool(torch.any(dv["valid"][t])) for t in range(dv["num_frames"]))
+
+
+class _CropLastX:
+    """Minimal geometric transform: crop the X axis on image + label_map in
+    lockstep, mirroring how Crop3D warps both entities together."""
+
+    def __init__(self, xkeep: int):
+        self.xkeep = xkeep
+
+    def __call__(self, sample: dict) -> dict:
+        sample["data_tensor"] = sample["data_tensor"][..., : self.xkeep, :]
+        for t in sample["metainfo"].get("targets", []):
+            if "label_map" in t:
+                t["label_map"] = t["label_map"][..., : self.xkeep]
+        return sample
+
+
+def test_forward_transform_keeps_image_and_labelmap_coherent():
+    # With a geometric transform that crops both image and per-target label_map,
+    # the post-transform stack/assert must pass and masks must come from the
+    # cropped labelmap (no RuntimeError, no shape mismatch).
+    device = torch.device("cpu")
+    B, T, Z, Y, X, C = 1, 1, 1, 2, 4, 2
+    XKEEP = 2
+
+    img = torch.randn(B, T, Z, Y, X, C, device=device)
+    lm = torch.zeros(B, T, Z, Y, X, device=device)
+    lm[0, 0, 0, 0, 1] = 9  # inside the kept region (x=1 < XKEEP)
+    lm[0, 0, 0, 1, 3] = 4  # outside the kept region (x=3 >= XKEEP) -> dropped
+    inputs = torch.cat([img, lm.unsqueeze(-1)], dim=-1)
+
+    targets = [
+        {
+            "mask_ids": torch.tensor([9], dtype=torch.long, device=device),
+            "boxes": torch.zeros((1, 6), dtype=torch.float32, device=device),
+        }
+    ]
+
+    pp = _make_forward_pp(max_masks=2)
+    pp.transforms = [_CropLastX(XKEEP)]
+    out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": targets}}, 0.0, 0)
+    dv = out["metainfo"]["targets"]
+
+    # Image and labelmap were cropped identically along X.
+    assert out["data_tensor"].shape == (T * B, C, Z, Y, XKEEP)
+    assert dv["labelmaps"].shape == (B * T, Z, Y, XKEEP)
+    assert torch.equal(targets[0]["label_map"], lm[..., :XKEEP][0].to(torch.int32))
+
+
+# --------------------------------------------------------------------------- #
+# _split_labelmap_int32 (shared base helper)
+# --------------------------------------------------------------------------- #
+
+
+def test_split_labelmap_int32_precast_preserves_large_ids():
+    pp = SAM2VideoPreprocessor.__new__(SAM2VideoPreprocessor)
+    img = torch.randn(1, 4, 2)
+    lm = torch.tensor([[300.0, 0.0, 4097.0, 0.0]]).unsqueeze(-1)  # ids > bf16-exact
+    x = torch.cat([img, lm], dim=-1)  # (1, 4, 3)
+
+    images, labelmap = pp._split_labelmap_int32(x, has_mask_channel=True)
+    assert images.shape == (1, 4, 2)
+    assert labelmap.dtype == torch.int32
+    assert labelmap.tolist() == [[300, 0, 4097, 0]]
+
+
+def test_split_labelmap_int32_none_when_no_channel():
+    pp = SAM2VideoPreprocessor.__new__(SAM2VideoPreprocessor)
+    x = torch.randn(1, 4, 3)
+    images, labelmap = pp._split_labelmap_int32(x, has_mask_channel=False)
+    assert labelmap is None
+    assert images is x
