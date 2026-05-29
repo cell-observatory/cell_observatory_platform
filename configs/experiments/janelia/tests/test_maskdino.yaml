@@ -1,34 +1,34 @@
 # @package _global_
 defaults:
-  - /tasks/instance_segmentation             # configs/tasks/instance_segmentation.yaml
-  - /paths/local                         # configs/paths/local.yaml
-  - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
-  - /clusters/janelia_a100                 # configs/clusters/janelia_a100.yaml
-  - /datasets/databases/base_database        # Loads configs/datasets/databases/base_database.yaml
-  - /datasets/transforms/ray_transforms      # Loads configs/datasets/transforms/ray_transforms.yaml
-  - /datasets/preprocessor/ray_preprocessor  # Loads configs/datasets/preprocessor/ray_preprocessor.yaml
-  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
-  - /datasets/preprocessor/instance_segmentation_preprocessor # configs/datasets/preprocessor/instance_segmentation_preprocessor.yaml
-  - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
-  - /models/BUILD_maskDINO                   # configs/models/BUILD_maskdino.yaml
-  - /models/meta_arch/maskdino/mae_large    # configs/models/maskdino/large.yaml
-  - /models/heads/maskdino_decoder/maskdino_decoder           # configs/models/heads/maskdino_decoder/maskdino_decoder.yaml
-  - /models/heads/pixel_decoder/maskdino_encoder # configs/models/heads/maskdino_encoder/maskdino_encoder.yaml
-  - /models/adapters/vit_adapter             # configs/models/adapters/vit_adapter.yaml
-  - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
-  - /models/backbones/maskdino_backbone/maskdino_backbone   # configs/models/backbones/maskdino_backbone/maskdino_backbone.yaml
-  - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
-  - /loggers/loggers                         # configs/loggers/loggers.yaml
-  - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
-  - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
-  - /optimizers/lamb                         # configs/optimizers/lamb.yaml
-  - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/maskdino/mae_large  # configs/optimizations/models/maskdino/mae_large.yaml
-  - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
-  - /profiling/profiling                     # configs/profiling/profiling.yaml
+  - /tasks/instance_segmentation
+  - /paths/local
+  - /hydra/overrides
+  - /clusters/janelia_l4
+  - /datasets/databases/base_database
+  - /datasets/transforms/ray_transforms
+  - /datasets/preprocessor/ray_preprocessor
+  - /datasets/pretrain_dataset_ray
+  - /datasets/preprocessor/instance_segmentation_preprocessor
+  - /datasets/masking/mask_generator
+  - /models/BUILD_maskDINO
+  - /models/meta_arch/maskdino/mae_large
+  - /models/heads/maskdino_decoder/maskdino_decoder
+  - /models/heads/pixel_decoder/maskdino_encoder
+  - /models/adapters/vit_adapter
+  - /models/backbones/masked_encoder/large
+  - /models/backbones/maskdino_backbone/maskdino_backbone
+  - /checkpoint/checkpoint
+  - /loggers/loggers
+  - /evaluation/base_evaluator
+  - /deepspeed/zero2
+  - /optimizers/lamb
+  - /schedulers/warmup_cosine_decay
+  - /optimizations/models/maskdino/mae_large
+  - /optimizations/optimizations
+  - /profiling/profiling
   - _self_
 
-experiment_name: instance_segmentation_maskdino_baseline_128x384x512_10_epoch_lr_0p0001_opt_lamb
+experiment_name: instance_segmentation_maskdino_baseline_128x384x512_new_pointrend_l4
 wandb_project: testing
 
 # debug_mode: true
@@ -54,8 +54,9 @@ engine: deepspeed
 # --------------------------------------------------------------------------------
 
 clusters:
-  batch_size: 192 # total batch size
-  worker_nodes: 4 # number of worker nodes
+  batch_size: 48 # 40GB memory
+  # batch_size: 96 # 80GB memory
+  worker_nodes: 2 # number of worker nodes
   # partition: gpu_a100 # 4 gpus per node: max 12 cpus per gpu
   # gpus_per_worker: 4 # number of gpus per worker node
   # cpus_per_gpu: 12 # number of cpu cores per gpu
@@ -65,7 +66,7 @@ clusters:
 paths:
   # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/testing/${experiment_name}
-  server_path_override: /groups/betzig/betziglab/CellObservatoryData/synthetic_data/05052026_mem_cyto_1k_volumes_77_tiles/
+  server_path_override: /groups/betzig/betziglab/CellObservatoryData/synthetic_data/fixed/05052026_mem_cyto_1k_volumes_77_tiles/
   resume_checkpointdir: null
   pretrained_checkpointdir: null
 
@@ -73,8 +74,6 @@ paths:
 datasets:
   # mainly used by other configs but determined here for ease of access
   batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
-  train_shape: [128, 384, 512, 5]
-  input_shape: [128, 384, 512, 6]
   train_shape: [128, 384, 512, 5]
   input_shape: [128, 384, 512, 6]
   patch_shape: [16, 16, 16, null]
@@ -95,7 +94,7 @@ datasets:
     # - "000x_005y_000z.zarr"
   # roi_list: [314] 
   # timepoint_list: [0]
-  max_rows: null # maximum number of rows to query from the database
+  max_rows: 1000 # maximum number of rows to query from the database
   cdf_threshold: null
   cdf_target: null
   selected_channel_localizations: ["membrane", "cytosol"]
@@ -150,7 +149,7 @@ datasets:
       - "annotations_metadata"
 
 schedulers:
-  epochs: 1
+  epochs: 5
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}

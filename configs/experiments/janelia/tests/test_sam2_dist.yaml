@@ -25,7 +25,7 @@ defaults:
   - /profiling/profiling
   - _self_
 
-experiment_name: profiling_a100_sam2_baseline_128x384x512_new_mask_ids_to_masks
+experiment_name: profiling_a100_sam2_baseline_128x384x512_new_mask_ids_to_masks_pointrend
 wandb_project: testing
 
 # debug_mode: true
@@ -48,6 +48,14 @@ engine: deepspeed
 
 # overrides
 # --------------------------------------------------------------------------------
+
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        num_points: 26000          # ~10% of 32x64x128 stride-4 grid
+        oversample_ratio: 3
+        importance_sample_ratio: 0.75
 
 clusters:
   batch_size: 8 # gpus_per_worker (4) * worker_nodes (2)
@@ -86,7 +94,7 @@ datasets:
     # - "000x_005y_000z.zarr"
   # roi_list: [314]
   # timepoint_list: [0]
-  max_rows: 104 # quick A100 smoke test of the new defer_binary_masks path
+  max_rows: 1000 # quick A100 smoke test of the new defer_binary_masks path
   cdf_threshold: null
   cdf_target: null
   selected_channel_localizations: ["membrane", "cytosol"]
@@ -150,7 +158,7 @@ datasets:
       - "annotations_metadata"
 
 schedulers:
-  epochs: 1
+  epochs: 10
   # warmup: 30
   # cooldown: 5
 
@@ -176,17 +184,17 @@ hooks:
   #   compare_fn: ${evaluation.val_mode}
   #   eval_after_validation: true
 
-  - _target_: cell_observatory_platform.training.hooks.TorchProfiler
-    output_dir: ${paths.outdir}/profiler
-    schedule:
-      # skip_first: 10
-      warmup: 4
-      active: 2
-      repeat: 1
-      wait: 1
-    activities:
-      - CUDA
-      - CPU
-    save_tensorboard: true
-    shutdown_after_profile: true
-    save_memory_trace: true
+  # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+  #   output_dir: ${paths.outdir}/profiler
+  #   schedule:
+  #     # skip_first: 10
+  #     warmup: 4
+  #     active: 2
+  #     repeat: 1
+  #     wait: 1
+  #   activities:
+  #     - CUDA
+  #     - CPU
+  #   save_tensorboard: true
+  #   shutdown_after_profile: true
+  #   save_memory_trace: true
