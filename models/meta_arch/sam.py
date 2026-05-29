@@ -27,16 +27,10 @@ from cell_observatory_platform.models.layers.attention import MemoryAttention, R
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
 from cell_observatory_platform.models.layers.utils import (
     select_closest_cond_frames,
-    sample_random_points_from_errors,
-    sample_one_point_from_error_center,
     get_next_point,
     sample_box_points,
-    concat_points
-)
-from cell_observatory_platform.models.ops.point_sampling import (
-    gt_masks_from_labelmap,
     sample_box_points_from_boxes,
-    sample_prompt_point_from_labelmap,
+    concat_points
 )
 from cell_observatory_platform.data.structures import (
     box_volume,
@@ -145,8 +139,8 @@ class SAM2Base(torch.nn.Module):
         #   - correction-prompt FP/FN region calculation
         #   - eval output (`pred_masks_high_res`)
         # Safe only when:
-        #   - the labelmap loss path is active (criterion already consumes
-        #     `multistep_pred_multimasks` not `_high_res`),
+        #   - the criterion consumes the high-res multimask stream and the
+        #     materialized dense `masks` (not low-res logits alone),
         #   - and the memory encoder + correction sampling either also run on
         #     low-res inputs or are disabled (e.g. single-frame static-image
         #     training with `num_correction_pt_per_frame=0` and
@@ -422,9 +416,9 @@ class SAM2Base(torch.nn.Module):
 
         if self.input_fmt == "TZYXC":
             if self.skip_high_res_upsample:
-                # Alias to low-res; downstream consumers (criterion via the
-                # labelmap path use normalized coords; memory encoder /
-                # correction sampling must tolerate the coarser resolution).
+                # Alias to low-res; downstream consumers (criterion uses
+                # normalized coords on materialized dense masks; memory
+                # encoder / correction sampling must tolerate coarser resolution).
                 high_res_multimasks = low_res_multimasks
             else:
                 high_res_multimasks = F.interpolate(
@@ -1196,9 +1190,9 @@ class SAM2(SAM2Base):
         backbone_out = self.prepare_prompt_inputs(backbone_out, data_sample)
         previous_stages_out = self.forward_tracking(backbone_out, data_sample)
         # Pass the structured target view (labelmaps, instance_ids, valid,
-        # presence_t, boxes, masks, ...) directly to the criterion. The
-        # criterion picks the labelmap-native or legacy dense-mask path based
-        # on which fields the view exposes.
+        # presence_t, boxes, masks, ...) directly to the criterion, which
+        # consumes the materialized dense `masks` plus `valid`/`presence_t`
+        # gates (single dense path).
         target_view = data_sample["metainfo"]["targets"]
         loss = self.criterion(previous_stages_out, target_view)
         return loss, previous_stages_out
@@ -1236,39 +1230,19 @@ class SAM2(SAM2Base):
         Prepare input mask, point or box prompts. Optionally, we allow tracking from
         a custom `start_frame_idx` to the end of the video (for evaluation purposes).
         """
-        # Load the ground-truth masks on all frames (so that we can later
-        # sample correction points from them)
-        # gt_masks_per_frame = {
-        #     stage_id: targets.segments.unsqueeze(1)  # [B, 1, H_im, W_im]
-        #     for stage_id, targets in enumerate(input.find_targets)
-        # }
         data_views = data_sample["metainfo"]["targets"]
 
-        # Per-frame GT masks. Preferred path: derive from the labelmap target
-        # view so the preprocessor can eventually stop emitting dense per-row
-        # masks entirely. Falls back to the eager `masks` field for configs
-        # that have not migrated.
-        has_labelmap = (
-            "labelmaps" in data_views
-            and "instance_ids" in data_views
-            and "img_ids" in data_views
-        )
-        if has_labelmap:
-            labelmaps = data_views["labelmaps"]
-            gt_masks_per_frame = {
-                t: gt_masks_from_labelmap(
-                    labelmap=labelmaps,
-                    img_ids=data_views["img_ids"][t],
-                    instance_ids=data_views["instance_ids"][t],
-                )
-                for t in range(int(data_views["num_frames"]))
-            }
-        else:
-            gt_masks_per_frame = {
-                t: m.unsqueeze(1)          # -> (N_obj, 1, Z, Y, X)
-                for t, m in enumerate(data_views["masks"])
-            }
+        # Per-frame GT masks for correction-point sampling. The preprocessor
+        # always materializes the K=max_masks binary-mask subset on-device, so
+        # we consume it directly (no labelmap rebuild here). Each entry is the
+        # per-frame `[N_obj, Z, Y, X]` tensor lifted to `[N_obj, 1, Z, Y, X]`.
+        gt_masks_per_frame = {
+            t: m.unsqueeze(1)          # -> (N_obj, 1, Z, Y, X)
+            for t, m in enumerate(data_views["masks"])
+        }
         backbone_out["gt_masks_per_frame"] = gt_masks_per_frame
+
+        # num_frames drives the per-frame prompt/correction loops below.
         num_frames = data_views["num_frames"]
         backbone_out["num_frames"] = num_frames
 
@@ -1340,10 +1314,9 @@ class SAM2(SAM2Base):
                     target_boxes_t = data_views.get("boxes")
                     box_format = data_views.get("box_format")
                     if target_boxes_t is not None and box_format is not None:
-                        # Labelmap target view supplies per-row boxes already;
-                        # avoid recomputing them from dense masks. Image shape
-                        # comes from the flat labelmaps tensor (B*T, Z, Y, X).
-                        Z, Y, X = data_views["labelmaps"].shape[-3:]
+                        # Per-row boxes come from the preprocessor; spatial
+                        # extents come from the materialized GT masks.
+                        Z, Y, X = gt_masks_per_frame[t].shape[-3:]
                         points, labels = sample_box_points_from_boxes(
                             boxes=target_boxes_t[t],
                             box_format=box_format,
@@ -1358,30 +1331,17 @@ class SAM2(SAM2Base):
                         )
                 else:
                     # Initial-prompt site: sample one click from the GT mask.
-                    # When the labelmap target view is available, route through
-                    # the labelmap-first helper so we do not depend on
-                    # `data_views["masks"]`. Training: GPU-friendly uniform
-                    # sampling. Eval: opt into exact scipy EDT when method=center.
+                    # Masks are always materialized by the preprocessor, so we
+                    # sample directly from gt_masks_per_frame. Training: uniform;
+                    # eval: self.pt_sampling_for_eval (exact EDT when "center").
                     method = "uniform" if self.training else self.pt_sampling_for_eval
-                    if has_labelmap:
-                        points, labels = sample_prompt_point_from_labelmap(
-                            labelmap=data_views["labelmaps"],
-                            img_ids=data_views["img_ids"][t],
-                            instance_ids=data_views["instance_ids"][t],
-                            pred_masks=None,
-                            input_fmt=self.input_fmt,
-                            time_separable=True,
-                            method=method,
-                            exact_edt_for_eval=not self.training,
-                        )
-                    else:
-                        points, labels = get_next_point(
-                            input_fmt=self.input_fmt,
-                            time_separable=True,
-                            gt_masks=gt_masks_per_frame[t],
-                            pred_masks=None,
-                            method=method,
-                        )
+                    points, labels = get_next_point(
+                        input_fmt=self.input_fmt,
+                        time_separable=True,
+                        gt_masks=gt_masks_per_frame[t],
+                        pred_masks=None,
+                        method=method,
+                    )
 
                 point_inputs = {"point_coords": points, "point_labels": labels}
                 backbone_out["point_inputs_per_frame"][t] = point_inputs
