@@ -925,6 +925,7 @@ def sample_random_points_from_errors(
         all_correct = all_correct[..., None, None, None]
 
         # channel 0 is FP map, while channel 1 is FN map
+        # FIXME: This allocates a large tensor; consider a more efficient sampling method.
         pts_noise = torch.rand(B, num_pt, D_im, H_im, W_im, 2, device=device)
         # sample a negative new click from FP region or a positive new click
         # from FN region, depend on where the maximum falls,
