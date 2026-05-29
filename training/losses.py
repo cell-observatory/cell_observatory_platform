@@ -1759,9 +1759,9 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         `valid` only. Denominators are the global gated row counts / world_size.
         Within each frame, `use_point_sampling` toggles PointRend vs dense voxel loss.
         """
-        masks_list: List[torch.Tensor] = target_view["masks"]      # list[T] [N,Z,Y,X]
-        valid_list: List[torch.Tensor] = target_view["valid"]
-        presence_list: List[torch.Tensor] = target_view["presence_t"]
+        masks_list: List[torch.Tensor] = target_view["masks"] # list[T] [N,Z,Y,X]
+        valid_list: List[torch.Tensor] = target_view["valid"] # list[T] [N] bool, is this a real object or padding?
+        presence_list: List[torch.Tensor] = target_view["presence_t"] # list[T] [N] bool, is this object present in this frame?
         T = len(masks_list)
         assert len(outs_batch) == T, "outs_batch length must match num_frames"
 
