@@ -93,8 +93,9 @@ criterion_args:
   iou_use_l1_loss: true
   pred_obj_scores: false
   activation_checkpoint: true
-  # dont see that big vram savings from point sampling
-  # due to iou loss
+  # Loss path selector:
+  #   true  -> PointRend point-sampling on materialized binary masks
+  #   false -> dense per-voxel loss on materialized binary masks
   use_point_sampling: false
   num_points: 20000
   oversample_ratio: 3

@@ -18,7 +18,6 @@ import torch
 import ujson
 
 from cupy.cuda import runtime as cudart
-from hydra.utils import get_method, instantiate
 from omegaconf import DictConfig, OmegaConf
  
 from cell_observatory_platform.data.databases.local_metadata_store import (
@@ -28,7 +27,7 @@ from cell_observatory_platform.data.databases.local_metadata_store import (
 )
 from cell_observatory_platform.data.io import read_zarr
 from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, attach_shared_memory, get_buffers
-from cell_observatory_platform.data.structures import convert_bbox_format, mask_ids_to_masks
+from cell_observatory_platform.data.structures import convert_bbox_format
 from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
 from cell_observatory_platform.data.datasets.utils import resolve_channel_localization_indices
 from cell_observatory_platform.training.helpers import get_data_dim, get_image_sizes, record_dataset_len
@@ -106,13 +105,8 @@ class FinetuneCollatorActor:
             "annotations_metadata",
         ],
         input_format: Literal["ZYXC", "TZYXC"] = "ZYXC",
-        mask_channel_idx: int = -1,
         bbox_data_format: str = "zyxzyx",
         bbox_output_format: str = "zyxzyx",
-        transforms_list: Optional[List[DictConfig]] = None,
-        use_masks: bool = False,
-        generate_binary_masks: bool = False,
-        defer_binary_masks: bool = False,
         require_targets: bool = True,
         # with_resize: bool = False,
         debug: bool = False,
@@ -137,7 +131,6 @@ class FinetuneCollatorActor:
         if self.input_format not in ["ZYXC", "TZYXC"]:
             raise NotImplementedError(f"FinetuneCollatorActor currently assumes ZYXC, got {self.input_format}")
 
-        self.mask_channel_idx = mask_channel_idx
         self.bbox_data_format = bbox_data_format
         self.bbox_output_format = bbox_output_format
 
@@ -203,18 +196,6 @@ class FinetuneCollatorActor:
             device_idx=idx,
         )
 
-        self.transforms = []
-        for t in transforms_list or []:
-            if isinstance(t, DictConfig):
-                # not yet instantiated
-                self.transforms.append(instantiate(t))
-            elif isinstance(t, str):
-                # a dotted‑path string
-                self.transforms.append(get_method(t))
-            else:
-                # already an instantiated callable object
-                self.transforms.append(t)
-
         # TODO: deprecate
         # self.with_resize = with_resize
         # if self.with_resize:
@@ -227,15 +208,13 @@ class FinetuneCollatorActor:
         #         pin_memory=True,
         #     )
 
-        self.use_masks = use_masks
-        self.generate_binary_masks = generate_binary_masks
-        # When True, defer per-instance binary mask materialization out of
-        # the CPU collator and into the model preprocessor (which can build
-        # only the K=max_masks slices it actually needs, on GPU). The
-        # labelmap rides on the last channel of data_tensor so no extra H2D
-        # is required. Caller is responsible for matching this with a
-        # downstream preprocessor that knows how to do the lazy build.
-        self.defer_binary_masks = defer_binary_masks
+        # Labelmap ownership lives entirely on the model preprocessor (GPU).
+        # The collator never clones, splits, or materializes the labelmap; the
+        # integer labelmap simply rides on the last channel of data_tensor and
+        # is transferred to VRAM in the single H2D copy. The preprocessor then
+        # splits it off (int32, before the dtype cast), applies transforms, and
+        # builds per-instance binary masks. The collator only emits lightweight
+        # per-target metadata (boxes / mask_ids / labels).
         self.require_targets = require_targets
         self.normalize_bboxes = normalize_bboxes
 
@@ -319,48 +298,22 @@ class FinetuneCollatorActor:
         except Exception:
             pass
 
-    def _get_masks(self, inputs: torch.Tensor):
-        assert self.input_format.upper().endswith("C"), "Input format must end with 'C' (channels)"
-        C = inputs.shape[-1]
-        if C < 2:
-            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
-        # For zero-copy we *require* the mask to be the last channel
-        if self.mask_channel_idx not in (-1, C - 1):
-            raise ValueError(
-                f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
-            )
-        masks = inputs[..., -1].clone()
-        return inputs, masks
-
     def _build_targets(
         self,
-        masks_labelmap: Optional[torch.Tensor],  # (B, Z, Y, X) on CPU
         annotations_metadata_batch: List[object],
     ):
         """
-        Build per-sample targets from annotations_metadata and an optional labelmap.
-        If self.use_masks is False, no binary masks are constructed and
-        the "masks" key is omitted entirely from the targets.
+        Build per-sample targets (boxes / mask_ids / labels) from
+        annotations_metadata. The labelmap is NOT touched here: it rides on the
+        data_tensor channel to VRAM and is split off + transformed + turned into
+        per-instance binary masks by the model preprocessor (single source).
         """
         if self.bbox_data_format != "zyxzyx":
             raise ValueError(
                 f"annotations_metadata provides bbox_zyxzyx, so bbox_data_format must be 'zyxzyx', got {self.bbox_data_format}"
             )
 
-        if masks_labelmap is not None:
-            if self.input_format == "ZYXC":
-                B, Zm, Ym, Xm = masks_labelmap.shape
-                spatiotemporal_shape = (Zm, Ym, Xm)
-            elif self.input_format == "TZYXC":
-                B, T, Zm, Ym, Xm = masks_labelmap.shape
-                spatiotemporal_shape = (T, Zm, Ym, Xm)
-            else:
-                raise NotImplementedError(f"Unsupported input_format={self.input_format}")
-            device = masks_labelmap.device
-        else:
-            B = len(annotations_metadata_batch)
-            spatiotemporal_shape = None
-            device = torch.device("cpu")
+        device = torch.device("cpu")
 
         mask_ids_batch: List[List[int]] = []
         labels_batch: List[List[int]] = []
@@ -402,39 +355,13 @@ class FinetuneCollatorActor:
                 )
             bboxes_batch.append(box_tensor)
 
-        if self.use_masks and self.generate_binary_masks and not self.defer_binary_masks:
-            if masks_labelmap is None or spatiotemporal_shape is None:
-                raise ValueError("generate_binary_masks=True requires a dense last-channel labelmap")
-            binary_masks_batch = mask_ids_to_masks(
-                batch_size=B,
-                spatiotemporal_shape=spatiotemporal_shape,
-                mask_ids_batch=mask_ids_batch,
-                masks=masks_labelmap,
-                device=device,
-            )
-        else:
-            binary_masks_batch = [None] * B
-
         targets: List[Dict[str, Any]] = []
-        for b, (ids, labels, bm, boxes) in enumerate(
-            zip(mask_ids_batch, labels_batch, binary_masks_batch, bboxes_batch)
-        ):
+        for ids, labels, boxes in zip(mask_ids_batch, labels_batch, bboxes_batch):
             t: Dict[str, Any] = {
                 "boxes": boxes,
                 "mask_ids": torch.as_tensor(ids, device=device, dtype=torch.long),
                 "labels": torch.as_tensor(labels, device=device, dtype=torch.long),
             }
-            if self.use_masks:
-                if self.defer_binary_masks:
-                    # Mask materialization is owned by the model preprocessor;
-                    # the labelmap rides on data_tensor's last channel.
-                    pass
-                elif self.generate_binary_masks:
-                    t["masks"] = bm
-                elif masks_labelmap is not None:
-                    t["label_map"] = masks_labelmap[b]
-                else:
-                    raise ValueError("use_masks=True requires a dense last-channel labelmap when not generating masks")
             targets.append(t)
 
         return targets
@@ -467,12 +394,9 @@ class FinetuneCollatorActor:
                 offset=host_buffer_idx * self.slot_bytes,
             )
 
-            inputs_full = torch.from_numpy(h_view)
-            # In inference we may have no labelmap channel at all.
-            if self.mask_channel_idx is not None:
-                inputs, masks_labelmap = self._get_masks(inputs_full)
-            else:
-                inputs, masks_labelmap = inputs_full, None
+            # The full tensor (image channels + any labelmap channel) rides to
+            # VRAM untouched; the preprocessor owns labelmap extraction.
+            inputs = torch.from_numpy(h_view)
 
             meta_cpu: Dict[str, Any] = {}
             for k in self.columns:
@@ -493,7 +417,6 @@ class FinetuneCollatorActor:
                     )
                 annotations_metadata_batch = list(meta_cpu["annotations_metadata"])
                 targets_cpu = self._build_targets(
-                    masks_labelmap=masks_labelmap,
                     annotations_metadata_batch=annotations_metadata_batch,
                 )
             else:
@@ -521,26 +444,13 @@ class FinetuneCollatorActor:
             meta_cpu["image_sizes_padded"] = torch.as_tensor(image_sizes_padded)
             meta_cpu["padding_mask"] = torch.as_tensor(padding_mask)
 
-            sample_cpu = {
-                "data_tensor": inputs,
-                "metainfo": {
-                    **meta_cpu,
-                    "targets": targets_cpu,
-                    # "resize_buffer": self.resize_buffer if self.with_resize else None,
-                },
+            # No CPU transforms: augmentation is owned entirely by the GPU
+            # preprocessor (single source of truth for spatiotemporal ops).
+            inputs_transformed = inputs
+            metainfo_transformed = {
+                **meta_cpu,
+                "targets": targets_cpu,
             }
-
-            if self.transforms:
-                for t in self.transforms:
-                    sample_cpu = t(sample_cpu)
-                inputs_transformed = sample_cpu["data_tensor"]
-                metainfo_transformed = sample_cpu["metainfo"]
-            else:
-                inputs_transformed = inputs
-                metainfo_transformed = {
-                    **meta_cpu,
-                    "targets": targets_cpu,
-                }
 
             device_buffer_idx = self.device_buffer.get_free()
             dst_device = self.device_buffer.device_buffers[device_buffer_idx]

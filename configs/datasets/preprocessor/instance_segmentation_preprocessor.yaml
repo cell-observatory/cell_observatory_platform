@@ -33,3 +33,11 @@ bbox_output_format: cxcyczwhd
 
 # debug_savepath: null
 require_targets: true #${datasets.collate_fn.require_targets}
+
+# When true, the preprocessor materializes per-instance binary masks
+# (targets[b]["masks"]) on-device from the integer label_map. Leave false
+# for labelmap-native heads (MaskDINO reads targets[b]["label_map"]) and for
+# PlainDETR (no mask loss). Only set true for a head whose matcher/loss reads
+# dense targets[b]["masks"] and is wired to THIS preprocessor. (Mask2Former
+# training uses the semantic-segmentation preprocessor, not this one.)
+materialize_binary_masks: false

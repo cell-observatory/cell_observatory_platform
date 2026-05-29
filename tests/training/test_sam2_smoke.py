@@ -162,26 +162,16 @@ def _make_data_sample(
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="SAM2 smoke needs CUDA")
 @pytest.mark.parametrize(
-    "skip_high_res_upsample",
+    "use_point_sampling",
     [
-        False,
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                reason=(
-                    "skip_high_res_upsample=True aliases high_res_masks to the "
-                    "low-res grid; the dense-mask correction sampler "
-                    "(get_next_point) still expects pred and gt to share the "
-                    "input-resolution shape. Re-enable once the correction "
-                    "path is rewired through the labelmap target view "
-                    "(see commit b800cd1 follow-up)."
-                ),
-                strict=True,
-            ),
-        ),
+        pytest.param(True, id="pointrend"),
+        pytest.param(False, id="dense"),
     ],
 )
-def test_sam2_forward_smoke_labelmap_path(skip_high_res_upsample: bool):
+def test_sam2_forward_smoke(use_point_sampling: bool):
+    """Drive both loss paths end-to-end. The preprocessor materializes the
+    K=max_masks binary-mask subset; the criterion flag selects PointRend
+    point-sampling (`True`) vs dense per-voxel (`False`)."""
     from cell_observatory_platform.models.meta_arch.sam import BUILD as BUILD_SAM2
     from cell_observatory_platform.models.layers.preprocessor import SAM2VideoPreprocessor
 
@@ -196,15 +186,12 @@ def test_sam2_forward_smoke_labelmap_path(skip_high_res_upsample: bool):
     cfg, train_shape, input_shape, patch_shape = _compose_smoke_cfg(
         T=T, Z=Z, Y=Y, X=X, C_in=C_in, max_masks=max_masks
     )
-    # Exercise the opt-in low-res-only path. Memory encoder is disabled in the
-    # smoke config (single-frame), so skipping the high-res upsample only
-    # affects criterion + correction sampling, both already labelmap-aware.
-    cfg.models.meta_arch.sam.skip_high_res_upsample = skip_high_res_upsample
+    cfg.models.meta_arch.sam.criterion_args.use_point_sampling = use_point_sampling
 
     model = BUILD_SAM2(cfg).to(device).train()
 
-    # Match the configured collator output (defer_binary_masks=True path):
-    # the preprocessor materializes per-instance masks from the labelmap.
+    # The preprocessor materializes the per-instance binary-mask subset and the
+    # labelmap target view on-device (the collator never builds masks on CPU).
     preprocessor = SAM2VideoPreprocessor(
         transforms_list=None,
         with_masking=False,
@@ -218,7 +205,6 @@ def test_sam2_forward_smoke_labelmap_path(skip_high_res_upsample: bool):
         expect_mask_channel=True,
         max_masks=max_masks,
         require_targets=True,
-        defer_binary_masks=True,
         bbox_format="zyxzyx",
     )
 
