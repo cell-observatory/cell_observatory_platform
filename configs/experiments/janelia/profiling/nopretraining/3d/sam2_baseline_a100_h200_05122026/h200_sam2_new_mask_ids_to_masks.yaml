@@ -49,6 +49,13 @@ engine: deepspeed
 # overrides
 # --------------------------------------------------------------------------------
 
+# Use the PointRend point-sampling loss path (labelmap-native).
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        use_point_sampling: true
+
 clusters:
   batch_size: 16 # gpus_per_worker (8) * worker_nodes (2)
   worker_nodes: 2

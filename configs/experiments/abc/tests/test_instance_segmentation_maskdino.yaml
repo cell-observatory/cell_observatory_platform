@@ -3,7 +3,8 @@ defaults:
   - /tasks/instance_segmentation             # configs/tasks/instance_segmentation.yaml
   - /paths/local                         # configs/paths/coreweave.yaml
   - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
-  - /clusters/abc_a100                 # configs/clusters/abc_a100.yaml
+  - /clusters/local                 # configs/clusters/abc_a100.yaml
+  # # - /clusters/abc_a100                 # configs/clusters/abc_a100.yaml
   - /datasets/databases/base_database        # Loads configs/datasets/databases/base_database.yaml
   - /datasets/masking/mask_generator         # Loads configs/datasets/masking/mask_generator.yaml
   - /datasets/transforms/ray_transforms      # Loads configs/datasets/transforms/ray_transforms.yaml
@@ -29,7 +30,8 @@ defaults:
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
 
-experiment_name: instance_segmentation_maskdino_baseline_128x256x512_100_epoch_lr_0p0001_opt_lamb
+experiment_name: instance_segmentation_maskdino_baseline_128x384x512_new_pointrend
+# experiment_name: instance_segmentation_maskdino_baseline_128x256x512_100_epoch_lr_0p0001_opt_lamb
 wandb_project: testing
 
 # debug_mode: true
@@ -58,14 +60,14 @@ clusters:
   batch_size: 44 # total batch size
   worker_nodes: 1 # number of worker nodes
   gpus_per_worker: 4 # number of gpus per worker node
-  cpus_per_gpu: 4 # number of cpu cores per gpu
+  cpus_per_gpu: 8 # number of cpu cores per gpu
   mem_per_cpu: 31000 # ram per cpu core
   ray_queue_memory: 0.2
 
 paths:
   # base output directory for logs, checkpoints, etc.
-  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
-  server_path_override: /clusterfs/vast/forsynthetic/benchmark_tests/iteration2_martin/synthetic_data_iteration_2
+  outdir: ${paths.data_path}/testing/${experiment_name}
+  server_path_override: /clusterfs/nvme/martinalvarez/synthetic_data_iteration_2_processing
   resume_checkpointdir: null
   pretrained_checkpointdir: null
 
@@ -92,7 +94,7 @@ datasets:
     # - "000x_005y_000z.zarr"
   # roi_list: [314] 
   # timepoint_list: [0]
-  max_rows: null # maximum number of rows to query from the database
+  max_rows: 1000 # maximum number of rows to query from the database
   cdf_threshold: null
   cdf_target: null
   selected_channel_localizations: ["membrane", "cytosol"]
@@ -143,7 +145,7 @@ datasets:
       - "annotations_metadata"
 
 schedulers:
-  epochs: 50
+  epochs: 3
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}
@@ -160,9 +162,9 @@ hooks:
   - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
     file_prefix: latest_model
     backend: DEEPSPEED
-  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
-    metric_name: ${evaluation.val_metric}
-    compare_fn: ${evaluation.val_mode}
-    eval_after_validation: true
+  # - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+  #   checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  # - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+  #   metric_name: ${evaluation.val_metric}
+  #   compare_fn: ${evaluation.val_mode}
+  #   eval_after_validation: true

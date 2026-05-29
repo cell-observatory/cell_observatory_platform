@@ -49,6 +49,13 @@ allreduce_spike:
   # null, before_forward, or before_backward. Variants only change this value.
   sync_at: null
 
+# Use the PointRend point-sampling loss path (labelmap-native).
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        use_point_sampling: true
+
 clusters:
   # One H200 node: 8 GPUs total, per-GPU batch size = 1.
   batch_size: 8

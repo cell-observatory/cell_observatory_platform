@@ -49,6 +49,13 @@ engine: deepspeed
 # overrides
 # --------------------------------------------------------------------------------
 
+# Use the PointRend point-sampling loss path (labelmap-native).
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        use_point_sampling: true
+
 clusters:
   batch_size: 8 # gpus_per_worker (4) * worker_nodes (2)
   worker_nodes: 2 # number of worker nodes
@@ -86,7 +93,7 @@ datasets:
     # - "000x_005y_000z.zarr"
   # roi_list: [314]
   # timepoint_list: [0]
-  max_rows: 104 # quick A100 smoke test of the new defer_binary_masks path
+  max_rows: 104 # quick A100 smoke test
   cdf_threshold: null
   cdf_target: null
   selected_channel_localizations: ["membrane", "cytosol"]
