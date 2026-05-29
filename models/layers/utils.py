@@ -7,7 +7,7 @@ https://github.com/facebookresearch/dinov3/dinov3/utils/utils.py
 """
 
 import math
-from typing import List, Tuple
+from typing import List, Literal, Optional, Tuple
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt
@@ -786,6 +786,99 @@ def sample_box_points(
         raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
 
     return box_coords, box_labels
+
+
+BoxFormat = Literal["xyzxyz", "zyxzyx", "cxcyczwhd"]
+
+
+def _to_xyzxyz(boxes: torch.Tensor, box_format: "BoxFormat") -> torch.Tensor:
+    """Convert [N, 6] boxes from `box_format` to (x1, y1, z1, x2, y2, z2)."""
+    if box_format == "xyzxyz":
+        return boxes
+    if box_format == "zyxzyx":
+        # (z1, y1, x1, z2, y2, x2) -> (x1, y1, z1, x2, y2, z2)
+        return boxes[..., [2, 1, 0, 5, 4, 3]]
+    if box_format == "cxcyczwhd":
+        cx, cy, cz, w, h, d = boxes.unbind(-1)
+        x1 = cx - w / 2
+        y1 = cy - h / 2
+        z1 = cz - d / 2
+        x2 = cx + w / 2
+        y2 = cy + h / 2
+        z2 = cz + d / 2
+        return torch.stack([x1, y1, z1, x2, y2, z2], dim=-1)
+    raise ValueError(f"unknown box_format {box_format!r}")
+
+
+def sample_box_points_from_boxes(
+    boxes: torch.Tensor,                  # [N, 6] target boxes
+    box_format: "BoxFormat",
+    image_shape: Tuple[int, int, int],    # (Z, Y, X) pixel extents
+    valid: Optional[torch.Tensor] = None,  # [N] bool, pad rows zeroed
+    noise: float = 0.1,
+    noise_bound: float = 20.0,
+    top_left_label: int = 2,
+    bottom_right_label: int = 3,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Sample noised SAM box-corner prompts from pre-existing target boxes.
+
+    SAM2 historically derived boxes from dense binary masks via
+    masks_to_boxes_v2 inside `sample_box_points`. With labelmap-native
+    targets, the bbox is already known per object and we can avoid the
+    `[N, 1, Z, Y, X]` mask materialization entirely.
+
+    Output mirrors `sample_box_points`:
+        points: `[N, 2, 3]` pixel `(x, y, z)`, top-left then bottom-right.
+        labels: `[N, 2]` int32 with `[top_left_label, bottom_right_label]`.
+
+    Padded rows (`valid[n] == False`) get all-zero points and label 0 so
+    the SAM2 prompt encoder skips them.
+    """
+    if boxes.dim() != 2 or boxes.shape[-1] != 6:
+        raise ValueError(f"boxes must be [N, 6], got {tuple(boxes.shape)}")
+    N = boxes.shape[0]
+    device = boxes.device
+    Z, Y, X = image_shape
+
+    box_coords = _to_xyzxyz(boxes, box_format).to(torch.float32).clone()
+
+    if noise > 0.0 and N > 0:
+        bbox_w = box_coords[..., 3] - box_coords[..., 0]
+        bbox_h = box_coords[..., 4] - box_coords[..., 1]
+        bbox_d = box_coords[..., 5] - box_coords[..., 2]
+        nb = torch.tensor(float(noise_bound), device=device, dtype=box_coords.dtype)
+        max_dx = torch.minimum(bbox_w * noise, nb)
+        max_dy = torch.minimum(bbox_h * noise, nb)
+        max_dz = torch.minimum(bbox_d * noise, nb)
+        # [N, 6] noise in [-1, 1] scaled by per-axis caps
+        box_noise = 2.0 * torch.rand(N, 6, device=device, dtype=box_coords.dtype) - 1.0
+        box_noise = box_noise * torch.stack(
+            [max_dx, max_dy, max_dz, max_dx, max_dy, max_dz], dim=-1
+        )
+        box_coords = box_coords + box_noise
+
+    img_bounds = torch.tensor(
+        [X - 1, Y - 1, Z - 1, X - 1, Y - 1, Z - 1],
+        device=device,
+        dtype=box_coords.dtype,
+    )
+    box_coords = box_coords.clamp(torch.zeros_like(img_bounds), img_bounds)
+
+    points = box_coords.reshape(N, 2, 3)  # top-left, bottom-right pixel (x, y, z)
+    labels = torch.tensor(
+        [top_left_label, bottom_right_label], dtype=torch.int32, device=device
+    ).view(1, 2).expand(N, 2).contiguous()
+
+    if valid is not None:
+        if valid.shape != (N,):
+            raise ValueError(f"valid must be [N], got {tuple(valid.shape)}")
+        invalid = ~valid
+        points = points.masked_fill(invalid[:, None, None], 0.0)
+        # SAM2 uses 0 as a neutral/ignored label; non-{2, 3} won't trip the
+        # corner-specific positional encoding for padded slots.
+        labels = labels.masked_fill(invalid[:, None], 0)
+
+    return points, labels
 
 
 def sample_random_points_from_errors(
