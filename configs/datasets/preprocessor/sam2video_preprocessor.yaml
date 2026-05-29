@@ -32,8 +32,3 @@ mask_channel_idx: ${datasets.mask_channel_idx}
 expect_mask_channel: true # ${datasets.collate_fn.expect_mask_channel}
 require_targets: true #${datasets.collate_fn.require_targets}
 max_masks: 40 # 38 on single-gpu, 35 on multi-gpu
-# Set to true (and pair with datasets.collate_fn.defer_binary_masks=true)
-# to skip the CPU binary mask build in the collator and materialize only
-# K=max_masks slices on-device from the labelmap inside _build_data_views.
-# Default off here so opt-in is explicit per experiment.
-defer_binary_masks: false
