@@ -1778,7 +1778,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         mask_denom = torch.clamp(mask_gate_total / get_world_size(), min=1.0)
         cls_denom = torch.clamp(cls_gate_total / get_world_size(), min=1.0)
 
-        losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
+        losses = defaultdict(int)
         for t in range(T):
             outs = outs_batch[t]
             target_masks_t = masks_list[t]                       # [N, Z, Y, X]
