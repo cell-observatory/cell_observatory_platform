@@ -1717,12 +1717,16 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         #   both the dense and sampled IoU paths. Always runs under
         #   torch.no_grad() so it does not back-prop through src_masks.
         soft_iou=False,
-        # low_res_multimasks: feed the low-res prediction stream
-        #   (`multistep_pred_multimasks`) to the criterion instead of
-        #   `multistep_pred_multimasks_high_res`. Requires
-        #   use_point_sampling=True AND sample_iou=True because dense
-        #   focal/dice/IoU cannot consume low-res predictions against
-        #   full-resolution materialized GT masks.
+        # low_res_multimasks: route focal/dice through the low-res prediction
+        #   stream (`multistep_pred_multimasks`) instead of the upsampled
+        #   `multistep_pred_multimasks_high_res`. The primary effect is to
+        #   eliminate the criterion-side trilinear-upsample backward (focal/
+        #   dice's point_sample bwd lands directly at the low-res tensor).
+        #   Requires use_point_sampling=True. When sample_iou=False, the
+        #   dense iou_loss path additionally reads the HIGH-RES stream so
+        #   `target_masks.expand_as(src_masks_iou)` stays shape-valid; this
+        #   is a forward-only read (the `> 0` threshold severs autograd, so
+        #   no extra upsample bwd is incurred through the IoU path).
         low_res_multimasks=False,
     ):
         """
@@ -1778,11 +1782,15 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
                 "(sampled IoU reuses focal/dice point_logits/point_labels)"
             )
         if self.low_res_multimasks:
-            assert self.use_point_sampling and self.sample_iou, (
-                "low_res_multimasks=True requires use_point_sampling=True and "
-                "sample_iou=True; dense focal/dice/IoU cannot mix low-res "
-                "predictions with full-resolution GT masks"
+            assert self.use_point_sampling, (
+                "low_res_multimasks=True requires use_point_sampling=True "
+                "(dense focal/dice cannot mix low-res preds with full-res GT)."
             )
+            # sample_iou is NOT strictly required: when False, the criterion
+            # reads `multistep_pred_multimasks_high_res` specifically for the
+            # dense iou_loss path so `target_masks.expand_as(src_masks_iou)`
+            # remains shape-valid. focal/dice still consumes the low-res
+            # stream via point_sample.
 
     def forward(self, outs_batch: List[Dict], target_view: Dict):
         """
@@ -1941,6 +1949,14 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             else "multistep_pred_multimasks_high_res"
         )
         src_masks_list = outputs[mask_stream_key]
+        # Split-stream: focal/dice on low-res, dense iou_loss on high-res.
+        # Active only when low_res_multimasks=True AND sample_iou=False so the
+        # `expand_as(src_masks_iou)` shape matches full-resolution target_masks.
+        # In all other configs the two lists alias the same tensors.
+        if self.low_res_multimasks and not self.sample_iou:
+            src_masks_iou_list = outputs["multistep_pred_multimasks_high_res"]
+        else:
+            src_masks_iou_list = src_masks_list
         pred_dtype = src_masks_list[0].dtype
         pred_device = src_masks_list[0].device
         target_masks = targets.unsqueeze(1).to(device=pred_device, dtype=pred_dtype)
@@ -1953,16 +1969,18 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
 
         assert len(src_masks_list) == len(ious_list), \
             f"Expected len(src_masks_list) == len(ious_list), got {len(src_masks_list)} and {len(ious_list)}"
+        assert len(src_masks_iou_list) == len(src_masks_list), \
+            f"IoU stream length must match focal/dice stream length, got {len(src_masks_iou_list)} vs {len(src_masks_list)}"
         assert len(object_score_logits_list) == len(ious_list), \
             f"Expected len(object_score_logits_list) == len(ious_list), got {len(object_score_logits_list)} and {len(ious_list)}"
 
         # accumulate the loss over prediction steps
         losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
-        for src_masks, ious, object_score_logits in zip(
-            src_masks_list, ious_list, object_score_logits_list
+        for src_masks, src_masks_iou, ious, object_score_logits in zip(
+            src_masks_list, src_masks_iou_list, ious_list, object_score_logits_list
         ):
             self._update_losses(
-                losses, src_masks, target_masks, ious, mask_denom, mask_gate,
+                losses, src_masks, src_masks_iou, target_masks, ious, mask_denom, mask_gate,
                 cls_denom, cls_gate, object_score_logits,
             )
         losses[self.core_loss_key] = self.reduce_loss(losses)
@@ -1976,6 +1994,12 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             else "multistep_pred_multimasks_high_res"
         )
         src_masks_list = outputs[mask_stream_key]
+        # Split-stream (see _forward for the same logic). Active only when
+        # low_res_multimasks=True AND sample_iou=False; otherwise aliases.
+        if self.low_res_multimasks and not self.sample_iou:
+            src_masks_iou_list = outputs["multistep_pred_multimasks_high_res"]
+        else:
+            src_masks_iou_list = src_masks_list
         ious_list = outputs["multistep_pred_ious"]
         object_score_logits_list = outputs["multistep_object_score_logits"]
 
@@ -1994,7 +2018,9 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         total = target_masks.new_zeros(())
         comp_sum_detached = target_masks.new_zeros(4)
 
-        for src_masks, pred_ious, obj_logits in zip(src_masks_list, ious_list, object_score_logits_list):
+        for src_masks, src_masks_iou, pred_ious, obj_logits in zip(
+            src_masks_list, src_masks_iou_list, ious_list, object_score_logits_list
+        ):
             if self.use_point_sampling:
                 with torch.no_grad():
                     point_coords_flat, point_labels = self._sample_points_and_labels(
@@ -2002,12 +2028,14 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
                     )
                 comps = checkpoint(
                     self._step_loss_components_points,
-                    src_masks, pred_ious, obj_logits, target_masks, mask_denom, mask_gate,
+                    src_masks, src_masks_iou, pred_ious, obj_logits, target_masks, mask_denom, mask_gate,
                     cls_denom, cls_gate, point_coords_flat, point_labels,
                     use_reentrant=False,
                     preserve_rng_state=False,  # safe: no randomness inside checkpointed fn
                 )
             else:
+                # dense path: low_res_multimasks=True is rejected at construction
+                # (requires use_point_sampling=True), so src_masks_iou==src_masks here.
                 comps = checkpoint(
                     self._step_loss_components,
                     src_masks, pred_ious, obj_logits, target_masks, mask_denom, mask_gate,
@@ -2028,7 +2056,8 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
 
     def _step_loss_components_points(
         self,
-        src_masks,            # [N, M, Z, Y, X]
+        src_masks,            # [N, M, Z, Y, X] -- focal/dice stream (low-res when low_res_multimasks=True)
+        src_masks_iou,        # [N, M, Z, Y, X] -- IoU stream (== src_masks except split-stream config)
         pred_ious,            # [N, M]
         object_score_logits,  # [N, 1] or [N]
         target_masks_base,    # [N, 1, Z, Y, X]
@@ -2078,9 +2107,13 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
                 point_logits=point_logits, point_labels=point_labels,
             )
         else:
-            target_masks_iou = target_masks_base.expand_as(src_masks)
+            # Dense IoU on `src_masks_iou`. For non-split configs this is
+            # bit-identical to using src_masks; for the split-stream config
+            # (cell 06) this is the HIGH-RES stream, so the shape matches
+            # full-resolution target_masks_base without resizing.
+            target_masks_iou = target_masks_base.expand_as(src_masks_iou)
             loss_multiiou = self._iou_loss(
-                src_masks, target_masks_iou, pred_ious, mask_denom,
+                src_masks_iou, target_masks_iou, pred_ious, mask_denom,
             )
 
         if loss_multimask.size(1) > 1:
@@ -2182,7 +2215,8 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
     def _update_losses(
         self,
         losses,
-        src_masks,
+        src_masks,           # focal/dice stream (low-res when low_res_multimasks=True)
+        src_masks_iou,       # IoU stream (== src_masks except split-stream config)
         target_masks,
         ious,
         mask_denom,
@@ -2246,9 +2280,10 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
                 point_logits=point_logits, point_labels=point_labels,
             )
         else:
-            target_masks_iou = target_masks_base.expand_as(src_masks)
+            # Dense IoU on `src_masks_iou` (== src_masks for non-split configs).
+            target_masks_iou = target_masks_base.expand_as(src_masks_iou)
             loss_multiiou = self._iou_loss(
-                src_masks, target_masks_iou, ious, mask_denom,
+                src_masks_iou, target_masks_iou, ious, mask_denom,
             )
         assert loss_multimask.dim() == 2, f"Expected loss_multimask shape (N, M), got {loss_multimask.shape}"
         assert loss_multidice.dim() == 2, f"Expected loss_multidice shape (N, M), got {loss_multidice.shape}"

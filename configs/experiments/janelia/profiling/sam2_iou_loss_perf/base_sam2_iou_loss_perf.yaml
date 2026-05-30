@@ -21,6 +21,11 @@
 #   03 pointrend_sample_iou       +sample_iou=true                (drops dense iou_loss)
 #   04 pointrend_sample_soft_iou  +soft_iou=true                  (patch's IoU formulation)
 #   05 pointrend_full_patch       +low_res_multimasks=true        (full patch equivalent)
+#   06 low_res_dense_iou          low_res_multimasks=true with sample_iou=false
+#                                 (split-stream: focal/dice on low-res,
+#                                  dense IoU on high-res; preserves dense IoU
+#                                  semantics while keeping most of the cell-05
+#                                  step-time win)
 #
 # Compute envelope: 2 epochs * 400 rows each, ~6.4k iters total per cell, so a
 # full 5-cell sweep fits in a few hours on 2x A100 nodes.

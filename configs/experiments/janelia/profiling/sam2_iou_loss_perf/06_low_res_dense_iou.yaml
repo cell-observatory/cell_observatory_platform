@@ -1,0 +1,46 @@
+# @package _global_
+#
+# Cell 06: low-res focal/dice + DENSE hard IoU (split-stream).
+# Single-flag delta vs cell 02 (`low_res_multimasks: false -> true`),
+# made valid by lifting the prior assertion that `low_res_multimasks=True`
+# requires `sample_iou=True`.
+#
+# Hypothesis being tested:
+# The cell-05 step-time win (-1.69 s, -43% vs cell 02) is almost entirely
+# from eliminating the criterion-side trilinear-upsample backward. With
+# `low_res_multimasks=True`, focal/dice's `point_sample` reads the LOW-RES
+# `multistep_pred_multimasks` stream and its bwd lands at the low-res
+# mask-decoder output directly -- no `F.interpolate` bwd to traverse.
+# The IoU path contributes zero bwd through `src_masks` regardless of
+# formulation (the `> 0` threshold severs autograd), so reading the
+# HIGH-RES stream for dense iou_loss costs only the forward pass.
+#
+# Expected vs cell 05:
+#   - step_s:   ~2.5 s   (cell 05's 2.24 s + dense iou_loss fwd cost,
+#                         doubled under criterion ckpt = ~270 ms)
+#   - bwd_inner: ~1530 ms (cell 05's 1360 + dense iou_loss recompute
+#                          under checkpointing)
+#   - peak_GB:  ~71.9    (dense iou_loss transient bool tensors come
+#                         back: ~6 GB peak above cell 05)
+#
+# Trade vs cell 05: gives back ~6 GB of VRAM and ~270 ms / step in
+# exchange for keeping the develop-baseline dense (binarized-overlap)
+# IoU supervision signal that cells 03-05 replace with sampled IoU. Use
+# this cell if convergence-quality of the dense IoU target is preferred
+# over the maximal step-time / VRAM gain.
+defaults:
+  - base_sam2_iou_loss_perf
+  - _self_
+
+experiment_name: sam2_iou_ablation_a100_06_low_res_dense_iou
+
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        use_point_sampling: true
+        sample_iou: false           # keep dense IoU supervision
+        soft_iou: false             # legacy hard `> 0` threshold
+        low_res_multimasks: true    # focal/dice on LOW-RES stream;
+                                     # criterion will auto-read HIGH-RES
+                                     # for the dense iou_loss path
