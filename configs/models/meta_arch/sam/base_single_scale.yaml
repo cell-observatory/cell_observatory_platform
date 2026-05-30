@@ -100,6 +100,17 @@ criterion_args:
   num_points: 20000
   oversample_ratio: 3
   importance_sample_ratio: 0.75
+  # IoU-loss / mask-stream ablation flags (all default off == legacy behavior):
+  #   sample_iou=true   -> IoU target sampled at the same uncertain points as
+  #                        focal/dice (requires use_point_sampling=true)
+  #   soft_iou=true     -> IoU target from sigmoid probs (no_grad) instead of
+  #                        a hard `> 0` threshold; independently selectable
+  #                        for dense and sampled IoU paths
+  #   low_res_multimasks=true -> feed the low-res mask stream to the criterion
+  #                              (requires use_point_sampling=true AND sample_iou=true)
+  sample_iou: false
+  soft_iou: false
+  low_res_multimasks: false
   focal_gamma_obj_score: 0.0
   focal_alpha_obj_score: -1
 

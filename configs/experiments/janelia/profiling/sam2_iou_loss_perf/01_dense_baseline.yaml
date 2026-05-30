@@ -1,0 +1,22 @@
+# @package _global_
+#
+# Cell 01: legacy dense path -- all ablation flags off, use_point_sampling off.
+#   focal/dice: dense per-voxel on [N,M,Z,Y,X]
+#   IoU:       dense hard `iou_loss` on [N,M,Z,Y,X]
+# Reference floor: closest analogue to a "develop pre-pointrend" baseline.
+# All four flags are explicit (not relying on base defaults) so the cell
+# stays readable as a standalone artifact.
+defaults:
+  - base_sam2_iou_loss_perf
+  - _self_
+
+experiment_name: sam2_iou_ablation_a100_01_dense_baseline
+
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        use_point_sampling: false
+        sample_iou: false
+        soft_iou: false
+        low_res_multimasks: false

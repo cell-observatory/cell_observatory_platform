@@ -1,0 +1,22 @@
+# @package _global_
+#
+# Cell 03: PointRend focal/dice + sampled HARD IoU. Single flag change vs
+# cell 02 (`sample_iou: false -> true`). The IoU target is computed at the
+# same P uncertain points used for focal/dice with the same `> 0` threshold
+# as the legacy dense path -- so any delta vs cell 02 is the cost of the
+# dense [N,M,Z,Y,X] `iou_loss` op itself, NOT the soft-vs-hard distinction.
+# This is the cell that pin-points "dense iou_loss is the regression."
+defaults:
+  - base_sam2_iou_loss_perf
+  - _self_
+
+experiment_name: sam2_iou_ablation_a100_03_pointrend_sample_iou
+
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        use_point_sampling: true
+        sample_iou: true
+        soft_iou: false
+        low_res_multimasks: false
