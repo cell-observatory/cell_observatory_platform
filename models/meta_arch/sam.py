@@ -132,21 +132,6 @@ class SAM2Base(torch.nn.Module):
         no_obj_embed_spatial: bool = False,
         # disable memory encoder
         disable_memory_encoder: bool = False,
-        # Skip the trilinear upsample from low-res (stride 16) to full-res masks
-        # inside `_forward_sam_heads`. Saves ~16^3 = 4096x the multimask
-        # tensor memory at the cost of low-resolution masks flowing into:
-        #   - memory encoder (downsamples by 4x; coarser inputs reduce quality)
-        #   - correction-prompt FP/FN region calculation
-        #   - eval output (`pred_masks_high_res`)
-        # Safe only when:
-        #   - the criterion consumes the high-res multimask stream and the
-        #     materialized dense `masks` (not low-res logits alone),
-        #   - and the memory encoder + correction sampling either also run on
-        #     low-res inputs or are disabled (e.g. single-frame static-image
-        #     training with `num_correction_pt_per_frame=0` and
-        #     `disable_memory_encoder=True` + `num_frames=1`).
-        # Defaults to False so existing configs retain the high-res upsample.
-        skip_high_res_upsample: bool = False,
     ):
         super().__init__()
 
@@ -276,7 +261,6 @@ class SAM2Base(torch.nn.Module):
 
         # disable memory encoder
         self.disable_memory_encoder = disable_memory_encoder
-        self.skip_high_res_upsample = skip_high_res_upsample
 
     @property
     def device(self):
@@ -415,19 +399,13 @@ class SAM2Base(torch.nn.Module):
                 raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
         if self.input_fmt == "TZYXC":
-            if self.skip_high_res_upsample:
-                # Alias to low-res; downstream consumers (criterion uses
-                # normalized coords on materialized dense masks; memory
-                # encoder / correction sampling must tolerate coarser resolution).
-                high_res_multimasks = low_res_multimasks
-            else:
-                high_res_multimasks = F.interpolate(
-                    low_res_multimasks,
-                    # TODO: less restrictive to upsample based on real image size
-                    size=tuple(self.input_shape[1:4]),
-                    mode="trilinear",
-                    align_corners=False,
-                )
+            high_res_multimasks = F.interpolate(
+                low_res_multimasks,
+                # TODO: less restrictive to upsample based on real image size
+                size=tuple(self.input_shape[1:4]),
+                mode="trilinear",
+                align_corners=False,
+            )
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
