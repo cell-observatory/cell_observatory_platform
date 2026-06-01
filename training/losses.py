@@ -491,6 +491,7 @@ class DETR_Set_Loss(nn.Module):
         labelmap = torch.stack([target["label_map"] for target in targets])
 
         with torch.no_grad():
+            # point_coords: [N, num_points, 3] normalized coords in [0, 1]
             point_coords = get_uncertain_point_coords_with_randomness(
                 coarse_logits=source_masks,
                 uncertainty_func=calculate_uncertainty,
@@ -498,13 +499,14 @@ class DETR_Set_Loss(nn.Module):
                 oversample_ratio=self.oversample_ratio,
                 importance_sample_ratio=self.importance_sample_ratio,
             )
+            
+            # Sample binary labels from labelmap
             point_labels = point_sample_labelmap_batched(
                 labelmap=labelmap,
                 point_coords=point_coords,
                 batch_indices=batch_indices,
                 instance_ids=instance_ids,
             )
-
 
         point_logits = point_sample(
             source_masks,
@@ -1104,15 +1106,16 @@ class Mask2FormerSetLoss(nn.Module):
             )
             # samples from target mask at point_coords
             point_labels = point_sample(
-                target_masks,
-                point_coords,
+                input=target_masks,
+                point_coords=point_coords,
+                mode="nearest", # default is bilinear; need nearest for GT binary labels
                 align_corners=False,
             ).squeeze(1)
 
         # samples from source mask at point_coords
         point_logits = point_sample(
-            source_masks,
-            point_coords,
+            input=source_masks,
+            point_coords=point_coords,
             align_corners=False,
         ).squeeze(1)
 
@@ -1263,8 +1266,9 @@ class MultiLabelBinaryPredictionLoss(nn.Module):
             ) # B*N_classes, P, 3
             # samples from target mask at point_coords
             point_labels = point_sample(
-                target_masks,
-                point_coords,
+                input=target_masks,
+                point_coords=point_coords,
+                mode="nearest", # default is bilinear; need nearest for GT binary labels
                 align_corners=False,
             ).squeeze(1)
 
@@ -1874,7 +1878,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         point_labels_obj = point_sample(
             input=gt, 
             point_coords=point_coords_obj,
-            mode="nearest",
+            mode="nearest", # default is bilinear; need nearest for GT binary labels
             align_corners=False,
         ).squeeze(1)  # [N, M*P]
         point_labels = point_labels_obj.view(N, M, P)  # [N, M, P]
