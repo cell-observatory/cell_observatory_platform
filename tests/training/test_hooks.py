@@ -592,6 +592,7 @@ def _test_hooks_dist(cfg):
             return report(metrics=metrics, checkpoint=None)
 
 
+@pytest.mark.cuda
 def test_hooks(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for testing")
