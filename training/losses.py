@@ -1871,7 +1871,12 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         # [N*M, P, 3] -> [N, M*P, 3]
         point_coords_obj = point_coords_flat.view(N, M * P, 3)
         gt = target_masks  # [N,1,Z,Y,X]
-        point_labels_obj = point_sample(gt, point_coords_obj, align_corners=False).squeeze(1)  # [N, M*P]
+        point_labels_obj = point_sample(
+            input=gt, 
+            point_coords=point_coords_obj,
+            mode="nearest",
+            align_corners=False,
+        ).squeeze(1)  # [N, M*P]
         point_labels = point_labels_obj.view(N, M, P)  # [N, M, P]
 
         return point_coords_flat, point_labels
