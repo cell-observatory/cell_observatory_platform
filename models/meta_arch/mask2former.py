@@ -18,6 +18,8 @@ from cell_observatory_platform.training.helpers import get_input_data, get_npara
 from cell_observatory_platform.training.losses import Mask2FormerSetLoss
 from cell_observatory_platform.utils.shape_format import get_spatial_shape
 from cell_observatory_platform.inference.utils import reduce_queries_to_semantic_map
+
+
 class Mask2Former(nn.Module):
     def __init__(self,
         backbone: Mask2FormerBackbone,

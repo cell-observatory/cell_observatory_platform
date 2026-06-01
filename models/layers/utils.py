@@ -564,7 +564,9 @@ def point_sample_labelmap_batched(
         labelmap = labelmap.to(torch.int32)
     N, K, _ = point_coords.shape
     B, Z, Y, X = labelmap.shape
-
+    # Get integer indices from normalized coordinates
+    # Note: coordinates are in XYZ axis order, but labelmap is in ZYX axis order. 
+    # See banner above for more details.
     if align_corners:
         x_idx = (point_coords[:, :, 0] * (X - 1)).round().long().clamp(0, X - 1)
         y_idx = (point_coords[:, :, 1] * (Y - 1)).round().long().clamp(0, Y - 1)
@@ -576,13 +578,14 @@ def point_sample_labelmap_batched(
 
     b_idx = batch_indices.view(N, 1).expand(N, K)
 
+    # Sample integer labels from labelmap
     sampled = labelmap[b_idx, z_idx, y_idx, x_idx]  # [N, K]
 
+    # Compare integer labels with instance IDs to get binary labels
     instance_ids_expanded = instance_ids.view(N, 1).expand(N, K)
     binary_labels = (sampled == instance_ids_expanded).float()
 
     return binary_labels
-
 
 def point_sample_labelmap(
     labelmap_single: torch.Tensor,  # [Z, Y, X] single batch labelmap
