@@ -1984,7 +1984,10 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             f"Expected len(object_score_logits_list) == len(ious_list), got {len(object_score_logits_list)} and {len(ious_list)}"
 
         # accumulate the loss over prediction steps
-        losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
+        losses = {
+            k: target_masks.new_zeros(())
+            for k in ("loss_mask","loss_dice","loss_iou","loss_class")
+        }
         for src_masks, src_masks_iou, ious, object_score_logits in zip(
             src_masks_list, src_masks_iou_list, ious_list, object_score_logits_list
         ):
