@@ -37,6 +37,9 @@ class BaseEvaluator(DatasetEvaluator):
     # loss_dict and append each loss metric to the
     # corresponding TrainLosses instance in self.metrics
     def process(self, data_sample, outputs, loss_dict):
+        if loss_dict is None:
+            raise RuntimeError(f"loss_dict=None; BaseEvaluator.process requires a loss_dict to dispatch on metric keys")
+
         for metric, metric_impl in self.metrics.items():
             metric_impl(outputs, data_sample, loss_dict[metric])
 
