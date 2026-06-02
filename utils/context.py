@@ -276,6 +276,13 @@ def ray_assigned_gpu_to_torch_ordinal(gpu_ids: List[int]) -> int:
         visible_phys = [int(p) for p in parts]
     except ValueError:
         # UUID / MIG identifiers — single visible device per process is typical
+        if len(parts) > 1:
+            logger.warning(
+                f"ray_assigned_gpu_to_torch_ordinal: CUDA_VISIBLE_DEVICES={vis!r} lists "
+                f"{len(parts)} UUID/MIG devices ({parts!r}) that cannot be parsed as ints; "
+                f"defaulting to torch ordinal 0 for gpu_ids={gpu_ids!r}. This assignment may "
+                f"be wrong on multi-device workers."
+            )
         return 0
     try:
         return visible_phys.index(physical)
