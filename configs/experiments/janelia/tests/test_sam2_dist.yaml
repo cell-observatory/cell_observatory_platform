@@ -58,6 +58,8 @@ models:
         num_points: 26000          # ~10% of 32x64x128 stride-4 grid
         oversample_ratio: 3
         importance_sample_ratio: 0.75
+        low_res_multimasks: true    # focal/dice on LOW-RES stream;
+                                     # dense iou_loss reads HIGH-RES forward-only
 
 clusters:
   batch_size: 8 # gpus_per_worker (4) * worker_nodes (2)
