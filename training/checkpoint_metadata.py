@@ -130,9 +130,55 @@ def write_metadata_json(path: Union[str, Path], metadata: Dict[str, Any]) -> Non
     os.replace(tmp, path)
 
 
-def read_metadata_json(path: Union[str, Path]) -> Dict[str, Any]:
+def default_metadata(reason: str = "") -> Dict[str, Any]:
+    """Synthesized fallback metadata for legacy checkpoints with no sidecar.
+
+    Every schema key is present with a safe default so downstream consumers
+    (``best_loss`` / ``epoch`` / ``iter`` / ``model_name_slug`` / ...) keep
+    working. ``best_loss`` is ``+inf`` so a ``BestCheckpointer`` treats the first
+    post-resume loss as an improvement rather than inheriting a bogus best.
+    """
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "saved_at": None,
+        "model_class_name": "unknown",
+        "model_name_slug": "legacy__unknown",
+        "experiment_name": "",
+        "wandb_project": "",
+        "wandb_entity": None,
+        "wandb_run_id": None,
+        "epoch": 0,
+        "iter": 0,
+        "best_loss": float("inf"),
+        "hydra_config": None,
+        "hydra_config_hash": None,
+        "synthesized_default": True,
+        "synthesized_reason": reason,
+    }
+
+
+def read_metadata_json(
+    path: Union[str, Path], allow_missing: bool = False
+) -> Dict[str, Any]:
+    """Read a checkpoint_meta.json sidecar.
+
+    With ``allow_missing=True`` (used by the load paths), a missing sidecar is
+    NOT fatal: it logs a loud warning and returns :func:`default_metadata`, so
+    pre-sidecar (legacy) checkpoints remain loadable. Saving still requires real
+    metadata. With ``allow_missing=False`` (default) a missing sidecar raises.
+    """
     path = Path(path)
     if not path.is_file():
+        if allow_missing:
+            logger.warning(
+                "Checkpoint metadata sidecar %s is MISSING — treating this as a "
+                "legacy checkpoint (saved before checkpoint_meta.json was "
+                "required) and proceeding with synthesized defaults "
+                "(epoch=0, iter=0, best_loss=inf, model_name_slug='legacy__unknown'). "
+                "Re-save with the current trainer to silence this warning.",
+                path,
+            )
+            return default_metadata(reason=f"missing sidecar at {path}")
         raise FileNotFoundError(
             f"Missing checkpoint metadata: {path}. "
             "Expected checkpoint_meta.json next to checkpoint (same tag directory). "

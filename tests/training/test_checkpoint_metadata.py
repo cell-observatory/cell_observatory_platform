@@ -11,6 +11,7 @@ from cell_observatory_platform.training.checkpoint_metadata import (
     build_metadata,
     build_model_name_slug,
     build_run_tag,
+    default_metadata,
     metadata_path_for_tag,
     read_metadata_json,
     slugify,
@@ -79,6 +80,40 @@ def test_read_metadata_json_missing(tmp_path):
     p = tmp_path / "nope.json"
     with pytest.raises(FileNotFoundError, match="Missing checkpoint metadata"):
         read_metadata_json(p)
+
+
+def test_read_metadata_json_missing_allow_missing_warns_and_defaults(tmp_path, caplog):
+    """allow_missing=True: a legacy checkpoint (no sidecar) loads with a loud
+    warning and a synthesized default, instead of hard-failing."""
+    import logging
+
+    p = tmp_path / "nope.json"
+    with caplog.at_level(logging.WARNING):
+        meta = read_metadata_json(p, allow_missing=True)
+    # Loud warning emitted.
+    assert any("MISSING" in r.message or "missing" in r.message.lower()
+               for r in caplog.records)
+    # Synthesized default carries every key the consumers dereference
+    # (training/helpers.py: best_loss/epoch/iter; training/loops.py: model_name_slug)
+    # so a legacy resume cannot KeyError.
+    assert meta["synthesized_default"] is True
+    assert meta["epoch"] == 0
+    assert meta["iter"] == 0
+    assert meta["best_loss"] == float("inf")
+    assert meta["model_name_slug"] == "legacy__unknown"
+
+
+def test_default_metadata_has_full_schema():
+    """default_metadata must cover the same keys real build_metadata emits, so
+    no downstream consumer can KeyError on a legacy checkpoint."""
+    d = default_metadata(reason="unit-test")
+    for key in (
+        "schema_version", "saved_at", "model_class_name", "model_name_slug",
+        "experiment_name", "wandb_project", "wandb_entity", "wandb_run_id",
+        "epoch", "iter", "best_loss", "hydra_config", "hydra_config_hash",
+    ):
+        assert key in d, key
+    assert d["synthesized_default"] is True
 
 
 def test_metadata_path_for_tag():

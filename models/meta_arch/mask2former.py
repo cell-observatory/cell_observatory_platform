@@ -141,6 +141,9 @@ class Mask2Former(nn.Module):
         Use this for inference/eval when you need masks at 128×256×512 or other full resolution.
         """
         features_dict = self.backbone(data_sample)
+        # NOTE(perf/OOM): segmentation_head.predict() interpolates ALL Q queries at full
+        # (B,Q,D,H,W) resolution before topk and will OOM on large volumes; see MaskMaterializer
+        # in models/meta_arch/maskdino.py for the chunked-materialization solution.
         # NOTE: Remove this in the Inference refactor -- this should be handled by the InferenceWorker or the PostProcessor
         if rescale_size is None:
             rescale_size = self.spatial_shape

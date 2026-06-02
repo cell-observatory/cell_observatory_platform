@@ -202,7 +202,7 @@ class CheckpointManager:
             module.to(TORCH_DTYPES[self.load_dtype].value)
 
         meta_path = metadata_path_for_tag(self.load_checkpointdir, self.checkpoint_tag)
-        checkpoint_meta = read_metadata_json(meta_path)
+        checkpoint_meta = read_metadata_json(meta_path, allow_missing=True)
         return ckpt_path, checkpoint_meta
 
     def _load_torch(self, checkpoint: str = "mp_rank_00_model_states.pt"):
@@ -240,7 +240,7 @@ class CheckpointManager:
             dst_module.to(TORCH_DTYPES[self.load_dtype].value)
 
         meta_path = metadata_path_for_tag(self.load_checkpointdir, self.checkpoint_tag)
-        checkpoint_meta = read_metadata_json(meta_path)
+        checkpoint_meta = read_metadata_json(meta_path, allow_missing=True)
         return str(pt_path), checkpoint_meta
 
     def _load_checkpoint(self, tag: str, custom_load_fn=None):
