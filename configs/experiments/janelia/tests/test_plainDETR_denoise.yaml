@@ -120,8 +120,6 @@ datasets:
     device_buffer_capacity: 2
     pin_numa_node: ${datasets.pin_numa_node}
     pin_pages: ${datasets.pin_memory}
-    use_masks: false
-    transforms_list: null
     bbox_data_format: zyxzyx
     bbox_output_format: cxcyczwhd
     with_resize: false

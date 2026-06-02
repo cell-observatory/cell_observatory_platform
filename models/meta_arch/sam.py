@@ -27,10 +27,9 @@ from cell_observatory_platform.models.layers.attention import MemoryAttention, R
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
 from cell_observatory_platform.models.layers.utils import (
     select_closest_cond_frames,
-    sample_random_points_from_errors,
-    sample_one_point_from_error_center,
     get_next_point,
     sample_box_points,
+    sample_box_points_from_boxes,
     concat_points
 )
 from cell_observatory_platform.data.structures import (
@@ -227,7 +226,10 @@ class SAM2Base(torch.nn.Module):
         if self.fixed_no_obj_ptr:
             assert self.pred_obj_scores, "pred_obj_scores must be True when fixed_no_obj_ptr is True"
             assert self.use_obj_ptrs_in_encoder, "use_obj_ptrs_in_encoder must be True when fixed_no_obj_ptr is True"
-        if self.pred_obj_scores and self.use_obj_ptrs_in_encoder:
+        if self.pred_obj_scores:
+            # `no_obj_ptr` is consumed in `_forward_sam_heads` whenever
+            # `pred_obj_scores=True`, independent of `use_obj_ptrs_in_encoder`,
+            # so it must be created on the same condition.
             self.no_obj_ptr = torch.nn.Parameter(torch.zeros(1, self.hidden_dim))
             trunc_normal_(self.no_obj_ptr, std=0.02)
         self.use_mlp_for_obj_ptr_proj = use_mlp_for_obj_ptr_proj
@@ -1168,8 +1170,12 @@ class SAM2(SAM2Base):
             backbone_out = {"backbone_fpn": None, "vision_pos_enc": None}
         backbone_out = self.prepare_prompt_inputs(backbone_out, data_sample)
         previous_stages_out = self.forward_tracking(backbone_out, data_sample)
-        gt_masks = torch.stack(data_sample["metainfo"]["targets"]["masks"]) 
-        loss = self.criterion(previous_stages_out, gt_masks)
+        # Pass the structured target view (labelmaps, instance_ids, valid,
+        # presence_t, boxes, masks, ...) directly to the criterion, which
+        # consumes the materialized dense `masks` plus `valid`/`presence_t`
+        # gates (single dense path).
+        target_view = data_sample["metainfo"]["targets"]
+        loss = self.criterion(previous_stages_out, target_view)
         return loss, previous_stages_out
 
     def _prepare_backbone_features_per_frame(self, data_sample, img_ids):
@@ -1205,21 +1211,19 @@ class SAM2(SAM2Base):
         Prepare input mask, point or box prompts. Optionally, we allow tracking from
         a custom `start_frame_idx` to the end of the video (for evaluation purposes).
         """
-        # Load the ground-truth masks on all frames (so that we can later
-        # sample correction points from them)
-        # gt_masks_per_frame = {
-        #     stage_id: targets.segments.unsqueeze(1)  # [B, 1, H_im, W_im]
-        #     for stage_id, targets in enumerate(input.find_targets)
-        # }
         data_views = data_sample["metainfo"]["targets"]
 
-        # Per-frame GT masks from the preprocessor's SAM2 view
-        # sam2["masks"][t] is (N_obj, Z, Y, X) bool
+        # Per-frame GT masks for correction-point sampling. The preprocessor
+        # always materializes the K=max_masks binary-mask subset on-device, so
+        # we consume it directly (no labelmap rebuild here). Each entry is the
+        # per-frame `[N_obj, Z, Y, X]` tensor lifted to `[N_obj, 1, Z, Y, X]`.
         gt_masks_per_frame = {
             t: m.unsqueeze(1)          # -> (N_obj, 1, Z, Y, X)
             for t, m in enumerate(data_views["masks"])
         }
         backbone_out["gt_masks_per_frame"] = gt_masks_per_frame
+
+        # num_frames drives the per-frame prompt/correction loops below.
         num_frames = data_views["num_frames"]
         backbone_out["num_frames"] = num_frames
 
@@ -1288,22 +1292,36 @@ class SAM2(SAM2Base):
                 # During training # P(box) = prob_to_use_pt_input * prob_to_use_box_input
                 use_box_input = self.rng.random() < prob_to_use_box_input
                 if use_box_input:
-                    points, labels = sample_box_points(
-                        input_fmt=self.input_fmt,
-                        time_separable=True,
-                        masks=gt_masks_per_frame[t],
-                    )
+                    target_boxes_t = data_views.get("boxes")
+                    box_format = data_views.get("box_format")
+                    if target_boxes_t is not None and box_format is not None:
+                        # Per-row boxes come from the preprocessor; spatial
+                        # extents come from the materialized GT masks.
+                        Z, Y, X = gt_masks_per_frame[t].shape[-3:]
+                        points, labels = sample_box_points_from_boxes(
+                            boxes=target_boxes_t[t],
+                            box_format=box_format,
+                            image_shape=(Z, Y, X),
+                            valid=data_views["valid"][t],
+                        )
+                    else:
+                        points, labels = sample_box_points(
+                            input_fmt=self.input_fmt,
+                            time_separable=True,
+                            masks=gt_masks_per_frame[t],
+                        )
                 else:
-                    # (here we only sample **one initial point** on initial conditioning frames from the
-                    # ground-truth mask; we may sample more correction points on the fly)
+                    # Initial-prompt site: sample one click from the GT mask.
+                    # Masks are always materialized by the preprocessor, so we
+                    # sample directly from gt_masks_per_frame. Training: uniform;
+                    # eval: self.pt_sampling_for_eval (exact EDT when "center").
+                    method = "uniform" if self.training else self.pt_sampling_for_eval
                     points, labels = get_next_point(
                         input_fmt=self.input_fmt,
                         time_separable=True,
                         gt_masks=gt_masks_per_frame[t],
                         pred_masks=None,
-                        method=(
-                            "uniform" if self.training else self.pt_sampling_for_eval
-                        ),
+                        method=method,
                     )
 
                 point_inputs = {"point_coords": points, "point_labels": labels}

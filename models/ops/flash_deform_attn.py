@@ -137,6 +137,23 @@ class FlashDeformAttnFunction(Function):
         return grad_value, None, None, grad_sampling_loc_attn, None, None, None
 
 
+# ============================================================================
+# !! AXIS ORDER !! sampling_locations last dim is (x, y, z) = (W, H, D).
+# ----------------------------------------------------------------------------
+# `F.grid_sample` for 5D input (N, C, D, H, W) reads the grid's last dim as
+# (x, y, z) -> (W, H, D):
+#     sampling_locations[..., 0] -> W axis (x)
+#     sampling_locations[..., 1] -> H axis (y)
+#     sampling_locations[..., 2] -> D axis (z)
+# Our tensors are stored (B, C, Z, Y, X) (so D=Z, H=Y, W=X) — the point repr
+# is the Cartesian flip of the tensor layout. Same convention as
+# `numpy.meshgrid(indexing="xy")`; the alternate "ij" flavour would give
+# (z, y, x). Do NOT pass tensor-order coords here.
+#
+# Refs:
+#   https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+#   https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
+# ============================================================================
 def ms_deform_attn_core_pytorch_3d(value, value_spatial_shapes, sampling_locations, attention_weights):
     # for debug / testing only, use cuda version otherwise
     # N_ = batch_size, S_ = total_spatial_tokens, M_ = num_heads, E_ = embed_dim
@@ -154,7 +171,7 @@ def ms_deform_attn_core_pytorch_3d(value, value_spatial_shapes, sampling_locatio
         #       hence we unsqueeze and add a dummy dim
         sampling_grid_l_ = sampling_grids[:, :, :, lid_].transpose(1, 2).flatten(0, 1).unsqueeze(1)
         # N_*M_, E_, Lq_, P_
-        sampling_value_l_ = F.grid_sample(
+        sampling_value_l_ = F.grid_sample( # FIXME: axis order issue here
             value_l_, sampling_grid_l_, mode="bilinear", padding_mode="zeros", align_corners=False
         )
         sampling_value_l_ = sampling_value_l_.squeeze(2)

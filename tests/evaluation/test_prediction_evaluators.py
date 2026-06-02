@@ -7,11 +7,20 @@ from cell_observatory_platform.evaluation.automated_benchmark_evaluator import (
 from cell_observatory_platform.evaluation.base_evaluation import BaseEvaluator
 
 
-def test_base_evaluator_rejects_loss_none():
+@pytest.mark.parametrize(
+    "data_sample, outputs, loss_dict, none_arg",
+    [
+        (None, {}, {}, "data_sample"),
+        ({}, None, {}, "outputs"),
+        ({}, {}, None, "loss_dict"),
+    ],
+    ids=["data_sample", "outputs", "loss_dict"],
+)
+def test_base_evaluator_rejects_none_args(data_sample, outputs, loss_dict, none_arg):
+    """BaseEvaluator.process rejects None for any required arg."""
     evaluator = BaseEvaluator(training_metrics=[{"step_loss": "mean"}])
-
-    with pytest.raises(RuntimeError, match="loss_dict=None"):
-        evaluator.process(None, None, None)
+    with pytest.raises(TypeError):
+        evaluator.process(data_sample, outputs, loss_dict)
 
 
 def test_automated_benchmark_select_pred_dict_requires_pred_key():

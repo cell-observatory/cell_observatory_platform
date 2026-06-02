@@ -28,8 +28,8 @@ from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedd
 from cell_observatory_platform.models.layers.utils import (
     batch_tensors,
     get_uncertain_point_coords_with_randomness,
-    point_sample,
     point_sample_labelmap_batched,
+    point_sample,
 )
 from cell_observatory_platform.models.ops.losses import (
     batch_dice_loss,
@@ -493,11 +493,11 @@ class DETR_Set_Loss(nn.Module):
         with torch.no_grad():
             # point_coords: [N, num_points, 3] normalized coords in [0, 1]
             point_coords = get_uncertain_point_coords_with_randomness(
-                source_masks,
-                lambda logits: calculate_uncertainty(logits),
-                self.num_points,
-                self.oversample_ratio,
-                self.importance_sample_ratio,
+                coarse_logits=source_masks,
+                uncertainty_func=calculate_uncertainty,
+                num_points=self.num_points,
+                oversample_ratio=self.oversample_ratio,
+                importance_sample_ratio=self.importance_sample_ratio,
             )
             
             # Sample binary labels from labelmap
@@ -1106,15 +1106,16 @@ class Mask2FormerSetLoss(nn.Module):
             )
             # samples from target mask at point_coords
             point_labels = point_sample(
-                target_masks,
-                point_coords,
+                input=target_masks,
+                point_coords=point_coords,
+                mode="nearest", # default is bilinear; need nearest for GT binary labels
                 align_corners=False,
             ).squeeze(1)
 
         # samples from source mask at point_coords
         point_logits = point_sample(
-            source_masks,
-            point_coords,
+            input=source_masks,
+            point_coords=point_coords,
             align_corners=False,
         ).squeeze(1)
 
@@ -1265,8 +1266,9 @@ class MultiLabelBinaryPredictionLoss(nn.Module):
             ) # B*N_classes, P, 3
             # samples from target mask at point_coords
             point_labels = point_sample(
-                target_masks,
-                point_coords,
+                input=target_masks,
+                point_coords=point_coords,
+                mode="nearest", # default is bilinear; need nearest for GT binary labels
                 align_corners=False,
             ).squeeze(1)
 
@@ -1693,8 +1695,12 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         focal_gamma_obj_score=0.0,
         focal_alpha_obj_score=-1,
         activation_checkpoint=False,
+        # True  -> PointRend point-sampling focal/dice on uncertain points
+        #          (sampled from the high-res prediction stream by default,
+        #          or the low-res stream if `low_res_multimasks=True`).
+        # False -> dense per-voxel focal/dice/IoU on the high-res masks.
         use_point_sampling=False,
-        # How to pick number of points?
+        # How to pick number of points (use_point_sampling=True only)?
         # Find the mask logit resolution loss samples from.
         # E.g., for volume 128×256×512, at stride 4, that is 32×64×128 = 262,144 candidate voxels.
         # 5% => ~13k
@@ -1703,10 +1709,21 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         num_points=20000,
         oversample_ratio=3,
         importance_sample_ratio=0.75,
+        # low_res_multimasks: route focal/dice through the low-res prediction
+        # stream (`multistep_pred_multimasks`) instead of the upsampled
+        # `multistep_pred_multimasks_high_res`. Eliminates the criterion-side
+        # trilinear-upsample backward (focal/dice's point_sample bwd lands
+        # directly at the low-res tensor). Requires use_point_sampling=True.
+        # The dense iou_loss path still reads the HIGH-RES stream so
+        # `target_masks.expand_as(...)` stays shape-valid; that read is
+        # forward-only (the `> 0` threshold severs autograd, so no extra
+        # upsample bwd is incurred through the IoU path).
+        low_res_multimasks=False,
     ):
         """
         Computes the multi-step multi-mask and IoU losses.
         Args:
+            input_fmt: input tensor layout identifier propagated from the data pipeline
             weight_dict: dict containing weights for focal, dice, iou losses
             focal_alpha: alpha for sigmoid focal loss
             focal_gamma: gamma for sigmoid focal loss
@@ -1715,6 +1732,16 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             pred_obj_scores: if True, compute loss for object scores
             focal_gamma_obj_score: gamma for sigmoid focal loss on object scores
             focal_alpha_obj_score: alpha for sigmoid focal loss on object scores
+            activation_checkpoint: if True, run per-step loss components under
+                torch.utils.checkpoint to trade compute for activation memory
+            use_point_sampling: PointRend point-sampling vs dense focal/dice/IoU
+            num_points: number of points sampled per step when use_point_sampling=True
+            oversample_ratio: candidate-pool multiplier for importance sampling
+            importance_sample_ratio: fraction of points drawn from the uncertain pool
+            low_res_multimasks: route focal/dice through the low-res prediction stream
+                (requires use_point_sampling=True)
+        See inline comments above the signature for the use_point_sampling /
+        low_res_multimasks / point-sampling sizing / activation_checkpoint rationale.
         """
         super().__init__()
 
@@ -1728,9 +1755,6 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         assert "loss_dice" in self.weight_dict, "loss_dice must be in weight_dict"
         assert "loss_iou" in self.weight_dict, "loss_iou must be in weight_dict"
         assert "loss_class" in self.weight_dict, "loss_class must be in weight_dict"
-
-        if "loss_class" not in self.weight_dict:
-            self.weight_dict["loss_class"] = 0.0
 
         self.focal_alpha_obj_score = focal_alpha_obj_score
         self.focal_gamma_obj_score = focal_gamma_obj_score
@@ -1747,22 +1771,60 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         self.oversample_ratio = oversample_ratio
         self.importance_sample_ratio = importance_sample_ratio
 
-    def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
-        assert len(outs_batch) == len(targets_batch), "outs_batch and targets_batch must have the same length"
-        num_objects = torch.tensor(
-            (targets_batch.shape[1]), device=targets_batch.device, dtype=torch.float
-        )  # Number of objects is fixed within a batch
+        self.low_res_multimasks = low_res_multimasks
+        if self.low_res_multimasks:
+            assert self.use_point_sampling, (
+                "low_res_multimasks=True requires use_point_sampling=True "
+                "(dense focal/dice cannot mix low-res preds with full-res GT)."
+            )
+
+    def forward(self, outs_batch: List[Dict], target_view: Dict):
+        """
+        Args:
+            outs_batch: list of per-frame outputs from SAM2 tracking.
+            target_view: SAM2 preprocessor target view dict with materialized
+                `masks` (list[T] of [N,Z,Y,X]), `valid`, and `presence_t`.
+
+        Mask focal/dice/IoU use `valid & presence_t` gates. Object-score uses
+        `valid` as the loss-weight gate but `valid & presence_t` as the target
+        (matching SAM2's `>0 ⇒ is_obj_appearing` convention), so the head learns
+        to predict absent for occluded frames of valid objects.
+        Denominators are the global gated row counts / world_size.
+        Within each frame, `use_point_sampling` toggles PointRend vs dense voxel loss.
+        """
+        masks_list: List[torch.Tensor] = target_view["masks"] # list[T] [N,Z,Y,X]
+        valid_list: List[torch.Tensor] = target_view["valid"] # list[T] [N] bool, is this a real object or padding?
+        presence_list: List[torch.Tensor] = target_view["presence_t"] # list[T] [N] bool, is this object present in this frame?
+        T = len(masks_list)
+        assert len(outs_batch) == T, "outs_batch length must match num_frames"
+
+        device = outs_batch[0]["multistep_pred_multimasks_high_res"][0].device
+
+        mask_gate_total = torch.zeros((), device=device, dtype=torch.float)
+        cls_gate_total = torch.zeros((), device=device, dtype=torch.float)
+        for v_t, p_t in zip(valid_list, presence_list):
+            mask_gate_total = mask_gate_total + (v_t & p_t).sum().to(torch.float)
+            cls_gate_total = cls_gate_total + v_t.sum().to(torch.float)
         if is_torch_dist_initialized():
-            dist.all_reduce(num_objects)
-        # num_objects = torch.clamp(num_objects / get_world_size(), min=1).item()
-        num_objects = torch.clamp(num_objects / get_world_size(), min=1.0)
+            dist.all_reduce(mask_gate_total)
+            dist.all_reduce(cls_gate_total)
+        mask_denom = torch.clamp(mask_gate_total / get_world_size(), min=1.0)
+        cls_denom = torch.clamp(cls_gate_total / get_world_size(), min=1.0)
 
         losses = defaultdict(int)
-        for outs, targets in zip(outs_batch, targets_batch):
+        for t in range(T):
+            outs = outs_batch[t]
+            target_masks_t = masks_list[t]                       # [N, Z, Y, X]
+            mask_gate = valid_list[t] & presence_list[t]         # [N] bool
+            cls_gate = valid_list[t]                             # [N] bool
             if self.activation_checkpoint:
-                cur_losses = self._forward_checkpoint(outs, targets, num_objects)
+                cur_losses = self._forward_checkpoint(
+                    outs, target_masks_t, mask_denom, mask_gate, cls_denom, cls_gate,
+                )
             else:
-                cur_losses = self._forward(outs, targets, num_objects)
+                cur_losses = self._forward(
+                    outs, target_masks_t, mask_denom, mask_gate, cls_denom, cls_gate,
+                )
             for k, v in cur_losses.items():
                 losses[k] += v
 
@@ -1798,12 +1860,17 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         # [N*M, P, 3] -> [N, M*P, 3]
         point_coords_obj = point_coords_flat.view(N, M * P, 3)
         gt = target_masks  # [N,1,Z,Y,X]
-        point_labels_obj = point_sample(gt, point_coords_obj, align_corners=False).squeeze(1)  # [N, M*P]
+        point_labels_obj = point_sample(
+            input=gt, 
+            point_coords=point_coords_obj,
+            mode="nearest", # default is bilinear; need nearest for GT binary labels
+            align_corners=False,
+        ).squeeze(1)  # [N, M*P]
         point_labels = point_labels_obj.view(N, M, P)  # [N, M, P]
 
         return point_coords_flat, point_labels
 
-    def _forward(self, outputs: Dict, targets: torch.Tensor, num_objects):
+    def _forward(self, outputs: Dict, targets: torch.Tensor, mask_denom, mask_gate, cls_denom, cls_gate):
         """
         Compute the losses related to the masks: the focal loss and the dice loss,
         and also the MAE or MSE loss between predicted IoUs and actual IoUs.
@@ -1816,7 +1883,17 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         with the lowest focal+dice loss between predicted mask and ground-truth.
         If `supervise_all_iou` is True, we backpropagate ious losses for all predicted masks.
         """
-        src_masks_list = outputs["multistep_pred_multimasks_high_res"]
+        mask_stream_key = (
+            "multistep_pred_multimasks" if self.low_res_multimasks
+            else "multistep_pred_multimasks_high_res"
+        )
+        src_masks_list = outputs[mask_stream_key]
+        # Dense iou_loss always reads the high-res stream so
+        # `target_masks.expand_as(...)` stays shape-valid. When
+        # `low_res_multimasks=False` this aliases `src_masks_list`; when True it
+        # is a forward-only read (the `>0` threshold inside iou_loss severs
+        # autograd, so no extra upsample-bwd is incurred).
+        src_masks_iou_list = outputs["multistep_pred_multimasks_high_res"]
         pred_dtype = src_masks_list[0].dtype
         pred_device = src_masks_list[0].device
         target_masks = targets.unsqueeze(1).to(device=pred_device, dtype=pred_dtype)
@@ -1829,24 +1906,37 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
 
         assert len(src_masks_list) == len(ious_list), \
             f"Expected len(src_masks_list) == len(ious_list), got {len(src_masks_list)} and {len(ious_list)}"
+        assert len(src_masks_iou_list) == len(src_masks_list), \
+            f"IoU stream length must match focal/dice stream length, got {len(src_masks_iou_list)} vs {len(src_masks_list)}"
         assert len(object_score_logits_list) == len(ious_list), \
             f"Expected len(object_score_logits_list) == len(ious_list), got {len(object_score_logits_list)} and {len(ious_list)}"
 
         # accumulate the loss over prediction steps
-        losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
-        for src_masks, ious, object_score_logits in zip(
-            src_masks_list, ious_list, object_score_logits_list
+        losses = {
+            k: target_masks.new_zeros(())
+            for k in ("loss_mask","loss_dice","loss_iou","loss_class")
+        }
+        for src_masks, src_masks_iou, ious, object_score_logits in zip(
+            src_masks_list, src_masks_iou_list, ious_list, object_score_logits_list
         ):
             self._update_losses(
-                losses, src_masks, target_masks, ious, num_objects, object_score_logits
+                losses, src_masks, src_masks_iou, target_masks, ious, mask_denom, mask_gate,
+                cls_denom, cls_gate, object_score_logits,
             )
         losses[self.core_loss_key] = self.reduce_loss(losses)
         # Cast step_loss to prediction dtype so backward matches model
         losses[self.core_loss_key] = losses[self.core_loss_key].to(src_masks_list[0].dtype)
         return losses
 
-    def _forward_checkpoint(self, outputs, targets, num_objects):
-        src_masks_list = outputs["multistep_pred_multimasks_high_res"]
+    def _forward_checkpoint(self, outputs, targets, mask_denom, mask_gate, cls_denom, cls_gate):
+        mask_stream_key = (
+            "multistep_pred_multimasks" if self.low_res_multimasks
+            else "multistep_pred_multimasks_high_res"
+        )
+        src_masks_list = outputs[mask_stream_key]
+        # Dense iou_loss always reads the high-res stream (aliases src_masks_list
+        # when low_res_multimasks=False).
+        src_masks_iou_list = outputs["multistep_pred_multimasks_high_res"]
         ious_list = outputs["multistep_pred_ious"]
         object_score_logits_list = outputs["multistep_object_score_logits"]
 
@@ -1865,22 +1955,30 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         total = target_masks.new_zeros(())
         comp_sum_detached = target_masks.new_zeros(4)
 
-        for src_masks, pred_ious, obj_logits in zip(src_masks_list, ious_list, object_score_logits_list):
+        for src_masks, src_masks_iou, pred_ious, obj_logits in zip(
+            src_masks_list, src_masks_iou_list, ious_list, object_score_logits_list
+        ):
             if self.use_point_sampling:
                 with torch.no_grad():
-                    point_coords_flat, point_labels = self._sample_points_and_labels(src_masks, target_masks)
-
+                    point_coords_flat, point_labels = self._sample_points_and_labels(
+                        src_masks, target_masks
+                    )
                 comps = checkpoint(
                     self._step_loss_components_points,
-                    src_masks, pred_ious, obj_logits, target_masks, num_objects,
-                    point_coords_flat, point_labels,
+                    src_masks, src_masks_iou, pred_ious, obj_logits, target_masks, mask_denom, mask_gate,
+                    cls_denom, cls_gate, point_coords_flat, point_labels,
                     use_reentrant=False,
                     preserve_rng_state=False,  # safe: no randomness inside checkpointed fn
                 )
             else:
+                # Dense path: use_point_sampling=False, so low_res_multimasks is rejected
+                # at construction (it requires use_point_sampling=True). focal/dice and
+                # IoU both run on src_masks (the high-res stream) — no separate IoU
+                # tensor is needed because both losses consume the same logits.
                 comps = checkpoint(
                     self._step_loss_components,
-                    src_masks, pred_ious, obj_logits, target_masks, num_objects,
+                    src_masks, pred_ious, obj_logits, target_masks, mask_denom, mask_gate,
+                    cls_denom, cls_gate,
                     use_reentrant=False,
                     preserve_rng_state=False,
                 )
@@ -1897,11 +1995,15 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
 
     def _step_loss_components_points(
         self,
-        src_masks,            # [N, M, Z, Y, X]
+        src_masks,            # [N, M, Z, Y, X] -- focal/dice stream (low-res when low_res_multimasks=True)
+        src_masks_iou,        # [N, M, Z, Y, X] -- high-res IoU stream (== src_masks when low_res_multimasks=False)
         pred_ious,            # [N, M]
         object_score_logits,  # [N, 1] or [N]
         target_masks_base,    # [N, 1, Z, Y, X]
-        num_objects,          # 0-dim cuda float
+        mask_denom,           # num_objects, 0-dim cuda float
+        mask_gate,
+        cls_denom,
+        cls_gate,
         point_coords_flat,    # [N*M, P, 3]
         point_labels,         # [N, M, P]
     ):
@@ -1913,36 +2015,40 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         point_logits = point_logits_flat.view(N, M, P)  # [N,M,P]
 
         loss_multimask = sigmoid_focal_loss(
-            point_logits, point_labels, num_objects,
+            point_logits, point_labels, mask_denom,
             alpha=self.focal_alpha, gamma=self.focal_gamma,
             loss_on_multimask=True,
         )
         loss_multidice = dice_loss(
-            point_logits, point_labels, num_objects,
+            point_logits, point_labels, mask_denom,
             loss_on_multimask=True,
         )
 
         # obj score loss
         if not self.pred_obj_scores:
             loss_class = loss_multimask.new_zeros(())
-            target_obj = loss_multimask.new_ones((loss_multimask.shape[0], 1))
         else:
-            target_obj = torch.any((target_masks_base[:, 0] > 0).flatten(1), dim=-1)[..., None].to(
-                dtype=loss_multimask.dtype, device=loss_multimask.device
-            )
-            loss_class = sigmoid_focal_loss(
-                object_score_logits, target_obj, num_objects,
-                alpha=self.focal_alpha_obj_score, gamma=self.focal_gamma_obj_score,
-            )
+            n_obj = object_score_logits.shape[0]
+            obj_logits_nm1 = object_score_logits.reshape(n_obj, 1, 1)
+            target_obj_nm1 = mask_gate.to(obj_logits_nm1.dtype).reshape(n_obj, 1, 1)
+            loss_class_row = sigmoid_focal_loss(
+                obj_logits_nm1, target_obj_nm1, cls_denom,
+                alpha=self.focal_alpha_obj_score,
+                gamma=self.focal_gamma_obj_score,
+                loss_on_multimask=True,
+            ).squeeze(-1)
+            loss_class = (loss_class_row * cls_gate.to(loss_class_row.dtype)).sum()
 
-        # dense IoU
-        target_masks_iou = target_masks_base.expand_as(src_masks)
+        # Dense hard IoU on the high-res stream. The shape matches the
+        # full-resolution target without resizing. With low_res_multimasks=True
+        # this is a forward-only read (the `> 0` threshold in iou_loss severs
+        # autograd through src_masks_iou).
+        target_masks_iou = target_masks_base.expand_as(src_masks_iou)
         loss_multiiou = iou_loss(
-            src_masks, target_masks_iou, pred_ious, num_objects,
+            src_masks_iou, target_masks_iou, pred_ious, mask_denom,
             loss_on_multimask=True, use_l1_loss=self.iou_use_l1_loss,
         )
 
-        # best-mask selection unchanged
         if loss_multimask.size(1) > 1:
             combo = (
                 loss_multimask * float(self.weight_dict["loss_mask"])
@@ -1950,7 +2056,6 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             )
             best = torch.argmin(combo, dim=-1)  # [N]
             b = torch.arange(combo.size(0), device=combo.device)
-
             loss_mask = loss_multimask[b, best].unsqueeze(1)
             loss_dice = loss_multidice[b, best].unsqueeze(1)
             if self.supervise_all_iou:
@@ -1960,11 +2065,12 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         else:
             loss_mask = loss_multimask
             loss_dice = loss_multidice
-            loss_iou  = loss_multiiou
+            loss_iou = loss_multiiou
 
-        loss_mask = (loss_mask * target_obj).sum()
-        loss_dice = (loss_dice * target_obj).sum()
-        loss_iou  = (loss_iou  * target_obj).sum()
+        gate = mask_gate.to(loss_mask.dtype).view(-1, 1)
+        loss_mask = (loss_mask * gate).sum()
+        loss_dice = (loss_dice * gate).sum()
+        loss_iou = (loss_iou * gate).sum()
 
         return torch.stack([loss_mask, loss_dice, loss_iou, loss_class])
 
@@ -1974,36 +2080,41 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         pred_ious,
         object_score_logits,
         target_masks,
-        num_objects,
+        mask_denom,
+        mask_gate,
+        cls_denom,
+        cls_gate,
     ):
         target_masks = target_masks.expand_as(src_masks)
 
         # [N, M]
         loss_multimask = sigmoid_focal_loss(
-            src_masks, target_masks, num_objects,
+            src_masks, target_masks, mask_denom,
             alpha=self.focal_alpha, gamma=self.focal_gamma,
             loss_on_multimask=True,
         )
         loss_multidice = dice_loss(
-            src_masks, target_masks, num_objects,
+            src_masks, target_masks, mask_denom,
             loss_on_multimask=True,
         )
 
         if not self.pred_obj_scores:
             loss_class = loss_multimask.new_zeros(())
-            target_obj = loss_multimask.new_ones((loss_multimask.shape[0], 1))
         else:
-            target_obj = torch.any((target_masks[:, 0] > 0).flatten(1), dim=-1)[..., None].to(
-                dtype=loss_multimask.dtype, device=loss_multimask.device
-            )
-            loss_class = sigmoid_focal_loss(
-                object_score_logits, target_obj, num_objects,
-                alpha=self.focal_alpha_obj_score, gamma=self.focal_gamma_obj_score,
-            )
+            N = object_score_logits.shape[0]
+            obj_logits_nm1 = object_score_logits.reshape(N, 1, 1)
+            target_obj_nm1 = mask_gate.to(obj_logits_nm1.dtype).reshape(N, 1, 1)
+            loss_class_row = sigmoid_focal_loss(
+                obj_logits_nm1, target_obj_nm1, cls_denom,
+                alpha=self.focal_alpha_obj_score,
+                gamma=self.focal_gamma_obj_score,
+                loss_on_multimask=True,
+            ).squeeze(-1)  # [N]
+            loss_class = (loss_class_row * cls_gate.to(loss_class_row.dtype)).sum()
 
-        # [N, M]
+        # [N, M] dense hard IoU (use_point_sampling=False path).
         loss_multiiou = iou_loss(
-            src_masks, target_masks, pred_ious, num_objects,
+            src_masks, target_masks, pred_ious, mask_denom,
             loss_on_multimask=True, use_l1_loss=self.iou_use_l1_loss,
         )
 
@@ -2026,64 +2137,85 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             loss_dice = loss_multidice
             loss_iou  = loss_multiiou
 
-        # gate, then reduce to scalars
-        loss_mask = (loss_mask * target_obj).sum()
-        loss_dice = (loss_dice * target_obj).sum()
-        loss_iou  = (loss_iou  * target_obj).sum()
+        # Gate by valid & presence (drop padded / absent rows), then reduce.
+        gate = mask_gate.to(loss_mask.dtype).view(-1, 1)  # [N,1]
+        loss_mask = (loss_mask * gate).sum()
+        loss_dice = (loss_dice * gate).sum()
+        loss_iou  = (loss_iou  * gate).sum()
 
         return torch.stack([loss_mask, loss_dice, loss_iou, loss_class])
 
+    # FIXME: collapse _forward to call _step_loss_components[_points] via a
+    # `maybe_checkpoint = checkpoint if self.activation_checkpoint else lambda fn,*a,**kw: fn(*a)`
+    # wrapper, then delete this function. The loss arithmetic here is a third copy
+    # of what's in _step_loss_components[_points] — three-way drift already bit
+    # this PR (IoU-stream aliasing fix had to land in all three sites).
     def _update_losses(
-        self, losses, src_masks, target_masks, ious, num_objects, object_score_logits
+        self,
+        losses,
+        src_masks,           # focal/dice stream (low-res when low_res_multimasks=True)
+        src_masks_iou,       # high-res IoU stream (== src_masks when low_res_multimasks=False)
+        target_masks,
+        ious,
+        mask_denom,
+        mask_gate,
+        cls_denom,
+        cls_gate,
+        object_score_logits,
     ):
         # target_masks is [N,1,Z,Y,X]
         target_masks_base = target_masks
 
         if self.use_point_sampling:
             # coords/labels are no_grad and depend on src_masks.detach()
-            point_coords_flat, point_labels = self._sample_points_and_labels(src_masks, target_masks_base)
-
+            point_coords_flat, point_labels = self._sample_points_and_labels(
+                src_masks, target_masks_base
+            )
             N, M, Z, Y, X = src_masks.shape
             src_flat = src_masks.reshape(N * M, 1, Z, Y, X)
-            point_logits_flat = point_sample(src_flat, point_coords_flat, align_corners=False).squeeze(1)  # [N*M,P]
+            point_logits_flat = point_sample(
+                src_flat, point_coords_flat, align_corners=False
+            ).squeeze(1)  # [N*M,P]
             point_logits = point_logits_flat.view(N, M, -1)  # [N,M,P]
-
             loss_multimask = sigmoid_focal_loss(
-                point_logits, point_labels, num_objects,
+                point_logits, point_labels, mask_denom,
                 alpha=self.focal_alpha, gamma=self.focal_gamma,
                 loss_on_multimask=True,
             )
             loss_multidice = dice_loss(
-                point_logits, point_labels, num_objects,
+                point_logits, point_labels, mask_denom,
                 loss_on_multimask=True,
             )
         else:
             target_masks = target_masks_base.expand_as(src_masks)  # [N,M,Z,Y,X]
             loss_multimask = sigmoid_focal_loss(
-                src_masks, target_masks, num_objects,
+                src_masks, target_masks, mask_denom,
                 alpha=self.focal_alpha, gamma=self.focal_gamma,
                 loss_on_multimask=True,
             )
             loss_multidice = dice_loss(
-                src_masks, target_masks, num_objects,
+                src_masks, target_masks, mask_denom,
                 loss_on_multimask=True,
             )
 
-        if not self.pred_obj_scores:
-            loss_class = loss_multimask.new_zeros(())
-            target_obj = loss_multimask.new_ones((loss_multimask.shape[0], 1))
-        else:
-            target_obj = torch.any((target_masks_base[:, 0] > 0).flatten(1), dim=-1)[..., None].to(
-                dtype=loss_multimask.dtype, device=loss_multimask.device
-            )
-            loss_class = sigmoid_focal_loss(
-                object_score_logits, target_obj, num_objects,
-                alpha=self.focal_alpha_obj_score, gamma=self.focal_gamma_obj_score,
-            )
+        if self.pred_obj_scores:
+            N = object_score_logits.shape[0]
+            obj_logits_nm1 = object_score_logits.reshape(N, 1, 1)
+            target_obj_nm1 = mask_gate.to(obj_logits_nm1.dtype).reshape(N, 1, 1)
+            loss_class_row = sigmoid_focal_loss(
+                obj_logits_nm1, target_obj_nm1, cls_denom,
+                alpha=self.focal_alpha_obj_score,
+                gamma=self.focal_gamma_obj_score,
+                loss_on_multimask=True,
+            ).squeeze(-1)  # [N]
+            losses["loss_class"] += (loss_class_row * cls_gate.to(loss_class_row.dtype)).sum()
 
-        target_masks_iou = target_masks_base.expand_as(src_masks)
+        # Dense hard IoU on the high-res stream. When low_res_multimasks=False
+        # this aliases src_masks; when True the high-res tensor is read forward-
+        # only (the `> 0` threshold severs autograd through it).
+        target_masks_iou = target_masks_base.expand_as(src_masks_iou)
         loss_multiiou = iou_loss(
-            src_masks, target_masks_iou, ious, num_objects,
+            src_masks_iou, target_masks_iou, ious, mask_denom,
             loss_on_multimask=True, use_l1_loss=self.iou_use_l1_loss,
         )
         assert loss_multimask.dim() == 2, f"Expected loss_multimask shape (N, M), got {loss_multimask.shape}"
@@ -2112,16 +2244,17 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             loss_dice = loss_multidice
             loss_iou = loss_multiiou
 
-        # backprop focal, dice and iou loss only if obj present
-        loss_mask = loss_mask * target_obj
-        loss_dice = loss_dice * target_obj
-        loss_iou = loss_iou * target_obj
+        # Gate by valid & presence (drop padded / absent rows). mask_denom is
+        # the global (valid & presence) count / world_size.
+        gate = mask_gate.to(loss_mask.dtype).view(-1, 1)  # [N,1]
+        loss_mask = loss_mask * gate
+        loss_dice = loss_dice * gate
+        loss_iou = loss_iou * gate
 
-        # sum over batch dimension (note that the losses are already divided by num_objects)
+        # sum over batch dimension (losses already divided by mask_denom)
         losses["loss_mask"] += loss_mask.sum()
         losses["loss_dice"] += loss_dice.sum()
         losses["loss_iou"] += loss_iou.sum()
-        losses["loss_class"] += loss_class
 
     def reduce_loss(self, losses):
         reduced_loss = 0.0

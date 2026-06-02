@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -40,13 +41,57 @@ def pytest_addoption(parser):
     )
 
 
-def pytest_collection_modifyitems(config, items):
-    if config.getoption("--run-localdb"):
-        return
+def _has_cuda_toolkit() -> bool:
+    # Tests marked `cuda` need the CUDA *toolkit* (nvcc), not just the runtime
+    # libs. DeepSpeed's `installed_cuda_version()` probe (which fires at
+    # module-import time inside several training modules) requires BOTH a
+    # callable nvcc AND `CUDA_HOME`/`CUDA_PATH` set, so we mirror that here.
+    nvcc = shutil.which("nvcc")
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+    if not nvcc and cuda_home:
+        candidate = os.path.join(cuda_home, "bin", "nvcc")
+        if os.access(candidate, os.X_OK):
+            nvcc = candidate
+    if not nvcc:
+        return False
+    if not cuda_home:
+        # nvcc found on PATH but no CUDA_HOME set — DeepSpeed will still fail
+        # at import. Treat as "no toolkit" so file-gated tests are skipped.
+        return False
+    return True
 
+
+# Module-level DeepSpeed imports inside these files trigger nvcc probing at
+# collection time, so we have to skip them earlier than markers can fire.
+_CUDA_TOOLKIT_REQUIRED_FILES = (
+    "tests/models/test_jepa_models.py",
+    "tests/training/test_test_trainer_predict_dispatch.py",
+    "tests/training/test_loggers.py",
+)
+
+
+def pytest_ignore_collect(collection_path, config):
+    if _has_cuda_toolkit():
+        return False
+    repo_root = Path(__file__).resolve().parent.parent
+    target = Path(collection_path).resolve()
+    for rel in _CUDA_TOOLKIT_REQUIRED_FILES:
+        if target == (repo_root / rel).resolve():
+            return True
+    return False
+
+
+def pytest_collection_modifyitems(config, items):
+    has_cuda_toolkit = _has_cuda_toolkit()
+    run_localdb = config.getoption("--run-localdb")
+
+    skip_cuda = pytest.mark.skip(reason="CUDA toolkit (nvcc) not available")
     skip_localdb = pytest.mark.skip(reason="need --run-localdb to execute localdb tests")
+
     for item in items:
-        if "localdb" in item.keywords:
+        if not has_cuda_toolkit and "cuda" in item.keywords:
+            item.add_marker(skip_cuda)
+        if not run_localdb and "localdb" in item.keywords:
             item.add_marker(skip_localdb)
 
 

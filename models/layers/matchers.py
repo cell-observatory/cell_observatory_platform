@@ -245,8 +245,9 @@ class Mask2FormerHungarianMatcher(nn.Module):
             point_coords = torch.rand(1, self.num_points, 3, device=out_mask.device)
             # get gt labels
             tgt_mask = point_sample(
-                tgt_mask,
-                point_coords.repeat(tgt_mask.shape[0], 1, 1),
+                input=tgt_mask,
+                point_coords=point_coords.repeat(tgt_mask.shape[0], 1, 1),
+                mode="nearest", # default is bilinear; need nearest for GT binary labels
                 align_corners=False,
             ).squeeze(1)
 

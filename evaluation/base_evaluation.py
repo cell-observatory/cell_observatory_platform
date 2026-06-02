@@ -37,6 +37,13 @@ class BaseEvaluator(DatasetEvaluator):
     # loss_dict and append each loss metric to the
     # corresponding TrainLosses instance in self.metrics
     def process(self, data_sample, outputs, loss_dict):
+        if data_sample is None:
+            raise TypeError("data_sample=None; BaseEvaluator.process requires a data_sample to forward to metric implementations")
+        if outputs is None:
+            raise TypeError("outputs=None; BaseEvaluator.process requires outputs to forward to metric implementations")
+        if loss_dict is None:
+            raise TypeError("loss_dict=None; BaseEvaluator.process requires a loss_dict to dispatch on metric keys")
+
         for metric, metric_impl in self.metrics.items():
             metric_impl(outputs, data_sample, loss_dict[metric])
 
