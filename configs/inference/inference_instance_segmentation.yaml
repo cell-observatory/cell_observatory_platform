@@ -48,7 +48,7 @@ inferencer_worker:
 
 save_worker:
   max_workers: 2
-  save_mode: "append"
+  save_mode: "overwrite"
   shard_spatial_shape: [128, 128, 128]
   chunk_spatial_shape: [32, 32, 32]
 

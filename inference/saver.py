@@ -212,6 +212,9 @@ class SaveWorker:
         shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
         chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
     ):
+        if save_mode not in ["overwrite", "create"]:
+            raise ValueError(f"Invalid save_mode {save_mode!r}. Must be either `overwrite` or `create`")
+        
         self.buffer_manager = buffer_manager
         self.save_mode = save_mode
         self.columns = columns
