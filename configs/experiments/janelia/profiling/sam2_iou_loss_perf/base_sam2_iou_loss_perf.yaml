@@ -1,5 +1,25 @@
 # @package _global_
 #
+# ============================================================================
+# DEPRECATED -- HISTORICAL REFERENCE ONLY (not runnable against current code).
+# ----------------------------------------------------------------------------
+# These configs reference criterion flags `sample_iou` and `soft_iou` that
+# were removed from `MultiStepMultiMasksAndIousLoss` after this sweep ran. The
+# wandb runs that informed the "keep only `low_res_multimasks`" decision used
+# these exact YAMLs against the older criterion API; the files are preserved
+# verbatim so the wandb artifacts remain interpretable. Cells 03, 04, 05 in
+# particular exist only to attribute step-time / VRAM cost to `sample_iou` and
+# `soft_iou` individually; the answer was "marginal," and both flags have
+# since been deleted from the codebase (see the PR that landed this banner).
+#
+# To run any of these cells under the current criterion: strip the
+# `sample_iou:` and `soft_iou:` lines from the cell, and accept that cells
+# 03/04/05 collapse to the cell 02 behavior (point sampling + dense hard IoU)
+# or the cell 06 behavior (+ `low_res_multimasks=true`).
+#
+# Production candidate: cell 06 (`low_res_multimasks=true`).
+# ============================================================================
+#
 # Base config for the SAM2 IoU-loss / mask-stream perf ablation.
 #
 # We're tracking a ~2x step-time regression that appeared after the partial
