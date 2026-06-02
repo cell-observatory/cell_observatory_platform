@@ -996,7 +996,7 @@ class LoaderActor:
         batch["batch_size_actual"] = np.full((self.batch_size,), actual_len, dtype=np.int64)
         batch["valid_mask"] = np.array([i < actual_len for i in range(self.batch_size)], dtype=bool)
 
-        if self.save_mode == "append_channel":
+        if self.save_mode == "append":
             batch["existing_zarr_path"] = np.array(
                 [
                     os.path.join(

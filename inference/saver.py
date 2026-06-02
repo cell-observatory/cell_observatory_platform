@@ -205,7 +205,7 @@ class SaveWorker:
     def __init__(
         self,
         buffer_manager: BufferManager,
-        save_mode: Literal["overwrite", "create"],
+        save_mode: Literal["overwrite", "create", "append"],
         max_workers: int = 4,
         columns: List[str] = [
             "server_folder",
@@ -215,8 +215,8 @@ class SaveWorker:
         shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
         chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
     ):
-        if save_mode not in ["overwrite", "create"]:
-            raise ValueError(f"Invalid save_mode {save_mode!r}. Must be either `overwrite` or `create`")
+        if save_mode not in ["overwrite", "create", "append"]:
+            raise ValueError(f"Invalid save_mode {save_mode!r}. Must be 'overwrite', 'create', or 'append'")
         
         self.buffer_manager = buffer_manager
         self.save_mode = save_mode
@@ -315,7 +315,7 @@ class SaveWorker:
                         ],
                         task,
                     ),
-                    save_mode=cast(Literal["overwrite", "create"], self.save_mode),
+                    save_mode=cast(Literal["overwrite", "create"], "overwrite" if self.save_mode == "append" else self.save_mode),
                     save_tensors_metadata=save_tensors_metadata,
                     existing_channel_names=channel_names_list[b],
                     timepoint_idxs=_timepoint_idxs_for_batch_idx(
