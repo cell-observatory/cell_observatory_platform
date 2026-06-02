@@ -904,6 +904,20 @@ class Inferencer(BaseTrainer):
 
         self.after_test()
 
+        # Tear down detached actors explicitly. They are created with
+        # lifetime="detached" + stable names, so they are not garbage
+        # collected when this driver exits and would leak across runs.
+        if self.save_worker is not None:
+            try:
+                ray.kill(self.save_worker)
+            except Exception as e:
+                ray.logger.warning(f"Failed to kill save_worker: {e}")
+        if self.viz_worker is not None:
+            try:
+                ray.kill(self.viz_worker)
+            except Exception as e:
+                ray.logger.warning(f"Failed to kill viz_worker: {e}")
+
     def run_inference_step(
         self,
         idx: int,
