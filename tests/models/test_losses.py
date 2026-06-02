@@ -11,8 +11,6 @@ from cell_observatory_platform.models.ops.losses import (
     sigmoid_focal_loss,
 )
 
-CUDA_AVAILABLE = torch.cuda.is_available()
-
 
 class DummyMatcher(torch.nn.Module):
     """
@@ -166,7 +164,7 @@ def test_calculate_uncertainty_ordering():
 # DETR_Set_Loss tests
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.cuda
 def test_detr_set_loss_basic(monkeypatch):
     # Make world_size=1 and no distributed init for deterministic behavior
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -228,7 +226,7 @@ def test_detr_set_loss_basic(monkeypatch):
         assert torch.isfinite(v)
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.cuda
 def test_detr_set_loss_focal_branch(monkeypatch):
     # Test the focal-loss classification branch (semantic_ce_loss=False)
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -278,7 +276,7 @@ def test_detr_set_loss_focal_branch(monkeypatch):
     assert torch.isfinite(v)
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.cuda
 def test_detr_set_loss_denoise_without_predictions(monkeypatch):
     # denoise=True but no denoise_predictions -> zero-valued *_denoise keys
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -341,7 +339,7 @@ def test_detr_set_loss_denoise_without_predictions(monkeypatch):
         assert float(losses[key].item()) == 0.0
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.cuda
 def test_detr_set_loss_denoise_with_predictions(monkeypatch):
     # denoise=True and valid denoise_predictions -> *_denoise keys non-zero/finate
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -423,7 +421,7 @@ def test_detr_set_loss_denoise_with_predictions(monkeypatch):
         assert torch.isfinite(losses[key])
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.cuda
 def test_detr_set_loss_with_aux_and_intermediate(monkeypatch):
     # Exercise auxiliary_outputs and intermediate_outputs branches
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -754,3 +752,54 @@ def test_plain_detr_set_loss_forward_with_aux_and_enc_outputs_cpu():
     for k, v in loss_dict.items():
         assert v.ndim == 0, f"{k} is not scalar"
         assert torch.isfinite(v), f"{k} is not finite"
+
+
+# -------------------------------------------------------------------------
+# MultiStepMultiMasksAndIousLoss regression tests
+# -------------------------------------------------------------------------
+
+
+@pytest.mark.cuda
+def test_sample_points_and_labels_yields_binary_labels():
+    """`MultiStepMultiMasksAndIousLoss._sample_points_and_labels` must return
+    point_labels in strictly {0, 1}. This is the actual call site at
+    training/losses.py:1854 that consumed mode="nearest" - if that kwarg ever
+    regresses, this test catches it because the labels feeding into focal/dice
+    would then carry fractional values.
+    """
+    device = torch.device("cuda")
+    torch.manual_seed(0)
+
+    criterion = losses_mod.MultiStepMultiMasksAndIousLoss(
+        input_fmt="TZYXC",
+        weight_dict={
+            "loss_mask": 20.0,
+            "loss_dice": 1.0,
+            "loss_iou": 1.0,
+            "loss_class": 0.0,
+        },
+        use_point_sampling=True,
+        num_points=64,
+        oversample_ratio=3,
+        importance_sample_ratio=0.75,
+        low_res_multimasks=False,
+    ).to(device)
+
+    # src_masks: [N=2, M=1, Z=8, Y=8, X=8] coarse logits (any finite values are fine).
+    src_masks = torch.randn(2, 1, 8, 8, 8, device=device)
+    # target_masks: [N=2, 1, Z=8, Y=8, X=8] strictly {0, 1}.
+    target_masks = torch.zeros(2, 1, 8, 8, 8, device=device, dtype=torch.float32)
+    target_masks[0, 0, 2:6, 2:6, 2:6] = 1.0
+    target_masks[1, 0, 1:4, 3:7, 2:5] = 1.0
+
+    point_coords_flat, point_labels = criterion._sample_points_and_labels(
+        src_masks, target_masks
+    )
+
+    # Shape: [N=2, M=1, P=64]
+    assert point_labels.shape == (2, 1, 64)
+    unique_vals = torch.unique(point_labels)
+    assert torch.all((point_labels == 0.0) | (point_labels == 1.0)), (
+        "_sample_points_and_labels must emit strictly binary labels (mode="
+        f"'nearest' contract); unique values seen: {unique_vals.tolist()}"
+    )

@@ -8,6 +8,9 @@ from cell_observatory_platform.models.layers.utils import (
     get_reference_points,
     get_uncertain_point_coords_with_randomness,
     point_sample,
+    point_sample_labelmap,
+    point_sample_labelmap_batched,
+    sample_box_points_from_boxes,
 )
 
 CUDA_AVAILABLE = torch.cuda.is_available()
@@ -138,6 +141,95 @@ def test_get_uncertain_point_coords_with_randomness_all_random():
 
 
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.parametrize("align_corners", [False, True])
+def test_point_sample_labelmap_batched_matches_grid_sample_nearest(align_corners):
+    # Regression test for the labelmap coord-order fix.
+    # point_sample_labelmap_batched must follow the same grid_sample convention
+    # as point_sample: coords[..., 0]=x (W), [..., 1]=y (H), [..., 2]=z (D).
+    # A non-symmetric labelmap is required so a swapped order would be detected.
+    device = torch.device("cuda")
+    Z, Y, X = 3, 5, 7
+
+    labelmap_single = (
+        torch.arange(Z * Y * X, dtype=torch.int32, device=device).reshape(Z, Y, X) + 1
+    )
+    labelmap = labelmap_single.unsqueeze(0)  # [1, Z, Y, X]
+
+    torch.manual_seed(0)
+    K = 256
+    coords = torch.rand(1, K, 3, device=device)
+
+    target_id = int(labelmap_single[1, 2, 4].item())
+    batch_indices = torch.zeros((1,), dtype=torch.long, device=device)
+    instance_ids = torch.tensor([target_id], dtype=torch.int64, device=device)
+
+    labels_helper = point_sample_labelmap_batched(
+        labelmap=labelmap,
+        point_coords=coords,
+        batch_indices=batch_indices,
+        instance_ids=instance_ids,
+        align_corners=align_corners,
+    ).squeeze(0)  # [K]
+
+    ref_input = (labelmap.float() == target_id).float().unsqueeze(1)  # [1, 1, Z, Y, X]
+    labels_ref = point_sample(
+        ref_input, coords, mode="nearest", align_corners=align_corners
+    ).squeeze(0).squeeze(0)  # [K]
+
+    assert torch.equal(labels_helper, labels_ref), (
+        f"point_sample_labelmap_batched disagrees with point_sample(mode='nearest') "
+        f"on a non-symmetric labelmap (align_corners={align_corners})."
+    )
+
+
+@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.parametrize("align_corners", [False, True])
+def test_point_sample_labelmap_matches_grid_sample_nearest(align_corners):
+    # Same regression contract for the single-batch matcher variant.
+    device = torch.device("cuda")
+    Z, Y, X = 3, 5, 7
+
+    labelmap_single = (
+        torch.arange(Z * Y * X, dtype=torch.int32, device=device).reshape(Z, Y, X) + 1
+    )
+
+    torch.manual_seed(1)
+    K = 256
+    coords = torch.rand(1, K, 3, device=device)
+
+    target_ids = torch.tensor(
+        [
+            int(labelmap_single[0, 0, 0].item()),
+            int(labelmap_single[1, 2, 4].item()),
+            int(labelmap_single[2, 4, 6].item()),
+        ],
+        dtype=torch.int64,
+        device=device,
+    )
+
+    labels_helper = point_sample_labelmap(
+        labelmap_single=labelmap_single,
+        point_coords=coords,
+        instance_ids=target_ids,
+        align_corners=align_corners,
+    )  # [M, K]
+
+    refs = []
+    for tid in target_ids.tolist():
+        ref_input = (labelmap_single.float() == tid).float().unsqueeze(0).unsqueeze(0)
+        labels_ref = point_sample(
+            ref_input, coords, mode="nearest", align_corners=align_corners
+        ).squeeze(0).squeeze(0)
+        refs.append(labels_ref)
+    labels_ref = torch.stack(refs, dim=0)  # [M, K]
+
+    assert torch.equal(labels_helper, labels_ref), (
+        f"point_sample_labelmap disagrees with point_sample(mode='nearest') "
+        f"on a non-symmetric labelmap (align_corners={align_corners})."
+    )
+
+
+@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_compute_unmasked_ratio_all_valid_and_partial():
     device = torch.device("cuda")
 
@@ -161,3 +253,130 @@ def test_compute_unmasked_ratio_all_valid_and_partial():
 
     # sample 1 unchanged (all valid)
     assert torch.allclose(ratios_partial[1], torch.tensor([1.0, 1.0, 1.0], device=device))
+
+
+# ----------------------------------------------------------------------------- #
+# sample_box_points_from_boxes
+# ----------------------------------------------------------------------------- #
+
+
+def test_sample_box_points_from_boxes_xyzxyz_noise_zero_matches_corners():
+    # With noise=0, output points must equal the box corners exactly (clamped
+    # to image bounds). Labels must be [top_left_label, bottom_right_label].
+    device = torch.device("cpu")
+    Z, Y, X = 10, 20, 30
+    boxes = torch.tensor(
+        [[1.0, 2.0, 3.0, 5.0, 6.0, 7.0],
+         [10.0, 11.0, 5.0, 12.0, 13.0, 8.0]],
+        device=device,
+    )
+    pts, lbls = sample_box_points_from_boxes(
+        boxes=boxes, box_format="xyzxyz", image_shape=(Z, Y, X), noise=0.0,
+    )
+    assert pts.shape == (2, 2, 3)
+    assert lbls.shape == (2, 2)
+    # Row 0: top-left (1, 2, 3), bottom-right (5, 6, 7)
+    assert torch.equal(
+        pts[0], torch.tensor([[1.0, 2.0, 3.0], [5.0, 6.0, 7.0]])
+    )
+    assert torch.equal(lbls[0], torch.tensor([2, 3], dtype=torch.int32))
+
+
+def test_sample_box_points_from_boxes_zyxzyx_format_conversion():
+    # zyxzyx input must map to identical xyz output as the xyzxyz input case.
+    device = torch.device("cpu")
+    Z, Y, X = 10, 20, 30
+    boxes_zyx = torch.tensor(
+        [[3.0, 2.0, 1.0, 7.0, 6.0, 5.0]],  # (z1, y1, x1, z2, y2, x2)
+        device=device,
+    )
+    boxes_xyz = torch.tensor(
+        [[1.0, 2.0, 3.0, 5.0, 6.0, 7.0]],  # (x1, y1, z1, x2, y2, z2)
+        device=device,
+    )
+    pts_zyx, _ = sample_box_points_from_boxes(
+        boxes=boxes_zyx, box_format="zyxzyx", image_shape=(Z, Y, X), noise=0.0,
+    )
+    pts_xyz, _ = sample_box_points_from_boxes(
+        boxes=boxes_xyz, box_format="xyzxyz", image_shape=(Z, Y, X), noise=0.0,
+    )
+    assert torch.equal(pts_zyx, pts_xyz)
+
+
+def test_sample_box_points_from_boxes_cxcyczwhd_format_conversion():
+    # cxcyczwhd input must map to identical xyz output as the xyzxyz input case.
+    device = torch.device("cpu")
+    Z, Y, X = 10, 20, 30
+    # Box centered at (3, 4, 5) (xyz) with size (2, 4, 6) (whd)
+    # -> x1=2, y1=2, z1=2, x2=4, y2=6, z2=8
+    boxes_c = torch.tensor([[3.0, 4.0, 5.0, 2.0, 4.0, 6.0]], device=device)
+    boxes_x = torch.tensor([[2.0, 2.0, 2.0, 4.0, 6.0, 8.0]], device=device)
+    pts_c, _ = sample_box_points_from_boxes(
+        boxes=boxes_c, box_format="cxcyczwhd", image_shape=(Z, Y, X), noise=0.0,
+    )
+    pts_x, _ = sample_box_points_from_boxes(
+        boxes=boxes_x, box_format="xyzxyz", image_shape=(Z, Y, X), noise=0.0,
+    )
+    assert torch.equal(pts_c, pts_x)
+
+
+def test_sample_box_points_from_boxes_clamps_to_image_bounds():
+    # Boxes outside the image must be clamped to [0, dim-1].
+    device = torch.device("cpu")
+    Z, Y, X = 10, 20, 30
+    boxes = torch.tensor(
+        [[-5.0, -5.0, -5.0, 100.0, 100.0, 100.0]],
+        device=device,
+    )
+    pts, _ = sample_box_points_from_boxes(
+        boxes=boxes, box_format="xyzxyz", image_shape=(Z, Y, X), noise=0.0,
+    )
+    assert torch.equal(pts[0, 0], torch.tensor([0.0, 0.0, 0.0]))
+    assert torch.equal(pts[0, 1], torch.tensor([X - 1.0, Y - 1.0, Z - 1.0]))
+
+
+def test_sample_box_points_from_boxes_valid_zeros_pad_rows():
+    # Pad rows (valid=False) must get all-zero points and label 0.
+    device = torch.device("cpu")
+    Z, Y, X = 10, 20, 30
+    boxes = torch.tensor(
+        [[1.0, 2.0, 3.0, 5.0, 6.0, 7.0],
+         [10.0, 11.0, 5.0, 12.0, 13.0, 8.0]],
+        device=device,
+    )
+    valid = torch.tensor([True, False])
+    pts, lbls = sample_box_points_from_boxes(
+        boxes=boxes, box_format="xyzxyz", image_shape=(Z, Y, X), noise=0.0,
+        valid=valid,
+    )
+    assert torch.equal(lbls[0], torch.tensor([2, 3], dtype=torch.int32))
+    assert torch.equal(lbls[1], torch.tensor([0, 0], dtype=torch.int32))
+    assert torch.all(pts[1] == 0.0)
+    assert not torch.all(pts[0] == 0.0)
+
+
+def test_sample_box_points_from_boxes_noise_bounded():
+    # With noise>0, perturbed corners must still lie inside the image and
+    # within noise_bound pixels of the original (per-axis).
+    torch.manual_seed(0)
+    device = torch.device("cpu")
+    Z, Y, X = 50, 100, 200
+    boxes = torch.tensor(
+        [[10.0, 20.0, 30.0, 40.0, 50.0, 45.0]] * 10,
+        device=device,
+    )
+    pts, _ = sample_box_points_from_boxes(
+        boxes=boxes, box_format="xyzxyz", image_shape=(Z, Y, X),
+        noise=0.1, noise_bound=20,
+    )
+    assert torch.all(pts[..., 0] >= 0) and torch.all(pts[..., 0] <= X - 1)
+    assert torch.all(pts[..., 1] >= 0) and torch.all(pts[..., 1] <= Y - 1)
+    assert torch.all(pts[..., 2] >= 0) and torch.all(pts[..., 2] <= Z - 1)
+
+
+def test_sample_box_points_from_boxes_rejects_bad_shape():
+    boxes = torch.zeros((3, 4))  # last dim should be 6
+    with pytest.raises(ValueError):
+        sample_box_points_from_boxes(
+            boxes=boxes, box_format="xyzxyz", image_shape=(4, 5, 6),
+        )

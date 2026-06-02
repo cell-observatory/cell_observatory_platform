@@ -7,7 +7,7 @@ https://github.com/facebookresearch/dinov3/dinov3/utils/utils.py
 """
 
 import math
-from typing import List, Tuple
+from typing import List, Literal, Optional, Tuple
 
 import numpy as np
 from scipy.ndimage import distance_transform_edt
@@ -383,12 +383,34 @@ def point_sample(input, point_coords, **kwargs):
     Args:
         input (Tensor): A tensor of shape (N, C, D, H, W) that contains features map on a D x H x W grid.
         point_coords (Tensor): A tensor of shape (N, P, 3) or (N, Dgrid, Wgrid, Hgrid, 3) that contains
-        [0, 1] x [0, 1] x [0, 1] normalized point coordinates.
+        [0, 1] x [0, 1] x [0, 1] normalized point coordinates. Last dim is (x, y, z) = (W, H, D);
+        see !! AXIS ORDER !! below. Same convention as `numpy.meshgrid(indexing="xy")`.
 
     Returns:
         output (Tensor): A tensor of shape (N, C, P) or (N, C, Dgrid, Wgrid, Hgrid) that contains
             features for points in `point_coords`. The features are obtained via trilinear
             interplation from `input` the same way as :function:`torch.nn.functional.grid_sample`.
+
+    ============================================================================
+    !! AXIS ORDER !! point_coords last dim is (x, y, z) = (W, H, D), NOT (z,y,x).
+    ----------------------------------------------------------------------------
+    PyTorch grid_sample for 5D input (N, C, D, H, W) reads the grid's last dim
+    as (x, y, z) -> (W, H, D):
+        point_coords[..., 0] -> W axis (x)
+        point_coords[..., 1] -> H axis (y)
+        point_coords[..., 2] -> D axis (z)
+    
+    Our tensors store spatial axes (Z, Y, X) (so D=Z, H=Y, W=X), but the point
+    representation STILL goes (x, y, z). This mirrors numpy.meshgrid's
+    `indexing="xy"` (Cartesian) vs `indexing="ij"` (matrix / tensor-order) split;
+    PyTorch picks the Cartesian "xy" flavour for grid_sample. Mixing the two is
+    a silent bug on anisotropic volumes (was the point_sample_labelmap_* bug,
+    fixed in 9355cf4).
+    
+    Refs:
+      https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+      https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
+    ============================================================================
     """
     add_dim = False
     if point_coords.dim() == 3:
@@ -430,6 +452,27 @@ def get_uncertain_point_coords_with_randomness(
     Returns:
         point_coords (Tensor): A tensor of shape (N, P, 3) that contains the coordinates of P
             sampled points.
+
+    ============================================================================
+    !! AXIS ORDER !! point_coords last dim is (x, y, z) = (W, H, D), NOT (z,y,x).
+    ----------------------------------------------------------------------------
+    PyTorch grid_sample for 5D input (N, C, D, H, W) reads the grid's last dim
+    as (x, y, z) -> (W, H, D):
+        point_coords[..., 0] -> W axis (x)
+        point_coords[..., 1] -> H axis (y)
+        point_coords[..., 2] -> D axis (z)
+    
+    Our tensors store spatial axes (Z, Y, X) (so D=Z, H=Y, W=X), but the point
+    representation STILL goes (x, y, z). This mirrors numpy.meshgrid's
+    `indexing="xy"` (Cartesian) vs `indexing="ij"` (matrix / tensor-order) split;
+    PyTorch picks the Cartesian "xy" flavour for grid_sample. Mixing the two is
+    a silent bug on anisotropic volumes (was the point_sample_labelmap_* bug,
+    fixed in 9355cf4).
+    
+    Refs:
+      https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+      https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
+    ============================================================================
     """
     assert oversample_ratio >= 1, "oversample_ratio must be >= 1"
     assert importance_sample_ratio <= 1 and importance_sample_ratio >= 0, "importance_sample_ratio must be in [0, 1]"
@@ -485,7 +528,7 @@ def get_uncertain_point_coords_with_randomness(
 
 def point_sample_labelmap_batched(
     labelmap: torch.Tensor,      # [B, Z, Y, X] integer instance labelmap
-    point_coords: torch.Tensor,  # [N, K, 3] normalized coords in [0, 1]
+    point_coords: torch.Tensor,  # [N, K, 3] normalized coords in [0, 1], (x, y, z) order
     batch_indices: torch.Tensor, # [N] which batch each query belongs to
     instance_ids: torch.Tensor,  # [N] actual labelmap instance IDs to match
     align_corners: bool = False,
@@ -494,77 +537,111 @@ def point_sample_labelmap_batched(
     Sample binary mask labels directly from an integer labelmap.
     Uses direct integer indexing instead of grid_sample to avoid
     materializing [N, Z, Y, X] intermediate tensors.
+
+    Coordinate convention matches torch.nn.functional.grid_sample for 5D
+    inputs (N, C, D, H, W): point_coords[..., 0] indexes the W axis (x),
+    [..., 1] indexes the H axis (y), [..., 2] indexes the D axis (z).
+
+    ============================================================================
+    !! AXIS ORDER !! point_coords last dim is (x, y, z) = (W, H, D), NOT (z,y,x).
+    ----------------------------------------------------------------------------
+    Mirrors PyTorch grid_sample 5D convention (see banner above `point_sample`):
+        point_coords[..., 0] -> W axis (x)
+        point_coords[..., 1] -> H axis (y)
+        point_coords[..., 2] -> D axis (z)
+    The `labelmap` tensor itself is laid out (B, Z, Y, X) — the indexing
+    `labelmap[b, z_idx, y_idx, x_idx]` flips the order back to tensor-order.
+    Same Cartesian convention as `numpy.meshgrid(indexing="xy")`; the alternate
+    matrix convention `indexing="ij"` would give (z, y, x) — DO NOT mix them.
+    
+    Refs:
+      https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+      https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
+    ============================================================================
+
     """
-    # NOTE: CUDA only supports int32 for indexing
     if labelmap.dtype in (torch.uint8, torch.uint16, torch.int8, torch.int16):
         labelmap = labelmap.to(torch.int32)
     N, K, _ = point_coords.shape
     B, Z, Y, X = labelmap.shape
-    device = labelmap.device
-    
-    # Convert normalized coords [0,1] to integer indices
-    # point_coords[:, :, 0] is z, [:, :, 1] is y, [:, :, 2] is x
+    # Get integer indices from normalized coordinates
+    # Note: coordinates are in XYZ axis order, but labelmap is in ZYX axis order. 
+    # See banner above for more details.
     if align_corners:
-        z_idx = (point_coords[:, :, 0] * (Z - 1)).round().long().clamp(0, Z - 1)
+        x_idx = (point_coords[:, :, 0] * (X - 1)).round().long().clamp(0, X - 1)
         y_idx = (point_coords[:, :, 1] * (Y - 1)).round().long().clamp(0, Y - 1)
-        x_idx = (point_coords[:, :, 2] * (X - 1)).round().long().clamp(0, X - 1)
+        z_idx = (point_coords[:, :, 2] * (Z - 1)).round().long().clamp(0, Z - 1)
     else:
-        z_idx = (point_coords[:, :, 0] * Z).floor().long().clamp(0, Z - 1)
+        x_idx = (point_coords[:, :, 0] * X).floor().long().clamp(0, X - 1)
         y_idx = (point_coords[:, :, 1] * Y).floor().long().clamp(0, Y - 1)
-        x_idx = (point_coords[:, :, 2] * X).floor().long().clamp(0, X - 1)
-    
-    # Expand batch_indices to [N, K]
+        z_idx = (point_coords[:, :, 2] * Z).floor().long().clamp(0, Z - 1)
+
     b_idx = batch_indices.view(N, 1).expand(N, K)
-    
-    # Direct 4D indexing: labelmap[b, z, y, x] -> [N, K]
-    sampled = labelmap[b_idx, z_idx, y_idx, x_idx]  # [N, K] integers
-    
-    # Compare with instance IDs
+
+    # Sample integer labels from labelmap
+    sampled = labelmap[b_idx, z_idx, y_idx, x_idx]  # [N, K]
+
+    # Compare integer labels with instance IDs to get binary labels
     instance_ids_expanded = instance_ids.view(N, 1).expand(N, K)
     binary_labels = (sampled == instance_ids_expanded).float()
-    
-    return binary_labels
 
+    return binary_labels
 
 def point_sample_labelmap(
     labelmap_single: torch.Tensor,  # [Z, Y, X] single batch labelmap
-    point_coords: torch.Tensor,     # [1, K, 3] or [K, 3] shared coords
+    point_coords: torch.Tensor,     # [1, K, 3] or [K, 3] shared coords, (x, y, z) order
     instance_ids: torch.Tensor,     # [M] instance IDs for M targets
     align_corners: bool = False,
 ) -> torch.Tensor:                  # [M, K] binary target masks at points
     """
     For matcher: sample target masks for all instances at shared point coords.
+
+    Coordinate convention matches torch.nn.functional.grid_sample for 5D
+    inputs (N, C, D, H, W): point_coords[..., 0] indexes the W axis (x),
+    [..., 1] indexes the H axis (y), [..., 2] indexes the D axis (z).
+
+    ============================================================================
+    !! AXIS ORDER !! point_coords last dim is (x, y, z) = (W, H, D), NOT (z,y,x).
+    ----------------------------------------------------------------------------
+    Mirrors PyTorch grid_sample 5D convention (see banner above `point_sample`):
+        point_coords[..., 0] -> W axis (x)
+        point_coords[..., 1] -> H axis (y)
+        point_coords[..., 2] -> D axis (z)
+    The `labelmap_single` tensor itself is laid out (Z, Y, X) — the indexing
+    `labelmap_single[z_idx, y_idx, x_idx]` flips the order back to tensor-order.
+    Same Cartesian convention as `numpy.meshgrid(indexing="xy")`; the alternate
+    matrix convention `indexing="ij"` would give (z, y, x) — DO NOT mix them.
+    
+    Refs:
+      https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+      https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
+    ============================================================================
     """
-    # NOTE: CUDA only supports int32 for indexing
     if labelmap_single.dtype in (torch.uint8, torch.uint16, torch.int8, torch.int16):
         labelmap_single = labelmap_single.to(torch.int32)
-    
+
     Z, Y, X = labelmap_single.shape
     M = instance_ids.shape[0]
-    
-    # Handle both [1, K, 3] and [K, 3] input
+
     if point_coords.dim() == 3:
         point_coords = point_coords.squeeze(0)  # [K, 3]
     K = point_coords.shape[0]
-    
-    # Convert normalized coords to integer indices
+
     if align_corners:
-        z_idx = (point_coords[:, 0] * (Z - 1)).round().long().clamp(0, Z - 1)
+        x_idx = (point_coords[:, 0] * (X - 1)).round().long().clamp(0, X - 1)
         y_idx = (point_coords[:, 1] * (Y - 1)).round().long().clamp(0, Y - 1)
-        x_idx = (point_coords[:, 2] * (X - 1)).round().long().clamp(0, X - 1)
+        z_idx = (point_coords[:, 2] * (Z - 1)).round().long().clamp(0, Z - 1)
     else:
-        z_idx = (point_coords[:, 0] * Z).floor().long().clamp(0, Z - 1)
+        x_idx = (point_coords[:, 0] * X).floor().long().clamp(0, X - 1)
         y_idx = (point_coords[:, 1] * Y).floor().long().clamp(0, Y - 1)
-        x_idx = (point_coords[:, 2] * X).floor().long().clamp(0, X - 1)
-    
-    # Sample labelmap at K points: [K]
+        z_idx = (point_coords[:, 2] * Z).floor().long().clamp(0, Z - 1)
+
     sampled = labelmap_single[z_idx, y_idx, x_idx]  # [K]
-    
-    # Broadcast compare: [M, 1] == [1, K] -> [M, K]
+
     instance_ids_col = instance_ids.view(M, 1)
     sampled_row = sampled.view(1, K)
     binary_targets = (sampled_row == instance_ids_col).float()
-    
+
     return binary_targets
 
 
@@ -714,6 +791,99 @@ def sample_box_points(
     return box_coords, box_labels
 
 
+BoxFormat = Literal["xyzxyz", "zyxzyx", "cxcyczwhd"]
+
+
+def _to_xyzxyz(boxes: torch.Tensor, box_format: "BoxFormat") -> torch.Tensor:
+    """Convert [N, 6] boxes from `box_format` to (x1, y1, z1, x2, y2, z2)."""
+    if box_format == "xyzxyz":
+        return boxes
+    if box_format == "zyxzyx":
+        # (z1, y1, x1, z2, y2, x2) -> (x1, y1, z1, x2, y2, z2)
+        return boxes[..., [2, 1, 0, 5, 4, 3]]
+    if box_format == "cxcyczwhd":
+        cx, cy, cz, w, h, d = boxes.unbind(-1)
+        x1 = cx - w / 2
+        y1 = cy - h / 2
+        z1 = cz - d / 2
+        x2 = cx + w / 2
+        y2 = cy + h / 2
+        z2 = cz + d / 2
+        return torch.stack([x1, y1, z1, x2, y2, z2], dim=-1)
+    raise ValueError(f"unknown box_format {box_format!r}")
+
+
+def sample_box_points_from_boxes(
+    boxes: torch.Tensor,                  # [N, 6] target boxes
+    box_format: "BoxFormat",
+    image_shape: Tuple[int, int, int],    # (Z, Y, X) pixel extents
+    valid: Optional[torch.Tensor] = None,  # [N] bool, pad rows zeroed
+    noise: float = 0.1,
+    noise_bound: float = 20.0,
+    top_left_label: int = 2,
+    bottom_right_label: int = 3,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Sample noised SAM box-corner prompts from pre-existing target boxes.
+
+    SAM2 historically derived boxes from dense binary masks via
+    masks_to_boxes_v2 inside `sample_box_points`. With labelmap-native
+    targets, the bbox is already known per object and we can avoid the
+    `[N, 1, Z, Y, X]` mask materialization entirely.
+
+    Output mirrors `sample_box_points`:
+        points: `[N, 2, 3]` pixel `(x, y, z)`, top-left then bottom-right.
+        labels: `[N, 2]` int32 with `[top_left_label, bottom_right_label]`.
+
+    Padded rows (`valid[n] == False`) get all-zero points and label 0 so
+    the SAM2 prompt encoder skips them.
+    """
+    if boxes.dim() != 2 or boxes.shape[-1] != 6:
+        raise ValueError(f"boxes must be [N, 6], got {tuple(boxes.shape)}")
+    N = boxes.shape[0]
+    device = boxes.device
+    Z, Y, X = image_shape
+
+    box_coords = _to_xyzxyz(boxes, box_format).to(torch.float32).clone()
+
+    if noise > 0.0 and N > 0:
+        bbox_w = box_coords[..., 3] - box_coords[..., 0]
+        bbox_h = box_coords[..., 4] - box_coords[..., 1]
+        bbox_d = box_coords[..., 5] - box_coords[..., 2]
+        nb = torch.tensor(float(noise_bound), device=device, dtype=box_coords.dtype)
+        max_dx = torch.minimum(bbox_w * noise, nb)
+        max_dy = torch.minimum(bbox_h * noise, nb)
+        max_dz = torch.minimum(bbox_d * noise, nb)
+        # [N, 6] noise in [-1, 1] scaled by per-axis caps
+        box_noise = 2.0 * torch.rand(N, 6, device=device, dtype=box_coords.dtype) - 1.0
+        box_noise = box_noise * torch.stack(
+            [max_dx, max_dy, max_dz, max_dx, max_dy, max_dz], dim=-1
+        )
+        box_coords = box_coords + box_noise
+
+    img_bounds = torch.tensor(
+        [X - 1, Y - 1, Z - 1, X - 1, Y - 1, Z - 1],
+        device=device,
+        dtype=box_coords.dtype,
+    )
+    box_coords = box_coords.clamp(torch.zeros_like(img_bounds), img_bounds)
+
+    points = box_coords.reshape(N, 2, 3)  # top-left, bottom-right pixel (x, y, z)
+    labels = torch.tensor(
+        [top_left_label, bottom_right_label], dtype=torch.int32, device=device
+    ).view(1, 2).expand(N, 2).contiguous()
+
+    if valid is not None:
+        if valid.shape != (N,):
+            raise ValueError(f"valid must be [N], got {tuple(valid.shape)}")
+        invalid = ~valid
+        points = points.masked_fill(invalid[:, None, None], 0.0)
+        # SAM2 uses 0 as a neutral/ignored label; non-{2, 3} won't trip the
+        # corner-specific positional encoding for padded slots.
+        labels = labels.masked_fill(invalid[:, None], 0)
+
+    return points, labels
+
+
 def sample_random_points_from_errors(
         input_fmt: str,
         gt_masks: torch.Tensor,
@@ -758,6 +928,7 @@ def sample_random_points_from_errors(
         all_correct = all_correct[..., None, None, None]
 
         # channel 0 is FP map, while channel 1 is FN map
+        # FIXME: This allocates a large tensor; consider a more efficient sampling method.
         pts_noise = torch.rand(B, num_pt, D_im, H_im, W_im, 2, device=device)
         # sample a negative new click from FP region or a positive new click
         # from FN region, depend on where the maximum falls,

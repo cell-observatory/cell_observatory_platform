@@ -71,6 +71,7 @@ def _test_dataloader_ray_dist(config):
             return report(metrics=metrics, checkpoint=None)
 
 
+@pytest.mark.localdb
 def test_data_pipeline_ray_distributed(config):
     if not torch.cuda.is_available():
         pytest.skip("No GPUs available for distributed Ray test")
