@@ -11,7 +11,21 @@ def test_base_evaluator_rejects_loss_none():
     evaluator = BaseEvaluator(training_metrics=[{"step_loss": "mean"}])
 
     with pytest.raises(RuntimeError, match="loss_dict=None"):
-        evaluator.process(None, None, None)
+        evaluator.process({}, {}, None)
+
+
+def test_base_evaluator_rejects_data_sample_none():
+    evaluator = BaseEvaluator(training_metrics=[{"step_loss": "mean"}])
+
+    with pytest.raises(RuntimeError, match="data_sample=None"):
+        evaluator.process(None, {}, {"step_loss": 0.0})
+
+
+def test_base_evaluator_rejects_outputs_none():
+    evaluator = BaseEvaluator(training_metrics=[{"step_loss": "mean"}])
+
+    with pytest.raises(RuntimeError, match="outputs=None"):
+        evaluator.process({}, None, {"step_loss": 0.0})
 
 
 def test_automated_benchmark_select_pred_dict_requires_pred_key():

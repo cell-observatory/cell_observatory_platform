@@ -1696,8 +1696,9 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         focal_alpha_obj_score=-1,
         activation_checkpoint=False,
         # True  -> PointRend point-sampling focal/dice on uncertain points
-        #          sampled from dense materialized masks (high-res stream).
-        # False -> dense per-voxel focal/dice/IoU on materialized masks.
+        #          (sampled from the high-res prediction stream by default,
+        #          or the low-res stream if `low_res_multimasks=True`).
+        # False -> dense per-voxel focal/dice/IoU on the high-res masks.
         use_point_sampling=False,
         # How to pick number of points (use_point_sampling=True only)?
         # Find the mask logit resolution loss samples from.
@@ -1722,6 +1723,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         """
         Computes the multi-step multi-mask and IoU losses.
         Args:
+            input_fmt: input tensor layout identifier propagated from the data pipeline
             weight_dict: dict containing weights for focal, dice, iou losses
             focal_alpha: alpha for sigmoid focal loss
             focal_gamma: gamma for sigmoid focal loss
@@ -1730,6 +1732,16 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             pred_obj_scores: if True, compute loss for object scores
             focal_gamma_obj_score: gamma for sigmoid focal loss on object scores
             focal_alpha_obj_score: alpha for sigmoid focal loss on object scores
+            activation_checkpoint: if True, run per-step loss components under
+                torch.utils.checkpoint to trade compute for activation memory
+            use_point_sampling: PointRend point-sampling vs dense focal/dice/IoU
+            num_points: number of points sampled per step when use_point_sampling=True
+            oversample_ratio: candidate-pool multiplier for importance sampling
+            importance_sample_ratio: fraction of points drawn from the uncertain pool
+            low_res_multimasks: route focal/dice through the low-res prediction stream
+                (requires use_point_sampling=True)
+        See inline comments above the signature for the use_point_sampling /
+        low_res_multimasks / point-sampling sizing / activation_checkpoint rationale.
         """
         super().__init__()
 
@@ -1962,8 +1974,10 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
                     preserve_rng_state=False,  # safe: no randomness inside checkpointed fn
                 )
             else:
-                # Dense path: use_point_sampling=False, so low_res_multimasks is
-                # rejected at construction → src_masks_iou aliases src_masks.
+                # Dense path: use_point_sampling=False, so low_res_multimasks is rejected
+                # at construction (it requires use_point_sampling=True). focal/dice and
+                # IoU both run on src_masks (the high-res stream) — no separate IoU
+                # tensor is needed because both losses consume the same logits.
                 comps = checkpoint(
                     self._step_loss_components,
                     src_masks, pred_ious, obj_logits, target_masks, mask_denom, mask_gate,
