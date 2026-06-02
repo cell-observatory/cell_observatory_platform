@@ -382,11 +382,15 @@ def _test_hooks_dist(cfg):
             epoch_df = pd.read_csv(epoch_csv)
 
             print(step_df.columns)
-            assert abs(step_df.loc[0, "loss_median"] - 1.23) < 1e-6
+            # CSV columns use the structured-key form (e.g. "step/loss")
+            # produced by get_metric_full_name, suffixed with the reduce op.
+            step_loss_col = get_metric_full_name(name="loss", scope="step") + "_median"
+            epoch_val_col = get_metric_full_name(name="val_metric", scope="epoch") + "_median"
+            assert abs(step_df.loc[0, step_loss_col] - 1.23) < 1e-6
             assert step_df.loc[0, "iter"] == 0
             assert step_df.loc[0, "epoch"] == 0
 
-            assert abs(epoch_df.loc[0, "val_metric_median"] - 0.90) < 1e-6
+            assert abs(epoch_df.loc[0, epoch_val_col] - 0.90) < 1e-6
             assert epoch_df.loc[0, "epoch"] == 0
 
     barrier()

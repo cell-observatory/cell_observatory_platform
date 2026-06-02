@@ -471,15 +471,19 @@ def _test_loggers_dist(cfg: DictConfig):
     if rank == 0:
         assert step_csv.exists(), "step CSV missing"
         step_df = pd.read_csv(step_csv)
+        # CSV columns use the structured-key form produced by get_metric_full_name
+        # plus the reduce-op suffix.
+        step_loss_col = get_metric_full_name(name="loss", scope="step") + "_median"
+        epoch_val_loss_col = get_metric_full_name(name="val_loss", scope="epoch") + "_median"
         expected_means = {it: sum(float(k + it + 1) for k in range(world)) / world for it in range(n_steps)}
         for _, row in step_df.iterrows():
-            assert pytest.approx(row["loss_median"]) == expected_means[row["iter"]]
+            assert pytest.approx(row[step_loss_col]) == expected_means[row["iter"]]
 
         assert epoch_csv.exists(), "epoch CSV missing"
         epoch_df = pd.read_csv(epoch_csv)
         mean_val_loss = sum(float(k + 10) for k in range(world)) / world
         assert len(epoch_df) == 1
-        assert pytest.approx(epoch_df.loc[0, "val_loss_median"]) == mean_val_loss
+        assert pytest.approx(epoch_df.loc[0, epoch_val_loss_col]) == mean_val_loss
 
     # TODO: test appending to existing CSVs
 
