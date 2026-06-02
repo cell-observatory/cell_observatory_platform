@@ -43,14 +43,22 @@ def pytest_addoption(parser):
 
 def _has_cuda_toolkit() -> bool:
     # Tests marked `cuda` need the CUDA *toolkit* (nvcc), not just the runtime
-    # libs. DeepSpeed's `installed_cuda_version()` probe walks `CUDA_HOME` and
-    # `nvcc`, so we check the same surface.
-    if shutil.which("nvcc"):
-        return True
+    # libs. DeepSpeed's `installed_cuda_version()` probe (which fires at
+    # module-import time inside several training modules) requires BOTH a
+    # callable nvcc AND `CUDA_HOME`/`CUDA_PATH` set, so we mirror that here.
+    nvcc = shutil.which("nvcc")
     cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
-    if cuda_home and os.path.exists(os.path.join(cuda_home, "bin", "nvcc")):
-        return True
-    return False
+    if not nvcc and cuda_home:
+        candidate = os.path.join(cuda_home, "bin", "nvcc")
+        if os.access(candidate, os.X_OK):
+            nvcc = candidate
+    if not nvcc:
+        return False
+    if not cuda_home:
+        # nvcc found on PATH but no CUDA_HOME set — DeepSpeed will still fail
+        # at import. Treat as "no toolkit" so file-gated tests are skipped.
+        return False
+    return True
 
 
 # Module-level DeepSpeed imports inside these files trigger nvcc probing at
@@ -66,8 +74,9 @@ def pytest_ignore_collect(collection_path, config):
     if _has_cuda_toolkit():
         return False
     repo_root = Path(__file__).resolve().parent.parent
+    target = Path(collection_path).resolve()
     for rel in _CUDA_TOOLKIT_REQUIRED_FILES:
-        if str(collection_path) == str(repo_root / rel):
+        if target == (repo_root / rel).resolve():
             return True
     return False
 
