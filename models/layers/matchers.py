@@ -137,33 +137,6 @@ class HungarianMatcher(nn.Module):
                     cost_mask = batch_sigmoid_ce_loss(predicted_sampled, target_sampled)
                     cost_mask_dice = batch_dice_loss(predicted_sampled, target_sampled)
 
-                # =============================================================
-                # NOTE: Legacy binary mask-based sampling 
-                # =============================================================                
-                # # predicted_masks/target_masks: [num_queries, 1, D_pred, H_pred, W_pred]
-                # # NOTE: gt masks are already padded when preparing targets
-                # target_masks = (targets[batch_idx]["masks"].unsqueeze(1)).to(predicted_masks)
-                # # all masks share the same set of points for efficient matching
-                # # point_ccords: (1, num_points, 3)
-                # point_coords = torch.rand(1, self.num_points, 3, device=predicted_masks.device)
-                # # target_masks: (num_target_masks, num_points)
-                # target_masks = point_sample(
-                #     target_masks,
-                #     # repeat point_coords for each target mask in the batch
-                #     point_coords.repeat(target_masks.shape[0], 1, 1),
-                #     align_corners=False,
-                # ).squeeze(1)
-                # predicted_masks = point_sample(
-                #     predicted_masks,
-                #     point_coords.repeat(predicted_masks.shape[0], 1, 1),
-                #     align_corners=False,
-                # ).squeeze(1)
-                # with autocast(enabled=False, device_type="cuda"):
-                #     predicted_masks, target_masks = predicted_masks.float(), target_masks.float()
-                #     # returns: (N, 0) if we have N predictions or (0, M) if we have M targets
-                #     cost_mask = batch_sigmoid_ce_loss(predicted_masks, target_masks)
-                #     cost_mask_dice = batch_dice_loss(predicted_masks, target_masks)                    
-
             else:
                 cost_mask = torch.tensor(0).to(predicted_bboxes)
                 cost_mask_dice = torch.tensor(0).to(predicted_bboxes)
