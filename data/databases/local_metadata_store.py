@@ -58,6 +58,16 @@ class TrainingTableKind(str, Enum):
 
 @dataclass(frozen=True)
 class SourceSpec:
+    # FIXME: `key` reads as a logical source identifier (the SOURCE_TABLES
+    # registry sets it to e.g. "cube_without_annotations", distinct from the
+    # physical `table_name_template`). But `_concrete_source` overwrites it
+    # with the *formatted* table_name_template, so on a resolved source
+    # `key == table_name` and the logical name is discarded. No consumer
+    # currently relies on the distinction (it's used only for the cache-path
+    # hash, the persisted descriptor, and a couple of log lines). Worth a
+    # future look: either make `key` a genuine logical name (if something
+    # ever needs to group shapes/variants under one source) or drop it and
+    # use `table_name` directly to remove the redundancy.
     key: str
     training_table_kind: TrainingTableKind
     table_name_template: str
