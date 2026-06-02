@@ -100,7 +100,7 @@ class RayPreprocessor(torch.nn.Module):
         #     raise ValueError(f"Invalid training data")
 
         transform_time = -1.0
-        if self.transforms is not None:
+        if self.transforms:
             transform_t0 = time.time()
             for transform in self.transforms:
                 inputs = transform(inputs)
@@ -586,7 +586,7 @@ class BaseFinetunePreprocessor(RayPreprocessor):
           - a dict with keys {"data_tensor", "metainfo"}.
         Each transform is responsible for returning the same type it was given.
         """
-        if self.transforms is not None:
+        if self.transforms:
             t0 = time.time()
             for transform in self.transforms:
                 data = transform(data)
