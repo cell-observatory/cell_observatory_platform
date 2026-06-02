@@ -481,6 +481,9 @@ def _test_hooks_dist(cfg):
 
     # ---- ---- ---- BestMetricSaver tests ---- ---- ----
 
+    # Strip the "{scope}_{category}/" prefix to recover the raw name the
+    # saver was constructed with (e.g. "val_step_loss").
+    metric_name = saver.metric_name.split("/")[-1]
     recorder = trainer.event_recorder
 
     # clearout logs
@@ -491,13 +494,13 @@ def _test_hooks_dist(cfg):
         os.remove(local_writer.epoch_scalars_savepath)
 
     def _log_epoch_scalar(val):
-        # Insert directly using the saver's full metric key (e.g.
-        # "epoch_loss/val_step_loss") so we don't have to reverse-engineer
-        # scope/category from the structured name produced by
-        # get_metric_full_name.
-        recorder._epoch_scalars[saver.metric_name].append(
-            (val, trainer._iter, trainer._epoch)
-        )
+        recorder._iter = trainer._iter
+        recorder._epoch = trainer._epoch
+        # BestMetricSaver hardcodes scope="epoch", category="loss" when it
+        # builds self.metric_name (see training/hooks.py:943). Pass the same
+        # kwargs through put_scalar so the recorded key round-trips to
+        # `saver.metric_name`.
+        recorder.put_scalar(metric_name, val, scope="epoch", category="loss")
 
     # ------------------------------------------------------------------ #
     # After Validation
@@ -568,6 +571,7 @@ def _test_hooks_dist(cfg):
 
     # ---- ---- ---- EarlyStopHook tests ---- ---- ----
 
+    metric = ehook.metric_name.split("/")[-1]  # raw name
     ehook.patience = 2
     threshold = ehook.stopping_threshold
 
@@ -581,11 +585,10 @@ def _test_hooks_dist(cfg):
     def _run_epoch(ep_idx, value):
         trainer._epoch = ep_idx
         trainer._iter = 0
-        # Insert directly using the hook's full metric key — same rationale
-        # as the BestMetricSaver section above.
-        recorder._epoch_scalars[ehook.metric_name].append(
-            (value, trainer._iter, trainer._epoch)
-        )
+        # EarlyStopHook hardcodes scope="epoch", category="loss" when it
+        # builds self.metric_name (see training/hooks.py:1185). Match those
+        # kwargs so the recorded key round-trips to `ehook.metric_name`.
+        recorder.put_scalar(metric, value, scope="epoch", category="loss")
         ehook.after_validation()
 
     # first value (improvement, wait_count stays 0)
