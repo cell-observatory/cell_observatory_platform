@@ -457,6 +457,9 @@ class InferencerWorker:
                     if slot_info is None:
                         ray.logger.warning(f"No free slot found for {output_tensor_name} in viz buffer. Skipping visualization.")
                         should_visualize = False
+                        for allocated_slot in viz_buffer_slots.values():
+                            self.buffer_manager.free_slot(allocated_slot)
+                        viz_buffer_slots.clear()
                         break
                     viz_buffer_slots[output_tensor_name] = slot_info
                     self._metrics[f"buffer_get_time_ms/{output_tensor_name}_viz"] = (time.perf_counter() - t0_buffer) * 1000
