@@ -37,10 +37,12 @@ class BaseEvaluator(DatasetEvaluator):
     # loss_dict and append each loss metric to the
     # corresponding TrainLosses instance in self.metrics
     def process(self, data_sample, outputs, loss_dict):
-        if data_sample is None:
-            raise TypeError("data_sample=None; BaseEvaluator.process requires a data_sample to forward to metric implementations")
-        if outputs is None:
-            raise TypeError("outputs=None; BaseEvaluator.process requires outputs to forward to metric implementations")
+        # Only `loss_dict` is unconditionally required: this method dispatches
+        # to metrics by subscripting it (loss_dict[metric]), which silently
+        # raised an opaque TypeError when None was passed in. data_sample and
+        # outputs may legitimately be None on validation paths where the metric
+        # impl doesn't need them; any metric that does will fail with its own
+        # meaningful error.
         if loss_dict is None:
             raise TypeError("loss_dict=None; BaseEvaluator.process requires a loss_dict to dispatch on metric keys")
 
