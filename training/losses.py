@@ -1776,8 +1776,11 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             target_view: SAM2 preprocessor target view dict with materialized
                 `masks` (list[T] of [N,Z,Y,X]), `valid`, and `presence_t`.
 
-        Mask focal/dice/IoU use `valid & presence_t` gates; object-score uses
-        `valid` only. Denominators are the global gated row counts / world_size.
+        Mask focal/dice/IoU use `valid & presence_t` gates. Object-score uses
+        `valid` as the loss-weight gate but `valid & presence_t` as the target
+        (matching SAM2's `>0 ⇒ is_obj_appearing` convention), so the head learns
+        to predict absent for occluded frames of valid objects.
+        Denominators are the global gated row counts / world_size.
         Within each frame, `use_point_sampling` toggles PointRend vs dense voxel loss.
         """
         masks_list: List[torch.Tensor] = target_view["masks"] # list[T] [N,Z,Y,X]
@@ -2016,7 +2019,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         else:
             n_obj = object_score_logits.shape[0]
             obj_logits_nm1 = object_score_logits.reshape(n_obj, 1, 1)
-            target_obj_nm1 = cls_gate.to(obj_logits_nm1.dtype).reshape(n_obj, 1, 1)
+            target_obj_nm1 = mask_gate.to(obj_logits_nm1.dtype).reshape(n_obj, 1, 1)
             loss_class_row = sigmoid_focal_loss(
                 obj_logits_nm1, target_obj_nm1, cls_denom,
                 alpha=self.focal_alpha_obj_score,
@@ -2089,7 +2092,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         else:
             N = object_score_logits.shape[0]
             obj_logits_nm1 = object_score_logits.reshape(N, 1, 1)
-            target_obj_nm1 = cls_gate.to(obj_logits_nm1.dtype).reshape(N, 1, 1)
+            target_obj_nm1 = mask_gate.to(obj_logits_nm1.dtype).reshape(N, 1, 1)
             loss_class_row = sigmoid_focal_loss(
                 obj_logits_nm1, target_obj_nm1, cls_denom,
                 alpha=self.focal_alpha_obj_score,
@@ -2182,7 +2185,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         if self.pred_obj_scores:
             N = object_score_logits.shape[0]
             obj_logits_nm1 = object_score_logits.reshape(N, 1, 1)
-            target_obj_nm1 = cls_gate.to(obj_logits_nm1.dtype).reshape(N, 1, 1)
+            target_obj_nm1 = mask_gate.to(obj_logits_nm1.dtype).reshape(N, 1, 1)
             loss_class_row = sigmoid_focal_loss(
                 obj_logits_nm1, target_obj_nm1, cls_denom,
                 alpha=self.focal_alpha_obj_score,
