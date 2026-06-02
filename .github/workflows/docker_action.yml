@@ -651,7 +651,7 @@ jobs:
         id: apptainer_run
         run: |
           rm -f test_results/* || true
-          echo "APPTAINER_RUN=apptainer exec --userns --home ${SCRATCH_ROOT}/home --env TRITON_CACHE_DIR=${SCRATCH_ROOT}/.triton --env MPLCONFIGDIR=${SCRATCH_ROOT}/.matplotlib --env XDG_CACHE_HOME=${SCRATCH_ROOT}/.cache --env SCRATCH_ROOT=${SCRATCH_ROOT} --env NODE_LOCAL_STORE_ROOT=${NODE_LOCAL_STORE_ROOT} ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_RUN=apptainer exec --userns --home ${SCRATCH_ROOT}/home --env TRITON_CACHE_DIR=${SCRATCH_ROOT}/.triton --env MPLCONFIGDIR=${SCRATCH_ROOT}/.matplotlib --env XDG_CACHE_HOME=${SCRATCH_ROOT}/.cache --env SCRATCH_ROOT=${SCRATCH_ROOT} --env NODE_LOCAL_STORE_ROOT=${NODE_LOCAL_STORE_ROOT} --env PYTHONFAULTHANDLER=1 ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
 
       - name: print environment variables
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
