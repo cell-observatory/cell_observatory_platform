@@ -10,21 +10,21 @@ from cell_observatory_platform.evaluation.base_evaluation import BaseEvaluator
 def test_base_evaluator_rejects_loss_none():
     evaluator = BaseEvaluator(training_metrics=[{"step_loss": "mean"}])
 
-    with pytest.raises(RuntimeError, match="loss_dict=None"):
+    with pytest.raises(TypeError, match="loss_dict=None"):
         evaluator.process({}, {}, None)
 
 
 def test_base_evaluator_rejects_data_sample_none():
     evaluator = BaseEvaluator(training_metrics=[{"step_loss": "mean"}])
 
-    with pytest.raises(RuntimeError, match="data_sample=None"):
+    with pytest.raises(TypeError, match="data_sample=None"):
         evaluator.process(None, {}, {"step_loss": 0.0})
 
 
 def test_base_evaluator_rejects_outputs_none():
     evaluator = BaseEvaluator(training_metrics=[{"step_loss": "mean"}])
 
-    with pytest.raises(RuntimeError, match="outputs=None"):
+    with pytest.raises(TypeError, match="outputs=None"):
         evaluator.process({}, None, {"step_loss": 0.0})
 
 
