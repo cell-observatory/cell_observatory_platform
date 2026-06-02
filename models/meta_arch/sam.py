@@ -991,6 +991,11 @@ class SAM2Base(torch.nn.Module):
 
 
 class SAM2(SAM2Base):
+    # NOTE: TestTrainer.run_test_step selects the model entrypoint from the
+    # EVALUATOR's `predict_method` attribute (InstanceSegmentationEvaluator sets
+    # it to "predict_for_eval"), not from the model — so SAM2 only needs to
+    # implement predict_for_eval (below); no model-side dispatch attribute.
+
     def __init__(
         self,
         criterion,
@@ -1653,6 +1658,97 @@ class SAM2(SAM2Base):
         else:
             # TODO: implement video prediction
             raise NotImplementedError(f"type {type} not supported yet")
+
+    @torch.no_grad()
+    def predict_for_eval(
+        self, data_sample: dict, type: Literal["volume", "video"] = "volume"
+    ) -> List[Dict[str, Any]]:
+        """Unprompted AMG inference for the instance-segmentation evaluator.
+
+        Wraps the same automatic-mask-generation pipeline as :meth:`predict`
+        (``_predict_generate_masks``) but, unlike :meth:`predict`, it does NOT
+        call ``MaskData.to_numpy()`` -- it preserves CPU ``torch.Tensor`` outputs
+        and packages them into the per-image dict contract that
+        ``InstanceSegmentationEvaluator._process_one`` consumes.
+
+        SAM2 AMG is class-agnostic and produces binary masks directly (it has no
+        ``mask_embeddings`` / ``pixel_decoder_output``), so the returned dict
+        carries the masks under the ``pred_masks`` key (the evaluator's direct
+        bool-mask source) and uses a sentinel class id ``-1`` (configure the
+        evaluator with ``match_labels=False``).
+
+        ``predict()`` enforces ``batch_size == 1``, so the returned list always
+        has length 1.
+
+        Each per-image dict contains:
+            * ``topk_query_indices``: ``(N,)`` long -- ``arange(N)``, a direct
+              index into ``pred_masks`` (the evaluator's "slot index").
+            * ``topk_class_scores``: ``(N,)`` float32 -- ``stability_score``
+              (distinct from ``iou_preds`` so the predicted-IoU metric's
+              score-ranking differs from its pred-iou ranking).
+            * ``topk_class_ids``: ``(N,)`` long -- sentinel ``-1`` (class-agnostic).
+            * ``boxes``: ``(N, 6)`` float32 xyzxyz at orig volume scale.
+            * ``orig_image_size``: tuple ``(Z, Y, X)`` ints.
+            * ``pred_masks``: ``(N, Z, Y, X)`` bool, CPU -- already-binarized,
+              full-resolution AMG masks (the SAM2 mask source).
+            * ``iou_preds``: ``(N,)`` float32 -- SAM mask-decoder IoU-head output
+              (the ``pred_ious`` consumed by ``PredictedIoUEvalMetric``).
+        """
+        if type != "volume":
+            # TODO: implement video prediction
+            raise NotImplementedError(f"type {type} not supported yet")
+
+        vol = data_sample["data_tensor"]
+        assert vol.shape[0] == 1, "predict_for_eval() expects batch_size=1"
+
+        was_training = self.training
+        self.eval()
+        try:
+            mask_data = self._predict_generate_masks(vol)
+        finally:
+            if was_training:
+                self.train()
+
+        # orig_image_size MUST equal the true pred_masks resolution, because the
+        # evaluator resizes the GT label_map to it before computing IoU. The AMG
+        # pipeline (_predict_generate_masks) unconditionally uncrops masks to
+        # vol.shape[-3:], so derive orig_size from that directly. Do NOT prefer a
+        # metainfo orig_image_sizes key: if it disagreed with vol.shape[-3:], GT
+        # would be resized to the wrong size and the IoU matmul would crash.
+        orig_size: Tuple[int, int, int] = tuple(int(x) for x in vol.shape[-3:])  # (Z, Y, X)
+
+        # Pull tensors out of MaskData (CPU after the AMG pipeline's to_cpu()).
+        n = len(mask_data)
+        if n == 0:
+            pred_masks = torch.zeros((0, *orig_size), dtype=torch.bool)
+            iou_preds = torch.zeros((0,), dtype=torch.float32)
+            stability = torch.zeros((0,), dtype=torch.float32)
+            boxes = torch.zeros((0, 6), dtype=torch.float32)
+        else:
+            pred_masks = mask_data["masks"].to(torch.bool).cpu()      # (N, Z, Y, X)
+            iou_preds = mask_data["iou_preds"].to(torch.float32).cpu()  # (N,)
+            stability = mask_data["stability_score"].to(torch.float32).cpu()  # (N,)
+            boxes = mask_data["boxes"].to(torch.float32).cpu()        # (N, 6)
+
+        # iou_preds must be in [0, 1] for PredictedIoUEvalMetric thresholds.
+        # If the IoU head does not apply sigmoid internally, clamp here.
+        if not self.iou_prediction_use_sigmoid:
+            iou_preds = iou_preds.clamp(0.0, 1.0)
+
+        n = pred_masks.shape[0]
+        topk_query_indices = torch.arange(n, dtype=torch.long)
+        topk_class_ids = torch.full((n,), -1, dtype=torch.long)
+
+        per_sample: List[Dict[str, Any]] = [{
+            "topk_query_indices": topk_query_indices,
+            "topk_class_scores": stability,
+            "topk_class_ids": topk_class_ids,
+            "boxes": boxes,
+            "orig_image_size": orig_size,
+            "pred_masks": pred_masks,
+            "iou_preds": iou_preds,
+        }]
+        return per_sample
 
     def _predict_generate_masks(self, vol: torch.Tensor) -> "MaskData":
         """
