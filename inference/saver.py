@@ -325,6 +325,7 @@ class SaveWorker:
             for b in range(batch_size):
                 batch_futures.append(self.thread_pool.submit(_save_batch_element, b))
 
+            errors = []
             for future in as_completed(batch_futures):
                 try:
                     future.result()
@@ -332,14 +333,17 @@ class SaveWorker:
                 except Exception as e:
                     ray.logger.error(f"Failed to save batch element: {e}", exc_info=True)
                     self._metrics["save_successful"].append(False)
-                    continue
+                    errors.append(e)
         except Exception as e:
             self._metrics["save_successful"].append(False)
             ray.logger.error(f"Failed to save: {e}", exc_info=True)
+            errors = [e]
         finally:
             for slot_info in slots_to_free:
                 self.buffer_manager.free_slot(slot_info)
             self._metrics["save_time_ms"].append((time.perf_counter() - t0) * 1000)
+        if errors:
+            raise RuntimeError(f"{errors}\n{len(errors)}/{batch_size} failed.")
 
 # TODO: Consider using this retry logic
 # def submit_with_state(executor: ThreadPoolExecutor, fn: Callable, arg: Any, attempt: int, future_state: Dict[Future, Dict[str, Any]]):
