@@ -18,7 +18,7 @@ from cell_observatory_platform.data.io import read_file
 from cell_observatory_platform.data.structures import convert_bbox_format, mask_ids_to_masks
 from cell_observatory_platform.data.utils import create_na_masks, downsample, resize_mask
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
-from cell_observatory_platform.training.helpers import get_patch_sizes
+from cell_observatory_platform.training.helpers import get_patch_sizes, make_timing_metric
 
 # --------------------------------------------------------------------------- #
 # Pretraining preprocessor
@@ -99,6 +99,7 @@ class RayPreprocessor(torch.nn.Module):
         # if torch.isnan(inputs).all() or torch.isinf(inputs).all():
         #     raise ValueError(f"Invalid training data")
 
+        transform_time = -1.0
         if self.transforms is not None:
             transform_t0 = time.time()
             for transform in self.transforms:
@@ -107,38 +108,34 @@ class RayPreprocessor(torch.nn.Module):
 
         assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 
+        masking_time = -1.0
+        mask_lists: dict[str, Any] = {}
         if self.with_masking:
-            masking_time = time.time()
+            mt0 = time.time()
             mask_data = self.mask_generator(inputs.shape[0])
-            masking_time = time.time() - masking_time
-
+            masking_time = time.time() - mt0
             mask_lists = {k: [v] for k, v in mask_data.items() if v is not None}
-            metainfo = {
-                **mask_lists,
-                "preprocess_time": time.time() - preprocess_time,
-                "data_time": data_time,
-                "masking_time": masking_time,
-                "transform_time": transform_time if self.transforms is not None else -1,
-                **meta,
-                "idx": idx,
-            }
-            metainfo["spatial_kwargs"] = self._build_spatial_kwargs(
-                batch_size=inputs.shape[0], device=inputs.device,
-            )
-            return {"data_tensor": inputs, "metainfo": metainfo}
-        else:
-            metainfo = {
-                "preprocess_time": time.time() - preprocess_time,
-                "data_time": data_time,
-                "masking_time": -1.0,
-                "transform_time": transform_time if self.transforms is not None else -1,
-                **meta,
-                "idx": idx,
-            }
-            metainfo["spatial_kwargs"] = self._build_spatial_kwargs(
-                batch_size=inputs.shape[0], device=inputs.device,
-            )
-            return {"data_tensor": inputs, "metainfo": metainfo}
+
+        metrics: list[dict[str, Any]] = [
+            make_timing_metric("data_time", data_time),
+            make_timing_metric("preprocess_time", time.time() - preprocess_time),
+            make_timing_metric("transform_time", transform_time),
+            make_timing_metric("masking_time", masking_time),
+        ]
+        existing_metrics = meta.get("metrics") if isinstance(meta, Mapping) else None
+        if existing_metrics:
+            metrics = list(existing_metrics) + metrics
+
+        metainfo = {
+            **mask_lists,
+            **meta,
+            "idx": idx,
+            "metrics": metrics,
+        }
+        metainfo["spatial_kwargs"] = self._build_spatial_kwargs(
+            batch_size=inputs.shape[0], device=inputs.device,
+        )
+        return {"data_tensor": inputs, "metainfo": metainfo}
 
 
 @dataclass(frozen=True)
@@ -386,6 +383,7 @@ class MultiSequenceRayPreprocessor(torch.nn.Module):
 
         # Apply per-dataset stream dtype conversion + (optional) masking
         dataset_stream_metainfo: Dict[str, Dict[str, Any]] = {}
+        per_stream_metrics: list[dict[str, Any]] = []
 
         for name, x in dataset_streams_tensors.items():
             if not torch.is_tensor(x):
@@ -403,26 +401,44 @@ class MultiSequenceRayPreprocessor(torch.nn.Module):
             else:
                 mask_meta = {}
                 masking_time = -1.0
-            
+
+            stream_transform_time = float(transform_time_by_dataset_stream[name])
+            stream_masking_time = float(masking_time)
+
             dataset_stream_metainfo[name] = {
                 "input_format": spec.input_format,
                 "input_shape": spec.input_shape,
                 "patch_shape": spec.patch_shape,
-                "transform_time": float(transform_time_by_dataset_stream[name]),
-                "masking_time": float(masking_time),
                 **mask_meta,
                 **dataset_streams_meta[name],
             }
 
+            # Per-stream timing records use a namespaced metric name so they
+            # land in dedicated W&B panels (e.g. step_timing/stream/<name>/...).
+            per_stream_metrics.append(make_timing_metric(
+                f"stream/{name}/transform_time", stream_transform_time,
+            ))
+            per_stream_metrics.append(make_timing_metric(
+                f"stream/{name}/masking_time", stream_masking_time,
+            ))
+
         out_meta = original_metainfo
 
         out_meta["dataset_stream_metainfo"] = dataset_stream_metainfo
-        out_meta["preprocess_time"] = float(time.time() - preprocess_t0)
-        out_meta["data_time"] = float(data_time)
-
         out_meta["idx"] = idx
         out_meta["local_batch_size"] = self.local_batch_size
         out_meta["global_batch_size"] = self.global_batch_size
+
+        aggregate_metrics: list[dict[str, Any]] = [
+            make_timing_metric("data_time", float(data_time)),
+            make_timing_metric("preprocess_time", float(time.time() - preprocess_t0)),
+        ]
+        existing_metrics = out_meta.get("metrics")
+        out_meta["metrics"] = (
+            (list(existing_metrics) if existing_metrics else [])
+            + aggregate_metrics
+            + per_stream_metrics
+        )
 
         return {"data_tensors": dataset_streams_tensors, "metainfo": out_meta}
 
@@ -592,39 +608,35 @@ class BaseFinetunePreprocessor(RayPreprocessor):
     ) -> dict:
         """Attach masking info and timing, returning the standard dict."""
 
+        masking_time = -1.0
+        mask_lists: dict[str, Any] = {}
         if self.with_masking:
             mt0 = time.time()
             B = inputs.shape[0]
             mask_data = self.mask_generator(B)
             masking_time = time.time() - mt0
-
             mask_lists = {k: [v] for k, v in mask_data.items() if v is not None}
-            return {
-                "data_tensor": inputs,
-                "metainfo": {
-                    **meta,
-                    **mask_lists,
-                    "targets": [targets],
-                    "preprocess_time": time.time() - preprocess_t0,
-                    "data_time": data_time,
-                    "masking_time": masking_time,
-                    "transform_time": transform_time,
-                    "idx": idx,
-                },
-            }
-        else:
-            return {
-                "data_tensor": inputs,
-                "metainfo": {
-                    **meta,
-                    "targets": [targets],
-                    "preprocess_time": time.time() - preprocess_t0,
-                    "data_time": data_time,
-                    "transform_time": transform_time,
-                    "masking_time": -1.0,
-                    "idx": idx,
-                },
-            }
+
+        metrics: list[dict[str, Any]] = [
+            make_timing_metric("data_time", data_time),
+            make_timing_metric("preprocess_time", time.time() - preprocess_t0),
+            make_timing_metric("transform_time", transform_time),
+            make_timing_metric("masking_time", masking_time),
+        ]
+        existing_metrics = meta.get("metrics") if isinstance(meta, Mapping) else None
+        if existing_metrics:
+            metrics = list(existing_metrics) + metrics
+
+        return {
+            "data_tensor": inputs,
+            "metainfo": {
+                **meta,
+                **mask_lists,
+                "targets": [targets],
+                "idx": idx,
+                "metrics": metrics,
+            },
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -2033,14 +2045,21 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
                 mask_labelmap=mask_labelmap,
             )
 
+        sam2_metrics: list[dict[str, Any]] = [
+            make_timing_metric("data_time", data_time),
+            make_timing_metric("preprocess_time", time.time() - preprocess_t0),
+            make_timing_metric("transform_time", transform_time),
+        ]
+        existing_metrics = meta.get("metrics") if isinstance(meta, Mapping) else None
+        if existing_metrics:
+            sam2_metrics = list(existing_metrics) + sam2_metrics
+
         return {
             "data_tensor": flat_img_batch,
             "metainfo": {
                 **meta,
                 "targets": data_views,
-                "preprocess_time": time.time() - preprocess_t0,
-                "data_time": data_time,
-                "transform_time": transform_time,
                 "idx": idx,
+                "metrics": sam2_metrics,
             },
         }

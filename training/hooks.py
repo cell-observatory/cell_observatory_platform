@@ -40,7 +40,11 @@ from cell_observatory_platform.utils.memory import (
 )
 from cell_observatory_platform.training.checkpoint_metadata import build_metadata
 from cell_observatory_platform.training.loggers import EventWriter, WandBEventWriter
-from cell_observatory_platform.training.helpers import log_data_timings, get_metric_full_name
+from cell_observatory_platform.training.helpers import (
+    get_metric_full_name,
+    log_data_sample_metrics,
+    log_loss_dict,
+)
 from cell_observatory_platform.training.schedulers import CosineScheduler
 from cell_observatory_platform.utils.context import gather_and_reduce, is_main_process, process_rank
 if TYPE_CHECKING:
@@ -387,7 +391,8 @@ class IterationTimer(HookBase):
                 category="timing",
                 units="sec"
             )
-            log_data_timings(self.trainer, self.trainer._iter + 1, data_sample, loss_dict, type="train")
+            log_data_sample_metrics(self.trainer, data_sample, default_phase="training")
+            log_loss_dict(self.trainer, loss_dict, phase="training")
         else:
             # reset _total_timer and _start_time
             # to avoid counting the warmup iterations
@@ -464,7 +469,8 @@ class IterationTimer(HookBase):
         # Reset the timer for the next validation step
         self._val_step_timer.reset()
 
-        log_data_timings(self.trainer, self.trainer._iter + 1, data_sample, loss_dict, type="val")
+        log_data_sample_metrics(self.trainer, data_sample, default_phase="validation")
+        log_loss_dict(self.trainer, loss_dict, phase="validation")
 
     def before_test(self):
         """
@@ -516,7 +522,8 @@ class IterationTimer(HookBase):
                 category="timing",
                 units="sec"
             )
-            log_data_timings(self.trainer, self.trainer._iter + 1, data_sample, loss_dict, type="test")
+            log_data_sample_metrics(self.trainer, data_sample, default_phase="testing")
+            log_loss_dict(self.trainer, loss_dict, phase="testing")
         else:
             # reset _total_timer and _start_time
             # to avoid counting the warmup iterations

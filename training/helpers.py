@@ -7,7 +7,7 @@ import random
 from collections import defaultdict
 from operator import attrgetter
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union, Iterable
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, TypedDict, Union, Iterable
 
 # Wandb panel sections are derived from the metric category. Currently
 # "timing", "loss", and "system" get their own sections (e.g.
@@ -17,6 +17,75 @@ from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Sequen
 # this is consumed.
 METRIC_CATEGORIES = Literal["timing", "loss", "system"]
 METRIC_CATEGORY_NAMES: tuple[METRIC_CATEGORIES, ...] = ("timing", "loss", "system")
+
+# Canonical phase names for sample-scoped metric records. Producers should
+# emit one of these; the hook calling ``log_data_sample_metrics`` injects a
+# ``default_phase`` so records without an explicit ``phase`` still resolve.
+METRIC_PHASES = Literal["training", "validation", "testing", "inference"]
+
+# Mapping from canonical phase (and short legacy aliases) to the W&B prefix
+# used in ``EventRecorder`` keys. ``training`` deliberately has no prefix to
+# preserve current metric names like ``step_timing/data_time_sec``.
+PHASE_TO_PREFIX: dict[str, Optional[str]] = {
+    "training": None,
+    "validation": "val",
+    "testing": "test",
+    "inference": "inference",
+    "train": None,
+    "val": "val",
+    "test": "test",
+}
+
+# Per-category default units when a record does not specify ``units``. Timing
+# records were historically stamped as ``_sec``; preserve that without forcing
+# each producer to repeat the same string.
+DEFAULT_UNITS_BY_CATEGORY: dict[Optional[str], Optional[str]] = {
+    "timing": "sec",
+    "loss": None,
+    "system": None,
+    None: None,
+}
+
+
+class DataSampleMetric(TypedDict, total=False):
+    """Record shape stored under ``data_sample["metainfo"]["metrics"]``.
+
+    Required keys: ``metric_name``, ``value``, ``reduce_method``.
+    Optional keys: ``category``, ``phase``, ``units``.
+
+    ``value`` may be a Python number, NumPy scalar, scalar tensor, or a
+    tensor/sequence that should reduce by mean; ``log_data_sample_metrics``
+    normalizes it before forwarding to ``EventRecorder.put_scalar``.
+    """
+
+    metric_name: str
+    value: Any
+    category: Optional[str]
+    phase: Optional[str]
+    reduce_method: List[str]
+    units: Optional[str]
+
+
+_REQUIRED_METRIC_FIELDS: tuple[str, ...] = ("metric_name", "value", "reduce_method")
+
+
+def make_timing_metric(
+    metric_name: str,
+    value: Any,
+    *,
+    phase: Optional[str] = None,
+    reduce_method: Optional[Sequence[str]] = None,
+) -> DataSampleMetric:
+    """Convenience builder for ``timing`` records used by preprocessors."""
+    record: DataSampleMetric = {
+        "metric_name": metric_name,
+        "value": value,
+        "category": "timing",
+        "reduce_method": list(reduce_method) if reduce_method is not None else ["median", "max", "min"],
+    }
+    if phase is not None:
+        record["phase"] = phase
+    return record
 
 import numpy as np
 import polars as pl
@@ -371,116 +440,145 @@ def summarize_model(
         ujson.dump(model_logbook, f, indent=4, sort_keys=False, ensure_ascii=False, escape_forward_slashes=False)
 
 
-def log_data_timings(
+def _normalize_metric_value(value: Any) -> Optional[float]:
+    """Reduce a metric ``value`` to a single Python float.
+
+    Accepts Python numbers, NumPy scalars/arrays, scalar tensors, multi-element
+    tensors (reduced by mean), and numeric sequences (reduced by mean). Returns
+    ``None`` for empty containers or values we cannot normalize.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if torch.is_tensor(value):
+        if value.numel() == 0:
+            return None
+        if value.numel() == 1:
+            return float(value.detach().float().item())
+        return float(value.detach().float().mean().item())
+    if isinstance(value, np.generic):
+        return float(value.item())
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return None
+        if value.size == 1:
+            return float(value.reshape(-1)[0])
+        return float(np.mean(value))
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return None
+        return float(np.mean(np.asarray(value, dtype=float)))
+    return None
+
+
+def _resolve_phase_prefix(phase: Optional[str]) -> Optional[str]:
+    if phase is None:
+        return None
+    if phase in PHASE_TO_PREFIX:
+        return PHASE_TO_PREFIX[phase]
+    logger.warning("Unknown metric phase '%s'; using it as-is for prefix.", phase)
+    return phase
+
+
+def log_data_sample_metrics(
     trainer,
-    idx,
-    data_sample: dict,
-    loss_dict: dict,
-    type: str = "train",
-):
-    assert data_sample is not None, "data_sample is None"
-    assert data_sample['metainfo'] is not None, "data_sample['metainfo'] is None"
+    data_sample: Optional[Mapping[str, Any]],
+    *,
+    default_phase: Optional[str] = None,
+    scope: Literal["step", "epoch"] = "step",
+    default_units_by_category: Optional[Mapping[Optional[str], Optional[str]]] = None,
+) -> None:
+    """Forward records from ``data_sample["metainfo"]["metrics"]`` to the recorder.
 
-    prefix = type if type != "train" else None
+    Each record is a ``DataSampleMetric`` dict. ``default_phase`` is injected
+    when a record omits ``phase``. ``default_units_by_category`` overlays the
+    module-level ``DEFAULT_UNITS_BY_CATEGORY`` (e.g. timing -> ``sec``).
+    """
+    if data_sample is None:
+        return
+    metainfo = data_sample.get("metainfo")
+    if not metainfo:
+        return
+    metrics = metainfo.get("metrics")
+    if not metrics:
+        return
 
-    data_time = data_sample['metainfo'].get('data_time', None)
-    if data_time is not None:
-        trainer.event_recorder.put_scalars(
-            scope="step",
-            prefix=prefix,
-            category="timing",
-            units="sec",
-            data_time=data_time,
-            reduce_method=["median", "max", "min"]
-        )
+    units_map = dict(DEFAULT_UNITS_BY_CATEGORY)
+    if default_units_by_category:
+        units_map.update(default_units_by_category)
 
-    get_item_time = data_sample['metainfo'].get('get_item_time', None)
-    if get_item_time is not None:
-        trainer.event_recorder.put_scalars(
-            scope="step",
-            prefix=prefix,
-            category="timing",
-            units="sec",
-            get_item_time=get_item_time.mean().item(),
-            reduce_method=["median", "max", "min"]
-        )
+    recorder = trainer.event_recorder
+    for record in metrics:
+        if not isinstance(record, Mapping):
+            logger.warning("Skipping metric record (not a mapping): %r", record)
+            continue
+        missing = [k for k in _REQUIRED_METRIC_FIELDS if k not in record]
+        if missing:
+            logger.warning("Skipping metric record missing fields %s: %r", missing, record)
+            continue
 
-    preprocess_time = data_sample['metainfo'].get('preprocess_time', None)
-    if preprocess_time is not None:
-        trainer.event_recorder.put_scalars(
-            scope="step",
-            prefix=prefix,
-            category="timing",
-            units="sec",
-            preprocess_time=preprocess_time,
-            reduce_method=["median", "max", "min"]
-        )
-
-    masking_time = data_sample['metainfo'].get('masking_time', None)
-    if masking_time is not None:
-        trainer.event_recorder.put_scalars(
-            scope="step",
-            prefix=prefix,
-            category="timing",
-            units="sec",
-            masking_time=masking_time,
-            reduce_method=["median", "max", "min"]
-        )
-
-    collate_time = data_sample['metainfo'].get('collate_time', None)
-    if collate_time is not None:
-        trainer.event_recorder.put_scalars(
-            scope="step",
-            prefix=prefix,
-            category="timing",
-            units="sec",
-            collate_time=collate_time,
-            reduce_method=["median", "max", "min"]
-        )
-
-    slice_time = data_sample['metainfo'].get('slice_time', None)
-    if slice_time is not None:
-        trainer.event_recorder.put_scalars(
-            scope="step",
-            prefix=prefix,
-            category="timing",
-            units="sec",
-            slice_time=slice_time.mean().item() if \
-                isinstance(slice_time, torch.Tensor) else np.mean(slice_time),
-            reduce_method=["median", "max", "min"]
-        )
-
-    transform_time = data_sample['metainfo'].get('transform_time', None)
-    if transform_time is not None:
-        trainer.event_recorder.put_scalars(
-            scope="step",
-            prefix=prefix,
-            category="timing",
-            units="sec",
-            transform_time=transform_time,
-            reduce_method=["median", "max", "min"]
-        )
-
-    advanced_metrics = data_sample.get('advanced_metrics', None)
-    if advanced_metrics is not None:
-        for k, v in advanced_metrics.items():
-            trainer.event_recorder.put_scalars(
-                scope="step",
-                prefix=prefix,
-                category="loss",
-                **{k: (v.item() if torch.is_tensor(v) else v)}
+        name = record["metric_name"]
+        reduce_method = record["reduce_method"]
+        if not isinstance(reduce_method, (list, tuple)) or len(reduce_method) == 0:
+            logger.warning(
+                "Skipping metric '%s': reduce_method must be a non-empty list, got %r",
+                name, reduce_method,
             )
+            continue
 
-    # the prediction-based test flow does not produce per-step losses
-    if loss_dict is not None and len(loss_dict) > 0:
-        trainer.event_recorder.put_scalars(
-            scope="step",
+        category = record.get("category")
+        phase = record.get("phase") or default_phase
+        prefix = _resolve_phase_prefix(phase)
+
+        value = _normalize_metric_value(record["value"])
+        if value is None:
+            logger.warning(
+                "Skipping metric '%s': could not normalize value %r", name, record["value"],
+            )
+            continue
+
+        units = record.get("units", units_map.get(category))
+
+        recorder.put_scalar(
+            name=name,
+            value=value,
+            scope=scope,
+            reduce_method=list(reduce_method),
+            category=category,
             prefix=prefix,
-            category="loss",
-            **{k: (v.item() if torch.is_tensor(v) else v)
-            for k, v in loss_dict.items()
-            }
+            units=units,
         )
+
+
+def log_loss_dict(
+    trainer,
+    loss_dict: Optional[Mapping[str, Any]],
+    *,
+    phase: Optional[str] = None,
+    scope: Literal["step", "epoch"] = "step",
+) -> None:
+    """Log a model loss dict to the recorder under the ``loss`` category.
+
+    Sample metrics now live in ``metainfo["metrics"]`` but model-side losses
+    are still produced per step by the trainer loop, so they have their own
+    entry point. The prediction-based test flow may pass ``None``; that's a
+    no-op.
+    """
+    if not loss_dict:
+        return
+    prefix = _resolve_phase_prefix(phase)
+    trainer.event_recorder.put_scalars(
+        scope=scope,
+        prefix=prefix,
+        category="loss",
+        **{
+            k: (float(v.item()) if torch.is_tensor(v) else float(v))
+            for k, v in loss_dict.items()
+        },
+    )
 
 def get_metric_full_name(
     name: str,

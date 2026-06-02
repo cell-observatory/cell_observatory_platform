@@ -14,6 +14,15 @@ from cell_observatory_platform.models.layers.preprocessor import (
 )
 
 
+def _metrics_by_name(meta: dict) -> dict[str, dict]:
+    """Index the metrics list by metric_name for easier assertions."""
+    return {r["metric_name"]: r for r in meta.get("metrics", [])}
+
+
+def _expected_timing_keys() -> set[str]:
+    return {"data_time", "preprocess_time", "transform_time", "masking_time"}
+
+
 BATCH = 32
 TIME = 16
 DEPTH = 128
@@ -89,10 +98,18 @@ def test_ray_preprocessor_transform_and_masking_on_cuda():
         assert isinstance(meta[k], list)
         assert len(meta[k]) == 1
 
-    assert isinstance(meta["preprocess_time"], float)
-    assert isinstance(meta["masking_time"], float)
-    assert isinstance(meta["transform_time"], float)
-    assert meta["data_time"] == 0.33
+    # Timing keys moved out of direct metainfo into metainfo["metrics"]
+    for k in _expected_timing_keys():
+        assert k not in meta, f"Direct timing field {k!r} should have moved into metainfo['metrics']"
+    metrics = _metrics_by_name(meta)
+    assert _expected_timing_keys().issubset(metrics.keys())
+    for k in _expected_timing_keys():
+        assert metrics[k]["category"] == "timing"
+        assert metrics[k]["reduce_method"] == ["median", "max", "min"]
+        assert isinstance(metrics[k]["value"], float)
+    assert metrics["data_time"]["value"] == 0.33
+    assert metrics["masking_time"]["value"] >= 0  # masking ran, must be non-negative
+    assert metrics["transform_time"]["value"] >= 0  # transforms ran, must be non-negative
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for RayPreprocessor tests")
@@ -122,10 +139,14 @@ def test_ray_preprocessor_no_mask_returns_empty_meta():
     for k in ("masks", "context_masks", "target_masks", "original_patch_indices", "channels_to_mask", "patches_used"):
         assert k not in meta
 
-    assert isinstance(meta["preprocess_time"], float)
-    assert meta["masking_time"] == -1.0
-    assert isinstance(meta["transform_time"], float)
-    assert meta["data_time"] == 0.0
+    for k in _expected_timing_keys():
+        assert k not in meta
+    metrics = _metrics_by_name(meta)
+    assert _expected_timing_keys().issubset(metrics.keys())
+    assert metrics["data_time"]["value"] == 0.0
+    assert metrics["masking_time"]["value"] == -1.0  # masking disabled
+    assert metrics["transform_time"]["value"] == -1.0  # no transforms configured
+    assert isinstance(metrics["preprocess_time"]["value"], float)
 
 
 def test_requires_c_last_in_input_format():
@@ -438,9 +459,15 @@ def test_denoising_preprocessor_forward():
     assert not torch.allclose(targets, proc.pe_patchify(noisy_inputs, channels = CHANNELS - 1), atol=1e-6), "Targets are the same as noised inputs"
 
     meta = output["metainfo"]
-    assert isinstance(meta["preprocess_time"], float), "preprocess_time is not a float"
-    assert isinstance(meta["transform_time"], float), "transform_time is not a float"
-    assert meta["data_time"] == 0.1, "data_time was modified"
+    for k in _expected_timing_keys():
+        assert k not in meta, f"Timing field {k!r} should now live in metainfo['metrics']"
+    metrics = _metrics_by_name(meta)
+    assert _expected_timing_keys().issubset(metrics.keys())
+    assert isinstance(metrics["preprocess_time"]["value"], float), "preprocess_time is not a float"
+    assert isinstance(metrics["transform_time"]["value"], float), "transform_time is not a float"
+    assert metrics["data_time"]["value"] == 0.1, "data_time was modified"
+    assert metrics["data_time"]["category"] == "timing"
+    assert metrics["data_time"]["reduce_method"] == ["median", "max", "min"]
 
 
 def test_denoising_preprocessor_reproducibility():
