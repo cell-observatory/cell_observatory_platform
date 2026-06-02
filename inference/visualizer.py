@@ -177,7 +177,10 @@ class VizWorker:
         targets = inference_outputs.pop("targets")
         targets_unpacked = unpack_batched_tensors(targets)
         data_tensor = inference_outputs.pop("data_tensor")
-        data_tensor_unpacked = list(data_tensor.unbind(0))
+        data_tensor_unpacked = [
+            np.squeeze(chunk, axis=0)
+            for chunk in np.split(data_tensor, data_tensor.shape[0], axis=0)
+        ]
         unpacked_inference_outputs = unpack_batched_tensors(inference_outputs, skip_keys={"metainfo"})
         bu = len(data_tensor_unpacked)
         if bu != len(regions) or bu != len(identifiers):
