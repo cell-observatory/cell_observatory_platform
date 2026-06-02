@@ -444,8 +444,11 @@ def _test_loggers_dist(cfg: DictConfig):
     # test write scalars on rank 0
     writer._write_scalar_impl(step_scalars, scope="step")
 
-    # test clearing scalars method
-    assert len(recorder.get_step_scalars()["loss"]) == n_steps
+    # test clearing scalars method.
+    # EventRecorder stores under the structured key produced by
+    # get_metric_full_name, not the raw "loss" handle.
+    loss_step_key = get_metric_full_name(name="loss", scope="step")
+    assert len(recorder.get_step_scalars()[loss_step_key]) == n_steps
     recorder.clear_scalars()
     assert all(len(v) == 0 for v in recorder.get_step_scalars().values())
 

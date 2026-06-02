@@ -33,6 +33,7 @@ def _test_hooks_dist(cfg):
         TorchProfiler,
         WeightDecayScheduleHook,
     )
+    from cell_observatory_platform.training.helpers import get_metric_full_name
     from cell_observatory_platform.training.loggers import LocalEventWriter
     from cell_observatory_platform.utils.context import barrier, process_rank
 
