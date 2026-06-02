@@ -1756,9 +1756,6 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         assert "loss_iou" in self.weight_dict, "loss_iou must be in weight_dict"
         assert "loss_class" in self.weight_dict, "loss_class must be in weight_dict"
 
-        if "loss_class" not in self.weight_dict:
-            self.weight_dict["loss_class"] = 0.0
-
         self.focal_alpha_obj_score = focal_alpha_obj_score
         self.focal_gamma_obj_score = focal_gamma_obj_score
         self.supervise_all_iou = supervise_all_iou
@@ -2148,6 +2145,11 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
 
         return torch.stack([loss_mask, loss_dice, loss_iou, loss_class])
 
+    # FIXME: collapse _forward to call _step_loss_components[_points] via a
+    # `maybe_checkpoint = checkpoint if self.activation_checkpoint else lambda fn,*a,**kw: fn(*a)`
+    # wrapper, then delete this function. The loss arithmetic here is a third copy
+    # of what's in _step_loss_components[_points] — three-way drift already bit
+    # this PR (IoU-stream aliasing fix had to land in all three sites).
     def _update_losses(
         self,
         losses,
