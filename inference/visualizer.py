@@ -343,7 +343,7 @@ class VizWorker:
                 futures.append(
                     self.thread_pool.submit(
                         self._handlers[handler_name],
-                        inference_outputs=inference_outputs,
+                        inference_outputs=dict(inference_outputs),
                         save_dir=self.output_dir,
                         **kwargs,
                     )
