@@ -1270,6 +1270,25 @@ class MappedTable:
             self._table = self._reader.read_all()
         return self._table
 
+    def close(self) -> None:
+        self._table = None
+        self._reader = None
+        if self._source is not None:
+            try:
+                self._source.close()
+            except Exception:
+                pass
+            self._source = None
+
+    def __del__(self) -> None:
+        self.close()
+
+    def __enter__(self) -> "MappedTable":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
 
 class SampleIndexPlanner:
     @staticmethod
