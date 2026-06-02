@@ -12,8 +12,6 @@ from cell_observatory_platform.models.ops.losses import (
     sigmoid_focal_loss,
 )
 
-CUDA_AVAILABLE = torch.cuda.is_available()
-
 
 class DummyMatcher(torch.nn.Module):
     """
@@ -167,7 +165,7 @@ def test_calculate_uncertainty_ordering():
 # DETR_Set_Loss tests
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.gpu
 def test_detr_set_loss_basic(monkeypatch):
     # Make world_size=1 and no distributed init for deterministic behavior
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -229,7 +227,7 @@ def test_detr_set_loss_basic(monkeypatch):
         assert torch.isfinite(v)
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.gpu
 def test_detr_set_loss_focal_branch(monkeypatch):
     # Test the focal-loss classification branch (semantic_ce_loss=False)
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -279,7 +277,7 @@ def test_detr_set_loss_focal_branch(monkeypatch):
     assert torch.isfinite(v)
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.gpu
 def test_detr_set_loss_denoise_without_predictions(monkeypatch):
     # denoise=True but no denoise_predictions -> zero-valued *_denoise keys
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -342,7 +340,7 @@ def test_detr_set_loss_denoise_without_predictions(monkeypatch):
         assert float(losses[key].item()) == 0.0
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.gpu
 def test_detr_set_loss_denoise_with_predictions(monkeypatch):
     # denoise=True and valid denoise_predictions -> *_denoise keys non-zero/finate
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -424,7 +422,7 @@ def test_detr_set_loss_denoise_with_predictions(monkeypatch):
         assert torch.isfinite(losses[key])
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.gpu
 def test_detr_set_loss_with_aux_and_intermediate(monkeypatch):
     # Exercise auxiliary_outputs and intermediate_outputs branches
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -814,7 +812,7 @@ def test_point_sample_nearest_yields_binary_labels():
     )
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for point sampling kernels")
+@pytest.mark.gpu
 def test_sample_points_and_labels_yields_binary_labels():
     """`MultiStepMultiMasksAndIousLoss._sample_points_and_labels` must return
     point_labels in strictly {0, 1}. This is the actual call site at

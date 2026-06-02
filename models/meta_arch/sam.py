@@ -226,7 +226,10 @@ class SAM2Base(torch.nn.Module):
         if self.fixed_no_obj_ptr:
             assert self.pred_obj_scores, "pred_obj_scores must be True when fixed_no_obj_ptr is True"
             assert self.use_obj_ptrs_in_encoder, "use_obj_ptrs_in_encoder must be True when fixed_no_obj_ptr is True"
-        if self.pred_obj_scores and self.use_obj_ptrs_in_encoder:
+        if self.pred_obj_scores:
+            # `no_obj_ptr` is consumed in `_forward_sam_heads` whenever
+            # `pred_obj_scores=True`, independent of `use_obj_ptrs_in_encoder`,
+            # so it must be created on the same condition.
             self.no_obj_ptr = torch.nn.Parameter(torch.zeros(1, self.hidden_dim))
             trunc_normal_(self.no_obj_ptr, std=0.02)
         self.use_mlp_for_obj_ptr_proj = use_mlp_for_obj_ptr_proj

@@ -221,12 +221,6 @@ def test_sam2_forward_smoke(flags):
     cfg.models.meta_arch.sam.criterion_args.pred_obj_scores = pred_obj_scores
     if pred_obj_scores:
         cfg.models.meta_arch.sam.criterion_args.weight_dict.loss_class = 1.0
-        # The meta-arch's `pred_obj_scores` branch unconditionally references
-        # `self.no_obj_ptr`, which is only created when use_obj_ptrs_in_encoder
-        # is also True (see SAM2.__init__). Co-enable both so the smoke can
-        # actually reach the loss without an AttributeError.
-        cfg.models.meta_arch.sam.use_obj_ptrs_in_encoder = True
-        cfg.models.meta_arch.sam.max_obj_ptrs_in_encoder = 1
 
     model = BUILD_SAM2(cfg).to(device).train()
 
