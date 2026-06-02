@@ -3,8 +3,18 @@ from typing import Callable, Dict, List, Literal, Optional, Sequence
 
 import numpy as np
 import torch
+import torch.distributed as dist
 
 from cell_observatory_platform.data.structures import box_iou_3d
+from cell_observatory_platform.utils.context import (
+    get_world_size,
+    is_torch_dist_initialized,
+)
+
+
+def _dist_inactive() -> bool:
+    """True when there is no real multi-rank process group to reduce over."""
+    return not is_torch_dist_initialized() or get_world_size() == 1
 
 
 class Metric(metaclass=abc.ABCMeta):
@@ -19,6 +29,10 @@ class Metric(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def reset(self):
         pass
+
+    def gather(self) -> None:
+        """All-reduce sufficient statistics across ranks (no-op by default)."""
+        return
 
 
 class TrainLosses(Metric):
@@ -272,7 +286,7 @@ def _per_class_ap(
     geom_p = torch.cat(all_pred_geom, dim=0)
     img_idx = torch.cat(pred_img_idx)
 
-    order = torch.argsort(scores, descending=True)
+    order = torch.argsort(scores, descending=True, stable=True)
     geom_p = geom_p[order]
     img_idx = img_idx[order]
 
@@ -361,11 +375,41 @@ class BoxMAPMetric(Metric):
         self.class_ids = list(class_ids) if class_ids is not None else None
         self._preds: List[dict] = []
         self._targets: List[dict] = []
+        self._gathered = False
 
     @torch.no_grad()
     def __call__(self, outputs, targets, loss=None):
         self._preds.extend(_detect_to_cpu(outputs, geom_key="boxes"))
         self._targets.extend(_detect_to_cpu(targets, geom_key="boxes"))
+
+    @staticmethod
+    def _merge_detection_lists(per_rank_preds, per_rank_targets):
+        """Concatenate per-rank (preds, targets) lists into a single pooled pair.
+
+        ``img_id`` is the list position, so plain concatenation auto-namespaces
+        images across ranks (no remap needed).
+        """
+        merged_preds: List[dict] = []
+        merged_targets: List[dict] = []
+        for preds in per_rank_preds:
+            merged_preds.extend(preds)
+        for targets in per_rank_targets:
+            merged_targets.extend(targets)
+        return merged_preds, merged_targets
+
+    def gather(self) -> None:
+        if self._gathered:
+            return
+        if _dist_inactive():
+            self._gathered = True
+            return
+        world = get_world_size()
+        preds_buf: List = [None] * world
+        targets_buf: List = [None] * world
+        dist.all_gather_object(preds_buf, self._preds)
+        dist.all_gather_object(targets_buf, self._targets)
+        self._preds, self._targets = self._merge_detection_lists(preds_buf, targets_buf)
+        self._gathered = True
 
     def aggregate(self) -> float:
         class_ids = _gather_class_ids(self._preds, self._targets, self.class_ids)
@@ -389,6 +433,7 @@ class BoxMAPMetric(Metric):
     def reset(self):
         self._preds.clear()
         self._targets.clear()
+        self._gathered = False
 
 
 class BoxMIoUMetric(Metric):
@@ -409,6 +454,27 @@ class BoxMIoUMetric(Metric):
         self.score_threshold = float(score_threshold)
         self.match_labels = bool(match_labels)
         self._matched_ious: List[float] = []
+        self._gathered = False
+
+    @staticmethod
+    def _merge_matched_ious(per_rank_ious):
+        """Concatenate per-rank matched-IoU lists (mean over the union is exact)."""
+        merged: List[float] = []
+        for ious in per_rank_ious:
+            merged.extend(ious)
+        return merged
+
+    def gather(self) -> None:
+        if self._gathered:
+            return
+        if _dist_inactive():
+            self._gathered = True
+            return
+        world = get_world_size()
+        buf: List = [None] * world
+        dist.all_gather_object(buf, self._matched_ious)
+        self._matched_ious = self._merge_matched_ious(buf)
+        self._gathered = True
 
     @torch.no_grad()
     def __call__(self, outputs, targets, loss=None):
@@ -422,7 +488,7 @@ class BoxMIoUMetric(Metric):
             labels_t = t["labels"].detach().cpu()
             if boxes_p.shape[0] == 0 or boxes_t.shape[0] == 0:
                 continue
-            order = torch.argsort(scores_p, descending=True)
+            order = torch.argsort(scores_p, descending=True, stable=True)
             boxes_p = boxes_p[order]
             labels_p = labels_p[order]
             ious = box_iou_3d(boxes_p, boxes_t)
@@ -442,6 +508,7 @@ class BoxMIoUMetric(Metric):
 
     def reset(self):
         self._matched_ious.clear()
+        self._gathered = False
 
 
 class BoxF1Metric(Metric):
@@ -463,6 +530,29 @@ class BoxF1Metric(Metric):
         self._tp = 0
         self._fp = 0
         self._fn = 0
+        self._gathered = False
+
+    @staticmethod
+    def _merge_counts(per_rank_counts):
+        """Sum per-rank (tp, fp, fn) triples (micro-averaged F1 is exact)."""
+        tp = fp = fn = 0
+        for c_tp, c_fp, c_fn in per_rank_counts:
+            tp += c_tp
+            fp += c_fp
+            fn += c_fn
+        return tp, fp, fn
+
+    def gather(self) -> None:
+        if self._gathered:
+            return
+        if _dist_inactive():
+            self._gathered = True
+            return
+        world = get_world_size()
+        buf: List = [None] * world
+        dist.all_gather_object(buf, (self._tp, self._fp, self._fn))
+        self._tp, self._fp, self._fn = self._merge_counts(buf)
+        self._gathered = True
 
     @torch.no_grad()
     def __call__(self, outputs, targets, loss=None):
@@ -478,7 +568,7 @@ class BoxF1Metric(Metric):
             unmatched_gt = torch.ones(boxes_t.shape[0], dtype=torch.bool)
             tp = fp = 0
             if boxes_p.shape[0]:
-                order = torch.argsort(scores_p, descending=True)
+                order = torch.argsort(scores_p, descending=True, stable=True)
                 boxes_p = boxes_p[order]
                 labels_p = labels_p[order]
                 if boxes_t.shape[0]:
@@ -516,6 +606,7 @@ class BoxF1Metric(Metric):
         self._tp = 0
         self._fp = 0
         self._fn = 0
+        self._gathered = False
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +628,35 @@ class ClassAPMetric(Metric):
         self.num_classes = int(num_classes) if num_classes is not None else None
         self._scores: List[torch.Tensor] = []
         self._targets: List[torch.Tensor] = []
+        self._gathered = False
+
+    @staticmethod
+    def _merge_score_target_lists(per_rank_scores, per_rank_targets):
+        """Concatenate per-rank score/target tensor lists into a single pooled pair."""
+        merged_scores: List[torch.Tensor] = []
+        merged_targets: List[torch.Tensor] = []
+        for scores in per_rank_scores:
+            merged_scores.extend(scores)
+        for targets in per_rank_targets:
+            merged_targets.extend(targets)
+        return merged_scores, merged_targets
+
+    def gather(self) -> None:
+        if self._gathered:
+            return
+        if _dist_inactive():
+            self._gathered = True
+            return
+        world = get_world_size()
+        # Move to CPU before gathering so the object payload is device-agnostic.
+        local_scores = [s.detach().cpu() for s in self._scores]
+        local_targets = [t.detach().cpu() for t in self._targets]
+        scores_buf: List = [None] * world
+        targets_buf: List = [None] * world
+        dist.all_gather_object(scores_buf, local_scores)
+        dist.all_gather_object(targets_buf, local_targets)
+        self._scores, self._targets = self._merge_score_target_lists(scores_buf, targets_buf)
+        self._gathered = True
 
     @torch.no_grad()
     def __call__(self, outputs, targets, loss=None):
@@ -562,6 +682,7 @@ class ClassAPMetric(Metric):
     def reset(self):
         self._scores.clear()
         self._targets.clear()
+        self._gathered = False
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +724,10 @@ class MaskMAPMetric(Metric):
         # Streaming accumulation: list of dicts with keys
         # {image_id: int, class_id: int, scores: (k,), ious: (k, m), n_gt: m}.
         self._stream: List[dict] = []
+        # Track pushed (image_id, class_id) keys to reject duplicates that would
+        # produce inconsistent n_gt and crash deep inside _aggregate_stream.
+        self._seen_keys: set = set()
+        self._gathered = False
 
     @torch.no_grad()
     def __call__(self, outputs, targets, loss=None):
@@ -633,6 +758,18 @@ class MaskMAPMetric(Metric):
             n_gt: number of GT instances of this class in this image (must
                 equal ``ious.shape[1]`` when ``k > 0``).
         """
+        key = (int(image_id), int(class_id))
+        if key in self._seen_keys:
+            prev_n_gt = next(
+                e["n_gt"] for e in self._stream
+                if e["image_id"] == key[0] and e["class_id"] == key[1]
+            )
+            raise ValueError(
+                f"Duplicate add_image_class for image_id={key[0]}, "
+                f"class_id={key[1]}: already pushed with n_gt={prev_n_gt}, "
+                f"now pushing n_gt={int(n_gt)}. Each (image_id, class_id) may "
+                "be pushed at most once."
+            )
         scores = scores.detach().cpu()
         ious = ious.detach().cpu().to(torch.float32)
         if scores.numel() and ious.shape[1] != n_gt:
@@ -652,6 +789,64 @@ class MaskMAPMetric(Metric):
             "ious": ious,
             "n_gt": int(n_gt),
         })
+        self._seen_keys.add(key)
+
+    @staticmethod
+    def _merge_streams(per_rank_streams: List[List[dict]]) -> List[dict]:
+        """Pool per-rank streaming entries, namespacing ``image_id`` by rank.
+
+        Each rank's per-image GT bucket must stay disjoint from every other
+        rank's, so we remap rank ``r``'s ``image_id`` to ``r * stride +
+        image_id`` with ``stride = 1 + global max image_id``. ``image_id`` is
+        only ever used as an opaque dict key in ``_stream_class_ap``, so this
+        remap is sound and ``n_gt`` (summed across images) is unaffected.
+        """
+        max_image_id = -1
+        for stream in per_rank_streams:
+            for entry in stream:
+                if entry["image_id"] > max_image_id:
+                    max_image_id = entry["image_id"]
+        stride = max_image_id + 1  # >= 1 whenever any entry exists
+        merged: List[dict] = []
+        for rank, stream in enumerate(per_rank_streams):
+            offset = rank * stride
+            for entry in stream:
+                new_entry = dict(entry)
+                new_entry["image_id"] = offset + entry["image_id"]
+                merged.append(new_entry)
+        return merged
+
+    @staticmethod
+    def _merge_batched(per_rank_preds, per_rank_targets):
+        """Concatenate per-rank batched preds/targets (list position = img_id)."""
+        merged_preds: List[dict] = []
+        merged_targets: List[dict] = []
+        for preds in per_rank_preds:
+            merged_preds.extend(preds)
+        for targets in per_rank_targets:
+            merged_targets.extend(targets)
+        return merged_preds, merged_targets
+
+    def gather(self) -> None:
+        if self._gathered:
+            return
+        if _dist_inactive():
+            self._gathered = True
+            return
+        world = get_world_size()
+        stream_buf: List = [None] * world
+        preds_buf: List = [None] * world
+        targets_buf: List = [None] * world
+        dist.all_gather_object(stream_buf, self._stream)
+        dist.all_gather_object(preds_buf, self._preds)
+        dist.all_gather_object(targets_buf, self._targets)
+        self._stream = self._merge_streams(stream_buf)
+        self._preds, self._targets = self._merge_batched(preds_buf, targets_buf)
+        # Rebuild the dup-key guard over the now-namespaced stream.
+        self._seen_keys = {
+            (e["image_id"], e["class_id"]) for e in self._stream
+        }
+        self._gathered = True
 
     def aggregate(self) -> float:
         if self._stream:
@@ -705,11 +900,30 @@ class MaskMAPMetric(Metric):
         return float(sum(ap_per_iou) / len(ap_per_iou)) if ap_per_iou else 0.0
 
     @staticmethod
-    def _stream_class_ap(entries: List[dict], iou_thr: float, n_gt_total: int) -> float:
+    def _stream_class_ap(
+        entries: List[dict],
+        iou_thr: float,
+        n_gt_total: int,
+        rank_fn: Optional[Callable[[dict], torch.Tensor]] = None,
+    ) -> float:
+        """Pooled per-class AP at one IoU threshold from streaming fragments.
+
+        ``rank_fn`` maps an ``entry`` dict to a ``(k,)`` per-detection ranking
+        vector used ONLY for the global descending stable sort. It defaults to
+        the entry's class ``scores`` (standard COCO ranking). The matching,
+        TP/FP bookkeeping, recall denominator (``n_gt_total``), and 101-point
+        interpolation are unaffected by the choice of ``rank_fn`` — only the
+        order in which detections are greedily matched changes. Callers that
+        want Mask Scoring R-CNN-style rankings (pred-IoU, score*pred-IoU) pass
+        a ``rank_fn`` that returns the corresponding per-detection vector.
+        """
+        if rank_fn is None:
+            rank_fn = lambda e: e["scores"]
         # Pool predictions across all images for this class. We keep per-row
         # IoU vectors as separate tensors (rather than padding to a rectangular
         # ``(K, max_n_gt)`` tensor) because per-image n_gt is ragged.
         flat_scores: List[torch.Tensor] = []
+        flat_rank: List[torch.Tensor] = []  # per-detection ranking vector segments
         flat_iou_rows: List[torch.Tensor] = []  # one (n_gt_img,) tensor per prediction
         flat_image_ids: List[int] = []
         n_gt_per_image: Dict[int, int] = {}
@@ -721,14 +935,16 @@ class MaskMAPMetric(Metric):
             ious = entry["ious"]
             if scores.numel() == 0:
                 continue
+            rank_seg = rank_fn(entry)
             flat_scores.append(scores)
+            flat_rank.append(rank_seg.reshape(-1))
             for i in range(int(scores.numel())):
                 flat_iou_rows.append(ious[i])
                 flat_image_ids.append(img_id)
         if not flat_scores:
             return 0.0
-        scores_cat = torch.cat(flat_scores)
-        order = torch.argsort(scores_cat, descending=True)
+        rank_cat = torch.cat(flat_rank).to(torch.float32)
+        order = torch.argsort(rank_cat, descending=True, stable=True)
 
         # Per-image GT-matched bookkeeping.
         gt_matched: Dict[int, torch.Tensor] = {
@@ -762,6 +978,359 @@ class MaskMAPMetric(Metric):
         self._preds.clear()
         self._targets.clear()
         self._stream.clear()
+        self._seen_keys.clear()
+        self._gathered = False
+
+
+class PredictedIoUEvalMetric(Metric):
+    """Model-agnostic evaluation of a predicted-IoU (self-assessed mask-quality)
+    head, SAM2 / Mask Scoring R-CNN style, distinct from the classification
+    score.
+
+    All three measurements below are derived from a single per-detection
+    sufficient statistic — ``pred_ious`` — carried in the SAME streaming
+    ``_stream`` that :class:`MaskMAPMetric` already gathers across ranks, so
+    cross-rank reduction is automatic and exact (it rides the existing
+    rank-namespacing merge). NO dense masks are stored or gathered; only
+    ``(scores, ious, n_gt, pred_ious)`` per ``(image, class)``.
+
+    A prediction's *true quality* is its BEST IoU to ANY GT (``ious[i].max()``;
+    ``0.0`` for an empty IoU row, i.e. an image with no GT of that class).
+
+    :meth:`aggregate` returns a flat ``Dict[str, float]`` with these keys:
+
+    Calibration (does ``pred_iou`` track ``true_iou``?):
+        * ``iou_head_mae``    — mean abs error ``|pred_iou - true_iou|``.
+        * ``iou_head_rmse``   — root-mean-square error.
+        * ``iou_head_spearman`` — Spearman rank correlation.
+        * ``iou_head_pearson``  — Pearson correlation.
+      (Each ``0.0`` when fewer than 2 pooled detections exist.)
+
+    Selection / quality-vs-coverage (raise a ``pred_iou`` threshold ``t`` and
+    keep predictions with ``pred_iou >= t``; report the true quality of the
+    retained set) for each ``t`` in ``pred_iou_thresholds``:
+        * ``true_miou@{t}``  — mean true_iou of kept set (``0.0`` if none).
+        * ``precision@{t}``  — fraction of kept with ``true_iou >= match_iou_threshold``.
+        * ``coverage@{t}``   — ``kept / total``.
+      Plus two coverage-integrated areas (the key comparison):
+        * ``selection_auc_prediou`` — area under (true_miou-of-retained vs
+          coverage) when ranking detections by ``pred_iou`` descending.
+        * ``selection_auc_score``   — same, ranking by class score descending
+          (the baseline selector).
+
+    Ranked AP (Mask Scoring R-CNN lever — which ranking key maximizes mask
+    AP? matching/TP-FP use the true ``ious``; only the RANKING changes):
+        * ``map_rank_score``            — rank by class score (numerically
+          equals a standard :class:`MaskMAPMetric` on the same fragments).
+        * ``map_rank_prediou``          — rank by ``pred_iou``.
+        * ``map_rank_score_x_prediou``  — rank by ``score * pred_iou``.
+    """
+
+    def __init__(
+        self,
+        iou_thresholds: Optional[Sequence[float]] = None,
+        pred_iou_thresholds: Optional[Sequence[float]] = None,
+        match_iou_threshold: float = 0.5,
+        max_detections: int = 100,
+        class_ids: Optional[Sequence[int]] = None,
+    ):
+        self.iou_thresholds = (
+            list(iou_thresholds) if iou_thresholds is not None
+            else _coco_iou_thresholds()
+        )
+        self.pred_iou_thresholds = (
+            list(pred_iou_thresholds) if pred_iou_thresholds is not None
+            else [round(0.5 + 0.05 * i, 2) for i in range(10)]  # 0.50..0.95
+        )
+        self.match_iou_threshold = float(match_iou_threshold)
+        self.max_detections = int(max_detections)
+        self.class_ids = list(class_ids) if class_ids is not None else None
+        # Streaming accumulation: list of dicts with keys
+        # {image_id, class_id, scores: (k,), ious: (k, m), n_gt: m, pred_ious: (k,)}.
+        self._stream: List[dict] = []
+        self._seen_keys: set = set()
+        self._gathered = False
+
+    @torch.no_grad()
+    def __call__(self, outputs, targets, loss=None):
+        # No batched push path: this metric requires the pred-IoU head output,
+        # which the streaming evaluator supplies via add_image_class.
+        return
+
+    @torch.no_grad()
+    def add_image_class(
+        self,
+        image_id: int,
+        class_id: int,
+        scores: torch.Tensor,
+        ious: torch.Tensor,
+        n_gt: int,
+        pred_ious: torch.Tensor,
+    ) -> None:
+        """Push a per-(image, class) fragment, REQUIRING the pred-IoU head.
+
+        Mirrors :meth:`MaskMAPMetric.add_image_class` but additionally carries
+        ``pred_ious`` ``(k,)`` — the model's self-assessed mask quality for each
+        of this image's predictions of this class, aligned with ``scores``. The
+        ``max_detections`` top-k subselection is applied jointly to ``scores``,
+        ``ious`` and ``pred_ious`` so they stay aligned.
+        """
+        key = (int(image_id), int(class_id))
+        if key in self._seen_keys:
+            prev_n_gt = next(
+                e["n_gt"] for e in self._stream
+                if e["image_id"] == key[0] and e["class_id"] == key[1]
+            )
+            raise ValueError(
+                f"Duplicate add_image_class for image_id={key[0]}, "
+                f"class_id={key[1]}: already pushed with n_gt={prev_n_gt}, "
+                f"now pushing n_gt={int(n_gt)}. Each (image_id, class_id) may "
+                "be pushed at most once."
+            )
+        scores = scores.detach().cpu()
+        ious = ious.detach().cpu().to(torch.float32)
+        pred_ious = pred_ious.detach().cpu().to(torch.float32)
+        # Non-finite predicted IoU (e.g. from a diverged/degraded head) is mapped
+        # to lowest quality (0.0) so calibration and selection AGREE on it: it is
+        # dropped by the ``pred_iou >= t`` selection gate AND scored as
+        # "predicted-bad" in calibration, instead of poisoning mae/rmse/pearson
+        # with NaN while spearman/selection silently ignore it.
+        pred_ious = torch.nan_to_num(pred_ious, nan=0.0, posinf=1.0, neginf=0.0)
+        if pred_ious.shape != scores.shape:
+            raise ValueError(
+                f"pred_ious shape {tuple(pred_ious.shape)} must equal scores "
+                f"shape {tuple(scores.shape)}."
+            )
+        if scores.numel() and ious.shape[1] != n_gt:
+            raise ValueError(
+                f"ious shape {tuple(ious.shape)} disagrees with n_gt={n_gt} "
+                "(when scores is non-empty, ious.shape[1] must equal n_gt)"
+            )
+        # NOTE: unlike MaskMAPMetric, we deliberately do NOT apply a score-based
+        # top-k cap here. Calibration (b) and selection (a) assess EVERY proposal,
+        # and the COCO ``max_detections`` cap for ranked AP (c) is applied
+        # per-ranking inside ``_ranked_map`` — capping by ``scores`` up front would
+        # bias the pred_iou ranking by dropping high-pred-iou/low-score proposals
+        # before they can be ranked.
+        self._stream.append({
+            "image_id": int(image_id),
+            "class_id": int(class_id),
+            "scores": scores,
+            "ious": ious,
+            "n_gt": int(n_gt),
+            "pred_ious": pred_ious,
+        })
+        self._seen_keys.add(key)
+
+    def gather(self) -> None:
+        if self._gathered:
+            return
+        if _dist_inactive():
+            self._gathered = True
+            return
+        world = get_world_size()
+        stream_buf: List = [None] * world
+        dist.all_gather_object(stream_buf, self._stream)
+        # Reuse MaskMAPMetric's rank-namespacing merge; pred_ious rides along in
+        # each entry dict (dict() copy in _merge_streams preserves all keys).
+        self._stream = MaskMAPMetric._merge_streams(stream_buf)
+        self._seen_keys = {
+            (e["image_id"], e["class_id"]) for e in self._stream
+        }
+        self._gathered = True
+
+    @staticmethod
+    def _true_quality(entry: dict) -> torch.Tensor:
+        """Per-detection best IoU to ANY GT (``(k,)``); 0 for empty IoU rows."""
+        ious = entry["ious"]
+        k = int(entry["scores"].numel())
+        if k == 0:
+            return torch.zeros(0, dtype=torch.float32)
+        if ious.numel() == 0 or ious.shape[1] == 0:
+            return torch.zeros(k, dtype=torch.float32)
+        return ious.max(dim=1).values.to(torch.float32)
+
+    @staticmethod
+    def _selection_auc(selector: torch.Tensor, true_iou: torch.Tensor) -> float:
+        """Area under (mean-true-IoU-of-retained vs coverage).
+
+        Sort detections by ``selector`` descending; sweeping the retained
+        prefix from coverage 0->1 traces the curve. Integrate the running
+        mean true IoU of the retained prefix against coverage via the
+        trapezoid rule (coverage spacing is uniform at ``1/N``).
+        """
+        n = int(selector.numel())
+        if n == 0:
+            return 0.0
+        order = torch.argsort(selector, descending=True, stable=True)
+        ti = true_iou[order].to(torch.float64)
+        running_mean = torch.cumsum(ti, dim=0) / torch.arange(
+            1, n + 1, dtype=torch.float64
+        )
+        coverage = torch.arange(1, n + 1, dtype=torch.float64) / n
+        # Trapezoid integral with an implicit (coverage=0, value=running_mean[0])
+        # left anchor so the curve starts at the first retained detection.
+        x = torch.cat([torch.zeros(1, dtype=torch.float64), coverage])
+        y = torch.cat([running_mean[:1], running_mean])
+        return float(torch.trapz(y, x).item())
+
+    def aggregate(self) -> Dict[str, float]:
+        out: Dict[str, float] = {}
+
+        # Pool every detection across the gathered stream. Empty-score entries
+        # (GT-only, no predictions) contribute nothing to the per-detection
+        # pools but their n_gt still matters for ranked-AP recall.
+        true_iou_segs: List[torch.Tensor] = []
+        pred_iou_segs: List[torch.Tensor] = []
+        score_segs: List[torch.Tensor] = []
+        for entry in self._stream:
+            if int(entry["scores"].numel()) == 0:
+                continue
+            true_iou_segs.append(self._true_quality(entry))
+            pred_iou_segs.append(entry["pred_ious"].reshape(-1).to(torch.float32))
+            score_segs.append(entry["scores"].reshape(-1).to(torch.float32))
+
+        if true_iou_segs:
+            true_iou = torch.cat(true_iou_segs)
+            pred_iou = torch.cat(pred_iou_segs)
+            score = torch.cat(score_segs)
+        else:
+            true_iou = torch.zeros(0, dtype=torch.float32)
+            pred_iou = torch.zeros(0, dtype=torch.float32)
+            score = torch.zeros(0, dtype=torch.float32)
+        n = int(true_iou.numel())
+
+        # ---- Calibration (b) ----
+        if n >= 2:
+            err = pred_iou - true_iou
+            out["iou_head_mae"] = float(err.abs().mean().item())
+            out["iou_head_rmse"] = float(torch.sqrt((err ** 2).mean()).item())
+            out["iou_head_pearson"] = self._pearson(pred_iou, true_iou)
+            out["iou_head_spearman"] = self._spearman(pred_iou, true_iou)
+        else:
+            out["iou_head_mae"] = 0.0
+            out["iou_head_rmse"] = 0.0
+            out["iou_head_pearson"] = 0.0
+            out["iou_head_spearman"] = 0.0
+
+        # ---- Selection / quality-vs-coverage (a) ----
+        total = max(n, 1)
+        for t in self.pred_iou_thresholds:
+            keep = pred_iou >= t
+            n_keep = int(keep.sum().item())
+            kept_true = true_iou[keep]
+            out[f"true_miou@{t}"] = (
+                float(kept_true.mean().item()) if n_keep > 0 else 0.0
+            )
+            out[f"precision@{t}"] = (
+                float((kept_true >= self.match_iou_threshold).float().mean().item())
+                if n_keep > 0 else 0.0
+            )
+            out[f"coverage@{t}"] = float(n_keep) / float(total)
+        out["selection_auc_prediou"] = self._selection_auc(pred_iou, true_iou)
+        out["selection_auc_score"] = self._selection_auc(score, true_iou)
+
+        # ---- Ranked AP (c) ----
+        out["map_rank_score"] = self._ranked_map(lambda e: e["scores"])
+        out["map_rank_prediou"] = self._ranked_map(lambda e: e["pred_ious"])
+        out["map_rank_score_x_prediou"] = self._ranked_map(
+            lambda e: e["scores"] * e["pred_ious"]
+        )
+        return out
+
+    def _ranked_map(self, rank_fn: Callable[[dict], torch.Tensor]) -> float:
+        """mAP (avg over iou_thresholds, avg over classes) using ``rank_fn`` as
+        the per-detection ranking vector in :meth:`MaskMAPMetric._stream_class_ap`.
+        """
+        per_class: Dict[int, List[dict]] = {}
+        for entry in self._stream:
+            per_class.setdefault(entry["class_id"], []).append(entry)
+        if self.class_ids is not None:
+            class_iter = [c for c in self.class_ids if c in per_class]
+        else:
+            class_iter = sorted(per_class.keys())
+        if not class_iter:
+            return 0.0
+        ap_per_iou = []
+        for iou_thr in self.iou_thresholds:
+            ap_per_class = []
+            for class_id in class_iter:
+                entries = per_class[class_id]
+                n_gt_total = sum(int(e["n_gt"]) for e in entries)
+                if n_gt_total == 0:
+                    continue
+                # Apply the per-image max_detections cap BY THE RANKING BEING
+                # evaluated (COCO parity), so each ranking variant keeps its own
+                # top-max_detections rather than a single score-based subset.
+                capped = [self._cap_entry_by_rank(e, rank_fn) for e in entries]
+                ap = MaskMAPMetric._stream_class_ap(
+                    capped, iou_thr=iou_thr, n_gt_total=n_gt_total,
+                    rank_fn=rank_fn,
+                )
+                ap_per_class.append(ap)
+            if ap_per_class:
+                ap_per_iou.append(sum(ap_per_class) / len(ap_per_class))
+        return float(sum(ap_per_iou) / len(ap_per_iou)) if ap_per_iou else 0.0
+
+    def _cap_entry_by_rank(
+        self, entry: dict, rank_fn: Callable[[dict], torch.Tensor]
+    ) -> dict:
+        """Truncate one (image, class) entry to top-``max_detections`` detections
+        by ``rank_fn`` (n_gt is unchanged — it counts GT, not predictions)."""
+        if int(entry["scores"].numel()) <= self.max_detections:
+            return entry
+        rank = rank_fn(entry).reshape(-1)
+        keep = torch.topk(rank, self.max_detections).indices
+        capped = dict(entry)
+        capped["scores"] = entry["scores"][keep]
+        capped["pred_ious"] = entry["pred_ious"][keep]
+        capped["ious"] = entry["ious"][keep]
+        return capped
+
+    @staticmethod
+    def _pearson(a: torch.Tensor, b: torch.Tensor) -> float:
+        a = a.to(torch.float64)
+        b = b.to(torch.float64)
+        a = a - a.mean()
+        b = b - b.mean()
+        denom = torch.sqrt((a ** 2).sum()) * torch.sqrt((b ** 2).sum())
+        if denom.item() <= 1e-12:
+            return 0.0
+        return float((a * b).sum().item() / denom.item())
+
+    @staticmethod
+    def _spearman(a: torch.Tensor, b: torch.Tensor) -> float:
+        # Spearman = Pearson on ranks (average-rank ties via argsort-of-argsort
+        # is exact only for distinct values; use scipy-free average ranking).
+        ra = PredictedIoUEvalMetric._avg_rank(a)
+        rb = PredictedIoUEvalMetric._avg_rank(b)
+        return PredictedIoUEvalMetric._pearson(ra, rb)
+
+    @staticmethod
+    def _avg_rank(x: torch.Tensor) -> torch.Tensor:
+        """Average (fractional) ranks of ``x``, handling ties."""
+        x = x.to(torch.float64)
+        n = int(x.numel())
+        order = torch.argsort(x, stable=True)
+        ranks = torch.empty(n, dtype=torch.float64)
+        ranks[order] = torch.arange(n, dtype=torch.float64)
+        # Average ranks within tied groups.
+        sorted_vals = x[order]
+        i = 0
+        while i < n:
+            j = i + 1
+            while j < n and sorted_vals[j] == sorted_vals[i]:
+                j += 1
+            if j - i > 1:
+                avg = (i + j - 1) / 2.0
+                ranks[order[i:j]] = avg
+            i = j
+        return ranks
+
+    def reset(self):
+        self._stream.clear()
+        self._seen_keys.clear()
+        self._gathered = False
 
 
 class MaskMIoUMetric(Metric):
@@ -800,6 +1369,51 @@ class MaskMIoUMetric(Metric):
         self._inter: Dict[int, int] = {}
         self._union: Dict[int, int] = {}
         self._matched_ious: List[float] = []
+        self._gathered = False
+
+    @staticmethod
+    def _merge_matched_ious(per_rank_ious):
+        """Concatenate per-rank matched-IoU lists (instance mode)."""
+        merged: List[float] = []
+        for ious in per_rank_ious:
+            merged.extend(ious)
+        return merged
+
+    @staticmethod
+    def _merge_inter_union(per_rank_inter, per_rank_union):
+        """Sum per-class intersection/union across ranks (semantic Jaccard).
+
+        Returns merged ``(inter, union)`` dicts so aggregate() computes
+        ``Sum(inter) / Sum(union)`` per class (NOT a mean of per-rank ratios).
+        """
+        inter: Dict[int, int] = {}
+        union: Dict[int, int] = {}
+        for d in per_rank_inter:
+            for c, v in d.items():
+                inter[c] = inter.get(c, 0) + v
+        for d in per_rank_union:
+            for c, v in d.items():
+                union[c] = union.get(c, 0) + v
+        return inter, union
+
+    def gather(self) -> None:
+        if self._gathered:
+            return
+        if _dist_inactive():
+            self._gathered = True
+            return
+        world = get_world_size()
+        if self.mode == "instance":
+            buf: List = [None] * world
+            dist.all_gather_object(buf, self._matched_ious)
+            self._matched_ious = self._merge_matched_ious(buf)
+        else:
+            inter_buf: List = [None] * world
+            union_buf: List = [None] * world
+            dist.all_gather_object(inter_buf, self._inter)
+            dist.all_gather_object(union_buf, self._union)
+            self._inter, self._union = self._merge_inter_union(inter_buf, union_buf)
+        self._gathered = True
 
     @torch.no_grad()
     def add_matched_ious(self, ious: Sequence[float]) -> None:
@@ -854,7 +1468,7 @@ class MaskMIoUMetric(Metric):
             labels_t = t["labels"].detach().cpu()
             if masks_p.shape[0] == 0 or masks_t.shape[0] == 0:
                 continue
-            order = torch.argsort(scores_p, descending=True)
+            order = torch.argsort(scores_p, descending=True, stable=True)
             masks_p = masks_p[order]
             labels_p = labels_p[order]
             ious = _pairwise_mask_iou_3d(masks_p, masks_t)
@@ -883,3 +1497,4 @@ class MaskMIoUMetric(Metric):
         self._inter.clear()
         self._union.clear()
         self._matched_ious.clear()
+        self._gathered = False
