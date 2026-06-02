@@ -188,7 +188,7 @@ def classify_table_name(table_name: str) -> dict:
             "kind": "cube_without_annotations",
             "sample_type": "cube",
             "has_annotations": False,
-            "source_key": f"cube_without_annotations_{t}_{z}_{y}_{x}",
+            "source_key": table_name,
             "selector_key": "cube_without_annotations_3d" if t == 1 else "cube_without_annotations_4d",
             "layout": "ZYXC" if t == 1 else "TZYXC",
             "input_shape": [z, y, x, 2] if t == 1 else [t, z, y, x, 2],
@@ -204,7 +204,7 @@ def classify_table_name(table_name: str) -> dict:
             "kind": "cube_with_annotations",
             "sample_type": "cube",
             "has_annotations": True,
-            "source_key": f"cube_with_annotations_{t}_{z}_{y}_{x}",
+            "source_key": table_name,
             "selector_key": "cube_with_annotations_3d",
             "layout": "ZYXC" if t == 1 else "TZYXC",
             "input_shape": [z, y, x, 2] if t == 1 else [t, z, y, x, 2],
@@ -219,7 +219,7 @@ def classify_table_name(table_name: str) -> dict:
             "kind": "tile_without_annotations",
             "sample_type": "tile",
             "has_annotations": False,
-            "source_key": f"tile_without_annotations_{t}",
+            "source_key": table_name,
             "selector_key": f"tile_without_annotations_{t}",
             "layout": "ZYXC" if t == 1 else "TZYXC",
             "input_shape": [128, 256, 256, 2] if t == 1 else [t, 128, 256, 256, 2],
@@ -234,7 +234,7 @@ def classify_table_name(table_name: str) -> dict:
             "kind": "tile_with_annotations",
             "sample_type": "tile",
             "has_annotations": True,
-            "source_key": f"tile_with_annotations_{t}",
+            "source_key": table_name,
             "selector_key": "tile_with_annotations_1",
             "layout": "ZYXC" if t == 1 else "TZYXC",
             "input_shape": [128, 256, 256, 2] if t == 1 else [t, 128, 256, 256, 2],
@@ -270,7 +270,11 @@ def build_config(meta: dict, tmp_path: Path):
                     "any_channel_patterns": None,
                     "all_channel_patterns": None,
                     "required_channel_localizations": None,
-                    "required_locations": None,
+                    # `_remap_server_folder` requires exactly one
+                    # `required_locations` entry. `exists_prfs` is the
+                    # default for live-DB tests since the sandbox snapshot
+                    # is built against the prfs-mounted catalog.
+                    "required_locations": ["exists_prfs"],
                     "holdout_split": None,
                 },
             },

@@ -698,7 +698,7 @@ class TableResolver:
             roi_list=cls._to_tuple(config.datasets.roi_list),
             tile_list=cls._to_tuple(config.datasets.tile_list),
             timepoint_list=cls._to_tuple(config.datasets.timepoint_list),
-            max_rows=config.datasets.max_rows,
+            max_rows=getattr(config.datasets, "max_rows", None),
             cdf_threshold=config.datasets.cdf_threshold,
             cdf_target=config.datasets.cdf_target,
             cdf_threshold_channel_localizations=cls._to_tuple(getattr(
