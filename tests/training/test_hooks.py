@@ -481,7 +481,6 @@ def _test_hooks_dist(cfg):
 
     # ---- ---- ---- BestMetricSaver tests ---- ---- ----
 
-    metric_name = saver.metric_name.split("/")[-1] # remove the {scope}_{category} prefix
     recorder = trainer.event_recorder
 
     # clearout logs
@@ -492,9 +491,13 @@ def _test_hooks_dist(cfg):
         os.remove(local_writer.epoch_scalars_savepath)
 
     def _log_epoch_scalar(val):
-        recorder._iter = trainer._iter
-        recorder._epoch = trainer._epoch
-        recorder.put_scalar(metric_name, val, scope="epoch")
+        # Insert directly using the saver's full metric key (e.g.
+        # "epoch_loss/val_step_loss") so we don't have to reverse-engineer
+        # scope/category from the structured name produced by
+        # get_metric_full_name.
+        recorder._epoch_scalars[saver.metric_name].append(
+            (val, trainer._iter, trainer._epoch)
+        )
 
     # ------------------------------------------------------------------ #
     # After Validation
@@ -565,7 +568,6 @@ def _test_hooks_dist(cfg):
 
     # ---- ---- ---- EarlyStopHook tests ---- ---- ----
 
-    metric = ehook.metric_name.split("/")[-1] # remove the {scope}_{category} prefix
     ehook.patience = 2
     threshold = ehook.stopping_threshold
 
@@ -579,7 +581,11 @@ def _test_hooks_dist(cfg):
     def _run_epoch(ep_idx, value):
         trainer._epoch = ep_idx
         trainer._iter = 0
-        recorder.put_scalar(metric, value, scope="epoch")
+        # Insert directly using the hook's full metric key — same rationale
+        # as the BestMetricSaver section above.
+        recorder._epoch_scalars[ehook.metric_name].append(
+            (value, trainer._iter, trainer._epoch)
+        )
         ehook.after_validation()
 
     # first value (improvement, wait_count stays 0)
