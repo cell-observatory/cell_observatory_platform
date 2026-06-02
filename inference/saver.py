@@ -189,8 +189,11 @@ def save_predictions(
     except Exception as e:
         ray.logger.error(f"Failed to save metadata for {model_name} at {image_path}: {e}", exc_info=True)
         exceptions["metadata"] = e
-    if len(exceptions) > 0:
-        raise Exception(f"Failed to save {exceptions.keys()}", list(exceptions.values()))
+    if exceptions:
+        raise RuntimeError(
+            f"{len(exceptions)}/{len(save_tensors_metadata)} failed to save."
+            "\n".join(f"{k}: {v}" for k, v in exceptions.items())
+        )
 
 @ray.remote(namespace="saver", lifetime="detached", num_cpus=0)
 class SaveWorker:
