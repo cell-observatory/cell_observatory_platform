@@ -427,7 +427,7 @@ class InferencerWorker:
         t0_buffer = time.perf_counter()
         save_buffer_slots = {}
         if self.save_outputs:
-            for output_tensor_name in self.outputs_metadata["save_tensors"].keys():
+            for output_tensor_name in self.outputs_metadata["save_tensors"]:
                 if output_tensor_name in (self.outputs_metadata.get("buffer_tensors") or ()):
                     t0_buffer = time.perf_counter()
                     save_buffer = self.buffer_manager.get_buffer(f"{output_tensor_name}_save")
@@ -463,7 +463,7 @@ class InferencerWorker:
         self._metrics["buffer_get_time_ms_total"] = (time.perf_counter() - t0_buffer) * 1000
         t0_transfer = time.perf_counter()
         with torch.cuda.stream(self._d2h_stream):
-            for output_tensor_name in self.outputs_metadata["save_tensors"].keys():
+            for output_tensor_name in self.outputs_metadata["save_tensors"]:
                 if output_tensor_name in preds.keys():
                     output_tensor = preds[output_tensor_name]
                 elif output_tensor_name in data_sample.keys():
