@@ -487,7 +487,9 @@ class InferencerWorker:
                     self._copy_d2h(dst=dest_array, src=output_tensor)
                     save_outputs[output_tensor_name] = slot_info
                 else:
-                    save_outputs[output_tensor_name] = output_tensor
+                    host_array = torch.empty_like(output_tensor, device="cpu", pin_memory=True)
+                    host_array.copy_(output_tensor, non_blocking=True)
+                    save_outputs[output_tensor_name] = host_array
 
             if should_visualize and self.vizualize_outputs:
                 for output_tensor_name in self.outputs_metadata["visualize_tensors"]:
@@ -511,7 +513,9 @@ class InferencerWorker:
                         self._copy_d2h(dst=dest_array, src=output_tensor)
                         viz_outputs[output_tensor_name] = slot_info
                     else:
-                        viz_outputs[output_tensor_name] = output_tensor
+                        host_array = torch.empty_like(output_tensor, device="cpu", pin_memory=True)
+                        host_array.copy_(output_tensor, non_blocking=True)
+                        viz_outputs[output_tensor_name] = host_array
 
         self._cp_d2h_stream.synchronize()
         self._metrics["buffer_transfer_time_ms"] = (time.perf_counter() - t0_transfer) * 1000
