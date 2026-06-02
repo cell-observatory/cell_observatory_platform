@@ -71,7 +71,7 @@ def prepare_environment() -> None:
     os.environ.setdefault("PGCOPYDB_SLOT_NAME", "cell_observatory_sandbox")
     os.environ.setdefault("PGCOPYDB_ORIGIN", "cell_observatory_sandbox")
     os.environ.setdefault(
-        "PGCOPYDB_FILTER_FILE", str(SCRIPT_DIR / "filter.ini")
+        "PGCOPYDB_FILTER_FILE", str(SCRIPT_DIR / "filters.ini")
     )
 
     Path(os.environ["PGCOPYDB_WORK_DIR"]).mkdir(parents=True, exist_ok=True)
