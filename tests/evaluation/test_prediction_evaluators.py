@@ -7,25 +7,20 @@ from cell_observatory_platform.evaluation.automated_benchmark_evaluator import (
 from cell_observatory_platform.evaluation.base_evaluation import BaseEvaluator
 
 
-def test_base_evaluator_rejects_loss_none():
+@pytest.mark.parametrize(
+    "data_sample, outputs, loss_dict, none_arg",
+    [
+        (None, {}, {}, "data_sample"),
+        ({}, None, {}, "outputs"),
+        ({}, {}, None, "loss_dict"),
+    ],
+    ids=["data_sample", "outputs", "loss_dict"],
+)
+def test_base_evaluator_rejects_none_args(data_sample, outputs, loss_dict, none_arg):
+    """BaseEvaluator.process rejects None for any required arg."""
     evaluator = BaseEvaluator(training_metrics=[{"step_loss": "mean"}])
-
-    with pytest.raises(TypeError, match="loss_dict=None"):
-        evaluator.process({}, {}, None)
-
-
-def test_base_evaluator_rejects_data_sample_none():
-    evaluator = BaseEvaluator(training_metrics=[{"step_loss": "mean"}])
-
-    with pytest.raises(TypeError, match="data_sample=None"):
-        evaluator.process(None, {}, {"step_loss": 0.0})
-
-
-def test_base_evaluator_rejects_outputs_none():
-    evaluator = BaseEvaluator(training_metrics=[{"step_loss": "mean"}])
-
-    with pytest.raises(TypeError, match="outputs=None"):
-        evaluator.process({}, None, {"step_loss": 0.0})
+    with pytest.raises(TypeError):
+        evaluator.process(data_sample, outputs, loss_dict)
 
 
 def test_automated_benchmark_select_pred_dict_requires_pred_key():

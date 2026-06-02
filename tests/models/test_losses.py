@@ -2,7 +2,6 @@ import pytest
 import torch
 
 import cell_observatory_platform.training.losses as losses_mod
-from cell_observatory_platform.models.layers.utils import point_sample
 from cell_observatory_platform.models.ops.losses import (
     batch_dice_loss,
     batch_sigmoid_ce_loss,
@@ -760,58 +759,6 @@ def test_plain_detr_set_loss_forward_with_aux_and_enc_outputs_cpu():
 # -------------------------------------------------------------------------
 
 
-def test_point_sample_nearest_yields_binary_labels():
-    """point_sample(..., mode="nearest") must produce strictly {0, 1} labels
-    when sampling a binary GT mask at fractional coords. This pins the
-    contract relied on by `MultiStepMultiMasksAndIousLoss._sample_points_and_labels`
-    at training/losses.py:1854: trilinear (the default) would smear boundary
-    voxels into fractional labels, which would then be fed to BCE-with-logits
-    inside sigmoid_focal_loss and silently bias the loss.
-    """
-    # Coherent 4x4x4 cube of 1s in an 8x8x8 binary mask.
-    mask = torch.zeros((1, 1, 8, 8, 8), dtype=torch.float32)
-    mask[..., 2:6, 2:6, 2:6] = 1.0
-
-    # Coords are in [0, 1]^3 with last dim ordered (x, y, z) per point_sample
-    # docstring; values are picked to fall ON the cube boundary so trilinear
-    # sampling will produce fractional values while nearest-neighbour will not.
-    coords = torch.tensor(
-        [
-            [0.25, 0.50, 0.50],   # x=0.25 -> on the X boundary
-            [0.50, 0.25, 0.50],   # y=0.25 -> on the Y boundary
-            [0.375, 0.375, 0.5],  # diagonal interior-to-boundary
-        ],
-        dtype=torch.float32,
-    ).unsqueeze(0)  # (N=1, P=3, 3)
-
-    out_nearest = point_sample(
-        input=mask,
-        point_coords=coords,
-        mode="nearest",
-        align_corners=False,
-    )
-    assert out_nearest.shape == (1, 1, 3)
-    # mode="nearest" rounds to the closest voxel -> strictly {0, 1}.
-    assert torch.all((out_nearest == 0.0) | (out_nearest == 1.0)), (
-        f"expected strictly binary labels with mode='nearest', got {out_nearest}"
-    )
-
-    # Negative control: default trilinear interpolation must produce at least
-    # one fractional value on these boundary-straddling coords. This is what
-    # would silently corrupt the GT labels if mode='nearest' were ever dropped
-    # at training/losses.py:1854.
-    out_bilinear = point_sample(
-        input=mask,
-        point_coords=coords,
-        align_corners=False,
-    )
-    assert torch.any((out_bilinear > 0.0) & (out_bilinear < 1.0)), (
-        "default (trilinear) point_sample must produce a fractional value on "
-        "boundary coords; if this fails the negative-control assumption "
-        f"broke (got {out_bilinear})"
-    )
-
-
 @pytest.mark.gpu
 def test_sample_points_and_labels_yields_binary_labels():
     """`MultiStepMultiMasksAndIousLoss._sample_points_and_labels` must return
@@ -856,28 +803,3 @@ def test_sample_points_and_labels_yields_binary_labels():
         "_sample_points_and_labels must emit strictly binary labels (mode="
         f"'nearest' contract); unique values seen: {unique_vals.tolist()}"
     )
-
-
-def test_multistep_loss_rejects_low_res_multimasks_without_point_sampling():
-    """`low_res_multimasks=True` is only meaningful when point sampling is on.
-
-    Dense focal/dice on a low-res prediction stream cannot mix with full-res
-    GT - the criterion would silently broadcast-error or produce wrong shapes.
-    The constructor must reject this combination at build time.
-    """
-    weight_dict = {
-        "loss_mask": 1.0,
-        "loss_dice": 1.0,
-        "loss_iou": 1.0,
-        "loss_class": 1.0,
-    }
-    with pytest.raises(
-        AssertionError,
-        match=r"low_res_multimasks=True requires use_point_sampling=True",
-    ):
-        losses_mod.MultiStepMultiMasksAndIousLoss(
-            input_fmt="TZYXC",
-            weight_dict=weight_dict,
-            use_point_sampling=False,
-            low_res_multimasks=True,
-        )

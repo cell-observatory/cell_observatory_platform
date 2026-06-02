@@ -284,29 +284,9 @@ def test_sam2_forward_smoke(flags):
         # MaskDecoder builds `pred_obj_score_head` only when pred_obj_scores=True.
         required_prefixes.append("sam_mask_decoder.pred_obj_score_head")
 
-    grads_seen = {prefix: [] for prefix in required_prefixes}
-    for name, p in model.named_parameters():
-        if not p.requires_grad:
-            continue
-        for prefix in required_prefixes:
-            if name.startswith(prefix):
-                has_grad = (
-                    p.grad is not None and torch.any(p.grad != 0).item()
-                )
-                grads_seen[prefix].append((name, has_grad))
-
-    starved = []
-    for prefix, entries in grads_seen.items():
-        assert entries, (
-            f"required prefix {prefix!r} matched zero trainable params; "
-            f"either the prefix is wrong or the head was never built"
-        )
-        if not any(has_grad for _, has_grad in entries):
-            starved.append(
-                (prefix, [name for name, _ in entries[:8]])
-            )
-
-    assert not starved, (
-        "the following head prefixes received NO gradient on any of their "
-        f"trainable params (loss did not flow into them): {starved}"
-    )
+    for prefix in required_prefixes:
+        params = [(n, p) for n, p in model.named_parameters()
+                  if p.requires_grad and n.startswith(prefix)]
+        assert params, f"prefix {prefix!r} matched zero trainable params"
+        assert any(p.grad is not None and torch.any(p.grad != 0).item() for _, p in params), \
+            f"prefix {prefix!r} received no gradient on any of {len(params)} params"
