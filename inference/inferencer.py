@@ -553,13 +553,19 @@ class InferencerWorker:
         return metrics
 
     def finalize(self):
-        ray.get(self._tasks)
+        n_tasks = len(self._tasks)
+        errors = []
+        for i, task in enumerate(self._tasks):
+            try:
+                ray.get(task, timeout=300)
+            except Exception as e:
+                errors.append((i, e))
+                ray.logger.error(f"Task {i}/{n_tasks} failed: {e}")
         self._tasks.clear()
         torch.cuda.synchronize()
         barrier()
-
-
-
+        if errors:
+            raise RuntimeError(f"{errors}\n{len(errors)}/{n_tasks} save/viz tasks failed.")
 
 # class InferencerWorker:
 #     def __init__(
