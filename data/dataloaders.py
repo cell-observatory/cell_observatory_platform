@@ -168,7 +168,9 @@ def get_dataloader(
         sample_store_desc=sample_store_desc,
         dp_degree=dp_degree,
         dp_rank=dp_rank,
-        selected_channel_localizations=list(selected_channel_localizations),
+        selected_channel_localizations=(
+            list(selected_channel_localizations) if selected_channel_localizations is not None else None
+        ),
     )
 
     return train_dataloader, val_dataloader, dataloader_config, buffer_actor, collate_fn.device_buffer, None
