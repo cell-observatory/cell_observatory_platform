@@ -59,7 +59,7 @@ echo "Removing old extracted sandbox: $sandbox_dir"
 # rm -rf "$sandbox_dir"
 
 echo "Copying sandbox tarball to $sandbox_tar"
-rsync -av --progress "$DATABASE_SANDBOX" "$sandbox_tar"
+rsync -av --no-group --progress "$DATABASE_SANDBOX" "$sandbox_tar"
 
 echo "Extracting sandbox under $scratch_root"
 zstd -d -c "$sandbox_tar" | tar -xf - -C "$scratch_root"
@@ -71,6 +71,8 @@ fi
 
 # FIXME: all these are not needed
 bind_dests=(
+  "/global"
+  "/clusterfs"
   "/workspace/cell_observatory_platform"
   "$DATA_DIR"
   "$STORAGE_SERVER_DIR"
