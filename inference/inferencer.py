@@ -540,6 +540,10 @@ class InferencerWorker:
         if should_visualize and self.vizualize_outputs:
             if self.viz_worker is None:
                 raise RuntimeError("Attempting to visualize outputs but viz_worker is None")
+            if "data_tensor" in data_sample:
+                viz_outputs["data_tensor"] = self._tree_to_cpu_numpy(data_sample["data_tensor"])
+            if targets is not None:
+                viz_outputs["targets"] = self._tree_to_cpu_numpy(targets)
             vis_task = self.viz_worker.visualize.remote(
                 inference_outputs=viz_outputs,
                 queue_t0=time.perf_counter(),
