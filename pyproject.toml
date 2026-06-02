@@ -33,8 +33,7 @@ testpaths = ["tests", "pytests"]
 python_files = ["test_*.py"]
 addopts = "--strict-markers -v"
 markers = [
-    "cuda: marks tests as requiring the CUDA compile toolkit (nvcc + CUDA_HOME)",
-    "gpu: marks tests as requiring a runtime CUDA GPU (torch.cuda.is_available)",
+    "cuda: marks tests as requiring CUDA",
     "localdb: marks tests as requiring the local sandbox database",
 ]
 

@@ -61,17 +61,6 @@ def _has_cuda_toolkit() -> bool:
     return True
 
 
-def _has_cuda_gpu() -> bool:
-    # Tests marked `gpu` need a runtime CUDA-capable device, NOT the compile
-    # toolkit. A node with `torch.cuda.is_available()` True but no nvcc can
-    # still run these.
-    try:
-        import torch
-        return torch.cuda.is_available()
-    except Exception:
-        return False
-
-
 # Module-level DeepSpeed imports inside these files trigger nvcc probing at
 # collection time, so we have to skip them earlier than markers can fire.
 _CUDA_TOOLKIT_REQUIRED_FILES = (
@@ -94,18 +83,14 @@ def pytest_ignore_collect(collection_path, config):
 
 def pytest_collection_modifyitems(config, items):
     has_cuda_toolkit = _has_cuda_toolkit()
-    has_cuda_gpu = _has_cuda_gpu()
     run_localdb = config.getoption("--run-localdb")
 
     skip_cuda = pytest.mark.skip(reason="CUDA toolkit (nvcc) not available")
-    skip_gpu = pytest.mark.skip(reason="no CUDA GPU available")
     skip_localdb = pytest.mark.skip(reason="need --run-localdb to execute localdb tests")
 
     for item in items:
         if not has_cuda_toolkit and "cuda" in item.keywords:
             item.add_marker(skip_cuda)
-        if not has_cuda_gpu and "gpu" in item.keywords:
-            item.add_marker(skip_gpu)
         if not run_localdb and "localdb" in item.keywords:
             item.add_marker(skip_localdb)
 
