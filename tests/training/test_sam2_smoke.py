@@ -160,18 +160,43 @@ def _make_data_sample(
     return {"data_tensor": data_tensor, "metainfo": {"targets": targets}}
 
 
+# Build the (use_point_sampling, low_res_multimasks, pred_obj_scores) matrix.
+# low_res_multimasks=True requires use_point_sampling=True (asserted at
+# MultiStepMultiMasksAndIousLoss.__init__), so filter those rows out instead of
+# letting the build fail loudly inside the test.
+_SMOKE_PARAMS = [
+    pytest.param(
+        (use_point_sampling, low_res_multimasks, pred_obj_scores),
+        id=(
+            ("pointrend" if use_point_sampling else "dense")
+            + ("-lowres" if low_res_multimasks else "-highres")
+            + ("-objscore" if pred_obj_scores else "-noobj")
+        ),
+    )
+    for use_point_sampling in (True, False)
+    for low_res_multimasks in (True, False)
+    for pred_obj_scores in (True, False)
+    if not (low_res_multimasks and not use_point_sampling)
+]
+
+
 @pytest.mark.skipif(not CUDA_AVAILABLE, reason="SAM2 smoke needs CUDA")
-@pytest.mark.parametrize(
-    "use_point_sampling",
-    [
-        pytest.param(True, id="pointrend"),
-        pytest.param(False, id="dense"),
-    ],
-)
-def test_sam2_forward_smoke(use_point_sampling: bool):
+@pytest.mark.parametrize("flags", _SMOKE_PARAMS)
+def test_sam2_forward_smoke(flags):
     """Drive both loss paths end-to-end. The preprocessor materializes the
     K=max_masks binary-mask subset; the criterion flag selects PointRend
-    point-sampling (`True`) vs dense per-voxel (`False`)."""
+    point-sampling (`True`) vs dense per-voxel (`False`).
+
+    Additional axes:
+      * `low_res_multimasks` - route focal/dice through the low-res mask
+        stream. Requires `use_point_sampling=True`.
+      * `pred_obj_scores`    - exercise the SAM2 object-score head + the
+        criterion's `loss_class` branch. Without this case the obj-score
+        path silently drops out of the gradient graph (loss_class weight
+        defaults to 0 in the YAML).
+    """
+    use_point_sampling, low_res_multimasks, pred_obj_scores = flags
+
     from cell_observatory_platform.models.meta_arch.sam import BUILD as BUILD_SAM2
     from cell_observatory_platform.models.layers.preprocessor import SAM2VideoPreprocessor
 
@@ -187,6 +212,21 @@ def test_sam2_forward_smoke(use_point_sampling: bool):
         T=T, Z=Z, Y=Y, X=X, C_in=C_in, max_masks=max_masks
     )
     cfg.models.meta_arch.sam.criterion_args.use_point_sampling = use_point_sampling
+    cfg.models.meta_arch.sam.criterion_args.low_res_multimasks = low_res_multimasks
+    # `pred_obj_scores` is read by BOTH the meta-arch (to build the obj-score
+    # head inside the mask decoder) and the criterion (to enable the
+    # `loss_class` branch). Keep them in sync, and bump loss_class's weight so
+    # the obj-score head actually receives gradient when enabled.
+    cfg.models.meta_arch.sam.pred_obj_scores = pred_obj_scores
+    cfg.models.meta_arch.sam.criterion_args.pred_obj_scores = pred_obj_scores
+    if pred_obj_scores:
+        cfg.models.meta_arch.sam.criterion_args.weight_dict.loss_class = 1.0
+        # The meta-arch's `pred_obj_scores` branch unconditionally references
+        # `self.no_obj_ptr`, which is only created when use_obj_ptrs_in_encoder
+        # is also True (see SAM2.__init__). Co-enable both so the smoke can
+        # actually reach the loss without an AttributeError.
+        cfg.models.meta_arch.sam.use_obj_ptrs_in_encoder = True
+        cfg.models.meta_arch.sam.max_obj_ptrs_in_encoder = 1
 
     model = BUILD_SAM2(cfg).to(device).train()
 
@@ -230,10 +270,49 @@ def test_sam2_forward_smoke(use_point_sampling: bool):
     assert torch.is_tensor(total) and torch.isfinite(total).item()
     total.backward()
 
-    # Verify at least one trainable param picked up a gradient.
-    grad_found = any(
-        p.grad is not None and torch.any(p.grad != 0).item()
-        for p in model.parameters()
-        if p.requires_grad
+    # Per-head gradient assertion. The original `any(...)` check would pass
+    # even if an entire head silently lost its connection to the loss graph
+    # (e.g. the obj-score head when loss_class weight is zero, or the prompt
+    # encoder when a refactor drops the prompt path). Here we require that
+    # AT LEAST ONE trainable parameter under each required prefix has a
+    # non-zero gradient -- the "head is exercised" contract. We avoid
+    # requiring *every* sub-param because the SAM2 prompt encoder/mask
+    # decoder include structurally-unused submodules in our config (box-prompt
+    # embeddings 2/3 with prob_to_use_box_input=0; the second mask token's
+    # hypernetwork MLP when num_multimask_outputs=1 and multimask_output_in_sam
+    # =False) that legitimately receive no gradient.
+    #
+    # Memory encoder/attention are NOT in the required set because with T=1
+    # they don't contribute to the loss (their outputs only feed future frames
+    # via the memory bank).
+    required_prefixes = ["image_encoder", "sam_prompt_encoder", "sam_mask_decoder"]
+    if getattr(model, "pred_obj_scores", False):
+        # MaskDecoder builds `pred_obj_score_head` only when pred_obj_scores=True.
+        required_prefixes.append("sam_mask_decoder.pred_obj_score_head")
+
+    grads_seen = {prefix: [] for prefix in required_prefixes}
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        for prefix in required_prefixes:
+            if name.startswith(prefix):
+                has_grad = (
+                    p.grad is not None and torch.any(p.grad != 0).item()
+                )
+                grads_seen[prefix].append((name, has_grad))
+
+    starved = []
+    for prefix, entries in grads_seen.items():
+        assert entries, (
+            f"required prefix {prefix!r} matched zero trainable params; "
+            f"either the prefix is wrong or the head was never built"
+        )
+        if not any(has_grad for _, has_grad in entries):
+            starved.append(
+                (prefix, [name for name, _ in entries[:8]])
+            )
+
+    assert not starved, (
+        "the following head prefixes received NO gradient on any of their "
+        f"trainable params (loss did not flow into them): {starved}"
     )
-    assert grad_found, "no gradients flowed through SAM2 from the labelmap loss"
