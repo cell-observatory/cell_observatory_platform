@@ -1,0 +1,18 @@
+# @package _global_
+# H200 variant. See base_sam2_new_mask_ids_to_masks.yaml for shared settings.
+# clusters.* overrides live here (after the cluster default) so they apply
+# after /clusters/janelia_h200 resets batch_size/worker_nodes.
+defaults:
+  - base_sam2_new_mask_ids_to_masks
+  - /clusters/janelia_h200
+  - _self_
+
+experiment_name: profiling_h200_sam2_baseline_128x384x512
+
+clusters:
+  batch_size: 16 # gpus_per_worker (8) * worker_nodes (2)
+  worker_nodes: 2
+
+datasets:
+  preprocessor:
+    max_masks: 26
