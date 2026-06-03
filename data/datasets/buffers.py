@@ -661,10 +661,24 @@ class BufferManager:
             ray.get(buffer_actor.disable_metrics_collection.remote())
 
     def get_metrics(self) -> Dict[str, Dict[str, float | int | list[float | int]]]:
-        """Get the metrics for the BufferManager."""
+        """Get the metrics for the BufferManager.
+
+        Best-effort: a buffer actor may already be torn down (e.g. ``ray.kill``
+        during test cleanup or shutdown, which skips its ``atexit`` handlers), so
+        a dead/unreachable actor is skipped with a warning rather than raising.
+        Callers (the metrics hook and :meth:`shutdown`) must not crash — and
+        ``shutdown`` must still proceed to release resources — when only a subset
+        of pools is alive.
+        """
         metrics = {}
         for pool_name, buffer_actor in self._buffer_actors.items():
-            metrics[pool_name] = ray.get(buffer_actor.get_metrics.remote())
+            try:
+                metrics[pool_name] = ray.get(buffer_actor.get_metrics.remote())
+            except Exception as e:
+                ray.logger.warning(
+                    f"[BufferManager] metrics unavailable for pool {pool_name} "
+                    f"(actor dead/unreachable): {e}"
+                )
         return metrics
     
     def log_metrics_at_shutdown(self) -> None:

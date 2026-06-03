@@ -1,9 +1,16 @@
 # @package _global_
+# Shared base for the a100/h100/h200 SAM2 baseline profiling runs.
+# Per-GPU configs include this and only override what differs (cluster,
+# experiment_name, clusters.batch_size/worker_nodes, preprocessor.max_masks).
+#
+# NOTE: the cluster default is intentionally NOT listed here. Each per-GPU
+# config adds its own /clusters/janelia_* default and sets clusters.batch_size
+# and clusters.worker_nodes in its own _self_ so they apply AFTER the cluster
+# file (which resets batch_size/worker_nodes to its own values).
 defaults:
   - /tasks/instance_segmentation
   - /paths/local
   - /hydra/overrides
-  - /clusters/janelia_h200
   - /datasets/databases/base_database
   - /datasets/transforms/ray_transforms
   - /datasets/preprocessor/ray_preprocessor
@@ -25,7 +32,6 @@ defaults:
   - /profiling/profiling
   - _self_
 
-experiment_name: profiling_h200_sam2_baseline_128x384x512_old_mask_ids_to_masks
 wandb_project: testing
 
 # debug_mode: true
@@ -49,9 +55,12 @@ engine: deepspeed
 # overrides
 # --------------------------------------------------------------------------------
 
-clusters:
-  batch_size: 16 # gpus_per_worker (8) * worker_nodes (2)
-  worker_nodes: 2
+# Use the PointRend point-sampling loss path (labelmap-native).
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        use_point_sampling: true
 
 paths:
   outdir: ${paths.data_path}/testing/${experiment_name}
@@ -83,7 +92,7 @@ datasets:
   synthetic_only: true
 
   preprocessor:
-    max_masks: 46
+    max_masks: 26
 
   databases:
     dbname: local

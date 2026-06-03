@@ -541,6 +541,20 @@ jobs:
       REQUIRED_SHM_GB: 64
       RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE: 1
     steps:
+      # This job bind-mounts ${{ github.workspace }} into the container and runs
+      # pytest against it, but (unlike docker-build) had NO checkout — so on a
+      # persistent self-hosted runner it tested whatever stale / wrong-branch
+      # code a previous run left behind. Force-sync the workspace to the tested
+      # commit here. clean: false is REQUIRED: a default clean (git clean -ffdx)
+      # would delete the build_SIF-produced *.sif (now gitignored) that the
+      # apptainer exec below bind-mounts; checkout --force still resets tracked
+      # files to the commit and adds any files missing from a stale workspace.
+      - name: Checkout tested commit into the persistent workspace
+        uses: actions/checkout@v6
+        with:
+          submodules: "recursive"
+          clean: false
+
       # - name: Cache pytest .testmondata
       #   uses: actions/cache@v4
       #   with:
@@ -651,7 +665,7 @@ jobs:
         id: apptainer_run
         run: |
           rm -f test_results/* || true
-          echo "APPTAINER_RUN=apptainer exec --userns --home ${SCRATCH_ROOT}/home --env TRITON_CACHE_DIR=${SCRATCH_ROOT}/.triton --env MPLCONFIGDIR=${SCRATCH_ROOT}/.matplotlib --env XDG_CACHE_HOME=${SCRATCH_ROOT}/.cache --env SCRATCH_ROOT=${SCRATCH_ROOT} --env NODE_LOCAL_STORE_ROOT=${NODE_LOCAL_STORE_ROOT} ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_RUN=apptainer exec --userns --home ${SCRATCH_ROOT}/home --env TRITON_CACHE_DIR=${SCRATCH_ROOT}/.triton --env MPLCONFIGDIR=${SCRATCH_ROOT}/.matplotlib --env XDG_CACHE_HOME=${SCRATCH_ROOT}/.cache --env SCRATCH_ROOT=${SCRATCH_ROOT} --env NODE_LOCAL_STORE_ROOT=${NODE_LOCAL_STORE_ROOT} --env PYTHONFAULTHANDLER=1 ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
 
       - name: print environment variables
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
