@@ -178,3 +178,8 @@ scripts/db/*.tar.zst
 scripts/db/*.backup
 scripts/db/pgcopydb_work/
 /.vscode/settings.json
+
+# CI-built Apptainer images and pytest artifacts (must not pollute the
+# self-hosted runner working tree / block branch switches)
+*.sif
+test_results/
