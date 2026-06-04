@@ -214,6 +214,26 @@ def test_process_match_labels_false_uses_class_agnostic_bucket_once():
     assert stream[0]["n_gt"] == 2
 
 
+def test_process_class_agnostic_sentinel_with_match_labels_true_raises():
+    evaluator = InstanceSegmentationEvaluator(metrics=["mask_map"], match_labels=True)
+    sample = _make_fake_predict_for_eval_output()
+    sample["topk_class_ids"] = torch.full((2,), -1, dtype=torch.long)
+
+    with pytest.raises(ValueError, match="class-agnostic"):
+        evaluator.process(_make_data_sample(), outputs=[sample])
+
+
+def test_process_class_agnostic_sentinel_with_match_labels_false_ok():
+    evaluator = InstanceSegmentationEvaluator(
+        metrics=["mask_map"], match_labels=False, mask_chunk_size=1
+    )
+    sample = _make_fake_predict_for_eval_output()
+    sample["topk_class_ids"] = torch.full((2,), -1, dtype=torch.long)
+
+    evaluator.process(_make_data_sample(), outputs=[sample])  # must not raise
+    assert math.isfinite(evaluator.evaluate()["mask_map"])
+
+
 def test_reset_clears_metrics_results_and_image_counter():
     evaluator = InstanceSegmentationEvaluator(
         metrics=["mask_map", "mask_miou"],

@@ -257,6 +257,16 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         topk_query_idx = sample["topk_query_indices"]  # defines ``device``
         topk_boxes = sample["boxes"].to(device)
 
+        if (
+            self.match_labels
+            and topk_class_ids.numel()
+            and bool((topk_class_ids < 0).any())
+        ):
+            raise ValueError(
+                "InstanceSegmentationEvaluator got class-agnostic predictions while match_labels=True."
+                "Set match_labels=False in the evaluator config for class-agnostic"
+            )
+
         # Self-assessed per-prediction mask quality from the model's PREDICTED-IoU
         # head (SAM2 contract). predict_for_eval exposes this as one of the keys
         # tried below (e.g. "pred_ious"); MaskDINO has no IoU head and provides
