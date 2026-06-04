@@ -15,4 +15,4 @@ clusters:
 
 datasets:
   preprocessor:
-    max_masks: 26
+    max_masks: 46
