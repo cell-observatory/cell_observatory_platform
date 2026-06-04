@@ -137,6 +137,31 @@ def test_mask_map_stream_shape_validation():
         )
 
 
+def test_mask_map_stream_preds_but_no_gt_are_false_positives():
+    metric = MaskMAPMetric(iou_thresholds=[0.5])
+    metric.add_image_class(
+        image_id=0,
+        class_id=1,
+        scores=torch.tensor([0.9, 0.8]),
+        ious=torch.zeros(2, 0),
+        n_gt=0,
+    )
+
+    assert metric.aggregate() == pytest.approx(0.0)
+
+
+def test_mask_map_stream_rejects_row_score_mismatch():
+    metric = MaskMAPMetric(iou_thresholds=[0.5])
+    with pytest.raises(ValueError, match="must equal number of scores"):
+        metric.add_image_class(
+            image_id=0,
+            class_id=1,
+            scores=torch.tensor([0.9, 0.8]),
+            ious=torch.zeros(0, 0),
+            n_gt=0,
+        )
+
+
 def test_mask_map_streaming_precedence_over_batched_state():
     metric = MaskMAPMetric(iou_thresholds=[0.5])
     mask = torch.zeros(1, 2, 2, 2, dtype=torch.bool)

@@ -423,9 +423,10 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
             if ious_rows:
                 ious_c = torch.cat(ious_rows, dim=0)
             else:
-                # No predictions -> empty IoU matrix. Still record n_gt so this
-                # class contributes to the recall denominator.
-                ious_c = torch.zeros((0, n_gt_c), dtype=torch.float32)
+                # No predictions -> empty IoU matrix but still need to record n_gt so this class contributes to the recall denominator.
+                # 1) no predictions of this class -> (0, n_gt)
+                # 2) predictions but no GT (gt_masks_c is None) -> (k, 0)
+                ious_c = torch.zeros((pred_scores_c.numel(), n_gt_c), dtype=torch.float32) # (k, n_gt)
 
             # Push to MaskMAP via streaming API. AP must see the FULL,
             # unfiltered prediction set (no score threshold) so the pooled

@@ -772,6 +772,12 @@ class MaskMAPMetric(Metric):
             )
         scores = scores.detach().cpu()
         ious = ious.detach().cpu().to(torch.float32)
+        if ious.shape[0] != scores.numel():
+            raise ValueError(
+                f"ious rows {ious.shape[0]} must equal number of scores "
+                f"{scores.numel()} (each prediction needs exactly one IoU row; "
+                "a preds-but-no-GT class must pass (k, 0), not (0, 0))."
+            )
         if scores.numel() and ious.shape[1] != n_gt:
             raise ValueError(
                 f"ious shape {tuple(ious.shape)} disagrees with n_gt={n_gt} "
@@ -1100,6 +1106,12 @@ class PredictedIoUEvalMetric(Metric):
             raise ValueError(
                 f"pred_ious shape {tuple(pred_ious.shape)} must equal scores "
                 f"shape {tuple(scores.shape)}."
+            )
+        if ious.shape[0] != scores.numel():
+            raise ValueError(
+                f"ious rows {ious.shape[0]} must equal number of scores "
+                f"{scores.numel()} (each prediction needs exactly one IoU row; "
+                "a preds-but-no-GT class must pass (k, 0), not (0, 0))."
             )
         if scores.numel() and ious.shape[1] != n_gt:
             raise ValueError(
