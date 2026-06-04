@@ -236,6 +236,8 @@ def test_no_iou_pred_key_skips_predicted_iou_but_mask_and_box_populate():
         mask_chunk_size=2,
         match_labels=False,
         gt_mask_source="label_map",
+        gt_box_format="xyzxyz",
+        gt_boxes_normalized=False,
     )
     evaluator.process(_data_sample(target), outputs=[sample])
 

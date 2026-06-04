@@ -375,6 +375,29 @@
       "justMyCode": false
     },
     {
+      "name": "🧪 tests/data/test_local_databases",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "--run-localdb",
+        "tests/data/test_local_databases.py"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
       "name": "🧪 tests/data/test_pretrain_dataset_ray",
       "type": "debugpy",
       "request": "launch",
@@ -943,6 +966,123 @@
       "cwd": "${workspaceFolder}",
       "env": {
         "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "test_sam2_instance_evaluator::test_no_iou_pred_key",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/evaluation/test_sam2_instance_evaluator.py::test_no_iou_pred_key_skips_predicted_iou_but_mask_and_box_populate"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "test_buffer_manager::test_set_buffer_exceeds_budget",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/inference/test_buffer_manager.py::TestBufferManagerSetGet::test_set_buffer_exceeds_budget"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "test_save_worker::test_save_failure_records_metric",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/inference/test_save_worker.py::TestSaveWorkerRay::test_save_worker_save_failure_records_metric"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "test_save_worker::test_nonexistent_image_path",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/inference/test_save_worker.py::TestSaveWorkerRay::test_save_worker_nonexistent_image_path_no_batch_success"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "justMyCode": false
+    },
+    {
+      "name": "test_hooks::test_hooks",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-s",
+        "-vvv",
+        "--cache-clear",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--color=yes",
+        "-r fEX",
+        "tests/training/test_hooks.py::test_hooks"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "SCRATCH_ROOT": "/scratch/sandbox",
+        "NODE_LOCAL_STORE_ROOT": "/scratch/sandbox/node_local_store"
       },
       "justMyCode": false
     },
