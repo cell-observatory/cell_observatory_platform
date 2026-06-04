@@ -410,85 +410,60 @@ class InferencerWorker:
 
         t0_buffer = time.perf_counter()
         save_buffer_slots = {}
-        if self.save_outputs:
-            for output_tensor_name in self.outputs_metadata["save_tensors"]:
-                if output_tensor_name in (self.outputs_metadata.get("buffer_tensors") or ()):
-                    t0_buffer = time.perf_counter()
-                    save_buffer = self.buffer_manager.get_buffer(f"{output_tensor_name}_save")
-                    if self.block_on_save:
-                        slot_info = ray.get(save_buffer.get_free.remote())
-                        if slot_info is None:
-                            raise RuntimeError(f"No free slot found for {output_tensor_name}")
-                    else:
-                        slot_info = ray.get(save_buffer.try_get_free.remote())
-
-                    if slot_info is None:
-                        ray.logger.warning(f"No free slot found for {output_tensor_name} in save buffer. Skipping save.")
-                        continue
-                    save_buffer_slots[output_tensor_name] = slot_info
-                    self._metrics[f"buffer_get_time_ms/{output_tensor_name}_save"] = (time.perf_counter() - t0_buffer) * 1000
-
         viz_buffer_slots = {}
-        if should_visualize and self.vizualize_outputs:
-            t0_buffer = time.perf_counter()
-            for output_tensor_name in self.outputs_metadata["visualize_tensors"]:
-                if output_tensor_name in (self.outputs_metadata.get("buffer_tensors") or ()):
-                    viz_buffer = self.buffer_manager.get_buffer(f"{output_tensor_name}_viz")
-                    if self.block_on_viz:
-                        slot_info = ray.get(viz_buffer.get_free.remote())
+        try:
+            if self.save_outputs:
+                for output_tensor_name in self.outputs_metadata["save_tensors"]:
+                    if output_tensor_name in (self.outputs_metadata.get("buffer_tensors") or ()):
+                        t0_buffer = time.perf_counter()
+                        save_buffer = self.buffer_manager.get_buffer(f"{output_tensor_name}_save")
+                        if self.block_on_save:
+                            slot_info = ray.get(save_buffer.get_free.remote())
+                            if slot_info is None:
+                                raise RuntimeError(f"No free slot found for {output_tensor_name}")
+                        else:
+                            slot_info = ray.get(save_buffer.try_get_free.remote())
+
                         if slot_info is None:
-                            raise RuntimeError(f"No free slot found for {output_tensor_name}")
-                    else:
-                        slot_info = ray.get(viz_buffer.try_get_free.remote())
-
-                    if slot_info is None:
-                        ray.logger.warning(f"No free slot found for {output_tensor_name} in viz buffer. Skipping visualization.")
-                        should_visualize = False
-                        for allocated_slot in viz_buffer_slots.values():
-                            self.buffer_manager.free_slot(allocated_slot)
-                        viz_buffer_slots.clear()
-                        break
-                    viz_buffer_slots[output_tensor_name] = slot_info
-                    self._metrics[f"buffer_get_time_ms/{output_tensor_name}_viz"] = (time.perf_counter() - t0_buffer) * 1000
-        self._metrics["buffer_get_time_ms_total"] = (time.perf_counter() - t0_buffer) * 1000
-        t0_transfer = time.perf_counter()
-        # d2h stream must wait for the compute stream that produced `preds` before any changes to those tensors
-        compute_stream = torch.cuda.current_stream(device=self.device)
-        with torch.cuda.stream(self._d2h_stream):
-            self._d2h_stream.wait_stream(compute_stream)
-            for output_tensor_name in self.outputs_metadata["save_tensors"]:
-                if output_tensor_name in preds.keys():
-                    output_tensor = preds[output_tensor_name]
-                elif output_tensor_name in data_sample.keys():
-                    output_tensor = data_sample[output_tensor_name]
-                else:
-                    raise ValueError(f"Tensor {output_tensor_name} not found in preds or data_sample")
-
-                if output_tensor is None:
-                    continue
-                
-                output_tensor_dtype_str = self.outputs_metadata["tensor_info"][output_tensor_name]["dtype"]
-                output_tensor_dtype = TORCH_DTYPES[output_tensor_dtype_str].value if isinstance(output_tensor_dtype_str, str) else output_tensor_dtype_str
-                output_tensor = output_tensor.to(dtype=output_tensor_dtype)
-
-                if output_tensor_name in save_buffer_slots.keys():
-                    slot_info = save_buffer_slots[output_tensor_name]
-                    dest_array = self.buffer_manager.slot_info_to_view(slot_info)
-                    self._copy_d2h(dst=dest_array, src=output_tensor)
-                    save_outputs[output_tensor_name] = slot_info
-                else:
-                    host_array = torch.empty_like(output_tensor, device="cpu", pin_memory=True)
-                    host_array.copy_(output_tensor, non_blocking=True)
-                    save_outputs[output_tensor_name] = host_array
+                            ray.logger.warning(f"No free slot found for {output_tensor_name} in save buffer. Skipping save.")
+                            continue
+                        save_buffer_slots[output_tensor_name] = slot_info
+                        self._metrics[f"buffer_get_time_ms/{output_tensor_name}_save"] = (time.perf_counter() - t0_buffer) * 1000
 
             if should_visualize and self.vizualize_outputs:
+                t0_buffer = time.perf_counter()
                 for output_tensor_name in self.outputs_metadata["visualize_tensors"]:
+                    if output_tensor_name in (self.outputs_metadata.get("buffer_tensors") or ()):
+                        viz_buffer = self.buffer_manager.get_buffer(f"{output_tensor_name}_viz")
+                        if self.block_on_viz:
+                            slot_info = ray.get(viz_buffer.get_free.remote())
+                            if slot_info is None:
+                                raise RuntimeError(f"No free slot found for {output_tensor_name}")
+                        else:
+                            slot_info = ray.get(viz_buffer.try_get_free.remote())
+
+                        if slot_info is None:
+                            ray.logger.warning(f"No free slot found for {output_tensor_name} in viz buffer. Skipping visualization.")
+                            should_visualize = False
+                            for allocated_slot in viz_buffer_slots.values():
+                                self.buffer_manager.free_slot(allocated_slot)
+                            viz_buffer_slots.clear()
+                            break
+                        viz_buffer_slots[output_tensor_name] = slot_info
+                        self._metrics[f"buffer_get_time_ms/{output_tensor_name}_viz"] = (time.perf_counter() - t0_buffer) * 1000
+            self._metrics["buffer_get_time_ms_total"] = (time.perf_counter() - t0_buffer) * 1000
+            t0_transfer = time.perf_counter()
+            # d2h stream must wait for the compute stream that produced `preds` before any changes to those tensors
+            compute_stream = torch.cuda.current_stream(device=self.device)
+            with torch.cuda.stream(self._d2h_stream):
+                self._d2h_stream.wait_stream(compute_stream)
+                for output_tensor_name in self.outputs_metadata["save_tensors"]:
                     if output_tensor_name in preds.keys():
                         output_tensor = preds[output_tensor_name]
                     elif output_tensor_name in data_sample.keys():
                         output_tensor = data_sample[output_tensor_name]
                     else:
-                        raise ValueError(f"Output {output_tensor_name} not found in preds or data_sample")
+                        raise ValueError(f"Tensor {output_tensor_name} not found in preds or data_sample")
 
                     if output_tensor is None:
                         continue
@@ -497,48 +472,81 @@ class InferencerWorker:
                     output_tensor_dtype = TORCH_DTYPES[output_tensor_dtype_str].value if isinstance(output_tensor_dtype_str, str) else output_tensor_dtype_str
                     output_tensor = output_tensor.to(dtype=output_tensor_dtype)
 
-                    if output_tensor_name in viz_buffer_slots.keys():
-                        slot_info = viz_buffer_slots[output_tensor_name]
+                    if output_tensor_name in save_buffer_slots.keys():
+                        slot_info = save_buffer_slots[output_tensor_name]
                         dest_array = self.buffer_manager.slot_info_to_view(slot_info)
                         self._copy_d2h(dst=dest_array, src=output_tensor)
-                        viz_outputs[output_tensor_name] = slot_info
+                        save_outputs[output_tensor_name] = slot_info
                     else:
                         host_array = torch.empty_like(output_tensor, device="cpu", pin_memory=True)
                         host_array.copy_(output_tensor, non_blocking=True)
-                        viz_outputs[output_tensor_name] = host_array
+                        save_outputs[output_tensor_name] = host_array
 
-        self._cp_d2h_stream.synchronize()
-        self._metrics["buffer_transfer_time_ms"] = (time.perf_counter() - t0_transfer) * 1000
-        # TODO: Ideally we do this async with buffer tensors because if we block on a buffer
-        # get slot call we can still transfer these data in the meantime. 
-        # Final pass: any remaining nested CUDA tensors (e.g. in metainfo) and
-        # non-buffer prediction tensors must be CPU NumPy before Ray serialization.
-        t0_cpu = time.perf_counter()
-        save_outputs = self._tree_to_cpu_numpy(save_outputs)
-        viz_outputs = self._tree_to_cpu_numpy(viz_outputs)
-        self._metrics["tree_to_cpu_transfer_time_ms"] = (time.perf_counter() - t0_cpu) * 1000
+                if should_visualize and self.vizualize_outputs:
+                    for output_tensor_name in self.outputs_metadata["visualize_tensors"]:
+                        if output_tensor_name in preds.keys():
+                            output_tensor = preds[output_tensor_name]
+                        elif output_tensor_name in data_sample.keys():
+                            output_tensor = data_sample[output_tensor_name]
+                        else:
+                            raise ValueError(f"Output {output_tensor_name} not found in preds or data_sample")
 
-        if self.save_outputs:
-            if self.save_worker is None:
-                raise RuntimeError("Attempting to save outputs but save_worker is None")
-            save_task = self.save_worker.save.remote(
-                inference_outputs=save_outputs,
-                queue_t0=time.perf_counter(),
-            )
-            self._tasks.append(save_task)
+                        if output_tensor is None:
+                            continue
 
-        if should_visualize and self.vizualize_outputs:
-            if self.viz_worker is None:
-                raise RuntimeError("Attempting to visualize outputs but viz_worker is None")
-            if "data_tensor" in data_sample:
-                viz_outputs["data_tensor"] = self._tree_to_cpu_numpy(data_sample["data_tensor"])
-            if targets is not None:
-                viz_outputs["targets"] = self._tree_to_cpu_numpy(targets)
-            vis_task = self.viz_worker.visualize.remote(
-                inference_outputs=viz_outputs,
-                queue_t0=time.perf_counter(),
-            )
-            self._tasks.append(vis_task)
+                        output_tensor_dtype_str = self.outputs_metadata["tensor_info"][output_tensor_name]["dtype"]
+                        output_tensor_dtype = TORCH_DTYPES[output_tensor_dtype_str].value if isinstance(output_tensor_dtype_str, str) else output_tensor_dtype_str
+                        output_tensor = output_tensor.to(dtype=output_tensor_dtype)
+
+                        if output_tensor_name in viz_buffer_slots.keys():
+                            slot_info = viz_buffer_slots[output_tensor_name]
+                            dest_array = self.buffer_manager.slot_info_to_view(slot_info)
+                            self._copy_d2h(dst=dest_array, src=output_tensor)
+                            viz_outputs[output_tensor_name] = slot_info
+                        else:
+                            host_array = torch.empty_like(output_tensor, device="cpu", pin_memory=True)
+                            host_array.copy_(output_tensor, non_blocking=True)
+                            viz_outputs[output_tensor_name] = host_array
+
+            self._cp_d2h_stream.synchronize()
+            self._metrics["buffer_transfer_time_ms"] = (time.perf_counter() - t0_transfer) * 1000
+            # TODO: Ideally we do this async with buffer tensors because if we block on a buffer
+            # get slot call we can still transfer these data in the meantime. 
+            # Final pass: any remaining nested CUDA tensors (e.g. in metainfo) and
+            # non-buffer prediction tensors must be CPU NumPy before Ray serialization.
+            t0_cpu = time.perf_counter()
+            save_outputs = self._tree_to_cpu_numpy(save_outputs)
+            viz_outputs = self._tree_to_cpu_numpy(viz_outputs)
+            self._metrics["tree_to_cpu_transfer_time_ms"] = (time.perf_counter() - t0_cpu) * 1000
+
+            if self.save_outputs:
+                if self.save_worker is None:
+                    raise RuntimeError("Attempting to save outputs but save_worker is None")
+                save_task = self.save_worker.save.remote(
+                    inference_outputs=save_outputs,
+                    queue_t0=time.perf_counter(),
+                )
+                self._tasks.append(save_task)
+                save_buffer_slots = {}
+
+            if should_visualize and self.vizualize_outputs:
+                if self.viz_worker is None:
+                    raise RuntimeError("Attempting to visualize outputs but viz_worker is None")
+                if "data_tensor" in data_sample:
+                    viz_outputs["data_tensor"] = self._tree_to_cpu_numpy(data_sample["data_tensor"])
+                if targets is not None:
+                    viz_outputs["targets"] = self._tree_to_cpu_numpy(targets)
+                vis_task = self.viz_worker.visualize.remote(
+                    inference_outputs=viz_outputs,
+                    queue_t0=time.perf_counter(),
+                )
+                self._tasks.append(vis_task)
+                viz_buffer_slots = {}
+        finally:
+            for slot_info in save_buffer_slots.values():
+                self.buffer_manager.free_slot(slot_info)
+            for slot_info in viz_buffer_slots.values():
+                self.buffer_manager.free_slot(slot_info)
 
     def get_metrics(self) -> Dict[str, float]:
         metrics = self._metrics.copy()
