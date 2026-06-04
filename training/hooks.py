@@ -45,7 +45,7 @@ from cell_observatory_platform.training.helpers import (
     log_data_sample_metrics,
     log_loss_dict,
 )
-from cell_observatory_platform.training.schedulers import CosineScheduler
+from cell_observatory_platform.training.schedulers import CosineScheduler, linear_warmup_cosine_decay
 from cell_observatory_platform.utils.context import gather_and_reduce, is_main_process, process_rank
 if TYPE_CHECKING:
     from cell_observatory_platform.training.loops import BaseTrainer, Inferencer
