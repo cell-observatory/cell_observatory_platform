@@ -78,6 +78,7 @@ def get_dataloader(
         db_client=db,
     )
     store_spec = TableResolver.build_store_spec_from_config(config)
+    server_path_override = getattr(config.paths, "server_path_override", None)
     sample_store = MappedTable.create_or_attach(
         db_client=db,
         resolved=resolved_source,
@@ -86,7 +87,7 @@ def get_dataloader(
         node_id=node_id(),
         local_rank=local_rank(),
         diagnostic_verbose=bool(getattr(config.datasets.databases, "diagnostic_verbose", False)),
-        server_path_override=str(getattr(config.paths, "server_path_override", None)),
+        server_path_override=None if server_path_override is None else str(server_path_override),
     )
     sample_store_desc = sample_store.descriptor
 
