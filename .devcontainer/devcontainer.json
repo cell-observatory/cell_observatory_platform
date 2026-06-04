@@ -39,7 +39,9 @@
     "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=cached",
     "source=${localEnv:HOME}/.ssh,target=/home/ubuntu/.ssh,type=bind,consistency=cached",
     "source=/groups/betzig/betziglab,target=/groups/betzig/betziglab,type=bind,consistency=cached",
-    "source=/scratch/${localEnv:USER}/sandbox,target=/scratch/sandbox,type=bind,consistency=cached"
+    "source=/scratch/${localEnv:USER},target=/scratch,type=bind,consistency=cached",
+    "source=/scratch/${localEnv:USER}/sandbox,target=/scratch/sandbox,type=bind,consistency=cached",
+    "source=/scratch/${localEnv:USER}/node_local_store,target=/scratch/node_local_store,type=bind,consistency=cached"
   ],
   "customizations": {
     "vscode": {
