@@ -26,7 +26,10 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, ListConfig
 from torch.nn import functional as F
 
-from cell_observatory_platform.data.structures import box_iou_3d
+from cell_observatory_platform.data.structures import (
+    box_cxcyczwhd_to_xyzxyz,
+    box_iou_3d,
+)
 from cell_observatory_platform.evaluation.evaluator import DatasetEvaluator
 from cell_observatory_platform.evaluation.metrics import (
     BoxF1Metric,
@@ -80,10 +83,16 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
             ``"masks"`` (use the pre-materialized ``target["masks"]`` tensor).
         target_key: name of the key in ``data_sample["metainfo"]`` that holds
             the per-batch list of target dicts. Defaults to ``"targets"``.
+        gt_box_format: coordinate format of ``target["boxes"]``.
+            The model's predicted boxes are absolute ``xyzxyz`` and ``box_iou_3d`` assumes ``xyzxyz`` corners,
+            so GT must be converted to that same space before the box metrics. 
+        gt_boxes_normalized: a toggle to normalize ``target["boxes"]``.
     """
 
     # Surfaced to the trainer dispatcher (see TestTrainer.run_test_step).
     predict_method = _PREDICT_METHOD_FOR_INSTANCE_SEG
+
+    _SUPPORTED_GT_BOX_FORMATS = ("cxcyczwhd", "xyzxyz")
 
     def __init__(
         self,
@@ -93,16 +102,26 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         match_labels: bool = True,
         gt_mask_source: str = "label_map",
         target_key: str = "targets",
+        gt_box_format: str = "cxcyczwhd",
+        gt_boxes_normalized: bool = True,
     ):
         if gt_mask_source not in ("label_map", "masks"):
             raise ValueError(
                 f"gt_mask_source must be 'label_map' or 'masks'; got {gt_mask_source!r}"
+            )
+        gt_box_format = str(gt_box_format).lower()
+        if gt_box_format not in self._SUPPORTED_GT_BOX_FORMATS:
+            raise ValueError(
+                f"gt_box_format must be one of {self._SUPPORTED_GT_BOX_FORMATS}; "
+                f"got {gt_box_format!r}"
             )
         self.mask_chunk_size = int(mask_chunk_size)
         self.score_threshold = float(score_threshold)
         self.match_labels = bool(match_labels)
         self.gt_mask_source = gt_mask_source
         self.target_key = target_key
+        self.gt_box_format = gt_box_format
+        self.gt_boxes_normalized = bool(gt_boxes_normalized)
 
         self.metrics: Dict[str, Any] = {}
         if isinstance(metrics, (list, ListConfig)):
@@ -267,11 +286,14 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         else:
             box_pred_labels = torch.zeros_like(topk_class_ids)
             box_gt_labels = torch.zeros_like(gt_labels)
+        gt_boxes_xyzxyz = self._gt_boxes_to_abs_xyzxyz(
+            gt_boxes, sample["orig_image_size"]
+        )
         self._update_box_metrics(
             pred_boxes=topk_boxes,
             pred_labels=box_pred_labels,
             pred_scores=topk_scores,
-            gt_boxes=gt_boxes,
+            gt_boxes=gt_boxes_xyzxyz,
             gt_labels=box_gt_labels,
         )
 
@@ -503,6 +525,19 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
             or (isinstance(m, MaskMIoUMetric) and m.mode == "instance")
             for m in self.metrics.values()
         )
+
+    def _gt_boxes_to_abs_xyzxyz(self, gt_boxes: torch.Tensor, orig_image_size: Any) -> torch.Tensor:
+        if gt_boxes.numel() == 0:
+            return gt_boxes
+        if self.gt_box_format == "cxcyczwhd":
+            boxes = box_cxcyczwhd_to_xyzxyz(gt_boxes)
+        else:  # already xyzxyz
+            boxes = gt_boxes
+        if self.gt_boxes_normalized:
+            depth, height, width = (int(s) for s in orig_image_size)
+            scale = boxes.new_tensor([width, height, depth, width, height, depth])
+            boxes = boxes * scale
+        return boxes
 
     def _update_box_metrics(
         self,

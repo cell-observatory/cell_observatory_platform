@@ -28,6 +28,11 @@ evaluator:
   gt_mask_source: label_map
   target_key: targets
 
+  # MaskDINO/SAM2 default to normalized cxcyczwhd. 
+  # The evaluator converts GT to absolute xyzxyz for running box_iou_3d
+  gt_box_format: cxcyczwhd
+  gt_boxes_normalized: true
+
   # Each entry is either a string naming a default factory or a Hydra dict
   # with a `name` key plus `_target_` to instantiate a custom metric.
   metrics:

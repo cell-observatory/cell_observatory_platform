@@ -135,6 +135,26 @@ def test_pairwise_mask_iou_3d_bool_manual_cases():
     assert ious[2, 2].item() == pytest.approx(1.0 / 3.0)
 
 
+def test_gt_boxes_to_abs_xyzxyz_matches_pred_postprocess():
+    evaluator = InstanceSegmentationEvaluator(
+        metrics=["box_map"], gt_box_format="cxcyczwhd", gt_boxes_normalized=True
+    )
+    gt = torch.tensor([[0.5, 0.5, 0.5, 1.0, 1.0, 1.0]], dtype=torch.float32)
+    out = evaluator._gt_boxes_to_abs_xyzxyz(gt, orig_image_size=(4, 8, 16))  # (D,H,W)
+    torch.testing.assert_close(
+        out, torch.tensor([[0.0, 0.0, 0.0, 16.0, 8.0, 4.0]])
+    )
+
+
+def test_gt_boxes_to_abs_xyzxyz_absolute_xyzxyz_is_identity():
+    evaluator = InstanceSegmentationEvaluator(
+        metrics=["box_map"], gt_box_format="xyzxyz", gt_boxes_normalized=False
+    )
+    gt = torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]], dtype=torch.float32)
+    out = evaluator._gt_boxes_to_abs_xyzxyz(gt, orig_image_size=(10, 10, 10))
+    torch.testing.assert_close(out, gt)
+
+
 def test_greedy_match_per_class_score_sorted():
     scores = torch.tensor([0.9, 0.8, 0.7])
     ious = torch.tensor(
