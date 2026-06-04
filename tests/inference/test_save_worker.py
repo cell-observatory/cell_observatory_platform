@@ -413,7 +413,8 @@ class TestSaveWorkerRay:
                 shard_spatial_shape=zarr_semantic_tile["shard_spatial_shape"],
                 chunk_spatial_shape=zarr_semantic_tile["chunk_spatial_shape"],
             )
-            ray.get(sw.save.remote(inference_outputs))
+            with pytest.raises(RuntimeError):
+                ray.get(sw.save.remote(inference_outputs))
             m = ray.get(sw.get_metrics.remote())
             _assert_save_worker_batch_outcomes(m, expected_successes=0, expected_failures=1)
             _wait_buffer_in_use_zero(buf)
@@ -512,7 +513,8 @@ class TestSaveWorkerRay:
                 shard_spatial_shape=zarr_semantic_tile["shard_spatial_shape"],
                 chunk_spatial_shape=zarr_semantic_tile["chunk_spatial_shape"],
             )
-            ray.get(sw.save.remote(inference_outputs))
+            with pytest.raises(RuntimeError):
+                ray.get(sw.save.remote(inference_outputs))
             m = ray.get(sw.get_metrics.remote())
             _assert_save_worker_batch_outcomes(m, expected_successes=0, expected_failures=1)
             _wait_buffer_in_use_zero(buffer_actor)
