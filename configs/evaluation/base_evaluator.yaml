@@ -3,7 +3,7 @@ defaults:
 
 val_begin: 0
 val_interval: 1
-val_metric: val_step_loss 
+val_metric: step_loss 
 val_mode: min # 'min' or 'max'
 
 evaluator:

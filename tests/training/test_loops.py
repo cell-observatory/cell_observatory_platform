@@ -77,7 +77,7 @@ def test_testing_loop(config):
         config.checkpoint.checkpoint_manager.checkpoint_tag = "latest_model"
 
         config.trainer = "cell_observatory_platform.training.loops.TestTrainer"
-        config.evaluation.val_metric = "test_step_loss"
+        config.evaluation.val_metric = "step_loss"
 
         # config.datasets.databases.max_hypercubes = 10000
 

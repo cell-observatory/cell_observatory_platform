@@ -115,7 +115,7 @@ evaluation:
   # used by BestMetricSaver to save best metric
   # needs to match one of metrics saved per epoch by loss_dict
   # in the training loop or evaluator.evaluate() in the evaluation loop
-  val_metric: val_step_loss
+  val_metric: step_loss
   val_mode: min # mode for the validation metric, can be 'max' or 'min'
   evaluator:
     _target_: cell_observatory_platform.evaluation.base_evaluation.BaseEvaluator

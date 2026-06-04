@@ -940,15 +940,19 @@ class BestMetricSaver(HookBase):
         period: int = 1,
     ):
         super().__init__()
-        self.metric_name = get_metric_full_name(
-            name=metric_name,
-            scope="epoch",
-            category="loss",
-        )
+        self.metric_name = metric_name
         self.compare_fn = operator.gt if compare_fn == "max" else operator.lt
 
         self.eval_after_validation = eval_after_validation
         self.period = period
+
+    def _epoch_metric_key(self, prefix: str) -> str:
+        return get_metric_full_name(
+            name=self.metric_name,
+            scope="epoch",
+            category="loss",
+            prefix=prefix,
+        )
 
     def _update_best_metrics(self, val):
         if math.isnan(val) or math.isinf(val):
@@ -964,13 +968,14 @@ class BestMetricSaver(HookBase):
 
     def after_validation(self):
         if self.eval_after_validation:
+            metric_key = self._epoch_metric_key(prefix="val")
             epoch_scalars = self.trainer.event_recorder.get_epoch_scalars()
-            if self.metric_name not in epoch_scalars:
+            if metric_key not in epoch_scalars:
                 raise ValueError(
-                    f"Metric {self.metric_name} not found in epoch logs. "
+                    f"Metric {metric_key} not found in epoch logs. "
                     "Make sure to set `val_metric` in the trainer config."
                 )
-            latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
+            latest_metric_val_per_rank, *_ = epoch_scalars[metric_key][-1]
             latest_metric_val = gather_and_reduce(
                 torch.tensor(latest_metric_val_per_rank, device="cuda"), 
                 reduce_op="median"
@@ -985,13 +990,14 @@ class BestMetricSaver(HookBase):
         # should match period of validation loop
         if (self.trainer._epoch + 1) % self.period == 0:
             if not self.eval_after_validation:
+                metric_key = self._epoch_metric_key(prefix="val")
                 epoch_scalars = self.trainer.event_recorder.get_epoch_scalars()
-                if self.metric_name not in epoch_scalars:
+                if metric_key not in epoch_scalars:
                     raise ValueError(
-                        f"Metric {self.metric_name} not found in epoch logs. "
+                        f"Metric {metric_key} not found in epoch logs. "
                         "Make sure to set `val_metric` in the trainer config."
                     )
-                latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
+                latest_metric_val_per_rank, *_ = epoch_scalars[metric_key][-1]
                 latest_metric_val = gather_and_reduce(
                     torch.tensor(latest_metric_val_per_rank, device="cuda"),
                     reduce_op="median"
@@ -1000,10 +1006,11 @@ class BestMetricSaver(HookBase):
                 self.update_best_metrics(latest_metric_val)
 
     def after_test(self):
+        metric_key = self._epoch_metric_key(prefix="test")
         test_scalars = self.trainer.event_recorder.get_epoch_scalars()
-        if self.metric_name not in test_scalars:
-            raise ValueError(f"Metric {self.metric_name} not found in test logs. ")
-        test_metric_val_per_rank, *_ = test_scalars[self.metric_name][-1]
+        if metric_key not in test_scalars:
+            raise ValueError(f"Metric {metric_key} not found in test logs. ")
+        test_metric_val_per_rank, *_ = test_scalars[metric_key][-1]
         test_metric_val = gather_and_reduce(
             torch.tensor(test_metric_val_per_rank, device="cuda"),
             reduce_op="median"
@@ -1182,11 +1189,7 @@ class EarlyStopHook(HookBase):
     ):
         super().__init__()
 
-        self.metric_name = get_metric_full_name(
-            name=metric_name,
-            scope="epoch",
-            category="loss",
-        )
+        self.metric_name = metric_name
         if mode == "min":
             self.compare_fn = operator.lt
         elif mode == "max":
@@ -1206,14 +1209,17 @@ class EarlyStopHook(HookBase):
         If not, increment the wait count.
         If the wait count exceeds the patience, stop training.
         """
+        metric_key = get_metric_full_name(
+            name=self.metric_name, scope="epoch", category="loss", prefix="val",
+        )
         epoch_scalars = self.trainer.event_recorder.get_epoch_scalars()
-        if self.metric_name not in epoch_scalars:
+        if metric_key not in epoch_scalars:
             raise ValueError(
-                f"Metric {self.metric_name} not found in epoch logs. "
+                f"Metric {metric_key} not found in epoch logs. "
                 "Make sure to set `val_metric` in the trainer config."
             )
 
-        latest_metric_val_per_rank, *_ = epoch_scalars[self.metric_name][-1]
+        latest_metric_val_per_rank, *_ = epoch_scalars[metric_key][-1]
         latest_metric_val = gather_and_reduce(
             torch.tensor(latest_metric_val_per_rank, device="cuda"),
             reduce_op="median"
