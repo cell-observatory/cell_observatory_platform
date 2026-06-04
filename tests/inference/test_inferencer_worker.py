@@ -290,11 +290,6 @@ def _make_outputs_metadata_instance_seg():
             "boxes": {"shape": (_TOPK, 6), "dtype": "float32"},
             "labels": {"shape": (_TOPK,), "dtype": "float32"},
         },
-        "save_tensors_dtypes": {
-            "masks": "uint16",
-            "boxes": "float32",
-            "labels": "float32",
-        },
     }
 
 
@@ -317,10 +312,6 @@ def _make_outputs_metadata_detection():
         "tensor_info": {
             "boxes": {"shape": (_TOPK, 6), "dtype": "float32"},
             "labels": {"shape": (_TOPK,), "dtype": "float32"},
-        },
-        "save_tensors_dtypes": {
-            "boxes": "float32",
-            "labels": "float32",
         },
     }
 

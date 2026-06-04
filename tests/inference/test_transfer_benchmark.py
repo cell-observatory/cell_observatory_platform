@@ -240,11 +240,6 @@ def _make_outputs_metadata(spatial: Tuple[int, ...], *, use_buffer: bool):
             "boxes": {"shape": (_TOPK, 6), "dtype": "float32"},
             "labels": {"shape": (_TOPK,), "dtype": "float32"},
         },
-        "save_tensors_dtypes": {
-            "masks": "uint16",
-            "boxes": "float32",
-            "labels": "float32",
-        },
     }
 
 

@@ -16,15 +16,26 @@ inferencer_worker:
       - labels
       - boxes
     save_tensors:
-      - masks
-      # - scores
-      - labels
-      - boxes
-    save_tensors_dtypes:
-      masks: ${dataset_dtype}
-      # scores: ${dataset_dtype}
-      labels: ${dataset_dtype}
-      boxes: ${dataset_dtype}
+      masks:
+        name: instance_masks
+        dtype: ${storage_dtype}
+        annotation_type: dense
+        data_format: ZYXC
+      # scores:
+      #   name: scores
+      #   dtype: ${dataset_dtype}
+      #   annotation_type: sparse
+      #   data_format: N
+      labels:
+        name: labels
+        dtype: ${dataset_dtype}
+        annotation_type: sparse
+        data_format: N
+      boxes:
+        name: boxes
+        dtype: ${dataset_dtype}
+        annotation_type: sparse
+        data_format: N6
 
   # Data shape configuration
   input_format: ${dataset_layout_order}
