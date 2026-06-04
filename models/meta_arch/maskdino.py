@@ -310,7 +310,14 @@ class MaskDINO(nn.Module):
         for key in expected_keys & actual_keys:
             expected_shape = tuple(tensor_info[key]["shape"])
             actual_shape = tuple(preds[key].shape[1:])  # strip batch dim
-            if actual_shape != expected_shape:
+            if "mask" in key.lower():
+                if len(actual_shape) != len(expected_shape):
+                    parts.append(
+                        f"'{key}' rank mismatch: tensor_info declares "
+                        f"{len(expected_shape)} spatial dims {expected_shape} but got "
+                        f"{len(actual_shape)} {actual_shape} (batch shape {tuple(preds[key].shape)})"
+                    )
+            elif actual_shape != expected_shape:
                 parts.append(
                     f"'{key}' shape mismatch: tensor_info declares "
                     f"{expected_shape} but got {actual_shape} (batch shape {tuple(preds[key].shape)})"
