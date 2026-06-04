@@ -452,7 +452,10 @@ class InferencerWorker:
                     self._metrics[f"buffer_get_time_ms/{output_tensor_name}_viz"] = (time.perf_counter() - t0_buffer) * 1000
         self._metrics["buffer_get_time_ms_total"] = (time.perf_counter() - t0_buffer) * 1000
         t0_transfer = time.perf_counter()
+        # d2h stream must wait for the compute stream that produced `preds` before any changes to those tensors
+        compute_stream = torch.cuda.current_stream(device=self.device)
         with torch.cuda.stream(self._d2h_stream):
+            self._d2h_stream.wait_stream(compute_stream)
             for output_tensor_name in self.outputs_metadata["save_tensors"]:
                 if output_tensor_name in preds.keys():
                     output_tensor = preds[output_tensor_name]
