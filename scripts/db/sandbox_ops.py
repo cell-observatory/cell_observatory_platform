@@ -55,9 +55,18 @@ def prepare_environment() -> None:
         "SUPABASE_PROD_ID"
     ) and os.environ.get("PGPASSWORD"):
         pid = os.environ["SUPABASE_PROD_ID"]
+
+        sslrootcert = os.environ.get("PGCOPYDB_SOURCE_SSLROOTCERT")
+        sslmode = os.environ.get(
+            "PGCOPYDB_SOURCE_SSLMODE",
+            "verify-full" if sslrootcert else "require",
+        )
+        ssl_params = f"?sslmode={sslmode}"
+        if sslrootcert:
+            ssl_params += f"&sslrootcert={sslrootcert}"
         os.environ["PGCOPYDB_SOURCE_PGURI"] = (
             f"postgresql://postgres@db.{pid}.supabase.co:5432/postgres"
-            f"?sslmode=disable{_KEEPALIVE_PARAMS}"
+            f"{ssl_params}{_KEEPALIVE_PARAMS}"
         )
 
     os.environ.setdefault(
