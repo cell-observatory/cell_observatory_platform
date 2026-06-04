@@ -500,7 +500,7 @@ class TestBufferManagerSetGet:
         pool = f"bud_{unique_suffix}"
         bm = _make_buffer_manager(ray_node_id, budget_gb=100 / (2 ** 30))
         try:
-            with pytest.raises(ValueError, match="exceeds max memory"):
+            with pytest.raises(ValueError, match="would exceed the memory budget"):
                 bm.set_buffer(
                     pool_name=pool, batch_size=2, input_shape=(1024, 1024),
                     dtype="float32", buffer_type="host_memory",
