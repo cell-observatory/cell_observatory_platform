@@ -559,10 +559,13 @@ class BufferManager:
         if pool_name in self._buffer_actors:
             raise ValueError(f"Pool {pool_name} already exists. Use get_buffer instead.")
 
-        slot_bytes = get_slot_bytes(input_shape, dtype)
+        slot_bytes = get_slot_bytes((int(batch_size), *tuple(input_shape)), dtype)
         total_bytes = slot_bytes * buffer_capacity
-        if total_bytes > self._max_memory_usage_bytes:
-            raise ValueError(f"Total bytes {total_bytes} exceeds max memory usage {self._max_memory_usage_bytes}")
+        if total_bytes + self._current_memory_usage_bytes > self._max_memory_usage_bytes:
+            raise ValueError(
+                f"Allocating pool {pool_name!r} ({total_bytes} bytes) would exceed the memory budget:"
+                f"current usage {self._current_memory_usage_bytes} + {total_bytes} > max {self._max_memory_usage_bytes}"
+            )
 
         try:
             buffer_dtype = NUMPY_DTYPES[dtype].value if isinstance(dtype, str) else dtype

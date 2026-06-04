@@ -583,6 +583,25 @@ class TestBufferManagerSetGet:
             if actor:
                 _kill_safe(actor)
 
+    def test_set_remove_buffer_accounting_batch_inclusive_and_symmetric(self, ray_ctx, ray_node_id, unique_suffix):
+        pool = f"acct_{unique_suffix}"
+        bm = _make_buffer_manager(ray_node_id)
+        actor = None
+        try:
+            actor, _ = bm.set_buffer(
+                pool_name=pool, batch_size=3, input_shape=(4, 4),
+                dtype="uint16", buffer_type="host_memory",
+                buffer_capacity=2, pin_numa_node=False,
+            )
+            expected = get_slot_bytes((3, 4, 4), "uint16") * 2
+            assert bm._current_memory_usage_bytes == expected
+            bm.remove_buffer(pool)
+            assert bm._current_memory_usage_bytes == 0
+        finally:
+            bm.shutdown()
+            if actor:
+                _kill_safe(actor)
+
     def test_remove_nonexistent_raises(self, ray_ctx, ray_node_id):
         bm = _make_buffer_manager(ray_node_id)
         try:
