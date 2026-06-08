@@ -24,7 +24,7 @@ batch_size: 4096 # total batch size
 worker_nodes: 1 # number of worker nodes
 gpus_per_worker: 4 # number of gpus per worker node
 cpus_per_gpu: 12 # number of cpu cores per gpu
-mem_per_cpu: 15000 # ram per cpu core
+mem_per_cpu: 40000 # ram per cpu core
 
 cpus_per_worker: ${eval:'${clusters.gpus_per_worker} * ${clusters.cpus_per_gpu}'}
 mem_per_worker: ${eval:'${clusters.cpus_per_worker} * ${clusters.mem_per_cpu}'}
