@@ -3,7 +3,7 @@
 # clusters.* overrides live here (after the cluster default) so they apply
 # after /clusters/janelia_h100 resets batch_size/worker_nodes.
 defaults:
-  - base_sam2_new_mask_ids_to_masks
+  - base_sam2_timing_baselines
   - /clusters/janelia_h100
   - _self_
 
@@ -15,4 +15,4 @@ clusters:
 
 datasets:
   preprocessor:
-    max_masks: 46
+    max_masks: 26
