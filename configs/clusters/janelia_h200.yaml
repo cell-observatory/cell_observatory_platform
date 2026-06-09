@@ -27,7 +27,7 @@ gpus_per_worker: 8 # number of gpus per worker node
 # FIXME: What are the actual numbers? 
 # The docs say 12cpu/15GB but the dashboard shows 12cpu/37GB
 cpus_per_gpu: 12 # number of cpu cores per gpu
-mem_per_cpu: 15000 # ram per cpu core
+mem_per_cpu: 40000 # ram per cpu core
 
 cpus_per_worker: ${eval:'${clusters.gpus_per_worker} * ${clusters.cpus_per_gpu}'}
 mem_per_worker: ${eval:'${clusters.cpus_per_worker} * ${clusters.mem_per_cpu}'}
