@@ -33,7 +33,8 @@ from cell_observatory_platform.training.helpers import (
     apply_activation_checkpointing,
     load_model_from_ckpt,
     aggregate_microbatch_losses,
-    get_model_optimizations_node
+    get_model_optimizations_node,
+    get_metric_full_name,
 )
 from cell_observatory_platform.training.hooks import HookBase
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
@@ -584,13 +585,25 @@ class EpochBasedTrainer(BaseTrainer):
                     self.run_validation_step(idx, data_sample)
                     end = time.perf_counter()
 
+        # Loss is the model's (logged per step by log_loss_dict); the evaluator
+        # only adds prediction metrics on top. Drop any evaluator output already
+        # logged as loss this epoch so BaseEvaluator's step_loss doesn't
+        # double-source and skew the reduction.
         metrics = self.evaluator.evaluate()
-        self.event_recorder.put_scalars(
-            scope="epoch",
-            prefix="val",
-            category="loss",
-            **{k: (v.item() if torch.is_tensor(v) else v) for k, v in metrics.items()},
-        )
+        already_logged = set(self.event_recorder.get_epoch_scalars().keys())
+        evaluator_metrics = {}
+        for k, v in metrics.items():
+            key = get_metric_full_name(name=k, scope="epoch", category="loss", prefix="val")
+            if key in already_logged:
+                continue
+            evaluator_metrics[k] = v.item() if torch.is_tensor(v) else v
+        if evaluator_metrics:
+            self.event_recorder.put_scalars(
+                scope="epoch",
+                prefix="val",
+                category="loss",
+                **evaluator_metrics,
+            )
         self.evaluator.reset()
 
         self.after_validation()

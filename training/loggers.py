@@ -49,6 +49,34 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def reduce_values(reduce_method: str, values: List[float]) -> float:
+    """Reduce a flat list to one scalar.
+
+    Shared by the write-time reduction and ``reduce_epoch_metric`` so plotted
+    and hook-selected values are computed identically.
+    """
+    if reduce_method == "sum":
+        return sum(values)
+    elif reduce_method == "mean":
+        return sum(values) / len(values)
+    elif reduce_method == "median":
+        if not values:
+            return 0.0
+        sorted_values = sorted(values)
+        n = len(sorted_values)
+        mid = n // 2
+        if n % 2 == 0:
+            return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
+        else:
+            return sorted_values[mid]
+    elif reduce_method == "max":
+        return max(values)
+    elif reduce_method == "min":
+        return min(values)
+    else:
+        raise ValueError(f"Unknown reduce method: {reduce_method!r}")
+
+
 class EventRecorder:
     def __init__(self):
         self._iter, self._epoch, self._val_iter = 0, 0, 0
@@ -213,7 +241,35 @@ class EventRecorder:
 
     def get_reduce_op(self, name):
             return self._reduce_methods.get(name)
-    
+
+    def reduce_epoch_metric(self, name: str, reduce_op: Optional[str] = None) -> Optional[float]:
+        """Reduce this epoch's buffered records for ``name`` to one scalar.
+
+        Hooks (``BestMetricSaver`` / ``EarlyStopHook``) need the per-epoch value
+        in ``after_validation`` — before ``PeriodicWriter`` reduces and clears.
+        Mirrors the writer's reduction (pool across steps and ranks, reduce once)
+        so selected == plotted. The buffer holds only the current epoch (cleared
+        each ``after_epoch``). ``None`` when nothing is buffered.
+        """
+        records = self._epoch_scalars.get(name)
+        vals = [float(v) for (v, _it, _ep) in records] if records else []
+
+        # pool raw per-rank values then reduce once (match the writer; NOT a
+        # reduce-of-per-rank-reductions)
+        if is_torch_dist_initialized() and get_world_size() > 1:
+            gathered: List[Optional[List[float]]] = [None] * get_world_size()
+            torch.distributed.all_gather_object(gathered, vals)
+            pooled = [v for part in gathered for v in (part or [])]
+        else:
+            pooled = vals
+
+        if not pooled:
+            return None
+
+        ops = self.get_reduce_op(name) or ["median"]
+        op = reduce_op or ops[0]
+        return reduce_values(op, pooled)
+
     def resume(self, iter: int, epoch: int):
         """
         Resume the recorder with the given iteration and epoch.
@@ -353,29 +409,7 @@ class EventWriter:
         return df
         
     def _reduce(self, reduce_method: str, values: List[float]) -> float:
-        """
-        Reduce values based on the specified method.
-        """
-        if reduce_method == "sum":
-            return sum(values)
-        elif reduce_method == "mean":
-            return sum(values) / len(values)
-        elif reduce_method == "median":
-            if not values:
-                return 0.0
-            sorted_values = sorted(values)
-            n = len(sorted_values)
-            mid = n // 2
-            if n % 2 == 0:
-                return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
-            else:
-                return sorted_values[mid]
-        elif reduce_method == "max":
-            return max(values)
-        elif reduce_method == "min":
-            return min(values)
-        else:
-            raise ValueError(f"Unknown reduce method: {reduce_method!r}")
+        return reduce_values(reduce_method, values)
 
     @abstractmethod
     def _write_scalar_impl(

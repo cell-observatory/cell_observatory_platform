@@ -253,14 +253,16 @@ def _test_hooks_dist(cfg):
     time.sleep(0.1)  # pretend some extra val work
     timer.after_validation()
 
+    # Val timing is epoch-scoped now; the 3 per-step records sit in the epoch
+    # buffer and only collapse to one point at reduce/write time.
     val_step_time_name = get_metric_full_name(
         name="step_time",
         prefix="val",
-        scope="step",
+        scope="epoch",
         category="timing",
         units="sec",
     )
-    val_step_times = rec.get_step_scalars().get(val_step_time_name, [])
+    val_step_times = rec.get_epoch_scalars().get(val_step_time_name, [])
     assert len(val_step_times) == 3 and all(val > 0 for val, *_ in val_step_times)
     for v, *_ in val_step_times:
         assert 0.05 <= v <= 0.2
@@ -492,6 +494,9 @@ def _test_hooks_dist(cfg):
         os.remove(local_writer.epoch_scalars_savepath)
 
     def _log_epoch_scalar(val, prefix="val"):
+        # BestMetricSaver reduces the epoch buffer, so reset it per simulated
+        # epoch (as PeriodicWriter.after_epoch does) to keep one record in play.
+        recorder.clear()
         recorder._iter = trainer._iter
         recorder._epoch = trainer._epoch
         recorder.put_scalar(metric_name, val, scope="epoch", category="loss", prefix=prefix)
@@ -577,6 +582,8 @@ def _test_hooks_dist(cfg):
         os.remove(local_writer.epoch_scalars_savepath)
 
     def _run_epoch(ep_idx, value):
+        # EarlyStopHook reduces the epoch buffer; reset per simulated epoch.
+        recorder.clear()
         trainer._epoch = ep_idx
         trainer._iter = 0
         recorder.put_scalar(metric, value, scope="epoch", category="loss", prefix="val")
