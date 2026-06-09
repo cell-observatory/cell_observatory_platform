@@ -35,6 +35,42 @@ detect_host_user() {
   basename "${HOST_HOME}"
 }
 
+remap_host_path() {
+  local path="$1"
+  local host_user="$2"
+  echo "${path}" | sed \
+    -e "s|/home/${host_user}/.oh-my-zsh|\${HOME}/.oh-my-zsh|g" \
+    -e "s|/home/${host_user}|/host-home|g" \
+    -e "s|/scratch/${host_user}|/scratch|g"
+}
+
+link_host_local_bin() {
+  local host_user="$1"
+  local host_bin="${HOST_HOME}/.local/bin"
+
+  mkdir -p "${LOCAL_BIN}"
+  [ -d "${host_bin}" ] || return 0
+
+  for entry in "${host_bin}"/*; do
+    [ -e "${entry}" ] || [ -L "${entry}" ] || continue
+
+    local name target fixed_target
+    name="$(basename "${entry}")"
+
+    if [ -e "${LOCAL_BIN}/${name}" ] && [ ! -L "${LOCAL_BIN}/${name}" ]; then
+      continue
+    fi
+
+    if [ -L "${entry}" ]; then
+      target="$(readlink "${entry}")"
+      fixed_target="$(remap_host_path "${target}" "${host_user}")"
+      ln -sfn "${fixed_target}" "${LOCAL_BIN}/${name}"
+    else
+      ln -sfn "${entry}" "${LOCAL_BIN}/${name}"
+    fi
+  done
+}
+
 install_fasd() {
   local fasd_dir="${USER_HOME}/.local/share/fasd"
   mkdir -p "${LOCAL_BIN}"
@@ -113,9 +149,11 @@ fi
 link_host_file ".p10k.zsh"
 link_host_dir ".oh-my-zsh"
 link_host_dir ".config"
+link_host_dir ".local/share"
 
 HOST_USER="$(detect_host_user)"
 
 install_fasd
+link_host_local_bin "${HOST_USER}"
 write_zsh_wrapper "${HOST_USER}"
 write_bash_wrapper "${HOST_USER}"
