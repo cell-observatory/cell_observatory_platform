@@ -407,10 +407,27 @@ class InferencerWorker:
             data_sample["targets"] = targets
 
         should_visualize = self._should_visualize(data_sample, preds)
+        should_save = self.save_outputs
 
         t0_buffer = time.perf_counter()
         save_buffer_slots = {}
         viz_buffer_slots = {}
+        
+        """
+        Optional save/viz skipping based on user config and buffer pool back-pressure:
+        
+            Reserve a shared-memory slot for each buffer, from separate `_save` and `_viz` pools.
+            block_on_(save/viz):
+                - True: blocks until a slot frees up
+                - False: if the pool is full, skip sample's save/viz
+                    
+            D2H stream which waits on the compute stream and copies each tensor:
+                - buffered: async cudaMemcpyAsync into its SHM slot and store its handle
+                - unbuffered: pinned host copy and sent later via Ray's plasma store
+                
+            Hand the slots to the Save/Viz actors by reference (arrays stay in SHM)
+            Slots are freed exactly once by the actor on success, or by finally on failure
+        """
         try:
             if self.save_outputs:
                 for output_tensor_name in self.outputs_metadata["save_tensors"]:
@@ -425,8 +442,12 @@ class InferencerWorker:
                             slot_info = ray.get(save_buffer.try_get_free.remote())
 
                         if slot_info is None:
-                            ray.logger.warning(f"No free slot found for {output_tensor_name} in save buffer. Skipping save.")
-                            continue
+                            ray.logger.warning(f"No free slot found for {output_tensor_name} in save buffer. Skipping save for this sample.")
+                            should_save = False
+                            for allocated_slot in save_buffer_slots.values():
+                                self.buffer_manager.free_slot(allocated_slot)
+                            save_buffer_slots.clear()
+                            break
                         save_buffer_slots[output_tensor_name] = slot_info
                         self._metrics[f"buffer_get_time_ms/{output_tensor_name}_save"] = (time.perf_counter() - t0_buffer) * 1000
 
@@ -453,34 +474,36 @@ class InferencerWorker:
                         self._metrics[f"buffer_get_time_ms/{output_tensor_name}_viz"] = (time.perf_counter() - t0_buffer) * 1000
             self._metrics["buffer_get_time_ms_total"] = (time.perf_counter() - t0_buffer) * 1000
             t0_transfer = time.perf_counter()
+            
             # d2h stream must wait for the compute stream that produced `preds` before any changes to those tensors
             compute_stream = torch.cuda.current_stream(device=self.device)
             with torch.cuda.stream(self._d2h_stream):
                 self._d2h_stream.wait_stream(compute_stream)
-                for output_tensor_name in self.outputs_metadata["save_tensors"]:
-                    if output_tensor_name in preds.keys():
-                        output_tensor = preds[output_tensor_name]
-                    elif output_tensor_name in data_sample.keys():
-                        output_tensor = data_sample[output_tensor_name]
-                    else:
-                        raise ValueError(f"Tensor {output_tensor_name} not found in preds or data_sample")
+                if should_save:
+                    for output_tensor_name in self.outputs_metadata["save_tensors"]:
+                        if output_tensor_name in preds.keys():
+                            output_tensor = preds[output_tensor_name]
+                        elif output_tensor_name in data_sample.keys():
+                            output_tensor = data_sample[output_tensor_name]
+                        else:
+                            raise ValueError(f"Tensor {output_tensor_name} not found in preds or data_sample")
 
-                    if output_tensor is None:
-                        continue
+                        if output_tensor is None:
+                            continue
 
-                    output_tensor_dtype_str = self.outputs_metadata["tensor_info"][output_tensor_name]["dtype"]
-                    output_tensor_dtype = TORCH_DTYPES[output_tensor_dtype_str].value if isinstance(output_tensor_dtype_str, str) else output_tensor_dtype_str
-                    output_tensor = output_tensor.to(dtype=output_tensor_dtype)
+                        output_tensor_dtype_str = self.outputs_metadata["tensor_info"][output_tensor_name]["dtype"]
+                        output_tensor_dtype = TORCH_DTYPES[output_tensor_dtype_str].value if isinstance(output_tensor_dtype_str, str) else output_tensor_dtype_str
+                        output_tensor = output_tensor.to(dtype=output_tensor_dtype)
 
-                    if output_tensor_name in save_buffer_slots.keys():
-                        slot_info = save_buffer_slots[output_tensor_name]
-                        dest_array = self.buffer_manager.slot_info_to_view(slot_info)
-                        self._copy_d2h(dst=dest_array, src=output_tensor)
-                        save_outputs[output_tensor_name] = slot_info
-                    else:
-                        host_array = torch.empty_like(output_tensor, device="cpu", pin_memory=True)
-                        host_array.copy_(output_tensor, non_blocking=True)
-                        save_outputs[output_tensor_name] = host_array
+                        if output_tensor_name in save_buffer_slots.keys():
+                            slot_info = save_buffer_slots[output_tensor_name]
+                            dest_array = self.buffer_manager.slot_info_to_view(slot_info)
+                            self._copy_d2h(dst=dest_array, src=output_tensor)
+                            save_outputs[output_tensor_name] = slot_info
+                        else:
+                            host_array = torch.empty_like(output_tensor, device="cpu", pin_memory=True)
+                            host_array.copy_(output_tensor, non_blocking=True)
+                            save_outputs[output_tensor_name] = host_array
 
                 if should_visualize and self.vizualize_outputs:
                     for output_tensor_name in self.outputs_metadata["visualize_tensors"]:
@@ -519,7 +542,7 @@ class InferencerWorker:
             viz_outputs = self._tree_to_cpu_numpy(viz_outputs)
             self._metrics["tree_to_cpu_transfer_time_ms"] = (time.perf_counter() - t0_cpu) * 1000
 
-            if self.save_outputs:
+            if self.save_outputs and should_save:
                 if self.save_worker is None:
                     raise RuntimeError("Attempting to save outputs but save_worker is None")
                 save_task = self.save_worker.save.remote(
