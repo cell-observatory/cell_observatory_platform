@@ -398,7 +398,7 @@ class CheckpointManager:
         """
         return OrderedDict((k if k.startswith(prefix) else f"{prefix}{k}", v) for k, v in state_dict.items())
 
-    @classmethod
+    @staticmethod
     def _strip_prefix(state_dict: dict, prefix: str = "module.") -> dict:
         """
         If the keys in `state_dict` are all prefixed with `prefix`, remove it.
