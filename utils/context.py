@@ -195,6 +195,36 @@ def barrier(device_ids: Optional[int] = None) -> None:
     return
 
 
+def reduce_values(reduce_method: str, values: List[float]) -> float:
+    """Reduce a flat list of scalars to one scalar (single-rank/local).
+
+    Single source for write-time reduction (loggers), epoch-metric reduction
+    (``reduce_epoch_metric`` / hook selection), and evaluator loss aggregation,
+    so plotted, hook-selected, and evaluated values are computed identically.
+    The cross-rank counterpart is :func:`gather_and_reduce`.
+    """
+    if reduce_method == "sum":
+        return sum(values)
+    elif reduce_method == "mean":
+        return sum(values) / len(values)
+    elif reduce_method == "median":
+        if not values:
+            return 0.0
+        sorted_values = sorted(values)
+        n = len(sorted_values)
+        mid = n // 2
+        if n % 2 == 0:
+            return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
+        else:
+            return sorted_values[mid]
+    elif reduce_method == "max":
+        return max(values)
+    elif reduce_method == "min":
+        return min(values)
+    else:
+        raise ValueError(f"Unknown reduce method: {reduce_method!r}")
+
+
 def gather_and_reduce(tensor: torch.Tensor, reduce_op: str = "mean"):
     if not is_torch_dist_initialized():
         return tensor.clone()

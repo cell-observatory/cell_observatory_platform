@@ -9,6 +9,7 @@ from cell_observatory_platform.data.structures import box_iou_3d
 from cell_observatory_platform.utils.context import (
     get_world_size,
     is_torch_dist_initialized,
+    reduce_values,
 )
 
 
@@ -45,14 +46,7 @@ class TrainLosses(Metric):
 
     def aggregate(self):
         assert self.loss_values, "No loss values to aggregate."
-        if self.reduce_method == "mean":
-            return sum(self.loss_values) / len(self.loss_values)
-        elif self.reduce_method == "min":
-            return min(self.loss_values)
-        elif self.reduce_method == "max":
-            return max(self.loss_values)
-        else:
-            raise ValueError(f"Unknown reduce method: {self.reduce_method}")
+        return reduce_values(self.reduce_method, self.loss_values)
 
     def reset(self):
         self.loss_values.clear()
@@ -69,14 +63,7 @@ class ReduceBuffer:
 
     def aggregate(self) -> float:
         assert self.values, "No values to aggregate."
-        if self.reduce_method == "mean":
-            return sum(self.values) / len(self.values)
-        elif self.reduce_method == "min":
-            return min(self.values)
-        elif self.reduce_method == "max":
-            return max(self.values)
-        else:
-            raise ValueError(f"Unknown reduce method: {self.reduce_method}")
+        return reduce_values(self.reduce_method, self.values)
 
     def reset(self):
         self.values.clear()

@@ -31,10 +31,11 @@ from cell_observatory_platform.training.helpers import (
     METRIC_CATEGORY_NAMES,
 )
 from cell_observatory_platform.utils.context import (
-    is_torch_dist_initialized, 
-    process_rank, 
+    is_torch_dist_initialized,
+    process_rank,
     get_world_size,
-    barrier
+    barrier,
+    reduce_values,
 )
 
 from torchtitan.tools import utils
@@ -47,34 +48,6 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-
-def reduce_values(reduce_method: str, values: List[float]) -> float:
-    """Reduce a flat list to one scalar.
-
-    Shared by the write-time reduction and ``reduce_epoch_metric`` so plotted
-    and hook-selected values are computed identically.
-    """
-    if reduce_method == "sum":
-        return sum(values)
-    elif reduce_method == "mean":
-        return sum(values) / len(values)
-    elif reduce_method == "median":
-        if not values:
-            return 0.0
-        sorted_values = sorted(values)
-        n = len(sorted_values)
-        mid = n // 2
-        if n % 2 == 0:
-            return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
-        else:
-            return sorted_values[mid]
-    elif reduce_method == "max":
-        return max(values)
-    elif reduce_method == "min":
-        return min(values)
-    else:
-        raise ValueError(f"Unknown reduce method: {reduce_method!r}")
 
 
 class EventRecorder:
