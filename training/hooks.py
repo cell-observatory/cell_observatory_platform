@@ -936,6 +936,12 @@ class TorchMemoryStats(HookBase):
 
 
 class BestMetricSaver(HookBase):
+    # Must run before BestCheckpointer (reports trainer._curr_val_metric) and
+    # before PeriodicWriter (clears the epoch buffer this hook reads). Both are
+    # MEDIUM, so without a higher priority this hook would run after them in
+    # config order — reporting a stale/inf metric and reading a cleared buffer.
+    PRIORITY = HOOK_PRIORITY.HIGH
+
     def __init__(
         self,
         metric_name: str,
