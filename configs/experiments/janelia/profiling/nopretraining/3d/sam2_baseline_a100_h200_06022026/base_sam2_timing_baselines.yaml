@@ -61,6 +61,9 @@ models:
     sam:
       criterion_args:
         use_point_sampling: true
+        num_points: 26000          # ~10% of 32x64x128 stride-4 grid
+        low_res_multimasks: true    # focal/dice on LOW-RES stream;
+                                    # dense iou_loss reads HIGH-RES forward-only
 
 paths:
   outdir: ${paths.data_path}/testing/${experiment_name}

@@ -1,9 +1,16 @@
 # @package _global_
+# Shared base for the a100/h100/h200 SAM2 baseline profiling runs.
+# Per-GPU configs include this and only override what differs (cluster,
+# experiment_name, clusters.batch_size/worker_nodes, preprocessor.max_masks).
+#
+# NOTE: the cluster default is intentionally NOT listed here. Each per-GPU
+# config adds its own /clusters/janelia_* default and sets clusters.batch_size
+# and clusters.worker_nodes in its own _self_ so they apply AFTER the cluster
+# file (which resets batch_size/worker_nodes to its own values).
 defaults:
   - /tasks/instance_segmentation
   - /paths/local
   - /hydra/overrides
-  - /clusters/janelia_a100
   - /datasets/databases/base_database
   - /datasets/transforms/ray_transforms
   - /datasets/preprocessor/ray_preprocessor
@@ -16,7 +23,7 @@ defaults:
   - /models/backbones/sam_backbone/sam_backbone
   - /checkpoint/checkpoint
   - /loggers/loggers
-  - /evaluation/base_evaluator
+  - /evaluation/sam2_instance_evaluator
   - /deepspeed/zero2
   - /optimizers/adamw_torch
   - /schedulers/warmup_cosine_decay
@@ -25,8 +32,7 @@ defaults:
   - /profiling/profiling
   - _self_
 
-experiment_name: profiling_a100_sam2_baseline_128x384x512_new_mask_ids_to_masks_pointrend
-wandb_project: testing
+wandb_project: sam2_baselines
 
 # debug_mode: true
 backend: DEEPSPEED
@@ -56,23 +62,12 @@ models:
       criterion_args:
         use_point_sampling: true
         num_points: 26000          # ~10% of 32x64x128 stride-4 grid
-        oversample_ratio: 3
-        importance_sample_ratio: 0.75
         low_res_multimasks: true    # focal/dice on LOW-RES stream;
-                                     # dense iou_loss reads HIGH-RES forward-only
-
-clusters:
-  batch_size: 8 # gpus_per_worker (4) * worker_nodes (2)
-  worker_nodes: 2 # number of worker nodes
-  # gpus_per_worker: 8 # number of gpus per worker node
-  # cpus_per_gpu: 12 # number of cpu cores per gpu
-  # mem_per_cpu: 40000 # ram per cpu core
-  # ray_queue_memory: 0.2
+                                    # dense iou_loss reads HIGH-RES forward-only
+      pt_sampling_for_eval: uniform # TODO: fix EDT transform to run on GPU faster
 
 paths:
-  # base output directory for logs, checkpoints, etc.
   outdir: ${paths.data_path}/testing/${experiment_name}
-  # server_path_override: /groups/betzig/betziglab/CellObservatoryData/synthetic_data/05052026_mem_cyto_1k_volumes_77_tiles/
   server_path_override: /groups/betzig/betziglab/CellObservatoryData/synthetic_data/fixed/05052026_mem_cyto_1k_volumes_77_tiles/
   resume_checkpointdir: null
   pretrained_checkpointdir: null
@@ -85,7 +80,7 @@ datasets:
   mask_channel_idx: 5
   last_batch_policy: drop
 
-  split: 0.0
+  split: 0.1
   return_dataloader: true
   distributed_sampler: true
   buffer_capacity: 16
@@ -93,12 +88,7 @@ datasets:
   num_actors_max: 12
 
   use_cached_hypercubes_dataframe: false
-  # tile_list:
-  #   - "000x_005y_001z.zarr"
-    # - "000x_005y_000z.zarr"
-  # roi_list: [314]
-  # timepoint_list: [0]
-  max_rows: 1000
+  max_rows: null
   cdf_threshold: null
   cdf_target: null
   selected_channel_localizations: ["membrane", "cytosol"]
@@ -106,18 +96,15 @@ datasets:
   synthetic_only: true
 
   preprocessor:
-    # max_masks: 3 # For L4; 24GB VRAM
-    max_masks: 26 # For A100 / H100; 80GB VRAM
-    # max_masks: 42 # For H200; 128GB VRAM
+    max_masks: 26
 
   databases:
     dbname: local
     protocol: cursor
     verbose: true
-    diagnostic_verbose: true
+    diagnostic_verbose: false
     sample_type: cube
     channel_count: 6
-    # required_channel_key_patterns: {0: "membrane"}
     required_channel_localizations: ["membrane", "cytosol"]
     required_locations: ["exists_abc"]
 
@@ -156,15 +143,12 @@ datasets:
       - "annotations_metadata"
 
 schedulers:
-  epochs: 10
-  # warmup: 30
-  # cooldown: 5
+  epochs: 1
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}
   lr: 1e-4
 
-# hooks
 hooks:
   hooks_list:
   - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
@@ -175,24 +159,9 @@ hooks:
   - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
     file_prefix: latest_model
     backend: DEEPSPEED
-  # - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
-  #   checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  # - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
-  #   metric_name: ${evaluation.val_metric}
-  #   compare_fn: ${evaluation.val_mode}
-  #   eval_after_validation: true
-
-  # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
-  #   output_dir: ${paths.outdir}/profiler
-  #   schedule:
-  #     # skip_first: 10
-  #     warmup: 4
-  #     active: 2
-  #     repeat: 1
-  #     wait: 1
-  #   activities:
-  #     - CUDA
-  #     - CPU
-  #   save_tensorboard: true
-  #   shutdown_after_profile: true
-  #   save_memory_trace: true
+  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true

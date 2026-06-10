@@ -33,7 +33,8 @@ from cell_observatory_platform.training.helpers import (
     apply_activation_checkpointing,
     load_model_from_ckpt,
     aggregate_microbatch_losses,
-    get_model_optimizations_node
+    get_model_optimizations_node,
+    get_metric_full_name,
 )
 from cell_observatory_platform.training.hooks import HookBase
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
@@ -571,6 +572,23 @@ class EpochBasedTrainer(BaseTrainer):
         """
         Run validation.
         """
+        # In-loop validation runs the training forward pass
+        # (`self.model(data_sample)` -> loss + outputs) and feeds those outputs
+        # to the evaluator. An evaluator that declares `predict_method` (e.g.
+        # InstanceSegmentationEvaluator -> predict_for_eval/AMG) expects model
+        # prediction output, not forward outputs, and would fail deep in
+        # process(). Those belong to job_type=test (TestTrainer.run_test_step
+        # dispatches predict_method). Fail fast with guidance.
+        _predict_method = getattr(self.evaluator, "predict_method", None)
+        if _predict_method is not None:
+            raise TypeError(
+                f"In-loop validation runs the model forward pass, but evaluator "
+                f"{type(self.evaluator).__name__} declares "
+                f"predict_method={_predict_method!r} (a prediction-based "
+                f"evaluator). Use a loss-based evaluator (e.g. BaseEvaluator) for "
+                f"validation, or run this evaluator under job_type=test."
+            )
+
         self.before_validation()
         # technically, contexts could be a hook
         # but kept here for clarity
@@ -584,13 +602,25 @@ class EpochBasedTrainer(BaseTrainer):
                     self.run_validation_step(idx, data_sample)
                     end = time.perf_counter()
 
+        # Loss is the model's (logged per step by log_loss_dict); the evaluator
+        # only adds prediction metrics on top. Drop any evaluator output already
+        # logged as loss this epoch so BaseEvaluator's step_loss doesn't
+        # double-source and skew the reduction.
         metrics = self.evaluator.evaluate()
-        self.event_recorder.put_scalars(
-            scope="epoch",
-            prefix="val",
-            category="loss",
-            **{k: (v.item() if torch.is_tensor(v) else v) for k, v in metrics.items()},
-        )
+        already_logged = set(self.event_recorder.get_epoch_scalars().keys())
+        evaluator_metrics = {}
+        for k, v in metrics.items():
+            key = get_metric_full_name(name=k, scope="epoch", category="loss", prefix="val")
+            if key in already_logged:
+                continue
+            evaluator_metrics[k] = v.item() if torch.is_tensor(v) else v
+        if evaluator_metrics:
+            self.event_recorder.put_scalars(
+                scope="epoch",
+                prefix="val",
+                category="loss",
+                **evaluator_metrics,
+            )
         self.evaluator.reset()
 
         self.after_validation()

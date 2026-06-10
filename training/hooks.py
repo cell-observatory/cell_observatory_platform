@@ -46,7 +46,7 @@ from cell_observatory_platform.training.helpers import (
     log_loss_dict,
 )
 from cell_observatory_platform.training.schedulers import CosineScheduler, linear_warmup_cosine_decay
-from cell_observatory_platform.utils.context import gather_and_reduce, is_main_process, process_rank
+from cell_observatory_platform.utils.context import is_main_process, process_rank
 if TYPE_CHECKING:
     from cell_observatory_platform.training.loops import BaseTrainer, Inferencer
 
@@ -454,14 +454,18 @@ class IterationTimer(HookBase):
         self._val_step_timer.reset()
 
     def after_val_step(self, data_sample, outputs, loss_dict):
-        """
-        Record the time spent on the validation step.
+        """Record validation-step time.
+
+        Emitted ``epoch``-scoped, not ``step``: val steps share the frozen
+        training ``_iter`` and collapse to one point/epoch, so step-scoping would
+        strand sparse points on the training ``iter`` axis joined by wandb
+        interpolation lines.
         """
         sec = self._val_step_timer.seconds()
         self.trainer.event_recorder.put_scalars(
             step_time=sec,
             prefix="val",
-            scope="step",
+            scope="epoch",
             category="timing",
             units="sec"
         )
@@ -469,8 +473,8 @@ class IterationTimer(HookBase):
         # Reset the timer for the next validation step
         self._val_step_timer.reset()
 
-        log_data_sample_metrics(self.trainer, data_sample, default_phase="validation")
-        log_loss_dict(self.trainer, loss_dict, phase="validation")
+        log_data_sample_metrics(self.trainer, data_sample, default_phase="validation", scope="epoch")
+        log_loss_dict(self.trainer, loss_dict, phase="validation", scope="epoch")
 
     def before_test(self):
         """
@@ -932,6 +936,12 @@ class TorchMemoryStats(HookBase):
 
 
 class BestMetricSaver(HookBase):
+    # Must run before BestCheckpointer (reports trainer._curr_val_metric) and
+    # before PeriodicWriter (clears the epoch buffer this hook reads). Both are
+    # MEDIUM, so without a higher priority this hook would run after them in
+    # config order — reporting a stale/inf metric and reading a cleared buffer.
+    PRIORITY = HOOK_PRIORITY.HIGH
+
     def __init__(
         self,
         metric_name: str,
@@ -969,17 +979,12 @@ class BestMetricSaver(HookBase):
     def after_validation(self):
         if self.eval_after_validation:
             metric_key = self._epoch_metric_key(prefix="val")
-            epoch_scalars = self.trainer.event_recorder.get_epoch_scalars()
-            if metric_key not in epoch_scalars:
+            latest_metric_val = self.trainer.event_recorder.reduce_epoch_metric(metric_key)
+            if latest_metric_val is None:
                 raise ValueError(
                     f"Metric {metric_key} not found in epoch logs. "
                     "Make sure to set `val_metric` in the trainer config."
                 )
-            latest_metric_val_per_rank, *_ = epoch_scalars[metric_key][-1]
-            latest_metric_val = gather_and_reduce(
-                torch.tensor(latest_metric_val_per_rank, device="cuda"), 
-                reduce_op="median"
-            ).item()
             self.trainer._curr_val_metric = latest_metric_val
             self.update_best_metrics(latest_metric_val)
 
@@ -991,30 +996,20 @@ class BestMetricSaver(HookBase):
         if (self.trainer._epoch + 1) % self.period == 0:
             if not self.eval_after_validation:
                 metric_key = self._epoch_metric_key(prefix="val")
-                epoch_scalars = self.trainer.event_recorder.get_epoch_scalars()
-                if metric_key not in epoch_scalars:
+                latest_metric_val = self.trainer.event_recorder.reduce_epoch_metric(metric_key)
+                if latest_metric_val is None:
                     raise ValueError(
                         f"Metric {metric_key} not found in epoch logs. "
                         "Make sure to set `val_metric` in the trainer config."
                     )
-                latest_metric_val_per_rank, *_ = epoch_scalars[metric_key][-1]
-                latest_metric_val = gather_and_reduce(
-                    torch.tensor(latest_metric_val_per_rank, device="cuda"),
-                    reduce_op="median"
-                ).item()
                 self.trainer._curr_val_metric = latest_metric_val
                 self.update_best_metrics(latest_metric_val)
 
     def after_test(self):
         metric_key = self._epoch_metric_key(prefix="test")
-        test_scalars = self.trainer.event_recorder.get_epoch_scalars()
-        if metric_key not in test_scalars:
+        test_metric_val = self.trainer.event_recorder.reduce_epoch_metric(metric_key)
+        if test_metric_val is None:
             raise ValueError(f"Metric {metric_key} not found in test logs. ")
-        test_metric_val_per_rank, *_ = test_scalars[metric_key][-1]
-        test_metric_val = gather_and_reduce(
-            torch.tensor(test_metric_val_per_rank, device="cuda"),
-            reduce_op="median"
-        ).item()
         self._update_best_metrics(test_metric_val)
 
 
@@ -1212,18 +1207,12 @@ class EarlyStopHook(HookBase):
         metric_key = get_metric_full_name(
             name=self.metric_name, scope="epoch", category="loss", prefix="val",
         )
-        epoch_scalars = self.trainer.event_recorder.get_epoch_scalars()
-        if metric_key not in epoch_scalars:
+        latest_metric_val = self.trainer.event_recorder.reduce_epoch_metric(metric_key)
+        if latest_metric_val is None:
             raise ValueError(
                 f"Metric {metric_key} not found in epoch logs. "
                 "Make sure to set `val_metric` in the trainer config."
             )
-
-        latest_metric_val_per_rank, *_ = epoch_scalars[metric_key][-1]
-        latest_metric_val = gather_and_reduce(
-            torch.tensor(latest_metric_val_per_rank, device="cuda"),
-            reduce_op="median"
-        ).item()
 
         if math.isnan(latest_metric_val) or math.isinf(latest_metric_val):
             raise ValueError(f"Validation metric {self.metric_name} is NaN or Inf. ")
