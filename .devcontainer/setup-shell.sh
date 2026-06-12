@@ -71,9 +71,20 @@ link_host_local_bin() {
   done
 }
 
+ensure_writable_local_share() {
+  local share_dir="${USER_HOME}/.local/share"
+
+  if [ -L "${share_dir}" ]; then
+    rm -f "${share_dir}"
+  fi
+
+  mkdir -p "${share_dir}"
+}
+
 install_fasd() {
   local fasd_dir="${USER_HOME}/.local/share/fasd"
   mkdir -p "${LOCAL_BIN}"
+  ensure_writable_local_share
 
   if [ -x "${LOCAL_BIN}/fasd" ]; then
     return 0
@@ -145,13 +156,11 @@ if [ ! -d "${HOST_HOME}" ]; then
   exit 0
 fi
 
-# Symlink host resources, but keep a generated shell entrypoint.
+HOST_USER="$(detect_host_user)"
 link_host_file ".p10k.zsh"
 link_host_dir ".oh-my-zsh"
 link_host_dir ".config"
 link_host_dir ".local/share"
-
-HOST_USER="$(detect_host_user)"
 
 install_fasd
 link_host_local_bin "${HOST_USER}"
