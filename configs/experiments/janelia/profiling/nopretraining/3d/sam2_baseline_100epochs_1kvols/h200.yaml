@@ -17,3 +17,7 @@ datasets:
 
 schedulers:
   epochs: 100
+
+optimizers:
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1.33e-4
