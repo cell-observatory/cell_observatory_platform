@@ -4,11 +4,11 @@ defaults:
   - /clusters/janelia_h200
   - _self_
 
-experiment_name: sam2_baseline_128x384x512_100epochs_1kvols_2xh200
+experiment_name: sam2_baseline_128x384x512_100epochs_1kvols_3xh200
 
 clusters:
-  batch_size: 16 # gpus_per_worker (8) * worker_nodes (2)
-  worker_nodes: 2
+  batch_size: 24 # gpus_per_worker (8) * worker_nodes (2)
+  worker_nodes: 3
 
 datasets:
   max_rows: null
@@ -17,3 +17,7 @@ datasets:
 
 schedulers:
   epochs: 100
+
+optimizers:
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+  lr: 5e-4
