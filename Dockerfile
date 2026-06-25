@@ -72,6 +72,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   rsync \
   zstd \
   pigz \
+  git-delta \
   && rm -rf /var/lib/apt/lists/*
 
 # postgres:17 needs to match the version in the sandbox.md and supabase.co
@@ -93,7 +94,6 @@ RUN mkdir -p /etc/apt/keyrings/ && \
     echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com beta main" | tee -a /etc/apt/sources.list.d/grafana.list
 
 RUN apt-get update && \
-    apt-get install -y grafana && \
     apt-get install -y grafana-enterprise && \
     rm -rf /var/lib/apt/lists/*
 
@@ -139,6 +139,11 @@ RUN groupadd --gid $USER_GID $USERNAME && \
     # [Optional] Add sudo support. Omit if you don't need to install software after connecting.        
     echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME || true
+
+RUN echo "ubuntu ALL=(root) NOPASSWD:ALL" > /etc/sudoers.d/ubuntu && \
+    chmod 0440 /etc/sudoers.d/ubuntu && \
+    mkdir -p /home/ubuntu/.claude && \
+    chown -R ubuntu:ubuntu /home/ubuntu/.claude
 
 # [Optional] Set the default user. Omit if you want to keep the default as root.
 # USER $USERNAME

@@ -19,6 +19,14 @@ link_host_dir() {
   fi
 }
 
+configure_git_identity() {
+  local name email
+  name="$(git config --file "${HOST_HOME}/.gitconfig" user.name 2>/dev/null || true)"
+  email="$(git config --file "${HOST_HOME}/.gitconfig" user.email 2>/dev/null || true)"
+  [ -n "${name}" ]  && git config --global user.name  "${name}"
+  [ -n "${email}" ] && git config --global user.email "${email}"
+}
+
 detect_host_user() {
   if [ -n "${HOST_USER:-}" ]; then
     echo "${HOST_USER}"
@@ -157,6 +165,7 @@ if [ ! -d "${HOST_HOME}" ]; then
 fi
 
 HOST_USER="$(detect_host_user)"
+configure_git_identity
 link_host_file ".p10k.zsh"
 link_host_dir ".oh-my-zsh"
 link_host_dir ".config"

@@ -43,6 +43,7 @@
     "source=${localEnv:HOME},target=/host-home,type=bind,consistency=cached,readonly",
     "source=${localEnv:HOME}/.ssh,target=/home/ubuntu/.ssh,type=bind,consistency=cached",
     "source=/groups/betzig/betziglab,target=/groups/betzig/betziglab,type=bind,consistency=cached",
+    "source=cell-observatory-claude,target=/home/ubuntu/.claude,type=volume",
     "source=/scratch/${localEnv:USER},target=/scratch,type=bind,consistency=cached",
     "source=/scratch/${localEnv:USER}/sandbox,target=/scratch/sandbox,type=bind,consistency=cached",
     "source=/scratch/${localEnv:USER}/node_local_store,target=/scratch/node_local_store,type=bind,consistency=cached"
@@ -88,6 +89,6 @@
       ]
     }
   },
-  "postCreateCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && pip install bpytop --user --no-dependencies && bash .devcontainer/setup-shell.sh && python3 --version",
+  "postCreateCommand": "cd /workspace/cell_observatory_platform && export PATH=$PATH:/home/ubuntu/.local/bin && pip install bpytop --user --no-dependencies && bash .devcontainer/setup-shell.sh && python3 --version && (chown -R ubuntu:ubuntu /home/ubuntu/.claude 2>/dev/null || sudo -n chown -R ubuntu:ubuntu /home/ubuntu/.claude 2>/dev/null || true) && ([ -f /workspace/.claude-devcontainer-setup.sh ] && bash /workspace/.claude-devcontainer-setup.sh || true)",
   "postStartCommand": "cd /workspace/cell_observatory_platform && bash .devcontainer/setup-shell.sh && export PATH=$PATH:/home/ubuntu/.local/bin && export PYTHONPATH=/workspace:/workspace/cell_observatory_platform:/workspace:/workspace/cell_observatory_platform:/workspace/ops3d && echo ' ' && echo 'pip installing workspace folder from source...' && pip install -e . --user --force-reinstall --no-deps && ( [ -f /host-home/.bashrc ] && source /host-home/.bashrc || source ~/.bashrc ) && echo '' && echo 'Apptainer instance run postgres database in background...' && apptainer instance run --no-mount proc --writable --env POSTGRES_PASSWORD=postgres /scratch/sandbox mysql -c 'config_file=/etc/postgresql/postgresql.conf' && echo ' ' && echo 'Test database connection to ${SUPABASE_LOCAL_URI}...' && psql postgresql://postgres@localhost/postgres --command=\"SELECT COUNT(*) NUMBER_OF_ROWS_IN_PREPARED FROM PREPARED;\" "
 }
