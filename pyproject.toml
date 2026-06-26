@@ -35,6 +35,7 @@ addopts = "--strict-markers -v"
 markers = [
     "cuda: marks tests as requiring CUDA",
     "localdb: marks tests as requiring the local sandbox database",
+    "benchmark: marks optional performance benchmark tests (opt-in via -m benchmark)",
 ]
 
 [tool.black]
