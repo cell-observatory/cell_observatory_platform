@@ -2,7 +2,7 @@ import pytest
 import torch
 from torch.nn import functional as F
 
-from cell_observatory_platform.models.meta_arch.maskdino import MaskMaterializer
+from cell_observatory_platform.models.layers.maskmaterializer import MaskMaterializer
 
 
 def _make_materializer_inputs():

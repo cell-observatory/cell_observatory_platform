@@ -10,34 +10,27 @@ from cell_observatory_platform.evaluation.base_evaluation import BaseEvaluator
 def test_base_evaluator_rejects_loss_dict_none():
     """BaseEvaluator.process raises a clear TypeError when loss_dict is None
     (otherwise the loss_dict[metric] subscript would raise an opaque error)."""
-    evaluator = BaseEvaluator(training_metrics=[{"step_loss": "mean"}])
+    evaluator = BaseEvaluator(
+        training_metrics=[{"name": "train_loss", "key": "step_loss", "reduce_method": "mean"}]
+    )
     with pytest.raises(TypeError):
         evaluator.process({}, {}, None)
 
 
-def test_automated_benchmark_select_pred_dict_requires_pred_key():
+def test_automated_benchmark_select_pred_dict_by_key():
     evaluator = AutomatedBenchmarkEvaluator(
-        metric_reductions=[{"mae": "mean"}],
-        pred_key=None,
-    )
-
-    with pytest.raises(ValueError, match="pred_key is None"):
-        evaluator._select_pred({"x": torch.ones(2)})
-
-
-def test_automated_benchmark_select_pred_tensor_rejects_pred_key():
-    evaluator = AutomatedBenchmarkEvaluator(
-        metric_reductions=[{"mae": "mean"}],
+        metric_reductions=[{"name": "mae", "reduce_method": "mean"}],
         pred_key="x",
+        target_key="targets",
     )
-
-    with pytest.raises(TypeError, match="non-dict"):
-        evaluator._select_pred(torch.ones(2))
+    data_sample = {"metainfo": {"targets": [torch.zeros(2, 2)]}}
+    # pred_key selects outputs["x"]; matching shape -> no error.
+    evaluator.process(data_sample, {"x": torch.zeros(2, 2)})
 
 
 def test_automated_benchmark_process_shape_mismatch():
     evaluator = AutomatedBenchmarkEvaluator(
-        metric_reductions=[{"mae": "mean"}],
+        metric_reductions=[{"name": "mae", "reduce_method": "mean"}],
         pred_key=None,
         target_key="targets",
     )
@@ -45,8 +38,3 @@ def test_automated_benchmark_process_shape_mismatch():
 
     with pytest.raises(ValueError, match="shape mismatch"):
         evaluator.process(data_sample, torch.zeros(2, 2))
-
-
-def test_automated_benchmark_ssim_is_explicitly_disabled():
-    with pytest.raises(NotImplementedError, match="SSIMMetric"):
-        AutomatedBenchmarkEvaluator(metric_reductions=[{"ssim": "mean"}])

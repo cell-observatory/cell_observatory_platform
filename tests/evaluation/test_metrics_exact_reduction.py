@@ -410,6 +410,7 @@ def _eval_sample_with_subthreshold_pred():
     pixel_decoder_output[0, 0, 0, 0] = 5.0  # query 0 -> voxel (0,0,0) == gt class 1
     pixel_decoder_output[1, 1, 1, 1] = 5.0  # query 1 -> voxel (1,1,1) == gt class 2
     return {
+        "mask_source": "query",
         "mask_embeddings": torch.eye(2, dtype=torch.float32),
         "pixel_decoder_output": pixel_decoder_output,
         "topk_query_indices": torch.tensor([0, 1], dtype=torch.long),
@@ -417,7 +418,7 @@ def _eval_sample_with_subthreshold_pred():
         "topk_class_scores": torch.tensor([0.9, 0.05], dtype=torch.float32),
         "topk_class_ids": torch.tensor([1, 2], dtype=torch.long),
         "boxes": torch.zeros(2, 6, dtype=torch.float32),
-        "orig_image_size": (2, 2, 2),
+        "eval_frame_size": (2, 2, 2),
     }
 
 
@@ -426,7 +427,7 @@ def test_evaluator_ap_sees_all_dets_but_miou_applies_score_threshold():
     0.05) is PUSHED to MaskMAP (AP) but is EXCLUDED from the matched-IoU list
     consumed by instance mIoU."""
     evaluator = InstanceSegmentationEvaluator(
-        metrics=["mask_map", "mask_miou"],
+        metrics=["mask_map", {"name": "mask_miou", "mode": "instance"}],
         mask_chunk_size=1,
         match_labels=True,
         score_threshold=0.5,
@@ -476,7 +477,7 @@ def test_evaluator_subthreshold_only_pred_still_pushed_to_ap():
     sample["topk_class_scores"] = torch.tensor([0.04, 0.05], dtype=torch.float32)
 
     evaluator = InstanceSegmentationEvaluator(
-        metrics=["mask_map", "mask_miou"],
+        metrics=["mask_map", {"name": "mask_miou", "mode": "instance"}],
         mask_chunk_size=1,
         match_labels=True,
         score_threshold=0.5,

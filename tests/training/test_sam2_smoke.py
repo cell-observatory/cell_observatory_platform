@@ -34,6 +34,20 @@ def _configs() -> Path:
     return _repo_root() / "configs"
 
 
+def _load_packaged(path: Path, node: str):
+    """`OmegaConf.load` a yaml that carries a hydra `# @package` directive.
+
+    `OmegaConf.load` does not interpret `# @package`, so the loaded document
+    keeps its in-file nesting (e.g. `meta_arch.sam: {...}`). Reach through to
+    `node` explicitly and assert it exists so a future config restructure fails
+    loudly here instead of silently producing an empty/misplaced config.
+    """
+    doc = OmegaConf.load(path)
+    selected = OmegaConf.select(doc, node)
+    assert selected is not None, f"expected node '{node}' in {path}"
+    return selected
+
+
 def _compose_smoke_cfg(
     T: int = 1,
     Z: int = 32,
@@ -52,7 +66,12 @@ def _compose_smoke_cfg(
     """
     cfg_root = _configs()
 
-    sam_cfg = OmegaConf.load(cfg_root / "models/meta_arch/sam/base_single_scale.yaml")
+    # base_single_scale.yaml starts with `# @package models` and nests its body
+    # under `meta_arch.sam:`; the other two yamls carry no package directive and
+    # are already flat, so they load as-is.
+    sam_cfg = _load_packaged(
+        cfg_root / "models/meta_arch/sam/base_single_scale.yaml", "meta_arch.sam"
+    )
     sam_backbone_cfg = OmegaConf.load(cfg_root / "models/backbones/sam_backbone/sam_backbone.yaml")
     masked_encoder_cfg = OmegaConf.load(cfg_root / "models/backbones/masked_encoder/base.yaml")
 
@@ -197,6 +216,11 @@ def test_sam2_forward_smoke(flags):
     """
     use_point_sampling, low_res_multimasks, pred_obj_scores = flags
 
+    # REGISTRY is populated purely by importing component modules
+    # (utils/registry.py has no autodiscovery). `utils._register` walk-imports
+    # every component root at import time; without it BUILD_SAM2's
+    # REGISTRY.build("backbone"/"criterion", "sam", ...) sees an empty registry.
+    import cell_observatory_platform.utils._register  # noqa: F401
     from cell_observatory_platform.models.meta_arch.sam import BUILD as BUILD_SAM2
     from cell_observatory_platform.models.layers.preprocessor import SAM2VideoPreprocessor
 
@@ -235,7 +259,8 @@ def test_sam2_forward_smoke(flags):
         input_format="TZYXC",
         input_shape=tuple(input_shape),
         seed=0,
-        mask_channel_idx=-1,
+        # `mask_channel_idx` is no longer a constructor arg: the labelmap is
+        # always the last channel of `data_tensor`.
         expect_mask_channel=True,
         max_masks=max_masks,
         require_targets=True,
@@ -248,7 +273,10 @@ def test_sam2_forward_smoke(flags):
 
     processed = preprocessor.forward(data_sample, data_time=0.0, idx=0)
 
-    target_view = processed["metainfo"]["targets"]
+    # `metainfo["targets"]` is now the platform-contract per-image list of dicts;
+    # the SAM2-private per-frame view (labelmaps/instance_ids/valid/presence_t)
+    # lives under `metainfo["sam2_views"]`.
+    target_view = processed["metainfo"]["sam2_views"]
     assert "labelmaps" in target_view, "preprocessor must emit labelmap target view"
     assert "instance_ids" in target_view and "valid" in target_view and "presence_t" in target_view
 

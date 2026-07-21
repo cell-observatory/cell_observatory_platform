@@ -61,16 +61,16 @@ class _BenchInstanceSegModel(nn.Module):
         self._device = device
         self.output_metadata = {
             "tensor_info": {
-                "masks": {"shape": spatial, "dtype": "uint16"},
+                "masks": {"shape": (*spatial, 1), "dtype": "uint16"},
                 "boxes": {"shape": (topk, 6), "dtype": "float32"},
                 "labels": {"shape": (topk,), "dtype": "float32"},
             },
         }
 
-    def predict(self, data_sample: dict) -> Dict[str, torch.Tensor]:
+    def inference_step(self, data_sample: dict) -> Dict[str, torch.Tensor]:
         B = data_sample["data_tensor"].shape[0]
         return {
-            "masks": torch.ones((B, *self._spatial), dtype=torch.uint16, device=self._device),
+            "masks": torch.ones((B, *self._spatial, 1), dtype=torch.uint16, device=self._device),
             "boxes": torch.full((B, self._topk, 6), 0.5, dtype=torch.float32, device=self._device),
             "labels": torch.full((B, self._topk), 0.9, dtype=torch.float32, device=self._device),
         }
@@ -269,7 +269,9 @@ def _make_data_sample(spatial: Tuple[int, ...], device: torch.device) -> dict:
         "metainfo": {
             "prepared_id": [0],
             "tile_name": "bench_tile.zarr",
-            "orig_image_sizes": [torch.tensor(spatial, device=device)],
+            # Batched (B, 3), matching production; postprocess() reads both keys.
+            "image_sizes": torch.tensor([spatial] * _BATCH_SIZE, device=device),
+            "orig_image_sizes": torch.tensor([spatial] * _BATCH_SIZE, device=device),
             "channel_mapping": dict(_BENCH_CHANNEL_MAPPING),
         },
     }
@@ -294,7 +296,6 @@ def _build_worker(
         input_format=_INPUT_FORMAT,
         input_shape=input_shape,
         patch_shape=list(_PATCH_SHAPE),
-        decoder_head_type="maskdino",
         model_name="bench__run_x__e0_i0",
         save_outputs=True,
         block_on_save=True,
@@ -304,7 +305,6 @@ def _build_worker(
         buffer_manager=buffer_manager,
         save_worker=save_worker,
         viz_worker=viz_worker,
-        channel_names=_BENCH_CHANNEL_NAMES,
     )
 
 

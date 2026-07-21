@@ -569,14 +569,31 @@ def _instantiate_transform_list(transforms_list: Optional[List[Any]]) -> List[Ca
 
 
 class BaseFinetunePreprocessor(RayPreprocessor):
+    # Reconstruction tasks (denoising / channel-split / upsample) patchify their
+    # targets and therefore need a known signal-channel count. Detection and
+    # segmentation legitimately have none, so the check is opt-in per subclass.
+    REQUIRES_CHANNEL_COUNT: bool = False
+
     @property
     def TARGET_ROLES(self) -> "frozenset[str]":
         """Channel roles this task consumes as targets, DERIVED from the single
         ``_data_types()`` declaration (the channel-backed target entries). Empty
         for reconstruction tasks (no channel-backed targets)."""
-        return frozenset(
-            e["channel_role"] for e in self._data_types().values() if "channel_role" in e
-        )
+        try:
+            return frozenset(
+                e["channel_role"] for e in self._data_types().values() if "channel_role" in e
+            )
+        except AttributeError as exc:
+            # nn.Module.__getattr__ is the fallback for ANY AttributeError escaping
+            # __getattribute__ -- including one raised from INSIDE this property body.
+            # Left alone, a missing self.input_format (e.g. a fixture that bypasses
+            # __init__ via __new__) surfaces as the misleading "object has no attribute
+            # 'TARGET_ROLES'". Re-raise as a non-AttributeError so the real cause
+            # survives, chained for the traceback.
+            raise RuntimeError(
+                f"{type(self).__name__}.TARGET_ROLES failed while evaluating "
+                f"_data_types(); an attribute normally set in __init__ is missing: {exc}"
+            ) from exc
 
     def __init__(
         self,
@@ -639,6 +656,18 @@ class BaseFinetunePreprocessor(RayPreprocessor):
                 f"min_channel_count ({min_channel_count}) != max_channel_count ({max_channel_count})"
             )
         self.channels = max_channel_count
+        if self.REQUIRES_CHANNEL_COUNT and self.channels is None:
+            # Reconstruction tasks patchify their targets, which needs a known
+            # signal-channel count. Below, channels=None means "no patchification"
+            # (pe_patchify = None) -- correct for detection/segmentation, silently
+            # wrong here: forward() would hand the loss un-patchified targets and the
+            # shape mismatch would surface far downstream. Fail at construction.
+            raise ValueError(
+                f"{type(self).__name__} requires a known signal-channel count, but "
+                "max_channel_count was not provided (self.channels is None). This is "
+                "normally sourced from the dataset DB; patchification would be "
+                "silently disabled. Pass max_channel_count explicitly."
+            )
 
         self.spatial_shape = (
             (self.axial_shape,) + self.lateral_shape if self.axial_shape is not None else self.lateral_shape
@@ -823,6 +852,8 @@ class BaseFinetunePreprocessor(RayPreprocessor):
 
 @registers_as("preprocessor", "denoising")
 class DenoisingPreprocessor(BaseFinetunePreprocessor):
+    REQUIRES_CHANNEL_COUNT = True
+
     """
     Task: denoising
     - inputs: noisy image (in counts, uint16 range)
@@ -935,6 +966,8 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
 
 @registers_as("preprocessor", "channel_split")
 class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
+    REQUIRES_CHANNEL_COUNT = True
+
     """
     Task: "channel_split"
     - inputs: original multi-channel image
@@ -1030,6 +1063,8 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
 
 @registers_as("preprocessor", "upsample")
 class UpsamplePreprocessor(BaseFinetunePreprocessor):
+    REQUIRES_CHANNEL_COUNT = True
+
     """
     Task: upsample
       mode in {"upsample_space", "upsample_spacetime", "upsample_time"}

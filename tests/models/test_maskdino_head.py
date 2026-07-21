@@ -197,8 +197,8 @@ def test_maskdino_forward_train(monkeypatch):
                 "mask_ids": mask_ids,
                 "label_map": label_map,
             }]],
-            "image_sizes": [torch.tensor([D_in, H_in, W_in], dtype=torch.long, device=device)],
-            "orig_image_sizes": [torch.tensor([D_in, H_in, W_in], dtype=torch.long, device=device)],
+            "image_sizes": torch.tensor([[D_in, H_in, W_in]], dtype=torch.long, device=device),
+            "orig_image_sizes": torch.tensor([[D_in, H_in, W_in]], dtype=torch.long, device=device),
         },
     }
 
@@ -344,22 +344,23 @@ def test_maskdino_predict():
         "data_tensor": data_tensor,
         "metainfo": {
             "targets": None,
-            "image_sizes": [torch.tensor([D_in, H_in, W_in], dtype=torch.long, device=device)],
-            "orig_image_sizes": [torch.tensor([D_in, H_in, W_in], dtype=torch.long, device=device)],
+            "image_sizes": torch.tensor([[D_in, H_in, W_in]], dtype=torch.long, device=device),
+            "orig_image_sizes": torch.tensor([[D_in, H_in, W_in]], dtype=torch.long, device=device),
         },
     }
 
     with torch.no_grad():
-        pred = model.predict(data_sample)
+        pred = model.inference_step(data_sample)
 
 
     assert "masks" in pred
     assert "boxes" in pred
     assert "labels" in pred
 
-    # masks: (B, D, H, W) after upsampling
-    assert pred["masks"].dim() == 4
-    assert pred["masks"].shape == (batch_size, D_in, H_in, W_in)
+    # masks: (B, D, H, W, 1) -- inference_step appends the trailing C=1 required by the
+    # channels-last ZYXC save-path contract (io.py ndim gate).
+    assert pred["masks"].dim() == 5
+    assert pred["masks"].shape == (batch_size, D_in, H_in, W_in, 1)
 
     # boxes: (B, topk, 6)
     assert pred["boxes"].shape == (batch_size, topk_per_image, 6)

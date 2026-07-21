@@ -181,7 +181,7 @@ class TestInputFormatToOutputFormat:
         assert o["labels"] == "TNM"
 
     def test_detection_tzyxc(self):
-        o = input_format_to_output_format("TZYXC", "detection")
+        o = input_format_to_output_format("TZYXC", "object_detection")
         assert o["scores"] == "TN"
         assert o["labels"] == "TNM"
         assert o["boxes"] == "TN6"
@@ -195,7 +195,7 @@ class TestInputFormatToOutputFormat:
             input_format_to_output_format("TYXC", "semantic_segmentation")
 
     def test_detection_zyxc(self):
-        o = input_format_to_output_format("ZYXC", "detection")
+        o = input_format_to_output_format("ZYXC", "object_detection")
         assert o["scores"] == "N"
         assert o["labels"] == "NM"
         assert o["boxes"] == "N6"
@@ -224,7 +224,6 @@ class TestSaverSavePredictions:
                     "annotation_type": "dense",
                 }
             },
-            existing_channel_names={0: "channel_0"},
             shard_spatial_shape=store["shard_spatial_shape"],
             chunk_spatial_shape=store["chunk_spatial_shape"],
         )
@@ -257,7 +256,6 @@ class TestSaverSavePredictions:
                     "annotation_type": "sparse",
                 },
             },
-            existing_channel_names={0: "channel_0"},
             shard_spatial_shape=store["shard_spatial_shape"],
             chunk_spatial_shape=store["chunk_spatial_shape"],
         )

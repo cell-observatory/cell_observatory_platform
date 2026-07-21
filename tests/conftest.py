@@ -34,6 +34,12 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env", verbose=True)
 
 def pytest_addoption(parser):
     parser.addoption(
+        "--run-benchmarks",
+        action="store_true",
+        default=False,
+        help="run tests marked benchmark",
+    )
+    parser.addoption(
         "--run-localdb",
         action="store_true",
         default=False,
@@ -84,15 +90,22 @@ def pytest_ignore_collect(collection_path, config):
 def pytest_collection_modifyitems(config, items):
     has_cuda_toolkit = _has_cuda_toolkit()
     run_localdb = config.getoption("--run-localdb")
+    run_benchmarks = config.getoption("--run-benchmarks")
 
     skip_cuda = pytest.mark.skip(reason="CUDA toolkit (nvcc) not available")
     skip_localdb = pytest.mark.skip(reason="need --run-localdb to execute localdb tests")
+    # The `benchmark` marker documents itself as opt-in, but a marker alone only
+    # enables `-m benchmark` SELECTION -- it does not deselect. These spin up Ray
+    # actors over SHM buffers and measure the machine rather than the code.
+    skip_benchmark = pytest.mark.skip(reason="need --run-benchmarks to execute benchmark tests")
 
     for item in items:
         if not has_cuda_toolkit and "cuda" in item.keywords:
             item.add_marker(skip_cuda)
         if not run_localdb and "localdb" in item.keywords:
             item.add_marker(skip_localdb)
+        if not run_benchmarks and "benchmark" in item.keywords:
+            item.add_marker(skip_benchmark)
 
 
 def _sdpa_kernel_with_math_fallback(backends):

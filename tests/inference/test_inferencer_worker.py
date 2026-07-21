@@ -35,7 +35,12 @@ requires_cuda = pytest.mark.skipif(not _CUDA_AVAILABLE, reason="CUDA not availab
 
 
 class _MockInstanceSegModel(nn.Module):
-    """Returns fixed masks / boxes / labels like MaskDINO.predict()."""
+    """Returns fixed masks / boxes / labels like ``MaskDINO.inference_step()``.
+
+    Mirrors the real contract (models/meta_arch/maskdino.py::inference_step):
+    ``boxes`` (B, topk, 6), ``labels`` (B, topk) and ``masks`` as a channels-last
+    ``(B, Z, Y, X, 1)`` uint16 instance label map.
+    """
 
     def __init__(self, spatial_shape: Tuple[int, ...], topk: int, device: torch.device):
         super().__init__()
@@ -44,15 +49,18 @@ class _MockInstanceSegModel(nn.Module):
         self._device = device
         self.output_metadata = {
             "tensor_info": {
-                "masks": {"shape": spatial_shape, "dtype": "uint16"},
+                "masks": {"shape": (*spatial_shape, 1), "dtype": "uint16"},
                 "boxes": {"shape": (topk, 6), "dtype": "float32"},
                 "labels": {"shape": (topk,), "dtype": "float32"},
             },
         }
 
-    def predict(self, data_sample: dict) -> Dict[str, torch.Tensor]:
+    def get_output_metadata(self) -> dict:
+        return self.output_metadata
+
+    def inference_step(self, data_sample: dict) -> Dict[str, torch.Tensor]:
         B = data_sample["data_tensor"].shape[0]
-        masks = torch.ones((B, *self._spatial), dtype=torch.uint16, device=self._device)
+        masks = torch.ones((B, *self._spatial, 1), dtype=torch.uint16, device=self._device)
         boxes = torch.full((B, self._topk, 6), 0.5, dtype=torch.float32, device=self._device)
         labels = torch.full((B, self._topk), 0.9, dtype=torch.float32, device=self._device)
         return {"masks": masks, "boxes": boxes, "labels": labels}
@@ -67,7 +75,7 @@ class _MockInstanceSegModel(nn.Module):
 
 
 class _MockDetectionModel(nn.Module):
-    """Returns fixed boxes / labels like PlainDETR.predict()."""
+    """Returns fixed boxes / labels like ``PlainDETR.inference_step()``."""
 
     def __init__(self, topk: int, device: torch.device):
         super().__init__()
@@ -80,7 +88,10 @@ class _MockDetectionModel(nn.Module):
             },
         }
 
-    def predict(self, data_sample: dict) -> Dict[str, torch.Tensor]:
+    def get_output_metadata(self) -> dict:
+        return self.output_metadata
+
+    def inference_step(self, data_sample: dict) -> Dict[str, torch.Tensor]:
         B = data_sample["data_tensor"].shape[0]
         boxes = torch.full((B, self._topk, 6), 0.25, dtype=torch.float32, device=self._device)
         labels = torch.full((B, self._topk), 0.8, dtype=torch.float32, device=self._device)
@@ -286,7 +297,8 @@ def _make_outputs_metadata_instance_seg():
         # Only large spatial arrays use pinned SHM pools; boxes/labels go inline as numpy.
         "buffer_tensors": ["masks"],
         "tensor_info": {
-            "masks": {"shape": _SPATIAL, "dtype": "uint16"},
+            # masks are channels-last ZYXC, matching MaskDINO.inference_step().
+            "masks": {"shape": (*_SPATIAL, 1), "dtype": "uint16"},
             "boxes": {"shape": (_TOPK, 6), "dtype": "float32"},
             "labels": {"shape": (_TOPK,), "dtype": "float32"},
         },
@@ -361,20 +373,15 @@ def _build_inferencer_worker(
     save_worker,
     viz_worker,
     outputs_metadata: dict,
-    decoder_head_type: str,
     save_outputs: bool = True,
     vizualize_outputs: bool = True,
     block_on_save: bool = True,
     block_on_viz: bool = True,
     viz_sampling_policy: Optional[dict] = None,
-    channel_names: Optional[dict] = None,
     timepoint_idxs_for_save: Optional[list] = None,
     model_name: str = "test_model__run_x__e0_i0",
 ):
     from cell_observatory_platform.inference.inferencer import InferencerWorker
-
-    if save_outputs and channel_names is None:
-        channel_names = {0: "test_channel_0"}
 
     return InferencerWorker(
         aggregate_mode="none",
@@ -384,7 +391,6 @@ def _build_inferencer_worker(
         input_format=_INPUT_FORMAT,
         input_shape=list(_INPUT_SHAPE),
         patch_shape=list(_PATCH_SHAPE),
-        decoder_head_type=decoder_head_type,
         model_name=model_name,
         save_outputs=save_outputs,
         block_on_save=block_on_save,
@@ -395,7 +401,6 @@ def _build_inferencer_worker(
         save_worker=save_worker,
         viz_worker=viz_worker,
         viz_sampling_policy=viz_sampling_policy,
-        channel_names=channel_names,
         timepoint_idxs_for_save=timepoint_idxs_for_save,
     )
 
@@ -411,7 +416,10 @@ def _make_data_sample(device: torch.device, batch_size: int = 1) -> dict:
             # _should_visualize compares tile_name as a scalar against the
             # policy list, so use a string for single-element batches.
             "tile_name": tile_names[0] if batch_size == 1 else tile_names,
-            "orig_image_sizes": [torch.tensor(_SPATIAL, device=device)] * batch_size,
+            # Production emits these as batched (B, 3) tensors (see get_image_sizes);
+            # postprocess() reads both keys, so both must be present.
+            "image_sizes": torch.tensor([_SPATIAL] * batch_size, device=device),
+            "orig_image_sizes": torch.tensor([_SPATIAL] * batch_size, device=device),
             "channel_mapping": dict(_CHANNEL_MAPPING_META),
         },
     }
@@ -446,10 +454,12 @@ class TestInferencerWorkerInit:
                     save_worker=sw,
                     viz_worker=vw,
                     outputs_metadata=outputs_meta,
-                    decoder_head_type="maskdino",
                 )
             assert worker.task == "instance_segmentation"
-            assert worker.main_output_name == "masks"
+            # Output naming is owned by the model's output_metadata and carried
+            # through ``outputs_metadata['save_tensors']``; the worker no longer
+            # designates a single "main" output.
+            assert set(worker.outputs_metadata["save_tensors"]) == {"masks", "boxes", "labels"}
             assert worker.input_format == _INPUT_FORMAT
         finally:
             _kill_safe(sw)
@@ -478,10 +488,9 @@ class TestInferencerWorkerInit:
                     save_worker=sw,
                     viz_worker=vw,
                     outputs_metadata=outputs_meta,
-                    decoder_head_type="plaindetr",
                 )
             assert worker.task == "detection"
-            assert worker.main_output_name == "boxes"
+            assert set(worker.outputs_metadata["save_tensors"]) == {"boxes", "labels"}
         finally:
             _kill_safe(sw)
             _kill_safe(vw)
@@ -511,7 +520,6 @@ class TestInferencerWorkerInit:
                     save_worker=sw,
                     viz_worker=vw,
                     outputs_metadata=outputs_meta,
-                    decoder_head_type="maskdino",
                     timepoint_idxs_for_save=[0],
                 )
             mi = {"channel_mapping": dict(_CHANNEL_MAPPING_META)}
@@ -525,45 +533,6 @@ class TestInferencerWorkerInit:
             _kill_safe(vw)
             for a in actors:
                 _kill_safe(a)
-            bm.shutdown()
-
-    @pytest.mark.parametrize("bad_channels", [None, {}])
-    def test_save_outputs_requires_channel_names(self, ray_ctx, ray_node_id, unique_suffix, bad_channels):
-        device = torch.device("cuda:0")
-        bm = _make_buffer_manager(ray_node_id)
-        sw = _StubSaveWorker.options(name=f"sw_chreq_{unique_suffix}").remote(buffer_manager=bm)
-        vw = _StubVizWorker.options(name=f"vw_chreq_{unique_suffix}").remote(buffer_manager=bm)
-        try:
-            outputs_meta = _make_outputs_metadata_instance_seg()
-            model = _MockInstanceSegModel(_SPATIAL, _TOPK, device)
-            from cell_observatory_platform.inference.inferencer import InferencerWorker
-
-            kwargs = dict(
-                aggregate_mode="none",
-                inference_mode="tile",
-                task="instance_segmentation",
-                outputs_metadata=outputs_meta,
-                input_format=_INPUT_FORMAT,
-                input_shape=list(_INPUT_SHAPE),
-                patch_shape=list(_PATCH_SHAPE),
-                decoder_head_type="maskdino",
-                model_name="need_channels",
-                save_outputs=True,
-                block_on_save=True,
-                vizualize_outputs=False,
-                block_on_viz=False,
-                model=model,
-                buffer_manager=bm,
-                save_worker=sw,
-                viz_worker=vw,
-            )
-            if bad_channels is not None:
-                kwargs["channel_names"] = bad_channels
-            with _patch_context(), pytest.raises(ValueError, match="channel_names"):
-                InferencerWorker(**kwargs)
-        finally:
-            _kill_safe(sw)
-            _kill_safe(vw)
             bm.shutdown()
 
 
@@ -597,7 +566,6 @@ class TestInferencerWorkerPredict:
                     save_worker=sw,
                     viz_worker=vw,
                     outputs_metadata=outputs_meta,
-                    decoder_head_type="maskdino",
                     block_on_save=True,
                     block_on_viz=True,
                 )
@@ -653,7 +621,6 @@ class TestInferencerWorkerPredict:
                     save_worker=sw,
                     viz_worker=vw,
                     outputs_metadata=outputs_meta,
-                    decoder_head_type="plaindetr",
                     block_on_save=True,
                     block_on_viz=True,
                 )
@@ -704,7 +671,6 @@ class TestInferencerWorkerPredict:
                     save_worker=sw,
                     viz_worker=vw,
                     outputs_metadata=outputs_meta,
-                    decoder_head_type="plaindetr",
                     block_on_save=True,
                     block_on_viz=True,
                 )
@@ -762,7 +728,6 @@ class TestInferencerWorkerVizPolicy:
                     save_worker=sw,
                     viz_worker=vw,
                     outputs_metadata=outputs_meta,
-                    decoder_head_type="plaindetr",
                     block_on_save=True,
                     block_on_viz=True,
                     viz_sampling_policy=policy,
@@ -810,7 +775,6 @@ class TestInferencerWorkerVizPolicy:
                     save_worker=sw,
                     viz_worker=vw,
                     outputs_metadata=outputs_meta,
-                    decoder_head_type="plaindetr",
                     block_on_save=True,
                     block_on_viz=True,
                     viz_sampling_policy=policy,
@@ -859,7 +823,6 @@ class TestInferencerWorkerSaveDisabled:
                     save_worker=sw,
                     viz_worker=vw,
                     outputs_metadata=outputs_meta,
-                    decoder_head_type="plaindetr",
                     save_outputs=False,
                     vizualize_outputs=False,
                     block_on_save=True,
@@ -912,7 +875,6 @@ class TestInferencerWorkerMultiplePredictions:
                     save_worker=sw,
                     viz_worker=vw,
                     outputs_metadata=outputs_meta,
-                    decoder_head_type="plaindetr",
                     block_on_save=True,
                     block_on_viz=True,
                 )
@@ -974,7 +936,6 @@ class TestInferencerWorkerInstanceSegValues:
                     save_worker=sw,
                     viz_worker=vw,
                     outputs_metadata=outputs_meta,
-                    decoder_head_type="maskdino",
                     block_on_save=True,
                     block_on_viz=True,
                 )
@@ -1008,34 +969,6 @@ class TestInferencerWorkerInstanceSegValues:
 # ---------------------------------------------------------------------------
 # Tier-0 pure function tests (no CUDA / Ray required)
 # ---------------------------------------------------------------------------
-
-
-class TestResolvePath:
-    """Tests for InferencerWorker.resolve_path (static method)."""
-
-    def test_simple_key(self):
-        from cell_observatory_platform.inference.inferencer import InferencerWorker
-
-        root = {"foo": 42}
-        assert InferencerWorker.resolve_path(root, "foo") == 42
-
-    def test_nested_key(self):
-        from cell_observatory_platform.inference.inferencer import InferencerWorker
-
-        root = {"a": {"b": {"c": 99}}}
-        assert InferencerWorker.resolve_path(root, "a.b.c") == 99
-
-    def test_list_index(self):
-        from cell_observatory_platform.inference.inferencer import InferencerWorker
-
-        root = {"items": [10, 20, 30]}
-        assert InferencerWorker.resolve_path(root, "items[1]") == 20
-
-    def test_bare_numeric_index(self):
-        from cell_observatory_platform.inference.inferencer import InferencerWorker
-
-        root = {"items": [10, 20, 30]}
-        assert InferencerWorker.resolve_path(root, "items.2") == 30
 
 
 class TestTreeToCpuNumpy:

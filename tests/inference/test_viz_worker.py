@@ -56,13 +56,14 @@ def _wait_buffer_in_use_zero(buffer_actor, *, timeout_s: float = 5.0, poll_s: fl
 
 
 def _viz_handler_kwargs():
-    """Kwargs for ``inference.utils.save_predictions`` that write a real TIFF."""
+    """Kwargs for ``inference.utils.save_predictions``.
+
+    The helper is plot-only (volume writing lives in the save path), so the only
+    artifact is the MIP PDF; ``save_tensors`` is required for the dict branch.
+    """
     return {
         "save_tensors": ["pred"],
-        "save_as_volume": True,
-        "save_as_pdf": False,
         "z_step_pdf": 1,
-        "filetype": "tiff",
     }
 
 
@@ -70,22 +71,21 @@ def _viz_handler_kwargs_failing():
     """Handler kwargs that trigger a KeyError inside save_predictions."""
     return {
         "save_tensors": ["nonexistent_key"],
-        "save_as_volume": True,
-        "save_as_pdf": False,
         "z_step_pdf": 1,
-        "filetype": "tiff",
     }
 
 
-def _expected_tiff_name() -> str:
-    """File name produced by save_predictions with _metainfo_for_viz() defaults."""
-    return "pred_out_folder_tile001_pred.tiff"
+def _expected_pdf_name(output_folder: str = "out/folder", tile_name: str = "tile001") -> str:
+    """PDF name produced by save_predictions for a given viz_identifier."""
+    return f"pred_{output_folder.replace('/', '_')}_{tile_name}_MIP.pdf"
 
 
 def _metainfo_for_viz():
+    """B=1 metainfo. Columns are per-batch-element sequences (sliced by index)."""
     return {
-        "output_folder": "out/folder",
-        "tile_name": "tile001",
+        "output_folder": ["out/folder"],
+        "tile_name": ["tile001"],
+        "batch_size_actual": 1,
     }
 
 
@@ -213,7 +213,7 @@ class TestVizWorkerRay:
             )
             ray.get(viz.visualize.remote(inference_outputs))
 
-            assert (tmp_path / _expected_tiff_name()).exists()
+            assert (tmp_path / _expected_pdf_name()).is_file()
             _wait_buffer_in_use_zero(buf)
 
             m = ray.get(viz.get_metrics.remote())
@@ -253,7 +253,7 @@ class TestVizWorkerRay:
                 handler_configs={"save_predictions": _viz_handler_kwargs()},
             )
             ray.get(viz.visualize.remote(inference_outputs))
-            assert (tmp_path / _expected_tiff_name()).exists()
+            assert (tmp_path / _expected_pdf_name()).is_file()
             buf = bm._buffer_actors[pool]
             _wait_buffer_in_use_zero(buf)
         finally:
@@ -263,10 +263,10 @@ class TestVizWorkerRay:
             if actor is not None:
                 _kill_safe(actor)
 
-    def test_viz_worker_visualize_batched_metainfo_writes_two_tiffs(
+    def test_viz_worker_visualize_batched_metainfo_writes_two_pdfs(
         self, ray_ctx, ray_node_id, unique_suffix, tmp_path
     ):
-        """B=2: per-batch-element names and sliced (TZYXC) arrays -> two volume files."""
+        """B=2: per-batch-element names and sliced (TZYXC) arrays -> two MIP PDFs."""
         bm = _make_buffer_manager(ray_node_id)
         viz = None
         try:
@@ -281,8 +281,8 @@ class TestVizWorkerRay:
                 handler_configs={"save_predictions": _viz_handler_kwargs()},
             )
             ray.get(viz.visualize.remote(inference_outputs))
-            assert (tmp_path / "pred_out_folder_tile001_pred.tiff").is_file()
-            assert (tmp_path / "pred_out_other_tile002_pred.tiff").is_file()
+            assert (tmp_path / _expected_pdf_name("out/folder", "tile001")).is_file()
+            assert (tmp_path / _expected_pdf_name("out/other", "tile002")).is_file()
         finally:
             if viz is not None:
                 _kill_safe(viz)

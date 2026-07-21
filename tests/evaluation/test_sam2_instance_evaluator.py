@@ -3,7 +3,7 @@
 These tests exercise the SAM2 direct-binary-mask source path of
 ``InstanceSegmentationEvaluator._process_one`` (the ``pred_masks`` branch) WITHOUT
 needing a GPU or real SAM2 weights. We build FAKE per-image sample dicts in the
-exact shape ``SAM2.predict_for_eval`` returns (see its docstring / the frozen
+exact shape ``SAM2.evaluate_step`` returns (see its docstring / the frozen
 contract) and a matching synthetic GT target, then drive ``process()`` +
 ``evaluate()`` with a ``PredictedIoUEvalMetric`` (plus ``MaskMAP`` / ``MaskMIoU``)
 registered.
@@ -16,7 +16,7 @@ Coverage:
   3. Per-class slice alignment with ``match_labels=True`` and >1 class.
   4. DEVICE HARDENING: pred_ious / masks / indices on (possibly mismatched)
      devices don't crash the coercion path.
-  5. SAM2.predict_for_eval shape/dtype/key contract -- run against the REAL
+  5. SAM2.evaluate_step shape/dtype/key contract -- run against the REAL
      method by faking only ``_predict_generate_masks`` (no GPU / real backbone),
      plus a CUDA-gated structural smoke if a model can be built.
 
@@ -38,7 +38,7 @@ CUDA = torch.cuda.is_available()
 
 
 # ---------------------------------------------------------------------------
-# Fake SAM2 predict_for_eval sample builders
+# Fake SAM2 evaluate_step sample builders
 # ---------------------------------------------------------------------------
 
 
@@ -48,10 +48,10 @@ def _sam2_sample(
     stability,
     boxes=None,
     class_ids=None,
-    orig_image_size=None,
+    eval_frame_size=None,
     include_iou_preds: bool = True,
 ):
-    """Build one per-image dict exactly as SAM2.predict_for_eval returns.
+    """Build one per-image dict exactly as SAM2.evaluate_step returns.
 
     ``pred_masks`` is (N, Z, Y, X) bool; everything else is derived/overridable.
     """
@@ -69,8 +69,9 @@ def _sam2_sample(
             torch.zeros(n, 6, dtype=torch.float32) if boxes is None
             else torch.as_tensor(boxes, dtype=torch.float32)
         ),
-        "orig_image_size": orig_image_size if orig_image_size is not None else zyx,
+        "eval_frame_size": eval_frame_size if eval_frame_size is not None else zyx,
         "pred_masks": pred_masks.bool(),
+        "mask_source": "direct",
     }
     if include_iou_preds:
         sample["iou_preds"] = torch.as_tensor(iou_preds, dtype=torch.float32)
@@ -126,11 +127,10 @@ def test_end_to_end_sam2_pred_ious_reach_metric_and_keys_flatten():
 
     evaluator = InstanceSegmentationEvaluator(
         metrics=[
-            {"name": "pred_iou", "_target_":
-             "cell_observatory_platform.evaluation.metrics.PredictedIoUEvalMetric",
+            {"name": "predicted_iou", "key": "pred_iou",
              "iou_thresholds": [0.5], "pred_iou_thresholds": [0.5]},
             "mask_map",
-            "mask_miou",
+            {"name": "mask_miou", "mode": "instance"},
         ],
         mask_chunk_size=2,
         match_labels=False,        # SAM2 is class-agnostic
@@ -175,8 +175,7 @@ def test_sam2_stream_pushed_to_pred_iou_metric_carries_true_iou_rows():
 
     evaluator = InstanceSegmentationEvaluator(
         metrics=[
-            {"name": "pred_iou", "_target_":
-             "cell_observatory_platform.evaluation.metrics.PredictedIoUEvalMetric",
+            {"name": "predicted_iou", "key": "pred_iou",
              "iou_thresholds": [0.5]},
         ],
         mask_chunk_size=1,
@@ -227,8 +226,7 @@ def test_no_iou_pred_key_skips_predicted_iou_but_mask_and_box_populate():
 
     evaluator = InstanceSegmentationEvaluator(
         metrics=[
-            {"name": "pred_iou", "_target_":
-             "cell_observatory_platform.evaluation.metrics.PredictedIoUEvalMetric",
+            {"name": "predicted_iou", "key": "pred_iou",
              "iou_thresholds": [0.5]},
             "mask_map",
             "box_map",
@@ -296,8 +294,7 @@ def test_per_class_slice_alignment_match_labels_true_two_classes():
 
     evaluator = InstanceSegmentationEvaluator(
         metrics=[
-            {"name": "pred_iou", "_target_":
-             "cell_observatory_platform.evaluation.metrics.PredictedIoUEvalMetric",
+            {"name": "predicted_iou", "key": "pred_iou",
              "iou_thresholds": [0.5], "pred_iou_thresholds": [0.5]},
             "mask_map",
         ],
@@ -358,8 +355,7 @@ def test_device_hardening_all_cpu_does_not_crash():
 
     evaluator = InstanceSegmentationEvaluator(
         metrics=[
-            {"name": "pred_iou", "_target_":
-             "cell_observatory_platform.evaluation.metrics.PredictedIoUEvalMetric",
+            {"name": "predicted_iou", "key": "pred_iou",
              "iou_thresholds": [0.5]},
             "mask_map",
         ],
@@ -397,8 +393,7 @@ def test_device_hardening_masks_on_other_device_branch():
 
     evaluator = InstanceSegmentationEvaluator(
         metrics=[
-            {"name": "pred_iou", "_target_":
-             "cell_observatory_platform.evaluation.metrics.PredictedIoUEvalMetric",
+            {"name": "predicted_iou", "key": "pred_iou",
              "iou_thresholds": [0.5]},
             "mask_map",
         ],
@@ -414,12 +409,12 @@ def test_device_hardening_masks_on_other_device_branch():
 
 
 # ---------------------------------------------------------------------------
-# 5. SAM2.predict_for_eval CONTRACT (faked _predict_generate_masks, no GPU)
+# 5. SAM2.evaluate_step CONTRACT (faked _predict_generate_masks, no GPU)
 # ---------------------------------------------------------------------------
 
 
-def test_predict_for_eval_dict_contract_against_real_method():
-    """Run the REAL SAM2.predict_for_eval by stubbing only the heavy backbone
+def test_evaluate_step_dict_contract_against_real_method():
+    """Run the REAL SAM2.evaluate_step by stubbing only the heavy backbone
     call ``_predict_generate_masks`` with a tiny MaskData. Asserts the per-image
     dict has EXACTLY the documented keys with documented shapes/dtypes, batch
     length 1, and that to_numpy() was NOT applied (tensors preserved)."""
@@ -437,7 +432,12 @@ def test_predict_for_eval_dict_contract_against_real_method():
 
     class _Stub:
         # Reuse the unbound real method; supply only the attributes it touches.
-        predict_for_eval = SAM2.predict_for_eval
+        evaluate_step = SAM2.evaluate_step
+        # evaluate_step converts the platform layout at the model boundary;
+        # the stub borrows the method, so it needs the helper too.
+        # staticmethod(): a bare function assigned to a class attribute would
+        # re-bind as an instance method and receive self as the first arg.
+        _to_model_layout = staticmethod(SAM2._to_model_layout)
         training = False
         iou_prediction_use_sigmoid = True
 
@@ -451,19 +451,22 @@ def test_predict_for_eval_dict_contract_against_real_method():
             return md
 
     stub = _Stub()
-    vol = torch.zeros(1, 1, z, y, x)  # batch=1
+    vol = torch.zeros(1, 1, z, y, x, 1)  # (B=1, T=1, Z, Y, X, C=1) platform layout
     data_sample = {"data_tensor": vol}
 
     with torch.no_grad():
-        out = stub.predict_for_eval(data_sample)
+        out = stub.evaluate_step(data_sample)
 
     assert isinstance(out, list) and len(out) == 1
     d = out[0]
     expected_keys = {
+        "mask_source",
         "topk_query_indices", "topk_class_scores", "topk_class_ids",
-        "boxes", "orig_image_size", "pred_masks", "iou_preds",
+        "boxes", "eval_frame_size", "pred_masks", "iou_preds",
     }
     assert set(d.keys()) == expected_keys
+    # The model DECLARES its mask source; the evaluator no longer sniffs keys.
+    assert d["mask_source"] == "direct"
     # Forbidden keys absent.
     assert "mask_embeddings" not in d
     assert "pixel_decoder_output" not in d
@@ -495,11 +498,11 @@ def test_predict_for_eval_dict_contract_against_real_method():
 
     assert d["iou_preds"].shape == (n,)
     assert d["iou_preds"].dtype == torch.float32
-    assert isinstance(d["orig_image_size"], tuple)
-    assert d["orig_image_size"] == (z, y, x)
+    assert isinstance(d["eval_frame_size"], tuple)
+    assert d["eval_frame_size"] == (z, y, x)
 
 
-def test_predict_for_eval_empty_case_shapes():
+def test_evaluate_step_empty_case_shapes():
     """N == 0 must yield correctly-typed zero-leading-dim tensors."""
     from cell_observatory_platform.models.meta_arch.sam import SAM2
     from cell_observatory_platform.inference.amg import MaskData
@@ -508,7 +511,12 @@ def test_predict_for_eval_empty_case_shapes():
     md = MaskData()  # empty
 
     class _Stub:
-        predict_for_eval = SAM2.predict_for_eval
+        evaluate_step = SAM2.evaluate_step
+        # evaluate_step converts the platform layout at the model boundary;
+        # the stub borrows the method, so it needs the helper too.
+        # staticmethod(): a bare function assigned to a class attribute would
+        # re-bind as an instance method and receive self as the first arg.
+        _to_model_layout = staticmethod(SAM2._to_model_layout)
         training = False
         iou_prediction_use_sigmoid = True
 
@@ -522,9 +530,9 @@ def test_predict_for_eval_empty_case_shapes():
             return md
 
     stub = _Stub()
-    data_sample = {"data_tensor": torch.zeros(1, 1, z, y, x)}
+    data_sample = {"data_tensor": torch.zeros(1, 1, z, y, x, 1)}  # B=1, T=1
     with torch.no_grad():
-        out = stub.predict_for_eval(data_sample)
+        out = stub.evaluate_step(data_sample)
     d = out[0]
     assert d["pred_masks"].shape == (0, z, y, x)
     assert d["pred_masks"].dtype == torch.bool
@@ -535,12 +543,17 @@ def test_predict_for_eval_empty_case_shapes():
     assert d["topk_class_scores"].shape == (0,)
 
 
-def test_predict_for_eval_asserts_batch_size_one():
+def test_evaluate_step_asserts_batch_size_one():
     from cell_observatory_platform.models.meta_arch.sam import SAM2
     from cell_observatory_platform.inference.amg import MaskData
 
     class _Stub:
-        predict_for_eval = SAM2.predict_for_eval
+        evaluate_step = SAM2.evaluate_step
+        # evaluate_step converts the platform layout at the model boundary;
+        # the stub borrows the method, so it needs the helper too.
+        # staticmethod(): a bare function assigned to a class attribute would
+        # re-bind as an instance method and receive self as the first arg.
+        _to_model_layout = staticmethod(SAM2._to_model_layout)
         training = False
         iou_prediction_use_sigmoid = True
 
@@ -554,18 +567,18 @@ def test_predict_for_eval_asserts_batch_size_one():
             return MaskData()
 
     stub = _Stub()
-    # batch=2 must trip the assert.
-    data_sample = {"data_tensor": torch.zeros(2, 1, 4, 4, 4)}
-    with pytest.raises(AssertionError, match="batch_size"):
-        stub.predict_for_eval(data_sample)
+    # B*T == 2 must trip the assert.
+    data_sample = {"data_tensor": torch.zeros(2, 1, 4, 4, 4, 1)}
+    with pytest.raises(AssertionError, match="single volume"):
+        stub.evaluate_step(data_sample)
 
 
 @pytest.mark.skipif(
     not CUDA,
-    reason="Full SAM2.predict_for_eval smoke needs CUDA + a real backbone/weights; "
+    reason="Full SAM2.evaluate_step smoke needs CUDA + a real backbone/weights; "
            "skipped on CPU-only. The dict contract is covered by the stubbed test.",
 )
-def test_predict_for_eval_real_backbone_smoke():
+def test_evaluate_step_real_backbone_smoke():
     # Intentionally a structural placeholder: building a real SAM2 (image
     # encoder + mask decoder + prompt encoder + criterion) requires a Hydra
     # config and weights not available in the unit-test environment. The
@@ -574,5 +587,5 @@ def test_predict_for_eval_real_backbone_smoke():
     # here.
     pytest.skip(
         "No tiny real-backbone SAM2 fixture available; dict contract covered by "
-        "test_predict_for_eval_dict_contract_against_real_method."
+        "test_evaluate_step_dict_contract_against_real_method."
     )

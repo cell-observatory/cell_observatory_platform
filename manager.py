@@ -188,7 +188,7 @@ def main(cfg: DictConfig):
                     #       instead of a list to prevent these kinds of loops
                     with open_dict(run_cfg_sweep):
                         for event_writer in run_cfg_sweep.loggers.event_writers:
-                            if event_writer._target_.endswith("WandBEventWriter"):
+                            if event_writer.get("name") == "wandb":
                                 event_writer.tags = event_writer.tags + list(cfg.wandb_tags)
 
                 with open_dict(run_cfg_sweep):

@@ -57,7 +57,6 @@ inference:
     - [92, "000x_002y_000z.zarr"]
     - [91, "000x_002y_000z.zarr"]
     - [90, "000x_002y_000z.zarr"]
-  decoder_head_type: "sam"
 
 clusters:
   batch_size: 1

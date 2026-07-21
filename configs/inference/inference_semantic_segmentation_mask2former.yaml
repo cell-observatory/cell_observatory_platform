@@ -3,9 +3,6 @@ inferencer_worker:
   aggregate_mode: "none"
   inference_mode: "tile"
   task: semantic_segmentation
-  # Required when save_outputs is true: root zarr channel index -> name for data you write.
-  channel_names:
-    0: membrane
   # Configures which tensors get passed to the viz / save workers
   outputs_metadata:
     tensor_info:
@@ -40,7 +37,12 @@ inferencer_worker:
   input_format: ${dataset_layout_order}
   input_shape: ${datasets.input_shape}
   patch_shape: ${datasets.patch_shape}
-  decoder_head_type: "mask2former"
+
+  # Toggle viz / save workers
+  save_outputs: true
+  block_on_save: false
+  vizualize_outputs: true
+  block_on_viz: false
 
 save_worker:
   max_workers: 2
@@ -76,20 +78,12 @@ viz_worker:
 
     # save_predictions:
     #   save_tensors: ["pred_masks"]
-    #   save_as_volume: false
-    #   save_as_pdf: true
     #   z_step_pdf: 10
-    #   filetype: "tiff"
-    #   # zarr_chunk_spatial_shape: [32, 32, 32]
-    #   # zarr_shard_spatial_shape: [128, 128, 128]
     #   pmin: 1.0
     #   pmax: 99.0
 
     semantic_map:
-      save_as_volume: false
-      save_as_pdf: true
       z_step_pdf: 10
-      filetype: "tiff"
       pmin: 1.0
       pmax: 99.0
       mip_depth: 1

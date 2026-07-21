@@ -874,6 +874,7 @@ class Inferencer(BaseTrainer):
                 buffer_manager=self.buffer_manager,
                 output_dir=cfg.inference.viz_worker.output_dir,
                 handler_configs=cfg.inference.viz_worker.handler_configs,
+                max_workers=cfg.inference.viz_worker.max_workers,
             )
         else:
             self.viz_worker = None

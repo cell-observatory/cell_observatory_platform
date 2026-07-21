@@ -621,6 +621,11 @@ def _test_hooks_dist(cfg):
             return report(metrics=metrics, checkpoint=None)
 
 
+# Needs the local sandbox database: the trainer's dataloader hits
+# local_database.execute_arrow, which fails with "Connection refused" when the
+# DB server is not up -- surfacing only as an opaque Ray WorkerGroupError.
+# Opt in with --run-localdb (see tests/conftest.py).
+@pytest.mark.localdb
 @pytest.mark.cuda
 def test_hooks(config):
     if not torch.cuda.is_available():

@@ -86,11 +86,6 @@ inference:
   inferencer_worker:
     aggregate_mode: "none"
     inference_mode: "tile"
-    channel_names:
-      0: membrane
-      1: nucleus
-      2: dead
-      3: semantic_masks
     # Toggle viz / save workers
     save_outputs: false
     block_on_save: true

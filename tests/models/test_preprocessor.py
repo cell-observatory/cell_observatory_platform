@@ -71,9 +71,17 @@ def test_ray_preprocessor_transform_and_masking_on_cuda():
     inputs = torch.ones((B, T, Z, Y, X, C), dtype=torch.float32, device="cuda")
     sample = {"data_tensor": inputs, "metainfo": {"k": "v"}}
 
-    def add_five(x: torch.Tensor) -> torch.Tensor:
+    def add_five(sample: dict) -> dict:
+        # Transforms receive the full {data_tensor, metainfo} sample, not a bare tensor --
+        # forward() injects metainfo["data_types"] and real transforms (Resize/crop_to_valid)
+        # read image_sizes from it. Mirrors _CropLastX in test_preprocessor_sam2.py.
+        x = sample["data_tensor"]
         assert x.is_cuda
-        return x + 5
+        assert "data_types" in sample["metainfo"], (
+            "forward() must inject data_types into metainfo before transforms run"
+        )
+        sample["data_tensor"] = x + 5
+        return sample
 
     proc = RayPreprocessor(
         dtype=torch.float32,
@@ -116,7 +124,7 @@ def test_ray_preprocessor_transform_and_masking_on_cuda():
 def test_ray_preprocessor_no_mask_returns_empty_meta():
     B, T, Z, Y, X, C = 2, 1, 1, 4, 4, 2
     inputs = torch.zeros((B, T, Z, Y, X, C), dtype=torch.float32, device="cuda")
-    sample = {"data_tensor": inputs, "metainfo": {}}
+    sample = {"data_tensor": inputs, "metainfo": {"channel_mapping": {1: "instance_segmentation"}}}
 
     proc = RayPreprocessor(
         dtype=torch.float32,
@@ -203,6 +211,10 @@ def test_spatial_dims_and_indices(fmt, full_shape, axial_patch_size):
         mask_generator=None,
         input_format=fmt,
         input_shape=full_shape[1:],
+        # `channels` is DB-sourced (max_channel_count), no longer derived from
+        # input_shape[channel_idx]; recon preprocessors now require it explicitly.
+        max_channel_count=axis_to_size["C"],
+        min_channel_count=axis_to_size["C"],
     )
 
     assert pp.input_format == fmt
@@ -251,12 +263,13 @@ def test_denoising_preprocessor_init():
     # Float parameters
     proc = DenoisingPreprocessor(
         denoising_type="microscopy",
+        max_channel_count=CHANNELS - 1,
+        min_channel_count=CHANNELS - 1,
         transforms_list=[
             DeepCopyInputsAsTargets(),
             ConvolveWithPSF(
                 psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
                 pad_type="zero",
-                input_format="ZYXC",
                 input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_format="ZYX",
@@ -276,7 +289,6 @@ def test_denoising_preprocessor_init():
         mask_generator=None,
         input_format="ZYXC",
         input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
-        mask_channel_idx=-1,
     )
     assert len(proc.transforms) == 3, "Expected three transforms: DeepCopyInputsAsTargets, ConvolveWithPSF, MixedPoissonGaussianNoise"
     assert isinstance(proc.transforms[0], DeepCopyInputsAsTargets), "Expected first transform to be DeepCopyInputsAsTargets"
@@ -293,12 +305,13 @@ def test_denoising_preprocessor_init_invalid_params():
     with pytest.raises(ValueError, match="quantum_efficiency must be a float or tuple of two floats"):
         DenoisingPreprocessor(
             denoising_type="microscopy",
+            max_channel_count=CHANNELS - 1,
+            min_channel_count=CHANNELS - 1,
             transforms_list=[
                 DeepCopyInputsAsTargets(), 
                 ConvolveWithPSF(
                     psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
                     pad_type="zero",
-                    input_format="ZYXC",
                     input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
                     input_pixel_size_um=(1.0, 1.0, 1.0),
                     psf_format="ZYX",
@@ -318,7 +331,6 @@ def test_denoising_preprocessor_init_invalid_params():
             mask_generator=None,
             input_format="ZYXC",
             input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
-            mask_channel_idx=-1,
         )
 
 
@@ -327,12 +339,13 @@ def test_denoising_preprocessor_noise_addition():
     # Fixed parameters
     proc = DenoisingPreprocessor(
         denoising_type="microscopy",
+        max_channel_count=CHANNELS - 1,
+        min_channel_count=CHANNELS - 1,
         transforms_list=[
             DeepCopyInputsAsTargets(),
             ConvolveWithPSF(
                 psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
                 pad_type="zero",
-                input_format="ZYXC",
                 input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_format="ZYX",
@@ -352,13 +365,12 @@ def test_denoising_preprocessor_noise_addition():
         mask_generator=None,
         input_format="ZYXC",
         input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
-        mask_channel_idx=-1,
     )
 
     inputs = torch.ones((BATCH, DEPTH, HEIGHT, WIDTH, CHANNELS), dtype=torch.float32) * 100.0
     inputs_clone = inputs.clone()
     inputs_clone = inputs_clone[..., :-1] # Remove mask channel
-    sample = {"data_tensor": inputs, "metainfo": {}}
+    sample = {"data_tensor": inputs, "metainfo": {"channel_mapping": {1: "instance_segmentation"}}}
     noisy_inputs = proc(sample, data_time=0.0, idx=0)["data_tensor"]
     assert not torch.allclose(inputs_clone, noisy_inputs, atol=1e-6), "Noised inputs are the same as original inputs"
     assert noisy_inputs.shape == inputs_clone.shape, "Noised inputs have different shape than original inputs"
@@ -367,12 +379,13 @@ def test_denoising_preprocessor_noise_addition():
     # Tuple parameters - check per-batch variation
     proc = DenoisingPreprocessor(
         denoising_type="microscopy",
+        max_channel_count=CHANNELS - 1,
+        min_channel_count=CHANNELS - 1,
         transforms_list=[
             DeepCopyInputsAsTargets(),
             ConvolveWithPSF(
                 psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
                 pad_type="zero",
-                input_format="ZYXC",
                 input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_format="ZYX",
@@ -392,7 +405,6 @@ def test_denoising_preprocessor_noise_addition():
         mask_generator=None,
         input_format="ZYXC",
         input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
-        mask_channel_idx=-1,
     )
 
     
@@ -400,7 +412,7 @@ def test_denoising_preprocessor_noise_addition():
     inputs_clone = inputs.clone()
     inputs_clone = inputs_clone[..., :-1] # Remove mask channel
     targets_expected = proc.pe_patchify(inputs_clone, channels = CHANNELS - 1)
-    sample = {"data_tensor": inputs, "metainfo": {}}
+    sample = {"data_tensor": inputs, "metainfo": {"channel_mapping": {1: "instance_segmentation"}}}
     noisy_inputs = proc(sample, data_time=0.0, idx=0)["data_tensor"]
 
     # Different batch elements should have different noise patterns
@@ -413,12 +425,13 @@ def test_denoising_preprocessor_forward():
     """Test forward pass produces noisy inputs and clean targets."""
     proc = DenoisingPreprocessor(
         denoising_type="microscopy",
+        max_channel_count=CHANNELS - 1,
+        min_channel_count=CHANNELS - 1,
         transforms_list=[
             DeepCopyInputsAsTargets(),
             ConvolveWithPSF(
                 psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
                 pad_type="zero",
-                input_format="ZYXC",
                 input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_format="ZYX",
@@ -438,14 +451,13 @@ def test_denoising_preprocessor_forward():
         mask_generator=None,
         input_format="ZYXC",
         input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
-        mask_channel_idx=-1,
     )
 
     inputs = torch.ones((BATCH, DEPTH, HEIGHT, WIDTH, CHANNELS), dtype=torch.float32) * 100.0
     inputs_clone = inputs.clone()
     inputs_clone = inputs_clone[..., :-1] # Remove mask channel
     expected_targets = proc.pe_patchify(inputs_clone, channels = CHANNELS - 1)
-    sample = {"data_tensor": inputs, "metainfo": {}}
+    sample = {"data_tensor": inputs, "metainfo": {"channel_mapping": {1: "instance_segmentation"}}}
 
     output = proc(sample, data_time=0.1, idx=0)
 
@@ -473,18 +485,19 @@ def test_denoising_preprocessor_forward():
 def test_denoising_preprocessor_reproducibility():
     """Test that same seed produces same noise, different seeds produce different noise."""
     inputs = torch.ones((BATCH, DEPTH, HEIGHT, WIDTH, CHANNELS), dtype=torch.float32) * 100.0
-    sample1 = {"data_tensor": inputs.clone(), "metainfo": {}}
-    sample2 = {"data_tensor": inputs.clone(), "metainfo": {}}
-    sample3 = {"data_tensor": inputs.clone(), "metainfo": {}}
+    sample1 = {"data_tensor": inputs.clone(), "metainfo": {"channel_mapping": {1: "instance_segmentation"}}}
+    sample2 = {"data_tensor": inputs.clone(), "metainfo": {"channel_mapping": {1: "instance_segmentation"}}}
+    sample3 = {"data_tensor": inputs.clone(), "metainfo": {"channel_mapping": {1: "instance_segmentation"}}}
 
     proc1 = DenoisingPreprocessor(
         denoising_type="microscopy",
+        max_channel_count=CHANNELS - 1,
+        min_channel_count=CHANNELS - 1,
         transforms_list=[
             DeepCopyInputsAsTargets(),
             ConvolveWithPSF(
                 psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
                 pad_type="zero",
-                input_format="ZYXC",
                 input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_format="ZYX",
@@ -504,17 +517,17 @@ def test_denoising_preprocessor_reproducibility():
         mask_generator=None,
         input_format="ZYXC",
         input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
-        mask_channel_idx=-1,
     )
 
     proc2 = DenoisingPreprocessor(
         denoising_type="microscopy",
+        max_channel_count=CHANNELS - 1,
+        min_channel_count=CHANNELS - 1,
         transforms_list=[
             DeepCopyInputsAsTargets(),
             ConvolveWithPSF(
                 psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
                 pad_type="zero",
-                input_format="ZYXC",
                 input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_format="ZYX",
@@ -534,17 +547,17 @@ def test_denoising_preprocessor_reproducibility():
         mask_generator=None,
         input_format="ZYXC",
         input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
-        mask_channel_idx=-1,
     )
 
     proc3 = DenoisingPreprocessor(
         denoising_type="microscopy",
+        max_channel_count=CHANNELS - 1,
+        min_channel_count=CHANNELS - 1,
         transforms_list=[
             DeepCopyInputsAsTargets(),
             ConvolveWithPSF(
                 psf=_delta_psf_3d(DEPTH//2, HEIGHT//2, WIDTH//2),
                 pad_type="zero",
-                input_format="ZYXC",
                 input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS - 1),
                 input_pixel_size_um=(1.0, 1.0, 1.0),
                 psf_format="ZYX",
@@ -563,7 +576,6 @@ def test_denoising_preprocessor_reproducibility():
         mask_generator=None,
         input_format="ZYXC",
         input_shape=(DEPTH, HEIGHT, WIDTH, CHANNELS),
-        mask_channel_idx=-1,
     )
 
     output1 = proc1(sample1, data_time=0.0, idx=0)

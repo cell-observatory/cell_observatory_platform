@@ -5,6 +5,7 @@ import torch
 from omegaconf import OmegaConf
 
 from cell_observatory_platform.models.meta_arch import autobench
+from cell_observatory_platform.utils.registry import REGISTRY
 
 
 class DummyBackbone(torch.nn.Module):
@@ -25,16 +26,28 @@ def build_dummy_decoder(cfg):
     return DummyDecoder()
 
 
+# Register the dummies as name-selected swap points, matching the new registry
+# scheme: the AutoBench variant __init__ builds its backbone/decoder via
+# REGISTRY.build("backbone"/"head", args.name, args). Guarded so a double import
+# of this test module (multiple sys.path roots) doesn't raise on re-registration.
+_DUMMY_BACKBONE = "dummy_autobench_build_backbone"
+_DUMMY_DECODER = "dummy_autobench_build_decoder"
+if not REGISTRY.has("backbone", _DUMMY_BACKBONE):
+    REGISTRY.register("backbone", _DUMMY_BACKBONE)(build_dummy_backbone)
+if not REGISTRY.has("head", _DUMMY_DECODER):
+    REGISTRY.register("head", _DUMMY_DECODER)(build_dummy_decoder)
+
+
 def _make_cfg(*, task: str, input_fmt: str = "ZYXC"):
     model_cfg = {
         "backbone_args": {
-            "BUILD": "tests.models.test_autobench_build.build_dummy_backbone",
+            "name": _DUMMY_BACKBONE,
             # Intentionally on backbone_args to exercise the fallback path:
             # embed_dim = model_cfg.get("embed_dim", backbone_args.get("embed_dim", None))
             "embed_dim": 8,
         },
         "decoder_args": {
-            "BUILD": "tests.models.test_autobench_build.build_dummy_decoder",
+            "name": _DUMMY_DECODER,
         },
         "input_fmt": input_fmt,
         "input_shape": [4, 4, 4, 2],  # Z, Y, X, C (only used when input_fmt == "ZYXC")
@@ -89,7 +102,7 @@ def _make_cfg(*, task: str, input_fmt: str = "ZYXC"):
 )
 def test_BUILD_dispatch_and_injects_decoder_dims(task, expected_cls):
     cfg = _make_cfg(task=task)
-    model = autobench.BUILD(cfg)
+    model = REGISTRY.build("model", f"{task}_autobench", cfg)
 
     assert isinstance(model, expected_cls), (
         f"BUILD() should return {expected_cls.__name__} for task={task}, got {type(model).__name__}"
@@ -110,6 +123,6 @@ def test_BUILD_dispatch_and_injects_decoder_dims(task, expected_cls):
 def test_BUILD_rejects_non_ZYXC_input_fmt():
     cfg = _make_cfg(task="denoising", input_fmt="TZYXC")
     with pytest.raises(ValueError, match="only supports 'ZYXC'"):
-        autobench.BUILD(cfg)
+        REGISTRY.build("model", "denoising_autobench", cfg)
 
 

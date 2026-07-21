@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from cell_observatory_platform.models.meta_arch import autobench
+from cell_observatory_platform.utils.registry import REGISTRY
 
 
 class DummyPatchEmbedding:
@@ -44,6 +45,29 @@ def build_dummy_decoder(cfg):
     return DummyDecoder()
 
 
+# The AutoBench variant __init__ builds its backbone/decoder via
+# REGISTRY.build("backbone"/"head", args.name, args), so the dummies are
+# registered as name-selected swap points (distinct names from
+# test_autobench_build.py to avoid a duplicate-registration clash). Guarded so a
+# double import of this module (multiple sys.path roots) doesn't raise.
+_DUMMY_BACKBONE = "dummy_autobench_fwd_backbone"
+_DUMMY_DECODER = "dummy_autobench_fwd_decoder"
+if not REGISTRY.has("backbone", _DUMMY_BACKBONE):
+    REGISTRY.register("backbone", _DUMMY_BACKBONE)(build_dummy_backbone)
+if not REGISTRY.has("head", _DUMMY_DECODER):
+    REGISTRY.register("head", _DUMMY_DECODER)(build_dummy_decoder)
+
+_BACKBONE_ARGS = SimpleNamespace(name=_DUMMY_BACKBONE)
+
+# AutoBench requires output_shape (= train_shape in BUILD): the dense reconstruction's
+# channel count follows the DECODER width, not input_shape[-1]. These fixtures use a
+# synthetic C=1 input with no mask channel, so the two coincide; DummyPatchEmbedding
+# ._unpatchify ignores out_channels anyway, so the value is inert here and exists only
+# to satisfy the contract.
+_OUTPUT_SHAPE = (1, 1, 1, 1)
+_DECODER_ARGS = SimpleNamespace(name=_DUMMY_DECODER)
+
+
 def test_denoising_forward_uses_aux_loss(monkeypatch):
     recorded = {}
 
@@ -58,11 +82,12 @@ def test_denoising_forward_uses_aux_loss(monkeypatch):
     monkeypatch.setattr(autobench.AutoBench, "get_num_patches", lambda self: 3)
 
     model = autobench.DenoisingAutoBench(
-        backbone_args=SimpleNamespace(BUILD="tests.models.test_autobench.build_dummy_backbone"),
-        decoder_args=SimpleNamespace(BUILD="tests.models.test_autobench.build_dummy_decoder"),
+        backbone_args=_BACKBONE_ARGS,
+        decoder_args=_DECODER_ARGS,
         input_fmt="ZYXC",
         input_shape=(1, 1, 1, 1),
         patch_shape=(1, 1, 1, 1),
+        output_shape=_OUTPUT_SHAPE,
         loss_fn="dummy",
         with_auxiliary_loss=True,
     )
@@ -87,16 +112,19 @@ def test_denoising_predict_unpatchifies_output(monkeypatch):
     monkeypatch.setattr(autobench, "get_loss_fn", lambda _: lambda *_, **__: (torch.tensor(0.0), None))
 
     model = autobench.DenoisingAutoBench(
-        backbone_args=SimpleNamespace(BUILD="tests.models.test_autobench.build_dummy_backbone"),
-        decoder_args=SimpleNamespace(BUILD="tests.models.test_autobench.build_dummy_decoder"),
+        backbone_args=_BACKBONE_ARGS,
+        decoder_args=_DECODER_ARGS,
         input_fmt="ZYXC",
         input_shape=(1, 1, 1, 1),
         patch_shape=(1, 1, 1, 1),
+        output_shape=_OUTPUT_SHAPE,
         loss_fn="dummy",
     )
 
     inputs = torch.zeros((1, 2))
-    output = model.predict({"data_tensor": inputs, "metainfo": {}})
+    # inference_step returns the dense prediction keyed by task name; evaluate_step
+    # would return patch-space (+3), not the unpatchified +6 this test is named for.
+    output = model.inference_step({"data_tensor": inputs, "metainfo": {}})[model.task]
 
     expected = inputs + 6
     assert torch.equal(output, expected), f"Predict output should be inputs + 6, got {output} vs expected {expected}"
@@ -107,11 +135,12 @@ def test_channel_split_requires_channel_last(monkeypatch):
 
     with pytest.raises(ValueError):
         autobench.ChannelSplitAutoBench(
-            backbone_args=SimpleNamespace(BUILD="tests.models.test_autobench.build_dummy_backbone"),
-            decoder_args=SimpleNamespace(BUILD="tests.models.test_autobench.build_dummy_decoder"),
+            backbone_args=_BACKBONE_ARGS,
+            decoder_args=_DECODER_ARGS,
             input_fmt="TZYX",
             input_shape=(1, 1, 1, 1),
             patch_shape=(1, 1, 1, 1),
+            output_shape=_OUTPUT_SHAPE,
             loss_fn="dummy",
         )
 
@@ -128,11 +157,12 @@ def test_upsample_time_forward_masks_targets(monkeypatch):
     monkeypatch.setattr(autobench.AutoBench, "get_num_patches", lambda self: 11)
 
     model = autobench.UpsampleTimeAutoBench(
-        backbone_args=SimpleNamespace(BUILD="tests.models.test_autobench.build_dummy_backbone"),
-        decoder_args=SimpleNamespace(BUILD="tests.models.test_autobench.build_dummy_decoder"),
+        backbone_args=_BACKBONE_ARGS,
+        decoder_args=_DECODER_ARGS,
         input_fmt="ZYXC",
         input_shape=(1, 1, 1, 1),
         patch_shape=(1, 1, 1, 1),
+        output_shape=_OUTPUT_SHAPE,
         loss_fn="dummy",
     )
 

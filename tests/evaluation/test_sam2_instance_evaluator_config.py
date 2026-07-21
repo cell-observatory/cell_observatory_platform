@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from hydra.utils import get_class, instantiate
 from omegaconf import OmegaConf
 
-from cell_observatory_platform.evaluation.instance_segmentation_evaluator import (
+from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.evaluation.instance_segmentation_evaluator import (  # noqa: F401  registers
     InstanceSegmentationEvaluator,
 )
 from cell_observatory_platform.evaluation.metrics import PredictedIoUEvalMetric
@@ -14,10 +14,11 @@ def _load_cfg():
     return OmegaConf.load(repo_root / "configs/evaluation/sam2_instance_evaluator.yaml")
 
 
-def test_sam2_instance_evaluator_config_target_resolves():
+def test_sam2_instance_evaluator_config_name_resolves():
     cfg = _load_cfg()
 
-    assert get_class(cfg.evaluator._target_) is InstanceSegmentationEvaluator
+    assert cfg.evaluator.name == "instance_segmentation"
+    assert REGISTRY.has("evaluator", cfg.evaluator.name)
     # SAM2 is class-agnostic (sentinel class id -1); match_labels MUST be False
     # or the evaluator raises and every metric collapses to ~0.
     assert cfg.evaluator.match_labels is False
@@ -25,9 +26,9 @@ def test_sam2_instance_evaluator_config_target_resolves():
     assert cfg.evaluator.gt_boxes_normalized is True
 
 
-def test_sam2_instance_evaluator_config_instantiates_like_the_trainer():
+def test_sam2_instance_evaluator_config_builds_like_the_trainer():
     cfg = _load_cfg()
-    evaluator = instantiate(cfg.evaluator)
+    evaluator = REGISTRY.build("evaluator", cfg.evaluator.name, cfg.evaluator)
 
     assert isinstance(evaluator, InstanceSegmentationEvaluator)
     assert evaluator.match_labels is False

@@ -94,6 +94,20 @@ def _make_forward_pp(materialize: bool = True, mask_channel_idx: int = -1) -> In
     pp.debug_savepath = None
     pp.materialize_binary_masks = materialize
     pp.with_masking = False
+    # forward() splits channels by ROLE, which reads TARGET_ROLES -> _data_types() ->
+    # base_dense_data_type / input_format / bbox_output_format. __init__ normally sets
+    # these; this fixture bypasses __init__ via __new__, so stub them or the property
+    # raises AttributeError (masked by nn.Module.__getattr__ into a confusing
+    # "no attribute 'TARGET_ROLES'").
+    pp.input_format = "ZYXC"
+    pp.bbox_output_format = "zyxzyx"
+    pp.base_dense_data_type = {
+        "kind": "dense",
+        "layout": pp.input_format,
+        "role": "input",
+        "has_time": False,
+    }
+    pp.channels = None
     return pp
 
 
@@ -117,7 +131,7 @@ def test_forward_populates_label_map_and_masks_from_channel():
     ]
 
     pp = _make_forward_pp(materialize=True)
-    out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": targets}}, 0.0, 0)
+    out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": targets, "channel_mapping": {C: "instance_segmentation"}}}, 0.0, 0)
     tgt = out["metainfo"]["targets"][0][0]
 
     # Mask channel stripped from the image tensor.

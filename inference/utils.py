@@ -1,14 +1,12 @@
-"""Inference visualization + prediction-saving helpers.
+"""Inference visualization helpers.
 
 Architecture (kept deliberately layered so new plot types are cheap to add):
 
   1. Shared low-level utils  -- ``_ensure_numpy*``, :func:`normalize_slice`,
-     :func:`mip_project`, :func:`instance_label_cmap`, and the volume writers
-     (:func:`_save_tiff_volume` / :func:`_save_zarr_volume`, dispatched by
-     :func:`save_volume`). These are format/layout primitives with no plotting
-     policy and are reused by every higher-level helper.
+     :func:`mip_project`, :func:`instance_label_cmap`. These are format/layout
+     primitives with no plotting policy and are reused by every higher-level helper.
 
-  2. Per-plot-type helpers   -- :func:`save_predictions` (dense MIP volumes/PDF),
+  2. Per-plot-type helpers   -- :func:`save_predictions` (dense MIP PDF),
      :func:`save_instance_predictions` (box/mask overlays), :func:`save_semantic_predictions`
      (per-class semantic panels), :func:`save_feature_visualizations` (PCA /
      patch-cosine feature maps), and :func:`save_bbox_overlay` (predicted boxes).
@@ -798,16 +796,15 @@ def save_predictions(
     predictions: ArrayLike | dict[str, ArrayLike],
     save_tensors: List[str],
     save_dir: Path | str,
-    save_as_pdf: bool,
     z_step_pdf: int,
-    filetype: Literal["tiff", "zarr"],
     pmin: float = 1.0,
     pmax: float = 99.0,
-    zarr_chunk_spatial_shape: Optional[Tuple[int, ...]] = None,
-    zarr_shard_spatial_shape: Optional[Tuple[int, ...]] = None,
 ):
     """
-    Central helper for saving predictions.
+    Plotting helper: render predictions as a MIP PDF.
+
+    Volume writing (tiff/zarr) is NOT done here -- it lives in the save path
+    (``inference/saver.py`` -> ``data/io.py``). This helper is plot-only.
 
     Inputs:
       - predictions:
@@ -815,15 +812,14 @@ def save_predictions(
           * dict[name -> TZYXC/ZYXC array].
     Standardization:
       - Each array is converted to TCZYX (if T>1) or CZYX (if T==1).
-      - That same arr+axes is used for TIFF, Zarr, and PDF.
-      - If predictions is a dict:
-          * One PDF with all entries combined (columns = outputs).
-          * Separate volume files per entry, with suffix "_{key}".
+      - That same arr+axes is used for the PDF pages.
+      - If predictions is a dict, one PDF with all entries combined
+        (columns = outputs).
     """
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[save_predictions] Saving predictions for tile {name}...")
+    print(f"[save_predictions] Plotting predictions for tile {name}...")
 
     # Dict case: multi-output
     if isinstance(predictions, dict):
@@ -838,28 +834,24 @@ def save_predictions(
             axes_map[key] = axes
 
         # Single PDF with all outputs on the same pages
-        if save_as_pdf:
-            pdf_path = save_dir / f"pred_{name}_MIP.pdf"
-            print(f"[save_predictions] Writing PDF to: {pdf_path}")
-            preds_dict_to_pdf(
-                arr_map,
-                axes_map,
-                out_path=pdf_path,
-                z_step=z_step_pdf,
-                pmin=pmin,
-                pmax=pmax,
-            )
-
+        pdf_path = save_dir / f"pred_{name}_MIP.pdf"
+        print(f"[save_predictions] Writing PDF to: {pdf_path}")
+        preds_dict_to_pdf(
+            arr_map,
+            axes_map,
+            out_path=pdf_path,
+            z_step=z_step_pdf,
+            pmin=pmin,
+            pmax=pmax,
+        )
         return
 
     # Single-array case
     arr_tzyxc = _ensure_numpy_tzyxc(predictions)
     arr_tc_or_czyx, axes = _tzyxc_to_tczyx_or_czyx(arr_tzyxc)
 
-    # PDF pages
-    if save_as_pdf:
-        pdf_path = save_dir / f"pred_{name}_MIP.pdf"
-        preds_to_pdf(arr_tc_or_czyx, axes=axes, out_path=pdf_path, z_step=z_step_pdf)
+    pdf_path = save_dir / f"pred_{name}_MIP.pdf"
+    preds_to_pdf(arr_tc_or_czyx, axes=axes, out_path=pdf_path, z_step=z_step_pdf)
 
 
 def _boxes_in_z_slice(boxes_xyzxyz: np.ndarray, z: int) -> np.ndarray:
@@ -1501,26 +1493,24 @@ def save_semantic_predictions(
     preds: Dict[str, ArrayLike],
     image: ArrayLike,
     save_dir: Path | str,
-    save_as_pdf: bool,
     z_step_pdf: int,
-    filetype: Literal["tiff", "zarr"],
     targets: Dict[str, ArrayLike] | None = None,
-    zarr_chunk_spatial_shape: Optional[Tuple[int, ...]] = None,
-    zarr_shard_spatial_shape: Optional[Tuple[int, ...]] = None,
     pmin: float = 1.0,
     pmax: float = 99.0,
     mip_depth: int = 20,
     class_names: Sequence[str] | None = None,
 ) -> None:
-    """Save one sample's semantic-segmentation prediction (volume and/or PDF).
+    """Plot one sample's semantic-segmentation prediction as a MIP PDF.
+
+    Volume writing lives in the save path (``inference/saver.py`` -> ``data/io.py``);
+    this helper is plot-only.
 
     Args:
         name: identifier for this prediction (drives output filenames).
         preds: prediction dict for this sample (e.g. ``{"pred_masks": [Z,Y,X,C]/[T,Z,Y,X,C]}``).
         image: input image ``[Z,Y,X,C]`` or ``[T,Z,Y,X,C]``.
         targets: this sample's target dict, or None.
-        (remaining args as before: save_as_volume/pdf, z_step_pdf, filetype, zarr shapes,
-        pmin/pmax, mip_depth, class_names.)
+        (remaining args: z_step_pdf, pmin/pmax, mip_depth, class_names.)
     """
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -1531,18 +1521,17 @@ def save_semantic_predictions(
         targets = {k: _ensure_numpy(v) for k, v in targets.items()}
 
     # pred is already probabilities from the reducer
-    if save_as_pdf:
-        visualize_semantic_labels(
-            image=image,
-            pred=preds,
-            target=targets,
-            out_path=save_dir / f"pred_{name}_semantic_MIP.pdf",
-            class_names=class_names,
-            z_step=z_step_pdf,
-            pmin=pmin,
-            pmax=pmax,
-            mip_depth=mip_depth,
-        )
+    visualize_semantic_labels(
+        image=image,
+        pred=preds,
+        target=targets,
+        out_path=save_dir / f"pred_{name}_semantic_MIP.pdf",
+        class_names=class_names,
+        z_step=z_step_pdf,
+        pmin=pmin,
+        pmax=pmax,
+        mip_depth=mip_depth,
+    )
 
 
 # ============================================================================

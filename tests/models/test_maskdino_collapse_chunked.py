@@ -1,7 +1,7 @@
 import torch
 
 from cell_observatory_platform.models.meta_arch.maskdino import MaskDINO
-from cell_observatory_platform.models.meta_arch.maskdino import MaskMaterializer
+from cell_observatory_platform.models.layers.maskmaterializer import MaskMaterializer
 
 
 def _make_model(focus_on_boxes):
@@ -21,7 +21,7 @@ def _make_sample():
         "topk_query_indices": torch.tensor([0, 1], dtype=torch.long),
         "topk_class_scores": torch.tensor([0.2, 0.9], dtype=torch.float32),
         "boxes": torch.zeros(2, 6, dtype=torch.float32),
-        "orig_image_size": (2, 2, 2),
+        "eval_frame_size": (2, 2, 2),
     }
 
 
@@ -29,7 +29,7 @@ def _materialize_sample_logits(sample):
     materializer = MaskMaterializer(
         mask_embeddings=sample["mask_embeddings"],
         pixel_decoder_output=sample["pixel_decoder_output"],
-        target_size=sample["orig_image_size"],
+        target_size=sample["eval_frame_size"],
         chunk_size=1,
     )
     return materializer.materialize(sample["topk_query_indices"])

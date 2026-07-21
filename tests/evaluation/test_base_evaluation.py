@@ -49,6 +49,11 @@ def _test_base_evaluation(cfg: DictConfig):
             return report(metrics=metrics, checkpoint=None)
 
 
+# Needs the local sandbox database: the trainer's dataloader hits
+# local_database.execute_arrow, which fails with "Connection refused" when the
+# DB server is not up -- surfacing only as an opaque Ray WorkerGroupError.
+# Opt in with --run-localdb (see tests/conftest.py).
+@pytest.mark.localdb
 @pytest.mark.cuda
 def test_evaluation(config):
     if not torch.cuda.is_available():
@@ -58,8 +63,16 @@ def test_evaluation(config):
         config.experiment_name = "test_evaluation"
         config.paths.resume_checkpointdir = None
 
-        config.evaluation.evaluator._target_ = "cell_observatory_platform.evaluation.base_evaluation.BaseEvaluator"
-        config.evaluation.evaluator.training_metrics = [{"step_loss": "mean"}]
+        # No _target_: loops.py builds via REGISTRY.build("evaluator",
+        # cfg.evaluation.evaluator.name, ...) and base_evaluator.yaml already sets
+        # `name: base` (registered to BaseEvaluator). Setting _target_ was a no-op.
+        #
+        # Metric specs are {name, key?, **ctor_kwargs} (metrics._build_one_metric).
+        # The old {loss_key: reduce_method} form raises KeyError('name') inside the
+        # Ray worker, visible only as an opaque WorkerGroupError.
+        config.evaluation.evaluator.training_metrics = [
+            {"name": "train_loss", "key": "step_loss", "reduce_method": "mean"},
+        ]
 
     metrics = distributed_test(
         cfg=config, test="cell_observatory_platform.tests.evaluation.test_base_evaluation._test_base_evaluation"

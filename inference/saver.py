@@ -211,6 +211,52 @@ def save_sparse(
     )
 
 
+_DENSE_FORMATS = ("TZYXC", "ZYXC")
+
+
+def _derive_save_handler(output_metadata: Dict[str, Any]) -> str:
+    """Map a ``save_tensors`` config entry onto a registered ``save_handler`` name.
+
+    Configs declare intent with ``annotation_type`` (``dense`` | ``sparse``) -- the same
+    key the pre-registry dispatch used. The dense branch splits further because
+    ``io.save_dense_image`` refuses mask-named or non-float arrays (see data/io.py):
+
+      dense  + name contains "mask"  -> save_labelmap    (integer label map)
+      dense  + name has no "mask"    -> save_dense_image (float volume)
+      sparse                         -> save_sparse
+
+    Raises rather than defaulting: a typo'd annotation_type must fail at the first batch,
+    not produce an empty output directory.
+    """
+    try:
+        annotation_type = output_metadata["annotation_type"]
+    except KeyError:
+        raise KeyError(
+            "save_tensors entry is missing required key 'annotation_type' "
+            f"(expected 'dense' or 'sparse'); got keys {sorted(output_metadata)}"
+        ) from None
+
+    if annotation_type == "sparse":
+        return "save_sparse"
+
+    if annotation_type == "dense":
+        name = str(output_metadata["name"])
+        dtype = str(output_metadata.get("dtype", ""))
+        if "mask" in name.lower():
+            return "save_labelmap"
+        if dtype and np.dtype(dtype).kind != "f":
+            raise ValueError(
+                f"dense non-mask output {name!r} must declare a float dtype for "
+                f"save_dense_image; got dtype={dtype!r}. Rename it to contain 'mask' "
+                "if it is a label map."
+            )
+        return "save_dense_image"
+
+    raise ValueError(
+        f"Unknown annotation_type {annotation_type!r}; expected 'dense' or 'sparse'."
+    )
+
+
 def save_predictions(
     image_path: str,
     model_name: str,
@@ -227,39 +273,24 @@ def save_predictions(
     exceptions = {}
     metadata = {"task": task}
     for output_name, output_metadata in save_tensors_metadata.items():
+        # Every failure below is RECORDED, not skipped. A bare `continue` here is what
+        # made a missing dispatch key produce a "successful" run that wrote nothing.
+        save_handler_key = "<underived>"
+        data_format = "<unknown>"
         try:
             data = preds[output_name]
-        except KeyError as e:
-            ray.logger.error(f"Save tensor {output_name} not found in preds: {e}")
-            continue
-        try:
             save_name = output_metadata["name"]
-        except KeyError as e:
-            ray.logger.error(f"Name for {output_name} not found in save_tensors_metadata: {e}")
-            continue
-        try:
             dtype = output_metadata["dtype"]
-        except KeyError as e:
-            ray.logger.error(f"Dtype for {output_name} not found in save_tensors_metadata: {e}")
-            continue
-        try:
             data_format = output_metadata["data_format"]
-        except KeyError as e:
-            ray.logger.error(f"Data format for {output_name} not found in save_tensors_metadata: {e}")
-            continue
-        try:
-            save_handler_key = output_metadata["save_handler"]
-        except KeyError as e:
-            ray.logger.error(f"save_handler for {output_name} not found in save_tensors_metadata: {e}")
-            continue
-        try:
+            save_handler_key = _derive_save_handler(output_metadata)
+
             handler = REGISTRY.get("save_handler", save_handler_key).factory
             # Dense handlers require spatial-crop before writing.  Tile-mode restore
             # places each prediction top-left in a full-tile buffer with trailing
             # zero-pad; cropping to orig_spatial drops that pad so only the original
             # tile is written.
             if save_handler_key in ("save_labelmap", "save_dense_image"):
-                assert data_format.upper() in ("TZYXC", "ZYXC"), (
+                assert data_format.upper() in _DENSE_FORMATS, (
                     f"Invalid data format for dense handler {save_handler_key!r}: {data_format!r}"
                 )
                 if orig_spatial is not None:
@@ -295,9 +326,9 @@ def save_predictions(
         ray.logger.error(f"Failed to save metadata for {model_name} at {image_path}: {e}", exc_info=True)
         exceptions["metadata"] = e
     if exceptions:
+        detail = "\n".join(f"{k}: {v}" for k, v in exceptions.items())
         raise RuntimeError(
-            f"{len(exceptions)}/{len(save_tensors_metadata)} failed to save."
-            "\n".join(f"{k}: {v}" for k, v in exceptions.items())
+            f"{len(exceptions)}/{len(save_tensors_metadata)} failed to save.\n{detail}"
         )
 
 @ray.remote(namespace="saver", lifetime="detached", num_cpus=0)

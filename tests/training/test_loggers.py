@@ -506,9 +506,15 @@ def test_loggers(config):
         config.experiment_name = "test_event_logging"
         config.paths.resume_checkpointdir = None
 
-        config.loggers.event_writers = [
-            w for w in config.loggers.event_writers if w._target_.endswith(".LocalEventWriter")
-        ]
+        # Event writers are REGISTRY specs keyed by `name` (see
+        # configs/loggers/loggers.yaml); keep only the local CSV writer so the
+        # test does not touch W&B.
+        local_writers = [w for w in config.loggers.event_writers if w.name == "local"]
+        assert local_writers, (
+            "no event writer named 'local' in config.loggers.event_writers; "
+            "the registered name may have been renamed"
+        )
+        config.loggers.event_writers = local_writers
 
     metrics = distributed_test(
         cfg=config, test="cell_observatory_platform.tests.training.test_loggers._test_loggers_dist"

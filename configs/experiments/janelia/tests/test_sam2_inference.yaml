@@ -40,7 +40,6 @@ seed: 42
 inference:
   roi_tile_list:
     - [653, "000x_002y_001z.zarr"]
-  decoder_head_type: "sam"
 
 clusters:
   batch_size: 1

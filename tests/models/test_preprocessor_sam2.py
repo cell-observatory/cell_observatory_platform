@@ -209,6 +209,18 @@ def _make_forward_pp(max_masks: int, expect_mask_channel: bool = True) -> SAM2Vi
     pp.expect_mask_channel = expect_mask_channel
     pp.dtype = torch.float32
     pp.transforms = None
+    # forward() splits channels by ROLE, which reads TARGET_ROLES -> _data_types() ->
+    # base_dense_data_type / input_format. __init__ normally sets these; this fixture
+    # bypasses __init__, so stub them or the property raises AttributeError (masked by
+    # nn.Module.__getattr__ into a confusing "no attribute 'TARGET_ROLES'").
+    pp.input_format = "TZYXC"
+    pp.base_dense_data_type = {
+        "kind": "dense",
+        "layout": pp.input_format,
+        "role": "input",
+        "has_time": True,
+    }
+    pp.channels = None
     return pp
 
 
@@ -233,10 +245,11 @@ def test_forward_splits_labelmap_from_channel_and_builds_views():
 
     pp = _make_forward_pp(max_masks=4)
     out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": targets}}, 0.0, 0)
-    dv = out["metainfo"]["targets"]
+    dv = out["metainfo"]["sam2_views"]
 
     # Image channel was stripped: flat batch is (T*B, C, Z, Y, X).
-    assert out["data_tensor"].shape == (T * B, C, Z, Y, X)
+    # Platform layout: SAM2 converts to (B*T, C, Z, Y, X) at its own boundary.
+    assert out["data_tensor"].shape == (B, T, Z, Y, X, C)
 
     # The flat labelmaps must equal the int32 channel, frame by frame.
     for b in range(B):
@@ -258,9 +271,10 @@ def test_forward_no_mask_channel_emits_empty_views():
 
     pp = _make_forward_pp(max_masks=4, expect_mask_channel=False)
     out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": [{}]}}, 0.0, 0)
-    dv = out["metainfo"]["targets"]
+    dv = out["metainfo"]["sam2_views"]
 
-    assert out["data_tensor"].shape == (T * B, C, Z, Y, X)
+    # Platform layout: SAM2 converts to (B*T, C, Z, Y, X) at its own boundary.
+    assert out["data_tensor"].shape == (B, T, Z, Y, X, C)
     assert dv["num_frames"] == T and dv["num_videos"] == B
     assert not any(bool(torch.any(dv["valid"][t])) for t in range(dv["num_frames"]))
 
@@ -304,34 +318,56 @@ def test_forward_transform_keeps_image_and_labelmap_coherent():
     pp = _make_forward_pp(max_masks=2)
     pp.transforms = [_CropLastX(XKEEP)]
     out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": targets}}, 0.0, 0)
-    dv = out["metainfo"]["targets"]
+    dv = out["metainfo"]["sam2_views"]
 
     # Image and labelmap were cropped identically along X.
-    assert out["data_tensor"].shape == (T * B, C, Z, Y, XKEEP)
+    assert out["data_tensor"].shape == (B, T, Z, Y, XKEEP, C)
     assert dv["labelmaps"].shape == (B * T, Z, Y, XKEEP)
     assert torch.equal(targets[0]["label_map"], lm[..., :XKEEP][0].to(torch.int32))
 
 
 # --------------------------------------------------------------------------- #
-# _split_labelmap_int32 (shared base helper)
+# _split_channels (shared base helper)
+#
+# Replaces the removed `_split_labelmap_int32`: the split is now role-driven via
+# channel_mapping rather than positional "last channel is the labelmap".
 # --------------------------------------------------------------------------- #
 
 
-def test_split_labelmap_int32_precast_preserves_large_ids():
+def _split_pp() -> SAM2VideoPreprocessor:
     pp = SAM2VideoPreprocessor.__new__(SAM2VideoPreprocessor)
+    pp.dtype = torch.float32
+    pp.channels = None
+    pp.input_format = "TZYXC"
+    pp.base_dense_data_type = {
+        "kind": "dense", "layout": pp.input_format, "role": "input", "has_time": True,
+    }
+    pp.bbox_format = "zyxzyx"
+    return pp
+
+
+def test_split_channels_int32_precast_preserves_large_ids():
+    """The object-channel tail is cast to int32, not bf16: ids > 4096 must survive."""
+    pp = _split_pp()
     img = torch.randn(1, 4, 2)
     lm = torch.tensor([[300.0, 0.0, 4097.0, 0.0]]).unsqueeze(-1)  # ids > bf16-exact
     x = torch.cat([img, lm], dim=-1)  # (1, 4, 3)
+    meta = {"channel_mapping": {2: "instance_segmentation"}}
 
-    images, labelmap = pp._split_labelmap_int32(x, has_mask_channel=True)
+    images, targets_by_role = pp._split_channels(x, meta)
+    labelmap = targets_by_role["instance_segmentation"]
     assert images.shape == (1, 4, 2)
     assert labelmap.dtype == torch.int32
     assert labelmap.tolist() == [[300, 0, 4097, 0]]
 
 
-def test_split_labelmap_int32_none_when_no_channel():
-    pp = SAM2VideoPreprocessor.__new__(SAM2VideoPreprocessor)
+def test_split_channels_no_target_role_returns_image_view():
+    """No object-role channel -> no labelmap, and images is a zero-copy view."""
+    pp = _split_pp()
     x = torch.randn(1, 4, 3)
-    images, labelmap = pp._split_labelmap_int32(x, has_mask_channel=False)
-    assert labelmap is None
-    assert images is x
+    images, targets_by_role = pp._split_channels(x, {"channel_mapping": {}})
+    assert targets_by_role == {}
+    # A basic-slice view, not the identical object: _split_channels always slices
+    # the signal prefix. Shared storage is what matters -- no gather, no copy.
+    assert images.data_ptr() == x.data_ptr()
+    assert images.shape == x.shape
