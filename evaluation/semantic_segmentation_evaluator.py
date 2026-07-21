@@ -43,6 +43,7 @@ class SemanticSegmentationEvaluator(DatasetEvaluator):
                 f"gt_mask_source must be 'label_map' or 'masks'; got {gt_mask_source!r}"
             )
         self.gt_mask_source = gt_mask_source
+        self.num_classes = num_classes
         self.result_name = result_name
         self.metrics = build_metrics([{
             "name": "mask_miou",
@@ -64,6 +65,20 @@ class SemanticSegmentationEvaluator(DatasetEvaluator):
     def process(self, data_sample: dict, outputs: Any, loss_dict=None) -> None:
         # model.evaluate_step returns List[{"labelmap": (D, H, W) long}].
         pred_maps = [item["labelmap"] for item in outputs]
+
+        # Taxonomy parity: the preprocessor declares semantic_classes in config and
+        # num_classes is declared separately here. Nothing ties them together, so a
+        # mismatch would silently score the wrong taxonomy -- fail loudly instead.
+        classes = data_sample["metainfo"].get("semantic_classes")
+        if classes is not None and self.num_classes is not None:
+            expected = len(classes) + 1  # + background
+            if expected != self.num_classes:
+                raise ValueError(
+                    f"evaluator num_classes={self.num_classes} does not match the data "
+                    f"taxonomy {classes} (expected {expected} = len(classes) + 1). "
+                    "Fix the evaluator config or the preprocessor's semantic_classes."
+                )
+
         targets = ep.extract_targets(data_sample)
         if len(targets) != len(pred_maps):
             raise RuntimeError(
@@ -71,7 +86,6 @@ class SemanticSegmentationEvaluator(DatasetEvaluator):
                 f"metainfo['targets'] has {len(targets)}"
             )
         for pred_map, target in zip(pred_maps, targets):
-            # FIXME: redo semantic map 
             gt_map = ep.gt_semantic_map(target, size=pred_map.shape[-3:], source=self.gt_mask_source)
             self.metric(pred_map.to(gt_map.device).long(), gt_map)
 

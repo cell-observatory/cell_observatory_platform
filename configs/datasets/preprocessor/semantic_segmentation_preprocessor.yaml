@@ -1,5 +1,13 @@
 name: semantic_segmentation
 
+# Class taxonomy. "all" = every matched semantic_segmentation_* channel role, which is
+# what you want when the DB supplies the classes directly (membrane, cytosol, golgi...).
+# Give an explicit ordered list to select named slices instead -- e.g. the membrane-only
+# setup here, where the two derived maps are the classes and the raw source channel is
+# just their input.
+# Class index is list position, so this also fixes the label values.
+semantic_classes: [boundary, foreground]
+
 with_masking: false
 mask_generator: null
 dtype: ${quantization}

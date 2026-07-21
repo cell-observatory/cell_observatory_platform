@@ -70,7 +70,18 @@ def gt_boxes_abs_xyzxyz(target: Dict[str, Any], size: Any, fmt: str, normalized:
 
 
 def gt_semantic_map(target: Dict[str, Any], size: Any, source: str) -> torch.Tensor:
-    """``(Z, Y, X)`` long GT class map (``class + 1``, background 0) from masks or label_map."""
+    """``(Z, Y, X)`` long GT class map (``class + 1``, background 0).
+
+    ``source="masks"`` scatters ``label + 1`` from the per-class binaries the semantic
+    preprocessor produced; this is the semantic path. Scattering is last-write-wins, so
+    a later class wins any overlap -- fine for a real taxonomy, and the reason a stack
+    of overlapping *derived* maps (a source footprint alongside its own partition) must
+    not be declared as classes. See preprocessor.build_semantic_targets.
+
+    ``source="label_map"`` maps instance ids to ``class + 1``. For INSTANCE datasets,
+    whose targets carry real per-instance class ids; use it to score semantic mIoU
+    against instance GT.
+    """
     labels = target["labels"]
     if source == "masks":
         masks = target["masks"]  # (N, Z, Y, X)

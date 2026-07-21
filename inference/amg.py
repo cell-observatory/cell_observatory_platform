@@ -278,10 +278,12 @@ def postprocess_sam_preds(
         if not isinstance(m, torch.Tensor):
             m = torch.as_tensor(np.asarray(m))
         m = m.float()
+        # (N, Z, Y, X, 1) ZYXC -- the instance_stack contract declared in SAM2's
+        # output_metadata. 
         if m.ndim == 3:
-            m = m[None, None, ...]
+            m = m[None, ..., None]
         elif m.ndim == 4:
-            m = m[:, None, ...]
+            m = m[..., None]
         p["masks"] = m
 
         # Fused instance label map for the dense save path. The per-object
@@ -300,7 +302,7 @@ def _fuse_masks_to_label_map(
     masks: torch.Tensor,
     preds: Dict[str, Any],
 ) -> torch.Tensor:
-    """Collapse ``(N, 1, Z, Y, X)`` per-object masks into ``(1, Z, Y, X, 1)`` labels.
+    """Collapse ``(N, Z, Y, X, 1)`` per-object masks into ``(1, Z, Y, X, 1)`` labels.
 
     Object ids are assigned in ``[1, N]`` (0 = background). Objects are painted
     in ascending score order (``stability_score`` if present, else ``iou_preds``,
@@ -313,11 +315,11 @@ def _fuse_masks_to_label_map(
         "The fused instance_masks label map uses uint16 dtype; more than 65535 "
         "objects would cause id wrapping."
     )
-    z, y, x = masks.shape[-3:]
+    z, y, x = masks.shape[1:4]
     label_map = torch.zeros((z, y, x), dtype=torch.int32)
 
     if n > 0:
-        binary = masks[:, 0] > 0.5  # (N, Z, Y, X) bool
+        binary = masks[..., 0] > 0.5  # (N, Z, Y, X, 1) -> (N, Z, Y, X) bool
 
         scores = preds.get("stability_score")
         if scores is None:

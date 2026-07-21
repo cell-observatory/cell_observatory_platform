@@ -1452,6 +1452,50 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
 # --------------------------------------------------------------------------- #
 
 
+def build_semantic_targets(target: dict, semantic_classes) -> tuple[dict, list[str]]:
+    """Select the ``semantic_maps`` slices named by ``semantic_classes``, in that order.
+
+    ``semantic_classes`` is either the literal string ``"all"`` or an explicit ordered
+    list of role names:
+
+      * ``"all"`` -- every DB-matched channel role, i.e. the slices that existed before
+        any transform appended a derived map. The common case: the DB supplies the
+        classes directly (membrane, cytosol, golgi...) and nobody has to enumerate them.
+      * ``[a, b, ...]`` -- exactly those slices, in that order. Use this to select
+        derived maps, subset, or reorder.
+
+    Class index is position in the resolved list, so the config controls both the
+    taxonomy and the label values, and a role that is not listed (a transform's source
+    channel, a dropped extra) is simply not a class.
+
+    Returns ``({"masks", "labels"}, resolved_classes)``. ``masks`` is multi-label: a
+    voxel may belong to several classes, which is what the per-class binary criteria
+    consume. The single-label map the mIoU metric wants is NOT built here -- it is a
+    pure function of these two and is derived at eval time by
+    ``evaluate_postprocess.gt_semantic_map(source="masks")``.
+    """
+    roles = list(target["semantic_roles"])
+    if semantic_classes == "all":
+        resolved = list(target["channel_roles"])
+    else:
+        resolved = [str(c) for c in semantic_classes]
+        missing = [c for c in resolved if c not in roles]
+        if missing:
+            raise KeyError(
+                f"semantic_classes {missing} not present in stack roles {roles}. "
+                "List only roles the preprocessor actually produced, or use 'all'."
+            )
+
+    idx = [roles.index(c) for c in resolved]
+    stack = target["semantic_maps"]
+    masks = stack[idx] > 0 if idx else torch.zeros(
+        (0, *stack.shape[1:]), dtype=torch.bool, device=stack.device
+    )
+    labels = torch.arange(masks.shape[0], dtype=torch.int64, device=stack.device)
+
+    return {"masks": masks, "labels": labels}, resolved
+
+
 class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
     """
     Task: semantic segmentation
@@ -1492,6 +1536,7 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         debug_savepath: str = None,
         min_channel_count: int | None = None,
         max_channel_count: int | None = None,
+        semantic_classes="all",
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -1507,6 +1552,9 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         )
 
         self.debug_savepath = debug_savepath
+        # The literal "all" (every matched channel role) or an explicit ordered role
+        # list. See build_semantic_targets.
+        self.semantic_classes = semantic_classes
 
     def _data_types(self) -> Dict[str, Dict[str, Any]]:
         """Semantic seg: image + a stacked ``semantic_maps`` target.
@@ -1571,23 +1619,30 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
                 stack = torch.stack([targets_by_role[r][b] for r in roles], dim=0)
             else:
                 stack = torch.zeros((0, *spatial), dtype=torch.int32, device=images.device)
-            targets.append({"semantic_maps": stack, "semantic_roles": list(roles)})
+            targets.append({
+                "semantic_maps": stack,
+                "semantic_roles": list(roles),
+                # The DB-matched channel roles, captured BEFORE any transform appends a
+                # derived slice -- this is what semantic_classes="all" resolves to.
+                "channel_roles": list(roles),
+            })
         meta["targets"] = targets
 
         sample = {"data_tensor": images, "metainfo": meta}
         sample, transform_time = self._apply_transforms(sample)
         meta = sample["metainfo"]
 
-        # Package into the dense masks contract. Any boundary/foreground transforms
-        # have already appended their derived maps to `semantic_maps`, so labels =
-        # arange(N) covers the direct channels plus whatever was tacked on.
-        built = []
+        # Package into the semantic target contract. The taxonomy comes from config
+        # (see build_semantic_targets): "all" = every matched channel role, or an
+        # explicit ordered list.
+        built, semantic_classes = [], []
         for t in meta["targets"]:
-            masks = t["semantic_maps"] > 0  # (N, Z, Y, X) bool
-            labels = torch.arange(masks.shape[0], dtype=torch.int64, device=masks.device)
-            built.append({"masks": masks, "labels": labels})
+            packaged, resolved = build_semantic_targets(t, self.semantic_classes)
+            built.append(packaged)
+            semantic_classes = resolved  # identical across the batch (same channel config)
         targets = built
         meta["targets"] = targets
+        meta["semantic_classes"] = semantic_classes
 
         if self.debug_savepath is not None:
             self._debug_visualize_batch(sample)
@@ -1959,17 +2014,6 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         }
 
     # ------------------------------------------------------------------ #
-    # Image transformations
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _build_flat_img_batch(images: torch.Tensor) -> torch.Tensor:
-        """(B, T, Z, Y, X, C) -> (T, B, C, Z, Y, X)"""
-        B, T, Z, Y, X, C = images.shape
-        images = images.permute(1, 0, 5, 2, 3, 4).contiguous()
-        return images.reshape(T * B, C, Z, Y, X)
-
-    # ------------------------------------------------------------------ #
     # Mask & index transformations
     # ------------------------------------------------------------------ #
 
@@ -2094,96 +2138,63 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         sentinel_pad_id = -1
 
         for t in range(T):
-            seg_masks: list[torch.Tensor] = []
-            seg_ids: list[torch.Tensor] = []
-            seg_instance: list[torch.Tensor] = []
-            seg_valid: list[torch.Tensor] = []
-            seg_presence: list[torch.Tensor] = []
-            seg_boxes: list[torch.Tensor] = []
+            # Preallocate the per-frame block once and write each video's rows into
+            # its slice.
+            frame_masks = torch.zeros((B * K_full, *spatial), dtype=torch.bool, device=device)
+            frame_ids = torch.zeros((B * K_full,), dtype=torch.int32, device=device)
+            frame_instance = torch.full(
+                (B * K_full,), sentinel_pad_id, dtype=torch.int64, device=device
+            )
+            frame_valid = torch.zeros((B * K_full,), dtype=torch.bool, device=device)
+            frame_presence = torch.zeros((B * K_full,), dtype=torch.bool, device=device)
+            frame_boxes = torch.zeros((B * K_full, 6), dtype=torch.float32, device=device)
+
             for b in range(B):
+                lo = b * K_full
                 sampled = sampled_ids_per_b[b]
                 K = sampled.numel()
                 flat_id = b * T + t
 
+                # Every row of this video's block carries the frame's flat img id,
+                # pad rows included -- they index the same frame.
+                frame_ids[lo:lo + K_full] = flat_id
+                if K == 0:
+                    continue
+
                 lm_bt = mask_labelmap[b, t]  # (Z, Y, X) int32
 
-                if K > 0:
-                    # (K, Z, Y, X) bool; only K ≤ max_masks materialized.
-                    # Kept for the eager-mask criterion path; point-loss
-                    # consumers should ignore this field.
-                    m = lm_bt.unsqueeze(0) == sampled.to(lm_bt.dtype).view(K, 1, 1, 1)
-                    instance_b_t = sampled.to(torch.int64)
-                    valid_b_t = torch.ones(K, dtype=torch.bool, device=device)
-                    # cheap per-object presence: ids actually present in lm_bt
-                    unique_ids = torch.unique(lm_bt)
-                    presence_b_t = torch.isin(
-                        sampled.to(unique_ids.dtype), unique_ids
-                    )
-                    boxes_src = sampled_boxes_per_b[b]
-                    if boxes_src is not None:
-                        boxes_b_t = boxes_src.to(
-                            device=device, dtype=torch.float32
+                # (K, Z, Y, X) bool; only K ≤ max_masks materialized, written straight
+                # into this video's slice. Kept for the eager-mask criterion path;
+                # point-loss consumers should ignore this field.
+                frame_masks[lo:lo + K] = (
+                    lm_bt.unsqueeze(0) == sampled.to(lm_bt.dtype).view(K, 1, 1, 1)
+                )
+                frame_instance[lo:lo + K] = sampled.to(torch.int64)
+                frame_valid[lo:lo + K] = True
+                # cheap per-object presence: ids actually present in lm_bt
+                unique_ids = torch.unique(lm_bt)
+                frame_presence[lo:lo + K] = torch.isin(
+                    sampled.to(unique_ids.dtype), unique_ids
+                )
+
+                boxes_src = sampled_boxes_per_b[b]
+                if boxes_src is not None:
+                    boxes_b_t = boxes_src.to(device=device, dtype=torch.float32)
+                    # sampled_boxes is gathered with the same perm as sampled_ids, so
+                    # it must already have exactly K rows.
+                    if boxes_b_t.shape[0] != K:
+                        raise ValueError(
+                            f"sampled boxes row count {boxes_b_t.shape[0]} != "
+                            f"K={K} for video {b}; box/id alignment is broken."
                         )
-                        # sampled_boxes is gathered with the same perm as
-                        # sampled_ids, so it must already have exactly K rows.
-                        if boxes_b_t.shape[0] != K:
-                            raise ValueError(
-                                f"sampled boxes row count {boxes_b_t.shape[0]} != "
-                                f"K={K} for video {b}; box/id alignment is broken."
-                            )
-                    else:
-                        boxes_b_t = torch.zeros(
-                            (K, 6), dtype=torch.float32, device=device
-                        )
-                else:
-                    m = torch.zeros((0, *spatial), dtype=torch.bool, device=device)
-                    instance_b_t = torch.zeros(0, dtype=torch.int64, device=device)
-                    valid_b_t = torch.zeros(0, dtype=torch.bool, device=device)
-                    presence_b_t = torch.zeros(0, dtype=torch.bool, device=device)
-                    boxes_b_t = torch.zeros((0, 6), dtype=torch.float32, device=device)
+                    frame_boxes[lo:lo + K] = boxes_b_t
 
-                ids = torch.full((K,), flat_id, dtype=torch.int32, device=device)
-
-                pad_n = K_full - K
-                if pad_n > 0:
-                    m = torch.cat(
-                        [m, torch.zeros((pad_n, *spatial), dtype=torch.bool, device=device)],
-                        dim=0,
-                    )
-                    ids = torch.cat(
-                        [ids, ids.new_full((pad_n,), flat_id)],
-                        dim=0,
-                    )
-                    instance_b_t = torch.cat(
-                        [instance_b_t, instance_b_t.new_full((pad_n,), sentinel_pad_id)],
-                        dim=0,
-                    )
-                    valid_b_t = torch.cat(
-                        [valid_b_t, torch.zeros(pad_n, dtype=torch.bool, device=device)],
-                        dim=0,
-                    )
-                    presence_b_t = torch.cat(
-                        [presence_b_t, torch.zeros(pad_n, dtype=torch.bool, device=device)],
-                        dim=0,
-                    )
-                    boxes_b_t = torch.cat(
-                        [boxes_b_t, boxes_b_t.new_zeros(pad_n, 6)],
-                        dim=0,
-                    )
-
-                seg_masks.append(m)
-                seg_ids.append(ids)
-                seg_instance.append(instance_b_t)
-                seg_valid.append(valid_b_t)
-                seg_presence.append(presence_b_t)
-                seg_boxes.append(boxes_b_t)
-
-            out_masks.append(torch.cat(seg_masks, dim=0))
-            out_img_ids.append(torch.cat(seg_ids, dim=0))
-            out_instance_ids.append(torch.cat(seg_instance, dim=0))
-            out_valid.append(torch.cat(seg_valid, dim=0))
-            out_presence.append(torch.cat(seg_presence, dim=0))
-            out_boxes.append(torch.cat(seg_boxes, dim=0))
+            out_masks.append(frame_masks)
+            out_img_ids.append(frame_ids)
+            out_instance_ids.append(frame_instance)
+            out_valid.append(frame_valid)
+            out_presence.append(frame_presence)
+            out_boxes.append(frame_boxes)
 
         # Flatten (B, T, Z, Y, X) -> (B*T, Z, Y, X). With img_ids[t][i] = b*T + t,
         # mask_labelmap.reshape(B*T, ...) is indexed by flat_id without permutation.
@@ -2248,8 +2259,11 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
 
         B, T = images.shape[0], images.shape[1]
 
-        # --- flatten to (T*B, C, Z, Y, X) ---------------------
-        flat_img_batch = self._build_flat_img_batch(images)
+        # data_tensor stays in the platform layout (B, T, Z, Y, X, C). SAM2 flattens
+        # and permutes to its own (B*T, C, Z, Y, X) at the model boundary -- see
+        # SAM2._to_model_layout. img_ids/labelmaps below are plain b*T + t arithmetic,
+        # so they are layout-independent and stay valid.
+        flat_img_batch = images
 
         # --- build per-frame masks & index maps ----------------------------
         # No mask channel (inference) -> emit an empty target view and skip
@@ -2280,26 +2294,25 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
                 mask_labelmap=mask_labelmap,
             )
 
-        # Canonical GT for evaluation: `data_views` (emitted under "targets") is
-        # the SAM2-specific dict the model needs, but the InstanceSegmentation-
-        # Evaluator wants the standard per-image 3D GT (labels/boxes/mask_ids/
-        # label_map). Publish the raw per-image `targets` by REFERENCE under
-        # "gt_targets" with the single-timepoint label_map squeezed (T,Z,Y,X) ->
-        # (Z,Y,X) as a VIEW (label_map[0]; no voxel copy, so no VRAM bloat). This
-        # makes the preprocessor the sole owner of GT shape and lets the
-        # evaluator consume targets directly (no GT adapter). Empty on the no-GT
-        # inference path (targets == []).
-        gt_targets = []
+        # Publish GT under the platform contract: metainfo["targets"] is a per-image
+        # list of dicts (labels/boxes/mask_ids/label_map), which is what
+        # evaluate_postprocess.extract_targets and every evaluator expect. The
+        # SAM2-specific per-frame view the model needs goes under its own key.
+        # Shallow-copy each target (tensors shared by reference) and squeeze the
+        # single-timepoint label_map (T,Z,Y,X) -> (Z,Y,X) as a VIEW -- no voxel copy.
+        # Empty on the no-GT inference path (targets == []).
+        gt_list = []
         for t in targets:
             g = dict(t)  # shallow: shares every tensor by reference
             lm = g.get("label_map")
-            if lm is not None and torch.is_tensor(lm) and lm.dim() == 4:
-                assert lm.shape[0] == 1, (
-                    "SAM2 3D instance GT expects a single timepoint (T==1) per "
-                    f"label_map, got T={lm.shape[0]}"
-                )
+            # Squeeze the single-timepoint case to the (Z, Y, X) the 3D instance
+            # evaluator expects -- a VIEW, no voxel copy. Multi-frame label_maps pass
+            # through as (T, Z, Y, X). Evaluation is single-timepoint only, and 
+            # extract_targets(squeeze_label_map=True)
+            # raises its own clear error if a multi-frame sample reaches an evaluator.
+            if lm is not None and torch.is_tensor(lm) and lm.dim() == 4 and lm.shape[0] == 1:
                 g["label_map"] = lm[0]  # view -> (Z, Y, X)
-            gt_targets.append(g)
+            gt_list.append(g)
 
         sam2_metrics: list[dict[str, Any]] = [
             make_timing_metric("data_time", data_time),
@@ -2314,8 +2327,8 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             "data_tensor": flat_img_batch,
             "metainfo": {
                 **meta,
-                "targets": data_views,
-                "gt_targets": gt_targets,
+                "targets": gt_list,        # platform contract: List[per-image dict]
+                "sam2_views": data_views,  # model-private per-frame view
                 "idx": idx,
                 "metrics": sam2_metrics,
             },

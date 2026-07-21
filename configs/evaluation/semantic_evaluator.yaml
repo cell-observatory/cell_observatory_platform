@@ -1,0 +1,18 @@
+# @package _global_
+
+# Semantic-segmentation mIoU. num_classes is len(semantic_classes) + 1 (background),
+# where semantic_classes comes from the preprocessor config. The evaluator asserts this
+# against metainfo["semantic_classes"] at runtime, so drift between the two configs
+# fails loudly instead of silently scoring the wrong taxonomy.
+#
+# Membrane-only ABC config -> semantic_classes: [boundary, foreground] -> 2 + 1 = 3.
+evaluation:
+  evaluator:
+    name: semantic_segmentation
+    num_classes: 3
+    ignore_index: 0
+    gt_mask_source: masks
+    result_name: mask_miou_semantic
+  predict_method: evaluate_step
+  val_metric: mask_miou_semantic
+  val_mode: max

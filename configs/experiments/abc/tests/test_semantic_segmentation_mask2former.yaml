@@ -14,7 +14,7 @@ defaults:
   - /models/heads/mask2former_decoder/mask2former_vitdet_transformer_decoder # configs/models/heads/mask2former_decoder/mask2former_decoder.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers                         # configs/loggers/loggers.yaml
-  - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
+  - /evaluation/semantic_evaluator           # configs/evaluation/semantic_evaluator.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml

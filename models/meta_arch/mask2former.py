@@ -32,6 +32,7 @@ class Mask2Former(nn.Module):
         num_classes: int,
         topk_queries: int,
         output_metadata: Optional[Dict[str, Any]] = None,
+        semantic_reduction: str = "canonical",
     ):
         super().__init__()
 
@@ -42,7 +43,13 @@ class Mask2Former(nn.Module):
 
         self.num_classes = num_classes
         self.topk_queries = topk_queries
+        self.semantic_reduction = semantic_reduction
         self.spatial_shape = get_spatial_shape(input_shape, input_fmt)
+        # The canonical reduction adds a leading no-object/background channel; the
+        # legacy top-k/max reduction does not.
+        _pred_mask_channels = (
+            self.num_classes + 1 if semantic_reduction == "canonical" else self.num_classes
+        )
         # Inference contract (see meta_arch/utils.py). masks_labelmap is the saved
         # semantic artifact (argmax+1 / bg-0). pred_masks is the soft probability
         # map (kept float16 so the inferencer cast doesn't truncate to 0); kind=dense
@@ -50,7 +57,7 @@ class Mask2Former(nn.Module):
         self.output_metadata = mo.output_metadata(
             masks_labelmap=mo.semantic_map(self.spatial_shape),          # (Z,Y,X,1) uint16
             pred_masks={
-                "shape": (*self.spatial_shape, self.num_classes),
+                "shape": (*self.spatial_shape, _pred_mask_channels),
                 "dtype": "float16",
                 "kind": "dense",
             },
@@ -113,18 +120,22 @@ class Mask2Former(nn.Module):
         # Convert masks to semantic map where each binary mask is replaced with the class index 
         # and all masks are flattened into a single channel-last tensor
         # classes are reduced to the average probability of the top k queries for each class
+        # Reduce queries to a dense per-class map, then collapse to a label map. The
+        # two reductions derive background differently, so each pairs with its own
+        # collapse: canonical carries an explicit no-object channel at index 0 (plain
+        # argmax); topk_max returns probabilities with no background channel and needs
+        # a threshold. See reduce_queries_to_semantic_map.
         masks_reduced, classes_reduced = reduce_queries_to_semantic_map(
             pred_masks=output["pred_masks"],
             pred_logits=output["pred_logits"],
             num_classes=self.num_classes,
             topk_per_image=self.topk_queries,
+            reduction=self.semantic_reduction,
         )
-        # Collapse the per-class channel to a semantic label map (class+1 / bg-0).
-        # masks_reduced is channels-last and already in PROBABILITY space (the
-        # sigmoid lives in reduce_queries_to_semantic_map), hence dim=-1 / 0.5.
-        mask_labels = mo.collapse_to_semantic_map(  # [B,D,H,W,num_classes] -> [B,D,H,W,1]
-            masks_reduced, threshold=0.5, dim=-1,
-        )
+        if self.semantic_reduction == "canonical":
+            mask_labels = masks_reduced.argmax(dim=-1).to(torch.uint16).unsqueeze(-1)
+        else:
+            mask_labels = mo.collapse_to_semantic_map(masks_reduced, threshold=0.5, dim=-1)
 
         # NOTE: class_labels was a duplicate of pred_classes (both classes_reduced)
         # and was declared uint16, which truncated the float class probabilities to

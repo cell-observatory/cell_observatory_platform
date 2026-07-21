@@ -67,14 +67,18 @@ def tile_hash(tile_name: str) -> int:
 # ============================================================================
 
 
-def reduce_queries_to_semantic_map(
+def _reduce_topk_max(
     pred_masks: torch.Tensor,
     pred_logits: torch.Tensor,
     num_classes: int = 1,
     topk_per_image: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Convert Mask2Former query-based outputs to a dense semantic map.
+    LEGACY reduction: top-k queries per class, combined with max.
+
+    Returns a per-class map in probability space with NO background channel -- callers
+    derive background by thresholding. Retained so checkpoints tuned against this
+    reduction stay scoreable; prefer ``reduction="canonical"`` for new work.
 
     Args:
         pred_masks: [B, num_queries, D, H, W] - mask logits (already at target resolution)
@@ -84,7 +88,8 @@ def reduce_queries_to_semantic_map(
 
     Returns:
         semantic_map: [B, D, H, W, num_classes] - channels-last dense semantic map (per-class)
-        average_probability: [B, num_classes] - average probability of the semantic map for each class
+        average_probability: average probability per class. NOTE: rank differs by branch
+            -- [B] when num_classes == 1, [B, num_classes] otherwise.
     """
     B, num_queries, D, H, W = pred_masks.shape
 
@@ -138,6 +143,70 @@ def reduce_queries_to_semantic_map(
         semantic = torch.stack(semantic_per_class, dim=-1)  # [B, D, H, W, num_classes]
         average_probability = torch.stack(average_probability_per_class, dim=-1)  # [B, num_classes]
         return semantic, average_probability
+
+
+def _reduce_canonical(
+    pred_masks: torch.Tensor,
+    pred_logits: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Canonical Mask2Former semantic inference.
+
+    Every query contributes, weighted by its class posterior:
+    ``semseg[c] = sum_q softmax(logits)[q, c] * sigmoid(mask)[q]``.
+
+    Args:
+        pred_masks: ``[B, Q, D, H, W]`` mask logits at target resolution.
+        pred_logits: ``[B, Q, num_classes + 1]``; last index is no-object
+            (DETR/Mask2Former convention, see losses.py ``empty_weight[-1]``).
+
+    Returns:
+        semseg: ``[B, D, H, W, 1 + num_classes]`` channels-last, **channel 0 is
+            no-object (background)**, so ``argmax(dim=-1)`` yields a label map in the
+            ``class + 1`` / background ``0`` convention with no threshold.
+        average_probability: ``[B, num_classes]`` mean per-class posterior over queries.
+    """
+    if pred_logits.dim() != 3 or pred_masks.dim() != 5:
+        raise ValueError(
+            f"expected pred_masks (B,Q,D,H,W) and pred_logits (B,Q,C+1); "
+            f"got {tuple(pred_masks.shape)} and {tuple(pred_logits.shape)}"
+        )
+    probs = pred_logits.softmax(-1)                      # [B, Q, C+1], last = no-object
+    masks = pred_masks.sigmoid()                         # [B, Q, D, H, W]
+
+    # [B,Q,K] x [B,Q,D,H,W] -> [B,D,H,W,K], K = C+1 with no-object last.
+    semseg = torch.einsum("bqk,bqdhw->bdhwk", probs, masks)
+    # Roll no-object to channel 0 so argmax gives class+1 / bg-0 directly.
+    semseg = torch.cat([semseg[..., -1:], semseg[..., :-1]], dim=-1)
+
+    average_probability = probs[..., :-1].mean(dim=1)    # [B, C]
+    return semseg, average_probability
+
+
+def reduce_queries_to_semantic_map(
+    pred_masks: torch.Tensor,
+    pred_logits: torch.Tensor,
+    num_classes: int = 1,
+    topk_per_image: int = 1,
+    reduction: str = "canonical",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Convert Mask2Former query outputs to a dense semantic map.
+
+    ``reduction="canonical"`` (default) sums over all queries and returns a
+    background-first ``[B, D, H, W, 1 + C]`` map -- collapse with ``argmax(dim=-1)``.
+    ``reduction="topk_max"`` is the legacy top-k/max path returning
+    ``[B, D, H, W, C]`` with no background channel -- collapse with
+    ``collapse_to_semantic_map(threshold=0.5, dim=-1)``.
+
+    The layouts differ because the two derive background differently; the caller must
+    pair the reduction with its matching collapse. ``num_classes`` and
+    ``topk_per_image`` apply to ``topk_max`` only; the canonical path infers
+    ``C = pred_logits.shape[-1] - 1``.
+    """
+    if reduction == "canonical":
+        return _reduce_canonical(pred_masks, pred_logits)
+    if reduction == "topk_max":
+        return _reduce_topk_max(pred_masks, pred_logits, num_classes, topk_per_image)
+    raise ValueError(f"reduction must be 'canonical' or 'topk_max'; got {reduction!r}")
 
 
 def normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):

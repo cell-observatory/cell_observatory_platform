@@ -1081,10 +1081,10 @@ class SAM2(SAM2Base):
         # Inference contract (see meta_arch/utils.py). The SAVEABLE artifact is the
         # fused instance label map (fixed shape). AMG produces a DYNAMIC object count
         # N, so the per-object mask stack, boxes, and iou_preds are host-side, never
-        # SHM (dynamic-N rule): boxes/iou_preds are declared with N=None; the raw
-        # per-object stack ("masks") is a variable intermediate left undeclared.
+        # SHM (dynamic-N rule): they are declared with N=None.
         self.output_metadata = mo.output_metadata(
             instance_masks = mo.instance_label_map(spatial_shape),  # (Z,Y,X,1) uint16 — fused, saved
+            masks          = mo.instance_stack(None, spatial_shape),  # (N,Z,Y,X,1) — viz, host-side
             boxes          = mo.boxes(None),                        # (N,6) variable, host-side
             iou_preds      = mo.scores(None),                       # (N,) variable, host-side
         )
@@ -1184,7 +1184,30 @@ class SAM2(SAM2Base):
             {"params": no_decay, "weight_decay": 0.0},
         ]
 
+    @staticmethod
+    def _to_model_layout(images: torch.Tensor) -> torch.Tensor:
+        """(B, T, Z, Y, X, C) -> (B*T, C, Z, Y, X), row index ``b*T + t``.
+
+        The platform hands every model channels-last; the ported SAM2 backbone wants
+        torch conv layout. Convert here, at the model's own edge, so ``data_tensor``
+        has exactly one layout everywhere outside a model.
+
+        Permuting only the channel axis leaves B and T outermost with their original
+        strides, so ``flatten(0, 1)`` merges them as a VIEW -- no copy of the image
+        batch. Row order matches ``img_ids`` (flat_id = b*T + t) and ``labelmaps``;
+        they must agree or forward_tracking's ``x[:, img_ids]`` gathers the wrong
+        frames whenever B > 1 and T > 1.
+        """
+        return images.permute(0, 1, 5, 2, 3, 4).flatten(0, 1)
+
     def forward(self, data_sample: dict):
+        # Shallow copy: metainfo and every target tensor stay shared by reference;
+        # only the data_tensor binding is replaced with the model-layout view. The
+        # backbone reads data_sample["data_tensor"], so it has to travel as a dict.
+        data_sample = {
+            **data_sample,
+            "data_tensor": self._to_model_layout(data_sample["data_tensor"]),
+        }
         if self.training or not self.forward_backbone_per_frame_for_eval:
             # precompute image features on all frames before tracking
             backbone_out = self.forward_image(data_sample)
@@ -1197,7 +1220,7 @@ class SAM2(SAM2Base):
         # presence_t, boxes, masks, ...) directly to the criterion, which
         # consumes the materialized dense `masks` plus `valid`/`presence_t`
         # gates (single dense path).
-        target_view = data_sample["metainfo"]["targets"]
+        target_view = data_sample["metainfo"]["sam2_views"]
         loss = self.criterion(previous_stages_out, target_view)
         return loss, previous_stages_out
 
@@ -1234,7 +1257,7 @@ class SAM2(SAM2Base):
         Prepare input mask, point or box prompts. Optionally, we allow tracking from
         a custom `start_frame_idx` to the end of the video (for evaluation purposes).
         """
-        data_views = data_sample["metainfo"]["targets"]
+        data_views = data_sample["metainfo"]["sam2_views"]
 
         # Per-frame GT masks for correction-point sampling. The preprocessor
         # always materializes the K=max_masks binary-mask subset on-device, so
@@ -1385,7 +1408,7 @@ class SAM2(SAM2Base):
             ) = self._prepare_backbone_features(backbone_out)
 
         # Starting the stage loop
-        data_views = data_sample["metainfo"]["targets"]
+        data_views = data_sample["metainfo"]["sam2_views"]
         num_frames = backbone_out["num_frames"]
         init_cond_frames = backbone_out["init_cond_frames"]
         frames_to_add_correction_pt = backbone_out["frames_to_add_correction_pt"]
@@ -1677,23 +1700,29 @@ class SAM2(SAM2Base):
         ``instance_masks (1, Z, Y, X, 1)`` plus auxiliary keys (``boxes``,
         ``iou_preds``, ``stability_score``, ``points``).
         """
-        vol = data_sample["data_tensor"]
-        assert vol.shape[0] == 1, "inference_step() expects batch_size=1 (AMG encodes one volume per call)"
+        vol = self._to_model_layout(data_sample["data_tensor"])
+        assert vol.shape[0] == 1, (
+            "inference_step() expects a single volume (B*T == 1); AMG encodes one "
+            f"volume per call, got (B, T) = {tuple(data_sample['data_tensor'].shape[:2])}"
+        )
 
         mask_data = self._predict_generate_masks(vol)
         # Empty-detection guard: an image with no AMG masks yields a keyless MaskData,
         # so mask_data["masks"] below would KeyError. Emit an all-background label map
-        # + empty per-object tensors (still channels-last) so the save path is uniform.
+        # + empty (N=0) per-object tensors. The key set must match the non-empty path
+        # exactly, or consumers reading `masks`/`stability_score`/`points` break on
+        # empty volumes.
         if len(mask_data) == 0:
             zyx = tuple(int(s) for s in vol.shape[-3:])
+            dev = vol.device
             preds = {
-                "instance_masks": torch.zeros((1, *zyx, 1), dtype=torch.uint16, device=vol.device),
-                "boxes": torch.zeros((0, 6), dtype=torch.float32, device=vol.device),
-                "iou_preds": torch.zeros((0,), dtype=torch.float32, device=vol.device),
+                "instance_masks": torch.zeros((1, *zyx, 1), dtype=torch.uint16, device=dev),
+                "masks": torch.zeros((0, *zyx, 1), dtype=torch.float32, device=dev),
+                "boxes": torch.zeros((0, 6), dtype=torch.float32, device=dev),
+                "iou_preds": torch.zeros((0,), dtype=torch.float32, device=dev),
+                "stability_score": torch.zeros((0,), dtype=torch.float32, device=dev),
+                "points": torch.zeros((0, 3), dtype=torch.float32, device=dev),
             }
-            dt = data_sample["data_tensor"]
-            if dt.dim() == 5:
-                data_sample["data_tensor"] = dt.permute(0, 2, 3, 4, 1)
             return preds
         mask_data.to_numpy()
 
@@ -1709,15 +1738,10 @@ class SAM2(SAM2Base):
         # postprocess_sam_preds is a pure preds -> preds helper (no data_tensor arg).
         preds = postprocess_sam_preds(raw)
 
-        # Permute data_tensor from channels-first (B, C, Z, Y, X) to channels-last
-        # (B, Z, Y, X, C) so the inferencer save/viz path always receives ZYXC/TZYXC.
-        # The channels-first layout was established by SAM2VideoPreprocessor
-        # (_build_flat_img_batch) and is needed by the SAM2 backbone / crop pipeline;
-        # the permute back happens here so the generic inferencer is model-agnostic.
-        dt = data_sample["data_tensor"]
-        if dt.dim() == 5:
-            data_sample["data_tensor"] = dt.permute(0, 2, 3, 4, 1)
-
+        # NOTE: data_sample belongs to the caller; the model does not mutate it. The
+        # inferencer already receives channels-last straight from the preprocessor --
+        # the channels-first layout exists only inside this model, between
+        # _to_model_layout and here.
         return preds
 
     @torch.no_grad()
@@ -1759,8 +1783,11 @@ class SAM2(SAM2Base):
             # TODO: implement video prediction
             raise NotImplementedError(f"type {type} not supported yet")
 
-        vol = data_sample["data_tensor"]
-        assert vol.shape[0] == 1, "evaluate_step() expects batch_size=1"
+        vol = self._to_model_layout(data_sample["data_tensor"])
+        assert vol.shape[0] == 1, (
+            "evaluate_step() expects a single volume (B*T == 1); got (B, T) = "
+            f"{tuple(data_sample['data_tensor'].shape[:2])}"
+        )
 
         was_training = self.training
         self.eval()

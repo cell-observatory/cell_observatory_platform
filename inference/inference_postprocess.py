@@ -312,7 +312,11 @@ def to_instance_stack(masks: Any, kind: Optional[str] = None, max_instances: int
         stack = np.stack([masks == i for i in ids], axis=0)  # (N,Z,Y,X) bool
         return stack[:, None, ...]  # (N,1,Z,Y,X)
 
-    # INSTANCE_STACK passthrough.
+    # INSTANCE_STACK passthrough. The declared kind is channels-last (N,Z,Y,X,1)
+    # (see meta_arch/utils.py instance_stack), so drop the trailing channel before
+    # inserting the leading singleton plotting wants.
+    if masks.ndim == 5 and masks.shape[-1] == 1:
+        masks = masks[..., 0]        # (N,Z,Y,X,1) -> (N,Z,Y,X)
     if masks.ndim == 4:
         masks = masks[:, None, ...]  # (N,Z,Y,X) -> (N,1,Z,Y,X)
     return masks
