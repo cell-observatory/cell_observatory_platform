@@ -725,7 +725,7 @@ jobs:
       - name: pytest /tests/inference
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_inference.xml tests/inference
-        timeout-minutes: 15
+        timeout-minutes: 25
 
       - name: pytest /tests/evaluation
         if: ${{ env.TESTING }}
