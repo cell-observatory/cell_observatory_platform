@@ -47,6 +47,7 @@ from cell_observatory_platform.training.helpers import (
 )
 from cell_observatory_platform.training.schedulers import CosineScheduler, linear_warmup_cosine_decay
 from cell_observatory_platform.utils.context import is_main_process, process_rank
+from cell_observatory_platform.utils.config import registers_flat_as
 if TYPE_CHECKING:
     from cell_observatory_platform.training.loops import BaseTrainer, Inferencer
 
@@ -190,6 +191,7 @@ class HookBase:
         return {}
 
 
+@registers_flat_as("hook", "anomaly_detector")
 class AnomalyDetector(HookBase):
     """Wrap each epoch in torch.autograd.detect_anomaly."""
 
@@ -218,6 +220,7 @@ class AnomalyDetector(HookBase):
                 )
 
 
+@registers_flat_as("hook", "sampler_setter")
 class SamplerSetter(HookBase):
     """
     A hook that sets the sampler for the trainer.
@@ -228,6 +231,7 @@ class SamplerSetter(HookBase):
             self.trainer.train_dataloader.sampler.set_epoch(self.trainer._epoch)
 
 
+@registers_flat_as("hook", "lr_scheduler")
 class LRScheduler(HookBase):
     """
     A hook which executes a scheduler step and summarizes the LR
@@ -295,6 +299,7 @@ class LRScheduler(HookBase):
             raise NotImplementedError(f"{self.update_type=} is not supported")
 
 
+@registers_flat_as("hook", "iteration_timer")
 class IterationTimer(HookBase):
     """
     Track the time spent for each iteration (each run_step call in the trainer).
@@ -556,6 +561,7 @@ def _inference_batch_size_from_sample(data_sample: Optional[Dict[str, Any]]) -> 
     return 1
 
 
+@registers_flat_as("hook", "inference_metrics")
 class InferenceMetricsHook(HookBase):
     """
     Pull raw metric lists from InferencerWorker, BufferManager, SaveWorker, VizWorker,
@@ -692,6 +698,7 @@ class InferenceMetricsHook(HookBase):
             )
 
 
+@registers_flat_as("hook", "periodic_writer")
 class PeriodicWriter(HookBase):
     """
     Write events with EventWriters periodically.
@@ -728,6 +735,7 @@ class PeriodicWriter(HookBase):
         self._writers.close()
 
 
+@registers_flat_as("hook", "periodic_checkpointer")
 class PeriodicCheckpointer(HookBase):
     """
     Checkpointing, executed every ``period`` epoch and after the last epoch.
@@ -807,6 +815,7 @@ class PeriodicCheckpointer(HookBase):
                 self.trainer.checkpoint_manager.close()
 
 
+@registers_flat_as("hook", "best_checkpointer")
 class BestCheckpointer(HookBase):
     def __init__(self, checkpointdir: Union[str, Path], backend: str = "DEEPSPEED"):
         super().__init__()
@@ -848,6 +857,7 @@ class BestCheckpointer(HookBase):
             )
 
 
+@registers_flat_as("hook", "torch_memory_stats")
 class TorchMemoryStats(HookBase):
     """
     Writes pytorch's cuda memory statistics periodically.
@@ -935,6 +945,7 @@ class TorchMemoryStats(HookBase):
                 f.write(str(mem_log))
 
 
+@registers_flat_as("hook", "best_metric_saver")
 class BestMetricSaver(HookBase):
     # Must run before BestCheckpointer (reports trainer._curr_val_metric) and
     # before PeriodicWriter (clears the epoch buffer this hook reads). Both are
@@ -1013,6 +1024,7 @@ class BestMetricSaver(HookBase):
         self._update_best_metrics(test_metric_val)
 
 
+@registers_flat_as("hook", "nsys_profiler")
 class NsysProfilerHook(HookBase):
     """
     Starts Nsight Systems on step `start_iter` and stops it at `end_iter`.
@@ -1044,6 +1056,7 @@ class NsysProfilerHook(HookBase):
 
 # TODO: support for saving trace to
 #       wandb/tensorboard
+@registers_flat_as("hook", "torch_profiler")
 class TorchProfiler(HookBase):
     """
     A hook which runs `torch.profiler.profile`.
@@ -1169,6 +1182,7 @@ class TorchProfiler(HookBase):
                 raise RuntimeError("Profiling complete — stopping training")
 
 
+@registers_flat_as("hook", "early_stop")
 class EarlyStopHook(HookBase):
     """
     A hook that stops training early if the validation metric does not improve
@@ -1242,6 +1256,7 @@ class EarlyStopHook(HookBase):
         self.latest_metric_val = latest_metric_val
 
 
+@registers_flat_as("hook", "ema_scheduler")
 class EMASchedulerHook(HookBase):
     """
     A hook that runs EMA beta update after each step.
@@ -1267,6 +1282,7 @@ class EMASchedulerHook(HookBase):
         self.model.ema_update(beta=next(self.ema_scheduler))
 
 
+@registers_flat_as("hook", "teacher_temperature_scheduler")
 class TeacherTemperatureSchedulerHook(HookBase):
     """
     Updates teacher temperature each step: cosine warmup from warmup_teacher_temp
@@ -1311,6 +1327,7 @@ class TeacherTemperatureSchedulerHook(HookBase):
 
 
 # NOTE: see models/meta_arch/dino.py for more details
+@registers_flat_as("hook", "local_loss_reweighting")
 class LocalLossReweightingHook(HookBase):
     def __init__(self, start: float, peak: float, end: float, warmup_epochs: int, cosine_epochs: int):
         super().__init__()
@@ -1332,6 +1349,7 @@ class LocalLossReweightingHook(HookBase):
         )
         self.model.local_loss_schedule = self.local_loss_schedule
 
+@registers_flat_as("hook", "weight_decay_schedule")
 class WeightDecayScheduleHook(HookBase):
     def __init__(self, backend: str = "DEEPSPEED"):
         super().__init__()
@@ -1370,6 +1388,7 @@ class WeightDecayScheduleHook(HookBase):
             raise NotImplementedError(f"Backend {self.backend} not supported.")
 
 
+@registers_flat_as("hook", "cuda_synchronize")
 class CudaSynchronizeHook(HookBase):
     """Diagnostic hook to force CUDA stream alignment at selected train boundaries."""
 
@@ -1399,6 +1418,7 @@ class CudaSynchronizeHook(HookBase):
             self._sync("cuda_sync_before_backward_time")
 
 
+@registers_flat_as("hook", "free_device_buffer")
 class FreeDeviceBufferHook(HookBase):
     """
     A hook that frees memory buffers after each step.
@@ -1434,6 +1454,7 @@ class FreeDeviceBufferHook(HookBase):
             self.device_buffer.put_free(device_buffer_idx)
 
 
+@registers_flat_as("hook", "adjust_timeout")
 class AdjustTimeoutHook(HookBase):
     """
     A hook that adjusts the training timeout for distributed processes.
@@ -1452,6 +1473,7 @@ class AdjustTimeoutHook(HookBase):
             )
 
 
+@registers_flat_as("hook", "memory_debug")
 class MemoryDebugHook(HookBase):
     PRIORITY = HOOK_PRIORITY.VERY_LOW
 
@@ -1573,6 +1595,7 @@ class MemoryDebugHook(HookBase):
             os.fsync(f.fileno())
 
 
+@registers_flat_as("hook", "garbage_collection")
 class GarbageCollectionHook(HookBase):
     """
     GC control Hook.
@@ -1678,36 +1701,3 @@ class GarbageCollectionHook(HookBase):
             return
         if self.reenable_on_end and self._auto_gc_was_enabled:
             gc.enable()
-
-
-# --- Registry -------------------------------------------------------------- #
-# Every HookBase subclass is a config-selected swap point (an entry in
-# `config.hooks.hooks_list`). Register each under the `hook` role, keyed by a name.
-from cell_observatory_platform.utils.config import register_flat_class as _register_flat_class
-
-_HOOKS = {
-    "anomaly_detector": AnomalyDetector,
-    "sampler_setter": SamplerSetter,
-    "lr_scheduler": LRScheduler,
-    "iteration_timer": IterationTimer,
-    "inference_metrics": InferenceMetricsHook,
-    "periodic_writer": PeriodicWriter,
-    "periodic_checkpointer": PeriodicCheckpointer,
-    "best_checkpointer": BestCheckpointer,
-    "torch_memory_stats": TorchMemoryStats,
-    "best_metric_saver": BestMetricSaver,
-    "nsys_profiler": NsysProfilerHook,
-    "torch_profiler": TorchProfiler,
-    "early_stop": EarlyStopHook,
-    "ema_scheduler": EMASchedulerHook,
-    "teacher_temperature_scheduler": TeacherTemperatureSchedulerHook,
-    "local_loss_reweighting": LocalLossReweightingHook,
-    "weight_decay_schedule": WeightDecayScheduleHook,
-    "cuda_synchronize": CudaSynchronizeHook,
-    "free_device_buffer": FreeDeviceBufferHook,
-    "adjust_timeout": AdjustTimeoutHook,
-    "memory_debug": MemoryDebugHook,
-    "garbage_collection": GarbageCollectionHook,
-}
-for _name, _cls in _HOOKS.items():
-    _register_flat_class("hook", _name, _cls)

@@ -6,8 +6,10 @@ import cell_observatory_platform.evaluation.evaluate_postprocess as ep
 from cell_observatory_platform.evaluation.evaluator import DatasetEvaluator
 from cell_observatory_platform.evaluation.metrics import build_metrics
 from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import registers_as
 
 
+@registers_as("evaluator", "reconstruction")
 class AutomatedBenchmarkEvaluator(DatasetEvaluator):
     """
     Reconstruction-style evaluator computing pixel-wise metrics (NRMSE, MAE, ...) between
@@ -69,7 +71,3 @@ class AutomatedBenchmarkEvaluator(DatasetEvaluator):
 
     # evaluate() is inherited from DatasetEvaluator (gather no-op + aggregate over
     # the accumulated NRMSE/MAE reduce buffers).
-
-
-from cell_observatory_platform.utils.config import register_class as _register_class
-_register_class("evaluator", "reconstruction", AutomatedBenchmarkEvaluator)

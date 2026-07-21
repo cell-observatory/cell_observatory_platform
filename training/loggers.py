@@ -41,6 +41,7 @@ from cell_observatory_platform.utils.context import (
 from torchtitan.tools import utils
 from torchtitan.distributed.parallel_dims import ParallelDims
 from torchtitan.components.metrics import DeviceMemoryMonitor, build_device_memory_monitor
+from cell_observatory_platform.utils.config import registers_flat_as
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -409,6 +410,7 @@ class EventWriter:
         pass
 
 
+@registers_flat_as("event_writer", "local")
 class LocalEventWriter(EventWriter):
     """
     A local event writer that writes events to disk.
@@ -479,6 +481,7 @@ class LocalEventWriter(EventWriter):
         pass
 
 
+@registers_flat_as("event_writer", "wandb")
 class WandBEventWriter(EventWriter):
     def __init__(
         self,
@@ -769,7 +772,3 @@ class MetricsProcessor:
 # `event_recorder=` override, exactly as the old `instantiate(cfg, event_recorder=...)`
 # did — a non-mutating splat. EventWriterList and EventRecorder are single-impl
 # infra (not swap points, §10.4) and stay on Hydra `instantiate`.
-from cell_observatory_platform.utils.config import register_flat_class as _register_flat_class
-
-_register_flat_class("event_writer", "local", LocalEventWriter)
-_register_flat_class("event_writer", "wandb", WandBEventWriter)

@@ -20,6 +20,7 @@ from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedd
 from cell_observatory_platform.training.helpers import get_patch_sizes, make_timing_metric
 from cell_observatory_platform.utils.shape_format import get_spatial_shape
 from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import registers_as
 from cell_observatory_platform.data.databases.local_metadata_store import OBJECT_SET, is_object_role
 
 
@@ -96,6 +97,7 @@ def partition_channels(channel_mapping, num_channels, target_roles):
 # --------------------------------------------------------------------------- #
 
 
+@registers_as("preprocessor", "ray")
 class RayPreprocessor(torch.nn.Module):
     def __init__(
         self,
@@ -819,6 +821,7 @@ class BaseFinetunePreprocessor(RayPreprocessor):
 # --------------------------------------------------------------------------- #
 
 
+@registers_as("preprocessor", "denoising")
 class DenoisingPreprocessor(BaseFinetunePreprocessor):
     """
     Task: denoising
@@ -930,6 +933,7 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
 # --------------------------------------------------------------------------- #
 
 
+@registers_as("preprocessor", "channel_split")
 class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
     """
     Task: "channel_split"
@@ -1024,6 +1028,7 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
 # --------------------------------------------------------------------------- #
 
 
+@registers_as("preprocessor", "upsample")
 class UpsamplePreprocessor(BaseFinetunePreprocessor):
     """
     Task: upsample
@@ -1170,6 +1175,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
 # --------------------------------------------------------------------------- #
 
 
+@registers_as("preprocessor", "instance_segmentation")
 class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
     """
     Task: instance segmentation
@@ -1496,6 +1502,7 @@ def build_semantic_targets(target: dict, semantic_classes) -> tuple[dict, list[s
     return {"masks": masks, "labels": labels}, resolved
 
 
+@registers_as("preprocessor", "semantic_segmentation")
 class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
     """
     Task: semantic segmentation
@@ -1746,6 +1753,7 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
 # Object Detection task
 # --------------------------------------------------------------------------- #
 
+@registers_as("preprocessor", "object_detection")
 class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
     """
     Task: object detection
@@ -1939,6 +1947,7 @@ class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
 # --------------------------------------------------------------------------- #
 
 
+@registers_as("preprocessor", "sam2_video")
 class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
     """
     Preprocessor for prompt-based video segmentation/tracking.
@@ -2333,18 +2342,3 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
                 "metrics": sam2_metrics,
             },
         }
-
-# --- registry: preprocessors are Hydra-instantiated (recursive transforms/mask_generator) ---
-from cell_observatory_platform.utils.config import register_class as _register_class
-
-for _pp_name, _pp_cls in {
-    "ray": RayPreprocessor,
-    "denoising": DenoisingPreprocessor,
-    "channel_split": ChannelSplitPreprocessor,
-    "upsample": UpsamplePreprocessor,
-    "instance_segmentation": InstanceSegmentationPreprocessor,
-    "semantic_segmentation": SemanticSegmentationPreprocessor,
-    "object_detection": ObjectDetectionPreprocessor,
-    "sam2_video": SAM2VideoPreprocessor,
-}.items():
-    _register_class("preprocessor", _pp_name, _pp_cls)

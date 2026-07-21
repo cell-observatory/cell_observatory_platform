@@ -23,8 +23,10 @@ from cell_observatory_platform.evaluation.metrics import build_metrics
 
 
 from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import registers_as
 
 
+@registers_as("evaluator", "pretrain")
 class PretrainEvaluator(DatasetEvaluator):
     """Accumulate pretraining losses for MAE/JEPA under ``job_type=test``.
 
@@ -81,7 +83,3 @@ class PretrainEvaluator(DatasetEvaluator):
 
     # evaluate() is inherited from DatasetEvaluator (gather no-op + aggregate
     # over the accumulated per-loss TrainLosses).
-
-
-from cell_observatory_platform.utils.config import register_class as _register_class
-_register_class("evaluator", "pretrain", PretrainEvaluator)

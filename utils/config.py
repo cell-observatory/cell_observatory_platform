@@ -55,6 +55,27 @@ def register_class(role: str, name: str, cls: type) -> None:
     REGISTRY.register(role, name)(lambda cfg=None, **ov: instantiate_as(cls, cfg, **ov))
 
 
+def registers_as(role: str, name: str):
+    """Class-decorator form of :func:`register_class`; returns the class UNCHANGED.
+
+    Keeps the registry name next to the class it names::
+
+        @registers_as("preprocessor", "sam2_video")
+        class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
+            ...
+
+    Registration happens at class-definition time, so it fires exactly when the module
+    is imported -- same reachability as a bottom-of-file registration table.
+
+    For components whose ``__init__`` takes unpacked config kwargs. Use
+    :func:`registers_flat_as` when the config node must stay pristine.
+    """
+    def _decorator(cls: type) -> type:
+        register_class(role, name, cls)
+        return cls
+    return _decorator
+
+
 def register_flat_class(role: str, name: str, cls: type) -> None:
     """Register ``cls`` under ``(role, name)`` with a NON-mutating splat factory.
 
@@ -71,3 +92,17 @@ def register_flat_class(role: str, name: str, cls: type) -> None:
             return cls(**overrides)
         return cls(**build_kwargs(cfg), **overrides)
     REGISTRY.register(role, name)(_factory)
+
+
+def registers_flat_as(role: str, name: str):
+    """Class-decorator form of :func:`register_flat_class`; returns the class UNCHANGED.
+
+    Non-mutating splat: the config node keeps no injected ``_target_``, so it can be
+    re-read later by ``name`` -- the wd-scheduler cross-check rescans
+    ``config.hooks.hooks_list`` after the hooks were already built. Use for hooks and
+    event writers.
+    """
+    def _decorator(cls: type) -> type:
+        register_flat_class(role, name, cls)
+        return cls
+    return _decorator

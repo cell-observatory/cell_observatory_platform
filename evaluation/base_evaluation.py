@@ -5,8 +5,10 @@ from cell_observatory_platform.evaluation.metrics import build_metrics
 
 
 from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import registers_as
 
 
+@registers_as("evaluator", "base")
 class BaseEvaluator(DatasetEvaluator):
     """
     Evaluate model loss on validation dataset.
@@ -42,7 +44,3 @@ class BaseEvaluator(DatasetEvaluator):
     # evaluate() is inherited from DatasetEvaluator: it gathers (no-op for
     # TrainLosses) + aggregates each metric into a flat dict passed to the event
     # writer before writing to the backend (e.g. TensorBoard, WandB, disk).
-
-
-from cell_observatory_platform.utils.config import register_class as _register_class
-_register_class("evaluator", "base", BaseEvaluator)

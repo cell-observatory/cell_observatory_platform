@@ -43,6 +43,7 @@ from cell_observatory_platform.models.ops.losses import (
 from cell_observatory_platform.training.helpers import get_patch_sizes
 from cell_observatory_platform.utils.context import get_world_size, is_torch_dist_initialized, process_rank
 from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import registers_flat_as
 
 
 # adapted from: https://github.com/pytorch/torchtitan/torchtitan/components/loss.py
@@ -1684,6 +1685,7 @@ class KoLeoLossDistributed(nn.Module):
         return loss
 
 
+@registers_flat_as("criterion", "sam")
 class MultiStepMultiMasksAndIousLoss(nn.Module):
     def __init__(
         self,
@@ -2273,6 +2275,3 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
 # The SAM2 criterion config is flat and the class is the factory, so this is a
 # plain non-mutating splat. `plain_detr` above stays a hand-written factory: it
 # derives its weight_dict from runtime values (dec_layers, two_stage, one2many).
-from cell_observatory_platform.utils.config import register_flat_class as _register_flat_class
-
-_register_flat_class("criterion", "sam", MultiStepMultiMasksAndIousLoss)

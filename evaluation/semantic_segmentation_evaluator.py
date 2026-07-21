@@ -16,8 +16,10 @@ import cell_observatory_platform.evaluation.evaluate_postprocess as ep
 from cell_observatory_platform.evaluation.evaluator import DatasetEvaluator
 from cell_observatory_platform.evaluation.metrics import build_metrics
 from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import registers_as
 
 
+@registers_as("evaluator", "semantic_segmentation")
 class SemanticSegmentationEvaluator(DatasetEvaluator):
     """Mean-IoU semantic-segmentation evaluator.
 
@@ -92,7 +94,3 @@ class SemanticSegmentationEvaluator(DatasetEvaluator):
     # evaluate() is inherited from DatasetEvaluator: gather() pools the per-class
     # intersection/union across ranks (no-op at world_size==1) and aggregate()
     # computes a single global Jaccard, keyed by result_name.
-
-
-from cell_observatory_platform.utils.config import register_class as _register_class
-_register_class("evaluator", "semantic_segmentation", SemanticSegmentationEvaluator)

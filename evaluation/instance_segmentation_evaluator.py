@@ -20,8 +20,10 @@ from cell_observatory_platform.evaluation.metrics import (
 from cell_observatory_platform.evaluation.mask_source import build_mask_source
 
 from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import registers_as
 
 
+@registers_as("evaluator", "instance_segmentation")
 class InstanceSegmentationEvaluator(DatasetEvaluator):
     """Per-image streaming evaluator for MaskDINO instance segmentation.
 
@@ -429,7 +431,3 @@ def _pairwise_mask_iou_3d_bool(masks_a: torch.Tensor, masks_b: torch.Tensor) -> 
     sum_b = b.sum(dim=1, keepdim=True)
     union = sum_a + sum_b.t() - inter
     return inter / torch.clamp(union, min=1e-12)
-
-
-from cell_observatory_platform.utils.config import register_class as _register_class
-_register_class("evaluator", "instance_segmentation", InstanceSegmentationEvaluator)

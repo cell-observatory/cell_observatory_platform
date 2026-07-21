@@ -28,8 +28,10 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import registers_as
 
 
+@registers_as("inferencer", "inferencer_worker")
 class InferencerWorker:
     def __init__(
         self,
@@ -510,7 +512,3 @@ class InferencerWorker:
         barrier()
         if errors:
             raise RuntimeError(f"{errors}\n{len(errors)}/{n_tasks} save/viz tasks failed.")
-
-
-from cell_observatory_platform.utils.config import register_class as _register_class
-_register_class("inferencer", "inferencer_worker", InferencerWorker)
