@@ -57,6 +57,9 @@ from cell_observatory_platform.data.datasets.buffers import BufferManager, init_
 from cell_observatory_platform.inference.saver import SaveWorker
 from cell_observatory_platform.inference.visualizer import VizWorker
 
+from cell_observatory_platform.utils.registry import REGISTRY
+import cell_observatory_platform.utils._register  # noqa: F401  walk-imports + populates REGISTRY
+
 from torchtitan.tools import utils
 from torchtitan.components.ft import FTManager
 from torchtitan.distributed import ParallelDims 
@@ -126,7 +129,9 @@ class BaseTrainer:
     def _build_event_writers(w_cfgs, recorder):
         writers = []
         for writer_cfg in w_cfgs:
-            writer = instantiate(_ensure_full_path(writer_cfg), event_recorder=recorder)
+            writer = REGISTRY.build(
+                "event_writer", writer_cfg.name, writer_cfg, event_recorder=recorder
+            )
             writers.append(writer)
         return writers
 
@@ -134,15 +139,9 @@ class BaseTrainer:
     def _build_hooks(h_cfgs, event_writers):
         hooks = []
         for hc in h_cfgs:
-            if hc._target_ and not hc._target_.startswith("cell_observatory_platform."):
-                hc._target_ = f"cell_observatory_platform.{hc._target_}"
-
-            # inject writers into PeriodicWriter hook
-            if hc._target_.endswith(".PeriodicWriter"):
-                hook = instantiate(hc, writers=event_writers)
-            else:
-                hook = instantiate(hc)
-            hooks.append(hook)
+            # inject writers into the PeriodicWriter hook
+            overrides = {"writers": event_writers} if hc.name == "periodic_writer" else {}
+            hooks.append(REGISTRY.build("hook", hc.name, hc, **overrides))
         return hooks
 
     def register_hooks(self, hooks: List[Optional[HookBase]]) -> None:
@@ -356,8 +355,7 @@ class EpochBasedTrainer(BaseTrainer):
         )
 
         # initialize model
-        BUILD = get_method(cfg.models.BUILD)
-        model = BUILD(cfg)
+        model = REGISTRY.build("model", cfg.models.model, cfg)
 
         # NOTE: we are moving model weight initialization back into each model class
         #       this may be problematic as we scale to larger models. However, 
@@ -379,7 +377,7 @@ class EpochBasedTrainer(BaseTrainer):
         #     )
         #     self.model_param_count, self.num_flops_per_token = -1, -1
 
-        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+        self.preprocessor = REGISTRY.build("preprocessor", cfg.datasets.preprocessor.name, cfg.datasets.preprocessor)
 
         # FIXME: not always desirable to force load model weights from this checkpoint
         # initialize checkpoint manager
@@ -423,7 +421,7 @@ class EpochBasedTrainer(BaseTrainer):
         self.opt, _ = get_optimizer(
             params=param_groups,
             config=cfg,
-            optimizer=cfg.optimizers.opt,
+            optimizer=cfg.optimizers.name,
             steps_per_epoch=self.steps_per_epoch
         )
         self.schedulers, self.wd_schedulers = get_schedulers(
@@ -483,7 +481,7 @@ class EpochBasedTrainer(BaseTrainer):
                 raise NotImplementedError(f'{self.schedulers.update_type=} is not supported')
 
         # initialize evaluator
-        self.evaluator = instantiate(cfg.evaluation.evaluator)
+        self.evaluator = REGISTRY.build("evaluator", cfg.evaluation.evaluator.name, cfg.evaluation.evaluator)
 
     def run(self):
         """
@@ -573,22 +571,9 @@ class EpochBasedTrainer(BaseTrainer):
         Run validation.
         """
         # In-loop validation runs the training forward pass
-        # (`self.model(data_sample)` -> loss + outputs) and feeds those outputs
-        # to the evaluator. An evaluator that declares `predict_method` (e.g.
-        # InstanceSegmentationEvaluator -> predict_for_eval/AMG) expects model
-        # prediction output, not forward outputs, and would fail deep in
-        # process(). Those belong to job_type=test (TestTrainer.run_test_step
-        # dispatches predict_method). Fail fast with guidance.
-        _predict_method = getattr(self.evaluator, "predict_method", None)
-        if _predict_method is not None:
-            raise TypeError(
-                f"In-loop validation runs the model forward pass, but evaluator "
-                f"{type(self.evaluator).__name__} declares "
-                f"predict_method={_predict_method!r} (a prediction-based "
-                f"evaluator). Use a loss-based evaluator (e.g. BaseEvaluator) for "
-                f"validation, or run this evaluator under job_type=test."
-            )
-
+        # (`self.model(data_sample)` -> loss + outputs) and feeds those outputs to
+        # a loss-based evaluator (e.g. BaseEvaluator). Prediction-based evaluators
+        # consume `model.evaluate_step` outputs and belong to job_type=test.
         self.before_validation()
         # technically, contexts could be a hook
         # but kept here for clarity
@@ -684,13 +669,12 @@ class TestTrainer(BaseTrainer):
         self.test_dataloader, _, _, self.host_buffer_actor, self.device_buffer, _ = get_dataloader(cfg)
 
         # initialize model
-        BUILD = get_method(cfg.models.BUILD)
-        model = BUILD(cfg)
+        model = REGISTRY.build("model", cfg.models.model, cfg)
 
         with torch.no_grad():
             model._init_model_weights(buffer_device="cuda")
 
-        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+        self.preprocessor = REGISTRY.build("preprocessor", cfg.datasets.preprocessor.name, cfg.datasets.preprocessor)
 
         # initialize checkpoint manager and load weights into the unwrapped
         # model (no DeepSpeed engine wrapper at inference time, so we load
@@ -722,12 +706,13 @@ class TestTrainer(BaseTrainer):
         self.model.eval()
 
         # initialize evaluator
-        self.evaluator = instantiate(cfg.evaluation.evaluator)
+        self.evaluator = REGISTRY.build("evaluator", cfg.evaluation.evaluator.name, cfg.evaluation.evaluator)
+
 
     def test(self):
         """
         Run model testing: iterate the test dataloader, call
-        ``model.predict`` per step, and aggregate metrics via the evaluator.
+        ``model.evaluate_step`` per step, and aggregate metrics via the evaluator.
         """
         self.before_test()
 
@@ -755,28 +740,14 @@ class TestTrainer(BaseTrainer):
 
     def run_test_step(self, idx: int, data_sample: Sequence[dict]) -> None:
         """
-        Iterate one test step: run prediction and feed postprocessed outputs to
-        the evaluator. ``loss_dict`` is ``None`` because ``model.predict`` does
-        not compute losses; evaluators that require losses must guard on this.
-
-        Evaluators may opt into a different model entrypoint by setting a
-        ``predict_method`` class/instance attribute (string method name on the
-        model). For example, :class:`InstanceSegmentationEvaluator` sets
-        ``predict_method = "predict_for_eval"`` so it receives raw mask
-        intermediates and can drive chunked materialization itself, instead of
-        the collapsed label-map dict that ``model.predict`` returns. Defaults
-        to ``"predict"``, preserving legacy behavior for all other evaluators.
+        Iterate one test step: run ``model.evaluate_step`` and feed its
+        postprocessed outputs to the evaluator. ``loss_dict`` is ``None`` because
+        ``evaluate_step`` does not compute losses; evaluators that require losses
+        must guard on this.
         """
         self.before_test_step()
 
-        predict_method = getattr(self.evaluator, "predict_method", "predict")
-        predict_fn = getattr(self.model, predict_method, None)
-        if predict_fn is None:
-            raise AttributeError(
-                f"evaluator requested model.{predict_method} but model "
-                f"{type(self.model).__name__} does not implement it"
-            )
-        preds = predict_fn(data_sample)
+        preds = self.model.evaluate_step(data_sample)
         self.evaluator.process(data_sample, preds, loss_dict=None)
 
         # for short testing runs:
@@ -814,15 +785,14 @@ class Inferencer(BaseTrainer):
         )
 
         # initialize model
-        BUILD = get_method(cfg.models.BUILD)
-        ray.logger.info(f"Building model with BUILD: {BUILD}")
-        model = BUILD(cfg)
+        ray.logger.info(f"Building model {cfg.models.model!r} via REGISTRY")
+        model = REGISTRY.build("model", cfg.models.model, cfg)
 
         with torch.no_grad():
             model._init_model_weights(buffer_device="cuda")
 
         ray.logger.info("initializing preprocessor...")
-        self.preprocessor = instantiate(cfg.datasets.preprocessor)
+        self.preprocessor = REGISTRY.build("preprocessor", cfg.datasets.preprocessor.name, cfg.datasets.preprocessor)
 
         # initialize checkpoint manager and
         # load model state from checkpoint
@@ -867,6 +837,12 @@ class Inferencer(BaseTrainer):
         model_output_metadata = self.model.get_output_metadata()
         with open_dict(cfg.inference.inferencer_worker.outputs_metadata):
             cfg.inference.inferencer_worker.outputs_metadata.merge_with(model_output_metadata)            
+        # Tile-mode inference restores predictions to the full original tile, so the
+        # dense save/viz buffers must be sized for that. init_output_memory_pools owns
+        # the enlargement; here we only feed it the DB stats (None => full-tile model).
+        _restore_stats = getattr(
+            dataloader_config.get("sample_store_desc", None), "stats", None
+        ) if isinstance(dataloader_config, dict) else None
         ray.logger.info(f"Inference outputs_metadata merged:\n{cfg.inference.inferencer_worker.outputs_metadata}")
 
         ray.logger.info("initializing output memory pools...")
@@ -878,6 +854,8 @@ class Inferencer(BaseTrainer):
             viz=cfg.inference.inferencer_worker.vizualize_outputs,
             save_buffer_capacity=cfg.datasets.buffer_capacity,
             viz_buffer_capacity=cfg.datasets.buffer_capacity,
+            layout=cfg.dataset_layout_order.upper(),
+            restore_stats=_restore_stats,
         )
         if cfg.inference.inferencer_worker.save_outputs:
             ray.logger.info("initializing save worker...")
@@ -905,7 +883,9 @@ class Inferencer(BaseTrainer):
         _timepoint_idxs_for_save = (
             [int(x) for x in _tp_cfg] if _tp_cfg is not None else None
         )
-        self.inferencer_worker: InferencerWorker = instantiate(
+        self.inferencer_worker: InferencerWorker = REGISTRY.build(
+            "inferencer",
+            cfg.inference.inferencer_worker.name,
             cfg.inference.inferencer_worker,
             model=self.model,
             buffer_manager=self.buffer_manager,
@@ -1070,7 +1050,7 @@ class Inferencer(BaseTrainer):
 #             )
 #             self.model_param_count, self.num_flops_per_token = -1, -1
 
-#         self.preprocessor = instantiate(cfg.datasets.preprocessor)
+#         self.preprocessor = REGISTRY.build("preprocessor", cfg.datasets.preprocessor.name, cfg.datasets.preprocessor)
 
 #         self.seq_len = int(self.preprocessor.seq_len)
 #         assert (
@@ -1165,7 +1145,7 @@ class Inferencer(BaseTrainer):
 #             num_flops_per_token=self.num_flops_per_token,
 #             model_param_count=self.model_param_count
 #         )
-#         self.evaluator = instantiate(cfg.evaluation.evaluator)
+#         self.evaluator = REGISTRY.build("evaluator", cfg.evaluation.evaluator.name, cfg.evaluation.evaluator)
 
 #         # if resume job, gather the state from the checkpoint
 #         # else intialize outdir, logdir, and checkpointdir

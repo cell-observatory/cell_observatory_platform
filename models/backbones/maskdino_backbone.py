@@ -43,8 +43,7 @@ class MaskDinoBackbone(nn.Module):
     ):
         super().__init__()
 
-        BUILD_BACKBONE = get_method(backbone_args["BUILD"])
-        self.backbone = BUILD_BACKBONE(backbone_args)
+        self.backbone = REGISTRY.build("backbone", backbone_args.name, backbone_args)
 
         self.blocks_to_train = blocks_to_train
 
@@ -59,8 +58,7 @@ class MaskDinoBackbone(nn.Module):
 
         if adapter_args is not None:
             self.with_backbone_adapter = True
-            BUILD_ADAPTER = get_method(adapter_args["BUILD"])
-            self.adapter = BUILD_ADAPTER(adapter_args)
+            self.adapter = REGISTRY.build("adapter", adapter_args.name, adapter_args)
         else:
             # TODO: implement logic to handle positional encodings without adapter
             self.with_backbone_adapter = False
@@ -147,6 +145,10 @@ class MaskDinoBackbone(nn.Module):
             return self._to_feature_dict(feats_list)
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("backbone", "maskdino")
 def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> nn.Module:
     out_layers = backbone_wrapper_args.get("out_layers", None)
     if out_layers is not None:

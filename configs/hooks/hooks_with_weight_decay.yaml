@@ -30,27 +30,27 @@ defaults:
 nsys_env: null
 
 hooks_list:
-  - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
-  - _target_: cell_observatory_platform.training.hooks.SamplerSetter
-  - _target_: cell_observatory_platform.training.hooks.LRScheduler
+  - name: anomaly_detector
+  - name: sampler_setter
+  - name: lr_scheduler
     backend: DEEPSPEED
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
-  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: periodic_checkpointer
     file_prefix: latest_model
     backend: DEEPSPEED
-  - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+  - name: best_checkpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-  - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+  - name: best_metric_saver
     metric_name: ${evaluation.val_metric}
     compare_fn: ${evaluation.val_mode}
     eval_after_validation: true
-  - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
+  - name: weight_decay_schedule
     backend: DEEPSPEED
-  # - _target_: cell_observatory_platform.training.hooks.NsysProfilerHook
+  # - name: nsys_profiler
   #   start_iter: 40
   #   end_iter: 90
-  # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+  # - name: torch_profiler
   #   output_dir: ${loggers.logdir}/profiler
   #   schedule:
   #     skip_first: 1
@@ -62,11 +62,11 @@ hooks_list:
   #     - CUDA
   #     - CPU
   #   save_tensorboard: true
-  # - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
+  # - name: torch_memory_stats
   #   step_period: 20
   #   epoch_period: 1
   #   logdir: ${loggers.logdir}
-  # - _target_: cell_observatory_platform.training.hooks.EarlyStopHook
+  # - name: early_stop
   #   patience: 10
   #   stopping_threshold: 0.01
   #   mode: ${evaluation.val_mode}

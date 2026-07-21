@@ -1,6 +1,6 @@
 # Hiera large multiscale backbone for SAM; 3 scales with q_pool=2
 # backbone_native_channels: Hiera large final stage = 144 * 2^3 = 1152 (dim_mul at each stage boundary)
-BUILD: cell_observatory_platform.models.backbones.sam_backbone.BUILD
+name: sam
 
 backbone_embed_dims:
   - 256

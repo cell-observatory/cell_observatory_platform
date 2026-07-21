@@ -10,7 +10,6 @@ defaults:
   - /datasets/preprocessor/ray_preprocessor  # Loads configs/datasets/preprocessor/ray_preprocessor.yaml
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
   - /datasets/preprocessor/semantic_segmentation_preprocessor # configs/datasets/preprocessor/semantic_segmentation_preprocessor.yaml
-  - /models/BUILD_mask2former                  # configs/models/BUILD_mask2former.yaml
   - /models/meta_arch/mask2former/mae_large_vitdet    # configs/models/mask2former/mae_large_vitdet.yaml
   - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
   - /models/backbones/mask2former_backbone/mask2former_backbone_w_vitdet   # configs/models/mask2former_backbone/mask2former_backbone.yaml
@@ -191,10 +190,10 @@ schedulers:
 # hooks
 hooks:
   hooks_list:
-  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.LRScheduler
+  - name: free_device_buffer
+  - name: lr_scheduler
     backend: DEEPSPEED
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
-  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  - _target_: cell_observatory_platform.training.hooks.InferenceMetricsHook
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: inference_metrics
     log_every_n_steps: 10

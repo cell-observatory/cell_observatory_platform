@@ -1,6 +1,6 @@
 # Hiera large backbone for decoders (SAM/MaskDINO/etc.)
 # With q_pool=2: returns 3 scales (intermediates[:2] + final); backbone_embed_dims needs 3 entries
-BUILD: cell_observatory_platform.models.backbones.masked_hiera_encoder.BUILD
+name: masked_hiera
 
 input_fmt: ${dataset_layout_order}
 input_shape: ${datasets.train_shape}

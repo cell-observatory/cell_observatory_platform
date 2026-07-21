@@ -17,6 +17,7 @@ from cell_observatory_platform.models.layers.matchers import Mask2FormerHungaria
 from cell_observatory_platform.training.helpers import get_input_data, get_nparams_and_flops
 from cell_observatory_platform.training.losses import Mask2FormerSetLoss
 from cell_observatory_platform.utils.shape_format import get_spatial_shape
+from cell_observatory_platform.models.meta_arch import utils as mo
 from cell_observatory_platform.inference.utils import reduce_queries_to_semantic_map
 
 
@@ -42,70 +43,30 @@ class Mask2Former(nn.Module):
         self.num_classes = num_classes
         self.topk_queries = topk_queries
         self.spatial_shape = get_spatial_shape(input_shape, input_fmt)
-        default_output_metadata = DictConfig({
-            "tensor_info": {
-                "pred_masks": {
-                    "shape": (*self.spatial_shape, self.num_classes),
-                    # Soft semantic maps are floats in [0, 1] from reduce_queries_to_semantic_map;
-                    # uint16 cast in the inferencer would truncate them to 0 (black PDFs / volumes).
-                    "dtype": "float16",
-                },
-                "pred_classes": {
-                    "shape": (self.num_classes,),
-                    "dtype": "float32",
-                },
-                "masks_labelmap": {
-                    "shape": (*self.spatial_shape, 1),
-                    "dtype": "uint16",
-                },
-                "class_labels": {
-                    "shape": (self.num_classes,),
-                    "dtype": "uint16",
-                },
+        # Inference contract (see meta_arch/utils.py). masks_labelmap is the saved
+        # semantic artifact (argmax+1 / bg-0). pred_masks is the soft probability
+        # map (kept float16 so the inferencer cast doesn't truncate to 0); kind=dense
+        # so it routes to the save path only if a config lists it.
+        self.output_metadata = mo.output_metadata(
+            masks_labelmap=mo.semantic_map(self.spatial_shape),          # (Z,Y,X,1) uint16
+            pred_masks={
+                "shape": (*self.spatial_shape, self.num_classes),
+                "dtype": "float16",
+                "kind": "dense",
             },
-        })
+            pred_classes={
+                "shape": (self.num_classes,),
+                "dtype": "float32",
+                "kind": "scores",
+            },
+        )
         if output_metadata is not None:
-            default_output_metadata.merge_with(output_metadata)
-        self.output_metadata = default_output_metadata
+            self.output_metadata.merge_with(output_metadata)
 
     @torch.jit.ignore
     def get_output_metadata(self):
         return self.output_metadata
 
-    @torch.jit.ignore
-    def validate_outputs(self, preds: Dict[str, torch.Tensor]) -> None:
-        """Verify that prediction keys and per-sample shapes match tensor_info.
-
-        Raises ``ValueError`` with a detailed message on any mismatch so
-        shape/key bugs surface immediately instead of silently corrupting
-        downstream buffers.
-        """
-        tensor_info = self.output_metadata["tensor_info"]
-        expected_keys = set(tensor_info.keys())
-        actual_keys = set(preds.keys())
-
-        missing = expected_keys - actual_keys
-        extra = actual_keys - expected_keys
-        parts: List[str] = []
-        if missing:
-            parts.append(f"missing keys {missing}")
-        if extra:
-            parts.append(f"unexpected keys {extra}")
-
-        for key in expected_keys & actual_keys:
-            expected_shape = tuple(tensor_info[key]["shape"])
-            actual_shape = tuple(preds[key].shape[1:])  # strip batch dim
-            if actual_shape != expected_shape:
-                parts.append(
-                    f"'{key}' shape mismatch: tensor_info declares "
-                    f"{expected_shape} but got {actual_shape} (batch shape {tuple(preds[key].shape)})"
-                )
-
-        if parts:
-            raise ValueError(
-                "Model output / tensor_info mismatch:\n  " + "\n  ".join(parts)
-            )
-        
     def _init_model_weights(self, buffer_device: str | None = None):
         # TODO: move model inits back into each model class
         # FIXME: add proper weight init logic for Mask2Former
@@ -135,7 +96,7 @@ class Mask2Former(nn.Module):
 
         return losses, outputs
 
-    def predict(self, data_sample: dict, rescale_size: Optional[tuple] = None):
+    def inference_step(self, data_sample: dict, rescale_size: Optional[tuple] = None):
         """
         Forward pass with pred_masks interpolated to target resolution (e.g. original input size).
         Use this for inference/eval when you need masks at 128×256×512 or other full resolution.
@@ -158,23 +119,41 @@ class Mask2Former(nn.Module):
             num_classes=self.num_classes,
             topk_per_image=self.topk_queries,
         )
-        # Get mask label by taking max over channels and assign the class with the highest pixel probability
-        mask_labels = masks_reduced.argmax(dim=-1)  # [B, D, H, W, num_classes] -> [B, D, H, W]
-        mask_labels = mask_labels.unsqueeze(-1)
-        # .max() returns a namedtuple (values, indices); we want the values
-        foreground = (masks_reduced > 0.5).max(dim=-1).values.unsqueeze(-1)  # [B, D, H, W]
-        mask_labels = mask_labels + 1  # shift the labels to start from 1
-        mask_labels = mask_labels * foreground  # remove the background class where foreground is 0
- 
-        
+        # Collapse the per-class channel to a semantic label map (class+1 / bg-0).
+        # masks_reduced is channels-last and already in PROBABILITY space (the
+        # sigmoid lives in reduce_queries_to_semantic_map), hence dim=-1 / 0.5.
+        mask_labels = mo.collapse_to_semantic_map(  # [B,D,H,W,num_classes] -> [B,D,H,W,1]
+            masks_reduced, threshold=0.5, dim=-1,
+        )
+
+        # NOTE: class_labels was a duplicate of pred_classes (both classes_reduced)
+        # and was declared uint16, which truncated the float class probabilities to
+        # 0 on the dtype cast. Dropped; consumers read pred_classes.
         final_output = {
             "pred_masks": masks_reduced,
             "pred_classes": classes_reduced,
             "masks_labelmap": mask_labels,
-            "class_labels": classes_reduced,
         }
         return final_output
-    
+
+    @torch.no_grad()
+    def evaluate_step(
+        self, data_sample: dict, rescale_size: Optional[tuple] = None
+    ) -> List[Dict[str, torch.Tensor]]:
+        """Semantic-segmentation eval entrypoint: per-image ``(D, H, W)`` label maps.
+
+        Reuses :meth:`inference_step` (which already reduces queries to an argmax
+        semantic map using the ``class + 1`` / background ``0`` convention),
+        drops the trailing singleton channel, and returns a per-sample list of
+        dicts (``{"labelmap": (D, H, W) long}``) so
+        :class:`SemanticSegmentationEvaluator` can pair each predicted label map
+        with its ground-truth label map. The trainer dispatches here because the
+        evaluator sets ``predict_method = "evaluate_step"``.
+        """
+        out = self.inference_step(data_sample, rescale_size=rescale_size)
+        lm = out["masks_labelmap"]  # (B, D, H, W, 1) uint16 -- shape guaranteed by the helper
+        return [{"labelmap": lm[b, ..., 0].long()} for b in range(lm.shape[0])]
+
     
     @staticmethod
     def adjust_loss_weight_dict(
@@ -211,12 +190,16 @@ def _extract_kwargs(cfg: Mapping[str, Any], extra_ignores: Optional[List[str]] =
     """
     if isinstance(cfg, DictConfig):
         cfg = OmegaConf.to_container(cfg, resolve=True)
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
     if extra_ignores:
         ignore.update(extra_ignores)
     return {k: v for k, v in cfg.items() if k not in ignore}
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("model", "mask2former")
 def BUILD(cfg: Mapping[str, Any]) -> Mask2Former:
     """
     Factory for Mask2Former using nested cfg dicts.
@@ -236,13 +219,8 @@ def BUILD(cfg: Mapping[str, Any]) -> Mask2Former:
     # ----------------------------------------------------
 
     bw_cfg = model_cfg["backbone_wrapper_args"]
-    build_backbone_wrapper = get_method(bw_cfg.BUILD)
-
     adapter_cfg = model_cfg.get("adapter_args", None)
-    if adapter_cfg is not None:
-        backbone = build_backbone_wrapper(bw_cfg, adapter_cfg)
-    else:
-        backbone = build_backbone_wrapper(bw_cfg, None)
+    backbone = REGISTRY.build("backbone", bw_cfg.name, bw_cfg, adapter_args=adapter_cfg)
 
     # ----------------------------------------------------
     # 3) Pixel decoder (Mask2FormerPixelDecoder)

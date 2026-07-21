@@ -407,7 +407,11 @@ class MaskedHieraPredictor(nn.Module):
         return self.decoder.get_num_layers()
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("head", "hiera_decoder")
 def BUILD(cfg) -> "MaskedHieraPredictor":
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
     kwargs = {k: v for k, v in cfg.items() if k not in ignore}
     return MaskedHieraPredictor(**kwargs)

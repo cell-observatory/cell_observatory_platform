@@ -1,4 +1,4 @@
-_target_: cell_observatory_platform.models.layers.preprocessor.UpsamplePreprocessor
+name: upsample
 
 mode: upsample_spacetime
 with_masking: true

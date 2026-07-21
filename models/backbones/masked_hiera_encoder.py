@@ -327,7 +327,11 @@ class MaskedHieraEncoder(nn.Module):
             return x, patches
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("backbone", "masked_hiera")
 def BUILD(cfg) -> "MaskedHieraEncoder":
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
     kwargs = {k: v for k, v in cfg.items() if k not in ignore}
     return MaskedHieraEncoder(**kwargs)

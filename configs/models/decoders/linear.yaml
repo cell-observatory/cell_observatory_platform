@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.heads.linear_head.BUILD
+name: linear
 
 in_dim: null
 output_dim: null

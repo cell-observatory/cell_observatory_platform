@@ -1,4 +1,4 @@
-opt: lion
+name: lion
 lr: 5e-4 # initial learning rate
 wd: 5e-5 # initial weight decay
 ld: null # optional layer decay

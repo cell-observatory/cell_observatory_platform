@@ -1,4 +1,4 @@
-type: warmup_stable_decay
+name: warmup_stable_decay
 epochs: 500
 warmup: 10
 cooldown: 50

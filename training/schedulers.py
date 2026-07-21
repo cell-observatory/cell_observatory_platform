@@ -24,6 +24,7 @@ from torch.distributed.checkpoint.stateful import Stateful
 from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 
 from cell_observatory_platform.training.optimizers import OptimizersContainer
+from cell_observatory_platform.utils.registry import REGISTRY
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
@@ -79,67 +80,83 @@ def _default_param_groups(model: nn.Module, weight_decay: float) -> List[Dict]:
     return groups
 
 
+# --- Registry -------------------------------------------------------------- #
+# Each LR schedule is a config-selected swap point (`config.schedulers.name`). The
+# factory receives the FULL config (the schedule bodies read both `config.schedulers.*`
+# and `config.optimizers.lr`) plus the runtime `opt=`, `steps_per_epoch=`, `decay=`
+# overrides. 
+
+@REGISTRY.register("scheduler", "fixedlr")
+def _build_fixedlr(config, *, opt, steps_per_epoch, decay):
+    scheduler = LinearLR(
+        opt,
+        start_factor=1.0,
+        end_factor=1.0,
+        total_iters=config.schedulers.epochs,
+    )
+    logger.info(f"Training steps: [{steps_per_epoch * config.schedulers.epochs}]")
+    return scheduler
+
+
+@REGISTRY.register("scheduler", "warmup_stable_decay")
+def _build_warmup_stable_decay(config, *, opt, steps_per_epoch, decay):
+    return WarmupStableDecaySchedule(
+        optimizer=opt,
+        warmup_steps=config.schedulers.warmup * steps_per_epoch,
+        anneal_steps=config.schedulers.cooldown * steps_per_epoch,
+        T_max=config.schedulers.epochs * steps_per_epoch,
+        start_lr=config.schedulers.warmup_min_ratio * config.optimizers.lr,
+        ref_lr=config.optimizers.lr,
+        final_lr=config.schedulers.final_lr_ratio * config.optimizers.lr,
+        update_type=config.schedulers.update_type,
+    )
+
+
+@REGISTRY.register("scheduler", "cosine")
+def _build_cosine(config, *, opt, steps_per_epoch, decay):
+    decay_epochs = config.schedulers.epochs - (config.schedulers.warmup + config.schedulers.cooldown)
+    total_steps = config.schedulers.epochs * steps_per_epoch
+    warmup_steps = config.schedulers.warmup * steps_per_epoch
+    cooldown_steps = config.schedulers.cooldown * steps_per_epoch
+    decay_steps = total_steps - (warmup_steps + cooldown_steps)
+
+    cos_min_lr = config.schedulers.cos_min_ratio * config.optimizers.lr
+    warmup_min_lr = config.schedulers.warmup_min_ratio * config.optimizers.lr
+
+    logger.info("-" * 80)
+    logger.info(
+        f"Epochs: {config.schedulers.epochs} = "
+        f"[{config.schedulers.warmup} warmup + {decay_epochs} decay + {config.schedulers.cooldown} cooldown]\n"
+        f"Steps: {total_steps} = "
+        f"[{warmup_steps} warmup + {decay_steps} decay + {cooldown_steps} cooldown]\n"
+        f"LR: {config.optimizers.lr} = [{warmup_min_lr=},  {cos_min_lr=}]"
+    )
+    logger.info("-" * 80)
+
+    scheduler, num_epochs = create_scheduler_v2(
+        optimizer=opt,
+        sched=decay,
+        num_epochs=config.schedulers.epochs,
+        warmup_epochs=config.schedulers.warmup,
+        cooldown_epochs=config.schedulers.cooldown,
+        decay_epochs=decay_epochs,
+        min_lr=cos_min_lr,
+        warmup_lr=warmup_min_lr,
+    )
+    scheduler.update_type = config.schedulers.update_type
+    return scheduler
+
+
 def get_schedulers(
     opt: torch.optim.Optimizer,
     steps_per_epoch: int,
     config: DictConfig,
     decay: str = 'cosine'
 ):
-    if config.schedulers.type == "fixedlr":
-        scheduler = LinearLR(
-            opt,
-            start_factor=1.0,
-            end_factor=1.0,
-            total_iters=config.schedulers.epochs,
-        )
-        logger.info(f"Training steps: [{steps_per_epoch * config.schedulers.epochs}]")
-
-    elif config.schedulers.type == "warmup_stable_decay":
-        scheduler = WarmupStableDecaySchedule(
-            optimizer=opt,
-            warmup_steps=config.schedulers.warmup * steps_per_epoch,
-            anneal_steps=config.schedulers.cooldown * steps_per_epoch,
-            T_max=config.schedulers.epochs * steps_per_epoch,
-            start_lr=config.schedulers.warmup_min_ratio * config.optimizers.lr,
-            ref_lr=config.optimizers.lr,
-            final_lr=config.schedulers.final_lr_ratio * config.optimizers.lr,
-            update_type=config.schedulers.update_type,
-        )
-
-    elif config.schedulers.type == "cosine":
-        decay_epochs = config.schedulers.epochs - (config.schedulers.warmup + config.schedulers.cooldown)
-        total_steps = config.schedulers.epochs * steps_per_epoch
-        warmup_steps = config.schedulers.warmup * steps_per_epoch
-        cooldown_steps = config.schedulers.cooldown * steps_per_epoch
-        decay_steps = total_steps - (warmup_steps + cooldown_steps)
-
-        cos_min_lr = config.schedulers.cos_min_ratio * config.optimizers.lr
-        warmup_min_lr = config.schedulers.warmup_min_ratio * config.optimizers.lr
-
-        logger.info("-" * 80)
-        logger.info(
-            f"Epochs: {config.schedulers.epochs} = "
-            f"[{config.schedulers.warmup} warmup + {decay_epochs} decay + {config.schedulers.cooldown} cooldown]\n"
-            f"Steps: {total_steps} = "
-            f"[{warmup_steps} warmup + {decay_steps} decay + {cooldown_steps} cooldown]\n"
-            f"LR: {config.optimizers.lr} = [{warmup_min_lr=},  {cos_min_lr=}]"
-        )
-        logger.info("-" * 80)
-
-        scheduler, num_epochs = create_scheduler_v2(
-            optimizer=opt,
-            sched=decay,
-            num_epochs=config.schedulers.epochs,
-            warmup_epochs=config.schedulers.warmup,
-            cooldown_epochs=config.schedulers.cooldown,
-            decay_epochs=decay_epochs,
-            min_lr=cos_min_lr,
-            warmup_lr=warmup_min_lr,
-        )
-        scheduler.update_type = config.schedulers.update_type
-
-    else:
-        raise NotImplementedError(f"Unknown scheduler: {config.schedulers.type}")
+    scheduler = REGISTRY.build(
+        "scheduler", config.schedulers.name, config,
+        opt=opt, steps_per_epoch=steps_per_epoch, decay=decay,
+    )
 
     if config.schedulers.wd_scheduler.enabled:
         wd_scheduler = CosineWeightDecaySchedule(
@@ -149,13 +166,15 @@ def get_schedulers(
             final_wd=config.schedulers.wd_scheduler.final_wd
         )
 
+        # The weight-decay schedule is stepped by WeightDecayScheduleHook; require it
+        # to be present. 
         _hook_is_registered = False
         for hook in list(config.hooks.hooks_list):
-            if hook._target_.endswith("WeightDecayScheduleHook"):
+            if hook.get("name") == "weight_decay_schedule":
                 _hook_is_registered = True
                 break
         if not _hook_is_registered:
-            raise ValueError("WeightDecayScheduleHook not found in "
+            raise ValueError("weight_decay_schedule hook not found in "
                              "config.hooks.hooks_list but wd_scheduler.enabled is True")
 
     else:

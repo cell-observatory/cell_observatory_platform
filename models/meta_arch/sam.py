@@ -15,8 +15,11 @@ import torch.distributed
 import torch.nn.functional as F
 
 from hydra.utils import get_method
+from omegaconf import DictConfig
 from torch.nn.init import trunc_normal_
 
+from cell_observatory_platform.utils.shape_format import get_spatial_shape
+from cell_observatory_platform.models.meta_arch import utils as mo
 from cell_observatory_platform.models.layers.mlp import MLP
 from cell_observatory_platform.models.heads.sam_head import MaskDecoder
 from cell_observatory_platform.models.layers.activation import get_activation
@@ -47,6 +50,7 @@ from cell_observatory_platform.inference.amg import (
     build_all_layer_point_grids_3d,
     calculate_stability_score_3d,
     generate_crop_boxes_3d,
+    postprocess_sam_preds,
     remove_small_regions_3d,
 )
 
@@ -991,11 +995,6 @@ class SAM2Base(torch.nn.Module):
 
 
 class SAM2(SAM2Base):
-    # NOTE: TestTrainer.run_test_step selects the model entrypoint from the
-    # EVALUATOR's `predict_method` attribute (InstanceSegmentationEvaluator sets
-    # it to "predict_for_eval"), not from the model — so SAM2 only needs to
-    # implement predict_for_eval (below); no model-side dispatch attribute.
-
     def __init__(
         self,
         criterion,
@@ -1059,6 +1058,7 @@ class SAM2(SAM2Base):
         min_mask_region_area: int = 0,
         debug: bool = False,
         buffer_device: str = "cuda",
+        output_metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         super().__init__(
@@ -1072,6 +1072,24 @@ class SAM2(SAM2Base):
         )
 
         self.debug = debug
+
+        # Output metadata for AMG (unprompted, class-agnostic) volume inference.
+        # inference_step also returns auxiliary tensors (stability_score, points)
+        # that are not declared here; undeclared keys are simply not saved.
+        spatial_shape = get_spatial_shape(self.input_shape, self.input_fmt)
+        self.spatial_shape = spatial_shape
+        # Inference contract (see meta_arch/utils.py). The SAVEABLE artifact is the
+        # fused instance label map (fixed shape). AMG produces a DYNAMIC object count
+        # N, so the per-object mask stack, boxes, and iou_preds are host-side, never
+        # SHM (dynamic-N rule): boxes/iou_preds are declared with N=None; the raw
+        # per-object stack ("masks") is a variable intermediate left undeclared.
+        self.output_metadata = mo.output_metadata(
+            instance_masks = mo.instance_label_map(spatial_shape),  # (Z,Y,X,1) uint16 — fused, saved
+            boxes          = mo.boxes(None),                        # (N,6) variable, host-side
+            iou_preds      = mo.scores(None),                       # (N,) variable, host-side
+        )
+        if output_metadata is not None:
+            self.output_metadata.merge_with(output_metadata)
 
         self.use_act_ckpt_iterative_pt_sampling = use_act_ckpt_iterative_pt_sampling
         self.forward_backbone_per_frame_for_eval = forward_backbone_per_frame_for_eval
@@ -1636,31 +1654,74 @@ class SAM2(SAM2Base):
 
         return point_inputs, sam_outputs
 
+    @torch.jit.ignore
+    def get_output_metadata(self):
+        return self.output_metadata
+
     @torch.no_grad()
-    def predict(self, data_sample: dict, type: Literal["volume", "video"] = "volume") -> dict:
-        """
-        Automatic mask generation for a single volume.
-        """
-        if type == "volume":
-            vol = data_sample["data_tensor"]
-            assert vol.shape[0] == 1, "predict() expects batch_size=1"
+    def inference_step(self, data_sample: dict) -> dict:
+        """Automatic mask generation (AMG) for a single volume.
 
-            mask_data = self._predict_generate_masks(vol)
-            mask_data.to_numpy()
+        Supported layout/shape (gated below): ``TZYXC`` input only, and a single
+        sample per call (``batch_size == 1``). The AMG pipeline encodes one
+        volume and sweeps a point grid; batching multiple volumes is not
+        supported. ``_predict_generate_masks`` raises for non-``TZYXC`` layouts.
 
-            return {
-                "masks": mask_data["masks"],
-                "boxes": mask_data["boxes"],
-                "iou_preds": mask_data["iou_preds"],
-                "stability_score": mask_data["stability_score"],
-                "points": mask_data["points"],
+        Owns the full output contract: calls ``postprocess_sam_preds`` to
+        normalise mask ranks and fuse per-object masks into ``instance_masks``,
+        and permutes ``data_sample["data_tensor"]`` from channels-first
+        ``(B, C, Z, Y, X)`` to channels-last ``(B, Z, Y, X, C)`` so the
+        inferencer save/viz path receives consistent channels-last data.
+
+        Returns a ``dict`` with at minimum ``masks (N, 1, Z, Y, X)`` and
+        ``instance_masks (1, Z, Y, X, 1)`` plus auxiliary keys (``boxes``,
+        ``iou_preds``, ``stability_score``, ``points``).
+        """
+        vol = data_sample["data_tensor"]
+        assert vol.shape[0] == 1, "inference_step() expects batch_size=1 (AMG encodes one volume per call)"
+
+        mask_data = self._predict_generate_masks(vol)
+        # Empty-detection guard: an image with no AMG masks yields a keyless MaskData,
+        # so mask_data["masks"] below would KeyError. Emit an all-background label map
+        # + empty per-object tensors (still channels-last) so the save path is uniform.
+        if len(mask_data) == 0:
+            zyx = tuple(int(s) for s in vol.shape[-3:])
+            preds = {
+                "instance_masks": torch.zeros((1, *zyx, 1), dtype=torch.uint16, device=vol.device),
+                "boxes": torch.zeros((0, 6), dtype=torch.float32, device=vol.device),
+                "iou_preds": torch.zeros((0,), dtype=torch.float32, device=vol.device),
             }
-        else:
-            # TODO: implement video prediction
-            raise NotImplementedError(f"type {type} not supported yet")
+            dt = data_sample["data_tensor"]
+            if dt.dim() == 5:
+                data_sample["data_tensor"] = dt.permute(0, 2, 3, 4, 1)
+            return preds
+        mask_data.to_numpy()
+
+        raw = {
+            "masks": mask_data["masks"],
+            "boxes": mask_data["boxes"],
+            "iou_preds": mask_data["iou_preds"],
+            "stability_score": mask_data["stability_score"],
+            "points": mask_data["points"],
+        }
+
+        # Normalise mask ranks + fuse per-object masks into an instance label map.
+        # postprocess_sam_preds is a pure preds -> preds helper (no data_tensor arg).
+        preds = postprocess_sam_preds(raw)
+
+        # Permute data_tensor from channels-first (B, C, Z, Y, X) to channels-last
+        # (B, Z, Y, X, C) so the inferencer save/viz path always receives ZYXC/TZYXC.
+        # The channels-first layout was established by SAM2VideoPreprocessor
+        # (_build_flat_img_batch) and is needed by the SAM2 backbone / crop pipeline;
+        # the permute back happens here so the generic inferencer is model-agnostic.
+        dt = data_sample["data_tensor"]
+        if dt.dim() == 5:
+            data_sample["data_tensor"] = dt.permute(0, 2, 3, 4, 1)
+
+        return preds
 
     @torch.no_grad()
-    def predict_for_eval(
+    def evaluate_step(
         self, data_sample: dict, type: Literal["volume", "video"] = "volume"
     ) -> List[Dict[str, Any]]:
         """Unprompted AMG inference for the instance-segmentation evaluator.
@@ -1688,7 +1749,7 @@ class SAM2(SAM2Base):
               score-ranking differs from its pred-iou ranking).
             * ``topk_class_ids``: ``(N,)`` long -- sentinel ``-1`` (class-agnostic).
             * ``boxes``: ``(N, 6)`` float32 xyzxyz at orig volume scale.
-            * ``orig_image_size``: tuple ``(Z, Y, X)`` ints.
+            * ``eval_frame_size``: tuple ``(Z, Y, X)`` ints.
             * ``pred_masks``: ``(N, Z, Y, X)`` bool, CPU -- already-binarized,
               full-resolution AMG masks (the SAM2 mask source).
             * ``iou_preds``: ``(N,)`` float32 -- SAM mask-decoder IoU-head output
@@ -1699,7 +1760,7 @@ class SAM2(SAM2Base):
             raise NotImplementedError(f"type {type} not supported yet")
 
         vol = data_sample["data_tensor"]
-        assert vol.shape[0] == 1, "predict_for_eval() expects batch_size=1"
+        assert vol.shape[0] == 1, "evaluate_step() expects batch_size=1"
 
         was_training = self.training
         self.eval()
@@ -1709,18 +1770,19 @@ class SAM2(SAM2Base):
             if was_training:
                 self.train()
 
-        # orig_image_size MUST equal the true pred_masks resolution, because the
-        # evaluator resizes the GT label_map to it before computing IoU. The AMG
-        # pipeline (_predict_generate_masks) unconditionally uncrops masks to
-        # vol.shape[-3:], so derive orig_size from that directly. Do NOT prefer a
-        # metainfo orig_image_sizes key: if it disagreed with vol.shape[-3:], GT
-        # would be resized to the wrong size and the IoU matmul would crash.
-        orig_size: Tuple[int, int, int] = tuple(int(x) for x in vol.shape[-3:])  # (Z, Y, X)
+        # Evaluate at the PROCESSED resolution (the resized volume the model saw).
+        # eval_frame_size MUST equal the true pred_masks resolution, because the
+        # evaluator compares against GT at this size. The AMG pipeline
+        # (_predict_generate_masks) unconditionally uncrops masks to vol.shape
+        # [-3:], so derive it from that directly. Restoring predictions to
+        # the original tile size is an INFERENCE concern (handled by the
+        # inferencer's post-processor), not an evaluation one.
+        eval_frame_size: Tuple[int, int, int] = tuple(int(x) for x in vol.shape[-3:])  # (Z, Y, X)
 
         # Pull tensors out of MaskData (CPU after the AMG pipeline's to_cpu()).
         n = len(mask_data)
         if n == 0:
-            pred_masks = torch.zeros((0, *orig_size), dtype=torch.bool)
+            pred_masks = torch.zeros((0, *eval_frame_size), dtype=torch.bool)
             iou_preds = torch.zeros((0,), dtype=torch.float32)
             stability = torch.zeros((0,), dtype=torch.float32)
             boxes = torch.zeros((0, 6), dtype=torch.float32)
@@ -1740,11 +1802,12 @@ class SAM2(SAM2Base):
         topk_class_ids = torch.full((n,), -1, dtype=torch.long)
 
         per_sample: List[Dict[str, Any]] = [{
+            "mask_source": "direct",
             "topk_query_indices": topk_query_indices,
             "topk_class_scores": stability,
             "topk_class_ids": topk_class_ids,
             "boxes": boxes,
-            "orig_image_size": orig_size,
+            "eval_frame_size": eval_frame_size,
             "pred_masks": pred_masks,
             "iou_preds": iou_preds,
         }]
@@ -2161,12 +2224,16 @@ def _extract_kwargs(
 ) -> Dict[str, Any]:
     """Drop Hydra/meta keys like ``_target_``, ``BUILD`` and any explicitly
     ignored keys, returning plain kwargs suitable for a constructor call."""
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
     if extra_ignores:
         ignore.update(extra_ignores)
     return {k: v for k, v in cfg.items() if k not in ignore}
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("model", "sam")
 def BUILD(cfg: Mapping[str, Any]) -> SAM2:
     """
     Factory that builds a complete :class:`SAM2` model from a nested
@@ -2178,16 +2245,14 @@ def BUILD(cfg: Mapping[str, Any]) -> SAM2:
     # 0) Criterion
     # ------------------------------------------------------------------
     criterion_cfg = model_cfg["criterion_args"]
-    criterion = get_method(criterion_cfg.BUILD)
-    criterion = criterion(**_extract_kwargs(criterion_cfg))
+    criterion = REGISTRY.build("criterion", criterion_cfg.name, criterion_cfg)
 
     # ------------------------------------------------------------------
     # 1) Image encoder
     # ------------------------------------------------------------------
     bw_cfg = model_cfg["backbone_wrapper_args"]
-    build_backbone = get_method(bw_cfg.BUILD)
     adapter_cfg = model_cfg.get("adapter_args", None)
-    image_encoder = build_backbone(bw_cfg, adapter_cfg)
+    image_encoder = REGISTRY.build("backbone", bw_cfg.name, bw_cfg, adapter_args=adapter_cfg)
 
     # Derive hidden_dim for downstream component defaults
     hidden_dim = image_encoder.backbone_embed_dims[-1]

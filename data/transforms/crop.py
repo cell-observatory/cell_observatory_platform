@@ -14,10 +14,9 @@ from cell_observatory_platform.data.transforms.utils import (
 )
 
 
-# TODO: generalize to N-D
-class Crop3D:
+class Crop:
     """
-    3D cropping transform with probabilistic mode selection.
+    3D/4D cropping transform with probabilistic mode selection.
 
     Modes:
       - "crop": Crop to target size (no resize). If input is smaller than target,
@@ -27,16 +26,18 @@ class Crop3D:
     Selection between modes is probabilistic via mode_probs dict.
 
     Supports:
-      - input_format="ZYXC": tensor shape (B, Z, Y, X, C)
+      - input_format="ZYXC": tensor shape (B, Z, Y, X, C) — full annotations
+      - input_format="TZYXC": tensor shape (B, T, Z, Y, X, C) — dense + label maps only
+        (boxes/masks are rejected at boot by the verifier).
 
     Can be called on a data_sample dict with keys:
       - "data_tensor": image tensor
       - "metainfo": dict containing "targets" (list of dicts with masks/boxes/label_map)
+        and optionally "data_fields" (for shape-dispatch via ShapeTransform).
     """
 
     def __init__(
         self,
-        input_format: str,
         target_spatial_shape: Union[Sequence[int], Tuple[Sequence[int], Sequence[int]]],
         crop_dims: str = "YX",
         crop_type: str = "random",
@@ -49,7 +50,6 @@ class Crop3D:
     ) -> None:
         """
         Args:
-            input_format: Data layout format, currently only "ZYXC" supported.
             target_spatial_shape: Final output spatial shape. Either:
                 - Fixed: (Z, Y, X) or [Z, Y, X]
                 - Range: ((Z_min, Y_min, X_min), (Z_max, Y_max, X_max))
@@ -67,9 +67,6 @@ class Crop3D:
             resize_mode: Interpolation mode for resize operations.
             align_corners: Whether to align corners in resize interpolation.
         """
-        self.input_format = input_format.upper()
-        if self.input_format != "ZYXC":
-            raise ValueError(f"Crop3D only supports input_format='ZYXC', got {input_format}")
 
         # Parse target shape (fixed or range)
         self.target_min, self.target_max, self.random_target = parse_target_shape_range(
@@ -350,17 +347,19 @@ class Crop3D:
         return resized
 
     def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Apply crop transform to data sample.
-
-        Args:
-            data: Dict with "data_tensor" and optionally "metainfo"
-
-        Returns:
-            Dict with cropped/resized "data_tensor" and updated "metainfo"
-        """
+        """dict in -> inspect data_types layout -> dispatch 3D/4D -> dict out."""
+        if not isinstance(data, dict):
+            raise TypeError(f"Crop expects a dict sample, got {type(data)}")
         if "data_tensor" not in data:
-            raise KeyError("Crop3D expects 'data_tensor' in input dict")
+            raise KeyError("Crop expects 'data_tensor' in input dict")
+
+        has_time = data["metainfo"]["data_types"]["data_tensor"]["has_time"]
+        return self._run_4d(data) if has_time else self._run_3d(data)
+
+    def _run_3d(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """ZYXC crop path — full dense + annotation handling (unchanged behavior)."""
+        if "data_tensor" not in data:
+            raise KeyError("Crop expects 'data_tensor' in input dict")
 
         inputs = data["data_tensor"].to(self.dtype)
         metainfo = data.get("metainfo", {})
@@ -399,7 +398,7 @@ class Crop3D:
             inputs, scale_factors = resize_tensor_3d(
                 inputs,
                 target_shape,
-                input_format=self.input_format,
+                input_format="ZYXC",
                 mode=self.resize_mode,
                 align_corners=self.align_corners,
                 dtype=self.dtype,
@@ -411,6 +410,81 @@ class Crop3D:
         metainfo["targets"] = targets
 
         final_shape = tuple(inputs.shape[1:4])
+        metainfo["image_sizes"] = torch.tensor(
+            [list(final_shape)] * B,
+            device=inputs.device,
+            dtype=torch.long,
+        )
+
+        return {"data_tensor": inputs, "metainfo": metainfo}
+
+    def _run_4d(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        TZYXC crop path — dense + label maps only; T axis preserved.
+        NOTE: not fully adapted for all tasks yet.
+        """
+        if "data_tensor" not in data:
+            raise KeyError("Crop expects 'data_tensor' in input dict")
+
+        inputs = data["data_tensor"].to(self.dtype)
+        metainfo = data.get("metainfo", {})
+        targets = metainfo.get("targets", [])
+
+        if inputs.ndim != 6:
+            raise ValueError(
+                f"_run_4d expects 6D tensor (B, T, Z, Y, X, C), got shape {inputs.shape}"
+            )
+
+        B, T, Z, Y, X, C = inputs.shape
+        current_shape = (Z, Y, X)
+
+        # Sample target shape and crop region
+        target_shape = self._sample_target_shape()
+        offsets, crop_size = self._compute_crop_region(current_shape, target_shape)
+        oz, oy, ox = offsets
+        cz, cy, cx = crop_size
+
+        # Crop the spatial axes; T is preserved: (B, T, Z, Y, X, C) → (B, T, cz, cy, cx, C)
+        inputs = inputs[:, :, oz:oz + cz, oy:oy + cy, ox:ox + cx, :]
+
+        # Crop any label_map targets (spatial-only; no boxes/masks at 4D)
+        new_targets = []
+        for tgt in targets:
+            t = dict(tgt)
+            for key in ("label_map",):
+                if key in t and t[key] is not None:
+                    lm = t[key]
+                    # (Z, Y, X) or (T, Z, Y, X) → crop trailing 3 spatial axes
+                    t[key] = lm[..., oz:oz + cz, oy:oy + cy, ox:ox + cx]
+            new_targets.append(t)
+
+        # Handle resize if needed (actual crop smaller than target)
+        actual_shape = (int(inputs.shape[2]), int(inputs.shape[3]), int(inputs.shape[4]))
+        if actual_shape != target_shape:
+            # Fold T into batch for resize_tensor_3d, then unfold
+            folded = inputs.reshape(B * T, cz, cy, cx, C)
+            resized_folded, scale_factors = resize_tensor_3d(
+                folded,
+                target_shape,
+                input_format="ZYXC",
+                mode=self.resize_mode,
+                align_corners=self.align_corners,
+                dtype=self.dtype,
+            )
+            inputs = resized_folded.reshape(B, T, *target_shape, C)
+            # Resize label_map targets
+            new_targets2 = []
+            for tgt in new_targets:
+                t = dict(tgt)
+                if "label_map" in t and t["label_map"] is not None:
+                    t["label_map"] = resize_label_map(t["label_map"], target_shape)
+                new_targets2.append(t)
+            new_targets = new_targets2
+
+        metainfo = dict(metainfo)
+        metainfo["targets"] = new_targets
+
+        final_shape = (int(inputs.shape[2]), int(inputs.shape[3]), int(inputs.shape[4]))
         metainfo["image_sizes"] = torch.tensor(
             [list(final_shape)] * B,
             device=inputs.device,

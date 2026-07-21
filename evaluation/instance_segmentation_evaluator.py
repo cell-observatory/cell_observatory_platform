@@ -1,35 +1,12 @@
-"""Streaming, memory-bounded instance-segmentation evaluator for MaskDINO.
-
-Drives chunked mask materialization (see :class:`MaskMaterializer`) so that
-peak GPU memory is bounded regardless of ``topk_per_image`` and full-resolution
-volume size. Instead of receiving materialized per-image masks like a vanilla
-detection evaluator, this evaluator consumes the *intermediates* returned by
-:meth:`MaskDINO.predict_for_eval` and computes per-(image, class) IoU rows
-itself, pushing only summary statistics (scores + IoU rows + n_gt) to the
-metrics.
-
-Why not the dict-based flow?
-    The legacy detection-style evaluator path keeps every predicted instance
-    mask in CPU memory across the whole epoch. For 3D MaskDINO with
-    ``topk_per_image=100`` and ``D=H=W=256``, that is ~6.4 GB per batch
-    element of fp32 logits before binarization — quickly fatal on long eval
-    runs. The streaming flow caps memory at one chunk of upsampled masks at
-    a time and only retains compact summary stats (per-image, per-class IoU
-    rows of shape ``(k, m)`` where ``k <= max_detections`` and ``m`` is the
-    GT count for that class) on CPU.
+"""
+Streaming, memory-bounded instance-segmentation evaluator.
 """
 
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Optional
 
 import torch
-from hydra.utils import instantiate
-from omegaconf import DictConfig, ListConfig
-from torch.nn import functional as F
 
-from cell_observatory_platform.data.structures import (
-    box_cxcyczwhd_to_xyzxyz,
-    box_iou_3d,
-)
+import cell_observatory_platform.evaluation.evaluate_postprocess as ep
 from cell_observatory_platform.evaluation.evaluator import DatasetEvaluator
 from cell_observatory_platform.evaluation.metrics import (
     BoxF1Metric,
@@ -37,29 +14,12 @@ from cell_observatory_platform.evaluation.metrics import (
     BoxMIoUMetric,
     MaskMAPMetric,
     MaskMIoUMetric,
+    PredictedIoUEvalMetric,
+    build_metrics,
 )
+from cell_observatory_platform.evaluation.mask_source import build_mask_source
 
-# PredictedIoUEvalMetric (SAM2-style self-assessed mask-quality head eval) lives
-# in metrics.py and is the consumer of the per-detection ``pred_ious`` stat we
-# pass through below. It is imported tolerantly so this evaluator keeps working
-# even when run against an older metrics.py that predates the metric: we only
-# ever ``isinstance``-check against it, so a ``None`` placeholder simply means
-# "no PredictedIoUEvalMetric will ever be matched", which is the correct no-op.
-try:
-    from cell_observatory_platform.evaluation.metrics import (
-        PredictedIoUEvalMetric,
-    )
-except ImportError:  # pragma: no cover - metric not yet present in metrics.py
-    PredictedIoUEvalMetric = ()  # isinstance(x, ()) is always False -> graceful skip
-
-from cell_observatory_platform.models.meta_arch.maskdino import MaskMaterializer
-
-
-# Tells the trainer dispatcher to call ``model.predict_for_eval`` instead of
-# the default ``model.predict`` so we get raw intermediates and own mask
-# materialization. Keeping it as a class attribute (not a method) means the
-# dispatcher can read it without instantiating the evaluator twice.
-_PREDICT_METHOD_FOR_INSTANCE_SEG = "predict_for_eval"
+from cell_observatory_platform.utils.registry import REGISTRY
 
 
 class InstanceSegmentationEvaluator(DatasetEvaluator):
@@ -81,18 +41,11 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         gt_mask_source: either ``"label_map"`` (build per-instance binary
             masks from ``target["label_map"]`` + ``target["mask_ids"]``) or
             ``"masks"`` (use the pre-materialized ``target["masks"]`` tensor).
-        target_key: name of the key in ``data_sample["metainfo"]`` that holds
-            the per-batch list of target dicts. Defaults to ``"targets"``.
         gt_box_format: coordinate format of ``target["boxes"]``.
             The model's predicted boxes are absolute ``xyzxyz`` and ``box_iou_3d`` assumes ``xyzxyz`` corners,
             so GT must be converted to that same space before the box metrics. 
         gt_boxes_normalized: a toggle to normalize ``target["boxes"]``.
     """
-
-    # Surfaced to the trainer dispatcher (see TestTrainer.run_test_step).
-    predict_method = _PREDICT_METHOD_FOR_INSTANCE_SEG
-
-    _SUPPORTED_GT_BOX_FORMATS = ("cxcyczwhd", "xyzxyz")
 
     def __init__(
         self,
@@ -101,7 +54,6 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         score_threshold: float = 0.0,
         match_labels: bool = True,
         gt_mask_source: str = "label_map",
-        target_key: str = "targets",
         gt_box_format: str = "cxcyczwhd",
         gt_boxes_normalized: bool = True,
     ):
@@ -110,58 +62,23 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
                 f"gt_mask_source must be 'label_map' or 'masks'; got {gt_mask_source!r}"
             )
         gt_box_format = str(gt_box_format).lower()
-        if gt_box_format not in self._SUPPORTED_GT_BOX_FORMATS:
+        if gt_box_format not in ep.GT_BOX_FORMATS:
             raise ValueError(
-                f"gt_box_format must be one of {self._SUPPORTED_GT_BOX_FORMATS}; "
-                f"got {gt_box_format!r}"
+                f"gt_box_format must be one of {ep.GT_BOX_FORMATS}; got {gt_box_format!r}"
             )
         self.mask_chunk_size = int(mask_chunk_size)
         self.score_threshold = float(score_threshold)
         self.match_labels = bool(match_labels)
         self.gt_mask_source = gt_mask_source
-        self.target_key = target_key
         self.gt_box_format = gt_box_format
         self.gt_boxes_normalized = bool(gt_boxes_normalized)
 
-        self.metrics: Dict[str, Any] = {}
-        if isinstance(metrics, (list, ListConfig)):
-            metric_iter = list(metrics)
-        else:
-            raise TypeError(
-                f"metrics must be a list/ListConfig; got {type(metrics).__name__}"
-            )
-        for spec in metric_iter:
-            name, metric = self._instantiate_metric(spec)
-            if name in self.metrics:
-                raise ValueError(f"duplicate metric name: {name!r}")
-            self.metrics[name] = metric
+        self.metrics: Dict[str, Any] = build_metrics(metrics)
 
         # Stable per-image id counter; we need it as the bucketing key for
         # per-class GT matching across images in MaskMAPMetric.
         self._image_id_counter = 0
         self._results: Dict[str, Optional[float]] = {name: None for name in self.metrics}
-
-    @staticmethod
-    def _instantiate_metric(spec: Any):
-        """Build a (name, metric) pair from a flexible config spec."""
-        if isinstance(spec, str):
-            factory = _DEFAULT_METRIC_FACTORIES.get(spec)
-            if factory is None:
-                raise ValueError(
-                    f"unknown metric name {spec!r}; expected one of "
-                    f"{sorted(_DEFAULT_METRIC_FACTORIES)}"
-                )
-            return spec, factory()
-        if isinstance(spec, (dict, DictConfig)):
-            d = dict(spec) if isinstance(spec, DictConfig) else dict(spec)
-            name = d.pop("name", None)
-            if name is None:
-                raise ValueError("metric DictConfig must include a 'name' field")
-            metric = instantiate(d)
-            return str(name), metric
-        raise TypeError(
-            f"metric spec must be str or DictConfig; got {type(spec).__name__}"
-        )
 
     def reset(self) -> None:
         for m in self.metrics.values():
@@ -173,69 +90,50 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
     def process(self, data_sample: dict, outputs: Any, loss_dict=None) -> None:
         """Drive chunked IoU computation for each image in the batch.
 
-        ``outputs`` must be the per-batch list returned by
-        :meth:`MaskDINO.predict_for_eval` — see that docstring for the dict
-        contract.
+        ``outputs`` must be the per-batch list of intermediates returned by the
+        model's ``evaluate_step`` — see that docstring for the dict contract.
         """
-        if loss_dict is not None:
-            # We don't need losses; defensive about flow misuse.
-            pass
-
         if not isinstance(outputs, (list, tuple)):
             raise TypeError(
-                "InstanceSegmentationEvaluator expects model.predict_for_eval-style "
-                "per-sample list of intermediates; got "
-                f"{type(outputs).__name__}. Make sure cfg.evaluation.evaluator points "
-                "to this evaluator and the trainer dispatches via predict_method."
+                "InstanceSegmentationEvaluator expects a per-sample list of "
+                f"evaluate_step intermediates; got {type(outputs).__name__}."
             )
 
-        targets_list = self._extract_targets(data_sample)
+        targets_list = ep.extract_targets(data_sample, squeeze_label_map=True)
         if len(targets_list) != len(outputs):
             raise RuntimeError(
                 f"batch size mismatch: outputs has {len(outputs)} samples but "
-                f"metainfo[{self.target_key!r}] has {len(targets_list)}"
+                f"metainfo['targets'] has {len(targets_list)}"
             )
 
         for sample_intermediates, target in zip(outputs, targets_list):
             self._process_one(sample_intermediates, target)
             self._image_id_counter += 1
 
-    def evaluate(self) -> Dict[str, float]:
-        # Cross-rank reduction happens by gathering each metric's COMPACT
-        # sufficient statistics (IoU matrices / scalar IoU lists / counts) and
-        # aggregating ONCE over the pooled multiset — never by reducing the
-        # per-rank scalar. ``gather()`` is idempotent and a no-op when
-        # world_size == 1, so this is safe in single-process runs.
-        for name, metric in self.metrics.items():
-            metric.gather()
-            value = metric.aggregate()
-            # A metric whose aggregate() returns a Mapping (e.g. the
-            # PredictedIoUEvalMetric reporting its selection curve / calibration
-            # / ranked-AP keys) is FLATTENED into self._results under
-            # ``f"{name}/{subkey}"``; a scalar return keeps the legacy behavior.
-            if isinstance(value, Mapping):
-                self._results.pop(name, None)
-                for subkey, subval in value.items():
-                    self._results[f"{name}/{subkey}"] = float(subval)
-            else:
-                self._results[name] = float(value)
-        return self._results
+    # evaluate() is inherited from DatasetEvaluator: it gathers + aggregates
+    # every metric and flattens Mapping returns (PredictedIoUEvalMetric) under
+    # ``f"{name}/{subkey}"`` into a flat dict[str, float].
 
     # ------------------------------------------------------------------
     # Per-image driver
     # ------------------------------------------------------------------
 
-    def _extract_targets(self, data_sample: dict) -> List[Dict[str, Any]]:
-        targets_field = data_sample["metainfo"][self.target_key]
-        # The platform convention is List[List[dict]] (outer wraps batch); strip if present.
-        if isinstance(targets_field, (list, tuple)) and targets_field and \
-                isinstance(targets_field[0], (list, tuple)):
-            targets_field = targets_field[0]
-        return list(targets_field)
-
     def _process_one(self, sample: Dict[str, Any], target: Dict[str, Any]) -> None:
         image_id = self._image_id_counter
         device = sample["topk_query_indices"].device
+
+        # ---- 0. Rank gate: instance IoU is strictly 3D. ----
+        # ``eval_frame_size`` is the (D, H, W) target resolution; a 4D (T,Z,Y,X)
+        # input would surface a length-4 spatial size, which the pairwise 3D IoU
+        # path cannot handle. Reject up front with a clear message rather than
+        # crashing deep inside mask materialization.
+        eval_frame_size = sample["eval_frame_size"]
+        if len(tuple(eval_frame_size)) != 3:
+            raise ValueError(
+                "InstanceSegmentationEvaluator is 3D-only: expected a (D, H, W) "
+                f"eval_frame_size, got {tuple(eval_frame_size)} (ndim>4 / temporal "
+                "inputs are not supported for instance IoU)."
+            )
 
         # ---- 1. Build per-class index slices (predictions and GT). ----
         # AP (box + mask) must see EVERY detection: COCO AP and the dense
@@ -268,21 +166,19 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
             )
 
         # Self-assessed per-prediction mask quality from the model's PREDICTED-IoU
-        # head (SAM2 contract). predict_for_eval exposes this as one of the keys
-        # tried below (e.g. "pred_ious"); MaskDINO has no IoU head and provides
-        # none, in which case ``topk_pred_ious`` stays None and we skip the
-        # PredictedIoUEvalMetric push entirely (the metric is only meaningful for
+        # head (SAM2 contract, exposed under "iou_preds"); MaskDINO has no IoU head
+        # and provides none, in which case ``topk_pred_ious`` stays None and we skip
+        # the PredictedIoUEvalMetric push entirely (the metric is only meaningful for
         # models with an IoU head). It is aligned 1:1 with the UNFILTERED topk
         # predictions (same ordering as topk_class_scores), so it slices with the
         # very same per-class index masks used for scores/boxes/ious below.
-        topk_pred_ious = self._lookup_pred_ious(sample)
+        topk_pred_ious = sample.get("iou_preds")   # canonical key; None when no IoU head
         if topk_pred_ious is not None:
             # Co-locate with the per-class index mask (WF1 hardening): SAM2 emits
             # iou_preds on CPU while indices may be CUDA, or vice versa.
             topk_pred_ious = topk_pred_ious.to(device)
 
         gt_labels = target["labels"]
-        gt_boxes = target["boxes"]
         # ---- 2. Box-only metrics first (cheap, no masks involved). ----
         # The box metrics (BoxMAPMetric / BoxF1Metric) match predictions to GT
         # within the SAME class label. Under class-agnostic eval (match_labels
@@ -296,8 +192,8 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         else:
             box_pred_labels = torch.zeros_like(topk_class_ids)
             box_gt_labels = torch.zeros_like(gt_labels)
-        gt_boxes_xyzxyz = self._gt_boxes_to_abs_xyzxyz(
-            gt_boxes, sample["orig_image_size"]
+        gt_boxes_xyzxyz = ep.gt_boxes_abs_xyzxyz(
+            target, sample["eval_frame_size"], self.gt_box_format, self.gt_boxes_normalized
         )
         self._update_box_metrics(
             pred_boxes=topk_boxes,
@@ -311,36 +207,15 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         if not self._has_mask_metrics():
             return
 
-        # Two mask sources are supported:
-        #   * MaskDINO: lazily materialize masks from decoder intermediates
-        #     (``mask_embeddings`` + ``pixel_decoder_output``) via
-        #     :class:`MaskMaterializer`, which owns trilinear upsample and
-        #     logit>0 binarization.
-        #   * SAM2 (AMG): masks are produced DIRECTLY by the model — already
-        #     binarized bool tensors at orig-volume resolution — and surfaced
-        #     under the ``pred_masks`` key (SAM2.predict_for_eval). SAM2 has no
-        #     pixel decoder, so there are no embeddings to materialize.
-        # The branch is gated purely on presence of a non-None ``pred_masks``
-        # key, so the MaskDINO path (which never emits that key) is byte-identical
-        # to before.
-        _has_direct_masks = (
-            "pred_masks" in sample and sample["pred_masks"] is not None
+        # The mask source abstracts where per-instance binary masks come from
+        # (query-embedding materialization for MaskDINO vs direct bool masks for
+        # SAM2 AMG). The model DECLARES which it produces via sample["mask_source"];
+        # build_mask_source dispatches on that and then asserts the rank/dtype
+        # contract, so soft float ``pred_masks`` (e.g. Mask2Former) are rejected
+        # instead of being silently ``.bool()``-cast into garbage hard masks.
+        mask_source = build_mask_source(
+            sample, target_size=sample["eval_frame_size"]
         )
-
-        if _has_direct_masks:
-            # SAM2 direct-mask source: (N, Z, Y, X) bool. Keep on its own device;
-            # we move per-chunk slices to ``device`` (the indexing-mask device)
-            # right before the pairwise IoU so a producer returning masks on a
-            # different device can't crash the advanced-index/IoU.
-            pred_masks_all = sample["pred_masks"]
-            materializer = None
-        else:
-            materializer = MaskMaterializer(
-                mask_embeddings=sample["mask_embeddings"],
-                pixel_decoder_output=sample["pixel_decoder_output"],
-                target_size=sample["orig_image_size"],
-                chunk_size=self.mask_chunk_size,
-            )
 
         # Per-(image, class) loop when labels matter; a single sentinel bucket
         # when evaluating class-agnostically. Without the sentinel, the
@@ -390,46 +265,23 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
             # Materialize GT masks for this class on the fly (one class at a
             # time bounds memory: ``n_gt_c * D*H*W`` bool).
             if n_gt_c > 0:
-                gt_masks_c = self._gt_masks_for_class(
-                    target=target,
-                    gt_class_mask=gt_mask_c,
-                    target_size=sample["orig_image_size"],
+                gt_masks_c = ep.gt_masks_for_class(
+                    target, gt_mask_c, sample["eval_frame_size"], self.gt_mask_source
                 ).to(device)
             else:
                 gt_masks_c = None
 
-            # Stream chunks of predicted masks and accumulate IoU rows.
+            # Stream chunks of predicted binary masks (already on ``device``)
+            # from the mask source and accumulate IoU rows. Peak memory is bound
+            # to ``chunk_size * D*H*W`` regardless of the underlying model.
             ious_rows: List[torch.Tensor] = []
             if pred_query_idx_c.numel() > 0 and gt_masks_c is not None:
-                if _has_direct_masks:
-                    # SAM2 direct-mask path: ``pred_query_idx_c`` is a direct slot
-                    # index (arange(N) sliced by class) into ``pred_masks_all``.
-                    # Chunk over proposals to bound peak memory at
-                    # ``chunk_size * Z*Y*X`` masks materialized on ``device`` at a
-                    # time (same bound as the MaskDINO materializer). Move both the
-                    # index and the gathered masks onto a common device before
-                    # indexing/IoU so a CPU-vs-CUDA mismatch can't crash.
-                    cs = self.mask_chunk_size
-                    src_device = pred_masks_all.device
-                    idx_on_src = pred_query_idx_c.to(src_device)
-                    for start in range(0, idx_on_src.numel(), cs):
-                        chunk_idx = idx_on_src[start : start + cs]
-                        # Index on the masks' own device, then move the (small)
-                        # bool chunk to ``device`` for the pairwise IoU vs GT.
-                        pred_bin = pred_masks_all[chunk_idx].to(device).bool()
-                        iou_chunk = _pairwise_mask_iou_3d_bool(pred_bin, gt_masks_c)
-                        ious_rows.append(iou_chunk.cpu())
-                        del pred_bin
-                else:
-                    for _, mask_logits in materializer.chunks(pred_query_idx_c):
-                        # Binarize at logit > 0, i.e. sigmoid(logit) > 0.5. This
-                        # matches the dense MaskMIoUMetric/MaskMAPMetric path, which
-                        # calls .bool() on already-thresholded masks. The producing
-                        # model emits mask LOGITS on this path (predict_for_eval),
-                        # so > 0 is the correct probability-0.5 cut.
-                        pred_bin = (mask_logits > 0)
-                        iou_chunk = _pairwise_mask_iou_3d_bool(pred_bin, gt_masks_c)
-                        ious_rows.append(iou_chunk.cpu())
+                for pred_bin in mask_source.binary_mask_chunks(
+                    pred_query_idx_c, self.mask_chunk_size, device
+                ):
+                    iou_chunk = _pairwise_mask_iou_3d_bool(pred_bin, gt_masks_c)
+                    ious_rows.append(iou_chunk.cpu())
+                    del pred_bin
             if ious_rows:
                 ious_c = torch.cat(ious_rows, dim=0)
             else:
@@ -497,35 +349,6 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
     # Helpers
     # ------------------------------------------------------------------
 
-    # Keys under which predict_for_eval may expose the per-prediction PREDICTED
-    # IoU vector. Tried in order; the first present, non-None entry wins. Keep
-    # this list the single source of truth for the SAM2 IoU-head contract.
-    _PRED_IOU_SAMPLE_KEYS = (
-        "pred_ious",
-        "predicted_ious",
-        "iou_preds",
-        "mask_iou_preds",
-    )
-
-    def _lookup_pred_ious(self, sample: Mapping[str, Any]) -> Optional[torch.Tensor]:
-        """Tolerantly fetch the per-prediction predicted-IoU vector ``(k,)``.
-
-        Returns the model's self-assessed mask-quality vector aligned 1:1 with
-        the UNFILTERED topk predictions, or ``None`` when the model exposes no
-        IoU head (e.g. MaskDINO) so callers skip the PredictedIoUEvalMetric push.
-        Skipping the lookup entirely when no consumer metric is registered avoids
-        forcing the contract on models that don't have an IoU head.
-        """
-        if not any(
-            isinstance(m, PredictedIoUEvalMetric) for m in self.metrics.values()
-        ):
-            return None
-        for key in self._PRED_IOU_SAMPLE_KEYS:
-            value = sample.get(key) if isinstance(sample, Mapping) else None
-            if value is not None:
-                return value
-        return None
-
     def _has_mask_metrics(self) -> bool:
         # PredictedIoUEvalMetric also derives its (true-IoU based) stats from
         # the per-(image, class) IoU matrix, so its presence must drive mask
@@ -536,19 +359,6 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
             or (isinstance(m, MaskMIoUMetric) and m.mode == "instance")
             for m in self.metrics.values()
         )
-
-    def _gt_boxes_to_abs_xyzxyz(self, gt_boxes: torch.Tensor, orig_image_size: Any) -> torch.Tensor:
-        if gt_boxes.numel() == 0:
-            return gt_boxes
-        if self.gt_box_format == "cxcyczwhd":
-            boxes = box_cxcyczwhd_to_xyzxyz(gt_boxes)
-        else:  # already xyzxyz
-            boxes = gt_boxes
-        if self.gt_boxes_normalized:
-            depth, height, width = (int(s) for s in orig_image_size)
-            scale = boxes.new_tensor([width, height, depth, width, height, depth])
-            boxes = boxes * scale
-        return boxes
 
     def _update_box_metrics(
         self,
@@ -571,40 +381,6 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         for metric in self.metrics.values():
             if isinstance(metric, (BoxMAPMetric, BoxMIoUMetric, BoxF1Metric)):
                 metric([pred_dict], [gt_dict], None)
-
-    def _gt_masks_for_class(
-        self,
-        target: Dict[str, Any],
-        gt_class_mask: torch.Tensor,
-        target_size: Any,
-    ) -> torch.Tensor:
-        """Return ``(n_gt_class, D, H, W)`` bool masks at original image size."""
-        if self.gt_mask_source == "masks":
-            masks = target["masks"][gt_class_mask].bool()
-            return self._maybe_resize_gt_masks(masks, target_size)
-        # label_map path: build instance masks via mask_ids equality.
-        label_map = target["label_map"]
-        mask_ids = target["mask_ids"][gt_class_mask].to(label_map.dtype)
-        if mask_ids.numel() == 0:
-            return label_map.new_zeros((0, *label_map.shape), dtype=torch.bool)
-        view_shape = (mask_ids.numel(),) + (1,) * label_map.dim()
-        masks = label_map.unsqueeze(0) == mask_ids.view(view_shape)
-        return self._maybe_resize_gt_masks(masks, target_size)
-
-    @staticmethod
-    def _maybe_resize_gt_masks(masks: torch.Tensor, target_size: Any) -> torch.Tensor:
-        """Trilinear-resize GT masks to ``target_size`` if shapes differ."""
-        target_size = tuple(int(s) for s in target_size)
-        if masks.shape[-3:] == target_size:
-            return masks
-        # Resize via nearest-neighbor on float to avoid kernel artifacts on
-        # binary masks.
-        resized = F.interpolate(
-            masks.unsqueeze(0).float(),
-            size=target_size,
-            mode="nearest",
-        ).squeeze(0)
-        return resized > 0.5
 
     @staticmethod
     def _greedy_match_per_class(
@@ -655,34 +431,5 @@ def _pairwise_mask_iou_3d_bool(masks_a: torch.Tensor, masks_b: torch.Tensor) -> 
     return inter / torch.clamp(union, min=1e-12)
 
 
-def _default_box_map() -> BoxMAPMetric:
-    return BoxMAPMetric()
-
-
-def _default_box_miou() -> BoxMIoUMetric:
-    return BoxMIoUMetric()
-
-
-def _default_box_f1() -> BoxF1Metric:
-    return BoxF1Metric()
-
-
-def _default_mask_map() -> MaskMAPMetric:
-    return MaskMAPMetric()
-
-
-def _default_mask_miou() -> MaskMIoUMetric:
-    return MaskMIoUMetric(mode="instance")
-
-
-_DEFAULT_METRIC_FACTORIES = {
-    "box_map": _default_box_map,
-    "box_miou": _default_box_miou,
-    "box_f1": _default_box_f1,
-    "mask_map": _default_mask_map,
-    "mask_miou": _default_mask_miou,
-}
-
-
-# Re-export so callers don't have to import from data.structures separately.
-__all__ = ["InstanceSegmentationEvaluator", "box_iou_3d"]
+from cell_observatory_platform.utils.config import register_class as _register_class
+_register_class("evaluator", "instance_segmentation", InstanceSegmentationEvaluator)

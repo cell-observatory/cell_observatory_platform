@@ -714,6 +714,11 @@ class MedNeXt(nn.Module):
         return features
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import build_kwargs as _build_kwargs
+
+
+@REGISTRY.register("backbone", "mednext")
 def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> nn.Module:
     if adapter_args is not None:
         raise NotImplementedError("Adapter is not supported for MedNeXt.")
@@ -726,4 +731,4 @@ def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> n
             if isinstance(resolved, dict):
                 backbone_wrapper_args = resolved
         logger.info(f"Building MedNeXt with args: {backbone_wrapper_args}")
-        return MedNeXt(**backbone_wrapper_args)
+        return MedNeXt(**_build_kwargs(backbone_wrapper_args))

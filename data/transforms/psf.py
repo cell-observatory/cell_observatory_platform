@@ -10,12 +10,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class ConvolveWithPSF:
     def __init__(
-        self, 
+        self,
         psf: torch.Tensor | PathLike[str],
         pad_type: str,
-        input_format: str,
         input_shape: tuple[int, ...],
         input_pixel_size_um: tuple[float, float, float],
         psf_format: str,
@@ -24,17 +24,15 @@ class ConvolveWithPSF:
         psf_centered: bool = True,
         visualization_dir: str | None = None,
     ):
-        # NOTE: Always normalize spatial dimensions to ZYX for consistency
-        # between input and PSF.
-        if input_format == "ZYXC":
-            z_idx = input_format.index("Z")
-            y_idx = input_format.index("Y")
-            x_idx = input_format.index("X")
-            self.data_spatial_dim_indices = (z_idx, y_idx, x_idx)
-            self.data_spatial_dim_indices_batched = (z_idx + 1, y_idx + 1, x_idx + 1) # +1 to account for batch dimension
-            self.input_spatial_shape = (input_shape[z_idx], input_shape[y_idx], input_shape[x_idx])
-        else:
-            raise ValueError(f"Unsupported input_format {input_format}")
+        # Spatial dims are always ZYX: input_shape is the per-frame (Z, Y, X, C)
+        # shape. For movies the T axis is folded into the batch in _run_4d, so the
+        # convolution core only ever sees a (B, Z, Y, X, C) view. Layout (3D vs 4D)
+        # is decided per-call from metainfo["data_types"] in __call__.
+        zyxc = "ZYXC"
+        z_idx, y_idx, x_idx = zyxc.index("Z"), zyxc.index("Y"), zyxc.index("X")
+        self.data_spatial_dim_indices = (z_idx, y_idx, x_idx)
+        self.data_spatial_dim_indices_batched = (z_idx + 1, y_idx + 1, x_idx + 1)
+        self.input_spatial_shape = (input_shape[z_idx], input_shape[y_idx], input_shape[x_idx])
         if psf_format == "ZYX":
             z_idx = psf_format.index("Z")
             y_idx = psf_format.index("Y")
@@ -212,9 +210,6 @@ class ConvolveWithPSF:
                 log=True,
             )
         
-
-
-
     def _convolve_with_psf(self, data: torch.Tensor) -> torch.Tensor:
         """
         Convolve data with PSF.
@@ -302,15 +297,36 @@ class ConvolveWithPSF:
             )
         return data
 
-    def __call__(self, data: torch.Tensor | dict) -> torch.Tensor | dict:
-        if isinstance(data, torch.Tensor):
-            return self._convolve_with_psf(data)
-        elif isinstance(data, dict):
-            if "data_tensor" not in data:
-                raise KeyError("ConvolveWithPSF expects 'data_tensor' in dict.")
-            data["data_tensor"] = self._convolve_with_psf(data["data_tensor"])
-            return data
-        raise TypeError(f"ConvolveWithPSF expects torch.Tensor or dict, got {type(data)}")
+    def __call__(self, data: dict) -> dict:
+        # dict in -> inspect data_types layout -> dispatch 3D/4D -> dict out.
+        if not isinstance(data, dict):
+            raise TypeError(f"ConvolveWithPSF expects a dict sample, got {type(data)}")
+        if "data_tensor" not in data:
+            raise KeyError("ConvolveWithPSF expects 'data_tensor' in dict.")
+        has_time = data["metainfo"]["data_types"]["data_tensor"]["has_time"]
+        return self._run_4d(data) if has_time else self._run_3d(data)
+
+    def _run_3d(self, sample: dict) -> dict:
+        """ZYXC (B, Z, Y, X, C): convolve directly."""
+        if "data_tensor" not in sample:
+            raise KeyError("ConvolveWithPSF expects 'data_tensor' in dict.")
+        sample["data_tensor"] = self._convolve_with_psf(sample["data_tensor"])
+        return sample
+
+    def _run_4d(self, sample: dict) -> dict:
+        """TZYXC (B, T, Z, Y, X, C): fold T into the batch, convolve per-frame, unfold."""
+        if "data_tensor" not in sample:
+            raise KeyError("ConvolveWithPSF expects 'data_tensor' in dict.")
+        tensor = sample["data_tensor"]
+        if tensor.ndim != 6:
+            raise ValueError(
+                f"_run_4d expects 6D (B, T, Z, Y, X, C), got shape {tuple(tensor.shape)}"
+            )
+        B, T = tensor.shape[0], tensor.shape[1]
+        folded = tensor.reshape(B * T, *tensor.shape[2:])
+        convolved = self._convolve_with_psf(folded)
+        sample["data_tensor"] = convolved.reshape(B, T, *tensor.shape[2:])
+        return sample
     
     def _plot_data_before_and_after_convolution(self, original_data: torch.Tensor, data: torch.Tensor) -> None:
         """

@@ -7,7 +7,6 @@ defaults:
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
   - /datasets/preprocessor/instance_segmentation_preprocessor # configs/datasets/preprocessor/instance_segmentation_preprocessor.yaml
   - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
-  - /models/BUILD_maskDINO                  # configs/models/BUILD_maskdino.yaml
   - /models/meta_arch/maskdino/mae_large_w_masks    # configs/models/maskdino/large.yaml
   - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
   - /models/backbones/maskdino_backbone/maskdino_backbone   # configs/models/backbones/maskdino_backbone/maskdino_backbone.yaml
@@ -110,7 +109,6 @@ datasets:
   preprocessor:
     transforms_list:
       - _target_: cell_observatory_platform.data.transforms.crop.Crop3D
-        input_format: ZYXC
         target_spatial_shape: [128, 384, 2048]
         crop_dims: YX
         crop_type: center
@@ -170,12 +168,12 @@ optimizers:
 # hooks
 hooks:
   hooks_list:
-  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.LRScheduler
+  - name: free_device_buffer
+  - name: lr_scheduler
     backend: DEEPSPEED
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
-  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-  # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+  - name: iteration_timer
+  - name: periodic_writer
+  # - name: torch_profiler
   #   output_dir: ${paths.outdir}/profiler
   #   schedule:
   #     skip_first: 10

@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.backbones.mask2former_backbone.BUILD
+name: mask2former
 backbone_embed_dims: ${models.backbones.convnext.dims}
 train_backbone: true
 use_layernorm: true

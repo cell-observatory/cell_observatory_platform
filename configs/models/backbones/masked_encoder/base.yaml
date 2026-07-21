@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.backbones.maskedencoder.BUILD
+name: masked_vit
 
 input_fmt: ${dataset_layout_order}
 input_shape: ${datasets.train_shape}

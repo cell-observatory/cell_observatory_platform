@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.backbones.mednext.BUILD
+name: mednext
 
 input_shape: ${datasets.train_shape}
 input_format: ${dataset_layout_order}

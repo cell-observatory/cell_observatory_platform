@@ -295,7 +295,7 @@ class MaskedEncoder(nn.Module):
 def _extract_model_encoder_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(MaskedEncoder.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
 
     kwargs = {}
     for k, v in cfg.items():
@@ -305,6 +305,10 @@ def _extract_model_encoder_kwargs(cfg: Mapping[str, Any]) -> dict:
     return kwargs
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("backbone", "masked_vit")
 def BUILD(cfg: Mapping[str, Any]) -> MaskedEncoder:
     """
     Hydra entrypoint for MaskedEncoder.

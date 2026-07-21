@@ -8,7 +8,6 @@ defaults:
   - /datasets/pretrain_dataset_ray
   - /datasets/masking/mask_generator
   - /models/meta_arch/mae/large_hiera
-  - /models/BUILD_MAE
   - /checkpoint/checkpoint
   - /loggers/loggers
   - /evaluation/base_evaluator
@@ -121,12 +120,12 @@ optimizers:
 
 hooks:
   hooks_list:
-    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-    - _target_: cell_observatory_platform.training.hooks.LRScheduler
+    - name: free_device_buffer
+    - name: lr_scheduler
       backend: DEEPSPEED
-    - _target_: cell_observatory_platform.training.hooks.IterationTimer
-    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-    # - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+    - name: iteration_timer
+    - name: periodic_writer
+    # - name: torch_profiler
     #   output_dir: ${paths.outdir}/profiler
     #   schedule:
     #     # skip_first: 10

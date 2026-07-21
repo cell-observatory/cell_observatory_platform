@@ -5,14 +5,13 @@ defaults:
   - /clusters/local                             # configs/clusters/local.yaml
   - /datasets/pretrain_dataset_ray                     # configs/datasets/pretrain_dataset.yaml
   - /models/meta_arch/mae/large                  # configs/models/jepa/large.yaml
-  - /models/BUILD_MAE                  # configs/models/BUILD_AutoBench.yaml  
   - /loggers/loggers                         # configs/loggers/loggers.yaml
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
   - /evaluation/base_evaluator               # configs/evaluation/base_evaluator.yaml
   - /schedulers/warmup_cosine_decay # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
+  - /optimizations/models/mae/large # configs/optimizations/models/mae/large.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - /inference/inference_feature_viz                      # configs/inference/inference.yaml
@@ -152,6 +151,6 @@ models:
 # hooks
 hooks:
   hooks_list:
-  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
-  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  - name: free_device_buffer
+  - name: iteration_timer
+  - name: periodic_writer

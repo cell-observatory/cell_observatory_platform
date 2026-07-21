@@ -13,6 +13,7 @@ from cell_observatory_platform.utils.context import (
 )
 
 
+# FIXME: move to correct place
 def _dist_inactive() -> bool:
     """True when there is no real multi-rank process group to reduce over."""
     return not is_torch_dist_initialized() or get_world_size() == 1
@@ -34,6 +35,11 @@ class Metric(metaclass=abc.ABCMeta):
     def gather(self) -> None:
         """All-reduce sufficient statistics across ranks (no-op by default)."""
         return
+
+
+# ---------------------------------------------------------------------------
+# Pretraining/General metrics
+# ---------------------------------------------------------------------------
 
 
 class TrainLosses(Metric):
@@ -1497,3 +1503,57 @@ class MaskMIoUMetric(Metric):
         self._union.clear()
         self._matched_ious.clear()
         self._gathered = False
+
+
+# ---------------------------------------------------------------------------
+# Single metric registry + builder
+# ---------------------------------------------------------------------------
+
+METRICS: Dict[str, Callable[..., Metric]] = {
+    "train_loss": TrainLosses,
+    "nrmse": NRMSEMetric,
+    "mae": MAEMetric,
+    "box_map": BoxMAPMetric,
+    "box_miou": BoxMIoUMetric,
+    "box_f1": BoxF1Metric,
+    "class_ap": ClassAPMetric,
+    "mask_map": MaskMAPMetric,
+    "mask_miou": MaskMIoUMetric,
+    "predicted_iou": PredictedIoUEvalMetric,
+}
+
+def _as_plain(obj):
+    """Convert an OmegaConf node into a plain python container (else pass through)."""
+    from omegaconf import OmegaConf
+    if OmegaConf.is_config(obj):
+        return OmegaConf.to_container(obj, resolve=True)
+    return obj
+
+
+def _build_one_metric(item):
+    """``(key, Metric)`` for one spec entry.
+
+    Each entry is either ``"name"`` (the named metric with its default ctor args) or
+    ``{"name": str, "key"?: str, **ctor_kwargs}`` (the named metric built with those
+    kwargs, keyed by ``key``, which defaults to ``name``). Every metric must be
+    registered in :data:`METRICS`; anything a config wants to configure it declares
+    explicitly in the kwargs.
+    """
+    item = _as_plain(item)
+    if isinstance(item, str):
+        return item, METRICS[item]()
+    d = dict(item)
+    name = d.pop("name")
+    key = d.pop("key", name)
+    return str(key), METRICS[name](**d)
+
+
+def build_metrics(spec) -> Dict[str, Metric]:
+    """Ordered ``{key: Metric}`` from a spec: a single entry or a list of entries.
+
+    See :func:`_build_one_metric` for the accepted entry forms.
+    """
+    spec = _as_plain(spec)
+    if isinstance(spec, (str, dict)):
+        spec = [spec]
+    return dict(_build_one_metric(item) for item in spec)

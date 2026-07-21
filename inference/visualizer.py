@@ -1,96 +1,98 @@
 """
-InferenceVisualizer: pure component that turns model outputs into human-consumable visual artifacts.
+VizWorker: turns model outputs into human-consumable visual artifacts.
 
-Handler dispatch is driven by output_type.viz.handler. Used by VizWorkers (Phase 3+) and post-hoc tools.
+Dispatch is driven by ``handler_configs`` (``viz.handler`` names). The worker materializes
+the batched SHM views, builds uniform per-sample :class:`InferenceRecord`s once (batch-first,
+`normalize_instance_masks=True`), then hands each ``(handler, record)`` to the thread pool.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Sequence, List, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
-from cell_observatory_platform.data.datasets.buffers import BufferManager
-from cell_observatory_platform.inference.utils import (
-    save_semantic_predictions,
-    save_feature_visualizations,
-    save_instance_predictions,
-    save_predictions,
-    unpack_batched_tensors,
-    )
 import ray
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from cell_observatory_platform.data.datasets.buffers import BufferManager
+from cell_observatory_platform.inference.inference_postprocess import (
+    InferenceRecord,
+    build_records,
+    viz_identifier,
+)
+from cell_observatory_platform.inference.utils import (
+    save_bbox_overlay,
+    save_semantic_predictions,
+    save_feature_visualizations,
+    save_instance_predictions,
+    save_predictions,
+)
 
-def _infer_batch_size(metainfo: Dict[str, Any]) -> int:
-    """Batch size from metainfo; scalar string fields imply B=1."""
-    if "batch_size_actual" in metainfo:
-        return int(metainfo["batch_size_actual"])
-    if "prepared_id" in metainfo:
-        pid = metainfo["prepared_id"]
-        if isinstance(pid, np.ndarray):
-            return int(pid.shape[0])
-        return len(pid)
-    tn = metainfo.get("tile_name")
-    if isinstance(tn, str):
-        return 1
-    if isinstance(tn, (np.ndarray, list, tuple)):
-        return len(tn)
-    return 1
-
-
-def _metainfo_scalar_at(metainfo: Dict[str, Any], key: str, b: int) -> Any:
-    """Value for batch index ``b``, or the scalar if not batched."""
-    v = metainfo.get(key)
-    if v is None:
-        return None
-    if isinstance(v, str):
-        return v
-    if isinstance(v, bytes):
-        return v.decode()
-    if isinstance(v, np.ndarray):
-        if v.ndim == 0:
-            return v.item()
-        return v[b]
-    if isinstance(v, (list, tuple)):
-        return v[b]
-    return v
+from cell_observatory_platform.utils.registry import REGISTRY
 
 
-def _get_base_sample_name_for_index(metainfo: Dict[str, Any], b: int) -> str:
-    try:
-        folder = _metainfo_scalar_at(metainfo, "output_folder", b)
-        if folder is None:
-            raise KeyError
-        base = str(folder).replace("/", "_")
-    except (KeyError, IndexError):
-        id_raw = metainfo.get("id", "unknown")
-        if isinstance(id_raw, (np.ndarray, list, tuple)) and not isinstance(id_raw, (str, bytes)):
-            try:
-                idv = id_raw[b]
-            except (IndexError, TypeError):
-                idv = "unknown"
-        else:
-            idv = id_raw
-        base = f"inference_roi{idv}"
-    tn = _metainfo_scalar_at(metainfo, "tile_name", b)
-    if tn is None:
-        tn = "unknown"
-    tile_name = str(tn)
-    base_sample_name = base + "_" + tile_name
-    return base_sample_name.replace(".zarr", "").replace(".tiff", "")
+# --- viz handlers: free functions (registry-dispatched). Read the record's declared
+# --- fields + the explicit `global_rank`, then call a plotter. ---
+
+@REGISTRY.register("viz_handler", "semantic_map")
+def semantic_map_handler(record: InferenceRecord, save_dir: str, *, global_rank: int, **kwargs: Any) -> None:
+    save_semantic_predictions(
+        name=viz_identifier(record, global_rank),
+        preds=record.preds, image=record.image, targets=record.targets,
+        save_dir=save_dir, **kwargs,
+    )
+
+
+@REGISTRY.register("viz_handler", "instance_overlay")
+def instance_overlay_handler(record: InferenceRecord, save_dir: str, *, global_rank: int, **kwargs: Any) -> None:
+    save_instance_predictions(
+        save_dir=save_dir, identifier=viz_identifier(record, global_rank),
+        image=record.image, preds=record.preds, targets=record.targets,
+        region=record.region, **kwargs,
+    )
+
+
+@REGISTRY.register("viz_handler", "save_predictions")
+def save_predictions_handler(record: InferenceRecord, save_dir: str, *, global_rank: int, **kwargs: Any) -> None:
+    save_predictions(
+        name=viz_identifier(record, global_rank),
+        predictions=record.preds, save_dir=save_dir, **kwargs,
+    )
+
+
+@REGISTRY.register("viz_handler", "feature_viz")
+def feature_viz_handler(record: InferenceRecord, save_dir: str, *, global_rank: int, **kwargs: Any) -> None:
+    if kwargs.get("feat_key") is None:
+        raise ValueError("feat_key must be specified for feature visualization")
+    # feature viz reads the GT image (gt_key, default "data_tensor") from predictions.
+    predictions = {**record.preds, "data_tensor": record.image}
+    save_feature_visualizations(
+        name=viz_identifier(record, global_rank),
+        predictions=predictions, save_dir=save_dir, **kwargs,
+    )
+
+
+@REGISTRY.register("viz_handler", "bbox_overlay")
+def bbox_overlay_handler(
+    record: InferenceRecord, save_dir: str, *, global_rank: int,
+    pred_boxes_key: str, background_channel: int = 0, z_step: int = 10,
+    pmin: float = 1.0, pmax: float = 99.0, **kwargs: Any,
+) -> None:
+    save_bbox_overlay(
+        pred_boxes_xyzxyz=record.preds[pred_boxes_key], image=record.image,
+        save_dir=save_dir, identifier=viz_identifier(record, global_rank),
+        z_step=z_step, pmin=pmin, pmax=pmax, background_channel=background_channel,
+    )
 
 
 @ray.remote(namespace="visualizer", lifetime="detached", num_cpus=0)
 class VizWorker:
-    """
-    Pure component that dispatches to visualization handlers based on output_type.viz.handler.
-    """
+    """Dispatches visualization handlers over uniform per-sample records."""
 
     def __init__(
-        self, 
+        self,
         buffer_manager: BufferManager,
         output_dir: str | Path,
         handler_configs: Dict[str, Dict[str, Any]],
@@ -101,16 +103,15 @@ class VizWorker:
         self.handler_configs = handler_configs
         self.output_dir = Path(output_dir).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self._handlers: Dict[str, Callable[..., None]] = {}
-        self._register_default_handlers()
         self.thread_pool = ThreadPoolExecutor(
             max_workers=max_workers,
-            thread_name_prefix=f"visualizer_worker_rank_{buffer_manager.global_rank}"
+            thread_name_prefix=f"visualizer_worker_rank_{buffer_manager.global_rank}",
         )
-        for handler_name, kwargs in self.handler_configs.items():
-            if handler_name not in self._handlers:
+        for handler_name in self.handler_configs:
+            if not REGISTRY.has("viz_handler", handler_name):
                 raise ValueError(
-                    f"Unknown viz.handler: {handler_name}. Registered: {list(self._handlers.keys())}"
+                    f"Unknown viz.handler: {handler_name}. "
+                    f"Registered: {sorted(REGISTRY.names('viz_handler'))}"
                 )
 
         self._metrics: Dict[str, float | int | List[float | bool]] = {
@@ -119,191 +120,6 @@ class VizWorker:
             "queue_time_ms": [],
             "visualize_calls": 0.0,
         }
-
-    def _register_default_handlers(self) -> None:
-        """Register built-in handlers for viz.handler names."""
-        self._handlers["semantic_map"] = self._handle_semantic_map
-        self._handlers["instance_overlay"] = self._handle_instance_overlay
-        self._handlers["feature_viz"] = self._handle_feature_viz
-        self._handlers["save_predictions"] = self._handle_save_predictions
-        self._handlers["bbox_overlay"] = self._handle_bbox_overlay
-
-    def _handle_semantic_map(
-        self,
-        inference_outputs: dict[str, Any],
-        save_dir: str,
-        **kwargs: Any,
-    ) -> None:
-        metainfo = inference_outputs["metainfo"]
-        if "targets" in inference_outputs:
-            targets = inference_outputs.pop("targets")
-            targets_unpacked = unpack_batched_tensors(targets)
-        else:
-            targets_unpacked = None
-        data_tensor = inference_outputs.pop("data_tensor")
-        data_tensor_unpacked = [np.squeeze(chunk, axis=0) for chunk in np.split(data_tensor, data_tensor.shape[0], axis=0)]
-        unpacked_inference_outputs = unpack_batched_tensors(inference_outputs, skip_keys={"metainfo"})
-        bsz = len(unpacked_inference_outputs)
-        if bsz == 0:
-            return
-        inferred = _infer_batch_size(metainfo)
-        if inferred != bsz:
-            raise ValueError(
-                f"metainfo batch ({inferred}) != unpacked preds batch ({bsz})"
-            )
-        names = [_get_base_sample_name_for_index(metainfo, b) for b in range(bsz)]
-
-        save_semantic_predictions(
-            name=names[0],
-            preds=unpacked_inference_outputs,
-            targets=targets_unpacked,
-            images=data_tensor_unpacked,
-            save_dir=save_dir,
-            names=names,
-            **kwargs,
-        )
-
-    def _handle_instance_overlay(
-        self,
-        inference_outputs: dict[str, Any],
-        save_dir: str,
-        **kwargs: Any,
-    ) -> None:
-
-        regions, identifiers = self._prepare_regions_and_identifiers(inference_outputs["metainfo"])
-
-        # Per-batch unpacking: _unpack_batch(inference_outputs, skip_keys={"metainfo"})
-        # -> List[Dict[str, Tensor ZYX]] (len = B) for per-sample handling
-        targets = inference_outputs.pop("targets")
-        targets_unpacked = unpack_batched_tensors(targets)
-        data_tensor = inference_outputs.pop("data_tensor")
-        data_tensor_unpacked = [
-            np.squeeze(chunk, axis=0)
-            for chunk in np.split(data_tensor, data_tensor.shape[0], axis=0)
-        ]
-        unpacked_inference_outputs = unpack_batched_tensors(inference_outputs, skip_keys={"metainfo"})
-        bu = len(data_tensor_unpacked)
-        if bu != len(regions) or bu != len(identifiers):
-            raise ValueError(
-                f"Batch mismatch: tensors={bu}, regions={len(regions)}, identifiers={len(identifiers)}"
-            )
-        save_instance_predictions(
-            save_dir=save_dir,
-            images=data_tensor_unpacked,
-            targets=targets_unpacked,
-            preds=unpacked_inference_outputs,
-            identifiers=identifiers,
-            regions=regions,
-            **kwargs,
-        )
-    
-    def _handle_save_predictions(
-        self,
-        inference_outputs: dict[str, Any],
-        save_dir: str,
-        **kwargs: Any,
-    ) -> None:
-        metainfo = inference_outputs["metainfo"]
-        save_tensors: List[str] = kwargs["save_tensors"]
-        tensor_dict = {k: inference_outputs[k] for k in save_tensors}
-        unpacked = unpack_batched_tensors(tensor_dict)
-        bsz = _infer_batch_size(metainfo)
-        if len(unpacked) != bsz:
-            raise ValueError(
-                f"metainfo batch ({bsz}) != unpacked tensor batch ({len(unpacked)})"
-            )
-        for b, preds_b in enumerate(unpacked):
-            name_b = _get_base_sample_name_for_index(metainfo, b)
-            save_predictions(
-                name=name_b,
-                predictions=preds_b,
-                save_dir=save_dir,
-                **kwargs,
-            )
-
-    def _handle_feature_viz(
-        self,
-        inference_outputs: dict[str, Any],
-        save_dir: str,
-        **kwargs: Dict[str, Any],
-    ) -> None:
-        metainfo = inference_outputs["metainfo"]
-        feat_key = kwargs.get("feat_key")
-        if feat_key is None:
-            raise ValueError("feat_key must be specified for feature visualization")
-        gt_key = kwargs.get("gt_key", "data_tensor")
-        tensor_dict = {
-            gt_key: inference_outputs[gt_key],
-            feat_key: inference_outputs[feat_key],
-        }
-        unpacked = unpack_batched_tensors(tensor_dict)
-        bsz = _infer_batch_size(metainfo)
-        if len(unpacked) != bsz:
-            raise ValueError(
-                f"metainfo batch ({bsz}) != unpacked tensor batch ({len(unpacked)})"
-            )
-        for b, preds_b in enumerate(unpacked):
-            name_b = _get_base_sample_name_for_index(metainfo, b)
-            save_feature_visualizations(
-                name=name_b,
-                predictions=preds_b,
-                save_dir=save_dir,
-                **kwargs,
-            )
-
-    def _handle_bbox_overlay(
-        self,
-        inference_outputs: dict[str, Any],
-        save_dir: str,
-        **kwargs: Any,
-    ) -> None:
-        raise NotImplementedError(
-            "bbox_overlay is not supported via VizWorker.visualize(); "
-            "use inference.utils.save_bbox_overlay with pred_boxes_xyzxyz, image, and save_dir."
-        )
-
-    def _prepare_regions_and_identifiers(self, metadata: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[str]]:
-        B = len(metadata["prepared_id"])
-
-        # rank_dir = Path(self.inference_save_dir) / f"rank{self.rank:03d}"
-        # os.makedirs(rank_dir, exist_ok=True)
-
-        regions: List[Dict[str, Any]] = []
-        identifiers: List[str] = []
-
-        for b in range(B):
-            roi = int(metadata["prepared_id"][b])
-            tile_nm = str(metadata["tile_name"][b])
-
-            t0 = int(metadata["time_start"][b])
-            T = int(metadata["time_size"][b])
-            t1 = t0 + T
-
-            z0 = int(metadata["z_start"][b])
-            sz = int(metadata["z_size"][b])
-            z1 = z0 + sz
-            y0 = int(metadata["y_start"][b])
-            sy = int(metadata["y_size"][b])
-            y1 = y0 + sy
-            x0 = int(metadata["x_start"][b])
-            sx = int(metadata["x_size"][b])
-            x1 = x0 + sx
-
-            region = dict(
-                roi=roi,
-                tile_name=tile_nm,
-                coords=(t0, t1, z0, z1, y0, y1, x0, x1),
-                coord_frame="voxel",
-            )
-            ident = (
-                f"rank{self.global_rank:03d}_roi{roi}_{tile_nm}"
-                f"_t{t0}-{t1}_z{z0}-{z1}_y{y0}-{y1}_x{x0}-{x1}"
-            )
-
-            regions.append(region)
-            identifiers.append(ident)
-        
-        return regions, identifiers
 
     def get_metrics(self) -> Dict[str, List[float | bool]]:
         metrics = self._metrics.copy()
@@ -320,9 +136,8 @@ class VizWorker:
         inference_outputs: Dict[str, Any],
         queue_t0: Optional[float] = None,
     ) -> None:
-        """
-        Dispatch to the appropriate handler based on output_type.viz.handler.
-        """
+        """Materialize SHM views, build per-sample records once, dispatch each
+        ``(handler, record)`` to the thread pool."""
         if queue_t0 is not None:
             self._metrics["queue_time_ms"].append((time.perf_counter() - queue_t0) * 1000)
         self._metrics["visualize_calls"] += 1.0
@@ -330,24 +145,33 @@ class VizWorker:
         start_time = time.perf_counter()
         futures = []
         try:
+            output_arrays: Dict[str, Any] = {}
             for name, slot_info in inference_outputs.items():
-                if name == "metainfo":
+                if name in ("metainfo", "targets"):
                     continue
                 if isinstance(slot_info, np.ndarray):
                     ray.logger.warning(f"Inference output being passed through the ray plasma store: {name}")
+                    output_arrays[name] = slot_info
                     continue
-                output_array = self.buffer_manager.slot_info_to_view(slot_info)
-                inference_outputs[name] = output_array
+                output_arrays[name] = self.buffer_manager.slot_info_to_view(slot_info)
                 slots_to_free.append(slot_info)
+
+            metainfo = inference_outputs["metainfo"]
+            records = build_records(
+                output_arrays,
+                metainfo,
+                columns=("output_folder", "tile_name"),
+                image_key="data_tensor",
+                targets=inference_outputs.get("targets"),
+                normalize_instance_masks=True,
+            )
+
             for handler_name, kwargs in self.handler_configs.items():
-                futures.append(
-                    self.thread_pool.submit(
-                        self._handlers[handler_name],
-                        inference_outputs=dict(inference_outputs),
-                        save_dir=self.output_dir,
-                        **kwargs,
+                handler = REGISTRY.get("viz_handler", handler_name).factory
+                for record in records:
+                    futures.append(
+                        self.thread_pool.submit(handler, record=record, save_dir=self.output_dir, global_rank=self.global_rank, **kwargs)
                     )
-                )
 
             for future in as_completed(futures):
                 try:

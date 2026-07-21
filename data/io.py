@@ -1,3 +1,37 @@
+"""Disk I/O for images, annotations, and predictions (TIFF + Zarr/TensorStore).
+
+This module is the single place that touches storage. It is organized in four
+layers (see the section banners below); nothing here changes array layout or
+write semantics -- the banners just make the create/append/overwrite contract
+explicit.
+
+Write-mode vocabulary used throughout:
+
+  * ``"create"``    -- allocate a brand-new array/store. Fails or is intended for
+    first-write only; dense creates additionally require ``shard_spatial_shape``
+    and ``chunk_spatial_shape``. This is the mode the inference SaveWorker uses
+    (predictions land in a *new* zarr next to the source data, never appended to
+    the source array).
+  * ``"overwrite"`` -- upsert into an existing array: open it if present, create
+    it if not, and write (optionally only the ``timepoint_idxs`` slices). Used to
+    add/refresh an annotation for a model without rebuilding the whole store.
+  * region update   -- :func:`update_zarr_data` writes into an existing array at
+    explicit voxel offsets (no resize); it neither creates nor overwrites the
+    whole array, it patches a sub-volume in place.
+
+On-disk annotation layout is nested and unchanged:
+``<image_or_pred_path>/<model_name>/<annotation_name>`` with per-array
+``channel_names`` attrs at the root and on each annotation array. Dense mask
+arrays must carry an ``annotation_name`` containing the substring ``mask``
+(case-insensitive); see :func:`_validate_dense_mask_annotation_name`.
+
+Layer map:
+  1. Root/group attrs + name helpers (channel names, model metadata, validation).
+  2. High-level annotation save API (sparse / dense / masks / metadata).
+  3. File-level read/write (npy, tiff, zarr, and the ``save_file`` dispatcher).
+  4. Low-level Zarr/TensorStore spec builders + array create/update primitives.
+"""
+
 import functools
 import inspect
 import logging
@@ -28,6 +62,34 @@ logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s -
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# Layer 1: root/group attrs + name helpers
+# ----------------------------------------------------------------------------
+# Read/write the per-array ``channel_names`` attrs and model-group metadata,
+# resolve the nested ``<path>/<model>/<annotation>`` mask paths, and enforce the
+# dense-mask naming contract. Pure attribute/name plumbing -- no array data is
+# written here except the small JSON attrs.
+# ============================================================================
+
+
+def record_init(fn):
+    """
+    Decorator for __init__ methods.  Captures every arg/kwarg you passed
+    (with defaults) into _init_args.
+    """
+    sig = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        bound = sig.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        init_args = {name: value for name, value in bound.arguments.items() if name != "self"}
+        self._init_args = init_args
+        return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
 def _open_root_zarr_for_attrs(image_path: str, mode: str):
     """Open the root zarr node (array or group) for attribute read/write (TensorStore root is often an array)."""
     try:
@@ -41,6 +103,7 @@ def read_channel_names(image_path: str) -> Dict[int, str]:
     node = _open_root_zarr_for_attrs(image_path, mode="r")
     raw = node.attrs.get("channel_names", {})
     return {int(k): str(v) for k, v in raw.items()}
+
 
 def read_shape(image_path: str, driver: str = "zarr3") -> Tuple[int, ...]:
     """Read the time dimension size from the root zarr array."""
@@ -163,6 +226,21 @@ def _verify_root_channel_names_match(incoming: Dict[int, str], on_disk: Dict[int
             )
 
 
+# ============================================================================
+# Layer 2: high-level annotation save API
+# ----------------------------------------------------------------------------
+# The public entrypoints used by the inference SaveWorker / pipelines:
+#   * save_annotations_metadata -- merge model-group .zattrs (no array data).
+#   * save_sparse_annotations   -- scores/labels/boxes; create | overwrite(upsert).
+#   * save_dense_annotations    -- dense mask volumes; create | overwrite(upsert);
+#                                  create requires shard/chunk spatial shapes.
+#   * save_masks                -- dense masks + root-array channel bookkeeping;
+#                                  returns the updated root channel_names map.
+# All of these delegate the actual array write to Layer 4 (save_zarr_annotations)
+# and keep the nested <model>/<annotation> layout.
+# ============================================================================
+
+
 def save_annotations_metadata(
     image_path: str,
     model_name: str,
@@ -248,12 +326,13 @@ def save_dense_annotations(
 ) -> None:
     """Save dense annotations to ``<image_path>/<model_name>/<annotation_name>``; update per-array ``channel_names`` attrs.
 
-    ``annotation_name`` is the on-disk array name under the model group; it must contain the substring
-    ``mask`` (case-insensitive), e.g. ``semantic_masks``.
-
+    ``annotation_name`` is the on-disk array name under the model group. This is
+    the generic dense writer used by ALL dense outputs -- segmentation masks
+    (e.g. ``semantic_masks``) as well as dense reconstruction images (denoising /
+    channel_split / upsample), so the name is NOT required to contain ``mask``.
+    Mask-specific bookkeeping (root channel append, channel_names) lives in
+    :func:`save_masks` / :func:`save_masks_channel_names`.
     """
-    # FIXME: Generalize this to work for all dense annotation types
-    _validate_dense_mask_annotation_name(annotation_name)
     if save_mode in ("overwrite", "create"):
         if save_mode == "create" and (shard_spatial_shape is None or chunk_spatial_shape is None):
             raise ValueError(
@@ -278,6 +357,115 @@ def save_dense_annotations(
             raise e
     else:
         raise ValueError(f"Invalid save_mode: {save_mode}")
+
+
+def _dense_image_zarr_path(image_path: str, model_name: str, annotation_name: str) -> Path:
+    return Path(image_path) / model_name / annotation_name
+
+
+def save_dense_image_channel_names(
+    image_path: str, model_name: str, annotation_name: str, channel_names: Dict[int, str]
+) -> None:
+    """Write ``channel_names`` to ``<image>.zarr/<model_name>/<annotation_name>/.zattrs`` (non-mask path)."""
+    path = _dense_image_zarr_path(image_path, model_name, annotation_name)
+    if not path.exists():
+        raise FileNotFoundError(f"Dense image array path does not exist: {path}")
+    arr = zarr.open_array(str(path), mode="a")
+    arr.attrs["channel_names"] = {str(k): v for k, v in sorted(channel_names.items())}
+
+
+def read_dense_image_channel_names(
+    image_path: str, model_name: str, annotation_name: str
+) -> Dict[int, str]:
+    """Read ``channel_names`` from the dense image array at ``<model_name>/<annotation_name>``."""
+    path = _dense_image_zarr_path(image_path, model_name, annotation_name)
+    if not path.exists():
+        return {}
+    arr = zarr.open_array(str(path), mode="r")
+    raw = arr.attrs.get("channel_names", {})
+    return {int(k): str(v) for k, v in raw.items()}
+
+
+def save_dense_image(
+    image_path: str,
+    model_name: str,
+    data: np.ndarray,
+    annotation_name: str,
+    data_format: Literal["TZYXC", "ZYXC"],
+    save_mode: Literal["overwrite", "create"],
+    zarr_driver: str = "zarr3",
+    dtype: str = "float32",
+    timepoint_idxs: Optional[List[int]] = None,
+    shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    channel_names: Optional[Dict[int, str]] = None,
+) -> None:
+    """Save a dense float reconstruction volume to ``<image_path>/<model_name>/<annotation_name>``.
+
+    This is the non-mask dense write path intended for float outputs such as
+    denoising, upsampling, and MAE reconstructions.  The annotation name must
+    NOT contain ``mask`` (those belong to :func:`save_masks`).
+
+    ``dtype`` must be a floating-point dtype (e.g. ``"float32"``, ``"float64"``);
+    non-float dtypes are rejected with an assertion error so that float volumes
+    are never silently truncated to uint16.
+
+    Optional ``channel_names`` are stored as per-array ``.zattrs`` and can be
+    retrieved with :func:`read_dense_image_channel_names`.
+    """
+    if "mask" in annotation_name.lower():
+        raise ValueError(
+            f"save_dense_image annotation_name must NOT contain 'mask' "
+            f"(use save_masks / save_dense_annotations for mask outputs); got {annotation_name!r}"
+        )
+    assert np.dtype(dtype).kind == "f", (
+        f"save_dense_image requires a float dtype (e.g. 'float32', 'float64'); got {dtype!r}"
+    )
+    if save_mode == "create" and (shard_spatial_shape is None or chunk_spatial_shape is None):
+        raise ValueError(
+            "shard_spatial_shape and chunk_spatial_shape are required when creating new dense image arrays"
+        )
+    try:
+        save_zarr_annotations(
+            image_path=image_path,
+            data=data,
+            source_name=model_name,
+            annotation_name=annotation_name,
+            data_format=data_format,
+            shard_spatial_shape=shard_spatial_shape,
+            chunk_spatial_shape=chunk_spatial_shape,
+            save_mode=save_mode,
+            timepoint_idxs=timepoint_idxs,
+            zarr_driver=zarr_driver,
+            dtype=dtype,
+        )
+    except Exception as e:
+        logger.error(f"Failed to save dense image at {image_path}/{model_name}/{annotation_name}: {e}")
+        raise e
+
+    if channel_names is not None:
+        save_dense_image_channel_names(image_path, model_name, annotation_name, channel_names)
+
+
+def read_dense_image(
+    image_path: str,
+    model_name: str,
+    annotation_name: str,
+    zarr_driver: str = "zarr3",
+) -> ts.TensorStore:
+    """Open the dense float array at ``<image_path>/<model_name>/<annotation_name>`` for reading.
+
+    Returns a :class:`tensorstore.TensorStore` (consistent with :func:`read_zarr`).
+    Call ``.read().result()`` or ``np.asarray(...)`` to materialise the data.
+
+    This path has no mask-name requirement and does not touch root channel
+    bookkeeping; it is the symmetric counterpart to :func:`save_dense_image`.
+    """
+    spec = _make_read_zarr_spec(
+        image_path, subpath=f"{model_name}/{annotation_name}", driver=zarr_driver
+    )
+    return ts.open(spec, read=True).result()
+
 
 def save_masks(
     image_path: str,
@@ -323,6 +511,7 @@ def save_masks(
             f"use save_mode='overwrite' to update that mask channel."
         )
 
+    # TODO: should the second condition be allowed?
     append_mask_channel = save_mode == "create" or (save_mode == "overwrite" and not annotation_in_root)
 
     if append_mask_channel:
@@ -341,6 +530,10 @@ def save_masks(
             )
         data_idxs = sorted(data_cn.keys())
         root_cn = read_channel_names(image_path)
+        # NOTE: this should work most of the time but may potentially cause issues if on initial save we 
+        #       have corrupted data channels. Safest way to guard against this is probably to add a check
+        #       that the number of data channels matches channel name information we want to insert. In general,
+        #       the logic in this section should be revisited, but works for now.
         if not root_cn:
             update_root_channel_names(image_path, data_cn)
             root_cn = read_channel_names(image_path)
@@ -394,6 +587,7 @@ def save_masks(
         data_idxs = sorted(data_cn.keys())
         mask_idxs = sorted(mask_cn.keys())
         root_cn = read_channel_names(image_path)
+        # TODO: revisit this logic
         _verify_root_channel_names_match(existing_channel_names, root_cn)
         if root_cn != existing_channel_names:
             # Require full agreement on keys and values
@@ -448,6 +642,16 @@ def save_masks(
         raise ValueError(f"Invalid save_mode: {save_mode}")
 
     return read_channel_names(image_path)
+
+# ============================================================================
+# Layer 3: file-level read/write (npy / tiff / zarr) + dispatcher
+# ----------------------------------------------------------------------------
+# Whole-file helpers that operate on a single path (no nested annotation
+# layout). ``read_file`` / ``save_file`` dispatch on suffix; ``save_file`` only
+# ever *creates* a new tiff or zarr (used for prediction volumes written beside
+# the source data). ``save_tiff`` defined later in this layer.
+# ============================================================================
+
 
 def read_npy(image_path: str, dtype: Optional[NUMPY_DTYPES | str] = None) -> np.ndarray:
     if isinstance(image_path, torch.Tensor):
@@ -537,6 +741,20 @@ def save_file(image_path: str, data: np.ndarray, **kwargs) -> None:
         save_tiff(image_path, data, **kwargs)
     else:
         raise ValueError(f"Unsupported file format for {image_path}")
+
+
+# ============================================================================
+# Layer 4: low-level Zarr/TensorStore spec builders + array primitives
+# ----------------------------------------------------------------------------
+# The bottom of the stack. Spec builders (_make_write/read_zarr_spec,
+# create_zarr_spec) and the actual TensorStore array operations:
+#   * save_zarr_annotations -- create | overwrite(upsert) a nested annotation
+#                              array (called by all Layer-2 save helpers).
+#   * save_zarr_data        -- create a new standalone zarr volume.
+#   * update_zarr_data      -- in-place region write into an existing array at
+#                              explicit voxel offsets (no create, no resize).
+#   * annotation_exists / normalize_idxs -- supporting lookups.
+# ============================================================================
 
 
 def _make_write_zarr_spec(
@@ -633,6 +851,7 @@ def _make_write_zarr_spec(
         }
     return zarr_spec
 
+
 def _make_read_zarr_spec(
     image_path: str,
     subpath: Optional[str] = None,
@@ -644,6 +863,7 @@ def _make_read_zarr_spec(
         "path": subpath if subpath else "",
     }
     return spec
+
 
 # NOTE: taken from ml-data-cell_observatory_platform
 def create_zarr_spec(
@@ -786,8 +1006,10 @@ def annotation_exists(image_path: str, source_name: str, annotation_name: str, z
             return False
         raise
 
+
 VALID_SOURCE_NAME = re.compile(r"^[^\/\\]+$")
 VALID_ANNOTATION_NAME = re.compile(r"^[a-zA-Z0-9_]+$")
+
 
 def save_zarr_annotations(
     image_path: str,
@@ -928,6 +1150,7 @@ def save_zarr_data(
     if channel_names is not None:
         update_root_channel_names(image_path, channel_names)
 
+
 def normalize_idxs(idxs: Iterable[int | float], shape_size: int) -> List[int]:
     """Normalize a list of indices to be within the bounds of the shape size. Converts negative indices to positive indices."""
     new_idxs = []
@@ -940,6 +1163,7 @@ def normalize_idxs(idxs: Iterable[int | float], shape_size: int) -> List[int]:
             raise ValueError(f"Index {idx} is out of bounds for shape size {shape_size}.")
         new_idxs.append(int(idx))
     return new_idxs
+
 
 def update_zarr_data(
     image_path: str,
@@ -1057,6 +1281,7 @@ def update_zarr_data(
     else:
         raise ValueError(f"Invalid mode: {mode}. Must be one of ['append', 'overwrite'].")
 
+
 def save_tiff(image_path: str, data: np.ndarray, axes: str, with_fiji: bool = False) -> None:
     if with_fiji:
         data = np.ascontiguousarray(data)
@@ -1064,305 +1289,3 @@ def save_tiff(image_path: str, data: np.ndarray, axes: str, with_fiji: bool = Fa
         imwrite(image_path, data, ome=True, metadata={"axes": axes}, bigtiff=True, photometric="minisblack")
     else:
         imsave(image_path, data)
-
-
-def get_shape_from_file_tiff(image_path: str) -> tuple:
-    path = Path(image_path)
-    with TiffFile(str(path)) as tif:
-        # series[0] is the first image series (e.g. the main image)
-        # .shape might be (Z,Y,X), (C,Z,Y,X), (T,Z,Y,X) or (T,C,Z,Y,X), etc.
-        return tif.series[0].shape
-
-
-def record_init(fn):
-    """
-    Decorator for __init__ methods.  Captures every arg/kwarg you passed
-    (with defaults) into _init_args.
-    """
-    sig = inspect.signature(fn)
-
-    @functools.wraps(fn)
-    def wrapper(self, *args, **kwargs):
-        bound = sig.bind(self, *args, **kwargs)
-        bound.apply_defaults()
-        init_args = {name: value for name, value in bound.arguments.items() if name != "self"}
-        self._init_args = init_args
-        return fn(self, *args, **kwargs)
-
-    return wrapper
-
-
-# def _coerce_bool_in(df: pl.DataFrame, col: str) -> pl.DataFrame:
-#     _INT_TYPES = {pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}
-#     dt = df.schema.get(col)
-
-#     if dt == pl.Boolean:
-#         expr = pl.col(col).fill_null(False)
-
-#     elif dt in _INT_TYPES:
-#         expr = (pl.col(col) != 0).fill_null(False)
-
-#     else:
-#         expr = pl.col(col).cast(pl.Utf8).str.strip_chars().str.to_lowercase().is_in(["t", "true", "1"]).fill_null(False)
-
-#     return df.with_columns(expr.alias(col))
-
-
-# def filter_hypercubes_dataframe_storage_server(df: pl.DataFrame, server_folder_path: str | None = None) -> pl.DataFrame:
-#     if server_folder_path is None or str(server_folder_path).startswith("/clusterfs"):
-#         flag = "exists"
-#         df = _coerce_bool_in(df, flag).filter(pl.col(flag))
-#         return df
-
-#     if str(server_folder_path).startswith("/groups"):
-#         flag = "exists_prfs"
-#     elif str(server_folder_path).startswith("/aws") or str(server_folder_path).startswith(
-#         "/workspace/CellObservatoryData"
-#     ):
-#         flag = "exists_aws"
-#     elif str(server_folder_path).startswith("/lustre"):
-#         flag = "exists_oak"
-#     else:
-#         raise ValueError(f"Unknown server_folder_path: {server_folder_path}")
-
-#     df = (
-#         _coerce_bool_in(df, flag)
-#         .filter(pl.col(flag))
-#         .with_columns(pl.lit(str(server_folder_path)).alias("server_folder"))
-#     )
-
-#     logger.info(f"Loaded hypercubes on server: {server_folder_path}; shape={df.shape}")
-#     return df
-
-
-# def apply_hypercubes_dataframe_selections(
-#     df: pl.DataFrame,
-#     max_rois: int | None = None,
-#     max_tiles: int | None = None,
-#     max_hypercubes: int | None = None,
-#     hpf_list: list[int] | None = None,
-#     roi_list: list[int] | None = None,
-#     tile_list: list[str] | None = None,
-#     timepoint_list: list[int] | None = None,
-# ) -> pl.DataFrame:
-#     logger.info(
-#         f"\nApplied selections:\n"
-#         f"hpf_list={hpf_list}\n"
-#         f"roi_list={roi_list}\n"
-#         f"tile_list={tile_list}\n"
-#         f"timepoint_list={timepoint_list}\n"
-#         f"max_rois={max_rois}\n"
-#         f"max_tiles={max_tiles}\n"
-#         f"max_hypercubes={max_hypercubes}"
-#     )
-
-#     def _to_list_or_none(x):
-#         if x is None or len(list(x)) == 0:
-#             return None
-#         else:
-#             return list(x)
-
-#     rois = _to_list_or_none(roi_list)
-#     tiles = _to_list_or_none(tile_list)
-#     hpfs = _to_list_or_none(hpf_list)
-#     tps = _to_list_or_none(timepoint_list)
-
-#     conds = []
-#     if rois is not None and "prepared_id" in df.columns:
-#         conds.append(pl.col("prepared_id").is_in(rois))
-#     if tiles is not None and "tile_name" in df.columns:
-#         conds.append(pl.col("tile_name").is_in(tiles))
-#     if tps is not None and "time_start" in df.columns:
-#         conds.append(pl.col("time_start").is_in(tps))
-
-#     if conds:
-#         cond = conds[0]
-#         for c in conds[1:]:
-#             cond = cond & c
-#         df = df.filter(cond)
-
-#     if hpfs is not None and "hpf" in df.columns:
-#         df = df.filter(pl.col("hpf").is_in(hpfs))
-
-#     if max_rois is not None and "prepared_id" in df.columns:
-#         keep_rois = (
-#             df.select(pl.col("prepared_id").unique())
-#             .sort("prepared_id")
-#             .select(pl.col("prepared_id").head(max_rois))
-#             .to_series()
-#             .to_list()
-#         )
-#         df = df.filter(pl.col("prepared_id").is_in(keep_rois))
-
-#     if max_tiles is not None and "tile_name" in df.columns:
-#         keep_tiles = (
-#             df.select(pl.col("tile_name").unique())
-#             .sort("tile_name")
-#             .select(pl.col("tile_name").head(max_tiles))
-#             .to_series()
-#             .to_list()
-#         )
-#         df = df.filter(pl.col("tile_name").is_in(keep_tiles))
-
-#     if max_hypercubes is not None:
-#         df = df.sort(["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_start"]).head(max_hypercubes)
-
-#     return df
-
-
-# def add_has_annotations_column(df: pl.DataFrame) -> pl.DataFrame:
-#     """
-#     look for nested entries for each channel in the
-#     pc_metadata_json col:  {'0': {'histogram': {...}}, '1': {'mask_bbox_dict': {...}}}
-#     each key is a channel id mapping to a dict of metadata
-#     """
-#     if "has_annotations" in df.columns:
-#         return df
-#     if "pc_metadata_json" not in df.columns and "metadata_tile_json" not in df.columns:
-#         return df.with_columns(pl.lit(False).alias("has_annotations"))
-#     if "pc_metadata_json" in df.columns:
-#         has_key = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"', literal=False)
-#         empty_obj = pl.col("pc_metadata_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
-#         expr = pl.col("pc_metadata_json").is_not_null() & has_key & (~empty_obj)
-#         return df.with_columns(expr.alias("has_annotations"))
-#     if "metadata_tile_json" in df.columns:
-#         has_key = pl.col("metadata_tile_json").str.contains(r'"mask_bbox_dict"', literal=False)
-#         empty_obj = pl.col("metadata_tile_json").str.contains(r'"mask_bbox_dict"\s*:\s*\{\s*\}', literal=False)
-#         expr = pl.col("metadata_tile_json").is_not_null() & has_key & (~empty_obj)
-#         return df.with_columns(expr.alias("has_annotations"))
-
-
-# # FIXME: current nomenclature for metadata may be improved
-# def create_channel_metadata_columns(df: pl.DataFrame, expected_channel_ids=["0", "1"]) -> pl.DataFrame:
-#     new_columns = []
-#     for ch in expected_channel_ids:
-#         if f"histogram_ch_{ch}" not in df.columns:
-#             new_columns.append(pl.lit(None).alias(f"histogram_ch_{ch}"))
-#         if f"mask_bbox_dict_ch_{ch}" not in df.columns:
-#             new_columns.append(pl.lit(None).alias(f"mask_bbox_dict_ch_{ch}"))
-#     if new_columns:
-#         df = df.with_columns(new_columns)
-#     if "mask_bbox_dict" not in df.columns:
-#         for ch in expected_channel_ids:
-#             if f"mask_bbox_dict_ch_{ch}" in df.columns:
-#                 df = df.with_columns(pl.col(f"mask_bbox_dict_ch_{ch}").alias("mask_bbox_dict"))
-#     # if "histograms" not in df.columns:
-#     #     for ch in expected_channel_ids:
-#     #         if f"histogram_ch_{ch}" in df.columns:
-#     #             df = df.with_columns(pl.col(f"histogram_ch_{ch}").alias("histograms"))
-#     return df
-
-
-# def load_hypercubes_dataframe(
-#     hypercubes_dataframe_path: str | Path,
-#     max_rois: int | None = None,
-#     max_tiles: int | None = None,
-#     max_hypercubes: int | None = None,
-#     hpf_list: list[int] | None = None,
-#     roi_list: list[int] | None = None,
-#     tile_list: list[str] | None = None,
-#     timepoint_list: list[int] | None = None,
-#     server_folder_path: str | None = None,
-#     synthetic_only: bool = False,
-#     has_annotations: bool = False,
-# ) -> tuple[pl.DataFrame, dict]:
-#     p = Path(hypercubes_dataframe_path)
-#     if not p.exists():
-#         raise FileNotFoundError(p)
-
-#     t_read = time.perf_counter()
-#     df = pl.read_csv(p, null_values=["NULL", "null", "NaN", ""])
-#     read_s = time.perf_counter() - t_read
-#     logger.info(f"Loaded hypercubes dataframe in {read_s:.2f} s; shape={df.shape}")
-
-#     # NOTE: database is currently not updated to reflect storage server status
-#     #       remove this once the database is updated
-#     # df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
-#     df = add_has_annotations_column(df)
-
-#     if synthetic_only:
-#         df = _coerce_bool_in(df, "is_synthetic").filter(pl.col("is_synthetic"))
-
-#     if has_annotations:
-#         df = _coerce_bool_in(df, "has_annotations").filter(pl.col("has_annotations"))
-
-#     df = create_channel_metadata_columns(df)
-
-    # t0 = time.perf_counter()
-    # df = apply_hypercubes_dataframe_selections(
-    #     df,
-    #     max_rois=max_rois,
-    #     max_tiles=max_tiles,
-    #     max_hypercubes=max_hypercubes,
-    #     hpf_list=hpf_list,
-    #     roi_list=roi_list,
-    #     tile_list=tile_list,
-    #     timepoint_list=timepoint_list,
-    # )
-    # t1 = time.perf_counter()
-    # logger.info(f"Applied selections in {t1 - t0:.2f} s; shape={df.shape}")
-
-#     try:
-#         with open(p.with_suffix(".json"), "r") as f:
-#             configs = ujson.load(f)
-#     except FileNotFoundError:
-#         configs = {}
-
-#     return df.to_pandas(use_pyarrow_extension_array=True), configs
-
-
-# def load_tiles_dataframe(
-#     hypercubes_dataframe_path: str | Path,
-#     max_rois: int | None = None,
-#     max_tiles: int | None = None,
-#     hpf_list: list[int] | None = None,
-#     roi_list: list[int] | None = None,
-#     tile_list: list[str] | None = None,
-#     timepoint_list: list[int] | None = None,
-#     server_folder_path: str | None = None,
-#     synthetic_only: bool = False,
-#     has_annotations: bool = False,
-# ) -> tuple[pd.DataFrame, dict]:
-#     p = Path(hypercubes_dataframe_path)
-#     if not p.exists():
-#         raise FileNotFoundError(p)
-
-#     t0 = time.perf_counter()
-#     df = pl.read_csv(p)
-#     t1 = time.perf_counter()
-#     logger.info(f"Loaded tiles dataframe in {t1 - t0:.2f} s; shape={df.shape}")
-
-#     # NOTE: database is currently not updated to reflect storage server status
-#     #       remove this once the database is updated
-#     # df = filter_hypercubes_dataframe_storage_server(df, server_folder_path)
-#     df = add_has_annotations_column(df)
-
-#     if synthetic_only and "is_synthetic" in df.columns:
-#         df = _coerce_bool_in(df, "is_synthetic").filter(pl.col("is_synthetic"))
-
-#     if has_annotations and "has_annotations" in df.columns:
-#         df = _coerce_bool_in(df, "has_annotations").filter(pl.col("has_annotations"))
-
-#     df = create_channel_metadata_columns(df)
-
-#     t0 = time.perf_counter()
-#     df = apply_hypercubes_dataframe_selections(
-#         df,
-#         max_rois=max_rois,
-#         max_tiles=max_tiles,
-#         max_hypercubes=None,
-#         hpf_list=hpf_list,
-#         roi_list=roi_list,
-#         tile_list=tile_list,
-#         timepoint_list=timepoint_list,
-#     )
-#     t1 = time.perf_counter()
-#     logger.info(f"Applied tile selections in {t1 - t0:.2f} s; shape={df.shape}")
-
-#     try:
-#         with open(p.with_suffix(".json"), "r") as f:
-#             configs = ujson.load(f)
-#     except FileNotFoundError:
-#         configs = {}
-
-#     return df.to_pandas(use_pyarrow_extension_array=True), configs

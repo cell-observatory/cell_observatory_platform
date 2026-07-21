@@ -1,3 +1,27 @@
+"""Inference visualization + prediction-saving helpers.
+
+Architecture (kept deliberately layered so new plot types are cheap to add):
+
+  1. Shared low-level utils  -- ``_ensure_numpy*``, :func:`normalize_slice`,
+     :func:`mip_project`, :func:`instance_label_cmap`, and the volume writers
+     (:func:`_save_tiff_volume` / :func:`_save_zarr_volume`, dispatched by
+     :func:`save_volume`). These are format/layout primitives with no plotting
+     policy and are reused by every higher-level helper.
+
+  2. Per-plot-type helpers   -- :func:`save_predictions` (dense MIP volumes/PDF),
+     :func:`save_instance_predictions` (box/mask overlays), :func:`save_semantic_predictions`
+     (per-class semantic panels), :func:`save_feature_visualizations` (PCA /
+     patch-cosine feature maps), and :func:`save_bbox_overlay` (predicted boxes).
+     Each owns exactly one artifact type and shares the layer-1 primitives.
+
+  3. Controller / dispatch   -- :data:`VISUALIZATION_HANDLERS` maps a declarative
+     ``handler`` name (the config key under ``viz_worker.handler_configs``) to its
+     layer-2 helper. ``inference.visualizer.VizWorker`` is the runtime dispatcher:
+     it materializes buffer slots, unpacks the batch, derives per-sample names,
+     and then calls the matching helper. Adding a plot type = add a layer-2
+     helper + one entry here; the config surface stays declarative.
+"""
+
 from tqdm import tqdm
 import hashlib
 from pathlib import Path
@@ -38,40 +62,90 @@ def tile_hash(tile_name: str) -> int:
     return stable_i64(tile_name)
 
 
-def unpack_batched_tensors(
-    tensors: Dict[str, Tensor | ArrayLike],
-    skip_keys: Optional[set[str]] = None,
-) -> List[Dict[str, Tensor | ArrayLike]]:
-    """
-    Unpack batch dimension of a dictionary of torch tensors or numpy arrays: 
-    Dict[str, Tensor BZYX] -> List[Dict[str, Tensor ZYX]] with len B.
-    Non-tensor/non-array entries are skipped.
-    Uses unbind(0) or np.split(0) (both no copy) and zip.
-    Returns a list of dictionaries, one for each batch element.
-    """
-    skip_keys = skip_keys or set()
-    tensor_items = [
-        (k, v)
-        for k, v in tensors.items()
-        if k not in skip_keys and (
-            isinstance(v, torch.Tensor) 
-            or isinstance(v, np.ndarray)
-        )
-    ]
-    if not tensor_items:
-        return []
-    keys = [k for k, _ in tensor_items]
-    unbound = []
-    for _, t in tensor_items:
-        if isinstance(t, torch.Tensor):
-            unbound.append(t.unbind(0))
-        else:
-            # np.split keeps a length-1 batch axis; match torch.unbind(0) by dropping it
-            chunks = np.split(t, t.shape[0], axis=0)
-            unbound.append(tuple(np.squeeze(c, axis=0) for c in chunks))
-    return [dict(zip(keys, batch_slice)) for batch_slice in zip(*unbound)]
+# ============================================================================
+# Layer 1: shared low-level utils (normalize / MIP / colormap / volume save)
+# ============================================================================
 
-def _normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
+
+def reduce_queries_to_semantic_map(
+    pred_masks: torch.Tensor,
+    pred_logits: torch.Tensor,
+    num_classes: int = 1,
+    topk_per_image: int = 1,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Convert Mask2Former query-based outputs to a dense semantic map.
+
+    Args:
+        pred_masks: [B, num_queries, D, H, W] - mask logits (already at target resolution)
+        pred_logits: [B, num_queries, num_classes + 1] - indices 0..num_classes-1 = semantic classes, last = no-object
+        num_classes: Number of foreground classes (default: 1 for binary segmentation)
+        topk_per_image: Number of top queries to use per image (for num_classes=1 case)
+
+    Returns:
+        semantic_map: [B, D, H, W, num_classes] - channels-last dense semantic map (per-class)
+        average_probability: [B, num_classes] - average probability of the semantic map for each class
+    """
+    B, num_queries, D, H, W = pred_masks.shape
+
+    if num_classes == 1:
+        # Binary segmentation: single semantic class at index 0, no-object at index 1
+        probs = pred_logits.softmax(-1)[..., 0]  # [B, Q] - class 0 (foreground) probability per query
+        # Get top k queries by foreground probability
+        topk_indices = probs.topk(k=topk_per_image, dim=1).indices  # [B, K]
+        topk_probs = probs.gather(1, topk_indices)  # [B, K]
+        # Get masks for top k queries: gather output shape = index shape, so expand index to [B, K, D, H, W]
+        topk_indices_expanded = topk_indices.view(B, topk_per_image, 1, 1, 1).expand(B, topk_per_image, D, H, W)
+        topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
+        # Convert mask logits to probabilities
+        topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
+        # Weight masks by foreground probability and sum over top k queries
+        # topk_probs: [B, K] -> [B, K, 1, 1, 1] for broadcasting
+        semantic = (topk_probs.view(B, topk_per_image, 1, 1, 1) * topk_masks).sum(1, keepdim=True)  # [B, 1, D, H, W]
+        # Permute to channels-last: [B, D, H, W, 1]
+        semantic = semantic.permute(0, 2, 3, 4, 1)  # [B, D, H, W, 1]
+        average_probability = topk_probs.mean(dim=1)  # [B, 1]
+        return semantic, average_probability
+    else:
+        # Multi-class segmentation: produce per-class maps
+        # pred_logits: [B, Q, num_classes + 1]; indices 0..num_classes-1 = semantic classes, last index = no-object (DETR/Mask2Former convention, see losses.py empty_weight[-1])
+        class_probs = pred_logits.softmax(-1)[..., :-1]  # [B, Q, num_classes] - keep all semantic classes, drop no-object
+        
+        # For each class, combine masks from queries assigned to that class
+        semantic_per_class = []
+        average_probability_per_class = []
+        for c in range(num_classes):
+            # Get probability of class c for each query: [B, Q]
+            class_c_probs = class_probs[..., c]  # [B, Q]
+            
+            # Get top k queries for this class
+            topk_indices = class_c_probs.topk(k=min(topk_per_image, num_queries), dim=1).indices  # [B, K]
+            topk_probs = class_c_probs.gather(1, topk_indices)  # [B, K]
+            
+            # Get masks for top k queries
+            topk_indices_expanded = topk_indices.view(B, -1, 1, 1, 1).expand(B, -1, D, H, W)
+            topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
+            topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
+            
+            # Weight by class probability and combine (max aggregation for cleaner maps)
+            # Use max instead of sum to avoid over-saturation
+            weighted_masks = topk_probs.view(B, -1, 1, 1, 1) * topk_masks  # [B, K, D, H, W]
+            class_map = weighted_masks.max(dim=1)[0]  # [B, D, H, W] - max over queries
+            semantic_per_class.append(class_map)
+            average_probability_per_class.append(topk_probs.mean(dim=1))
+        
+        # Stack along channel dimension: [B, D, H, W, num_classes]
+        semantic = torch.stack(semantic_per_class, dim=-1)  # [B, D, H, W, num_classes]
+        average_probability = torch.stack(average_probability_per_class, dim=-1)  # [B, num_classes]
+        return semantic, average_probability
+
+
+def normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
+    """Percentile-normalize a 2D image to ``[0, 1]`` for display.
+
+    Falls back to min/max if the percentile window is degenerate and to an all-
+    zero image if the slice is constant. Shared by every PDF generator.
+    """
     img2d = np.asarray(img2d)
     lo, hi = np.percentile(img2d, [pmin, pmax])
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
@@ -80,6 +154,11 @@ def _normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
             return np.zeros_like(img2d, dtype=np.float32)
     out = (img2d - lo) / (hi - lo)
     return np.clip(out, 0, 1)
+
+
+def mip_project(block: np.ndarray, axis: int = 0) -> np.ndarray:
+    """Max-intensity projection over ``axis`` (default: leading z-block axis)."""
+    return np.asarray(block).max(axis=axis)
 
 
 def _ensure_numpy(x: ArrayLike):
@@ -215,6 +294,14 @@ def preds_dict_to_pdf(
     names = list(preds_tc_or_czyx.keys())
     num_types = len(names)
 
+    # One figure reused across all (t, z) pages (max_C x num_types is fixed).
+    fig, axes_grid = plt.subplots(
+        max_C,
+        num_types,
+        figsize=(5 * num_types, 4 * max_C),
+        squeeze=False,
+    )
+
     with PdfPages(out_path) as pdf:
         for t in range(T_ref):
             for z0 in range(0, Z_ref, z_step):
@@ -222,12 +309,9 @@ def preds_dict_to_pdf(
                 if z1 <= z0:
                     continue
 
-                fig, axes_grid = plt.subplots(
-                    max_C,
-                    num_types,
-                    figsize=(5 * num_types, 4 * max_C),
-                    squeeze=False,
-                )
+                for row in range(max_C):
+                    for col in range(num_types):
+                        axes_grid[row, col].cla()
 
                 for col, name in enumerate(names):
                     vol = vols_tzyxc[name]
@@ -237,14 +321,14 @@ def preds_dict_to_pdf(
                             axes_grid[row, col].axis("off")
                         continue
 
-                    mip = block.max(axis=0)  # (Y,X,C)
+                    mip = mip_project(block)  # (Y,X,C)
                     _, _, C = mip.shape
 
                     for c in range(max_C):
                         ax = axes_grid[c, col]
                         if c < C:
                             img = mip[..., c]
-                            img_norm = _normalize_slice(img, pmin=pmin, pmax=pmax)
+                            img_norm = normalize_slice(img, pmin=pmin, pmax=pmax)
                             ax.imshow(img_norm, cmap="gray", interpolation="nearest")
                             ax.set_title(f"{name} | T={t}  Z∈[{z0},{z1})  C={c}")
                             ax.axis("off")
@@ -253,7 +337,8 @@ def preds_dict_to_pdf(
 
                 fig.tight_layout()
                 pdf.savefig(fig)
-                plt.close(fig)
+
+    plt.close(fig)
 
 
 def preds_to_pdf(
@@ -288,6 +373,12 @@ def preds_to_pdf(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # One figure reused across all (t, z) pages (C is fixed): clearing axes each
+    # page avoids reallocating a figure per slice.
+    C = vol_tzyxc.shape[-1]
+    fig, axes_col = plt.subplots(C, 1, figsize=(18, 7 * C), squeeze=False)
+    axes_col = axes_col[:, 0]
+
     with PdfPages(out_path) as pdf:
         for t in range(T):
             for z0 in range(0, Z, z_step):
@@ -298,71 +389,22 @@ def preds_to_pdf(
                     continue
 
                 # Max-intensity projection over z-axis
-                mip = block.max(axis=0)  # (Y, X, C)
-                _, _, C = mip.shape
-
-                # Channels stacked vertically: C rows x 1 column
-                fig, axes_col = plt.subplots(C, 1, figsize=(18, 7 * C), squeeze=False)
-                axes_col = axes_col[:, 0]
+                mip = mip_project(block)  # (Y, X, C)
 
                 for c in range(C):
                     img = mip[..., c]
-                    img_norm = _normalize_slice(img, pmin=pmin, pmax=pmax)
+                    img_norm = normalize_slice(img, pmin=pmin, pmax=pmax)
 
                     ax = axes_col[c]
+                    ax.cla()
                     ax.imshow(img_norm, cmap="gray", interpolation="nearest")
                     ax.set_title(f"T={t}  Z∈[{z0},{z1})  C={c}")
                     ax.axis("off")
 
                 fig.tight_layout()
                 pdf.savefig(fig)
-                plt.close(fig)
 
-
-def _save_tiff_volume(
-    predictions: np.ndarray,
-    axes: Literal["TCZYX", "CZYX"],
-    save_dir: Path,
-    name: str,
-):
-    """
-    Save as TIFF, always TCZYX or CZYX.
-    """
-    if axes not in ("TCZYX", "CZYX"):
-        raise ValueError(f"Unsupported axes for TIFF: {axes!r}")
-
-    save_path = save_dir / f"pred_{name}.tiff"
-    # OME TIFF typically wants float32
-    arr = predictions.astype(np.float32)
-    save_file(save_path, arr, axes=axes)
-
-
-def _save_zarr_volume(
-    predictions: np.ndarray,
-    axes: Literal["TCZYX", "CZYX"],
-    save_dir: Path,
-    name: str,
-    zarr_chunk_spatial_shape: Optional[Tuple[int, ...]] = None,
-    zarr_shard_spatial_shape: Optional[Tuple[int, ...]] = None,
-):
-    """
-    Save as Zarr, also standardized to TCZYX or CZYX.
-    """
-    if axes not in ("TCZYX", "CZYX"):
-        raise ValueError(f"Unsupported axes for Zarr: {axes!r}")
-
-    save_path = save_dir / f"pred_{name}.zarr"
-    arr = predictions.astype(np.float16)
-
-    save_file(
-        save_path,
-        arr,
-        chunk_spatial_shape=zarr_chunk_spatial_shape,
-        shard_spatial_shape=zarr_shard_spatial_shape,
-        input_format=axes,  # axes string encodes layout
-        dtype="float16",
-    )
-
+    plt.close(fig)
 
 def pca_reduce(
     vol_tzyxc: np.ndarray,   # (T,Z,Y,X,C)
@@ -538,6 +580,11 @@ def patch_cosine_sim_maps(
     return sims_gt.numpy()
 
 
+# ============================================================================
+# Layer 2: Per-plot-type helpers
+# ============================================================================
+
+
 def save_feature_visualizations(
     name: str,
     predictions: Dict[str, ArrayLike],
@@ -644,7 +691,7 @@ def save_feature_visualizations(
                     for c in range(Cg):
                         ax = axes[Cg + c]
                         img = gt[t, z, :, :, c]
-                        ax.imshow(_normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
+                        ax.imshow(normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
                         ax.set_title(f"{gt_key} | t={t} z={z} c={c}")
                         ax.axis("off")
 
@@ -666,7 +713,7 @@ def save_feature_visualizations(
                     for c in range(Cg):
                         ax = axes[1 + c]
                         img = gt[t, z, :, :, c]
-                        ax.imshow(_normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
+                        ax.imshow(normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
                         ax.set_title(f"{gt_key} | t={t} z={z} c={c}")
                         ax.axis("off")
 
@@ -682,7 +729,6 @@ def save_predictions(
     predictions: ArrayLike | dict[str, ArrayLike],
     save_tensors: List[str],
     save_dir: Path | str,
-    save_as_volume: bool,
     save_as_pdf: bool,
     z_step_pdf: int,
     filetype: Literal["tiff", "zarr"],
@@ -735,25 +781,6 @@ def save_predictions(
                 pmax=pmax,
             )
 
-        # Separate volumes per output type
-        if save_as_volume:
-            for key, arr_tc_or_czyx in arr_map.items():
-                subname = f"{name}_{key}"
-                axes = axes_map[key]
-                if filetype == "tiff":
-                    _save_tiff_volume(arr_tc_or_czyx, axes=axes, save_dir=save_dir, name=subname)
-                elif filetype == "zarr":
-                    _save_zarr_volume(
-                        arr_tc_or_czyx,
-                        axes=axes,
-                        save_dir=save_dir,
-                        name=subname,
-                        zarr_chunk_spatial_shape=zarr_chunk_spatial_shape,
-                        zarr_shard_spatial_shape=zarr_shard_spatial_shape,
-                    )
-                else:
-                    raise ValueError(f"Unsupported save format: {filetype!r}")
-
         return
 
     # Single-array case
@@ -764,22 +791,6 @@ def save_predictions(
     if save_as_pdf:
         pdf_path = save_dir / f"pred_{name}_MIP.pdf"
         preds_to_pdf(arr_tc_or_czyx, axes=axes, out_path=pdf_path, z_step=z_step_pdf)
-
-    # Volume
-    if save_as_volume:
-        if filetype == "tiff":
-            _save_tiff_volume(arr_tc_or_czyx, axes=axes, save_dir=save_dir, name=name)
-        elif filetype == "zarr":
-            _save_zarr_volume(
-                arr_tc_or_czyx,
-                axes=axes,
-                save_dir=save_dir,
-                name=name,
-                zarr_chunk_spatial_shape=zarr_chunk_spatial_shape,
-                zarr_shard_spatial_shape=zarr_shard_spatial_shape,
-            )
-        else:
-            raise ValueError(f"Unsupported save format: {filetype!r}")
 
 
 def _boxes_in_z_slice(boxes_xyzxyz: np.ndarray, z: int) -> np.ndarray:
@@ -909,7 +920,7 @@ def save_bbox_overlay(
     with PdfPages(out_pdf) as pdf:
         for t in range(T):
             for z in range(0, Z, max(1, z_step)):
-                bg = _normalize_slice(
+                bg = normalize_slice(
                     img_tzyxc[t, z, :, :, background_channel],
                     pmin=pmin,
                     pmax=pmax,
@@ -939,11 +950,11 @@ def save_bbox_overlay(
 
 def save_instance_predictions(
     save_dir: Path | str,
-    identifiers: Sequence[str],
-    images: Sequence[ArrayLike],
-    preds: Sequence[Dict[str, Any]],
-    targets: Optional[Sequence[Dict[str, Any]]] = None,
-    regions: Optional[Sequence[Dict[str, Any]]] = None,
+    identifier: str,
+    image: ArrayLike,
+    preds: Dict[str, Any],
+    targets: Optional[Dict[str, Any]] = None,
+    region: Optional[Dict[str, Any]] = None,
     pred_boxes_key: str = "boxes",
     pred_masks_key: str = "masks",
     gt_boxes_key: str = "boxes",
@@ -974,14 +985,13 @@ def save_instance_predictions(
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    n = len(identifiers)
-    if targets is None:
-        targets = [{} for _ in range(n)]
-    if not (len(images) == len(preds) == len(targets) == n):
-        raise ValueError("identifiers/images/preds/targets must have same length")
-
-    if regions is not None and len(regions) != n:
-        raise ValueError("regions must be None or same length as identifiers")
+    # Single record: render over a length-1 batch (keeps the per-(t,z) renderer below).
+    identifiers = [identifier]
+    images = [image]
+    preds = [preds]
+    targets = [targets if targets is not None else {}]
+    regions = None if region is None else [region]
+    n = 1
 
     def _has_nonempty(x: Any) -> bool:
         if x is None:
@@ -1026,16 +1036,17 @@ def save_instance_predictions(
         gt_masks = targets[i].get(gt_masks_key, None)
         pr_masks = preds[i].get(pred_masks_key, None)
 
-        # FIXME: we unsqueeze since downstream plotting logic
-        #       expects (N,T,Z,Y,X) shape, generalize later if needed
+        # Downstream plotting expects per-instance (N,1,Z,Y,X) stacks. Pred masks
+        # already arrive canonicalized (the record builder normalized them by the
+        # model-declared kind). GT masks come from the dataset as per-instance
+        # stacks, so they keep the legacy (N,Z,Y,X) -> (N,1,Z,Y,X) passthrough.
         if gt_masks is not None:
             gt_masks = _ensure_numpy(gt_masks)
             if gt_masks.ndim == 4:
                 gt_masks = gt_masks[:, None, ...]  # (N,Z,Y,X) -> (N,1,Z,Y,X)
         if pr_masks is not None:
+            # masks arrive already canonicalized to (N,1,Z,Y,X) by the record builder.
             pr_masks = _ensure_numpy(pr_masks)
-            if pr_masks.ndim == 4:
-                pr_masks = pr_masks[:, None, ...]  # (N,Z,Y,X) -> (N,1,Z,Y,X)
 
         # --- plot ---
         has_boxes_row = _has_nonempty(gt_xyzxyz) or _has_nonempty(pr_xyzxyz)
@@ -1058,11 +1069,11 @@ def save_instance_predictions(
                     x_line = X // 2
 
                     # Precompute ortho background planes for this t (background channel)
-                    bg_xz = _normalize_slice(
+                    bg_xz = normalize_slice(
                         img_tzyxc[t, :, y_line, :, background_channel],  # (Z,X)
                         pmin=pmin, pmax=pmax
                     )
-                    bg_yz = _normalize_slice(
+                    bg_yz = normalize_slice(
                         img_tzyxc[t, :, :, x_line, background_channel].transpose(1, 0),  # (Y,Z)
                         pmin=pmin, pmax=pmax
                     )
@@ -1098,7 +1109,7 @@ def save_instance_predictions(
                     fig.suptitle(f"T={t} Z={z}{region_s}", fontsize=12)
 
                     # background slice (XY at this z)
-                    bg = _normalize_slice(
+                    bg = normalize_slice(
                         img_tzyxc[t, z, :, :, background_channel],
                         pmin=pmin,
                         pmax=pmax,
@@ -1307,10 +1318,7 @@ def visualize_semantic_labels(
     pred_masks = _ensure_numpy_tzyxc(pred["pred_masks"])
     pred_labels = _ensure_numpy_tnc(pred["pred_classes"])
     masks_labelmap = _ensure_numpy_tzyxc(pred["masks_labelmap"])
-    class_labels = _ensure_numpy_tnc(pred["class_labels"])
     num_classes = pred_labels.shape[-1]
-
-    
     
     T, Z, Y, X, C_img = image_tzyxc.shape
     T_pred, Z_pred, Y_pred, X_pred, C_pred = pred_masks.shape
@@ -1322,13 +1330,14 @@ def visualize_semantic_labels(
             f"Got image {(T,Z,Y,X)} vs pred {(T_pred,Z_pred,Y_pred,X_pred)}"
         )
 
-    # Handle gt_semantic
-    if target is not None:
+    # Handle gt_semantic. When there is no target we leave ``gt_masks`` as None
+    # (instead of allocating a full (T,Z,Y,X,C) zero volume just to render blank
+    # panels): the GT columns below simply render empty axes.
+    has_gt = target is not None
+    if has_gt:
         gt_masks = _ensure_numpy_tzyxc(target["masks"])
-        gt_labels = _ensure_numpy_tnc(target["labels"])
     else:
-        gt_masks = np.zeros((T, Z, Y, X, C_pred), dtype=np.float32)
-        gt_labels = np.zeros((T, Z, Y, X, num_classes), dtype=np.float32)
+        gt_masks = None
 
     # Prepare class names
     if class_names is None:
@@ -1344,6 +1353,15 @@ def visualize_semantic_labels(
     # Layout: Image | Pred_c0 | ... | Pred_cK | GT_c0 | ... | GT_cK | Merged
     num_cols = 1 + num_classes + num_classes + 1  # add 1 for merged mask labels column
 
+    # One figure reused across all (t, z) pages (num_cols is fixed).
+    fig, axes_row = plt.subplots(
+        1,
+        num_cols,
+        figsize=(5 * num_cols, 5),
+        squeeze=False,
+    )
+    axes_row = axes_row[0, :]
+
     with PdfPages(out_path) as pdf:
         for t in range(T):
             for z0 in range(0, Z, z_step):
@@ -1351,13 +1369,8 @@ def visualize_semantic_labels(
                 if z1 <= z0:
                     continue
 
-                fig, axes_row = plt.subplots(
-                    1,
-                    num_cols,
-                    figsize=(5 * num_cols, 5),
-                    squeeze=False,
-                )
-                axes_row = axes_row[0, :]
+                for ax in axes_row:
+                    ax.cla()
 
                 # Column 0: Image
                 img_block = image_tzyxc[t, z0:z1]  # [z_block, Y, X, C_img]
@@ -1367,7 +1380,7 @@ def visualize_semantic_labels(
                     img_2d = img_mip[..., 0]
                 else:
                     img_2d = img_mip.mean(axis=-1)
-                img_norm = _normalize_slice(img_2d, pmin=pmin, pmax=pmax)
+                img_norm = normalize_slice(img_2d, pmin=pmin, pmax=pmax)
                 axes_row[0].imshow(img_norm, cmap="gray", interpolation="nearest")
                 axes_row[0].set_title(f"Image | T={t}  Z∈[{z0},{z1})")
                 axes_row[0].axis("off")
@@ -1382,14 +1395,18 @@ def visualize_semantic_labels(
                     axes_row[col_idx].set_title(f"Pred {class_names[c]}")
                     axes_row[col_idx].axis("off")
 
-                # Columns num_classes+1 to 2*num_classes: GT per class (clip to [0,1], no min-max)
+                # Columns num_classes+1 to 2*num_classes: GT per class (clip to [0,1], no min-max).
+                # With no target we render empty axes rather than zeros.
                 for c in range(num_classes):
                     col_idx = 1 + num_classes + c
-                    gt_block = gt_masks[t, z0:z1, ..., c]  # [z_block, Y, X]
-                    gt_mip = gt_block.max(axis=0)  # [Y, X]
-                    gt_display = np.clip(gt_mip, 0, 1).astype(np.float32)
-                    axes_row[col_idx].imshow(gt_display, cmap="viridis", interpolation="nearest")
-                    axes_row[col_idx].set_title(f"GT {class_names[c]}")
+                    if has_gt:
+                        gt_block = gt_masks[t, z0:z1, ..., c]  # [z_block, Y, X]
+                        gt_mip = gt_block.max(axis=0)  # [Y, X]
+                        gt_display = np.clip(gt_mip, 0, 1).astype(np.float32)
+                        axes_row[col_idx].imshow(gt_display, cmap="viridis", interpolation="nearest")
+                        axes_row[col_idx].set_title(f"GT {class_names[c]}")
+                    else:
+                        axes_row[col_idx].set_title(f"GT {class_names[c]} (n/a)")
                     axes_row[col_idx].axis("off")
 
                 # New final column: merged integer labels using mask2former.py logic
@@ -1400,190 +1417,79 @@ def visualize_semantic_labels(
                 mask_labels = np.max(pred_block, axis=0)  # [Y, X]
 
                 axes_row[-1].imshow(mask_labels, cmap="tab20", interpolation="nearest")  # Discrete color map
-                axes_row[-1].set_title(f"Masks labelmap: class labels {class_labels[t]}")
+                axes_row[-1].set_title(f"Masks labelmap: class labels {pred_labels[t]}")
                 axes_row[-1].axis("off")
        
 
                 fig.tight_layout()
                 pdf.savefig(fig)
-                plt.close(fig)
+
+    plt.close(fig)
 
 
 def save_semantic_predictions(
     name: str,
-    preds: Sequence[Dict[str, ArrayLike]],
-    images: Sequence[ArrayLike],
+    preds: Dict[str, ArrayLike],
+    image: ArrayLike,
     save_dir: Path | str,
-    save_as_volume: bool,
     save_as_pdf: bool,
     z_step_pdf: int,
     filetype: Literal["tiff", "zarr"],
-    targets: Sequence[Dict[str, ArrayLike]] | None = None,
+    targets: Dict[str, ArrayLike] | None = None,
     zarr_chunk_spatial_shape: Optional[Tuple[int, ...]] = None,
     zarr_shard_spatial_shape: Optional[Tuple[int, ...]] = None,
     pmin: float = 1.0,
     pmax: float = 99.0,
     mip_depth: int = 20,
     class_names: Sequence[str] | None = None,
-    names: Sequence[str] | None = None,
 ) -> None:
-    """
-    Save semantic segmentation predictions with dedicated visualization.
-    
-    Handles:
-    - Extracting and normalizing predictions
-    - Extracting ground truth from various sources
-    - Determining num_classes
-    - Saving volumes (TIFF/Zarr) if requested
-    - Saving semantic visualization PDF if requested
-    
+    """Save one sample's semantic-segmentation prediction (volume and/or PDF).
+
     Args:
-        name: Identifier for this prediction
-        preds: Prediction tensor [Z, Y, X, C] or [T, Z, Y, X, C]
-        image: Input image tensor [Z, Y, X, C] or [T, Z, Y, X, C]
-        save_dir: Directory to save outputs
-        save_as_volume: Whether to save volume files
-        save_as_pdf: Whether to save PDF visualization
-        z_step_pdf: Step size for z-slices in PDF
-        filetype: Volume file format ("tiff" or "zarr")
-        targets: List of target dicts (one per batch element)
-        data_sample: Data sample dict for extracting GT and auxiliary outputs
-        zarr_chunk_spatial_shape: Chunk shape for Zarr files
-        zarr_shard_spatial_shape: Shard shape for Zarr files
-        pmin: Percentile for normalization (lower bound)
-        pmax: Percentile for normalization (upper bound)
-        mip_depth: Depth for max-intensity projection
-        class_names: Optional list of class names for visualization
-        names: Optional per-element names (same length as preds); overrides ``name`` when set
+        name: identifier for this prediction (drives output filenames).
+        preds: prediction dict for this sample (e.g. ``{"pred_masks": [Z,Y,X,C]/[T,Z,Y,X,C]}``).
+        image: input image ``[Z,Y,X,C]`` or ``[T,Z,Y,X,C]``.
+        targets: this sample's target dict, or None.
+        (remaining args as before: save_as_volume/pdf, z_step_pdf, filetype, zarr shapes,
+        pmin/pmax, mip_depth, class_names.)
     """
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    if not (len(preds) == len(images) and (targets is None or len(targets) == len(preds))):
-        raise ValueError("preds/image/targets must have same length")
-    if names is not None and len(names) != len(preds):
-        raise ValueError("names length must match preds when names is provided")
 
-    images = list(images)
-    preds = list(preds)
+    image = _ensure_numpy(image)
+    preds = {k: _ensure_numpy(v) for k, v in preds.items()}
     if targets is not None:
-        targets = list(targets)
+        targets = {k: _ensure_numpy(v) for k, v in targets.items()}
 
-    for i in range(len(preds)):
-        label = names[i] if names is not None else name
-
-        images[i] = _ensure_numpy(images[i])
-
-        for key, arr in preds[i].items():
-            preds[i][key] = _ensure_numpy(arr)
-        
-        if targets is not None:
-            for key, arr in targets[i].items():
-                targets[i][key] = _ensure_numpy(arr)
-        
-
-        # Save volume files (TIFF/Zarr) if requested
-        if save_as_volume:
-            save_predictions(
-                name=label,
-                predictions=preds[i],
-                save_tensors=["pred_masks"],
-                save_dir=save_dir,
-                save_as_volume=True,
-                save_as_pdf=False,  # Use dedicated semantic visualization for PDF
-                z_step_pdf=z_step_pdf,
-                filetype=filetype,
-                pmin=pmin,
-                pmax=pmax,
-                zarr_chunk_spatial_shape=zarr_chunk_spatial_shape,
-                zarr_shard_spatial_shape=zarr_shard_spatial_shape,
-            )
-        
-        # Save semantic visualization PDF if requested (pred_np is already probabilities from reducer)
-        if save_as_pdf:
-            visualize_semantic_labels(
-                image=images[i],
-                pred=preds[i],
-                target=targets[i] if targets is not None else None,
-                out_path=save_dir / f"pred_{label}_semantic_MIP.pdf",
-                class_names=class_names,
-                z_step=z_step_pdf,
-                pmin=pmin,
-                pmax=pmax,
-                mip_depth=mip_depth,
-            )
+    # pred is already probabilities from the reducer
+    if save_as_pdf:
+        visualize_semantic_labels(
+            image=image,
+            pred=preds,
+            target=targets,
+            out_path=save_dir / f"pred_{name}_semantic_MIP.pdf",
+            class_names=class_names,
+            z_step=z_step_pdf,
+            pmin=pmin,
+            pmax=pmax,
+            mip_depth=mip_depth,
+        )
 
 
-
-
-
-def reduce_queries_to_semantic_map(
-    pred_masks: torch.Tensor,
-    pred_logits: torch.Tensor,
-    num_classes: int = 1,
-    topk_per_image: int = 1,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Convert Mask2Former query-based outputs to a dense semantic map.
-
-    Args:
-        pred_masks: [B, num_queries, D, H, W] - mask logits (already at target resolution)
-        pred_logits: [B, num_queries, num_classes + 1] - indices 0..num_classes-1 = semantic classes, last = no-object
-        num_classes: Number of foreground classes (default: 1 for binary segmentation)
-        topk_per_image: Number of top queries to use per image (for num_classes=1 case)
-
-    Returns:
-        semantic_map: [B, D, H, W, num_classes] - channels-last dense semantic map (per-class)
-        average_probability: [B, num_classes] - average probability of the semantic map for each class
-    """
-    B, num_queries, D, H, W = pred_masks.shape
-
-    if num_classes == 1:
-        # Binary segmentation: single semantic class at index 0, no-object at index 1
-        probs = pred_logits.softmax(-1)[..., 0]  # [B, Q] - class 0 (foreground) probability per query
-        # Get top k queries by foreground probability
-        topk_indices = probs.topk(k=topk_per_image, dim=1).indices  # [B, K]
-        topk_probs = probs.gather(1, topk_indices)  # [B, K]
-        # Get masks for top k queries: gather output shape = index shape, so expand index to [B, K, D, H, W]
-        topk_indices_expanded = topk_indices.view(B, topk_per_image, 1, 1, 1).expand(B, topk_per_image, D, H, W)
-        topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
-        # Convert mask logits to probabilities
-        topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
-        # Weight masks by foreground probability and sum over top k queries
-        # topk_probs: [B, K] -> [B, K, 1, 1, 1] for broadcasting
-        semantic = (topk_probs.view(B, topk_per_image, 1, 1, 1) * topk_masks).sum(1, keepdim=True)  # [B, 1, D, H, W]
-        # Permute to channels-last: [B, D, H, W, 1]
-        semantic = semantic.permute(0, 2, 3, 4, 1)  # [B, D, H, W, 1]
-        average_probability = topk_probs.mean(dim=1)  # [B, 1]
-        return semantic, average_probability
-    else:
-        # Multi-class segmentation: produce per-class maps
-        # pred_logits: [B, Q, num_classes + 1]; indices 0..num_classes-1 = semantic classes, last index = no-object (DETR/Mask2Former convention, see losses.py empty_weight[-1])
-        class_probs = pred_logits.softmax(-1)[..., :-1]  # [B, Q, num_classes] - keep all semantic classes, drop no-object
-        
-        # For each class, combine masks from queries assigned to that class
-        semantic_per_class = []
-        average_probability_per_class = []
-        for c in range(num_classes):
-            # Get probability of class c for each query: [B, Q]
-            class_c_probs = class_probs[..., c]  # [B, Q]
-            
-            # Get top k queries for this class
-            topk_indices = class_c_probs.topk(k=min(topk_per_image, num_queries), dim=1).indices  # [B, K]
-            topk_probs = class_c_probs.gather(1, topk_indices)  # [B, K]
-            
-            # Get masks for top k queries
-            topk_indices_expanded = topk_indices.view(B, -1, 1, 1, 1).expand(B, -1, D, H, W)
-            topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
-            topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
-            
-            # Weight by class probability and combine (max aggregation for cleaner maps)
-            # Use max instead of sum to avoid over-saturation
-            weighted_masks = topk_probs.view(B, -1, 1, 1, 1) * topk_masks  # [B, K, D, H, W]
-            class_map = weighted_masks.max(dim=1)[0]  # [B, D, H, W] - max over queries
-            semantic_per_class.append(class_map)
-            average_probability_per_class.append(topk_probs.mean(dim=1))
-        
-        # Stack along channel dimension: [B, D, H, W, num_classes]
-        semantic = torch.stack(semantic_per_class, dim=-1)  # [B, D, H, W, num_classes]
-        average_probability = torch.stack(average_probability_per_class, dim=-1)  # [B, num_classes]
-        return semantic, average_probability
+# ============================================================================
+# Layer 3: controller / dispatch surface
+# ============================================================================
+#
+# Maps the declarative ``handler`` name used in ``viz_worker.handler_configs``
+# to the layer-2 helper that produces that artifact. ``VizWorker`` performs the
+# runtime dispatch (buffer materialization + batch unpack + per-sample naming)
+# and then calls the matching helper; this table is the single registry that
+# documents which handler names are valid. Add a plot type by adding a layer-2
+# helper above and one entry here.
+VISUALIZATION_HANDLERS: Dict[str, Callable[..., None]] = {
+    "save_predictions": save_predictions,
+    "instance_overlay": save_instance_predictions,
+    "semantic_map": save_semantic_predictions,
+    "feature_viz": save_feature_visualizations,
+    "bbox_overlay": save_bbox_overlay,
+}

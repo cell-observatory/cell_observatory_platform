@@ -8,7 +8,6 @@ defaults:
   - /datasets/pretrain_dataset_ray
   - /datasets/preprocessor/sam2video_preprocessor
   - /datasets/masking/mask_generator
-  - /models/BUILD_SAM2
   - /models/meta_arch/sam/base_multi_scale
   - /models/backbones/masked_hiera_encoder/large_multiscale
   - /models/backbones/sam_backbone/sam_backbone_hiera_multiscale
@@ -123,8 +122,8 @@ optimizers:
 
 hooks:
   hooks_list:
-    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-    - _target_: cell_observatory_platform.training.hooks.LRScheduler
+    - name: free_device_buffer
+    - name: lr_scheduler
       backend: DEEPSPEED
-    - _target_: cell_observatory_platform.training.hooks.IterationTimer
-    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+    - name: iteration_timer
+    - name: periodic_writer

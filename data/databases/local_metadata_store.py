@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 LocationKey = Literal["is_available", "exists_prfs", "exists_aws", "exists_oak", "exists_abc"]
 AxisKey = Literal["T", "Z", "Y", "X", "C"]
 
-# TODO: migrate to a DB table
+# HACK: migrate to a DB table
 LOCATION_SERVER_PATHS: dict[str, str] = {
     "exists_abc": "/clusterfs/vast/Data/cell_observatory_training_datasets",
     "exists_prfs": "/groups/betzig/betziglab/CellObservatoryData",
@@ -42,6 +42,27 @@ def _literal_channel_pattern(value: object) -> str:
     if not normalized:
         raise ValueError("Channel localization values must not be empty")
     return re.escape(normalized)
+
+
+# HACK: OBJECT_SET is a TRANSITIONAL hardcode. The DB will own
+# per-channel ROLE labels (channel_mapping[idx] -> role). When that lands, this
+# set must be sourced from the DB role table (same membership API), not edited
+# here.
+OBJECT_SET: frozenset[str] = frozenset(
+    {
+        "instance_segmentation",
+        "semantic_segmentation_membrane",
+        "semantic_segmentation_nucleus",
+        "object_detection",
+        "boundary",
+        "foreground",
+    }
+)
+
+
+def is_object_role(role: object) -> bool:
+    """True if ``role`` (normalized) is an object/label role in ``OBJECT_SET``."""
+    return _normalize_channel_token(role) in {_normalize_channel_token(r) for r in OBJECT_SET}
 
 
 class SampleType(str, Enum):

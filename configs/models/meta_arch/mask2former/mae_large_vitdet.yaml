@@ -1,48 +1,50 @@
-BUILD: cell_observatory_platform.models.meta_arch.mask2former.BUILD
+# @package models
+model: mask2former
 
-# Backbone config (MAE)
-backbone_wrapper_args: ${models.backbones.mask2former_backbone}
+meta_arch:
+  mask2former:
 
-# Backbone adapter
-adapter_args: ${models.adapters}
+    # Backbone config (MAE)
+    backbone_wrapper_args: ${models.backbones.mask2former_backbone}
 
-# Pixel decoder (Mask2FormerPixelDecoder)
-pixel_decoder_args: ${models.heads.pixel_decoder}
+    # Backbone adapter
+    adapter_args: ${models.adapters}
 
-# Query decoder (Mask2FormerTransformerDecoder)
-decoder_args: ${models.heads.mask2former_decoder}
+    # Pixel decoder (Mask2FormerPixelDecoder)
+    pixel_decoder_args: ${models.heads.pixel_decoder}
 
-input_shape: ${datasets.input_shape}
-input_fmt: ${dataset_layout_order}
-topk_queries: 10
-num_classes: 2
+    # Query decoder (Mask2FormerTransformerDecoder)
+    decoder_args: ${models.heads.mask2former_decoder}
 
-# Matcher
-matcher_args:
-  BUILD: cell_observatory_platform.models.utils.matchers.HungarianMatcher.BUILD
-  cost_classification: 1.0 # 4.0
-  cost_mask: 20 # 5.0
-  cost_mask_dice: 1 # 5.0
-  num_points: 20000
+    input_shape: ${datasets.input_shape}
+    input_fmt: ${dataset_layout_order}
+    topk_queries: 10
+    num_classes: 2
 
-# Criterion
-criterion_args:
-  BUILD: cell_observatory_platform.training.losses.Mask2FormerSetLoss.BUILD
-  num_classes: 2
-  loss_weight_dict:
-    loss_labels_ce: 2.0 
-    loss_mask_dice: 5.0
-    loss_mask_ce: 10.0
-  no_object_loss_weight: 0.1
-  losses: ["labels", "masks"]
-  num_points: 20000
-  oversample_ratio: 3.0
-  importance_sample_ratio: 0.75
+    # Matcher
+    matcher_args:
+      cost_classification: 1.0 # 4.0
+      cost_mask: 20 # 5.0
+      cost_mask_dice: 1 # 5.0
+      num_points: 20000
 
-# How to pick number of points?
-# Find the mask logit resolution loss samples from.
-# E.g., for volume 128×256×512, at stride 4, that is 32×64×128 = 262,144 candidate voxels.
-# Sample ~5–20% of that grid:
-# 5% → ~13k
-# 10% → ~26k
-# 20% → ~52k
+    # Criterion
+    criterion_args:
+      num_classes: 2
+      loss_weight_dict:
+        loss_labels_ce: 2.0 
+        loss_mask_dice: 5.0
+        loss_mask_ce: 10.0
+      no_object_loss_weight: 0.1
+      losses: ["labels", "masks"]
+      num_points: 20000
+      oversample_ratio: 3.0
+      importance_sample_ratio: 0.75
+
+    # How to pick number of points?
+    # Find the mask logit resolution loss samples from.
+    # E.g., for volume 128×256×512, at stride 4, that is 32×64×128 = 262,144 candidate voxels.
+    # Sample ~5–20% of that grid:
+    # 5% → ~13k
+    # 10% → ~26k
+    # 20% → ~52k

@@ -827,7 +827,7 @@ class EncoderAdapter(nn.Module):
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(EncoderAdapter.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD", "input_channels"}
+    ignore = {"_target_", "BUILD", "name", "input_channels"}
 
     kwargs = {}
     for k, v in cfg.items():
@@ -837,6 +837,10 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     return kwargs
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("adapter", "vit_adapter")
 def BUILD(adapter_args: dict):
     adapter_args = dict(adapter_args)  # make a copy
 

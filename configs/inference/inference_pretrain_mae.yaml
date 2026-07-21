@@ -1,4 +1,4 @@
-_target_: cell_observatory_platform.inference.inferencer.InferencerWorker
+name: inferencer_worker
 
 use_cached_hypercubes_dataframe: ${datasets.databases.use_cached_hypercubes_dataframe}
 hypercubes_dataframe_path: ${datasets.databases.hypercubes_dataframe_path}

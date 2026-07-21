@@ -1,5 +1,5 @@
 inferencer_worker:
-  _target_: cell_observatory_platform.inference.inferencer.InferencerWorker
+  name: inferencer_worker
   aggregate_mode: "none"
   inference_mode: "tile"
   task: instance_segmentation

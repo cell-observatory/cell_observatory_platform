@@ -10,7 +10,6 @@ import numpy as np
 import torch
 
 from omegaconf import DictConfig
-from dataclasses import dataclass
 from hydra.utils import get_method, instantiate
 
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
@@ -19,6 +18,78 @@ from cell_observatory_platform.data.structures import convert_bbox_format, mask_
 from cell_observatory_platform.data.utils import create_na_masks, downsample, resize_mask
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
 from cell_observatory_platform.training.helpers import get_patch_sizes, make_timing_metric
+from cell_observatory_platform.utils.shape_format import get_spatial_shape
+from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.data.databases.local_metadata_store import OBJECT_SET, is_object_role
+
+
+# --------------------------------------------------------------------------- #
+# Channel role partition (transitional; the DB will own per-channel roles)
+# --------------------------------------------------------------------------- #
+
+def _channel_mapping_from_meta(meta: Any) -> Optional[dict]:
+    """Pull the ``{channel_index -> role/token}`` mapping out of metainfo.
+
+    Tolerates the platform ``List[...]``-wrapped convention and missing keys.
+    """
+    if not isinstance(meta, Mapping):
+        return None
+    cm = meta.get("channel_mapping")
+    if cm is None:
+        return None
+    if isinstance(cm, (list, tuple)):
+        cm = cm[0] if cm else None
+    if isinstance(cm, Mapping):
+        return dict(cm)
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# General role-driven channel partition
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class ChannelPartition:
+    input_idxs: list[int] = field(default_factory=list)
+    targets_by_role: dict[str, list[int]] = field(default_factory=dict)
+    dropped_idxs: list[int] = field(default_factory=list)
+
+
+def _role_matches_target(role: str, target_roles) -> bool:
+    """A channel ``role`` is a consumed target if it equals a target role or falls
+    under one as a FAMILY: ``semantic_segmentation`` matches
+    ``semantic_segmentation_membrane``/``_nucleus``/... So a task declares the
+    family once and every ``<family>_<name>`` channel is grabbed, keyed by its
+    concrete role.
+    """
+    return any(role == t or role.startswith(t + "_") for t in target_roles)
+
+
+def partition_channels(channel_mapping, num_channels, target_roles):
+    """Partition channels into INPUT / TARGET(by role) / DROPPED, driven solely by
+    the channel_mapping role table.
+
+      role matches a target role/family           -> TARGET (kept as GT, keyed by concrete role)
+      role is an object role but not consumed     -> DROPPED (discarded)
+      otherwise                                   -> INPUT (signal -> model)
+
+    With no channel_mapping every channel is INPUT (pre-DB data / recon).
+    """
+    p = ChannelPartition()
+    cm = channel_mapping or {}
+    # normalize {idx:role}; tolerate the platform List[...] wrapper handled by callers
+    role_by_idx = {int(i): r for i, r in cm.items()}
+    for idx in range(num_channels):
+        role = role_by_idx.get(idx)
+        if role is not None and is_object_role(role):
+            if _role_matches_target(role, target_roles):
+                p.targets_by_role.setdefault(role, []).append(idx)
+            else:
+                p.dropped_idxs.append(idx)
+        else:
+            p.input_idxs.append(idx)
+    return p
+
 
 # --------------------------------------------------------------------------- #
 # Pretraining preprocessor
@@ -65,6 +136,14 @@ class RayPreprocessor(torch.nn.Module):
         spatial_token_shape = [s for s in self._token_shape[:-1] if s is not None]
         self.spatial_token_shape = spatial_token_shape
 
+        # The dense ``data_tensor`` entry shared by every task's ``_data_types``.
+        self.base_dense_data_type = {
+            "kind": "dense",
+            "layout": self.input_format,
+            "role": "input",
+            "has_time": "T" in self.input_format,
+        }
+
     def _build_spatial_kwargs(self, batch_size: int, device: torch.device) -> dict:
         spatial_shapes = torch.tensor(
             [self.spatial_token_shape], dtype=torch.long, device=device,
@@ -80,6 +159,36 @@ class RayPreprocessor(torch.nn.Module):
             "valid_ratios": valid_ratios,
             "tokens_per_level": tokens_per_level,
         }
+
+    def _data_types(self) -> Dict[str, Dict[str, Any]]:
+        """Single declaration of this stream's fields, keyed by field name.
+
+        Each entry is ``{"kind", "layout", "role", ("channel_role")}``; it is the
+        one source of truth the transforms inspect (``metainfo["data_types"]``) to
+        decide 3D/4D dispatch and per-field ops. The base case declares only the
+        dense ``data_tensor`` (``self.base_dense_data_type``) -- all the
+        reconstruction tasks (MAE/JEPA/denoising/channel-split/upsample) need,
+        since their targets are derived from the resized image. Task preprocessors
+        that carry spatial GT through the transforms (seg/det/SAM) override this to
+        add their target fields.
+        """
+        return {"data_tensor": self.base_dense_data_type}
+
+    def _assert_input_shape_spatial(self, tensor: torch.Tensor) -> None:
+        """Fail fast if the (post-transform) spatial shape != ``input_shape``.
+
+        Patch/token grids and the mask generator are sized from ``input_shape``,
+        so a Resize target (or any spatial transform) MUST land on it.
+        """
+        expected = get_spatial_shape(tuple(self.input_shape), self.input_format)
+        actual = get_spatial_shape(tuple(tensor.shape[1:]), self.input_format)
+        if tuple(actual) != tuple(expected):
+            raise ValueError(
+                f"{type(self).__name__}: post-transform spatial shape {actual} "
+                f"!= input_shape spatial {expected}. Patch/token grids and "
+                f"masking are sized from input_shape; a Resize target must "
+                f"match it."
+            )
 
     def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         """
@@ -102,9 +211,17 @@ class RayPreprocessor(torch.nn.Module):
         transform_time = -1.0
         if self.transforms:
             transform_t0 = time.time()
+            # Route a dict (not a bare tensor) so transforms like Resize can read
+            # image_sizes (crop_to_valid) and the declared data_types.
+            meta = dict(meta)
+            meta["data_types"] = self._data_types()
+            sample: Any = {"data_tensor": inputs, "metainfo": meta}
             for transform in self.transforms:
-                inputs = transform(inputs)
+                sample = transform(sample)
+            inputs, meta = sample["data_tensor"], sample["metainfo"]
             transform_time = time.time() - transform_t0
+
+        self._assert_input_shape_spatial(inputs)
 
         assert inputs.dtype == self.dtype, f"{inputs.dtype} != {self.dtype}"
 
@@ -163,284 +280,285 @@ def _instantiate_transform_list(transforms_list: Optional[List[Any]]) -> List[Ca
     return out
 
 
-class MultiSequenceRayPreprocessor(torch.nn.Module):
-    """
-    Batch preprocessor for multiple dataset streams 
-    (e.g., DINO global/local crops, or multiple datasets with different shapes).
+# @REGISTRY.register("preprocessor", "multi_sequence")
+# class MultiSequenceRayPreprocessor(torch.nn.Module):
+#     """
+#     Batch preprocessor for multiple dataset streams 
+#     (e.g., DINO global/local crops, or multiple datasets with different shapes).
 
-    Output:
-      {
-        "data_tensors": {name: tensor, ...},
-        "metainfo": {
-            ... original meta ...,
-            "dataset_stream_metainfo": {
-                name: {
-                    "input_format": ...,
-                    "input_shape": ...,
-                    "patch_shape": ...,
-                    "transform_time": float,
-                    "masking_time": float,
-                    # masking outputs if enabled:
-                    "masks": [Tensor] (optional),
-                    "context_masks": [Tensor] (optional),
-                    "target_masks": [Tensor] (optional),
-                    "original_patch_indices": [Tensor] (optional),
-                    "channels_to_mask": [Any] (optional),
-                    "patches_used": [Tensor] (optional),
-                },
-            },
-            "preprocess_time": float,
-            "data_time": float,
-        }
-      }
-    """
+#     Output:
+#       {
+#         "data_tensors": {name: tensor, ...},
+#         "metainfo": {
+#             ... original meta ...,
+#             "dataset_stream_metainfo": {
+#                 name: {
+#                     "input_format": ...,
+#                     "input_shape": ...,
+#                     "patch_shape": ...,
+#                     "transform_time": float,
+#                     "masking_time": float,
+#                     # masking outputs if enabled:
+#                     "masks": [Tensor] (optional),
+#                     "context_masks": [Tensor] (optional),
+#                     "target_masks": [Tensor] (optional),
+#                     "original_patch_indices": [Tensor] (optional),
+#                     "channels_to_mask": [Any] (optional),
+#                     "patches_used": [Tensor] (optional),
+#                 },
+#             },
+#             "preprocess_time": float,
+#             "data_time": float,
+#         }
+#       }
+#     """
 
-    def __init__(
-        self,
-        local_batch_size: int,
-        global_batch_size: int,
-        input_metadict: Mapping[str, Union[InputDataStreamSpec, Mapping[str, Any]]],
-        transforms_metadict: Optional[Mapping[str, Optional[List[Any]]]] = None,
-        mask_generators: Optional[Mapping[str, Any]] = None,
-        dtype: torch.dtype | str = "bfloat16",
-    ):
-        super().__init__()
+#     def __init__(
+#         self,
+#         local_batch_size: int,
+#         global_batch_size: int,
+#         input_metadict: Mapping[str, Union[InputDataStreamSpec, Mapping[str, Any]]],
+#         transforms_metadict: Optional[Mapping[str, Optional[List[Any]]]] = None,
+#         mask_generators: Optional[Mapping[str, Any]] = None,
+#         dtype: torch.dtype | str = "bfloat16",
+#     ):
+#         super().__init__()
 
-        # TODO: decide if this should be property of Preprocessor or DataLoader
-        self.local_batch_size = local_batch_size
-        self.global_batch_size = global_batch_size
+#         # TODO: decide if this should be property of Preprocessor or DataLoader
+#         self.local_batch_size = local_batch_size
+#         self.global_batch_size = global_batch_size
 
-        self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
+#         self.dtype = TORCH_DTYPES[dtype].value if isinstance(dtype, str) else dtype
 
-        data_streams: Dict[str, InputDataStreamSpec] = {}
-        for name, spec in input_metadict.items():
-            if isinstance(spec, InputDataStreamSpec):
-                data_streams[name] = spec
-            else:
-                data_streams[name] = InputDataStreamSpec(**dict(spec))
-        self.data_streams = data_streams
+#         data_streams: Dict[str, InputDataStreamSpec] = {}
+#         for name, spec in input_metadict.items():
+#             if isinstance(spec, InputDataStreamSpec):
+#                 data_streams[name] = spec
+#             else:
+#                 data_streams[name] = InputDataStreamSpec(**dict(spec))
+#         self.data_streams = data_streams
 
-        # Per-dataset stream transforms
-        self.transforms: Dict[str, List[Callable]] = {}
-        transforms_metadict = transforms_metadict or {}
-        for name in self.data_streams.keys():
-            self.transforms[name] = _instantiate_transform_list(transforms_metadict.get(name, None))
-        # NOTE: for single dataset stream, we use the BASE transforms pipeline to create the dataset stream tensors
-        #       for example, see multicrop augmentation for dino
-        self.transforms["BASE"] = _instantiate_transform_list(transforms_metadict.get("BASE", None))
+#         # Per-dataset stream transforms
+#         self.transforms: Dict[str, List[Callable]] = {}
+#         transforms_metadict = transforms_metadict or {}
+#         for name in self.data_streams.keys():
+#             self.transforms[name] = _instantiate_transform_list(transforms_metadict.get(name, None))
+#         # NOTE: for single dataset stream, we use the BASE transforms pipeline to create the dataset stream tensors
+#         #       for example, see multicrop augmentation for dino
+#         self.transforms["BASE"] = _instantiate_transform_list(transforms_metadict.get("BASE", None))
 
-        # Per-dataset stream mask generators
-        self.mask_generators = dict(mask_generators or {})
+#         # Per-dataset stream mask generators
+#         self.mask_generators = dict(mask_generators or {})
 
-    def _apply_dataset_stream_transforms(
-        self,
-        name: str,
-        x: torch.Tensor,
-        meta: Dict[str, Any],
-    ) -> Tuple[torch.Tensor, Dict[str, Any], float]:
-        """
-        Apply transforms for a given dataset stream.
-        """
-        t0 = time.time()
-        data_dict: Dict[str, Any] = {"data_tensor": x, "metainfo": meta}
+#     def _apply_dataset_stream_transforms(
+#         self,
+#         name: str,
+#         x: torch.Tensor,
+#         meta: Dict[str, Any],
+#     ) -> Tuple[torch.Tensor, Dict[str, Any], float]:
+#         """
+#         Apply transforms for a given dataset stream.
+#         """
+#         t0 = time.time()
+#         data_dict: Dict[str, Any] = {"data_tensor": x, "metainfo": meta}
 
-        for tr in self.transforms.get(name, []):
-            out = tr(data_dict)
-            if isinstance(out, torch.Tensor):
-                data_dict["data_tensor"] = out
-            elif isinstance(out, dict):
-                if "data_tensor" not in out:
-                    raise KeyError(f"Transform for dataset stream={name!r} returned dict without 'data_tensor'.")
-                data_dict = out
-                data_dict.setdefault("metainfo", {})
-            else:
-                raise TypeError(
-                    f"Transform for dataset stream={name!r} must return Tensor or dict; got {type(out)}."
-                )
+#         for tr in self.transforms.get(name, []):
+#             out = tr(data_dict)
+#             if isinstance(out, torch.Tensor):
+#                 data_dict["data_tensor"] = out
+#             elif isinstance(out, dict):
+#                 if "data_tensor" not in out:
+#                     raise KeyError(f"Transform for dataset stream={name!r} returned dict without 'data_tensor'.")
+#                 data_dict = out
+#                 data_dict.setdefault("metainfo", {})
+#             else:
+#                 raise TypeError(
+#                     f"Transform for dataset stream={name!r} must return Tensor or dict; got {type(out)}."
+#                 )
 
-        return data_dict["data_tensor"], data_dict.get("metainfo", {}), (time.time() - t0)
+#         return data_dict["data_tensor"], data_dict.get("metainfo", {}), (time.time() - t0)
 
-    def _apply_dataset_stream_masking(
-        self,
-        name: str,
-        x: torch.Tensor,
-    ) -> Tuple[Dict[str, Any], float]:
-        """
-        Calls the dataset stream's mask generator if enabled.
+#     def _apply_dataset_stream_masking(
+#         self,
+#         name: str,
+#         x: torch.Tensor,
+#     ) -> Tuple[Dict[str, Any], float]:
+#         """
+#         Calls the dataset stream's mask generator if enabled.
 
-        Expects mask generator to return a dict with optional keys (unused as None).
-        Values are wrapped in single-element lists and merged into the stream's metainfo.
-        """
-        spec = self.data_streams[name]
-        if not spec.with_masking:
-            return {}, -1.0
+#         Expects mask generator to return a dict with optional keys (unused as None).
+#         Values are wrapped in single-element lists and merged into the stream's metainfo.
+#         """
+#         spec = self.data_streams[name]
+#         if not spec.with_masking:
+#             return {}, -1.0
 
-        mask_gen = self.mask_generators.get(name, None)
-        if mask_gen is None:
-            raise ValueError(f"with_masking=True for stream={name!r} but no mask generator was provided.")
+#         mask_gen = self.mask_generators.get(name, None)
+#         if mask_gen is None:
+#             raise ValueError(f"with_masking=True for stream={name!r} but no mask generator was provided.")
 
-        B = x.shape[0]
-        mt0 = time.time()
-        mask_data = mask_gen(B)
-        masking_time = time.time() - mt0
+#         B = x.shape[0]
+#         mt0 = time.time()
+#         mask_data = mask_gen(B)
+#         masking_time = time.time() - mt0
 
-        if not isinstance(mask_data, dict):
-            raise TypeError(
-                f"Mask generator for stream={name!r} returned {type(mask_data)}, expected dict."
-            )
-        mask_kwargs = {k: [v] for k, v in mask_data.items() if v is not None}
-        return mask_kwargs, masking_time
+#         if not isinstance(mask_data, dict):
+#             raise TypeError(
+#                 f"Mask generator for stream={name!r} returned {type(mask_data)}, expected dict."
+#             )
+#         mask_kwargs = {k: [v] for k, v in mask_data.items() if v is not None}
+#         return mask_kwargs, masking_time
 
-    def forward(self, data_sample: Any, data_time: float, idx: int):
-        preprocess_t0 = time.time()
+#     def forward(self, data_sample: Any, data_time: float, idx: int):
+#         preprocess_t0 = time.time()
 
-        if isinstance(data_sample, dict):
-            # TODO: dataset, dataloader, and database stack currently does not support this branch properly
-            if "data_tensors" in data_sample and isinstance(data_sample["data_tensors"], dict):
-                input_mode = "multi_dataset_streams"
-                # NOTE: we match the tensor and metadict names to the outputs of the base transforms
-                # in the single_dataset_stream mode
-                dataset_streams_tensors = data_sample["data_tensors"]
-                dataset_streams_meta = data_sample.get("metainfo", {})
-            elif "data_tensor" in data_sample and torch.is_tensor(data_sample["data_tensor"]):
-                input_mode = "single_dataset_stream"
-                in_tensors = data_sample["data_tensor"]
-                input_dataset_stream_metainfo = data_sample.get("metainfo", {})
-            else:
-                raise KeyError(
-                    "MultiSequenceRayPreprocessor expects either:\n"
-                    "  - {'data_tensors': {name: tensor, ...}, 'metainfo': {...}}  OR\n"
-                    "  - {'data_tensor': tensor, 'metainfo': {...}}  OR\n"
-                )
-        else:
-            raise TypeError(f"data_sample must be a dict; got {type(data_sample)}")
+#         if isinstance(data_sample, dict):
+#             # TODO: dataset, dataloader, and database stack currently does not support this branch properly
+#             if "data_tensors" in data_sample and isinstance(data_sample["data_tensors"], dict):
+#                 input_mode = "multi_dataset_streams"
+#                 # NOTE: we match the tensor and metadict names to the outputs of the base transforms
+#                 # in the single_dataset_stream mode
+#                 dataset_streams_tensors = data_sample["data_tensors"]
+#                 dataset_streams_meta = data_sample.get("metainfo", {})
+#             elif "data_tensor" in data_sample and torch.is_tensor(data_sample["data_tensor"]):
+#                 input_mode = "single_dataset_stream"
+#                 in_tensors = data_sample["data_tensor"]
+#                 input_dataset_stream_metainfo = data_sample.get("metainfo", {})
+#             else:
+#                 raise KeyError(
+#                     "MultiSequenceRayPreprocessor expects either:\n"
+#                     "  - {'data_tensors': {name: tensor, ...}, 'metainfo': {...}}  OR\n"
+#                     "  - {'data_tensor': tensor, 'metainfo': {...}}  OR\n"
+#                 )
+#         else:
+#             raise TypeError(f"data_sample must be a dict; got {type(data_sample)}")
 
-           # Preserve collator/dataloader metainfo (e.g. device_buffer_idx, host_buffer_idx) for hooks
-        if input_mode == "single_dataset_stream":
-            original_metainfo = dict(input_dataset_stream_metainfo)
-        else:
-            original_metainfo = dict(data_sample.get("metainfo", {}))
+#            # Preserve collator/dataloader metainfo (e.g. device_buffer_idx, host_buffer_idx) for hooks
+#         if input_mode == "single_dataset_stream":
+#             original_metainfo = dict(input_dataset_stream_metainfo)
+#         else:
+#             original_metainfo = dict(data_sample.get("metainfo", {}))
 
-        # If we have 1 dataset stream, apply base transforms to generate a dict-of-tensors
-        if input_mode == "single_dataset_stream":
-            if not torch.is_tensor(in_tensors):
-                raise TypeError(f"data_tensor must be a torch.Tensor; got {type(in_tensors)}")
+#         # If we have 1 dataset stream, apply base transforms to generate a dict-of-tensors
+#         if input_mode == "single_dataset_stream":
+#             if not torch.is_tensor(in_tensors):
+#                 raise TypeError(f"data_tensor must be a torch.Tensor; got {type(in_tensors)}")
 
-            base_dtype = TORCH_DTYPES[self.dtype].value if isinstance(self.dtype, str) else self.dtype
-            if in_tensors.dtype != base_dtype:
-                in_tensors = in_tensors.to(base_dtype)
+#             base_dtype = TORCH_DTYPES[self.dtype].value if isinstance(self.dtype, str) else self.dtype
+#             if in_tensors.dtype != base_dtype:
+#                 in_tensors = in_tensors.to(base_dtype)
 
-            base_transforms = self.transforms.get("BASE", [])
-            assert base_transforms, "single_dataset_stream mode requires a BASE transforms pipeline."
+#             base_transforms = self.transforms.get("BASE", [])
+#             assert base_transforms, "single_dataset_stream mode requires a BASE transforms pipeline."
 
-            data_dict: Dict[str, Any] = {"data_tensor": in_tensors, "metainfo": dict(input_dataset_stream_metainfo)}
-            t_base0 = time.time()
-            for tr in base_transforms:
-                data_dict = tr(data_dict)
+#             data_dict: Dict[str, Any] = {"data_tensor": in_tensors, "metainfo": dict(input_dataset_stream_metainfo)}
+#             t_base0 = time.time()
+#             for tr in base_transforms:
+#                 data_dict = tr(data_dict)
 
-            base_transform_time = time.time() - t_base0
+#             base_transform_time = time.time() - t_base0
 
-            # Interpret output as dataset streams
-            if "data_tensor" in data_dict and isinstance(data_dict["data_tensor"], dict):
-                dataset_streams_tensors = data_dict["data_tensor"]
-                dataset_streams_meta = data_dict.get("metainfo", {})
-            else:
-                raise KeyError(
-                    "Base transforms pipeline must create streams by returning:\n"
-                    "  - {'data_tensors': {name: tensor, ...}, 'metainfo': ...} "
-                    f"Got keys={list(data_dict.keys())} and data_tensor type={type(data_dict.get('data_tensor', None))}."
-                )
-        else:
-            base_transform_time = 0.0
+#             # Interpret output as dataset streams
+#             if "data_tensor" in data_dict and isinstance(data_dict["data_tensor"], dict):
+#                 dataset_streams_tensors = data_dict["data_tensor"]
+#                 dataset_streams_meta = data_dict.get("metainfo", {})
+#             else:
+#                 raise KeyError(
+#                     "Base transforms pipeline must create streams by returning:\n"
+#                     "  - {'data_tensors': {name: tensor, ...}, 'metainfo': ...} "
+#                     f"Got keys={list(data_dict.keys())} and data_tensor type={type(data_dict.get('data_tensor', None))}."
+#                 )
+#         else:
+#             base_transform_time = 0.0
 
-        if not isinstance(dataset_streams_tensors, dict):
-            raise TypeError(f"Expected dict-of-tensors, got {type(dataset_streams_tensors)}")
+#         if not isinstance(dataset_streams_tensors, dict):
+#             raise TypeError(f"Expected dict-of-tensors, got {type(dataset_streams_tensors)}")
 
-        expected_dataset_streams = set(self.data_streams.keys())
-        dataset_streams_tensors_keys = set(dataset_streams_tensors.keys())
-        assert dataset_streams_tensors_keys == expected_dataset_streams, (
-            "Dataset streams produced by data ingestion pipeline don't match data_streams.\n"
-            f"produced={sorted(dataset_streams_tensors_keys)}\n"
-            f"expected={sorted(expected_dataset_streams)}"
-        )
+#         expected_dataset_streams = set(self.data_streams.keys())
+#         dataset_streams_tensors_keys = set(dataset_streams_tensors.keys())
+#         assert dataset_streams_tensors_keys == expected_dataset_streams, (
+#             "Dataset streams produced by data ingestion pipeline don't match data_streams.\n"
+#             f"produced={sorted(dataset_streams_tensors_keys)}\n"
+#             f"expected={sorted(expected_dataset_streams)}"
+#         )
 
-        # Apply per-dataset stream transforms
-        transform_time_by_dataset_stream: Dict[str, float] = {}
+#         # Apply per-dataset stream transforms
+#         transform_time_by_dataset_stream: Dict[str, float] = {}
 
-        for name in dataset_streams_tensors.keys():
-            x = dataset_streams_tensors[name]
-            if not torch.is_tensor(x):
-                raise TypeError(f"Produced dataset stream tensor {name!r} is not a tensor; got {type(x)}")
+#         for name in dataset_streams_tensors.keys():
+#             x = dataset_streams_tensors[name]
+#             if not torch.is_tensor(x):
+#                 raise TypeError(f"Produced dataset stream tensor {name!r} is not a tensor; got {type(x)}")
 
-            dataset_stream_meta = dataset_streams_meta[name]
+#             dataset_stream_meta = dataset_streams_meta[name]
 
-            # apply dataset stream-specific transforms (if any)
-            x, dataset_stream_meta, t_dataset_stream = self._apply_dataset_stream_transforms(name=name, x=x, meta=dataset_stream_meta)
+#             # apply dataset stream-specific transforms (if any)
+#             x, dataset_stream_meta, t_dataset_stream = self._apply_dataset_stream_transforms(name=name, x=x, meta=dataset_stream_meta)
 
-            dataset_streams_tensors[name] = x
-            dataset_streams_meta[name] = dataset_stream_meta
-            transform_time_by_dataset_stream[name] = float(base_transform_time + t_dataset_stream)
+#             dataset_streams_tensors[name] = x
+#             dataset_streams_meta[name] = dataset_stream_meta
+#             transform_time_by_dataset_stream[name] = float(base_transform_time + t_dataset_stream)
 
-        # Apply per-dataset stream dtype conversion + (optional) masking
-        dataset_stream_metainfo: Dict[str, Dict[str, Any]] = {}
-        per_stream_metrics: list[dict[str, Any]] = []
+#         # Apply per-dataset stream dtype conversion + (optional) masking
+#         dataset_stream_metainfo: Dict[str, Dict[str, Any]] = {}
+#         per_stream_metrics: list[dict[str, Any]] = []
 
-        for name, x in dataset_streams_tensors.items():
-            if not torch.is_tensor(x):
-                raise TypeError(f"Produced stream {name!r} is not a tensor; got {type(x)}")
+#         for name, x in dataset_streams_tensors.items():
+#             if not torch.is_tensor(x):
+#                 raise TypeError(f"Produced stream {name!r} is not a tensor; got {type(x)}")
 
-            spec = self.data_streams[name]
+#             spec = self.data_streams[name]
 
-            # Cast to per-dataset stream dtype if we have a spec
-            target_dtype = TORCH_DTYPES[spec.dtype].value if isinstance(spec.dtype, str) else spec.dtype
-            if x.dtype != target_dtype:
-                x = x.to(target_dtype)
+#             # Cast to per-dataset stream dtype if we have a spec
+#             target_dtype = TORCH_DTYPES[spec.dtype].value if isinstance(spec.dtype, str) else spec.dtype
+#             if x.dtype != target_dtype:
+#                 x = x.to(target_dtype)
 
-            if spec.with_masking:
-                mask_meta, masking_time = self._apply_dataset_stream_masking(name=name, x=x)
-            else:
-                mask_meta = {}
-                masking_time = -1.0
+#             if spec.with_masking:
+#                 mask_meta, masking_time = self._apply_dataset_stream_masking(name=name, x=x)
+#             else:
+#                 mask_meta = {}
+#                 masking_time = -1.0
 
-            stream_transform_time = float(transform_time_by_dataset_stream[name])
-            stream_masking_time = float(masking_time)
+#             stream_transform_time = float(transform_time_by_dataset_stream[name])
+#             stream_masking_time = float(masking_time)
 
-            dataset_stream_metainfo[name] = {
-                "input_format": spec.input_format,
-                "input_shape": spec.input_shape,
-                "patch_shape": spec.patch_shape,
-                **mask_meta,
-                **dataset_streams_meta[name],
-            }
+#             dataset_stream_metainfo[name] = {
+#                 "input_format": spec.input_format,
+#                 "input_shape": spec.input_shape,
+#                 "patch_shape": spec.patch_shape,
+#                 **mask_meta,
+#                 **dataset_streams_meta[name],
+#             }
 
-            # Per-stream timing records use a namespaced metric name so they
-            # land in dedicated W&B panels (e.g. step_timing/stream/<name>/...).
-            per_stream_metrics.append(make_timing_metric(
-                f"stream/{name}/transform_time", stream_transform_time,
-            ))
-            per_stream_metrics.append(make_timing_metric(
-                f"stream/{name}/masking_time", stream_masking_time,
-            ))
+#             # Per-stream timing records use a namespaced metric name so they
+#             # land in dedicated W&B panels (e.g. step_timing/stream/<name>/...).
+#             per_stream_metrics.append(make_timing_metric(
+#                 f"stream/{name}/transform_time", stream_transform_time,
+#             ))
+#             per_stream_metrics.append(make_timing_metric(
+#                 f"stream/{name}/masking_time", stream_masking_time,
+#             ))
 
-        out_meta = original_metainfo
+#         out_meta = original_metainfo
 
-        out_meta["dataset_stream_metainfo"] = dataset_stream_metainfo
-        out_meta["idx"] = idx
-        out_meta["local_batch_size"] = self.local_batch_size
-        out_meta["global_batch_size"] = self.global_batch_size
+#         out_meta["dataset_stream_metainfo"] = dataset_stream_metainfo
+#         out_meta["idx"] = idx
+#         out_meta["local_batch_size"] = self.local_batch_size
+#         out_meta["global_batch_size"] = self.global_batch_size
 
-        aggregate_metrics: list[dict[str, Any]] = [
-            make_timing_metric("data_time", float(data_time)),
-            make_timing_metric("preprocess_time", float(time.time() - preprocess_t0)),
-        ]
-        existing_metrics = out_meta.get("metrics")
-        out_meta["metrics"] = (
-            (list(existing_metrics) if existing_metrics else [])
-            + aggregate_metrics
-            + per_stream_metrics
-        )
+#         aggregate_metrics: list[dict[str, Any]] = [
+#             make_timing_metric("data_time", float(data_time)),
+#             make_timing_metric("preprocess_time", float(time.time() - preprocess_t0)),
+#         ]
+#         existing_metrics = out_meta.get("metrics")
+#         out_meta["metrics"] = (
+#             (list(existing_metrics) if existing_metrics else [])
+#             + aggregate_metrics
+#             + per_stream_metrics
+#         )
 
-        return {"data_tensors": dataset_streams_tensors, "metainfo": out_meta}
+#         return {"data_tensors": dataset_streams_tensors, "metainfo": out_meta}
 
 
 # --------------------------------------------------------------------------- #
@@ -449,6 +567,15 @@ class MultiSequenceRayPreprocessor(torch.nn.Module):
 
 
 class BaseFinetunePreprocessor(RayPreprocessor):
+    @property
+    def TARGET_ROLES(self) -> "frozenset[str]":
+        """Channel roles this task consumes as targets, DERIVED from the single
+        ``_data_types()`` declaration (the channel-backed target entries). Empty
+        for reconstruction tasks (no channel-backed targets)."""
+        return frozenset(
+            e["channel_role"] for e in self._data_types().values() if "channel_role" in e
+        )
+
     def __init__(
         self,
         *,
@@ -459,8 +586,9 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         dtype: torch.dtype | str,
         input_format: str,
         input_shape: tuple[int, ...],
-        mask_channel_idx: int | None,
         seed: int | None = None,
+        min_channel_count: int | None = None,
+        max_channel_count: int | None = None,
     ):
         super().__init__(
             dtype=dtype,
@@ -493,11 +621,23 @@ class BaseFinetunePreprocessor(RayPreprocessor):
         if "Y" not in axis_to_size or "X" not in axis_to_size:
             raise ValueError("Input must include Y and X axes.")
         self.lateral_shape = (axis_to_size["Y"], axis_to_size["X"])
-        self.channels = axis_to_size.get("C", None)
-        self.mask_channel_idx = mask_channel_idx
-        if self.channels is not None and self.mask_channel_idx is not None:
-            self.channels -= 1
-            assert self.channels > 0, "Expected at least 1 channel after mask channel removal"
+
+        # DB-sourced channel count.
+        # self.channels is the signal-channel count fed to the model.
+        self.min_channel_count = min_channel_count
+        self.max_channel_count = max_channel_count
+        if (
+            min_channel_count is not None
+            and max_channel_count is not None
+            and min_channel_count != max_channel_count
+        ):
+            # TODO: Handle variable channel counts across runs.
+            raise NotImplementedError(
+                "dynamic/variable channel count not implemented yet; "
+                f"min_channel_count ({min_channel_count}) != max_channel_count ({max_channel_count})"
+            )
+        self.channels = max_channel_count
+
         self.spatial_shape = (
             (self.axial_shape,) + self.lateral_shape if self.axial_shape is not None else self.lateral_shape
         )
@@ -521,23 +661,30 @@ class BaseFinetunePreprocessor(RayPreprocessor):
             input_shape=self.input_shape,
             patch_shape=patch_shape,
         )
-        self.pixels_per_patch = PatchEmbedding.compute_num_pixels_per_patch(
-            channels=self.channels,
-            temporal_patch_size=self.temporal_patch_size,
-            axial_patch_size=self.axial_patch_size,
-            lateral_patch_size=self.lateral_patch_size,
-            input_format=self.input_format,
-        )
-        self.pe_patchify = functools.partial(
-            PatchEmbedding.patchify,
-            temporal_patch_size=self.temporal_patch_size,
-            axial_patch_size=self.axial_patch_size,
-            lateral_patch_size=self.lateral_patch_size,
-            input_format=self.input_format,
-            num_patches=self.num_patches,
-            token_shape=self.token_shape,
-            pixels_per_patch=self.pixels_per_patch,
-        )
+        # Currently only tasks with a known signal-channel count (recon: denoising/
+        # channel_split/upsample, which set max_channel_count) patchify their
+        # targets.
+        if self.channels is not None:
+            self.pixels_per_patch = PatchEmbedding.compute_num_pixels_per_patch(
+                channels=self.channels,
+                temporal_patch_size=self.temporal_patch_size,
+                axial_patch_size=self.axial_patch_size,
+                lateral_patch_size=self.lateral_patch_size,
+                input_format=self.input_format,
+            )
+            self.pe_patchify = functools.partial(
+                PatchEmbedding.patchify,
+                temporal_patch_size=self.temporal_patch_size,
+                axial_patch_size=self.axial_patch_size,
+                lateral_patch_size=self.lateral_patch_size,
+                input_format=self.input_format,
+                num_patches=self.num_patches,
+                token_shape=self.token_shape,
+                pixels_per_patch=self.pixels_per_patch,
+            )
+        else:
+            self.pixels_per_patch = None
+            self.pe_patchify = None
 
     def _common_pre(
         self,
@@ -557,35 +704,63 @@ class BaseFinetunePreprocessor(RayPreprocessor):
 
         return inputs, meta, preprocess_t0, data_time_value
 
-    def _split_labelmap_int32(
+    def _split_channels(
         self,
         inputs: torch.Tensor,
-        has_mask_channel: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Single source of the labelmap: split the integer labelmap off the
-        last channel of `data_tensor` BEFORE any model-dtype cast.
+        meta: Any,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Fast contiguous-prefix channel split.
 
-        Returns `(images, labelmap)` where `images` is the channel-stripped view
-        (still in the input dtype; the caller casts) and `labelmap` is an int32
-        copy of shape `(B, *spatial)`, or `None` when there is no mask channel
-        (e.g. inference). The pre-cast int32 snapshot is mandatory: the labelmap
-        rides the data_tensor channel for transport, but a bf16 cast aliases any
-        segment id > 256 (8-bit mantissa) and uint16 has no CUDA sort kernel for
-        downstream `torch.unique`/`isin`/`==` ops.
-        """
-        if not has_mask_channel:
-            return inputs, None
-        labelmap = inputs[..., -1].to(torch.int32)  # (B, *spatial)
-        images = inputs[..., :-1]                   # (B, *spatial, C-1)
-        return images, labelmap
+        Enforces the layout contract: signal (input) channels are a contiguous
+        prefix ``[0..n_in)`` and every object-role channel (consumed targets AND
+        dropped object channels) occupies the tail. That lets us take the signal
+        channels as a **basic-slice view** (``inputs[..., :n_in]``) -- no CUDA
+        gather kernel, so uint16 needs no int32 cast -- and cast only the small
+        object-channel tail to int32 for the labelmap snapshot.
 
-    def _apply_transforms(self, data: torch.Tensor | dict) -> tuple[torch.Tensor | dict, float]:
+        Returns ``(images, targets_by_role)``:
+          - ``images``: signal prefix, cast to the model dtype.
+          - ``targets_by_role``: ``{channel_role -> int32 (B, *spatial)}`` from the
+            tail; empty for reconstruction tasks (no target roles). uint16 has no
+            CUDA sort/compare kernel and a bf16 cast would alias ids > 256, so the
+            snapshot is int32.
         """
-        Apply transforms to either:
-          - a torch.Tensor (image only), or
-          - a dict with keys {"data_tensor", "metainfo"}.
-        Each transform is responsible for returning the same type it was given.
+        C = inputs.shape[-1]
+        cm = _channel_mapping_from_meta(meta)
+        partition = partition_channels(cm, C, self.TARGET_ROLES)
+
+        n_in = len(partition.input_idxs)
+        assert partition.input_idxs == list(range(n_in)), (
+            f"{type(self).__name__}: signal channels must be a contiguous prefix "
+            f"[0..{n_in}); all object/target channels must occupy the tail. "
+            f"Got input_idxs={partition.input_idxs} (C={C})."
+        )
+
+        images = inputs[..., :n_in]                # uint16 basic-slice view; no gather, no cast
+        if images.dtype != self.dtype:
+            images = images.to(self.dtype)
+
+        targets_by_role: dict[str, torch.Tensor] = {}
+        if n_in < C:
+            tail = inputs[..., n_in:].to(torch.int32)   # cheap: only the object channels
+            for role, idxs in partition.targets_by_role.items():
+                if len(idxs) > 1:
+                    raise NotImplementedError(
+                        f"multi-target-channel split not wired yet; role {role!r} "
+                        f"has {len(idxs)} channels"
+                    )
+                targets_by_role[role] = tail[..., idxs[0] - n_in]
+        return images, targets_by_role
+
+    def _apply_transforms(self, data: dict) -> tuple[dict, float]:
+        """Apply the configured transforms to a ``{"data_tensor", "metainfo"}`` dict.
+
+        Single source of truth for ``data_types``: the per-task declarative spec
+        (``_data_types``) is injected into ``metainfo`` here so every task drives
+        the transforms the same way. dict in -> dict out; a malformed sample
+        raises rather than silently skipping.
         """
+        data["metainfo"]["data_types"] = self._data_types()
         if self.transforms:
             t0 = time.time()
             for transform in self.transforms:
@@ -673,8 +848,9 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
         dtype: torch.dtype | str,
         input_format: str,
         input_shape: tuple[int, ...],
-        mask_channel_idx: int | None,
         seed: int | None = None,
+        min_channel_count: int | None = None,
+        max_channel_count: int | None = None,
     ):
         if denoising_type not in ("microscopy",):
             raise ValueError(f"Unknown denoising type: {denoising_type}")
@@ -689,60 +865,54 @@ class DenoisingPreprocessor(BaseFinetunePreprocessor):
             dtype=dtype,
             input_format=input_format,
             input_shape=input_shape,
-            mask_channel_idx=mask_channel_idx,
             seed=seed,
+            min_channel_count=min_channel_count,
+            max_channel_count=max_channel_count,
         )
 
         self.denoising_type = denoising_type
 
-    def _split_inputs_and_mask(self, inputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """
-        inputs: (B, Z, Y, X, C_full)
-        returns:
-          inputs_wo_mask: (B, Z, Y, X, C_full-1)
-          masks_labelmap: (B, Z, Y, X)
-        """
-        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
-        B, Z, Y, X, C = inputs.shape
-        
-        if self.mask_channel_idx is None:
-            return inputs, None
+    def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
+        preprocess_t0 = time.time()
+        raw_inputs = data_sample["data_tensor"]
+        meta = data_sample["metainfo"]
+        data_time_value = data_time
 
-        if C < 2:
-            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
+        # Strip any stray object channels (TARGET_ROLES=empty -> no target channel;
+        # object channels go to dropped_idxs and are excluded from `images`).
+        # Snapshot BEFORE dtype cast so int32 ids are preserved exactly.
+        images, _targets = self._split_channels(raw_inputs, meta)
 
-        # For zero-copy we *require* the mask to be the last channel
-        if self.mask_channel_idx not in (-1, C - 1):
-            raise ValueError(
-                f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
+        if images.dtype != self.dtype:
+            images = images.to(self.dtype)
+
+        # Parity guard: after stripping object channels, signal channel count
+        # must match the DB-configured fixed count (when set).
+        # TODO: eventuallly relax this to channels <= max_channel_count.
+        if self.channels is not None:
+            assert images.shape[-1] == self.channels, (
+                f"DenoisingPreprocessor channel parity failure: "
+                f"got {images.shape[-1]} signal channels but self.channels={self.channels} "
+                f"(from max_channel_count). Check the DB channel config."
             )
 
-        masks = inputs[..., -1].clone()  # (B, Z, Y, X), view
-        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
-        
-        return inputs_wo_mask, masks
-
-    def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
-        inputs, meta, preprocess_t0, data_time_value = self._common_pre(
-            data_sample=data_sample,
-            data_time=data_time,
-        )
-        inputs_wo_mask, _ = self._split_inputs_and_mask(inputs)
         sample = {
-            "data_tensor": inputs_wo_mask,
+            "data_tensor": images,
             "metainfo": meta,
         }
 
         sample, transform_time = self._apply_transforms(sample)
 
+        self._assert_input_shape_spatial(sample["data_tensor"])
+
         # TODO: Consider refactoring this to support non-transformer-based decoders
         # Patchify targets for transformer-based decoders
         targets = self.pe_patchify(
-            sample["metainfo"]["targets"][0], 
+            sample["metainfo"]["targets"][0],
             channels=self.channels,
         )
 
-        # FIXME: Streamline this so that we either consistently pass data_sample 
+        # FIXME: Streamline this so that we either consistently pass data_sample
         # or its components (e.g. data_tensor, metainfo, targets, etc.)
         return self._finalize(
             inputs=sample["data_tensor"],
@@ -778,8 +948,9 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
         dtype: torch.dtype | str,
         input_format: str,
         input_shape: tuple[int, ...],
-        mask_channel_idx: int | None = None,
         seed: int | None = None,
+        min_channel_count: int | None = None,
+        max_channel_count: int | None = None,
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -789,45 +960,46 @@ class ChannelSplitPreprocessor(BaseFinetunePreprocessor):
             dtype=dtype,
             input_format=input_format,
             input_shape=input_shape,
-            mask_channel_idx=mask_channel_idx,
             seed=seed,
+            min_channel_count=min_channel_count,
+            max_channel_count=max_channel_count,
         )
-
-    def _split_inputs_and_mask(self, inputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Remove mask channel if present; return inputs (with or without mask stripped)."""
-        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
-        B, Z, Y, X, C = inputs.shape
-
-        if self.mask_channel_idx is None:
-            return inputs, None
-
-        if C < 2:
-            raise ValueError(
-                f"Expected at least 2 channels (image + mask), got C={C}"
-            )
-        if self.mask_channel_idx not in (-1, C - 1):
-            raise ValueError(
-                f"For zero-copy split, mask_channel_idx must be -1 or C-1; "
-                f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
-            )
-
-        masks = inputs[..., -1].clone()
-        inputs_wo_mask = inputs[..., :-1]
-        return inputs_wo_mask, masks
 
     def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
-        inputs, meta, preprocess_t0, data_time_value = self._common_pre(
-            data_sample=data_sample,
-            data_time=data_time,
-        )
+        preprocess_t0 = time.time()
+        raw_inputs = data_sample["data_tensor"]
+        meta = data_sample["metainfo"]
+        data_time_value = data_time
 
         if self.channel_idx is None:
             raise ValueError("Channel axis 'C' not present in input_format; cannot channel_split.")
 
-        inputs_wo_mask, _ = self._split_inputs_and_mask(inputs)
+        # Strip any stray object channels (TARGET_ROLES=empty -> no target channel;
+        # object channels go to dropped_idxs and are excluded from `images`).
+        # Snapshot BEFORE dtype cast so int32 ids are preserved exactly.
+        images, _targets = self._split_channels(raw_inputs, meta)
 
-        # FIXME: consider if this is the correct order of operations
-        inputs_wo_mask, transform_time = self._apply_transforms(data=inputs_wo_mask)
+        if images.dtype != self.dtype:
+            images = images.to(self.dtype)
+
+        # Parity guard: after stripping object channels, signal channel count
+        # must match the DB-configured fixed count (when set).
+        # TODO: eventuallly relax this to channels <= max_channel_count.
+        if self.channels is not None:
+            assert images.shape[-1] == self.channels, (
+                f"ChannelSplitPreprocessor channel parity failure: "
+                f"got {images.shape[-1]} signal channels but self.channels={self.channels} "
+                f"(from max_channel_count). Check the DB channel config."
+            )
+
+        # Route a dict so transforms (e.g. Resize) can crop_to_valid + read the
+        # data_fields (injected in _apply_transforms); the target is derived from
+        # the SAME transformed tensor.
+        sample = {"data_tensor": images, "metainfo": meta}
+        sample, transform_time = self._apply_transforms(data=sample)
+        inputs_wo_mask = sample["data_tensor"]
+        meta = sample["metainfo"]
+        self._assert_input_shape_spatial(inputs_wo_mask)
 
         # targets are per-channel patches from original (transformed) input
         # input_shape must describe data after mask strip; self.channels matches inputs_wo_mask
@@ -876,8 +1048,9 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
         ideal_psf_path: str | None = None,
         na_mask_thresholds: list[float] | None = None,
         resize_na_masks: bool = True,
-        mask_channel_idx: int = -1,
         mode: str = "upsample_space",
+        min_channel_count: int | None = None,
+        max_channel_count: int | None = None,
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -888,7 +1061,8 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             input_format=input_format,
             input_shape=input_shape,
             seed=seed,
-            mask_channel_idx=mask_channel_idx,
+            min_channel_count=min_channel_count,
+            max_channel_count=max_channel_count,
         )
 
         if mode not in ("upsample_space", "upsample_spacetime", "upsample_time"):
@@ -916,12 +1090,38 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             self.na_masks = None
 
     def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
-        inputs, meta, preprocess_t0, data_time_value = self._common_pre(
-            data_sample=data_sample,
-            data_time=data_time,
-        )
+        preprocess_t0 = time.time()
+        raw_inputs = data_sample["data_tensor"]
+        meta = data_sample["metainfo"]
+        data_time_value = data_time
 
-        inputs, transform_time = self._apply_transforms(data=inputs)
+        # Strip any stray object channels (TARGET_ROLES=empty -> no target channel;
+        # object channels go to dropped_idxs and are excluded from `images`).
+        # Snapshot BEFORE dtype cast so int32 ids are preserved exactly.
+        images, _targets = self._split_channels(raw_inputs, meta)
+
+        if images.dtype != self.dtype:
+            images = images.to(self.dtype)
+
+        # Parity guard: after stripping object channels, signal channel count
+        # must match the DB-configured fixed count (when set).
+        # TODO: Eventually relax this to channels <= max_channel_count.
+        if self.channels is not None:
+            assert images.shape[-1] == self.channels, (
+                f"UpsamplePreprocessor channel parity failure: "
+                f"got {images.shape[-1]} signal channels but self.channels={self.channels} "
+                f"(from max_channel_count). Check the DB channel config."
+            )
+
+        # Route a dict so transforms (e.g. Resize) can crop_to_valid + read the
+        # data_fields (injected in _apply_transforms); both the HR target and the
+        # downsampled input are derived from the SAME transformed tensor (no
+        # original-vs-transformed mismatch).
+        sample = {"data_tensor": images, "metainfo": meta}
+        sample, transform_time = self._apply_transforms(data=sample)
+        inputs = sample["data_tensor"]
+        meta = sample["metainfo"]
+        self._assert_input_shape_spatial(inputs)
 
         if self.mode in ("upsample_space", "upsample_spacetime"):
             # targets are HR patches
@@ -946,7 +1146,7 @@ class UpsamplePreprocessor(BaseFinetunePreprocessor):
             )
             inputs = downsample(
                 na_mask=na_mask,
-                inputs=data_sample["data_tensor"],
+                inputs=inputs,
                 spatial_dims=self.spatial_dims,
             )
         elif self.mode == "upsample_time":
@@ -1005,12 +1205,13 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         input_format: str,
         input_shape: tuple[int, ...],
         seed: int | None = None,
-        mask_channel_idx: int = -1,
         bbox_data_format: Optional[str] = None,
         bbox_output_format: Optional[str] = None,
         debug_savepath: str = None,
         require_targets: bool = True,
         materialize_binary_masks: bool = False,
+        min_channel_count: int | None = None,
+        max_channel_count: int | None = None,
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -1021,7 +1222,8 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
             input_format=input_format,
             input_shape=input_shape,
             seed=seed,
-            mask_channel_idx=mask_channel_idx,
+            min_channel_count=min_channel_count,
+            max_channel_count=max_channel_count,
         )
 
         if bbox_data_format is None or bbox_output_format is None:
@@ -1037,6 +1239,18 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         # dense-mask heads (Mask2Former / PlainDETR / multilabel) opt in here.
         # Labelmap-native heads (MaskDINO) leave this off and read "label_map".
         self.materialize_binary_masks = materialize_binary_masks
+
+    def _data_types(self) -> Dict[str, Dict[str, Any]]:
+        """Instance seg: image + per-target integer ``label_map`` (nearest) and
+        ``boxes`` (coordinate-scaled). Binary ``masks`` are materialized AFTER
+        transforms from the resized ``label_map``, so they are not listed here.
+        """
+        return {
+            "data_tensor": self.base_dense_data_type,
+            "label_map": {"kind": "instance_masks", "layout": self.input_format,
+                          "role": "target", "channel_role": "instance_segmentation"},
+            "boxes": {"kind": "boxes", "layout": self.bbox_output_format, "role": "target"},
+        }
 
     def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         """
@@ -1065,13 +1279,11 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         meta = data_sample["metainfo"]
         data_time_value = data_time
 
-        # Single source of truth: split the int32 labelmap off the channel
-        # BEFORE the dtype cast, then cast the image view.
-        images, labelmap = self._split_labelmap_int32(
-            raw_inputs, has_mask_channel=self.mask_channel_idx is not None
-        )
-        if images.dtype != self.dtype:
-            images = images.to(self.dtype)
+        # Fast split: signal channels off the front (view + dtype cast), object
+        # channels off the int32 tail. `label_map` rides the targets so Resize
+        # warps it in lockstep with the image and boxes.
+        images, targets_by_role = self._split_channels(raw_inputs, meta)
+        labelmap = targets_by_role.get("instance_segmentation")
 
         # Attach the per-target labelmap BEFORE transforms so Crop3D / Resize
         # warp `label_map` in lockstep with the image (and boxes). Labelmap-
@@ -1275,10 +1487,11 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         input_format: str,
         input_shape: tuple[int, ...],
         seed: int | None = None,
-        mask_channel_idx: int = 1,
         bbox_data_format: Optional[str] = None,
         bbox_output_format: Optional[str] = None,
         debug_savepath: str = None,
+        min_channel_count: int | None = None,
+        max_channel_count: int | None = None,
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -1289,42 +1502,25 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
             input_format=input_format,
             input_shape=input_shape,
             seed=seed,
-            mask_channel_idx=mask_channel_idx,
+            min_channel_count=min_channel_count,
+            max_channel_count=max_channel_count,
         )
 
         self.debug_savepath = debug_savepath
 
-    def _split_inputs_and_mask(self, inputs: torch.Tensor):
+    def _data_types(self) -> Dict[str, Dict[str, Any]]:
+        """Semantic seg: image + a stacked ``semantic_maps`` target.
+
+        Every ``semantic_segmentation_*`` channel is grabbed (role family) and
+        stacked into ``metainfo["targets"][b]["semantic_maps"]`` -- an
+        ``(N, Z, Y, X)`` integer labelmap warped nearest by Resize. Optional
+        boundary/foreground transforms append derived maps to the stack.
         """
-        inputs: (B, Z, Y, X, C_full)
-        returns:
-          inputs_wo_mask: (B, Z, Y, X, C_full-1)
-          masks_labelmap: (B, Z, Y, X)
-        """
-        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
-        B, Z, Y, X, C = inputs.shape
-
-        if self.mask_channel_idx is None:
-            masks = torch.zeros(
-                (B, Z, Y, X),
-                dtype=torch.bool, 
-                device=inputs.device
-                )
-            return inputs, masks
-
-        if C < 2:
-            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
-
-        # For zero-copy we *require* the mask to be the last channel
-        if self.mask_channel_idx not in (-1, C - 1):
-            raise ValueError(
-                f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
-            )
-
-        masks = inputs[..., -1]  # (B, Z, Y, X), view
-        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
-
-        return inputs_wo_mask, masks
+        return {
+            "data_tensor": self.base_dense_data_type,
+            "semantic_maps": {"kind": "semantic_masks", "layout": self.input_format,
+                              "role": "target", "channel_role": "semantic_segmentation"},
+        }
 
     def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         """
@@ -1346,40 +1542,59 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
           - run any remaining transforms on the full dict (if configured),
           - unpack targets and finalize.
         """
-        inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
+        t0 = time.time()
+        raw_inputs = data_sample["data_tensor"]
+        meta = data_sample["metainfo"]
+        data_time_value = data_time
 
-        inputs_wo_mask, masks_labelmap = self._split_inputs_and_mask(inputs)
+        # Fast split: signal channels off the front (view + dtype cast); every
+        # semantic_segmentation_* channel off the int32 tail, keyed by concrete role.
+        images, targets_by_role = self._split_channels(raw_inputs, meta)
 
-        sample = {
-            "data_tensor": inputs_wo_mask,
-            "metainfo": meta,
-            "masks_labelmap": masks_labelmap, # This is used to generate the boundary masks
-        }
-        sample, transform_time = self._apply_transforms(sample)
-        
-        semantic_masks = []
-        if "boundary_masks" in sample:
-            semantic_masks.append(sample["boundary_masks"])
-        if "foreground_masks" in sample:
-            semantic_masks.append(sample["foreground_masks"])
-        semantic_masks = torch.stack(semantic_masks, dim=1)  # [B, N_masks, D, H, W]
-        labels = torch.arange(
-            semantic_masks.shape[1], dtype=torch.int64, device=semantic_masks.device
-        )  # [N_masks]
+        if self.channels is not None:
+            assert images.shape[-1] == self.channels, (
+                f"SemanticSegmentationPreprocessor channel parity failure: "
+                f"got {images.shape[-1]} signal channels but self.channels={self.channels} "
+                f"(from max_channel_count). Check the DB channel config."
+            )
+
+        B = images.shape[0]
+        spatial = tuple(images.shape[1:-1])  # (Z, Y, X)
+
+        # Stack the matched semantic channels into one (N, Z, Y, X) map per sample
+        # (deterministic role order). `semantic_roles` lets a boundary transform
+        # address a specific slice. Empty (N=0) at inference with no GT channels.
+        roles = sorted(targets_by_role.keys())
         targets = []
-        for batch_idx in range(semantic_masks.shape[0]):
-            targets.append({
-                "masks": semantic_masks[batch_idx],  # [N_masks, D, H, W]
-                "labels": labels.clone(),  # [N_masks]
-            })
-        meta["targets"] = targets # List[Dict[str, Tensor | Tuple]]
-        
+        for b in range(B):
+            if roles:
+                stack = torch.stack([targets_by_role[r][b] for r in roles], dim=0)
+            else:
+                stack = torch.zeros((0, *spatial), dtype=torch.int32, device=images.device)
+            targets.append({"semantic_maps": stack, "semantic_roles": list(roles)})
+        meta["targets"] = targets
+
+        sample = {"data_tensor": images, "metainfo": meta}
+        sample, transform_time = self._apply_transforms(sample)
+        meta = sample["metainfo"]
+
+        # Package into the dense masks contract. Any boundary/foreground transforms
+        # have already appended their derived maps to `semantic_maps`, so labels =
+        # arange(N) covers the direct channels plus whatever was tacked on.
+        built = []
+        for t in meta["targets"]:
+            masks = t["semantic_maps"] > 0  # (N, Z, Y, X) bool
+            labels = torch.arange(masks.shape[0], dtype=torch.int64, device=masks.device)
+            built.append({"masks": masks, "labels": labels})
+        targets = built
+        meta["targets"] = targets
+
         if self.debug_savepath is not None:
             self._debug_visualize_batch(sample)
 
         inputs = sample["data_tensor"]
         meta = sample["metainfo"]
-        
+
         return self._finalize(
             inputs=inputs,
             meta=meta,
@@ -1507,10 +1722,11 @@ class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
         input_format: str,
         input_shape: tuple[int, ...],
         seed: int | None = None,
-        mask_channel_idx: int = -1,
         bbox_data_format: Optional[str] = None,
         bbox_output_format: Optional[str] = None,
         debug_savepath: str = None,
+        min_channel_count: int | None = None,
+        max_channel_count: int | None = None,
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -1521,7 +1737,8 @@ class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
             input_format=input_format,
             input_shape=input_shape,
             seed=seed,
-            mask_channel_idx=mask_channel_idx,
+            min_channel_count=min_channel_count,
+            max_channel_count=max_channel_count,
         )
 
         if bbox_data_format is None or bbox_output_format is None:
@@ -1531,29 +1748,12 @@ class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
 
         self.debug_savepath = debug_savepath
 
-    def _split_inputs_and_mask(self, inputs: torch.Tensor):
-        """
-        inputs: (B, Z, Y, X, C_full)
-        returns:
-          inputs_wo_mask: (B, Z, Y, X, C_full-1)
-          masks_labelmap: (B, Z, Y, X)
-        """
-        assert inputs.ndim == 5, f"Expected (B, Z, Y, X, C), got {inputs.shape}"
-        B, Z, Y, X, C = inputs.shape
-
-        if C < 2:
-            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
-
-        # For zero-copy we *require* the mask to be the last channel
-        if self.mask_channel_idx not in (-1, C - 1):
-            raise ValueError(
-                f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
-            )
-
-        masks = inputs[..., -1]  # (B, Z, Y, X), view
-        inputs_wo_mask = inputs[..., :-1]  # (B, Z, Y, X, C-1), view
-
-        return inputs_wo_mask, masks
+    def _data_types(self) -> Dict[str, Dict[str, Any]]:
+        """Object detection: image + ``boxes`` (coordinate-scaled). No dense GT."""
+        return {
+            "data_tensor": self.base_dense_data_type,
+            "boxes": {"kind": "boxes", "layout": self.bbox_output_format, "role": "target"},
+        }
 
     def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         """
@@ -1575,9 +1775,22 @@ class ObjectDetectionPreprocessor(BaseFinetunePreprocessor):
           - run any remaining transforms on the full dict (if configured),
           - unpack targets and finalize.
         """
-        inputs, meta, t0, data_time_value = self._common_pre(data_sample, data_time)
+        t0 = time.time()
+        raw_inputs = data_sample["data_tensor"]
+        meta = data_sample["metainfo"]
+        data_time_value = data_time
 
-        inputs_wo_mask, masks_labelmap = self._split_inputs_and_mask(inputs)
+        # Fast split: object detection targets come from meta["targets"] (boxes),
+        # so the object channels are just stripped off the model image (the tail
+        # snapshot is discarded).
+        inputs_wo_mask, _targets = self._split_channels(raw_inputs, meta)
+
+        if self.channels is not None:
+            assert inputs_wo_mask.shape[-1] == self.channels, (
+                f"ObjectDetectionPreprocessor channel parity failure: "
+                f"got {inputs_wo_mask.shape[-1]} signal channels but self.channels={self.channels} "
+                f"(from max_channel_count). Check the DB channel config."
+            )
 
         sample = {
             "data_tensor": inputs_wo_mask,
@@ -1690,11 +1903,13 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         input_format: str,
         input_shape: tuple[int, ...],
         seed: int | None = None,
-        mask_channel_idx: int = -1,
+        # FIXME: review and redo this preprocessor once infrence/eval lands!!!
         expect_mask_channel: bool = True,
         max_masks: int | None = None,
         require_targets: bool = True,
         bbox_format: str = "zyxzyx",
+        min_channel_count: int | None = None,
+        max_channel_count: int | None = None,
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -1705,7 +1920,8 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             input_format=input_format,
             input_shape=input_shape,
             seed=seed,
-            mask_channel_idx=mask_channel_idx,
+            min_channel_count=min_channel_count,
+            max_channel_count=max_channel_count,
         )
         if "T" not in self.input_format:
             raise ValueError(
@@ -1729,6 +1945,18 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         # downstream consumers (SAM2 box-prompt sampler) convert at the boundary
         # without inferring silently.
         self.bbox_format = bbox_format
+
+    def _data_types(self) -> Dict[str, Dict[str, Any]]:
+        """SAM2 video: image + per-target integer ``label_map`` (nearest) and
+        ``boxes`` (coordinate-scaled). Per-frame mask/index views are built AFTER
+        transforms from the resized labelmap, so they are not listed here.
+        """
+        return {
+            "data_tensor": self.base_dense_data_type,
+            "label_map": {"kind": "instance_masks", "layout": self.input_format,
+                          "role": "target", "channel_role": "instance_segmentation"},
+            "boxes": {"kind": "boxes", "layout": self.bbox_format, "role": "target"},
+        }
 
     # ------------------------------------------------------------------ #
     # Image transformations
@@ -1985,15 +2213,22 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         inputs = data_sample["data_tensor"]
         meta = data_sample.get("metainfo", {})
 
-        # Single source of truth: split the int32 labelmap off the channel
-        # BEFORE the dtype cast (uint16 has no CUDA sort kernel; a bf16 cast
-        # aliases ids > 256). `mask_labelmap` is (B, T, Z, Y, X) or None at
-        # inference (no mask channel -> no labelmap, no masks built).
-        images, mask_labelmap = self._split_labelmap_int32(
-            inputs, has_mask_channel=self.expect_mask_channel
-        )
-        if images.dtype != self.dtype:
-            images = images.to(self.dtype)
+        # HACK: the DB does not yet carry the instance_segmentation role
+        # in channel_mapping. We know the LAST channel (the 6th, idx C-1) is the
+        # instance-seg label, so inject that role here so the role-driven partition
+        # strips it off the model input AND snapshots it as the int32 labelmap.
+        # Remove once the DB owns the channel role table.
+        if isinstance(meta, dict) and self.expect_mask_channel:
+            _C = inputs.shape[-1]
+            _cm = dict(_channel_mapping_from_meta(meta) or {})
+            _cm[_C - 1] = "instance_segmentation"
+            meta["channel_mapping"] = _cm
+
+        # Fast split: signal channels off the front (view + dtype cast), object
+        # channels off the int32 tail. `mask_labelmap` is (B, T, Z, Y, X) or None
+        # at inference (no mask channel -> no labelmap, no masks built).
+        images, targets_by_role = self._split_channels(inputs, meta)
+        mask_labelmap = targets_by_role.get("instance_segmentation")
 
         # Attach the per-target labelmap BEFORE transforms so geometric ops
         # (Crop3D / Resize / flip) warp it in lockstep with the image and
@@ -2045,6 +2280,27 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
                 mask_labelmap=mask_labelmap,
             )
 
+        # Canonical GT for evaluation: `data_views` (emitted under "targets") is
+        # the SAM2-specific dict the model needs, but the InstanceSegmentation-
+        # Evaluator wants the standard per-image 3D GT (labels/boxes/mask_ids/
+        # label_map). Publish the raw per-image `targets` by REFERENCE under
+        # "gt_targets" with the single-timepoint label_map squeezed (T,Z,Y,X) ->
+        # (Z,Y,X) as a VIEW (label_map[0]; no voxel copy, so no VRAM bloat). This
+        # makes the preprocessor the sole owner of GT shape and lets the
+        # evaluator consume targets directly (no GT adapter). Empty on the no-GT
+        # inference path (targets == []).
+        gt_targets = []
+        for t in targets:
+            g = dict(t)  # shallow: shares every tensor by reference
+            lm = g.get("label_map")
+            if lm is not None and torch.is_tensor(lm) and lm.dim() == 4:
+                assert lm.shape[0] == 1, (
+                    "SAM2 3D instance GT expects a single timepoint (T==1) per "
+                    f"label_map, got T={lm.shape[0]}"
+                )
+                g["label_map"] = lm[0]  # view -> (Z, Y, X)
+            gt_targets.append(g)
+
         sam2_metrics: list[dict[str, Any]] = [
             make_timing_metric("data_time", data_time),
             make_timing_metric("preprocess_time", time.time() - preprocess_t0),
@@ -2059,7 +2315,23 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             "metainfo": {
                 **meta,
                 "targets": data_views,
+                "gt_targets": gt_targets,
                 "idx": idx,
                 "metrics": sam2_metrics,
             },
         }
+
+# --- registry: preprocessors are Hydra-instantiated (recursive transforms/mask_generator) ---
+from cell_observatory_platform.utils.config import register_class as _register_class
+
+for _pp_name, _pp_cls in {
+    "ray": RayPreprocessor,
+    "denoising": DenoisingPreprocessor,
+    "channel_split": ChannelSplitPreprocessor,
+    "upsample": UpsamplePreprocessor,
+    "instance_segmentation": InstanceSegmentationPreprocessor,
+    "semantic_segmentation": SemanticSegmentationPreprocessor,
+    "object_detection": ObjectDetectionPreprocessor,
+    "sam2_video": SAM2VideoPreprocessor,
+}.items():
+    _register_class("preprocessor", _pp_name, _pp_cls)

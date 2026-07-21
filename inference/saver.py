@@ -1,23 +1,31 @@
+"""SaveWorker: persists inference predictions to disk as nested Zarr annotations.
+
+A Ray actor that consumes the inferencer's ``dict[str, Tensor]`` outputs (plus
+``metainfo``) and writes them under ``<pred_path>/<model_name>/<annotation_name>``
+via :mod:`cell_observatory_platform.data.io`.
+"""
+
 from __future__ import annotations
 
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
+from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
 import numpy as np
 import ray
 
+from cell_observatory_platform.data import io
 from cell_observatory_platform.data.datasets.buffers import BufferManager
-from cell_observatory_platform.data.io import (
-    save_annotations_metadata,
-    save_dense_annotations,
-    save_sparse_annotations,
+from cell_observatory_platform.inference.inference_postprocess import (
+    crop_sample_spatial,
+    InferenceRecord,
+    build_records,
 )
 
 def input_format_to_output_format(
     input_format: Literal["TZYXC", "ZYXC"],
-    task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
+    task: Literal["instance_segmentation", "semantic_segmentation", "object_detection"],
 ) -> Dict[str, Literal["TZYXC", "ZYXC", "TN6", "N6", "TN", "N"]]:
     """
     Convert input format to output format.
@@ -56,7 +64,7 @@ def input_format_to_output_format(
             output_format["labels"] = "NM"
         else:
             raise ValueError(f"Unknown input format: {input_format}")
-    elif task == "detection":
+    elif task == "object_detection":
         if input_format == "TZYXC":
             output_format["scores"] = "TN"
             output_format["labels"] = "TNM"
@@ -70,19 +78,6 @@ def input_format_to_output_format(
     else:
         raise ValueError(f"Unknown task: {task}")
     return output_format
-
-
-def _expand_channel_names_for_batch(
-    channel_names: Union[Dict[int, str], List[Dict[int, str]]],
-    batch_size: int,
-) -> List[Dict[int, str]]:
-    if isinstance(channel_names, dict):
-        return [channel_names] * batch_size
-    if len(channel_names) != batch_size:
-        raise ValueError(
-            f"channel_names list length {len(channel_names)} must equal batch_size {batch_size}"
-        )
-    return list(channel_names)
 
 
 def _timepoint_idxs_for_batch_idx(
@@ -102,18 +97,132 @@ def _timepoint_idxs_for_batch_idx(
     return timepoint_idxs
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("save_handler", "save_labelmap")
+def save_labelmap(
+    *,
+    image_path: str,
+    model_name: str,
+    data: np.ndarray,
+    annotation_name: str,
+    data_format: str,
+    save_mode: Literal["overwrite", "create"],
+    dtype: str = "uint16",
+    chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    timepoint_idxs: Optional[List[int]] = None,
+    zarr_driver: str = "zarr3",
+    **_: Any,
+) -> None:
+    """Save an integer label-map (instance or semantic masks) via save_dense_annotations.
+
+    ``data_format`` must be ``ZYXC`` or ``TZYXC``.
+    ``annotation_name`` must contain ``"mask"`` (the name contract lives in
+    save_masks / save_masks_channel_names; the underlying io call does NOT
+    validate the name).
+    """
+    assert data_format.upper() in ("ZYXC", "TZYXC"), (
+        f"save_labelmap expects ZYXC or TZYXC data_format; got {data_format!r}"
+    )
+    io.save_dense_annotations(
+        image_path=image_path,
+        model_name=model_name,
+        data=data,
+        annotation_name=annotation_name,
+        data_format=cast(Literal["TZYXC", "ZYXC"], data_format.upper()),
+        save_mode=save_mode,
+        chunk_spatial_shape=chunk_spatial_shape,
+        shard_spatial_shape=shard_spatial_shape,
+        timepoint_idxs=timepoint_idxs,
+        zarr_driver=zarr_driver,
+        dtype=dtype,
+    )
+
+
+@REGISTRY.register("save_handler", "save_dense_image")
+def save_dense_image(
+    *,
+    image_path: str,
+    model_name: str,
+    data: np.ndarray,
+    annotation_name: str,
+    data_format: str,
+    save_mode: Literal["overwrite", "create"],
+    dtype: str = "float32",
+    chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    timepoint_idxs: Optional[List[int]] = None,
+    zarr_driver: str = "zarr3",
+    **_: Any,
+) -> None:
+    """Save a float dense reconstruction volume via io.save_dense_image.
+
+    ``dtype`` must be a float dtype (``float32``, ``float64``, etc.).
+    ``annotation_name`` must NOT contain ``"mask"`` — use ``save_labelmap`` for masks.
+    """
+    assert data_format.upper() in ("ZYXC", "TZYXC"), (
+        f"save_dense_image expects ZYXC or TZYXC data_format; got {data_format!r}"
+    )
+    io.save_dense_image(
+        image_path=image_path,
+        model_name=model_name,
+        data=data,
+        annotation_name=annotation_name,
+        data_format=cast(Literal["TZYXC", "ZYXC"], data_format.upper()),
+        save_mode=save_mode,
+        chunk_spatial_shape=chunk_spatial_shape,
+        shard_spatial_shape=shard_spatial_shape,
+        timepoint_idxs=timepoint_idxs,
+        zarr_driver=zarr_driver,
+        dtype=dtype,
+    )
+
+
+@REGISTRY.register("save_handler", "save_sparse")
+def save_sparse(
+    *,
+    image_path: str,
+    model_name: str,
+    data: np.ndarray,
+    annotation_name: str,
+    data_format: str,
+    save_mode: Literal["overwrite", "create"],
+    dtype: str = "float32",
+    timepoint_idxs: Optional[List[int]] = None,
+    zarr_driver: str = "zarr3",
+    **_: Any,
+) -> None:
+    """Save sparse per-object arrays (boxes, scores, labels) via save_sparse_annotations."""
+    io.save_sparse_annotations(
+        image_path=image_path,
+        model_name=model_name,
+        data=data,
+        annotation_name=cast(Literal["scores", "labels", "boxes"], annotation_name),
+        data_format=cast(
+            Literal["TNM", "TN6", "TN", "NM", "N6", "N"],
+            data_format,
+        ),
+        save_mode=save_mode,
+        timepoint_idxs=timepoint_idxs,
+        zarr_driver=zarr_driver,
+        dtype=dtype,
+    )
+
+
 def save_predictions(
     image_path: str,
     model_name: str,
     preds: Dict[str, Any],
-    task: Literal["instance_segmentation", "semantic_segmentation", "detection"],
+    task: Literal["instance_segmentation", "semantic_segmentation", "object_detection"],
     save_mode: Literal["overwrite", "create"],
     save_tensors_metadata: Dict[str, Dict[str, Any]],
-    existing_channel_names: Dict[int, str],
     zarr_driver: str = "zarr3",
     timepoint_idxs: Optional[List[int]] = None,
     shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
     chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
+    orig_spatial: Optional[Tuple[int, int, int]] = None,
 ) -> None:
     exceptions = {}
     metadata = {"task": task}
@@ -139,48 +248,44 @@ def save_predictions(
             ray.logger.error(f"Data format for {output_name} not found in save_tensors_metadata: {e}")
             continue
         try:
-            annotation_type = output_metadata["annotation_type"]
+            save_handler_key = output_metadata["save_handler"]
         except KeyError as e:
-            ray.logger.error(f"Annotation type for {output_name} not found in save_tensors_metadata: {e}")
+            ray.logger.error(f"save_handler for {output_name} not found in save_tensors_metadata: {e}")
             continue
         try:
-            if annotation_type == "dense":
-                assert output_metadata["data_format"] in ["TZYXC", "ZYXC"], f"Invalid data format: {output_metadata['data_format']}"
-                save_dense_annotations(
-                    image_path=image_path,
-                    model_name=model_name,
-                    data=data,
-                    annotation_name=save_name,
-                    data_format=cast(Literal["TZYXC", "ZYXC"], data_format),
-                    save_mode=save_mode,
-                    chunk_spatial_shape=chunk_spatial_shape,
-                    shard_spatial_shape=shard_spatial_shape,
-                    timepoint_idxs=timepoint_idxs,
-                    zarr_driver=zarr_driver,
-                    dtype=dtype,
+            handler = REGISTRY.get("save_handler", save_handler_key).factory
+            # Dense handlers require spatial-crop before writing.  Tile-mode restore
+            # places each prediction top-left in a full-tile buffer with trailing
+            # zero-pad; cropping to orig_spatial drops that pad so only the original
+            # tile is written.
+            if save_handler_key in ("save_labelmap", "save_dense_image"):
+                assert data_format.upper() in ("TZYXC", "ZYXC"), (
+                    f"Invalid data format for dense handler {save_handler_key!r}: {data_format!r}"
                 )
-            elif annotation_type == "sparse":
-                save_sparse_annotations(
-                    image_path=image_path,
-                    model_name=model_name,
-                    data=data,
-                    annotation_name=cast(Literal["scores", "labels", "boxes"], save_name),
-                    data_format=cast(
-                        Literal["TNM", "TN6", "TN", "NM", "N6", "N"],
-                        data_format,
-                    ),
-                    save_mode=save_mode,
-                    timepoint_idxs=timepoint_idxs,
-                    zarr_driver=zarr_driver,
-                    dtype=dtype,   
-                )
-            else:
-                raise ValueError(f"Unknown annotation type: {annotation_type}")
+                if orig_spatial is not None:
+                    data = crop_sample_spatial(
+                        data,
+                        tuple(int(s) for s in orig_spatial),
+                        data_format.upper().startswith("T"),
+                    )
+            handler(
+                image_path=image_path,
+                model_name=model_name,
+                data=data,
+                annotation_name=save_name,
+                data_format=data_format,
+                save_mode=save_mode,
+                dtype=dtype,
+                chunk_spatial_shape=chunk_spatial_shape,
+                shard_spatial_shape=shard_spatial_shape,
+                timepoint_idxs=timepoint_idxs,
+                zarr_driver=zarr_driver,
+            )
         except Exception as e:
-            ray.logger.error(f"Failed to save {annotation_type} annotation {output_name} with data format {data_format}: {e}", exc_info=True)
+            ray.logger.error(f"Failed to save {save_handler_key!r} annotation {output_name} with data format {data_format}: {e}", exc_info=True)
             exceptions[output_name] = e
     try:
-        save_annotations_metadata(
+        io.save_annotations_metadata(
             image_path=image_path,
             model_name=model_name,
             timepoint_idxs=timepoint_idxs,
@@ -276,7 +381,6 @@ class SaveWorker:
                 "batch_size_actual",
                 "save_tensors_metadata",
                 "model_name",
-                "channel_names",
             )
             for key in required:
                 if key not in sample_metainfo:
@@ -284,49 +388,58 @@ class SaveWorker:
             task = sample_metainfo["task"]
             batch_size = sample_metainfo["batch_size_actual"]
             timepoint_idxs_raw = sample_metainfo.get("timepoint_idxs", None)
-            channel_names_list = _expand_channel_names_for_batch(
-                sample_metainfo["channel_names"], batch_size
-            )
             save_tensors_metadata = sample_metainfo["save_tensors_metadata"]
 
             batch_futures: List[Future] = []
 
-            def _save_batch_element(b: int) -> None:
-                metadata_element = {col: sample_metainfo[col][b] for col in self.columns}
+            orig_image_sizes = sample_metainfo.get("orig_image_sizes", None)
+
+            # Uniform per-sample unpack (batch-first). image_key=None keeps every output
+            # in record.preds; save writes the raw labelmap (no viz mask normalization).
+            records = build_records(
+                output_arrays, sample_metainfo, columns=tuple(self.columns), image_key=None,
+            )
+
+            def _save_batch_element(record: InferenceRecord) -> None:
                 image_path = os.path.join(
-                    metadata_element["server_folder"],
-                    metadata_element["output_folder"],
-                    metadata_element["tile_name"],
+                    record.metadata["server_folder"],
+                    record.metadata["output_folder"],
+                    record.metadata["tile_name"],
                 )
                 if not os.path.exists(image_path):
                     raise ValueError(
                         f"Save mode is {self.save_mode} but image path {image_path} does not exist"
                     )
-                preds_element = {name: output_arrays[name][b] for name in output_arrays}
+                # Original tile spatial size (Z, Y, X) this element was restored to;
+                # dense outputs are cropped to it (drops the full-tile buffer zero-pad).
+                orig_spatial = None
+                if orig_image_sizes is not None:
+                    row = orig_image_sizes[record.index]
+                    orig_spatial = tuple(int(x) for x in tuple(np.asarray(row).ravel())[-3:])
                 save_predictions(
                     image_path=str(image_path),
                     model_name=sample_metainfo["model_name"],
-                    preds=preds_element,
+                    preds=record.preds,
+                    orig_spatial=orig_spatial,
                     task=cast(
                         Literal[
                             "instance_segmentation",
                             "semantic_segmentation",
-                            "detection",
+                            "object_detection",
                         ],
                         task,
                     ),
                     save_mode=cast(Literal["overwrite", "create"], "overwrite" if self.save_mode == "append" else self.save_mode),
                     save_tensors_metadata=save_tensors_metadata,
-                    existing_channel_names=channel_names_list[b],
                     timepoint_idxs=_timepoint_idxs_for_batch_idx(
-                        timepoint_idxs_raw, b, batch_size
+                        timepoint_idxs_raw, record.index, batch_size
                     ),
                     chunk_spatial_shape=self.chunk_spatial_shape,
                     shard_spatial_shape=self.shard_spatial_shape,
                 )
 
-            for b in range(batch_size):
-                batch_futures.append(self.thread_pool.submit(_save_batch_element, b))
+            for record in records:
+                batch_futures.append(self.thread_pool.submit(_save_batch_element, record))
 
             errors = []
             for future in as_completed(batch_futures):

@@ -7,7 +7,6 @@ defaults:
   - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
   - /datasets/preprocessor/instance_segmentation_preprocessor # configs/datasets/preprocessor/instance_segmentation_preprocessor.yaml
   - /datasets/masking/mask_generator         # configs/datasets/masking/mask_generator.yaml
-  - /models/BUILD_maskDINO                  # configs/models/BUILD_maskdino.yaml
   - /models/meta_arch/maskdino/mae_large_w_masks    # configs/models/maskdino/large.yaml
   - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
   - /models/backbones/maskdino_backbone/maskdino_backbone   # configs/models/backbones/maskdino_backbone/maskdino_backbone.yaml
@@ -19,7 +18,7 @@ defaults:
   - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
   - /optimizers/lamb                         # configs/optimizers/lamb.yaml
   - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml
-  - /optimizations/models/mae                # configs/optimizations/models/mae.yaml
+  - /optimizations/models/mae/large # configs/optimizations/models/mae/large.yaml
   - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
   - /profiling/profiling                     # configs/profiling/profiling.yaml
   - _self_
@@ -154,8 +153,8 @@ optimizers:
 # hooks
 hooks:
   hooks_list:
-  - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-  - _target_: cell_observatory_platform.training.hooks.LRScheduler
+  - name: free_device_buffer
+  - name: lr_scheduler
     backend: DEEPSPEED
-  - _target_: cell_observatory_platform.training.hooks.IterationTimer
-  - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+  - name: iteration_timer
+  - name: periodic_writer

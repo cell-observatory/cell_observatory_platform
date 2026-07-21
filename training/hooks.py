@@ -1678,3 +1678,36 @@ class GarbageCollectionHook(HookBase):
             return
         if self.reenable_on_end and self._auto_gc_was_enabled:
             gc.enable()
+
+
+# --- Registry -------------------------------------------------------------- #
+# Every HookBase subclass is a config-selected swap point (an entry in
+# `config.hooks.hooks_list`). Register each under the `hook` role, keyed by a name.
+from cell_observatory_platform.utils.config import register_flat_class as _register_flat_class
+
+_HOOKS = {
+    "anomaly_detector": AnomalyDetector,
+    "sampler_setter": SamplerSetter,
+    "lr_scheduler": LRScheduler,
+    "iteration_timer": IterationTimer,
+    "inference_metrics": InferenceMetricsHook,
+    "periodic_writer": PeriodicWriter,
+    "periodic_checkpointer": PeriodicCheckpointer,
+    "best_checkpointer": BestCheckpointer,
+    "torch_memory_stats": TorchMemoryStats,
+    "best_metric_saver": BestMetricSaver,
+    "nsys_profiler": NsysProfilerHook,
+    "torch_profiler": TorchProfiler,
+    "early_stop": EarlyStopHook,
+    "ema_scheduler": EMASchedulerHook,
+    "teacher_temperature_scheduler": TeacherTemperatureSchedulerHook,
+    "local_loss_reweighting": LocalLossReweightingHook,
+    "weight_decay_schedule": WeightDecayScheduleHook,
+    "cuda_synchronize": CudaSynchronizeHook,
+    "free_device_buffer": FreeDeviceBufferHook,
+    "adjust_timeout": AdjustTimeoutHook,
+    "memory_debug": MemoryDebugHook,
+    "garbage_collection": GarbageCollectionHook,
+}
+for _name, _cls in _HOOKS.items():
+    _register_flat_class("hook", _name, _cls)

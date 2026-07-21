@@ -255,6 +255,11 @@ class ConvNeXtV2(nn.Module):
         return x
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import build_kwargs as _build_kwargs
+
+
+@REGISTRY.register("backbone", "convnext")
 def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> nn.Module:
     if adapter_args is not None:
         raise NotImplementedError("Adapter is not supported for ConvNeXtV2.")
@@ -267,4 +272,4 @@ def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> n
             if isinstance(resolved, dict):
                 backbone_wrapper_args = resolved
         logger.info(f"Building ConvNeXtV2 with args: {backbone_wrapper_args}")
-        return ConvNeXtV2(**backbone_wrapper_args)
+        return ConvNeXtV2(**_build_kwargs(backbone_wrapper_args))

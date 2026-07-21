@@ -1,4 +1,4 @@
-_target_: cell_observatory_platform.inference.inferencer.InferencerWorker
+name: inferencer_worker
 
 aggregate_mode: save_local
 

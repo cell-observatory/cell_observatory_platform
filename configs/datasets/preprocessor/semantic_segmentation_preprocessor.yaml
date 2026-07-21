@@ -1,4 +1,4 @@
-_target_: cell_observatory_platform.models.layers.preprocessor.SemanticSegmentationPreprocessor
+name: semantic_segmentation
 
 with_masking: false
 mask_generator: null
@@ -15,12 +15,14 @@ transforms_list:
   #   bbox_format: ${datasets.preprocessor.bbox_output_format}
   #   crop_to_meta_spatial: true
 
-  # 1) Convert instance labels to boundary masks
+  # 1) Convert the membrane instance labelmap to boundary masks
   - _target_: cell_observatory_platform.data.transforms.make_targets.InstanceToBoundaryMask
+    source_role: semantic_segmentation_membrane
     connectivity: 1
 
-  # 2) Convert instance labels to foreground masks
+  # 2) Convert the membrane instance labelmap to foreground masks
   - _target_: cell_observatory_platform.data.transforms.make_targets.ForegroundMasks
+    source_role: semantic_segmentation_membrane
     remove_boundary: true
 
   # 2) Normalize after transforms
@@ -32,6 +34,5 @@ transforms_list:
 patch_shape: ${datasets.patch_shape}
 input_format: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
-mask_channel_idx: ${datasets.mask_channel_idx}
 
 seed: ${seed}

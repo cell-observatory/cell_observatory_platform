@@ -6,6 +6,7 @@ from typing import Any, Dict, Literal, List, Mapping, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from omegaconf import DictConfig
 
 from cell_observatory_platform.models.layers.mlp import get_mlp
 from cell_observatory_platform.models.layers.norm import get_norm
@@ -20,6 +21,7 @@ from cell_observatory_platform.models.layers.patch_embeddings import calc_num_pa
 from cell_observatory_platform.models.backbones.masked_hiera_encoder import MaskedHieraEncoder
 from cell_observatory_platform.models.heads.masked_hiera_predictor import MaskedHieraPredictor
 from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops
+from cell_observatory_platform.models.meta_arch import utils as mo
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -198,7 +200,12 @@ class MaskedAutoEncoder(nn.Module):
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
-        self.output_metadata = output_metadata
+        # Inference contract: inference_step returns full-context per-patch token
+        # FEATURES (not saved; VLM/downstream). Metadata is lazy-built in
+        # get_output_metadata() because it needs the encoder (built below); a config
+        # may still override by passing output_metadata.
+        self._output_metadata_override = output_metadata
+        self.output_metadata = None
 
         axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value["C"]
@@ -493,6 +500,14 @@ class MaskedAutoEncoder(nn.Module):
     
     @torch.jit.ignore
     def get_output_metadata(self):
+        # Lazy-built (needs the encoder): declares the per-level token FEATURES that
+        # inference_step returns. A config-provided override wins.
+        if self.output_metadata is None:
+            self.output_metadata = (
+                self._output_metadata_override
+                if self._output_metadata_override is not None
+                else mo.output_metadata(**mo.build_feature_metadata(self, self.masked_encoder))
+            )
         return self.output_metadata
 
     def forward(self, data_sample: dict):
@@ -586,53 +601,27 @@ class MaskedAutoEncoder(nn.Module):
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions
 
-    def predict(self, data_sample: dict):
-        inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
+    def evaluate_step(self, data_sample: dict) -> dict:
+        """EVAL — consumed by PretrainEvaluator (loss-only). Returns the loss dict;
+        metric keys (e.g. ``"step_loss"``) are read directly. The masked-target
+        patch payload is dropped (unused by the metric, and 'reconstruction' was a
+        misnomer for masked patch embeddings)."""
+        loss_dict, _ = self.forward(data_sample)
+        return dict(loss_dict)
 
-        masks, spatial_kwargs = meta["masks"][0], meta.get("spatial_kwargs", None)
-        context_masks, patches_used = meta["context_masks"][0], meta["patches_used"][0]
-        target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
-        mu_mask, mu_keep_idx = meta.get("mu_mask", [None])[0], meta.get("mu_keep_idx", [None])[0]
-
-        if self.backbone_type == "vit":
-            x, patches = self.masked_encoder(
-                inputs, masks=context_masks, spatial_kwargs=spatial_kwargs,
-            )
-            x = self.masked_decoder(
-                x,
-                original_patch_indices=original_patch_indices,
-                target_masks=target_masks,
-                patches_used=patches_used,
-                spatial_kwargs=spatial_kwargs,
-            )
-        
-        elif self.backbone_type == "hiera":
-            if mu_mask is None or mu_keep_idx is None:
-                raise ValueError(
-                    "Hiera backbone requires mu_mask and mu_keep_idx in meta. "
-                    "Use mask_mode=HIERA_MU or HIERA_MU_BLOCKED."
-                )
-            x, patches = self.masked_encoder(
-                inputs, masks=mu_mask, ctx_idx=mu_keep_idx, spatial_kwargs=spatial_kwargs,
-                with_intermediates=True,
-                with_fusion_heads=True,
-                return_windowed=False,
-            )
-            x = self.masked_decoder(
-                x, mu_mask=mu_mask, ctx_idx=mu_keep_idx, spatial_kwargs=spatial_kwargs,
-            )
-        
-        else:
-            raise ValueError(f"Unsupported backbone_type={self.backbone_type}")
-
-        predictions = self.masked_encoder.patch_embedding._unpatchify(x, out_channels=None)
-        return predictions
+    @torch.no_grad()
+    def inference_step(self, data_sample: dict) -> dict:
+        """INFERENCE — full-context per-patch token FEATURES (VLM/downstream); NOT saved.
+        No masking, no unpatchify, no raster un-window, no scatter -- flat [B, N, C]
+        per level (single for vit/single-scale hiera; every level for multiscale).
+        See :func:`meta_arch.utils.extract_token_features`."""
+        return mo.extract_token_features(self.masked_encoder, self, data_sample)
 
 
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(MaskedAutoEncoder.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
     kwargs = {}
     for k in cfg.keys():
         if k in ignore or k not in allowed:
@@ -641,6 +630,10 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     return kwargs
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("model", "mae")
 def BUILD(cfg: Mapping[str, Any]) -> MaskedAutoEncoder:
     model_cfg = cfg.models.meta_arch.mae
     return MaskedAutoEncoder(**_extract_model_kwargs(model_cfg))

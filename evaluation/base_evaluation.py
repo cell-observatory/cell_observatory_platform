@@ -1,7 +1,10 @@
 from typing import Dict, List
 
 from cell_observatory_platform.evaluation.evaluator import DatasetEvaluator
-from cell_observatory_platform.evaluation.metrics import TrainLosses
+from cell_observatory_platform.evaluation.metrics import build_metrics
+
+
+from cell_observatory_platform.utils.registry import REGISTRY
 
 
 class BaseEvaluator(DatasetEvaluator):
@@ -10,24 +13,11 @@ class BaseEvaluator(DatasetEvaluator):
     """
 
     def __init__(self, training_metrics: List[Dict[str, str]]):
-        # _results is a dictionary that will hold the final results
-        # after evaluation, where each key is a metric name
-        # and the value is the aggregated result for that metric
-        self._results = {metric: None for training_metric in training_metrics for metric in training_metric.keys()}
-
-        # for a loss dict: {"metric1": loss, "metric2": loss}
-        # we create a TrainLosses instance for each metric
-        # with the specified reduction method
-        # e.g. {"metric1": "mean", "metric2": "min"}
-        # this object will accumulate the losses
-        # for a given metric across steps and then
-        # aggregate epoch statistics to write to
-        # eventWriter backends for logging
-        self.metrics = {
-            metric: TrainLosses(reduce_method=reduce_op)
-            for training_metric in training_metrics
-            for metric, reduce_op in training_metric.items()
-        }
+        # Each {loss_key: reduce_method} pair builds a TrainLosses keyed by the
+        # loss name; these accumulate per-step losses and aggregate epoch stats
+        # written to the event-writer backends (TensorBoard/WandB/disk).
+        self.metrics = build_metrics(training_metrics)
+        self._results = {m: None for m in self.metrics}
 
     # reset _results for each metric
     def reset(self):
@@ -49,17 +39,10 @@ class BaseEvaluator(DatasetEvaluator):
         for metric, metric_impl in self.metrics.items():
             metric_impl(outputs, data_sample, loss_dict[metric])
 
-    # calls the Metric object aggregate method
-    # to compute the final metric value for each metric
-    # which is stored in self._results
-    def aggregate(self):
-        for metric, metric_impl in self.metrics.items():
-            self._results[metric] = float(metric_impl.aggregate())
+    # evaluate() is inherited from DatasetEvaluator: it gathers (no-op for
+    # TrainLosses) + aggregates each metric into a flat dict passed to the event
+    # writer before writing to the backend (e.g. TensorBoard, WandB, disk).
 
-    # calls the aggregate method to compute the final results
-    # and returns the _results dictionary which is passed to
-    # the event writer before writing to the backend
-    # e.g. TensorBoard, WandB, disk, etc.
-    def evaluate(self):
-        self.aggregate()
-        return self._results
+
+from cell_observatory_platform.utils.config import register_class as _register_class
+_register_class("evaluator", "base", BaseEvaluator)

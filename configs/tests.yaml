@@ -5,7 +5,6 @@ defaults:
   - /datasets/preprocessor/ray_preprocessor
   - /datasets/pretrain_dataset_ray
   - /datasets/masking/mask_generator
-  - /models/BUILD_MAE # configs/models/BUILD_MAE.yaml
   - /models/meta_arch/mae/tiny  # smaller model to avoid oom for github actions
   - /optimizations/optimizations # configs/optimizations/optimizations.yaml
   - /optimizations/models/jepa/large # configs/optimizations/models/jepa.yaml
@@ -118,13 +117,15 @@ evaluation:
   val_metric: step_loss
   val_mode: min # mode for the validation metric, can be 'max' or 'min'
   evaluator:
-    _target_: cell_observatory_platform.evaluation.base_evaluation.BaseEvaluator
+    name: base
     training_metrics:
-      - "step_loss": "mean"
+      - name: train_loss
+        key: step_loss
+        reduce_method: mean
 
 loggers:
   event_writers:
-    - _target_: cell_observatory_platform.training.loggers.LocalEventWriter
+    - name: local
       save_dir: ${loggers.logdir}
       step_scalars_prefix: step_logbook
       epoch_scalars_prefix: epoch_logbook
@@ -132,19 +133,19 @@ loggers:
 
 hooks:
   hooks_list:
-    - _target_: cell_observatory_platform.training.hooks.AnomalyDetector
-    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-    - _target_: cell_observatory_platform.training.hooks.LRScheduler
-    - _target_: cell_observatory_platform.training.hooks.WeightDecayScheduleHook
-    - _target_: cell_observatory_platform.training.hooks.IterationTimer
+    - name: anomaly_detector
+    - name: free_device_buffer
+    - name: lr_scheduler
+    - name: weight_decay_schedule
+    - name: iteration_timer
       warmup_iter: 2
-    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-    - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+    - name: periodic_writer
+    - name: periodic_checkpointer
       file_prefix: latest_model
       backend: DEEPSPEED
-    - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+    - name: best_checkpointer
       checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-    - _target_: cell_observatory_platform.training.hooks.TorchProfiler
+    - name: torch_profiler
       output_dir: ${loggers.logdir}/profiler
       schedule:
         skip_first: 1
@@ -157,15 +158,15 @@ hooks:
         - CPU
       save_tensorboard: true
       shutdown_after_profile: False
-    - _target_: cell_observatory_platform.training.hooks.TorchMemoryStats
+    - name: torch_memory_stats
       step_period: 5
       epoch_period: 1
       logdir: ${loggers.logdir}
-    - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+    - name: best_metric_saver
       metric_name: ${evaluation.val_metric}
       compare_fn: ${evaluation.val_mode}
       eval_after_validation: true
-    - _target_: cell_observatory_platform.training.hooks.EarlyStopHook
+    - name: early_stop
       patience: 10
       stopping_threshold: 0.01
       mode: ${evaluation.val_mode}

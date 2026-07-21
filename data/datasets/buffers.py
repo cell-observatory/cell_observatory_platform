@@ -7,6 +7,8 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 from typing_extensions import Buffer
 
+from omegaconf import open_dict
+
 import cupy as cp
 from cupy.cuda import runtime as cudart
 import numpy as np
@@ -355,15 +357,65 @@ def get_slot_bytes(shape: tuple[int, ...], dtype: str) -> int:
     )
 
 
+def _resize_dense_output_shapes_for_restore(output_metadata, layout: Optional[str], stats) -> None:
+    """Grow dense save/viz buffer shapes to the FULL ORIGINAL TILE.
+
+    Tile-mode inference resizes inputs down to the model's ``train_shape`` and then
+    restores predictions back up to the original tile size. The SHM save/viz slots
+    are sized from ``tensor_info[name].shape`` (the model's processed shape after
+    the merge), which would be too small for the restored full-tile outputs and
+    overflow the raw device->host memcpy. Here we enlarge the spatial dims of each
+    DENSE buffer tensor to the DB per-table maxima (``stats.max_{z,y,x}_size``),
+    which bounds the largest tile across the batch. A no-op when the model already
+    runs at full tile (maxima <= current shape).
+
+    Identifies dense tensors via ``save_tensors[name].annotation_type == "dense"``
+    and uses their ``data_format`` to locate the Z/Y/X axes in the shape tuple.
+
+    Mutates ``output_metadata`` IN PLACE (the caller passes the live config node, so
+    the enlarged shapes are visible to every downstream consumer of that node).
+    """
+    tensor_info = output_metadata.get("tensor_info", {}) or {}
+    save_tensors = output_metadata.get("save_tensors", {}) or {}
+    buffer_tensors = list(output_metadata.get("buffer_tensors", []) or [])
+
+    axis_max = {
+        "Z": int(getattr(stats, "max_z_size", 0) or 0),
+        "Y": int(getattr(stats, "max_y_size", 0) or 0),
+        "X": int(getattr(stats, "max_x_size", 0) or 0),
+    }
+
+    dense_formats: Dict[str, str] = {}
+    for name, meta in (save_tensors.items() if hasattr(save_tensors, "items") else []):
+        if hasattr(meta, "get") and meta.get("annotation_type") == "dense":
+            dense_formats[name] = str(meta.get("data_format", layout)).upper()
+
+    with open_dict(output_metadata):
+        for name in buffer_tensors:
+            fmt = dense_formats.get(name)
+            # TODO: fail hard here?
+            if fmt is None or name not in tensor_info:
+                continue
+            shape = [int(s) for s in tensor_info[name]["shape"]]
+            for axis, max_value in axis_max.items():
+                if axis in fmt and max_value > 0:
+                    idx = fmt.index(axis)
+                    if idx < len(shape):
+                        shape[idx] = max(shape[idx], max_value)
+            tensor_info[name]["shape"] = shape
+
+
 def init_output_memory_pools(
-    buffer_manager: BufferManager, 
-    output_metadata: Dict[str, Any], 
+    buffer_manager: BufferManager,
+    output_metadata: Dict[str, Any],
     batch_size: int,
     save: Optional[bool] = False,
     viz: Optional[bool] = False,
     save_buffer_capacity: Optional[int] = None,
     viz_buffer_capacity: Optional[int] = None,
     pin_numa_node: Optional[bool] = True,
+    layout: Optional[str] = None,
+    restore_stats: Optional[Any] = None,
 ) -> None:
     """
     Initialize output memory pools for save and viz.
@@ -407,6 +459,14 @@ def init_output_memory_pools(
     if not save and not viz:
         raise ValueError("at least one of save or viz must be True")
 
+    # Tile-mode inference restores predictions to the full original tile; enlarge the
+    # dense buffer shapes (in place) before sizing the pools so the SHM slots fit. The
+    # in-place mutation of output_metadata is intentional: the caller passes the live
+    # config node, so the enlarged shapes are seen by every downstream consumer (the
+    # inferencer_worker + save/viz workers built from that same node). No-op / skipped
+    # when restore_stats is None (model already runs at full tile).
+    if restore_stats is not None:
+        _resize_dense_output_shapes_for_restore(output_metadata, layout, restore_stats)
 
     for name in (output_metadata.get("buffer_tensors") or ()):
         try:

@@ -9,7 +9,7 @@ val_metric: mask_map
 val_mode: max  # 'min' or 'max'
 
 evaluator:
-  _target_: cell_observatory_platform.evaluation.instance_segmentation_evaluator.InstanceSegmentationEvaluator
+  name: instance_segmentation
   _recursive_: false
   # SAM2 emits masks directly; mask_chunk_size only bounds the pairwise-IoU
   # working set per class (chunk_size * Z*Y*X bool masks at a time).
@@ -23,7 +23,6 @@ evaluator:
   # GT per-instance masks are built from `target["label_map"]` + `mask_ids`
   # (the dataset format shared with MaskDINO).
   gt_mask_source: label_map
-  target_key: targets
 
   # GT boxes come from the same dataset pipeline as MaskDINO
   # (bbox_output_format=cxcyczwhd, normalize_bboxes=true), while SAM2's predicted
@@ -41,6 +40,7 @@ evaluator:
     - box_miou
     - box_f1
     - mask_map
-    - mask_miou
-    - name: pred_iou_eval
-      _target_: cell_observatory_platform.evaluation.metrics.PredictedIoUEvalMetric
+    - name: mask_miou
+      mode: instance
+    - name: predicted_iou
+      key: pred_iou_eval

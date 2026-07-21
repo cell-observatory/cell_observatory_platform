@@ -5,7 +5,6 @@ defaults:
   - /clusters/coreweave_h200 # configs/clusters/local.yaml
   - /datasets/pretrain_dataset_ray # configs/datasets/pretrain_dataset_ray.yaml
   - /models/meta_arch/mae/large # configs/models/jepa/large.yaml
-  - /models/BUILD_MAE # configs/models/BUILD_AutoBench.yaml
   - /checkpoint/checkpoint # configs/checkpoint/checkpoint.yaml
   - /loggers/loggers # configs/loggers/loggers.yaml
   - /evaluation/base_evaluator # configs/evaluation/base_evaluator.yaml
@@ -168,17 +167,17 @@ optimizers:
 # hooks
 hooks:
   hooks_list:
-    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-    - _target_: cell_observatory_platform.training.hooks.LRScheduler
+    - name: free_device_buffer
+    - name: lr_scheduler
       backend: DEEPSPEED
-    - _target_: cell_observatory_platform.training.hooks.IterationTimer
-    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
-    - _target_: cell_observatory_platform.training.hooks.PeriodicCheckpointer
+    - name: iteration_timer
+    - name: periodic_writer
+    - name: periodic_checkpointer
       file_prefix: latest_model
       backend: DEEPSPEED
-    - _target_: cell_observatory_platform.training.hooks.BestCheckpointer
+    - name: best_checkpointer
       checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
-    - _target_: cell_observatory_platform.training.hooks.BestMetricSaver
+    - name: best_metric_saver
       metric_name: ${evaluation.val_metric}
       compare_fn: ${evaluation.val_mode}
       eval_after_validation: true

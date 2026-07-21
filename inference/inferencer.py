@@ -1,12 +1,12 @@
 import os
-import re
 import time
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import ray
 import torch
+from torch.nn import functional as F
 from ray.actor import ActorHandle
 
 import cupy as cp
@@ -16,28 +16,39 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
 from cell_observatory_platform.training.helpers import get_patch_sizes
-from cell_observatory_platform.inference.amg import postprocess_sam_preds
 from cell_observatory_platform.utils.context import barrier, get_world_size, process_rank
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
 from cell_observatory_platform.data.datasets.buffers import BufferManager
 from cell_observatory_platform.inference.saver import SaveWorker
 from cell_observatory_platform.inference.visualizer import VizWorker
+from cell_observatory_platform.inference.inference_postprocess import postprocess
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+from cell_observatory_platform.utils.registry import REGISTRY
+
 
 class InferencerWorker:
     def __init__(
         self,
         aggregate_mode: Literal["stitch_volume", "none"],
         inference_mode: Literal["tile", "cube"],
-        task: Literal["detection", "instance_segmentation", "semantic_segmentation", "upsample_space", "channel_split"],
+        task: Optional[Literal[
+            "object_detection",
+            "instance_segmentation",
+            "semantic_segmentation",
+            "denoising",
+            "channel_split",
+            "upsample_space",
+            "upsample_time",
+            "upsample_spacetime",
+        ]],
         outputs_metadata: dict,
         input_format: str,
         input_shape: List[int],
         patch_shape: List[Optional[int]],
-        decoder_head_type: str,
         model_name: str,
         save_outputs: bool,
         block_on_save: bool,
@@ -48,7 +59,6 @@ class InferencerWorker:
         save_worker: ActorHandle[SaveWorker],
         viz_worker: ActorHandle[VizWorker],
         viz_sampling_policy: Optional[Dict[str, Any]] = None,
-        channel_names: Optional[Dict[int, str]] = None,
         timepoint_idxs_for_save: Optional[List[int]] = None,
     ):
 
@@ -90,23 +100,6 @@ class InferencerWorker:
         self.viz_worker = viz_worker
         self.viz_sampling_policy = viz_sampling_policy
         self.model_name = model_name
-        def _normalize_channel_names(m: Mapping[Any, Any]) -> Dict[int, str]:
-            return {int(k): str(v) for k, v in m.items()}
-
-        if save_outputs:
-            if channel_names is None or not channel_names:
-                raise ValueError(
-                    "inferencer_worker.channel_names must be set to a non-empty dict "
-                    "(root zarr channel index -> name) when save_outputs is True. "
-                    "Configure it in your inference Hydra config."
-                )
-            self._inference_channel_names = _normalize_channel_names(dict(channel_names))
-        else:
-            self._inference_channel_names = (
-                None
-                if channel_names is None
-                else _normalize_channel_names(dict(channel_names))
-            )
 
         self._save_timepoint_idxs = (
             None
@@ -125,15 +118,9 @@ class InferencerWorker:
         )
         self.buffer_manager.pin_buffers()
 
-        self.decoder_head_type = decoder_head_type
-
         assert outputs_metadata is not None, "outputs_metadata must be provided"
         self.outputs_metadata = OmegaConf.to_container(outputs_metadata, resolve=True) \
             if isinstance(outputs_metadata, DictConfig) else dict(outputs_metadata)
-
-        # FIXME: enforce user naming main_output_name instead
-        # main prediction output name; assume first key in tensor_info
-        self.main_output_name = next(iter(self.outputs_metadata["tensor_info"].keys()))
 
         self.rank, self.world_size = process_rank(), get_world_size()
 
@@ -153,132 +140,24 @@ class InferencerWorker:
             raise ValueError(f"Unsupported input format: {input_format}")
 
     def _predict(self, batch_tensor: torch.Tensor, data_sample: dict) -> Dict[str, torch.Tensor]:
-        if self.task == "detection":
-            if self.decoder_head_type == "plaindetr":
-                preds = self.model.predict(data_sample)
-                if not isinstance(preds, dict):
-                    if isinstance(preds, torch.Tensor):
-                        preds = {self.main_output_name: preds}
-                    else:
-                        raise ValueError(f"Prediction returned unexpected type {type(preds)}")
-            else:
-                raise NotImplementedError(
-                    f"Decoder head type {self.decoder_head_type} not supported for detection inference."
-                )
+        """Run the model's ``inference_step()`` and return a ``dict[str, torch.Tensor]``.
 
-        elif self.task == "instance_segmentation":
-            if self.decoder_head_type == "maskdino":
-                preds = self.model.predict(data_sample)
-            elif self.decoder_head_type == "sam":
-                preds = self.model.predict(data_sample, type="volume")
-                preds, data_sample["data_tensor"] = postprocess_sam_preds(
-                    preds, data_sample["data_tensor"]
-                )
-            else:
-                raise NotImplementedError(
-                    f"Decoder head type {self.decoder_head_type} not supported for instance segmentation inference."
-                )
-        elif self.task == "semantic_segmentation":
-            if self.decoder_head_type == "mask2former":
-                # Call model.predict() which already upsamples pred_masks to input resolution
-                preds = self.model.predict(data_sample)
-            elif self.decoder_head_type == "unet":
-                # UNet.predict returns (B, num_classes, D, H, W); inferencer expects channels-last
-                outputs = self.model.predict(data_sample)
-                pred_masks = outputs["pred_masks"]
-                preds = {self.main_output_name: pred_masks}
-            else:
-                raise NotImplementedError(
-                    f"Decoder head type {self.decoder_head_type} not supported for semantic segmentation sliding window inference."
-                )            
+        Output naming is owned by the model: ``inference_step()`` must return a
+        dict keyed by the names declared in the model's ``output_metadata``. 
 
-        elif self.task == "dense_prediction":
-            if self.task not in {"upsample_space", "upsample_time", "upsample_space_time", "channel_split"}:
-                raise NotImplementedError(
-                    f"Task {self.task} not implemented for {self.decoder_head_type} inference."
-                )
-            pred_hypercubes = self.model.predict(data_sample)
-            preds = {self.main_output_name: pred_hypercubes}
+        Each model owns its full output contract (mask rank normalisation, fuse,
+        any layout permutes). The inferencer is model-agnostic: it calls
+        ``inference_step(data_sample)`` for all models including SAM2.
+        """
+        preds = self.model.inference_step(data_sample)
 
-        elif self.task == "pretrain":
-            pred_hypercubes = self.model.predict(data_sample)
-            preds = {self.main_output_name: pred_hypercubes}
-
-        elif self.task == "feature_extractor":
-            # NOTE: we expect patchified prediction tensors here
-            pred_hypercubes = self.model.forward_features(batch_tensor, masks=None)
-            
-            if self.input_format == "ZYXC":
-                B, N, C = pred_hypercubes.shape
-
-                # FIXME: this will break if the backbone does further downsampling
-                num = int(np.prod(self.token_shape))
-                # CLS token
-                if N == num + 1:
-                    pred_hypercubes = pred_hypercubes[:, 1:, :]
-                    N -= 1
-                if N != num:
-                    raise RuntimeError(f"forward_features returned N={N}, expected {num} (token_shape={self.token_shape})")
-
-                pred_hypercubes = pred_hypercubes.view(B, *self.token_shape, C)
-                pred_hypercubes = pred_hypercubes.unsqueeze(1)
-            else:
-                raise ValueError("Feature extractor only supports ZYXC input format for now.")
-
-            preds = {self.main_output_name: pred_hypercubes}
-
-        else:
-            raise NotImplementedError(
-                f"Task {self.task} with decoder head {self.decoder_head_type} not supported for inference."
+        if not isinstance(preds, dict):
+            raise ValueError(
+                "model.inference_step() must return a dict[str, torch.Tensor]; "
+                f"got {type(preds)}. Each model owns its output naming via output_metadata."
             )
 
-        if hasattr(self.model, "validate_outputs"):
-            self.model.validate_outputs(preds)
-
         return preds
-
-    _PATH_TOKEN = re.compile(r"""
-        ([^.[]+)
-        (?:\[(\d+)\])?
-    """, re.X)
-
-    @staticmethod
-    def resolve_path(root: Any, path: str) -> Any:
-        """
-        Resolve 'path' against 'root'.
-        Supports dict keys, attributes, and list indices via '[i]' or bare '.i'.
-        Examples:
-        - "data_tensor"
-        - "metainfo.masks[0]"
-        - "metainfo.masks.0"   (treated like index 0)
-        """
-        cur = root
-        for part in path.split("."):
-            if part == "":
-                continue
-
-            # allow bare numeric segments as list indices (".0")
-            if part.isdigit():
-                cur = cur[int(part)]
-                continue
-
-            # support "key" and "key[i]"
-            m = InferencerWorker._PATH_TOKEN.fullmatch(part)
-            if not m:
-                raise KeyError(f"Bad path segment: {part!r} (full path: {path!r})")
-            key, idx = m.group(1), m.group(2)
-
-            # descend by key/attr
-            if isinstance(cur, dict):
-                cur = cur[key]
-            else:
-                cur = getattr(cur, key)
-
-            # optional index
-            if idx is not None:
-                cur = cur[int(idx)]
-
-        return cur
 
     def predict(self, data_sample: dict):
         """
@@ -293,6 +172,12 @@ class InferencerWorker:
         t0_predict = time.perf_counter()
         preds = self._predict(X, data_sample)
         self._metrics["predict_time_ms"] = (time.perf_counter() - t0_predict) * 1000
+
+        # Restore dense predictions to the original tile resolution (tile-mode
+        # resize undo) and rescale boxes to the original coordinate frame.
+        t0_restore = time.perf_counter()
+        preds = postprocess(preds, data_sample, self.outputs_metadata)
+        self._metrics["restore_outputs_time_ms"] = (time.perf_counter() - t0_restore) * 1000
 
         B = len(metadata["prepared_id"])
         targets = metadata.get("targets", None)
@@ -325,11 +210,28 @@ class InferencerWorker:
         return False
 
     def _copy_d2h(self, dst: np.ndarray, src: torch.Tensor) -> None:
-        """Async device-to-host memcpy via CuPy, mirroring CollatorActor.copy_h2d."""
+        """Async device-to-host memcpy via CuPy, mirroring CollatorActor.copy_h2d.
+
+        Guards against host-memory corruption: the destination SHM slot is sized
+        from the declared ``tensor_info`` (DB maxima x declared C/dtype), so a
+        model output whose channel/time count or dtype disagrees with that
+        declaration must fail loudly here rather than overrun the slot. This
+        fail-hard guard is the sole runtime check on the output contract.
+        """
+        src_nbytes = src.nelement() * src.element_size()
+        dst_nbytes = int(dst.nbytes)
+        if src_nbytes > dst_nbytes:
+            raise ValueError(
+                "d2h copy would overrun host slot: src "
+                f"{tuple(src.shape)} ({src.dtype}, {src_nbytes} B) does not fit "
+                f"dst {tuple(dst.shape)} ({dst.dtype}, {dst_nbytes} B). Model "
+                "output shape/dtype disagrees with declared output_metadata "
+                "tensor_info; fix the declaration or the model output."
+            )
         dst_ptr = dst.__array_interface__["data"][0]
         src_ptr = src.data_ptr()
         cudart.memcpyAsync(
-            dst_ptr, src_ptr, src.nelement() * src.element_size(),
+            dst_ptr, src_ptr, src_nbytes,
             cudart.memcpyDeviceToHost, int(self._cp_d2h_stream.ptr),
         )
 
@@ -362,22 +264,30 @@ class InferencerWorker:
         return obj
 
     def _attach_save_worker_metainfo(self, metainfo_numpy: Dict[str, Any]) -> None:
-        """Populate keys required by ``SaveWorker.save`` (see ``saver.save_predictions``)."""
+        """Populate keys required by ``SaveWorker.save`` (see ``saver.save_predictions``).
+
+        Output naming comes from the config's ``save_tensors`` metadata; channel
+        provenance rides along in ``metainfo['channel_mapping']`` (carried from the
+        dataset/DB).
+        """
         metainfo_numpy.setdefault("model_name", self.model_name)
         metainfo_numpy.setdefault("task", self.task)
         metainfo_numpy.setdefault("save_tensors_metadata", self.outputs_metadata["save_tensors"])
 
-        assert "channel_mapping" in metainfo_numpy, "channel_mapping must be in metainfo"
-        print(f"channel_mapping: {metainfo_numpy['channel_mapping']}")
-        # FIXME: this is a hack to get the channel names to the save worker during development
-        # In the future we should rely on the channel_mapping in the metainfo
-        names = self._inference_channel_names
-        if names is None:
-            raise RuntimeError("InferencerWorker missing channel_names while saving outputs.")
-        metainfo_numpy["channel_names"] = dict(names)
-
         if self._save_timepoint_idxs is not None:
             metainfo_numpy.setdefault("timepoint_idxs", self._save_timepoint_idxs)
+
+    def _attach_viz_worker_metainfo(self, metainfo_numpy: Dict[str, Any]) -> None:
+        """Populate keys required by viz handlers.
+
+        Carries the merged, model-sourced output tensor metadata (``tensor_info``,
+        which includes each output's declared ``kind``) so viz handlers dispatch
+        on the producer's declared semantics (e.g. ``instance_label_map`` vs
+        ``instance_stack``) instead of sniffing tensor rank/dtype. Mirrors
+        ``_attach_save_worker_metainfo``; the same transport pattern as
+        ``save_tensors_metadata``.
+        """
+        metainfo_numpy.setdefault("tensor_metadata", self.outputs_metadata["tensor_info"])
 
     def _save_inference_outputs(self, data_sample: dict, preds: dict) -> None:
         """
@@ -395,6 +305,8 @@ class InferencerWorker:
         metainfo_numpy = self._tree_to_cpu_numpy(sample_metainfo)
         if self.save_outputs:
             self._attach_save_worker_metainfo(metainfo_numpy)
+        if self.vizualize_outputs:
+            self._attach_viz_worker_metainfo(metainfo_numpy)
         save_outputs = {
             "metainfo": metainfo_numpy,
         }
@@ -555,9 +467,16 @@ class InferencerWorker:
             if should_visualize and self.vizualize_outputs:
                 if self.viz_worker is None:
                     raise RuntimeError("Attempting to visualize outputs but viz_worker is None")
-                if "data_tensor" in data_sample:
+                # Invariant: only attach a host copy if the key was NOT already
+                # buffered into viz_outputs above. When data_tensor/targets are
+                # listed in visualize_tensors+buffer_tensors they already hold a
+                # SHM slot_info here; overwriting it with a host array orphans the
+                # slot (viz_buffer_slots is cleared at dispatch, so finally never
+                # frees it) -> pool exhaustion/stall under block_on_viz. The
+                # targets guard is defensive (targets is not buffered today).
+                if "data_tensor" in data_sample and "data_tensor" not in viz_outputs:
                     viz_outputs["data_tensor"] = self._tree_to_cpu_numpy(data_sample["data_tensor"])
-                if targets is not None:
+                if targets is not None and "targets" not in viz_outputs:
                     viz_outputs["targets"] = self._tree_to_cpu_numpy(targets)
                 vis_task = self.viz_worker.visualize.remote(
                     inference_outputs=viz_outputs,
@@ -591,3 +510,7 @@ class InferencerWorker:
         barrier()
         if errors:
             raise RuntimeError(f"{errors}\n{len(errors)}/{n_tasks} save/viz tasks failed.")
+
+
+from cell_observatory_platform.utils.config import register_class as _register_class
+_register_class("inferencer", "inferencer_worker", InferencerWorker)

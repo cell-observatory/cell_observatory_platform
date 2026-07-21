@@ -486,7 +486,7 @@ class WandBEventWriter(EventWriter):
         project: str,
         dir: str | Path,
         entity: str | None = None,
-        name: str | None = None,
+        run_name: str | None = None,
         tags: List[str] | None = None,
         resume_from: str | None = None,
         id: str | None = None,
@@ -502,7 +502,7 @@ class WandBEventWriter(EventWriter):
             self.run = wandb.init(project=project,
                                     entity=entity,
                                     dir=dir,
-                                    name=name,
+                                    name=run_name,
                                     tags=tags,
                                     resume=resume_from,
                                     id=id,
@@ -761,3 +761,15 @@ class MetricsProcessor:
 
         aggregated_loss = aggregate_microbatch_losses(loss_dicts, self.gradient_accumulation_steps)
         return metrics, aggregated_loss
+
+# --- Registry -------------------------------------------------------------- #
+# LocalEventWriter / WandBEventWriter are config-selected swap points (entries in
+# `config.loggers.event_writers`), so register them under the `event_writer` role.
+# The class is the factory: __init__ takes flat config kwargs plus the injected
+# `event_recorder=` override, exactly as the old `instantiate(cfg, event_recorder=...)`
+# did — a non-mutating splat. EventWriterList and EventRecorder are single-impl
+# infra (not swap points, §10.4) and stay on Hydra `instantiate`.
+from cell_observatory_platform.utils.config import register_flat_class as _register_flat_class
+
+_register_flat_class("event_writer", "local", LocalEventWriter)
+_register_flat_class("event_writer", "wandb", WandBEventWriter)

@@ -1,4 +1,4 @@
-_target_: cell_observatory_platform.models.layers.preprocessor.InstanceSegmentationPreprocessor
+name: instance_segmentation
 
 with_masking: false
 mask_generator: null

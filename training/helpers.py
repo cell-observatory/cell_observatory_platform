@@ -1180,14 +1180,21 @@ def get_image_sizes(
 
     image_sizes_padded: List[Tuple[int, ...]] = [spatiotemporal_shape] * batch_size
 
-    # use orig_* sizes only if *all* are present
+    # orig_image_sizes is the authoritative "restore to this shape" target used
+    # by inference post-processing (resize predictions back up) and by eval
+    # (compute metrics at original resolution). It MUST be the true per-tile
+    # size from the DB (z/y/x_size), NOT the padded buffer shape -- otherwise a
+    # restored mask would be upsized to the global-max buffer instead of the
+    # actual source tile. Prefer explicit orig_* columns when present; otherwise
+    # fall back to the true per-tile image_sizes (decoded above), never the
+    # padded buffer.
     if all(f"orig_{ax}_size" in metadata for ax in ax_names):
         orig_image_sizes: List[Tuple[int, ...]] = []
         for i in range(batch_size):
             spatiotemporal_dims = [int(metadata[f"orig_{ax}_size"][i]) for ax in ax_names]
             orig_image_sizes.append(tuple(spatiotemporal_dims))
     else:
-        orig_image_sizes = image_sizes_padded
+        orig_image_sizes = list(image_sizes)
 
     padding_mask = torch.zeros(
         (batch_size, *spatiotemporal_shape),

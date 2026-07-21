@@ -8,7 +8,6 @@ defaults:
   - /datasets/pretrain_dataset_ray
   - /datasets/preprocessor/instance_segmentation_preprocessor
   - /datasets/masking/mask_generator
-  - /models/BUILD_maskDINO
   - /models/meta_arch/maskdino/mae_large
   - /models/heads/maskdino_decoder/maskdino_decoder_box_init_multiscale
   - /models/heads/pixel_decoder/maskdino_encoder_hiera_multiscale
@@ -20,7 +19,7 @@ defaults:
   - /deepspeed/zero2
   - /optimizers/adamw_torch
   - /schedulers/warmup_cosine_decay
-  - /optimizations/models/mae
+  - /optimizations/models/mae/large # configs/optimizations/models/mae/large.yaml
   - /optimizations/optimizations
   - /profiling/profiling
   - _self_
@@ -124,8 +123,8 @@ optimizers:
 
 hooks:
   hooks_list:
-    - _target_: cell_observatory_platform.training.hooks.FreeDeviceBufferHook
-    - _target_: cell_observatory_platform.training.hooks.LRScheduler
+    - name: free_device_buffer
+    - name: lr_scheduler
       backend: DEEPSPEED
-    - _target_: cell_observatory_platform.training.hooks.IterationTimer
-    - _target_: cell_observatory_platform.training.hooks.PeriodicWriter
+    - name: iteration_timer
+    - name: periodic_writer

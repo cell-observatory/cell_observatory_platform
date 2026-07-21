@@ -25,6 +25,7 @@ from hydra.utils import get_method
 from torch import nn
 
 from cell_observatory_platform.data.structures import box_cxcyczwhd_to_xyzxyz, box_xyzxyz_to_cxcyczwhd, delta2bbox
+from cell_observatory_platform.models.meta_arch import utils as mo
 from cell_observatory_platform.models.layers.attention import RopeAttention
 from cell_observatory_platform.models.layers.mlp import MLP
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
@@ -133,7 +134,15 @@ class PlainDETR(nn.Module):
         # for inference
         self.topk = topk
         self.reparam = reparam
-        self.output_metadata = output_metadata
+        # Inference contract (see meta_arch/utils.py): inference_step returns a batched
+        # dict of top-k detections at the PROCESSED scale (the inferencer rescales to
+        # the original tile).
+        self.output_metadata = (
+            output_metadata if output_metadata is not None
+            else mo.output_metadata(
+                boxes=mo.boxes(topk), labels=mo.labels(topk), scores=mo.scores(topk),
+            )
+        )
 
         self._init_model_weights(buffer_device=buffer_device)
 
@@ -507,28 +516,25 @@ class PlainDETRReParam(PlainDETR):
             for a, b, c, d in zip(outputs_class[:-1], outputs_coord[:-1], outputs_coord_old[:-1], outputs_deltas[:-1])
         ]
 
-    def predict(self, samples: Dict):
+    def inference_step(self, samples: Dict):
         outputs = self._forward(samples)
-        preds = self._predict(
+        return self._predict(
             outputs,
             target_sizes=samples["metainfo"]["image_sizes_padded"],
-            original_target_sizes=samples["metainfo"]["orig_image_sizes"],
         )
-        return preds
 
-    def _predict(self, outputs, target_sizes, original_target_sizes=None):
-        """
-        Parameters:
-            outputs: raw outputs of the model
-            target_sizes: tensor of dimension [batch_size x 3] containing the size of each images of the batch
-                          For evaluation, this must be the original image size (before any data augmentation).
-                          For visualization, this should be the image size after data augment, but before padding.
+    def _predict(self, outputs, target_sizes):
+        """Top-k detections at the PROCESSED (padded) scale.
+
+        Returns a batched ``dict[str, Tensor]`` (the inferencer contract): ``boxes``
+        ``(BS, topk, 6)`` xyzxyz, ``labels`` ``(BS, topk)``, ``scores`` ``(BS, topk)``.
+        Boxes are emitted at the processed scale; the inferencer's post-processor
+        rescales them to the original tile (we do NOT rescale here).
         """
         out_logits, out_bbox = outputs["pred_logits"], outputs["pred_boxes"]
 
         assert len(out_logits) == len(target_sizes), "the batch size of out_logits and target_sizes must be equal"
         assert target_sizes.shape[1] == 3, "target_sizes should have shape [batch_size x 3]"
-        assert not self.reparam or original_target_sizes.shape[1] == 3, "original_target_sizes should have shape [batch_size x 3]"
 
         # prob: [BS, num_queries, num_classes]
         prob = out_logits.sigmoid()
@@ -544,28 +550,27 @@ class PlainDETRReParam(PlainDETR):
         # boxes: [BS, topk, 6]
         boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 6))
 
-        # NOTE: (important!) target_sizes and original_target_sizes are in 
-        #       (D, H, W) format while most other code uses (H, W, D) format
-        # target_sizes: [BS, 3]
+        # NOTE: (important!) target_sizes is in (D, H, W) format.
         img_d, img_h, img_w = target_sizes.unbind(1)
         if self.reparam:
-            # img_i: [BS, 1, 1, 1]
-            img_w, img_h, img_d = img_w[:, None, None], img_h[:, None, None], img_d[:, None, None]
-            boxes[..., 0::3].clamp_(min=torch.zeros_like(img_w), max=img_w)
-            boxes[..., 1::3].clamp_(min=torch.zeros_like(img_h), max=img_h)
-            boxes[..., 2::3].clamp_(min=torch.zeros_like(img_d), max=img_d)
-            scale_d, scale_h, scale_w = (original_target_sizes / target_sizes).unbind(1)
-            scale_fct = torch.stack([scale_w, scale_h, scale_d, scale_w, scale_h, scale_d], dim=1)
+            # Reparam boxes are already ABSOLUTE in the processed (padded) frame;
+            # clamp to that frame. Do NOT rescale to the original tile here.
+            img_w4, img_h4, img_d4 = img_w[:, None, None], img_h[:, None, None], img_d[:, None, None]
+            boxes[..., 0::3].clamp_(min=torch.zeros_like(img_w4), max=img_w4)
+            boxes[..., 1::3].clamp_(min=torch.zeros_like(img_h4), max=img_h4)
+            boxes[..., 2::3].clamp_(min=torch.zeros_like(img_d4), max=img_d4)
         else:
+            # Normalized [0, 1] boxes -> absolute processed-frame coords.
             scale_fct = torch.stack([img_w, img_h, img_d, img_w, img_h, img_d], dim=1)
+            boxes = boxes * scale_fct[:, None, :]
 
-        # boxes: [BS, topk, 6], scale_fct: [BS, 6]
-        boxes = boxes * scale_fct[:, None, :]
-
-        results = [{"scores": s, "labels": l, "boxes": b} for s, l, b in zip(scores, labels, boxes)]
-        return results
+        return {"boxes": boxes, "labels": labels, "scores": scores}
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("model", "plain_detr")
 def BUILD(cfg: Mapping[str, Any]) -> PlainDETR:
     """
     Factory for PlainDETR / PlainDETRReParam.
@@ -578,20 +583,14 @@ def BUILD(cfg: Mapping[str, Any]) -> PlainDETR:
     # ------------------------------------------------------------------
 
     bw_cfg = model_cfg["backbone_wrapper_args"]
-    build_backbone_wrapper = get_method(bw_cfg.BUILD)
-
     adapter_cfg = model_cfg.get("adapter_args", None)
-    if adapter_cfg is not None:
-        backbone = build_backbone_wrapper(bw_cfg, adapter_cfg)
-    else:
-        backbone = build_backbone_wrapper(bw_cfg, None)
+    backbone = REGISTRY.build("backbone", bw_cfg.name, bw_cfg, adapter_args=adapter_cfg)
 
     # ------------------------------------------------------------------
     # 2) Build transformer
     # ------------------------------------------------------------------
 
     transformer_cfg = model_cfg["transformer_args"]
-    build_transformer = get_method(transformer_cfg.BUILD)
 
     # The transformer BUILD reads its own fields (d_model, nheads, etc.)
     # We still need to inject reparam + query counts so they stay in sync
@@ -606,20 +605,21 @@ def BUILD(cfg: Mapping[str, Any]) -> PlainDETR:
     transformer_build_cfg["num_queries_one2many"] = num_queries_one2many
     transformer_build_cfg["mixed_selection"] = mixed_selection
 
-    transformer = build_transformer(transformer_build_cfg)
+    transformer = REGISTRY.build("head", transformer_build_cfg.name, transformer_build_cfg)
 
     # ------------------------------------------------------------------
     # 3) Build loss module (criterion)
     # ------------------------------------------------------------------
 
     crit_cfg = model_cfg["criterion_args"]
-    build_loss = get_method(crit_cfg.BUILD)
 
     num_classes = model_cfg["num_classes"]
     two_stage = model_cfg.get("two_stage", False)
     aux_loss = model_cfg.get("aux_loss", True)
 
-    loss_module = build_loss(
+    loss_module = REGISTRY.build(
+        "criterion",
+        crit_cfg.name,
         crit_cfg,
         num_classes=num_classes,
         two_stage=two_stage,

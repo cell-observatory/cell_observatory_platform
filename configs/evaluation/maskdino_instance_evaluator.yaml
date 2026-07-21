@@ -8,11 +8,11 @@ val_interval: 1
 val_metric: mask_map
 val_mode: max  # 'min' or 'max'
 
-# InstanceSegmentationEvaluator drives chunked mask materialization through
-# MaskDINO.predict_for_eval. The trainer dispatches to that method via the
-# evaluator's `predict_method` class attribute, so no extra wiring needed.
+# InstanceSegmentationEvaluator drives chunked mask materialization from the
+# per-sample intermediates returned by MaskDINO.evaluate_step (dispatched by
+# TestTrainer.run_test_step under job_type=test).
 evaluator:
-  _target_: cell_observatory_platform.evaluation.instance_segmentation_evaluator.InstanceSegmentationEvaluator
+  name: instance_segmentation
   # Number of MaskDINO queries materialized at full resolution at once. Trades
   # compute (one extra einsum + interpolate per chunk) for peak GPU memory:
   #   peak_bytes ~= mask_chunk_size * D*H*W * 4 (fp32 logits during upsample).
@@ -26,9 +26,8 @@ evaluator:
   # (the default dataset format). Use "masks" if your dataset materializes
   # binary masks upstream (memory-heavier).
   gt_mask_source: label_map
-  target_key: targets
 
-  # MaskDINO/SAM2 default to normalized cxcyczwhd. 
+  # MaskDINO/SAM2 default to normalized cxcyczwhd.
   # The evaluator converts GT to absolute xyzxyz for running box_iou_3d
   gt_box_format: cxcyczwhd
   gt_boxes_normalized: true
@@ -40,4 +39,5 @@ evaluator:
     - box_miou
     - box_f1
     - mask_map
-    - mask_miou
+    - name: mask_miou
+      mode: instance

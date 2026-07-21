@@ -12,162 +12,13 @@ from cell_observatory_platform.models.heads.maskdino_decoder import MaskDINODeco
 from cell_observatory_platform.models.heads.maskdino_head import MaskDINOHead
 from cell_observatory_platform.models.heads.pixel_decoders import MaskDINOEncoder
 from cell_observatory_platform.models.layers.attention import RopeAttention
+from cell_observatory_platform.models.layers.maskmaterializer import MaskMaterializer
 from cell_observatory_platform.models.layers.matchers import HungarianMatcher
+from cell_observatory_platform.models.meta_arch import utils as mo
 from cell_observatory_platform.training.helpers import get_input_data, get_nparams_and_flops
 from cell_observatory_platform.training.losses import DETR_Set_Loss
 from cell_observatory_platform.utils.shape_format import get_spatial_shape
 
-class MaskMaterializer:
-    """Chunked, per-image mask materializer for MaskDINO.
-
-    Args:
-        mask_embeddings: ``(Q, mask_dim)`` projected query embeddings for one
-            image (last decoder layer). May be in any floating dtype.
-        pixel_decoder_output: ``(mask_dim, d, h, w)`` finest pixel-decoder
-            feature map for the same image.
-        target_size: ``(D, H, W)`` spatial size to upsample masks to (typically
-            the original input image size).
-        chunk_size: maximum number of queries to materialize simultaneously.
-        upsample_dtype: dtype used inside the trilinear interpolate. Defaults
-            to ``torch.float32`` because trilinear in fp16 has noticeable
-            artefacts on small structures.
-
-    Chunked mask materialization for MaskDINO-style detectors.
-
-    MaskDINO produces ``num_queries`` object queries that, at the final decoder
-    layer, project to a ``mask_dim``-vector each. To turn each query into a 3D
-    binary mask the model evaluates::
-
-        low_res_mask[b, q] = einsum("bqc, bcdhw->bqdhw", mask_embeddings, pixel_decoder_output)
-        full_res_mask[b, q] = F.interpolate(low_res_mask[b, q], size=(D, H, W), mode="trilinear")
-
-    The interpolation step is the memory bottleneck for large 3D volumes: at
-    ``D = H = W = 256`` and ``topk_per_image = 100``, a single batch element costs
-    ``100 * 256**3 * 4 B = 6.7 GB`` in fp32 (3.3 GB in fp16) just for the mask
-    logits — before binarization, IoU computation, etc.
-
-    ``MaskMaterializer`` offers a single entry point — ``chunks(query_indices)`` —
-    that yields the upsampled mask logits for ``chunk_size`` queries at a time.
-    Callers (``MaskDINO.predict``, ``InstanceSegmentationEvaluator``) consume one
-    chunk, free it, and ask for the next. Peak memory drops from
-    ``topk * D*H*W`` to ``chunk_size * D*H*W``.
-
-    Notes:
-        * The chunked einsum is identical to the global one because the einsum is
-        parallelizable along the query axis.
-        * Per-chunk logits are produced in the model's compute dtype (typically
-        bf16/fp16 when AMP is active); upsample is forced to fp32 internally to
-        avoid trilinear precision issues, then cast back. Callers that need a
-        different dtype should cast on consumption.
-        * Bbox-cropped materialization is not implemented yet but is a natural
-        extension: take the union of ``pred_box`` and ``gt_box``, crop the
-        pixel-decoder feature map to the corresponding low-res region, and only
-        upsample within that crop. We expose enough state (the raw embeddings)
-        to add this without changing callers.
-    """
-
-    def __init__(
-        self,
-        mask_embeddings: torch.Tensor,
-        pixel_decoder_output: torch.Tensor,
-        target_size: Sequence[int],
-        chunk_size: int = 8,
-        upsample_dtype: torch.dtype = torch.float32,
-    ) -> None:
-        if mask_embeddings.dim() != 2:
-            raise ValueError(
-                f"mask_embeddings must be (Q, mask_dim); got {tuple(mask_embeddings.shape)}"
-            )
-        if pixel_decoder_output.dim() != 4:
-            raise ValueError(
-                f"pixel_decoder_output must be (mask_dim, d, h, w); got "
-                f"{tuple(pixel_decoder_output.shape)}"
-            )
-        if mask_embeddings.shape[1] != pixel_decoder_output.shape[0]:
-            raise ValueError(
-                "mask_dim mismatch: mask_embeddings has "
-                f"{mask_embeddings.shape[1]} channels but pixel_decoder_output has "
-                f"{pixel_decoder_output.shape[0]} channels"
-            )
-        if len(target_size) != 3:
-            raise ValueError(f"target_size must be 3D; got {tuple(target_size)}")
-        if chunk_size <= 0:
-            raise ValueError(f"chunk_size must be positive; got {chunk_size}")
-
-        self.mask_embeddings = mask_embeddings
-        self.pixel_decoder_output = pixel_decoder_output
-        self.target_size = tuple(int(s) for s in target_size)
-        self.chunk_size = int(chunk_size)
-        self.upsample_dtype = upsample_dtype
-
-    @property
-    def num_queries(self) -> int:
-        return int(self.mask_embeddings.shape[0])
-
-    @property
-    def mask_dim(self) -> int:
-        return int(self.mask_embeddings.shape[1])
-
-    @torch.no_grad()
-    def materialize(self, query_indices: torch.Tensor) -> torch.Tensor:
-        """Materialize the upsampled mask logits for ``query_indices`` at once.
-
-        Use sparingly — defeats the purpose of chunking when the index set is
-        large. Provided for parity with the legacy non-chunked path.
-        """
-        if query_indices.numel() == 0:
-            return self.mask_embeddings.new_zeros((0, *self.target_size))
-        embed = self.mask_embeddings.index_select(0, query_indices)
-        return self._materialize_from_embeds(embed)
-
-    @torch.no_grad()
-    def chunks(
-        self,
-        query_indices: torch.Tensor,
-        chunk_size: Optional[int] = None,
-    ) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
-        """Yield ``(chunk_query_indices, upsampled_mask_logits)`` per chunk.
-
-        ``upsampled_mask_logits`` has shape ``(k, D, H, W)`` where ``k`` is the
-        number of queries in this chunk (last chunk may be smaller). Logits are
-        in the model's mask-embedding dtype (no sigmoid applied).
-        """
-        if query_indices.numel() == 0:
-            return
-        cs = int(chunk_size) if chunk_size is not None else self.chunk_size
-        if cs <= 0:
-            raise ValueError(f"chunk_size must be positive; got {cs}")
-        n = int(query_indices.numel())
-        for start in range(0, n, cs):
-            end = min(start + cs, n)
-            chunk_idx = query_indices[start:end]
-            embed = self.mask_embeddings.index_select(0, chunk_idx)
-            yield chunk_idx, self._materialize_from_embeds(embed)
-
-    def _materialize_from_embeds(self, mask_embeds_chunk: torch.Tensor) -> torch.Tensor:
-        """Run einsum + trilinear upsample for one chunk of queries.
-
-        ``mask_embeds_chunk``: ``(k, mask_dim)``.
-        Returns: ``(k, D, H, W)`` logits at ``self.target_size``.
-        """
-        # Low-res einsum: (k, mask_dim) @ (mask_dim, d*h*w) -> (k, d, h, w).
-        # Using matmul on the flattened pixel decoder is slightly cheaper than
-        # einsum and easier to reason about for memory.
-        c, d, h, w = self.pixel_decoder_output.shape
-        low_res = mask_embeds_chunk @ self.pixel_decoder_output.reshape(c, d * h * w)
-        low_res = low_res.reshape(-1, d, h, w)  # (k, d, h, w)
-
-        # Trilinear upsample: F.interpolate expects (N, C, D, H, W); treat each
-        # query as its own "batch" item with C=1 so memory scales linearly.
-        original_dtype = low_res.dtype
-        low_res = low_res.to(self.upsample_dtype)
-        upsampled = F.interpolate(
-            low_res.unsqueeze(1),
-            size=self.target_size,
-            mode="trilinear",
-            align_corners=False,
-        ).squeeze(1)  # (k, D, H, W)
-        return upsampled.to(original_dtype)
 
 class MaskDINO(nn.Module):
     def __init__(
@@ -201,26 +52,21 @@ class MaskDINO(nn.Module):
         # Number of queries to materialize at full resolution simultaneously in
         # `predict` / `predict_for_eval`. Tune down on tighter vRAM budgets.
         self.mask_chunk_size = int(mask_chunk_size)
+        self.input_fmt = input_fmt
         spatial_shape = get_spatial_shape(input_shape, input_fmt)
-        default_output_metadata = DictConfig({
-            "tensor_info": {
-                "masks": {
-                    "shape": spatial_shape,
-                    "dtype": "uint16",
-                },
-                "boxes": {
-                    "shape": (topk_per_image, 6),
-                    "dtype": "float32",
-                },
-                "labels": {
-                    "shape": (topk_per_image,),
-                    "dtype": "float32",
-                },
-            },
-        })
+        self.spatial_shape = spatial_shape
+        # Inference contract (see meta_arch/utils.py). inference_step collapses the
+        # topk queries into ONE instance label map (channels-last ZYXC) plus
+        # per-instance boxes/scores at the processed scale. NOTE: the "labels" key
+        # actually carries the per-instance CONFIDENCE score (kept for the save
+        # contract), hence the scores kind.
+        self.output_metadata = mo.output_metadata(
+            masks  = mo.instance_label_map(spatial_shape),   # (Z,Y,X,1) uint16
+            boxes  = mo.boxes(topk_per_image),               # (topk,6) xyzxyz, processed scale
+            labels = mo.scores(topk_per_image),              # (topk,) per-instance confidence
+        )
         if output_metadata is not None:
-            default_output_metadata.merge_with(output_metadata)
-        self.output_metadata = default_output_metadata
+            self.output_metadata.merge_with(output_metadata)
 
         self._init_model_weights(buffer_device=buffer_device)
 
@@ -286,47 +132,6 @@ class MaskDINO(nn.Module):
     @torch.jit.ignore
     def get_output_metadata(self):
         return self.output_metadata
-
-    @torch.jit.ignore
-    def validate_outputs(self, preds: Dict[str, torch.Tensor]) -> None:
-        """Verify that prediction keys and per-sample shapes match tensor_info.
-
-        Raises ``ValueError`` with a detailed message on any mismatch so
-        shape/key bugs surface immediately instead of silently corrupting
-        downstream buffers.
-        """
-        tensor_info = self.output_metadata["tensor_info"]
-        expected_keys = set(tensor_info.keys())
-        actual_keys = set(preds.keys())
-
-        missing = expected_keys - actual_keys
-        extra = actual_keys - expected_keys
-        parts: List[str] = []
-        if missing:
-            parts.append(f"missing keys {missing}")
-        if extra:
-            parts.append(f"unexpected keys {extra}")
-
-        for key in expected_keys & actual_keys:
-            expected_shape = tuple(tensor_info[key]["shape"])
-            actual_shape = tuple(preds[key].shape[1:])  # strip batch dim
-            if "mask" in key.lower():
-                if len(actual_shape) != len(expected_shape):
-                    parts.append(
-                        f"'{key}' rank mismatch: tensor_info declares "
-                        f"{len(expected_shape)} spatial dims {expected_shape} but got "
-                        f"{len(actual_shape)} {actual_shape} (batch shape {tuple(preds[key].shape)})"
-                    )
-            elif actual_shape != expected_shape:
-                parts.append(
-                    f"'{key}' shape mismatch: tensor_info declares "
-                    f"{expected_shape} but got {actual_shape} (batch shape {tuple(preds[key].shape)})"
-                )
-
-        if parts:
-            raise ValueError(
-                "Model output / tensor_info mismatch:\n  " + "\n  ".join(parts)
-            )
 
     @staticmethod
     def adjust_loss_weight_dict(
@@ -402,21 +207,25 @@ class MaskDINO(nn.Module):
 
         return losses, outputs
 
-    def predict(self, data_sample: dict):
+    def inference_step(self, data_sample: dict):
         """Run inference and return per-sample collapsed instance predictions.
 
         Mask materialization is performed in chunks of ``self.mask_chunk_size``
         queries to keep peak vRAM bounded; see :class:`MaskMaterializer` and
-        :meth:`predict_for_eval` for the underlying primitives. The returned
+        :meth:`evaluate_step` for the underlying primitives. The returned
         dict has the following keys / shapes:
 
-            * ``boxes``: ``(B, topk, 6)`` in xyzxyz at original-image scale.
+            * ``boxes``: ``(B, topk, 6)`` in xyzxyz at the PROCESSED scale (the
+              resized volume the model saw). Tile-mode inference rescales these
+              to the original tile frame in the inferencer post-processor.
             * ``labels``: ``(B, topk)`` per-instance scores (optionally
               re-weighted by mean mask probability when ``focus_on_boxes`` is
               False).
-            * ``masks``: ``(B, *orig_image_size)`` uint16 instance label maps.
+            * ``masks``: ``(B, *processed_size)`` uint16 instance label maps at
+              the resized resolution; the inferencer restores them to the
+              original tile size for saving.
         """
-        intermediates = self.predict_for_eval(data_sample)
+        intermediates = self.evaluate_step(data_sample)
 
         per_sample_preds = []
         for sample in intermediates:
@@ -426,9 +235,14 @@ class MaskDINO(nn.Module):
             key: torch.stack([s[key] for s in per_sample_preds], dim=0)
             for key in per_sample_preds[0]
         }
+        # masks is a (B, Z, Y, X) instance label map. Add a trailing C=1 so it
+        # conforms to the channels-last ZYXC contract used by the save path
+        # (io.py ndim==len(data_format) gate); kind=instance_label_map.
+        if "masks" in batched:
+            batched["masks"] = batched["masks"].unsqueeze(-1)
         return batched
 
-    def predict_for_eval(self, data_sample: dict) -> List[Dict[str, Any]]:
+    def evaluate_step(self, data_sample: dict) -> List[Dict[str, Any]]:
         """Return per-sample inference intermediates without collapsing masks.
 
         Skips the global low-res einsum (``predict_mask=False``) so the caller
@@ -443,8 +257,10 @@ class MaskDINO(nn.Module):
               score per topk pick (the COCO-style class-aware ranking score).
             * ``topk_class_ids``: ``(topk,)`` long — the predicted class id
               corresponding to each topk pick.
-            * ``boxes``: ``(topk, 6)`` xyzxyz at original-image scale.
-            * ``orig_image_size``: ``(D, H, W)`` ints.
+            * ``boxes``: ``(topk, 6)`` xyzxyz at the PROCESSED scale.
+            * ``eval_frame_size``: ``(D, H, W)`` ints -- the PROCESSED size the
+              model saw (kept under this key for the downstream mask
+              materializer / evaluator contract), NOT the original tile size.
         """
         features_dict = self.backbone(data_sample)
         outputs, _ = self.segmentation_head(
@@ -455,14 +271,23 @@ class MaskDINO(nn.Module):
         mask_embeddings_b = outputs["mask_embeddings"]      # (B, Q, mask_dim)
         pixel_decoder_output_b = outputs["pixel_decoder_output"]  # (B, mask_dim, d, h, w)
 
-        orig_image_sizes = [
-            tuple(int(x) for x in orig.tolist())
-            for orig in data_sample["metainfo"]["orig_image_sizes"]
-        ]
+        # Evaluate at the PROCESSED resolution -- the spatial size of the tensor
+        # the model actually saw (after any Resize/crop in the preprocessor) --
+        # NOT metainfo["orig_image_sizes"] (the original tile size). GT rides the
+        # data tensor and was resized in lockstep, so both live here; restoring
+        # to the original tile size is an inference-only concern. Per-sample sizes
+        # are identical across the batch (the data tensor is a single dense
+        # buffer), so derive one processed (D, H, W) and reuse it.
+        processed_size = get_spatial_shape(
+            tuple(int(s) for s in data_sample["data_tensor"].shape[1:]),
+            self.input_fmt,
+        )
+        batch_size = pred_logits.shape[0]
+        eval_image_sizes = [processed_size] * batch_size
 
         num_classes = self.segmentation_head.num_classes
         per_sample: List[Dict[str, Any]] = []
-        for b, orig_size in enumerate(orig_image_sizes):
+        for b, eval_frame_size in enumerate(eval_image_sizes):
             scores = pred_logits[b].sigmoid()                                 # (Q, C)
             topk_scores, topk_idx = scores.flatten(0, 1).topk(
                 self.topk_per_image, sorted=False
@@ -472,19 +297,20 @@ class MaskDINO(nn.Module):
             topk_query_idx = topk_idx // num_classes                          # (topk,)
             topk_class_id = topk_idx % num_classes                            # (topk,)
 
-            depth, height, width = orig_size
+            depth, height, width = eval_frame_size
             boxes_topk = self.box_postprocess(
                 pred_boxes[b][topk_query_idx], depth, height, width
             )
 
             per_sample.append({
+                "mask_source": "query",
                 "mask_embeddings": mask_embeddings_b[b],
                 "pixel_decoder_output": pixel_decoder_output_b[b],
                 "topk_query_indices": topk_query_idx,
                 "topk_class_scores": topk_scores,
                 "topk_class_ids": topk_class_id,
                 "boxes": boxes_topk,
-                "orig_image_size": orig_size,
+                "eval_frame_size": eval_frame_size,
             })
         return per_sample
 
@@ -508,7 +334,7 @@ class MaskDINO(nn.Module):
         materializer = MaskMaterializer(
             mask_embeddings=sample["mask_embeddings"],
             pixel_decoder_output=sample["pixel_decoder_output"],
-            target_size=sample["orig_image_size"],
+            target_size=sample["eval_frame_size"],
             chunk_size=self.mask_chunk_size,
         )
         topk_query_idx = sample["topk_query_indices"]
@@ -541,7 +367,7 @@ class MaskDINO(nn.Module):
         # ones (matches `collapse_instance_masks` semantics).
         order = scores_per_instance.argsort()  # ascending
         label_map = torch.zeros(
-            sample["orig_image_size"], dtype=torch.int32, device=device
+            sample["eval_frame_size"], dtype=torch.int32, device=device
         )
         ordered_query_idx = topk_query_idx[order]
         # Label IDs 1..K assigned in iteration order = ascending-score order.
@@ -609,12 +435,16 @@ def _extract_kwargs(cfg: Mapping[str, Any], extra_ignores: Optional[List[str]] =
     """
     Drop Hydra/meta keys like _target_, BUILD, and any explicitly ignored keys.
     """
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
     if extra_ignores:
         ignore.update(extra_ignores)
     return {k: v for k, v in cfg.items() if k not in ignore}
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("model", "maskdino")
 def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
     """
     Factory for MaskDINO using nested cfg dicts.
@@ -638,13 +468,8 @@ def BUILD(cfg: Mapping[str, Any]) -> MaskDINO:
     # ----------------------------------------------------
 
     bw_cfg = model_cfg["backbone_wrapper_args"]
-    build_backbone_wrapper = get_method(bw_cfg.BUILD)
-
     adapter_cfg = model_cfg.get("adapter_args", None)
-    if adapter_cfg is not None:
-        backbone = build_backbone_wrapper(bw_cfg, adapter_cfg)
-    else:
-        backbone = build_backbone_wrapper(bw_cfg, None)
+    backbone = REGISTRY.build("backbone", bw_cfg.name, bw_cfg, adapter_args=adapter_cfg)
 
     # ----------------------------------------------------
     # 3) Pixel decoder (MaskDINOEncoder)

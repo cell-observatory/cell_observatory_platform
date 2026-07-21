@@ -1,4 +1,4 @@
-_target_: cell_observatory_platform.models.layers.preprocessor.DenoisingPreprocessor
+name: denoising
 
 with_masking: false
 mask_generator: ${datasets.masking.mask_generators.0}
@@ -9,7 +9,6 @@ transforms_list:
   # 0) Synthetic data needs to be convolved with PSF to simulate the effect of the microscope.
   - _target_: cell_observatory_platform.data.transforms.psf.ConvolveWithPSF
   # TODO: Make this configurable.
-    input_format: ${dataset_layout_order}
     input_shape: ${datasets.input_shape}
     input_pixel_size_um: [0.1, 0.1, 0.1]
     psf: /clusterfs/nvme/martinalvarez/psf-real/DSR/CamA_Arc_OMW.tif

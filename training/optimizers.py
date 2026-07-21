@@ -29,9 +29,62 @@ from timm.optim.lion import Lion
 from torchtitan.distributed import ParallelDims
 from torchtitan.components.ft import FTManager, has_torchft
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
+
+
+# --- Registry -------------------------------------------------------------- #
+# Each optimizer is a config-selected swap point (`config.optimizers.name`). The
+# factory reads the `optimizers` sub-config node and receives `params=` from the
+# caller.
+
+@REGISTRY.register("optimizer", "adamw")
+def _build_adamw(cfg, *, params):
+    return FusedAdam(
+        params,
+        lr=cfg.lr,
+        weight_decay=cfg.wd,
+        betas=tuple(cfg.betas),
+        eps=cfg.eps,
+    )
+
+
+@REGISTRY.register("optimizer", "adamw_torch")
+def _build_adamw_torch(cfg, *, params):
+    # NOTE: sometimes DeepSpeed's fused AdamW has issues, so we fall back to
+    #       torch's implementation.
+    return torch.optim.AdamW(
+        params,
+        lr=cfg.lr,
+        weight_decay=cfg.wd,
+        betas=tuple(cfg.betas),
+        eps=cfg.eps,
+        fused=True,
+    )
+
+
+@REGISTRY.register("optimizer", "lamb")
+def _build_lamb(cfg, *, params):
+    return FusedLamb(
+        params,
+        lr=cfg.lr,
+        weight_decay=cfg.wd,
+        betas=(0.9, 0.99),
+        eps=1e-08,
+    )
+
+
+@REGISTRY.register("optimizer", "lion")
+def _build_lion(cfg, *, params):
+    return Lion(
+        params,
+        lr=cfg.lr,
+        weight_decay=cfg.wd,
+        betas=tuple(cfg.betas),
+    )
 
 
 def get_optimizer(
@@ -41,51 +94,12 @@ def get_optimizer(
     steps_per_epoch: int,
     deepspeed_scheduler: bool = False
 ):
-    if optimizer == "adamw":
-        opt = FusedAdam(
-            params,
-            lr=config.optimizers.lr,
-            weight_decay=config.optimizers.wd,
-            betas=tuple(config.optimizers.betas),
-            eps=config.optimizers.eps,
-        )
-    #NOTE: sometimes DeepSpeed's fused AdamW has issues, so we 
-    #      fall back to torch's implementation
-    elif optimizer == "adamw_torch":
-        opt = torch.optim.AdamW(
-            params,
-            lr=config.optimizers.lr,
-            weight_decay=config.optimizers.wd,
-            betas=tuple(config.optimizers.betas),
-            eps=config.optimizers.eps,
-            fused=True
-        )
-    elif optimizer == "lamb":
-        opt = FusedLamb(
-            params,
-            lr=config.optimizers.lr,
-            weight_decay=config.optimizers.wd,
-            betas=(0.9, 0.99),
-            eps=1e-08,
-        )
-    elif optimizer == "lion":
-        opt = Lion(
-            params,
-            lr=config.optimizers.lr,
-            weight_decay=config.optimizers.wd,
-            betas=tuple(config.optimizers.betas),
-        )
-    # NOTE: not supported fully yet
-    # elif optimizer == "muon":
-    #     opt = Muon(
-    #         params,
-    #         lr=config.optimizers.lr,
-    #         weight_decay=config.optimizers.wd,
-    #         eps=config.optimizers.eps,
-    #         adjust_lr_fn=config.optimizers.get("adjust_lr_fn", None),
-    #     )
-    else:
-        raise ValueError(f"Optimizer {optimizer} not supported")
+    # NOTE: `muon` is not supported fully yet — it is intentionally left
+    #       unregistered, so `name: muon` fails loud at build (was the else-branch):
+    #     Muon(params, lr=config.optimizers.lr, weight_decay=config.optimizers.wd,
+    #          eps=config.optimizers.eps,
+    #          adjust_lr_fn=config.optimizers.get("adjust_lr_fn", None))
+    opt = REGISTRY.build("optimizer", optimizer, config.optimizers, params=params)
 
     if deepspeed_scheduler:
         decay_epochs = config.schedulers.epochs - (config.schedulers.warmup + config.schedulers.cooldown)

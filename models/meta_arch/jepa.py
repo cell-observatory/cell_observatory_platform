@@ -21,6 +21,7 @@ from cell_observatory_platform.data.masking.mask_generator import apply_masks
 from cell_observatory_platform.models.heads.maskedpredictor import MaskedPredictor
 from cell_observatory_platform.models.backbones.maskedencoder import MaskedEncoder
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
+from cell_observatory_platform.models.meta_arch import utils as mo
 from cell_observatory_platform.models.backbones.masked_hiera_encoder import MaskedHieraEncoder
 from cell_observatory_platform.models.heads.masked_hiera_predictor import MaskedHieraPredictor
 from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops
@@ -204,7 +205,11 @@ class JEPA(nn.Module):
 
         self.input_fmt = input_fmt
         self.input_shape = input_shape
-        self.output_metadata = output_metadata
+        # Inference contract: inference_step returns full-context per-patch token
+        # FEATURES (not saved; VLM/downstream). Lazy-built in get_output_metadata()
+        # (needs the encoder); a config may override by passing output_metadata.
+        self._output_metadata_override = output_metadata
+        self.output_metadata = None
         axis_to_value = dict(zip(input_fmt, input_shape))
         self.in_chans = axis_to_value["C"]
         self.num_frames = axis_to_value.get("T", None)
@@ -588,6 +593,14 @@ class JEPA(nn.Module):
 
     @torch.jit.ignore
     def get_output_metadata(self):
+        # Lazy-built (needs the encoder): declares the per-level token FEATURES that
+        # inference_step returns. A config-provided override wins.
+        if self.output_metadata is None:
+            self.output_metadata = (
+                self._output_metadata_override
+                if self._output_metadata_override is not None
+                else mo.output_metadata(**mo.build_feature_metadata(self, self.input_encoder))
+            )
         return self.output_metadata
 
     def forward(self, data_sample: dict):
@@ -598,6 +611,21 @@ class JEPA(nn.Module):
             return self._forward_hiera(inputs, meta)
         else:
             raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
+
+    def evaluate_step(self, data_sample: dict) -> dict:
+        """EVAL — consumed by PretrainEvaluator (loss-only). Returns the loss dict;
+        metric keys (e.g. ``"step_loss"``) are read directly. The predictor payload
+        is dropped (unused by the metric; 'embeddings' was a divergent key)."""
+        loss_dict, _ = self.forward(data_sample)
+        return dict(loss_dict)
+
+    @torch.no_grad()
+    def inference_step(self, data_sample: dict) -> dict:
+        """INFERENCE — full-context per-patch token FEATURES (VLM/downstream); NOT saved.
+        No masking, no unpatchify, no raster un-window, no scatter -- flat [B, N, C]
+        per level (single for vit/single-scale hiera; every level for multiscale).
+        See :func:`meta_arch.utils.extract_token_features`."""
+        return mo.extract_token_features(self.input_encoder, self, data_sample)
 
     def _forward_vit(self, inputs: torch.Tensor, meta: dict):
         masks, spatial_kwargs = meta["masks"][0], meta.get("spatial_kwargs", None)
@@ -713,7 +741,7 @@ class JEPA(nn.Module):
 def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(JEPA.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
     kwargs = {}
     for k in cfg.keys():
         if k in ignore or k not in allowed:
@@ -722,6 +750,9 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     return kwargs
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+@REGISTRY.register("model", "jepa")
 def BUILD(cfg: Mapping[str, Any]) -> JEPA:
     model_cfg = cfg.models.meta_arch.jepa
     return JEPA(**_extract_model_kwargs(model_cfg))

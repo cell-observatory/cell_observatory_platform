@@ -20,6 +20,7 @@ limitations under the License.
 
 
 import abc
+from typing import Dict, Mapping
 
 
 class DatasetEvaluator(metaclass=abc.ABCMeta):
@@ -31,18 +32,24 @@ class DatasetEvaluator(metaclass=abc.ABCMeta):
         raw ``model.forward`` outputs and ``loss_dict`` is the loss dict from
         the same forward pass.
       * Prediction-based test (``TestTrainer.run_test_step``): ``outputs`` are
-        postprocessed predictions from ``model.predict`` (in target space) and
-        ``loss_dict`` is ``None`` because ``predict`` does not compute losses.
+        postprocessed predictions from ``model.evaluate_step`` in target space,
+        and ``loss_dict`` is ``None``.
 
     Each evaluator decides which flow(s) it supports. Loss-based evaluators
     (e.g. :class:`BaseEvaluator`) must reject ``loss_dict=None``. Prediction-
     based evaluators (e.g. :class:`AutomatedBenchmarkEvaluator`) ignore
-    ``loss_dict`` and operate on ``outputs`` against
-    ``data_sample["metainfo"][target_key]``.
+    ``loss_dict`` and operate on ``outputs`` against the ground truth in
+    ``data_sample["metainfo"]``.
 
-    The class accumulates per-step state via :meth:`process` and produces the
-    final aggregated metrics via :meth:`evaluate`.
+    Concrete evaluators build ``self.metrics`` (an ordered ``{name: Metric}``
+    dict, via :func:`evaluation.metrics.build_metrics`) and accumulate per-step
+    state in :meth:`process`. The shared :meth:`evaluate` gathers + aggregates
+    every metric and flattens any ``Mapping`` return into ``f"{name}/{subkey}"``
+    so every evaluator yields a flat ``dict[str, float]``.
     """
+
+    # Concrete evaluators populate this in __init__ (via build_metrics).
+    metrics: Dict[str, object] = {}
 
     @abc.abstractmethod
     def reset(self):
@@ -60,29 +67,33 @@ class DatasetEvaluator(metaclass=abc.ABCMeta):
         Args:
             data_sample (dict): the inputs that were used to call the model.
                 Must contain ``metainfo`` for evaluators that need targets.
-            outputs: 
+            outputs:
                 - validation flow -> raw return value of ``model(inputs)``
-                - test flow -> return value of ``model.predict(inputs)`` already
-                in target space.
+                - test flow -> return value of ``model.evaluate_step(inputs)``
+                already in target space.
             loss_dict (Optional[dict]):a dictionary of losses
                 e.g. {"metric1": loss, "metric2": loss}
                 where each metric is a string and loss is a float.
         """
         pass
 
-    @abc.abstractmethod
-    def evaluate(self):
-        """
-        Evaluate/summarize the performance, after
-        processing all input/output pairs.
+    def evaluate(self) -> Dict[str, float]:
+        """Gather + aggregate every metric into a flat ``dict[str, float]``.
 
-        Returns:
-            dict:
-                A new evaluator class can return a dict of arbitrary format
-                as long as the user can process the results.
-                The dict should have the following structure:
-
-                * key: the name of the task (e.g., bbox)
-                * value: a dict of {metric name: score}, e.g.: {"AP50": 80}
+        Cross-rank reduction happens by gathering each metric's compact
+        sufficient statistics (``gather()`` is idempotent and a no-op at
+        ``world_size == 1``) and aggregating once over the pooled multiset. A
+        metric whose ``aggregate()`` returns a ``Mapping`` (e.g.
+        :class:`PredictedIoUEvalMetric`) is flattened under ``f"{name}/{sub}"``.
         """
-        pass
+        results: Dict[str, float] = {}
+        for name, metric in self.metrics.items():
+            metric.gather()
+            value = metric.aggregate()
+            if isinstance(value, Mapping):
+                for subkey, subval in value.items():
+                    results[f"{name}/{subkey}"] = float(subval)
+            else:
+                results[name] = float(value)
+        self._results = results
+        return results
