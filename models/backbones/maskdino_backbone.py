@@ -43,7 +43,9 @@ class MaskDinoBackbone(nn.Module):
     ):
         super().__init__()
 
-        self.backbone = REGISTRY.build("backbone", backbone_args.name, backbone_args)
+        # Dict-safe access (backbone_args may be a plain dict, not a DictConfig)
+        # — match Mask2FormerBackbone's fix.
+        self.backbone = REGISTRY.build("backbone", backbone_args["name"], backbone_args)
 
         self.blocks_to_train = blocks_to_train
 

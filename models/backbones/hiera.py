@@ -74,7 +74,9 @@ class Hiera(nn.Module):
         num_heads: int = 1,
         drop_path_rate: float = 0.0,
         q_pool: int = 3, # number of stages to pool q
-        q_stride: Union[Tuple[int, ...], int] = (2, 2),
+        # int default: expanded to the token-grid rank below. A fixed-rank tuple
+        # default (the old (2, 2)) silently zip-truncated against 3-D/4-D grids.
+        q_stride: Union[Tuple[int, ...], int] = 2,
         stages: Tuple[int, ...] = (2, 3, 16, 3),
         mask_unit_size: Optional[Tuple[int, ...]] = None,
         dim_mul: float = 2.0,
@@ -110,6 +112,23 @@ class Hiera(nn.Module):
             if x is not None and isinstance(x, int)
         ]
         D = len(self.tokens_spatial_shape)
+
+        # Rank guards: every later zip(...) against tokens_spatial_shape
+        # (mask-unit divisibility, Unroll views, Reroll schedules) silently
+        # TRUNCATES to the shorter rank -- a rank-2 stride against a rank-3
+        # grid mis-factors the mask-unit layout instead of failing.
+        if len(self.q_stride) != D:
+            raise ValueError(
+                f"q_stride {self.q_stride} has rank {len(self.q_stride)} but the "
+                f"token grid {self.tokens_spatial_shape} has rank {D}; pass an "
+                f"int or a rank-{D} tuple."
+            )
+        if mask_unit_size is not None and len(tuple(mask_unit_size)) != D:
+            raise ValueError(
+                f"mask_unit_size {tuple(mask_unit_size)} has rank "
+                f"{len(tuple(mask_unit_size))} but the token grid "
+                f"{self.tokens_spatial_shape} has rank {D}."
+            )
 
         depth = sum(stages)
         self.stage_ends = [sum(stages[:i]) - 1 for i in range(1, len(stages) + 1)]
@@ -163,6 +182,7 @@ class Hiera(nn.Module):
         )
 
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
 
@@ -230,10 +250,14 @@ class Hiera(nn.Module):
             if ctx_idx is None:
                 raise ValueError("ctx_idx [B, K] is required when mask is provided (HIERA_MU). Precompute in mask generator.")
             num_mus = N // self.flat_mu_size
-            # x: [B, M, MU, C]
-            x = x.view(B, num_mus, self.flat_mu_size, C)
-            gather_idx = ctx_idx[:, :, None, None].expand(-1, -1, self.flat_mu_size, C)
-            x = x.gather(dim=1, index=gather_idx).reshape(B, ctx_idx.shape[1] * self.flat_mu_size, C)
+            # Unroll layout: token n = intra_mu_offset * num_mus + mu_index, i.e.
+            # the mask-unit index is the FASTEST axis (verified by the layout
+            # test in tests/models/test_fix_regressions_models.py). View
+            # accordingly and gather kept mask units on the MU dim; the result
+            # keeps the same convention with num_mus -> K (kept units).
+            x = x.view(B, self.flat_mu_size, num_mus, C)
+            gather_idx = ctx_idx[:, None, :, None].expand(-1, self.flat_mu_size, -1, C)
+            x = x.gather(dim=2, index=gather_idx).reshape(B, self.flat_mu_size * ctx_idx.shape[1], C)
 
         intermediates = []
         for i, blk in enumerate(self.blocks):

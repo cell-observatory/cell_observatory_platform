@@ -4,11 +4,6 @@ from typing import Literal, Union
 
 import torch.nn as nn
 
-logging.basicConfig(
-	stream=sys.stdout,
-	level=logging.INFO,
-	format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 

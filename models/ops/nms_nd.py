@@ -42,7 +42,8 @@ def nms_nd(dets: torch.Tensor, iou_threshold: float):
             (x1, y1, z1, x2, y2, z2, score) format
         iou_threshold : float
             discards all overlapping
-            boxes with IoU < iou_threshold
+            boxes with IoU > iou_threshold (boxes overlapping a kept box by
+            MORE than the threshold are suppressed)
 
     Returns:
     keep : Tensor

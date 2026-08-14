@@ -58,7 +58,6 @@ from cell_observatory_platform.data.data_types import (
     TORCH_DTYPES,
 )
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 

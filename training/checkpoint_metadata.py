@@ -86,6 +86,7 @@ def build_metadata(
     best_loss: Optional[float],
     wandb_run_id: Optional[str] = None,
     wandb_entity: Optional[str] = None,
+    trainer_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     saved_at = datetime.now(timezone.utc).isoformat()
     model_class_name = unwrap_model_for_class_name(model)
@@ -118,6 +119,9 @@ def build_metadata(
         "best_loss": best_loss,
         "hydra_config": hydra_config,
         "hydra_config_hash": hsh,
+        # JSON-serializable BaseTrainer.state_dict() (includes hook sub-state:
+        # early-stop counters, best-metric lineage); None for legacy sidecars.
+        "trainer_state": trainer_state,
     }
 
 
@@ -149,9 +153,14 @@ def default_metadata(reason: str = "") -> Dict[str, Any]:
         "wandb_run_id": None,
         "epoch": 0,
         "iter": 0,
-        "best_loss": float("inf"),
+        # None sentinel: this fallback has no config in scope, so it cannot
+        # know min-vs-max mode -- a hardcoded +inf is UNBEATABLE for
+        # val_mode: max (best-checkpoint tracking dead for the whole resumed
+        # run). resume_model_state substitutes initial_best_metric(config).
+        "best_loss": None,
         "hydra_config": None,
         "hydra_config_hash": None,
+        "trainer_state": None,
         "synthesized_default": True,
         "synthesized_reason": reason,
     }

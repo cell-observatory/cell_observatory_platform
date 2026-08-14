@@ -207,6 +207,7 @@ class Transformer(nn.Module):
                 torch.linspace(0, D_ - 1, D_, dtype=torch.float32, device=memory.device),
                 torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
                 torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device),
+                indexing="ij",
             )
             # grid: [D_, H_, W_, 3]
             grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1), grid_z.unsqueeze(-1)], -1)
@@ -422,6 +423,7 @@ class TransformerReParam(Transformer):
                 torch.linspace(0, D_ - 1, D_, dtype=torch.float32, device=memory.device),
                 torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
                 torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device),
+                indexing="ij",
             )
             # grid: [D_, H_, W_, 3] -> [N_, D_, H_, W_, 3]
             grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1), grid_z.unsqueeze(-1)], -1)

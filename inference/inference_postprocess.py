@@ -29,6 +29,12 @@ def postprocess(preds: Dict[str, Any], data_sample: dict, outputs_metadata: dict
     for name, meta in outputs_metadata["save_tensors"].items():
         annotation_type = meta["annotation_type"]
         data_format = str(meta["data_format"]).upper()
+        if name not in preds:
+            raise ValueError(
+                f"save_tensors entry {name!r} is not among the model outputs "
+                f"{sorted(preds)} -- check the inference config's save_tensors "
+                "against the model's predict() contract."
+            )
         if annotation_type == "dense":
             preds[name] = _restore_dense_tensor(
                 preds[name], data_format, orig_sizes, name, proc_sizes, outputs_metadata,
@@ -75,10 +81,11 @@ def _restore_dense_tensor(
     fully valid, e.g. after Resize with ``crop_to_valid``).
     """
     target_spatial = _buffer_spatial(outputs_metadata, name, data_format)
-    assert tensor.dim() == len(data_format) + 1, (
-        f"{name}: dense output rank {tensor.dim()} does not match layout "
-        f"{data_format!r} + batch ({len(data_format) + 1})"
-    )
+    if tensor.dim() != len(data_format) + 1:  # survives python -O
+        raise ValueError(
+            f"{name}: dense output rank {tensor.dim()} does not match layout "
+            f"{data_format!r} + batch ({len(data_format) + 1})"
+        )
     has_time = data_format.startswith("T")
     B, C = tensor.shape[0], tensor.shape[-1]
     fz, fy, fx = target_spatial
@@ -94,7 +101,16 @@ def _restore_dense_tensor(
         crop = tuple(min(int(p), int(s)) for p, s in zip(proc_sizes[b], cur_spatial))
         if crop != tuple(int(s) for s in cur_spatial):
             sample = crop_sample_spatial(sample, crop, has_time)
-        oz, oy, ox = (min(int(o), int(f)) for o, f in zip(orig_sizes[b], target_spatial))
+        if any(int(o) > int(f) for o, f in zip(orig_sizes[b], target_spatial)):
+            # Clamping here would flow downstream into the saver's crop, which
+            # numpy-slices past the end silently -- the PERSISTED volume would
+            # be truncated to the buffer size with no error.
+            raise ValueError(
+                f"{name}: sample {b} original size {tuple(orig_sizes[b])} exceeds "
+                f"the declared full-tile buffer spatial {tuple(target_spatial)} -- "
+                "tensor_info shape (DB maxima) is too small for this tile."
+            )
+        oz, oy, ox = (int(o) for o in orig_sizes[b])
         resized = _resize_sample_spatial(sample, (oz, oy, ox), has_time, mode)
         if has_time:
             out[b, :, :oz, :oy, :ox, :] = resized.to(out.dtype)
@@ -144,9 +160,10 @@ def _rescale_boxes_to_orig(
     orig_sizes: List[Tuple[int, int, int]],
 ) -> torch.Tensor:
     """Scale absolute ``xyzxyz`` boxes ``(B, N, 6)`` from processed to original scale."""
-    assert boxes.dim() == 3 and boxes.shape[-1] == 6, (
-        f"sparse box output must be (B, N, 6), got {tuple(boxes.shape)}"
-    )
+    if boxes.dim() != 3 or boxes.shape[-1] != 6:  # survives python -O
+        raise ValueError(
+            f"sparse box output must be (B, N, 6), got {tuple(boxes.shape)}"
+        )
     out = boxes.clone()
     for b in range(boxes.shape[0]):
         oz, oy, ox = orig_sizes[b]
@@ -174,8 +191,6 @@ REGION_COLUMNS = (
     "y_start", "y_size", "x_start", "x_size",
 )
 
-# Output kinds that are per-object instance masks (canonicalized to a stack for viz).
-INSTANCE_MASK_KINDS = (OutputKind.INSTANCE_LABEL_MAP.value, OutputKind.INSTANCE_STACK.value)
 
 
 @dataclass
@@ -209,7 +224,6 @@ def build_records(
     columns: tuple[str, ...],
     image_key: Optional[str] = "data_tensor",
     targets: Optional[Sequence[Dict[str, Any]]] = None,
-    normalize_instance_masks: bool = False,
 ) -> List[InferenceRecord]:
     """Unpack batched outputs into per-sample records.
 
@@ -221,9 +235,12 @@ def build_records(
             ``preds``); None to keep everything in ``preds``.
         targets: per-sample target list (len B), or None. Supplied explicitly because its
             transport differs by worker (viz attaches it as a top-level key).
-        normalize_instance_masks: viz on / save off. When True, every pred whose declared
-            kind is an instance-mask kind is reshaped to the canonical per-object
-            ``(N, 1, Z, Y, X)`` stack, so the plotting layer never reshapes.
+
+    Note: viz renders the PROCESSED frame (tensors at the model's working resolution,
+    uniform across the batch) so there is no per-sample crop here; the saver restores +
+    crops to the original tile inside ``save_predictions`` itself. Instance-mask
+    normalization is per-handler (``instance_overlay`` normalizes per-object stacks via
+    :func:`to_instance_stack`; label maps pass through and render natively), not here.
     """
     B = metainfo["batch_size_actual"]                 # KeyError if missing -- required
     kinds = kinds_from_metainfo(metainfo)
@@ -234,15 +251,12 @@ def build_records(
         preds_b = {
             name: arr[b] for name, arr in output_arrays.items() if name != image_key
         }
-        if normalize_instance_masks:
-            for name in list(preds_b):
-                if kinds.get(name) in INSTANCE_MASK_KINDS:
-                    preds_b[name] = to_instance_stack(preds_b[name], kind=kinds[name])
+        image_b = image[b] if image is not None else None
         records.append(InferenceRecord(
             index=b,
             metadata={col: metainfo[col][b] for col in columns},
             region=_region_at(metainfo, b),
-            image=(image[b] if image is not None else None),
+            image=image_b,
             preds=preds_b,
             targets=(targets[b] if targets is not None else None),
             kinds=kinds,
@@ -285,36 +299,24 @@ def viz_identifier(record: InferenceRecord, rank: int) -> str:
     return ident.replace(".zarr", "").replace(".tiff", "")
 
 
-def to_instance_stack(masks: Any, kind: Optional[str] = None, max_instances: int = 512) -> np.ndarray:
-    """Normalize a mask tensor to the ``(N, 1, Z, Y, X)`` per-object stack plotting expects.
+def to_instance_stack(masks: Any, kind: Optional[str] = None) -> np.ndarray:
+    """Normalize a per-object mask stack to the ``(N, 1, Z, Y, X)`` plotting expects.
 
-    Dispatch is driven by the model-declared :class:`OutputKind` (never shape sniffing):
+    ``INSTANCE_LABEL_MAP`` is NOT exploded here anymore: the overlay renders label
+    maps natively, slice by slice (``utils._label_and_cmap_from_label_map``) --
+    O(volume) memory instead of O(N * volume), so instance count no longer bounds
+    what can be visualized.
 
-      * ``INSTANCE_LABEL_MAP``: integer label volume ``(Z,Y,X)`` or ``(Z,Y,X,1)``, exploded
-        into one binary volume per non-zero id (capped at ``max_instances`` so a mis-routed
-        dense/semantic map cannot OOM the run).
-      * ``INSTANCE_STACK`` / ``None`` (legacy): already a per-object stack; a bare
-        ``(N,Z,Y,X)`` is unsqueezed to ``(N,1,Z,Y,X)`` and ``(N,1,Z,Y,X)`` passes through.
+      * ``INSTANCE_STACK`` / ``None`` (legacy): a per-object stack; channels-last
+        ``(N,Z,Y,X,1)`` (see meta_arch/utils.py instance_stack) drops the trailing
+        channel, a bare ``(N,Z,Y,X)`` is unsqueezed, ``(N,1,Z,Y,X)`` passes through.
     """
     masks = _as_numpy(masks)
     if kind == OutputKind.INSTANCE_LABEL_MAP.value:
-        if masks.ndim == 4 and masks.shape[-1] == 1:
-            masks = masks[..., 0]
-        assert masks.ndim == 3, (
-            f"instance_label_map expects (Z,Y,X) or (Z,Y,X,1), got shape {masks.shape}"
+        raise ValueError(
+            "instance_label_map is rendered natively by the overlay (no per-object "
+            "explosion); to_instance_stack only normalizes per-object stacks."
         )
-        ids = np.unique(masks)
-        ids = ids[ids != 0]
-        if ids.size > max_instances:
-            ids = ids[:max_instances]
-        if ids.size == 0:
-            return np.zeros((0, 1, *masks.shape), dtype=bool)
-        stack = np.stack([masks == i for i in ids], axis=0)  # (N,Z,Y,X) bool
-        return stack[:, None, ...]  # (N,1,Z,Y,X)
-
-    # INSTANCE_STACK passthrough. The declared kind is channels-last (N,Z,Y,X,1)
-    # (see meta_arch/utils.py instance_stack), so drop the trailing channel before
-    # inserting the leading singleton plotting wants.
     if masks.ndim == 5 and masks.shape[-1] == 1:
         masks = masks[..., 0]        # (N,Z,Y,X,1) -> (N,Z,Y,X)
     if masks.ndim == 4:

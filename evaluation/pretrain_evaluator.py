@@ -31,14 +31,20 @@ class PretrainEvaluator(DatasetEvaluator):
     """Accumulate pretraining losses for MAE/JEPA under ``job_type=test``.
 
     Args:
-        training_metrics: list of ``{loss_key: reduce_method}`` dicts (same
-            shape as :class:`BaseEvaluator`), e.g. ``[{"step_loss": "mean"}]``.
-            Each ``loss_key`` must appear in the model's ``evaluate_step`` dict.
+        training_metrics: metric spec list (same shape as
+            :class:`BaseEvaluator`), each entry either a registered metric name
+            or ``{"name": <registered name>, "key"?: <loss key>, **ctor_kwargs}``
+            — e.g. ``[{"name": "train_loss", "key": "step_loss",
+            "reduce_method": "mean"}]``. The resulting ``key`` must appear in
+            the model's ``evaluate_step`` loss dict. (Names NOT in
+            ``metrics.METRICS`` raise — there is no implicit TrainLosses
+            fallback.)
     """
 
     def __init__(self, training_metrics: List[Dict[str, str]]):
-        # Each {loss_key: reduce_method} pair builds a TrainLosses keyed by the
-        # loss name (build_metrics routes unknown names to TrainLosses).
+        # Each spec entry builds its registered Metric keyed by `key` (default:
+        # its name); TrainLosses gathers by pooling per-rank value lists via
+        # all_gather_object, then reduces over the pooled multiset.
         self.metrics = build_metrics(training_metrics)
         self._results: Dict[str, Any] = {m: None for m in self.metrics}
 

@@ -138,8 +138,11 @@ def do_pool_stride(x: torch.Tensor, stride: int) -> torch.Tensor:
         return x
     B, N, C = x.shape
     assert N % stride == 0, f"N={N} must be divisible by stride={stride}"
-    x = x.view(B, N // stride, stride, C)
-    return x.max(dim=2).values
+    # Unroll layout: the stride offsets being pooled are the SLOWEST axis of the
+    # token dim (reference Hiera's do_pool pools the leading dim); pooling the
+    # trailing dim would max over `stride` different mask units instead.
+    x = x.view(B, stride, N // stride, C)
+    return x.max(dim=1).values
 
 
 class Reroll(nn.Module):
@@ -773,8 +776,10 @@ def sample_box_points(
             max_dx = torch.min(bbox_w * noise, noise_bound)
             max_dy = torch.min(bbox_h * noise, noise_bound)
             max_dz = torch.min(bbox_d * noise, noise_bound)
-            # bbox_noise: [B, 6] in range [-1, 1]
-            box_noise = 2 * torch.rand(B, 1, 6, device=device) - 1
+            # bbox_noise: [B, 6] in range [-1, 1]. Must be [B, 6] (NOT [B, 1, 6]):
+            # the per-box scales stacked below are [B, 6], and [B,1,6]*[B,6]
+            # broadcast to a bogus [B, B, 6].
+            box_noise = 2 * torch.rand(B, 6, device=device) - 1
             box_noise = box_noise * torch.stack((max_dx, max_dy, max_dz, max_dx, max_dy, max_dz), dim=-1)
 
             box_coords = box_coords + box_noise
@@ -927,26 +932,45 @@ def sample_random_points_from_errors(
         # all_correct: [B, 1, 1, 1, 1]
         all_correct = all_correct[..., None, None, None]
 
-        # channel 0 is FP map, while channel 1 is FN map
-        # FIXME: This allocates a large tensor; consider a more efficient sampling method.
-        pts_noise = torch.rand(B, num_pt, D_im, H_im, W_im, 2, device=device)
-        # sample a negative new click from FP region or a positive new click
-        # from FN region, depend on where the maximum falls,
-        # and in case the predictions are all correct (no FP or FN), we just
-        # sample a negative click from the background region
-        # sample negative click in FP region OR if all correct and background
-        pts_noise[..., 0] *= fp_masks | (all_correct & ~gt_masks)
-        # sample positive click in FN region
-        pts_noise[..., 1] *= fn_masks
-        # pts_idx: [B, num_pt]
-        pts_idx = pts_noise.flatten(2).argmax(dim=2)
-        # labels: [B, num_pt]
-        labels = (pts_idx % 2).to(torch.int32)
-        pts_idx = pts_idx // 2
-        pts_x = pts_idx % W_im
-        pts_y = (pts_idx // W_im) % H_im
-        pts_z = pts_idx // (W_im * H_im)
-        points = torch.stack([pts_x, pts_y, pts_z], dim=2).to(torch.float)
+        # Index-sampling formulation of the original argmax-over-noise trick
+        # (which allocated a (B, num_pt, D, H, W, 2) noise volume — ~0.5 GB at
+        # 128^3). The old joint argmax over iid U(0,1) noise masked by the two
+        # pools picks UNIFORMLY over the union
+        #   {(voxel, neg) : voxel in FP (or background when all-correct)}
+        #   ∪ {(voxel, pos) : voxel in FN}
+        # independently per (b, point) — so a negative click is drawn with
+        # probability |neg_pool| / (|neg_pool| + |fn_pool|). Reproduce exactly
+        # by flat-index sampling from the concatenated pools.
+        points = torch.zeros(B, num_pt, 3, dtype=torch.float, device=device)
+        labels = torch.zeros(B, num_pt, dtype=torch.int32, device=device)
+        for b in range(B):
+            if bool(all_correct[b, 0, 0, 0, 0]):
+                # prediction is perfect: negative clicks come from background
+                neg_pool = (~gt_masks[b, 0]).reshape(-1).nonzero(as_tuple=True)[0]
+            else:
+                neg_pool = fp_masks[b, 0].reshape(-1).nonzero(as_tuple=True)[0]
+            pos_pool = fn_masks[b, 0].reshape(-1).nonzero(as_tuple=True)[0]
+            n_neg, n_pos = neg_pool.numel(), pos_pool.numel()
+            if n_neg + n_pos == 0:
+                # degenerate (gt all-foreground & perfect pred): the old argmax
+                # of an all-zero volume returned voxel 0 with label 0 — keep it.
+                continue
+            sel = torch.randint(n_neg + n_pos, (num_pt,), device=device)
+            is_pos = sel >= n_neg
+            neg_sel = (
+                neg_pool[sel.clamp(max=max(n_neg - 1, 0))]
+                if n_neg else torch.zeros_like(sel)
+            )
+            pos_sel = (
+                pos_pool[(sel - n_neg).clamp(min=0)]
+                if n_pos else torch.zeros_like(sel)
+            )
+            flat = torch.where(is_pos, pos_sel, neg_sel)
+            labels[b] = is_pos.to(torch.int32)
+            pts_x = flat % W_im
+            pts_y = (flat // W_im) % H_im
+            pts_z = flat // (W_im * H_im)
+            points[b] = torch.stack([pts_x, pts_y, pts_z], dim=1).to(torch.float)
     else:
         raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
     return points, labels

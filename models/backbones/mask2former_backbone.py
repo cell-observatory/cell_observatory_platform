@@ -42,7 +42,9 @@ class Mask2FormerBackbone(nn.Module):
     ):
         super().__init__()
 
-        self.backbone = REGISTRY.build("backbone", backbone_args.name, backbone_args)
+        # backbone_args may be a plain dict (resolved from a DictConfig by BUILD);
+        # attribute access only works on DictConfig, so index by key.
+        self.backbone = REGISTRY.build("backbone", backbone_args["name"], backbone_args)
 
         self.blocks_to_train = blocks_to_train
 
@@ -57,7 +59,7 @@ class Mask2FormerBackbone(nn.Module):
 
         if adapter_args is not None:
             self.with_backbone_adapter = True
-            self.adapter = REGISTRY.build("adapter", adapter_args.name, adapter_args)
+            self.adapter = REGISTRY.build("adapter", adapter_args["name"], adapter_args)
         else:
             # TODO: implement logic to handle positional encodings without adapter
             self.with_backbone_adapter = False

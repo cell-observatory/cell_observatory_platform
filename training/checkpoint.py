@@ -1,24 +1,27 @@
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, Iterable, List, Literal, Optional, Union
+from typing import Any, Dict, Iterable, List, Literal, Optional, Union
 
 import ray
 import torch
-from deepspeed.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
+import torch.distributed.checkpoint as dcp
+from torch.distributed.checkpoint.stateful import Stateful
 
 from cell_observatory_platform.data.data_types import TORCH_DTYPES
 from cell_observatory_platform.training.checkpoint_metadata import (
+    build_metadata,
+    default_metadata,
     metadata_path_for_tag,
     read_metadata_json,
     write_metadata_json,
 )
 from cell_observatory_platform.utils.context import barrier, is_main_process
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -30,7 +33,10 @@ class CheckpointManager:
         load_universal_checkpoint: bool,
         save_checkpointdir: Union[str, Path],
         save_period: int = 1,
-        load_optimizer: bool = True,
+        # None -> "load optimizer state only when resuming" (the documented
+        # default below); an explicit bool always wins. A `True` default made
+        # the else-branch unreachable.
+        load_optimizer: Optional[bool] = None,
         load_dtype: Optional[str] = None,
         resume_checkpointdir: Optional[Union[str, Path]] = None,
         pretrained_checkpointdir: Optional[Union[str, Path]] = None,
@@ -51,10 +57,12 @@ class CheckpointManager:
         self.ckpt_translate_map = ckpt_translate_map
         self.ckpt_include_prefixes = ckpt_include_prefixes
 
-        assert not (resume_checkpointdir is not None and pretrained_checkpointdir is not None), (
-            "Cannot specify both `resume_checkpointdir` and `pretrained_checkpointdir`. "
-            "Please choose one of them or neither."
-        )
+        if resume_checkpointdir is not None and pretrained_checkpointdir is not None:
+            # survives python -O (a stripped assert silently accepted both)
+            raise ValueError(
+                "Cannot specify both `resume_checkpointdir` and `pretrained_checkpointdir`. "
+                "Please choose one of them or neither."
+            )
 
         self.resume_checkpointdir = resume_checkpointdir
         self.pretrained_checkpointdir = pretrained_checkpointdir
@@ -86,9 +94,6 @@ class CheckpointManager:
     def save(
         self,
         prefix: str,
-        save_epoch: int = None,
-        save_step: int = None,
-        save_best_loss: Optional[float] = None,
         metadata: Optional[Dict] = None,
     ):
         self.save_checkpointdir.mkdir(parents=True, exist_ok=True)
@@ -118,6 +123,31 @@ class CheckpointManager:
                 "No checkpoint directory specified for loading. "
                 "Please set `resume_checkpointdir` or `pretrained_checkpointdir`."
             )
+
+    def load_for_eval(self, job_type: str):
+        """Weight loading for eval-time trainers (TestTrainer / Inferencer).
+
+        Only ``pretrained_checkpointdir`` is valid here: eval loads into the raw
+        ``nn.Module`` (no DeepSpeed engine), so a ``resume_checkpointdir`` -- the
+        natural reuse of a training config -- would either route to the engine
+        loader (AttributeError) or, worse, silently evaluate the random init.
+        Fail loud in both wrong configurations.
+        """
+        if self.pretrained_checkpointdir:
+            _, checkpoint_meta = self.load()
+            return checkpoint_meta
+        if self.resume_checkpointdir:
+            raise ValueError(
+                f"job_type={job_type} loads weights via pretrained_checkpointdir; "
+                "resume_checkpointdir is a DeepSpeed-engine resume dir and cannot "
+                "be loaded into the raw nn.Module used at eval/inference time. "
+                "Point pretrained_checkpointdir at the checkpoint tag instead."
+            )
+        raise ValueError(
+            f"No checkpoint directory configured for job_type={job_type} -- "
+            "refusing to run with randomly initialized weights. Set "
+            "checkpoint.checkpoint_manager.pretrained_checkpointdir."
+        )
 
     def _load_deepspeed(self):
         assert self.load_checkpointdir is not None, (
@@ -210,6 +240,22 @@ class CheckpointManager:
         pt_path = tag_dir / checkpoint
         sd = torch.load(pt_path, map_location="cpu")
 
+        # ZeRO-3 partitions parameters across ranks: the module state dict in
+        # mp_rank_00_model_states.pt holds (mostly empty) placeholders, so a
+        # plain torch load would silently produce a partially-initialized model.
+        if isinstance(sd, dict):
+            ckpt_stage = (
+                sd.get("ds_config", {}).get("zero_optimization", {}).get("stage", 0)
+                if isinstance(sd.get("ds_config", {}), dict) else 0
+            )
+            if ckpt_stage == 3:
+                raise ValueError(
+                    f"Refusing to torch-load a ZeRO-3 checkpoint from {pt_path}: "
+                    f"parameters are partitioned and the model-states file does not "
+                    f"contain the full weights. Convert it first with "
+                    f"deepspeed.utils.zero_to_fp32 (see convert_zero_checkpoint)."
+                )
+
         src = None
         for k in ("module", "state_dict", "model", "model_state_dict"):
             if isinstance(sd, dict) and k in sd and isinstance(sd[k], dict):
@@ -264,11 +310,17 @@ class CheckpointManager:
         - translates keys via translate_map,
         - filters to keys starting with any of include_prefixes (if provided),
         - drops any tensor whose shape doesn't match the destination tensor,
-        - logs dropped/missing/unexpected keys,
-        - and loads with strict=False so non-matching layers remain at init.
+        - logs dropped/missing/unexpected keys.
+
+        Strictness: when NO include_prefixes and NO translate_map are
+        configured, this is a plain resume — any architecture drift (dropped
+        shape mismatches, missing or unexpected keys) must FAIL loudly instead
+        of silently leaving layers at init. Only a user-configured translation
+        opts into the permissive strict=False load.
         """
         include_prefixes = list(include_prefixes) if include_prefixes else None
         translate_map = dict(translate_map) if translate_map else {}
+        strict = not (include_prefixes or translate_map)
 
         def _translate_key(k: str) -> str:
             # prefix-based rename: old.* -> new.*
@@ -318,7 +370,21 @@ class CheckpointManager:
             #     dst_state_dict.keys(),
             # )
 
-            missing, unexpected = dst.load_state_dict(keep, strict=False)
+            if strict and dropped:
+                raise RuntimeError(
+                    "[CheckpointManager] strict resume: checkpoint/model architecture "
+                    "drift — %d tensors mismatched in shape or missing from the model:\n%s\n"
+                    "Configure ckpt_include_prefixes/ckpt_translate_map to opt into a "
+                    "permissive load."
+                    % (
+                        len(dropped),
+                        "\n".join([f"  - {k}: ckpt{cs} -> model{ms}" for (k, cs, ms) in dropped]),
+                    )
+                )
+
+            # strict=True raises on missing/unexpected keys (surfacing them in the
+            # error); the permissive path logs them below instead.
+            missing, unexpected = dst.load_state_dict(keep, strict=strict)
 
             if dropped:
                 ray.logger.warning(
@@ -437,7 +503,266 @@ class CheckpointManager:
 
     # useful utility function to convert a deepspeed
     # zero stage 3 checkpoint to a standard checkpoint
+    @staticmethod
     def convert_zero_checkpoint(checkpoint_dir: str, tag: str = "best_model"):
+        # lazy: keep deepspeed off the module import path (Ray actors import
+        # this module transitively and would pay ~9s for the deepspeed import)
+        from deepspeed.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
+
         checkpoint_path = os.path.join(checkpoint_dir, tag)
         output_path = os.path.join(checkpoint_path, f"{tag}_universal")
         convert_zero_checkpoint_to_fp32_state_dict(checkpoint_dir=checkpoint_path, output_dir=output_path)
+
+
+# --------------------------------------------------------------------------- #
+# Torch-native (DCP) checkpointing -- used by TorchNativeTrainer
+# --------------------------------------------------------------------------- #
+
+# canonical state keys inside a DCP checkpoint
+MODEL = "model"
+OPTIMIZER = "optimizer"
+LR_SCHEDULER = "lr_scheduler"
+TRAIN_STATE = "train_state"
+
+
+class ModelWrapper(Stateful):
+    """Flat FQN-keyed model state for DCP.
+
+    FSDP2-sharded modules natively return sharded ``DTensor``s from
+    ``state_dict()``, which DCP saves/loads reshard-safely. Model keys are
+    flattened to the top level of the checkpoint (DCP-canonical layout), so
+    after ``dcp.load`` the caller must route them back via ``load_state_dict``.
+    """
+
+    def __init__(self, model_parts: List[torch.nn.Module]):
+        self.model_parts = model_parts
+
+    def state_dict(self) -> Dict[str, Any]:
+        return {k: v for m in self.model_parts for k, v in m.state_dict().items()}
+
+    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+        for m in self.model_parts:
+            m.load_state_dict(state_dict, strict=False)
+
+
+class DCPCheckpointManager:
+    """torch.distributed.checkpoint manager for the torch-native trainer.
+
+    Layout: ``<save_checkpointdir>/step-<N>/`` DCP shards + a
+    ``checkpoint_meta.json`` sidecar (same schema as the DeepSpeed manager's).
+
+    Hook contract (PeriodicCheckpointer/BestCheckpointer TORCHTITAN branches):
+    ``save(curr_step, last_step=False)`` -- gated internally on ``save_period``
+    -- and ``close()``. Resume goes through ``load()`` (called by
+    ``helpers.resume_model_state``), which restores every registered Stateful
+    in place and returns ``(loaded_step, checkpoint_meta)``.
+
+    Unlike the DeepSpeed manager, checkpoints are reshard-safe: a run may
+    resume on a different world size (``get_optimizer_state_dict`` flattens
+    optimizer state to FQN keys; model state is sharded DTensors).
+    """
+
+    def __init__(
+        self,
+        model_parts: Optional[List[torch.nn.Module]] = None,
+        optimizers: Optional[Stateful] = None,
+        lr_schedulers: Optional[Stateful] = None,
+        states: Optional[Dict[str, Any]] = None,
+        save_checkpointdir: Union[str, Path] = None,
+        save_period: int = 1,
+        keep_latest_k: int = 0,
+        resume_checkpointdir: Optional[Union[str, Path]] = None,
+        pretrained_checkpointdir: Optional[Union[str, Path]] = None,
+        load_optimizer: Optional[bool] = None,
+        # eval-time trainers (TestTrainer/Inferencer) instantiate checkpoint
+        # managers with a single `model=` kwarg -- accept it as an alias
+        model: Optional[torch.nn.Module] = None,
+    ):
+        if resume_checkpointdir is not None and pretrained_checkpointdir is not None:
+            # survives python -O (mirrors the DeepSpeed manager's guard)
+            raise ValueError(
+                "Cannot specify both `resume_checkpointdir` and `pretrained_checkpointdir`. "
+                "Please choose one of them or neither."
+            )
+        if model_parts is None:
+            if model is None:
+                raise ValueError("DCPCheckpointManager requires model_parts (or model=).")
+            model_parts = [model]
+
+        self.model_parts = model_parts
+        self.states: Dict[str, Any] = {MODEL: ModelWrapper(model_parts)}
+        if optimizers is not None:
+            self.states[OPTIMIZER] = optimizers
+        if lr_schedulers is not None:
+            self.states[LR_SCHEDULER] = lr_schedulers
+        if states:
+            overlap = set(states) & set(self.states)
+            if overlap:
+                raise ValueError(f"Duplicate checkpoint state keys: {sorted(overlap)}")
+            self.states.update(states)
+
+        self.save_checkpointdir = Path(save_checkpointdir)
+        self.save_period = int(save_period)
+        self.keep_latest_k = int(keep_latest_k)
+        self.resume_checkpointdir = (
+            Path(resume_checkpointdir) if resume_checkpointdir else None
+        )
+        self.pretrained_checkpointdir = (
+            Path(pretrained_checkpointdir) if pretrained_checkpointdir else None
+        )
+        # default mirrors the DeepSpeed manager: load optimizer state only when resuming
+        self.load_optimizer = (
+            load_optimizer
+            if load_optimizer is not None
+            else self.resume_checkpointdir is not None
+        )
+        self._last_saved_step: Optional[int] = None
+
+    # ------------------------------------------------------------- helpers --
+    @staticmethod
+    def _checkpoint_steps(ckpt_dir: Path) -> List[int]:
+        """Completed checkpoint steps in a directory (require DCP .metadata)."""
+        steps = []
+        for p in ckpt_dir.glob("step-*"):
+            if (p / ".metadata").exists():
+                try:
+                    steps.append(int(p.name.split("-")[1]))
+                except (IndexError, ValueError):
+                    continue
+        return sorted(steps)
+
+    def _checkpoint_id(self, step: int, folder: Optional[Path] = None) -> str:
+        return str((folder or self.save_checkpointdir) / f"step-{step}")
+
+    def _flattened_sd(self, include_optimizer: bool = True) -> Dict[str, Any]:
+        """Model keys flattened to top level; everything else nested Stateful."""
+        sd = {
+            k: v
+            for k, v in self.states.items()
+            if k != MODEL and (include_optimizer or k != OPTIMIZER)
+        }
+        sd.update(self.states[MODEL].state_dict())
+        return sd
+
+    def _build_metadata(self, curr_step: int) -> Dict[str, Any]:
+        trainer = self.states.get(TRAIN_STATE, None)
+        if trainer is None:
+            return default_metadata(reason="no train_state registered")
+        return build_metadata(
+            model=self.model_parts[0],
+            cfg=getattr(trainer, "pristine_cfg", getattr(trainer, "cfg", {})),
+            epoch=getattr(trainer, "_epoch", None),
+            iter_=curr_step,
+            best_loss=getattr(trainer, "best_metric", None),
+            trainer_state=trainer.state_dict(),
+        )
+
+    def _should_save(self, curr_step: int, last_step: bool) -> bool:
+        if curr_step == self._last_saved_step:
+            return False  # e.g. after_epoch + after_train both fire at the same step
+        if last_step:
+            return True
+        return self.save_period > 0 and curr_step % self.save_period == 0
+
+    def _purge_stale(self) -> None:
+        if self.keep_latest_k <= 0 or not is_main_process():
+            return
+        steps = self._checkpoint_steps(self.save_checkpointdir)
+        for step in steps[: -self.keep_latest_k]:
+            shutil.rmtree(self._checkpoint_id(step), ignore_errors=True)
+            logger.info(f"[DCPCheckpointManager] purged stale checkpoint step-{step}")
+
+    # ---------------------------------------------------------------- save --
+    def save(self, curr_step: int, last_step: bool = False) -> bool:
+        """Collective. Saves when ``curr_step`` hits the period (or last_step)."""
+        if not self._should_save(curr_step, last_step):
+            return False
+        self.save_checkpointdir.mkdir(parents=True, exist_ok=True)
+        checkpoint_id = self._checkpoint_id(curr_step)
+        dcp.save(self._flattened_sd(), checkpoint_id=checkpoint_id)
+        if is_main_process():
+            write_metadata_json(
+                Path(checkpoint_id) / "checkpoint_meta.json",
+                self._build_metadata(curr_step),
+            )
+        self._last_saved_step = curr_step
+        self._purge_stale()
+        barrier()
+        logger.info(f"[DCPCheckpointManager] saved checkpoint at step {curr_step}")
+        return True
+
+    # ---------------------------------------------------------------- load --
+    def load(self, step: Optional[int] = None):
+        """Restore states in place. Returns ``(loaded_step, checkpoint_meta)``.
+
+        - ``resume_checkpointdir`` -> full restore (model/optim/schedulers/
+          train_state; optimizer skipped when ``load_optimizer=False``)
+        - ``pretrained_checkpointdir`` -> model weights only
+        - neither -> ``(None, None)``
+        """
+        if self.resume_checkpointdir is not None:
+            return self._load(
+                self.resume_checkpointdir,
+                step=step,
+                model_only=False,
+                include_optimizer=self.load_optimizer,
+            )
+        if self.pretrained_checkpointdir is not None:
+            return self._load(self.pretrained_checkpointdir, step=step, model_only=True)
+        return None, None
+
+    def load_for_eval(self, job_type: str):
+        """Model-weights-only load for TestTrainer / Inferencer."""
+        if self.resume_checkpointdir is not None:
+            raise ValueError(
+                f"job_type={job_type!r} loads model weights only -- use "
+                "`pretrained_checkpointdir`, not `resume_checkpointdir`."
+            )
+        if self.pretrained_checkpointdir is None:
+            raise ValueError("load_for_eval requires `pretrained_checkpointdir`.")
+        # return the sidecar dict only, matching CheckpointManager.load_for_eval
+        _, checkpoint_meta = self._load(
+            self.pretrained_checkpointdir, step=None, model_only=True
+        )
+        return checkpoint_meta
+
+    def _load(
+        self,
+        ckpt_dir: Path,
+        step: Optional[int],
+        model_only: bool,
+        include_optimizer: bool = True,
+    ):
+        steps = self._checkpoint_steps(ckpt_dir)
+        if not steps:
+            return None, None
+        if step is None:
+            step = steps[-1]
+        elif step not in steps:
+            raise ValueError(
+                f"Requested checkpoint step {step} not found in {ckpt_dir} "
+                f"(available: {steps})."
+            )
+        checkpoint_id = self._checkpoint_id(step, folder=ckpt_dir)
+
+        if model_only:
+            sd = self.states[MODEL].state_dict()
+        else:
+            sd = self._flattened_sd(include_optimizer=include_optimizer)
+        dcp.load(sd, checkpoint_id=checkpoint_id)
+        # DCP cannot route the flattened model keys back through a Stateful --
+        # route them manually (torchtitan does the same).
+        self.states[MODEL].load_state_dict(sd)
+
+        meta = read_metadata_json(
+            Path(checkpoint_id) / "checkpoint_meta.json", allow_missing=True
+        )
+        logger.info(
+            f"[DCPCheckpointManager] loaded checkpoint step-{step} from {ckpt_dir} "
+            f"(model_only={model_only})"
+        )
+        return step, meta
+
+    def close(self) -> None:
+        # slot for async_save draining if/when async checkpointing lands
+        pass

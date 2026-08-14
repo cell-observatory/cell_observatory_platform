@@ -26,6 +26,32 @@ def _parse_channel_mapping(raw: object) -> dict[str, str]:
     raise ValueError(f"Unsupported channel_mapping payload type {type(raw).__name__}; expected dict or JSON string")
 
 
+def remap_channel_mapping_to_selection(
+    channel_mapping: object,
+    channel_indices: List[int],
+) -> dict[str, str]:
+    """Remap a raw ``{old_channel_idx: role}`` mapping onto post-selection positions.
+
+    After the loader slices channels with ``channel_indices``, channel ``k`` of the
+    emitted tensor is source channel ``channel_indices[k]`` -- so every downstream
+    consumer of ``channel_mapping`` (the preprocessor's role-driven partition, the
+    inferencer's provenance) must see roles keyed by the NEW positions, not the
+    source ones.
+    """
+    mapping = _parse_channel_mapping(channel_mapping)
+    remapped: dict[str, str] = {}
+    for new_idx, old_idx in enumerate(channel_indices):
+        key = str(int(old_idx))
+        if key not in mapping:
+            raise KeyError(
+                f"channel index {old_idx} selected for loading is not present in "
+                f"channel_mapping={mapping!r}; cannot remap roles to post-selection "
+                f"positions."
+            )
+        remapped[str(new_idx)] = mapping[key]
+    return remapped
+
+
 def resolve_channel_localization_indices(
     channel_mapping: object,
     requested_localizations: Optional[List[str]],

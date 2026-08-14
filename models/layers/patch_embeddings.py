@@ -7,11 +7,6 @@ import torch.nn as nn
 
 from cell_observatory_platform.training.helpers import get_patch_sizes
 
-logging.basicConfig(
-	stream=sys.stdout,
-	level=logging.INFO,
-	format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 
@@ -83,11 +78,12 @@ def calc_num_patches(
 
 
 def compute_num_pixels_per_patch(channels, temporal_patch_size, axial_patch_size, lateral_patch_size, input_fmt):
-    pixels_per_patch = channels
-    pixels_per_patch *= temporal_patch_size if temporal_patch_size is not None else 1
-    pixels_per_patch *= axial_patch_size if axial_patch_size is not None else 1
-    pixels_per_patch *= lateral_patch_size**2 if input_fmt is not "XC" else lateral_patch_size
-    return pixels_per_patch
+    # Single source of truth: PatchEmbedding.compute_num_pixels_per_patch.
+    # (The old inline copy compared `input_fmt is not "XC"` — identity, not
+    # equality — which is True for any runtime-built string.)
+    return PatchEmbedding.compute_num_pixels_per_patch(
+        channels, temporal_patch_size, axial_patch_size, lateral_patch_size, input_fmt
+    )
 
 
 # NOTE: timm has optional norm layer after patch embedding
@@ -145,14 +141,10 @@ class PatchEmbedding(nn.Module):
         return pixels_per_patch
 
     def _compute_num_pixels_per_patch(self):
-        pixels_per_patch = self.channels
-        pixels_per_patch *= self.temporal_patch_size if self.temporal_patch_size is not None else 1
-        pixels_per_patch *= self.axial_patch_size if self.axial_patch_size is not None else 1
-        if self.input_fmt != "XC":
-            pixels_per_patch *= self.lateral_patch_size ** 2
-        else:
-            pixels_per_patch *= self.lateral_patch_size
-        return pixels_per_patch
+        return self.compute_num_pixels_per_patch(
+            self.channels, self.temporal_patch_size, self.axial_patch_size,
+            self.lateral_patch_size, self.input_fmt,
+        )
     
     def _patchify(self, inputs, reshape=True, shape=None):
         # support variable size input, e.g. multiresolution inputs
@@ -190,6 +182,24 @@ class PatchEmbedding(nn.Module):
                  pixels_per_patch,
                  reshape=True
     ):
+        # Layout tripwire: a channels-FIRST tensor whose numel happens to match
+        # (e.g. SAM2's (B*T, C, Z, Y, X) with T=1) would reshape into scrambled
+        # tokens with NO error -- the channel axis silently folds into the
+        # patch axes. Refuse anything that is not batch + channels-last
+        # input_format.
+        if inputs.ndim != len(input_format) + 1:
+            raise ValueError(
+                f"patchify expects {len(input_format) + 1}D input "
+                f"(B + {input_format}), got {inputs.ndim}D {tuple(inputs.shape)}"
+            )
+        if inputs.shape[-1] != channels:
+            raise ValueError(
+                f"patchify expects channels-last (C={channels} in the last axis) "
+                f"for input_format {input_format!r}, got shape {tuple(inputs.shape)} "
+                "-- a channels-first tensor reshapes into scrambled tokens without "
+                "error when numel happens to match."
+            )
+
         b = inputs.shape[0]
         t, z, y, x, c = token_shape
 
@@ -265,7 +275,16 @@ class PatchEmbedding(nn.Module):
         else:
             raise NotImplementedError
 
-        # NOTE: if tensor is already in the specified memory format, 
+        if not reshape:
+            # unfold appends the intra-patch dims AFTER the channel axis, so the
+            # raw layout is (..., C, Ti, Zi, Li, Li) -- a DIFFERENT intra-patch
+            # pixel order than the reshape path's (..., Ti, Zi, Li, Li, C), and
+            # unpatchify assumes the reshape order. Move C to the end so both
+            # paths share one canonical order. (C sits at index len(input_format)
+            # -- batch(0) + the format's axes -- and unfolds only append dims.)
+            patches = patches.movedim(len(input_format), -1)
+
+        # NOTE: if tensor is already in the specified memory format,
         #       contiguous returns the tensor
         patches = patches.contiguous().view(b, num_patches, pixels_per_patch)
         return patches

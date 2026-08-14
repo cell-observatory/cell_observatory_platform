@@ -24,8 +24,10 @@ event_writers:
         - ${job_type}
         - ${trainer}
         - ${quantization}
-      # step to resume from if resuming a run 
-      # (if id is set to an existing run)
+      # wandb.init(resume=...) policy, NOT a step number: one of
+      # "allow" | "must" | "never" (or null). Takes effect only when `id`
+      # points at an existing run. Run-id lineage is also persisted in the
+      # checkpoint_meta sidecar (wandb_run_id) for resume tooling.
       resume_from: null
       # unique ID used for resuming a run
       # if not set, a new run will be created

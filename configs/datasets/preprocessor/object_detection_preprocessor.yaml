@@ -24,7 +24,6 @@ dtype: ${quantization}
 patch_shape: ${datasets.patch_shape}
 input_format: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
-mask_channel_idx: ${datasets.mask_channel_idx}
 
 seed: ${seed}
 

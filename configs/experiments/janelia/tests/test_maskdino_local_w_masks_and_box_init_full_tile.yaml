@@ -108,7 +108,7 @@ datasets:
 
   preprocessor:
     transforms_list:
-      - _target_: cell_observatory_platform.data.transforms.crop.Crop3D
+      - _target_: cell_observatory_platform.data.transforms.crop.Crop
         target_spatial_shape: [128, 384, 2048]
         crop_dims: YX
         crop_type: center

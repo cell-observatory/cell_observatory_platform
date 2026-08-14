@@ -15,15 +15,21 @@ class BaseEvaluator(DatasetEvaluator):
     """
 
     def __init__(self, training_metrics: List[Dict[str, str]]):
-        # Each {loss_key: reduce_method} pair builds a TrainLosses keyed by the
-        # loss name; these accumulate per-step losses and aggregate epoch stats
-        # written to the event-writer backends (TensorBoard/WandB/disk).
+        # Metric spec list: each entry is a registered metric name or
+        # {"name": ..., "key"?: ..., **ctor_kwargs} (see metrics._build_one_metric),
+        # e.g. [{"name": "train_loss", "key": "step_loss", "reduce_method": "mean"}].
+        # These accumulate per-step losses and aggregate epoch stats written to
+        # the event-writer backends (TensorBoard/WandB/disk).
         self.metrics = build_metrics(training_metrics)
         self._results = {m: None for m in self.metrics}
 
-    # reset _results for each metric
+    # reset _results AND the accumulated per-metric state: without the metric
+    # reset, epoch E+1's aggregate silently included every epoch <= E's losses
+    # (every sibling evaluator already resets its metrics here).
     def reset(self):
         self._results = {m: None for m in self._results.keys()}
+        for m in self.metrics.values():
+            m.reset()
 
     # for each metric after each step we process the
     # loss_dict and append each loss metric to the

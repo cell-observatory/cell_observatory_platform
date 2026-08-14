@@ -76,7 +76,9 @@ class PlainDETR(nn.Module):
         self.num_feature_levels = num_feature_levels
 
         if not two_stage:
-            self.query_embed = nn.Embedding(num_queries, hidden_dim * 24)
+            # 2x hidden_dim: the transformer splits each query embedding into
+            # (query_pos, tgt) halves, as in the reference implementation.
+            self.query_embed = nn.Embedding(num_queries, hidden_dim * 2)
         elif mixed_selection:
             self.query_embed = nn.Embedding(num_queries, hidden_dim)
 
@@ -137,12 +139,13 @@ class PlainDETR(nn.Module):
         # Inference contract (see meta_arch/utils.py): inference_step returns a batched
         # dict of top-k detections at the PROCESSED scale (the inferencer rescales to
         # the original tile).
-        self.output_metadata = (
-            output_metadata if output_metadata is not None
-            else mo.output_metadata(
-                boxes=mo.boxes(topk), labels=mo.labels(topk), scores=mo.scores(topk),
-            )
+        # Standardized override pattern (matches mask2former/maskdino/UNet): build
+        # the canonical defaults, then merge any config-provided overrides on top.
+        self.output_metadata = mo.output_metadata(
+            boxes=mo.boxes(topk), labels=mo.labels(topk), scores=mo.scores(topk),
         )
+        if output_metadata is not None:
+            self.output_metadata.merge_with(output_metadata)
 
         self._init_model_weights(buffer_device=buffer_device)
 
@@ -357,13 +360,13 @@ class PlainDETR(nn.Module):
         if use_one2many:
             losses = self.compute_hybrid_loss(
                 outputs=outputs,
-                targets=samples["metainfo"]["targets"][0],
+                targets=samples["metainfo"]["targets"],
                 k_one2many=self.k_one2many,
                 criterion=self.loss,
                 lambda_one2many=self.lambda_one2many,
             )
         else:
-            losses = self.loss(outputs, samples["metainfo"]["targets"][0])
+            losses = self.loss(outputs, samples["metainfo"]["targets"])
 
         losses["step_loss"] = sum(
             losses[k] * self.loss.weight_dict[k] for k in losses.keys() if k in self.loss.weight_dict
@@ -378,8 +381,81 @@ class PlainDETR(nn.Module):
         # as a dict having both a Tensor and a list.
         return [{"pred_logits": a, "pred_boxes": b} for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
+    # ------------------------------------------------------------------
+    # Inference/evaluation entry points. These live on the BASE class so the
+    # BUILD'd model exposes them for both reparam=True (PlainDETRReParam) and
+    # reparam=False (PlainDETR) — previously inference_step existed only on the
+    # subclass and evaluate_step existed nowhere.
+    # ------------------------------------------------------------------
+
+    def inference_step(self, samples: Dict):
+        outputs = self._forward(samples)
+        return self._predict(
+            outputs,
+            target_sizes=samples["metainfo"]["image_sizes_padded"],
+        )
+
+    def evaluate_step(self, samples: Dict):
+        """Test-flow entry point (TestTrainer.run_test_step): postprocessed
+        top-k detections at the processed scale, same contract as
+        ``inference_step`` (boxes/labels/scores)."""
+        return self.inference_step(samples)
+
+    def _predict(self, outputs, target_sizes):
+        """Top-k detections at the PROCESSED (padded) scale.
+
+        Returns a batched ``dict[str, Tensor]`` (the inferencer contract): ``boxes``
+        ``(BS, topk, 6)`` xyzxyz, ``labels`` ``(BS, topk)``, ``scores`` ``(BS, topk)``.
+        Boxes are emitted at the processed scale; the inferencer's post-processor
+        rescales them to the original tile (we do NOT rescale here).
+        """
+        out_logits, out_bbox = outputs["pred_logits"], outputs["pred_boxes"]
+
+        assert len(out_logits) == len(target_sizes), "the batch size of out_logits and target_sizes must be equal"
+        assert target_sizes.shape[1] == 3, "target_sizes should have shape [batch_size x 3]"
+
+        # prob: [BS, num_queries, num_classes]
+        prob = out_logits.sigmoid()
+        # topk: [BS, topk] for both values and indexes
+        topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), self.topk, dim=1)
+
+        scores = topk_values
+        # get the corresponding boxes and labels for each topk score
+        # since scores are flattened such that indexes = box_index * num_classes + class_index
+        topk_boxes = topk_indexes // out_logits.shape[2]
+        labels = topk_indexes % out_logits.shape[2]
+        boxes = box_cxcyczwhd_to_xyzxyz(out_bbox)
+        # boxes: [BS, topk, 6]
+        boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 6))
+
+        # NOTE: (important!) target_sizes is in (D, H, W) format.
+        img_d, img_h, img_w = target_sizes.unbind(1)
+        if self.reparam:
+            # Reparam boxes are already ABSOLUTE in the processed (padded) frame;
+            # clamp to that frame. Do NOT rescale to the original tile here.
+            img_w4, img_h4, img_d4 = img_w[:, None, None], img_h[:, None, None], img_d[:, None, None]
+            boxes[..., 0::3].clamp_(min=torch.zeros_like(img_w4), max=img_w4)
+            boxes[..., 1::3].clamp_(min=torch.zeros_like(img_h4), max=img_h4)
+            boxes[..., 2::3].clamp_(min=torch.zeros_like(img_d4), max=img_d4)
+        else:
+            # Normalized [0, 1] boxes -> absolute processed-frame coords. Only
+            # reachable on the non-reparam base class (PlainDETRReParam enforces
+            # reparam=True in __init__).
+            scale_fct = torch.stack([img_w, img_h, img_d, img_w, img_h, img_d], dim=1)
+            boxes = boxes * scale_fct[:, None, :]
+
+        return {"boxes": boxes, "labels": labels, "scores": scores}
+
 
 class PlainDETRReParam(PlainDETR):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not self.reparam:
+            # Narrow the class contract: the reparam forward/_predict paths are
+            # the only live ones on this subclass; BUILD selects the class from
+            # cfg.reparam, so a mismatch here is a construction bug.
+            raise ValueError("PlainDETRReParam requires reparam=True; use PlainDETR for reparam=False.")
+
     def _forward(self, samples: Dict):
         """
         The forward expects a List[Dict], which consists of:
@@ -516,56 +592,6 @@ class PlainDETRReParam(PlainDETR):
             for a, b, c, d in zip(outputs_class[:-1], outputs_coord[:-1], outputs_coord_old[:-1], outputs_deltas[:-1])
         ]
 
-    def inference_step(self, samples: Dict):
-        outputs = self._forward(samples)
-        return self._predict(
-            outputs,
-            target_sizes=samples["metainfo"]["image_sizes_padded"],
-        )
-
-    def _predict(self, outputs, target_sizes):
-        """Top-k detections at the PROCESSED (padded) scale.
-
-        Returns a batched ``dict[str, Tensor]`` (the inferencer contract): ``boxes``
-        ``(BS, topk, 6)`` xyzxyz, ``labels`` ``(BS, topk)``, ``scores`` ``(BS, topk)``.
-        Boxes are emitted at the processed scale; the inferencer's post-processor
-        rescales them to the original tile (we do NOT rescale here).
-        """
-        out_logits, out_bbox = outputs["pred_logits"], outputs["pred_boxes"]
-
-        assert len(out_logits) == len(target_sizes), "the batch size of out_logits and target_sizes must be equal"
-        assert target_sizes.shape[1] == 3, "target_sizes should have shape [batch_size x 3]"
-
-        # prob: [BS, num_queries, num_classes]
-        prob = out_logits.sigmoid()
-        # topk: [BS, topk] for both values and indexes
-        topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), self.topk, dim=1)
-
-        scores = topk_values
-        # get the corresponding boxes and labels for each topk score
-        # since scores are flattened such that indexes = box_index * num_classes + class_index
-        topk_boxes = topk_indexes // out_logits.shape[2]
-        labels = topk_indexes % out_logits.shape[2]
-        boxes = box_cxcyczwhd_to_xyzxyz(out_bbox)
-        # boxes: [BS, topk, 6]
-        boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 6))
-
-        # NOTE: (important!) target_sizes is in (D, H, W) format.
-        img_d, img_h, img_w = target_sizes.unbind(1)
-        if self.reparam:
-            # Reparam boxes are already ABSOLUTE in the processed (padded) frame;
-            # clamp to that frame. Do NOT rescale to the original tile here.
-            img_w4, img_h4, img_d4 = img_w[:, None, None], img_h[:, None, None], img_d[:, None, None]
-            boxes[..., 0::3].clamp_(min=torch.zeros_like(img_w4), max=img_w4)
-            boxes[..., 1::3].clamp_(min=torch.zeros_like(img_h4), max=img_h4)
-            boxes[..., 2::3].clamp_(min=torch.zeros_like(img_d4), max=img_d4)
-        else:
-            # Normalized [0, 1] boxes -> absolute processed-frame coords.
-            scale_fct = torch.stack([img_w, img_h, img_d, img_w, img_h, img_d], dim=1)
-            boxes = boxes * scale_fct[:, None, :]
-
-        return {"boxes": boxes, "labels": labels, "scores": scores}
-
 
 from cell_observatory_platform.utils.registry import REGISTRY
 
@@ -584,7 +610,7 @@ def BUILD(cfg: Mapping[str, Any]) -> PlainDETR:
 
     bw_cfg = model_cfg["backbone_wrapper_args"]
     adapter_cfg = model_cfg.get("adapter_args", None)
-    backbone = REGISTRY.build("backbone", bw_cfg.name, bw_cfg, adapter_args=adapter_cfg)
+    backbone = REGISTRY.build("backbone", bw_cfg["name"], bw_cfg, adapter_args=adapter_cfg)
 
     # ------------------------------------------------------------------
     # 2) Build transformer
@@ -605,7 +631,9 @@ def BUILD(cfg: Mapping[str, Any]) -> PlainDETR:
     transformer_build_cfg["num_queries_one2many"] = num_queries_one2many
     transformer_build_cfg["mixed_selection"] = mixed_selection
 
-    transformer = REGISTRY.build("head", transformer_build_cfg.name, transformer_build_cfg)
+    # transformer_build_cfg is a plain dict (built via dict(transformer_cfg) above);
+    # attribute access only works on DictConfig, so index by key.
+    transformer = REGISTRY.build("head", transformer_build_cfg["name"], transformer_build_cfg)
 
     # ------------------------------------------------------------------
     # 3) Build loss module (criterion)
@@ -619,7 +647,7 @@ def BUILD(cfg: Mapping[str, Any]) -> PlainDETR:
 
     loss_module = REGISTRY.build(
         "criterion",
-        crit_cfg.name,
+        crit_cfg["name"],
         crit_cfg,
         num_classes=num_classes,
         two_stage=two_stage,

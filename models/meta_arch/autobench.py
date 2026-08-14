@@ -1,4 +1,3 @@
-import sys
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Literal, Mapping, Optional
@@ -9,6 +8,7 @@ from hydra.utils import get_method
 from omegaconf import DictConfig, OmegaConf
 
 from cell_observatory_platform.data.masking.mask_generator import apply_masks
+from cell_observatory_platform.data.data_types import get_role
 from cell_observatory_platform.models.layers.attention import RopeAttention
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
 from cell_observatory_platform.training.helpers import (
@@ -19,11 +19,6 @@ from cell_observatory_platform.training.helpers import (
 from cell_observatory_platform.training.losses import get_loss_fn
 from cell_observatory_platform.models.meta_arch import utils as mo
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -63,12 +58,16 @@ class AutoBench(nn.Module, ABC):
         buffer_device: str = "cuda",
         output_shape: Optional[Any] = None,
         output_metadata: Dict[str, Any] = None,
+        target_role: Optional[str] = None,
     ):
         super().__init__()
         self.backbone_args = backbone_args
         self.decoder_args = decoder_args
 
         self.task = task
+        # Form-D role to read the reconstruction target
+        # preprocessors publish under their task/mode name, so the default aligns.
+        self.target_role = target_role or task
 
         self.input_fmt = input_fmt
         self.input_shape = tuple(input_shape)
@@ -84,10 +83,11 @@ class AutoBench(nn.Module, ABC):
         # Inference contract (see meta_arch/utils.py): the dense prediction is keyed by
         # the task name (e.g. "denoising", "channel_split"); the eval config's pred_key
         # and the save/viz config reference this key directly.
-        self.output_metadata = (
-            output_metadata if output_metadata is not None
-            else mo.output_metadata(**{task: mo.dense(self.output_shape)})
-        )
+        # Standardized override pattern (matches mask2former/maskdino/UNet): build
+        # the canonical defaults, then merge any config-provided overrides on top.
+        self.output_metadata = mo.output_metadata(**{task: mo.dense(self.output_shape)})
+        if output_metadata is not None:
+            self.output_metadata.merge_with(output_metadata)
         self.loss_fn = get_loss_fn(loss_fn)
         self.with_auxiliary_loss = with_auxiliary_loss
         self.weight_init_type = weight_init_type
@@ -105,6 +105,14 @@ class AutoBench(nn.Module, ABC):
         """
         for param in self.backbone.parameters():
             param.requires_grad = False
+
+    def _finalize_build(self):
+        """Shared __init__ tail every variant must call after building its
+        backbone/decoder. Centralizes the freeze so a variant cannot silently
+        ignore ``freeze_backbone: true`` (the denoising variant did exactly
+        that -- a linear-probe config quietly became full finetuning)."""
+        if self.freeze_backbone:
+            self._freeze_backbone()
 
     @abstractmethod
     def forward(self, data_sample: dict):
@@ -124,7 +132,7 @@ class AutoBench(nn.Module, ABC):
     def evaluate_step(self, data_sample: dict) -> dict:
         """EVAL — consumed by AutomatedBenchmarkEvaluator.process():
           pred = outputs[pred_key]  (the eval config's pred_key MUST equal self.task)
-          target = metainfo["targets"][0]
+          target = get_role(metainfo["targets"], target_role)   # Form-D read
         Returns the PATCH-SPACE prediction (forward's decoder output), which matches
         the patchified target element-wise -- NRMSE/MAE are shape-agnostic, so this
         equals comparing in image space and mirrors the training loss (no unpatchify
@@ -259,10 +267,12 @@ class DenoisingAutoBench(AutoBench):
         )
         self.backbone = REGISTRY.build("backbone", backbone_args.name, backbone_args)
         self.decoder = REGISTRY.build("head", decoder_args.name, decoder_args)
+        self._finalize_build()
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
-        targets = meta.get("targets", [None])[0]
+        t = meta.get("targets")
+        targets = get_role(t, self.target_role) if t else None   # Form-D read
 
         x, patches = self.backbone(inputs)
         x = self.decoder(x)
@@ -277,10 +287,13 @@ class DenoisingAutoBench(AutoBench):
         else:
             aux_loss_meta = None
 
+        # Normalize by the number of SUPERVISED patches across the WHOLE batch
+        # (B * N): L2_masked_loss sums over batch and patch dims, so a per-sample
+        # count would scale the loss linearly with batch size.
         loss, aux_losses = self.loss_fn(
             predictions=predictions,
             targets=targets,
-            num_patches=self.get_num_patches(),
+            num_patches=targets.shape[0] * targets.shape[1],
             aux_loss_meta=aux_loss_meta,
         )
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
@@ -292,8 +305,11 @@ class DenoisingAutoBench(AutoBench):
         x = self.decoder(x)
 
         # TODO: make this more general to support models which don't use patch_embedding._unpatchify
-        # Assume backbone exposes patch_embedding._unpatchify 
-        predictions = self.backbone.patch_embedding._unpatchify(x, out_channels=None)
+        # Assume backbone exposes patch_embedding._unpatchify
+        # out_channels is the DECODER's output width (output_shape[-1] = train_shape[-1]),
+        # NOT input_shape[-1]: for denoising the mask channel is stripped (in C=2 -> out C=1),
+        # and out_channels=None falls back to the INPUT channel count from token_shape.
+        predictions = self.backbone.patch_embedding._unpatchify(x, out_channels=self.output_shape[-1])
         return {self.task: predictions}
 
 class ChannelSplitAutoBench(AutoBench):
@@ -320,12 +336,12 @@ class ChannelSplitAutoBench(AutoBench):
         # [-1]), NOT input_shape[-1] (input and output channel counts can differ).
         self.output_channels = self.output_shape[-1]
 
-        if self.freeze_backbone:
-            self._freeze_backbone()
+        self._finalize_build()
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
-        targets = meta.get("targets", [None])[0]
+        t = meta.get("targets")
+        targets = get_role(t, self.target_role) if t else None   # Form-D read
         target_masks = meta.get("target_masks", [None])[0]
         patches_used = meta.get("patches_used", [None])[0]
 
@@ -342,7 +358,10 @@ class ChannelSplitAutoBench(AutoBench):
         else:
             aux_loss_meta = None
 
-        loss, aux_losses = self.loss_fn(predictions, targets, num_patches=self.get_num_patches(), aux_loss_meta=aux_loss_meta)
+        # Normalize by B * N supervised patches (loss sums over the batch).
+        loss, aux_losses = self.loss_fn(
+            predictions, targets, num_patches=targets.shape[0] * targets.shape[1], aux_loss_meta=aux_loss_meta
+        )
 
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions
@@ -379,8 +398,7 @@ class UpsampleTimeAutoBench(AutoBench):
         self.backbone = REGISTRY.build("backbone", backbone_args.name, backbone_args)
         self.decoder = REGISTRY.build("head", decoder_args.name, decoder_args)
 
-        if self.freeze_backbone:
-            self._freeze_backbone()
+        self._finalize_build()
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
@@ -401,7 +419,10 @@ class UpsampleTimeAutoBench(AutoBench):
         targets = apply_masks(patches, masks=target_masks)
         predictions = apply_masks(x, masks=target_masks)
 
-        loss, aux_losses = self.loss_fn(predictions, targets, num_patches=self.get_num_patches())
+        # targets is already the masked subset, so B * N here is the batch-wide
+        # count of SUPERVISED (masked) patches — normalizing by it fixes both the
+        # batch-size scaling and the divide-by-all-N under partial supervision.
+        loss, aux_losses = self.loss_fn(predictions, targets, num_patches=targets.shape[0] * targets.shape[1])
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
 
         return loss_dict, predictions
@@ -420,7 +441,9 @@ class UpsampleTimeAutoBench(AutoBench):
             target_masks=target_masks,
         )
 
-        predictions = self.backbone.patch_embedding._unpatchify(x, out_channels=None)
+        # out_channels must be the decoder's output width (output_shape[-1]); None would
+        # fall back to the INPUT channel count and mis-reshape when in/out channels differ.
+        predictions = self.backbone.patch_embedding._unpatchify(x, out_channels=self.output_shape[-1])
         return {self.task: predictions}
 
 
@@ -441,12 +464,12 @@ class UpsampleSpaceAutoBench(AutoBench):
         self.backbone = REGISTRY.build("backbone", backbone_args.name, backbone_args)
         self.decoder = REGISTRY.build("head", decoder_args.name, decoder_args)
 
-        if self.freeze_backbone:
-            self._freeze_backbone()
+        self._finalize_build()
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
-        targets = meta.get("targets", [None])[0]
+        t = meta.get("targets")
+        targets = get_role(t, self.target_role) if t else None   # Form-D read
         target_masks = meta.get("target_masks", [None])[0]
         patches_used = meta.get("patches_used", [None])[0]
 
@@ -462,7 +485,10 @@ class UpsampleSpaceAutoBench(AutoBench):
         else:
             aux_loss_meta = None
 
-        loss, aux_losses = self.loss_fn(predictions, targets, num_patches=self.get_num_patches(), aux_loss_meta=aux_loss_meta)
+        # Normalize by B * N supervised patches (loss sums over the batch).
+        loss, aux_losses = self.loss_fn(
+            predictions, targets, num_patches=targets.shape[0] * targets.shape[1], aux_loss_meta=aux_loss_meta
+        )
 
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
         return loss_dict, predictions
@@ -473,7 +499,9 @@ class UpsampleSpaceAutoBench(AutoBench):
         x, patches = self.backbone(inputs)
         x = self.decoder(x)
 
-        predictions = self.backbone.patch_embedding._unpatchify(x, out_channels=None)
+        # out_channels must be the decoder's output width (output_shape[-1]); None would
+        # fall back to the INPUT channel count and mis-reshape when in/out channels differ.
+        predictions = self.backbone.patch_embedding._unpatchify(x, out_channels=self.output_shape[-1])
         return {self.task: predictions}
 
 
@@ -495,12 +523,12 @@ class UpsampleSpaceTimeAutoBench(AutoBench):
         self.backbone = REGISTRY.build("backbone", backbone_args.name, backbone_args)
         self.decoder = REGISTRY.build("head", decoder_args.name, decoder_args)
 
-        if self.freeze_backbone:
-            self._freeze_backbone()
+        self._finalize_build()
 
     def forward(self, data_sample: dict):
         inputs, meta = data_sample["data_tensor"], data_sample["metainfo"]
-        targets = meta.get("targets", [None])[0]
+        t = meta.get("targets")
+        targets = get_role(t, self.target_role) if t else None   # Form-D read
         context_masks = meta.get("context_masks", [None])[0]
         target_masks = meta.get("target_masks", [None])[0]
         original_patch_indices = meta.get("original_patch_indices", [None])[0]
@@ -515,7 +543,8 @@ class UpsampleSpaceTimeAutoBench(AutoBench):
 
         predictions = x
 
-        loss, aux_losses = self.loss_fn(x, targets, num_patches=self.get_num_patches())
+        # Normalize by B * N supervised patches (loss sums over the batch).
+        loss, aux_losses = self.loss_fn(x, targets, num_patches=targets.shape[0] * targets.shape[1])
         loss_dict = {"step_loss": loss, **(aux_losses or {})}
 
         return loss_dict, predictions
@@ -533,7 +562,9 @@ class UpsampleSpaceTimeAutoBench(AutoBench):
             target_masks=target_masks,
         )
 
-        predictions = self.backbone.patch_embedding._unpatchify(x, out_channels=None)
+        # out_channels must be the decoder's output width (output_shape[-1]); None would
+        # fall back to the INPUT channel count and mis-reshape when in/out channels differ.
+        predictions = self.backbone.patch_embedding._unpatchify(x, out_channels=self.output_shape[-1])
         return {self.task: predictions}
 
 

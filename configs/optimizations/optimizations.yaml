@@ -4,16 +4,17 @@ cudnn_allow_tf32: true
 cudnn_deterministic: false
 deterministic: false
 
+# Debug-only NCCL/distributed settings (TORCH_DISTRIBUTED_DEBUG,
+# TORCH_NCCL_BLOCKING_WAIT -- the latter spins a CPU core on every collective)
+# live in optimizations_debug.yaml; opt in with `optimizations=optimizations_debug`.
 env:
-  HYDRA_FULL_ERROR: true     
+  HYDRA_FULL_ERROR: true
   RAY_DEDUP_LOGS: true
-  TORCH_DISTRIBUTED_DEBUG: "INFO"    
-  OMP_NUM_THREADS: "1"             
+  OMP_NUM_THREADS: "1"
   TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC: 3600
   RAY_TRAIN_WORKER_GROUP_START_TIMEOUT_SEC: 3600
   PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
   NVIDIA_TF32_OVERRIDE: "1"
   CUDA_LAUNCH_BLOCKING: null
-  TORCH_NCCL_BLOCKING_WAIT: 1
 
 with_model_summary: false

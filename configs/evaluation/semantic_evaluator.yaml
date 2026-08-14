@@ -10,7 +10,9 @@ evaluation:
   evaluator:
     name: semantic_segmentation
     num_classes: 3
-    ignore_index: 0
+    # Background is a real predictable class excluded from the MEAN only.
+    # (ignore_index now means the voxel-masking convention; see metrics.py.)
+    exclude_from_mean: 0
     gt_mask_source: masks
     result_name: mask_miou_semantic
   predict_method: evaluate_step

@@ -30,8 +30,9 @@ defaults:
 nsys_env: null
 
 hooks_list:
-  - name: anomaly_detector
-  - name: sampler_setter
+  - name: free_device_buffer   # returns device-buffer slots to the loader pool;
+                               # without it the loader stalls once the pool is
+                               # exhausted (deadlock after buffer_capacity steps)
   - name: lr_scheduler
     backend: DEEPSPEED
   - name: iteration_timer

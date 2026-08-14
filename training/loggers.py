@@ -3,6 +3,8 @@ Adopted with Apache License 2.0 from
 https://github.com/facebookresearch/detectron2/detectron2/utils/events.py
 """
 
+from __future__ import annotations   # lazy annotations: torchtitan types stay import-free
+
 import os
 import sys
 import math
@@ -16,7 +18,6 @@ from dotenv import load_dotenv
 from collections import defaultdict
 from typing import Literal, Tuple, Dict, List, Any, Optional, Sequence
 
-import wandb
 import pandas as pd
 from omegaconf import OmegaConf
 
@@ -38,16 +39,17 @@ from cell_observatory_platform.utils.context import (
     reduce_values,
 )
 
-from torchtitan.tools import utils
-from torchtitan.distributed.parallel_dims import ParallelDims
-from torchtitan.components.metrics import DeviceMemoryMonitor, build_device_memory_monitor
+# torchtitan (parked build path) and wandb are imported lazily at their use
+# sites -- module scope here is walk-imported by every trainer/actor process
+# and both imports are slow. Type-only names resolve via future annotations.
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from torchtitan.distributed.parallel_dims import ParallelDims
+    from torchtitan.components.metrics import DeviceMemoryMonitor
+
 from cell_observatory_platform.utils.config import registers_flat_as
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 
@@ -68,7 +70,7 @@ class EventRecorder:
         name,
         value,
         scope: Literal["step", "epoch"] = "step",
-        reduce_method: List[str] | None = ["median"],
+        reduce_method: List[str] | None = None,   # None -> recorder default ["median"]
         category: Optional[METRIC_CATEGORIES] = None,
         prefix: Optional[str] = None,
         units: Optional[str] = None,
@@ -81,11 +83,23 @@ class EventRecorder:
             units=units,
         )
         # we need to reduce per rank and per step to get epoch averages
-        # either we set this dynamically or we have a config with 
+        # either we set this dynamically or we have a config with
         # the reduce methods for each scalar but then we have
         # to specify each scalar we are expecting to record
         if full_name not in self._reduce_methods:
             self._reduce_methods[full_name] = reduce_method
+        elif (
+            reduce_method is not None
+            and self._reduce_methods[full_name] is not None
+            and list(reduce_method) != list(self._reduce_methods[full_name])
+        ):
+            # First-writer-wins is silent otherwise: a later caller asking for
+            # a DIFFERENT reduction would believe it took effect.
+            warnings.warn(
+                f"reduce_method for {full_name!r} already registered as "
+                f"{self._reduce_methods[full_name]}; ignoring conflicting "
+                f"{list(reduce_method)}."
+            )
         if scope == "step":
             self._step_scalars[full_name].append((value, self._iter, self._epoch))
         elif scope == "epoch":
@@ -96,7 +110,7 @@ class EventRecorder:
         name: str,
         values: Sequence[float],
         scope: Literal["step", "epoch"] = "step",
-        reduce_method: List[str] | None = ["median"],
+        reduce_method: List[str] | None = None,   # None -> recorder default ["median"]
         category: Optional[METRIC_CATEGORIES] = None,
         prefix: Optional[str] = None,
         units: Optional[str] = None,
@@ -125,7 +139,7 @@ class EventRecorder:
     def put_scalars(
         self,
         scope: Literal["step", "epoch"] = "step",
-        reduce_method: List[str] = ["median"],
+        reduce_method: List[str] | None = None,   # None -> recorder default ["median"]
         category: Optional[METRIC_CATEGORIES] = None,
         prefix: Optional[str] = None,
         units: Optional[str] = None,
@@ -313,17 +327,20 @@ class EventWriter:
         if rank == 0:
             # {metric: {(it,ep): [vals,...]}}
             buckets = defaultdict(lambda: defaultdict(list))
-            
+
             # {metric: {(it, ep): [val_rank0, ...]}}
-            for rank, dict in enumerate(gathered):
-                for name, records in dict.items():
+            for rank_scalars in gathered:
+                for name, records in (rank_scalars or {}).items():
                     for val, it, ep in records:
                         buckets[name][(it, ep)].append(val)
 
             # apply reductions
             merged, merged_per_step = defaultdict(list), defaultdict(list)
             for metric, rows in buckets.items():
-                reduce_op_list = self.event_recorder.get_reduce_op(metric)
+                # A metric recorded only on rank>0 never registered a reduce
+                # method in rank 0's recorder — fall back instead of crashing
+                # on `for op in None`.
+                reduce_op_list = self.event_recorder.get_reduce_op(metric) or ["median"]
                 # vals_per_rank = [[val_rank0_iter0, ...], [val_rank0_iter1, ...] ...]
                 vals_per_rank = [v for _, v in rows.items()]
                 # flatten list of lists before reduction
@@ -437,6 +454,32 @@ class LocalEventWriter(EventWriter):
             f"{self.epoch_scalars_prefix}.{self.scalars_save_format}"
         os.makedirs(os.path.join(save_dir, "scalars"), exist_ok=True)
 
+    @staticmethod
+    def _append_csv_aligned(df, savepath) -> None:
+        """Append with column alignment: each flush can carry a different
+        metric set (val-only keys on val epochs, new metrics mid-run). A raw
+        mode="a" append writes rows whose values do not line up with the
+        original header -- silently corrupt logbooks. When the column set
+        grows, rewrite the file with the union header; otherwise reindex the
+        flush to the existing header order.
+        """
+        import pandas as pd
+
+        if not savepath.exists():
+            df.to_csv(savepath, index=False)
+            return
+        existing_cols = list(pd.read_csv(savepath, nrows=0).columns)
+        if set(df.columns) <= set(existing_cols):
+            df.reindex(columns=existing_cols).to_csv(
+                savepath, mode="a", header=False, index=False
+            )
+        else:
+            cols = existing_cols + [c for c in df.columns if c not in existing_cols]
+            old = pd.read_csv(savepath)
+            pd.concat([old, df], ignore_index=True).reindex(columns=cols).to_csv(
+                savepath, index=False
+            )
+
     def _write_scalar_impl(self, scalar_dict, scope: Literal["step", "epoch"] = "step"):
         if not scalar_dict:
             barrier()
@@ -455,11 +498,7 @@ class LocalEventWriter(EventWriter):
                     logger.info(f"Epoch scalars: {scalar_dict}")
                     df = self._make_epoch_table(scalar_dict)
                     savepath = self.epoch_scalars_savepath
-                df.to_csv(savepath,
-                    mode="a",
-                    header=not savepath.exists(),
-                    index=False
-                )
+                self._append_csv_aligned(df, savepath)
 
             else:
                 raise NotImplementedError(
@@ -500,6 +539,8 @@ class WandBEventWriter(EventWriter):
         self.event_recorder = event_recorder
 
         if process_rank() == 0:
+            import wandb   # lazy: only the rank-0 writer process pays the import
+
             load_dotenv(env_path)
             wandb.login(key=os.getenv("WANDB_API_KEY"))
             self.run = wandb.init(project=project,
@@ -514,6 +555,12 @@ class WandBEventWriter(EventWriter):
             
             self.run.define_metric("iter")
             self.run.define_metric("epoch")
+            # Monotonic internal wandb step for batched logging (charts are
+            # driven by the "iter"/"epoch" payload keys via define_metric, so
+            # the internal step only needs to strictly increase). Seed from the
+            # run's current step so resumed runs don't log below it (wandb
+            # silently drops rows with a non-increasing step).
+            self._log_seq = self._initial_log_seq()
             catchall_step_name = get_metric_full_name(
                 name="*",
                 scope="step",
@@ -539,6 +586,13 @@ class WandBEventWriter(EventWriter):
                 self.run.define_metric(catchall_epoch_cat_name, step_metric="epoch")
         else:
             self.run = None
+
+    def _initial_log_seq(self) -> int:
+        """Current wandb internal step (0 for fresh runs / non-numeric mocks)."""
+        try:
+            return int(getattr(self.run, "step", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
 
     def save_config(self, cfg: Any, filename: str = "resolved_config.yaml") -> None:
         """Save the resolved run config as a W&B file."""
@@ -568,29 +622,45 @@ class WandBEventWriter(EventWriter):
         if self.run is None:
             return
         if not scalar_dict:
-            raise ValueError("No scalars to write.")
+            return          # mirror LocalEventWriter's tolerant empty-flush early-return
+
+        # Batched flush: every row used to be a separate `log(commit=True)`
+        # call — steps_per_epoch synchronous history commits per epoch flush.
+        # Rows are logged with an explicit, strictly-increasing internal step
+        # (so wandb neither merges nor drops them) and only the LAST row of the
+        # batch commits, flushing the whole batch in one go.
+        if not hasattr(self, "_log_seq"):
+            self._log_seq = self._initial_log_seq()
+
+        def _log_batch(records):
+            n = len(records)
+            for i, payload in enumerate(records):
+                self._log_seq += 1
+                self.run.log(payload, step=self._log_seq, commit=(i == n - 1))
 
         if scope == "step":
             df = self._make_step_table(scalar_dict)
+            batch = []
             for rec in df.to_dict(orient="records"):
                 it = int(rec["iter"])
                 ep = int(rec.get("epoch", 0))
-                payload = {
+                batch.append({
                     "iter": it,            # required so step metrics use iter
                     "epoch": ep,           # handy to see epoch with step logs
                     **{k: v for k, v in rec.items() if k not in ("iter", "epoch")},
-                }
-                self.run.log(payload, commit=True)
+                })
+            _log_batch(batch)
 
         elif scope == "epoch":
             df = self._make_epoch_table(scalar_dict)
+            batch = []
             for rec in df.to_dict(orient="records"):
                 ep = int(rec["epoch"])
-                payload = {
+                batch.append({
                     "epoch": ep,           # required so epoch metrics use epoch
                     **{k: v for k, v in rec.items() if k != "epoch"},
-                }
-                self.run.log(payload, commit=True)             
+                })
+            _log_batch(batch)
 
     def _write_histograms_impl(self):
         pass
@@ -675,6 +745,10 @@ class MetricsProcessor:
         lr_schedulers: LRSchedulersContainer | None = None,
         model_parts: list[torch.nn.Module] | None = None,
     ):
+        # torchtitan build path only -- lazy import (see module-top note)
+        from torchtitan.tools import utils
+        from torchtitan.components.metrics import build_device_memory_monitor
+
         self.parallel_dims = parallel_dims
         self.device_memory_monitor = build_device_memory_monitor()
 

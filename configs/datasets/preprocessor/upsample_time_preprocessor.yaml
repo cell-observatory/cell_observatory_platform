@@ -14,7 +14,12 @@ transforms_list:
 patch_shape: ${datasets.patch_shape}
 input_format: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
-mask_channel_idx: ${datasets.mask_channel_idx}
+# Signal-channel count fed to the model (patchification sizing). The old
+# mask_channel_idx key was removed from every preprocessor signature; the
+# object channel is now identified by channel_mapping roles. VERIFY these
+# counts against each dataset's channel_mapping before real runs.
+max_channel_count: 2
+min_channel_count: 2
 
 seed: ${seed}
 ideal_psf_path: "/groups/betzig/betziglab/hph/cell_observatory_project/data/1.tif"

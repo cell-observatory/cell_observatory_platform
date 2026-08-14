@@ -20,10 +20,11 @@ class LinearProbe(nn.Module):
     def init_weights(self):
         self.apply(self._init_model_weights)
 
-    def _init_model_weights(self):
-        trunc_normal_(self.linear.weight, std=0.02)
-        if self.linear.bias is not None:
-            nn.init.constant_(self.linear.bias, 0)
+    def _init_model_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=0.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         return self.linear(x)
@@ -99,7 +100,7 @@ def _build_mlp(nlayers,
         return nn.Sequential(*layers)
     
 
-def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
+def _extract_model_kwargs(cfg: Mapping[str, Any], cls: type = None) -> dict:
     cfg = dict(cfg)
 
     # Mandatory: AutoBench must set input_dim
@@ -112,7 +113,8 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     cfg["in_dim"] = in_dim
     cfg["output_dim"] = out_dim
 
-    sig = inspect.signature(LinearHead.__init__)
+    cls = cls if cls is not None else LinearHead
+    sig = inspect.signature(cls.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
     ignore = {"_target_", "BUILD", "name", "type"}
 
@@ -137,8 +139,8 @@ def BUILD(cfg: Mapping[str, Any]) -> LinearHead:
       - input_dim / num_layers  (aliased to above)
     """
     if cfg.type == "linear":
-        return LinearHead(**_extract_model_kwargs(cfg))
+        return LinearHead(**_extract_model_kwargs(cfg, cls=LinearHead))
     elif cfg.type == "linear_probe":
-        return LinearProbe(**_extract_model_kwargs(cfg))
+        return LinearProbe(**_extract_model_kwargs(cfg, cls=LinearProbe))
     else:
         raise ValueError(f"Invalid type: {cfg.type}")

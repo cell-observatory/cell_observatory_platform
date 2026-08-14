@@ -8,10 +8,18 @@ from typing import List, Tuple, Dict, Optional
 from multiprocessing import shared_memory
 
 import warnings
-warnings.filterwarnings("ignore")
 
-import pynvml as nvml
-from numa import schedule, memory, info
+# Scoped suppression only. This module is imported by essentially EVERY
+# process (trainers, actors, loggers); a blanket filterwarnings("ignore")
+# silenced torch deprecations, overflow warnings, and this repo's own
+# warnings.warn() calls everywhere.
+warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"ray(\..*)?")
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"timm(\..*)?")
+
+# NOTE: pynvml / numa / cupy are imported LAZILY inside the few functions that
+# need them (NUMA mapping / process binding). This module is imported by every
+# process that calls process_rank()/get_world_size() — including lightweight
+# Ray actors — and these three imports are slow and environment-sensitive.
 
 import logging
 from enum import Enum
@@ -21,13 +29,13 @@ import ray
 from ray.train import get_context
 from contextlib import contextmanager, nullcontext
 
-import cupy as cp
-
 import torch
 from torch import distributed as dist
 
 logger = logging.getLogger("ray")
-logger.setLevel(logging.DEBUG)
+# INFO, not DEBUG: this runs in every importing process and DEBUG floods the
+# shared "ray" logger repo-wide (loops.py resets to INFO only where imported).
+logger.setLevel(logging.INFO)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
 
 
@@ -203,6 +211,10 @@ def reduce_values(reduce_method: str, values: List[float]) -> float:
     so plotted, hook-selected, and evaluated values are computed identically.
     The cross-rank counterpart is :func:`gather_and_reduce`.
     """
+    if not values:
+        # uniform empty-input guard (the mean branch used to ZeroDivisionError
+        # and max/min raised on empty shards)
+        return 0.0
     if reduce_method == "sum":
         return sum(values)
     elif reduce_method == "mean":
@@ -349,18 +361,27 @@ def get_local_numa_nodes(worker_numa_node: int):
 # ---------------- NVML helpers ----------------
 
 
+def _get_nvml():
+    """Lazy pynvml import (see module-level note)."""
+    import pynvml as nvml
+    return nvml
+
+
 _NVML_INIT = False
 def _nvml_init():
     global _NVML_INIT
     if not _NVML_INIT:
         try:
-            nvml.nvmlInit()
+            _get_nvml().nvmlInit()
             _NVML_INIT = True
         except Exception:
             _NVML_INIT = False
 
 
 def _nvml_handle_for_torch_index(torch_idx: int):
+    import cupy as cp  # lazy (see module-level note)
+
+    nvml = _get_nvml()
     _nvml_init()
     # NOTE: NVML idx and CUDA idx may not be correlated hence
     #       we use PCIBusId
@@ -415,6 +436,7 @@ def _try_struct_fields(pci) -> str | None:
 
 
 def _pci_bus_id(handle) -> str:
+    nvml = _get_nvml()
     # 1) prefer v3 if available
     for fn_name in ("nvmlDeviceGetPciInfo_v3", "nvmlDeviceGetPciInfo"):
         pci_info_func = getattr(nvml, fn_name, None)
@@ -581,6 +603,8 @@ def torch_gpu_to_numa(torch_idx: int) -> Dict:
 
 
 def bind_current_process_to_node(node: int):
+    from numa import schedule, memory  # lazy (see module-level note)
+
     if node is None:
         raise RuntimeError("Cannot bind: NUMA node is None")
     target = set(cpus_for_node(node))

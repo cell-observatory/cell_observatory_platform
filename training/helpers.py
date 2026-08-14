@@ -89,9 +89,8 @@ def make_timing_metric(
 
 import numpy as np
 import polars as pl
+import ray
 import torch
-import torch.distributed as dist
-import torch.functional as F
 import torch.nn as nn
 import ujson
 from omegaconf import DictConfig, open_dict
@@ -99,11 +98,28 @@ from timm.layers.weight_init import trunc_normal_
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import CheckpointWrapper
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import checkpoint_wrapper as ptd_checkpoint_wrapper
 from torchinfo import summary
-from torchtitan.components.checkpoint import CheckpointManager
 
 logger = logging.getLogger("ray")
 logger.setLevel(logging.INFO)
 logging.getLogger("ray.train._internal.checkpoint_manager").setLevel(logging.INFO)
+
+
+def kill_stale_actor(name: str) -> None:
+    """Kill a detached named Ray actor left over from a previous run, if present.
+
+    A run that died without its ``finally`` (e.g. a SIGKILL'd driver) leaves its
+    detached actors registered under stable names; creating our own with the same
+    name would collide at init. Safe no-op when no such actor exists.
+    """
+    try:
+        stale = ray.get_actor(name)
+    except ValueError:
+        return  # no such actor -- the normal case
+    try:
+        ray.kill(stale)
+        logger.warning(f"Killed stale detached actor {name!r} from a previous run")
+    except Exception as e:
+        logger.warning(f"Failed to kill stale actor {name!r}: {e}")
 
 
 def record_dataset_len(config, num_train_rows: int, num_val_rows: int):
@@ -189,72 +205,6 @@ def get_steps_per_epoch(
     return steps_per_epoch, val_steps_per_epoch
 
 
-def load_model_from_ckpt(cfg: DictConfig, checkpoint_manager: CheckpointManager):
-    """
-    Load ONLY the model weights from checkpoint directory,
-    leaving optimizer/lr_schedulers/train_state/etc. unchanged.
-    """
-    ckpt_dir = cfg.checkpoint.checkpoint_manager.pretrained_checkpointdir
-
-    if not ckpt_dir:
-        raise ValueError("pretrained_checkpointdir is empty in config.")
-    if not os.path.isdir(ckpt_dir):
-        raise ValueError(f"pretrained_checkpointdir does not exist: {ckpt_dir}")
-
-    ckpt_tag = cfg.checkpoint.checkpoint_manager.get("ckpt_tag", None)
-    if not ckpt_tag:
-        raise ValueError("ckpt_tag is not specified in config.")
-
-    checkpoint_id = checkpoint_manager._create_checkpoint_id(ckpt_tag, folder=ckpt_dir)
-    logger.info(f"[Trainer] Loading *model only* from pretrained checkpoint {checkpoint_id}")
-
-    state_dict = checkpoint_manager.states[MODEL].state_dict()
-    checkpoint_manager.dcp_load(
-        state_dict=state_dict,
-        checkpoint_id=checkpoint_id,
-        # TODO: add support for from_hf, from_quantized
-        from_hf=False,
-        from_quantized=False,
-    )
-
-
-def load_trainer_state_dict_from_checkpoint(
-        checkpoint_manager: CheckpointManager,
-        resume_dir: str | Path,
-        step: int = -1
-):
-    """
-    Load only train_state from checkpoint directory,
-    without loading model / optimizer / lr_schedulers.
-    """
-    resume_dir = Path(resume_dir)
-    if not resume_dir.is_dir():
-        raise FileNotFoundError(f"Resume directory {resume_dir} does not exist")
-
-    # Temporarily point the manager at the resume directory
-    original_folder = checkpoint_manager.folder
-    checkpoint_manager.folder = str(resume_dir)
-
-    try:
-        # If step == -1 find latest step in this folder
-        if step == -1:
-            step = checkpoint_manager._find_load_step()
-            if step == -1:
-                raise FileNotFoundError(f"No checkpoints found in {resume_dir}.")
-
-        checkpoint_id = checkpoint_manager._create_checkpoint_id(step)
-
-        train_state_obj = checkpoint_manager.states[TRAIN_STATE]
-        states_to_load = {TRAIN_STATE: train_state_obj}
-        dcp.load(states_to_load, checkpoint_id=str(checkpoint_id))
-
-        train_state_sd: Dict[str, Any] = train_state_obj.state_dict()
-        return train_state_sd, step
-
-    finally:
-        checkpoint_manager.folder = original_folder
-
-
 # NOTE: For DeepSpeed backend, we store best loss, starting epoch and step
 #       with checkpoint manager in client state
 #       resume model state is most useful when restarting a 
@@ -265,16 +215,32 @@ def load_trainer_state_dict_from_checkpoint(
 #       will be loaded from the checkpoint directory.
 def resume_model_state(config: DictConfig, checkpoint_manager):
     if config.backend.upper() == "DEEPSPEED":
-        assert config.checkpoint.checkpoint_manager.resume_checkpointdir is not None and \
-            Path(config.checkpoint.checkpoint_manager.resume_checkpointdir).is_dir(), \
-            f"Checkpoint directory does not exist: {config.checkpoint.checkpoint_manager.resume_checkpointdir}" \
-            f"Checkpoint directory must be populated " \
-            f"with a valid checkpoint to resume training."
+        _resume_dir = config.checkpoint.checkpoint_manager.resume_checkpointdir
+        if _resume_dir is None or not Path(_resume_dir).is_dir():
+            # survives python -O
+            raise ValueError(
+                f"Checkpoint directory does not exist: {_resume_dir}. "
+                "Checkpoint directory must be populated with a valid "
+                "checkpoint to resume training."
+            )
         
         _ckpt_path, checkpoint_meta = checkpoint_manager.load()
 
         # lineage from checkpoint_meta.json (mirrors former DeepSpeed client_state)
         best_loss = checkpoint_meta["best_loss"]
+        if best_loss is None:
+            # best_loss is None ONLY for a legacy sidecar-less checkpoint
+            # (default_metadata fallback); a real sidecar always persists the
+            # mode-aware best (initial_best_metric sentinel or a recorded value).
+            # Refuse rather than fabricate one -- a substituted sentinel silently
+            # resets best-checkpoint tracking for the whole resumed run.
+            # (raise, not fallback: survives python -O)
+            raise ValueError(
+                "Cannot resume: checkpoint has no best_loss lineage (legacy "
+                "checkpoint saved before checkpoint_meta.json existed, or a "
+                "synthesized default_metadata). Re-save this checkpoint with the "
+                "current trainer to write its sidecar, or start a fresh run."
+            )
         starting_epoch, starting_iter = checkpoint_meta["epoch"], checkpoint_meta["iter"]
         epochs_left = config.schedulers.epochs - starting_epoch
 
@@ -301,14 +267,37 @@ def resume_model_state(config: DictConfig, checkpoint_manager):
             )
             Path(config.loggers.logdir).mkdir(exist_ok=True, parents=True)
 
-        return best_loss, starting_iter, starting_epoch
+        return best_loss, starting_iter, starting_epoch, checkpoint_meta
 
     elif config.backend.upper() == "TORCHTITAN":
-        train_state_sd, step = load_trainer_state_dict_from_checkpoint(
-            checkpoint_manager=checkpoint_manager,
-            resume_dir=config.checkpoint.checkpoint_manager.resume_checkpointdir,
-            step=config.checkpoint.checkpoint_manager.save_step,
-        )
+        _resume_dir = config.checkpoint.checkpoint_manager.resume_checkpointdir
+        if _resume_dir is None or not Path(_resume_dir).is_dir():
+            # survives python -O
+            raise ValueError(
+                f"Checkpoint directory does not exist: {_resume_dir}. "
+                "Checkpoint directory must be populated with a valid "
+                "checkpoint to resume training."
+            )
+
+        # DCP restores every registered Stateful IN PLACE (model, optimizer,
+        # lr/wd schedulers, train_state=trainer); the return values below are
+        # recovered from the freshly loaded train_state for the caller contract.
+        loaded_step, checkpoint_meta = checkpoint_manager.load()
+        if loaded_step is None:
+            raise ValueError(
+                f"No DCP checkpoint (step-*/.metadata) found in {_resume_dir}."
+            )
+        train_state_sd = checkpoint_manager.states["train_state"].state_dict()
+        starting_iter = int(train_state_sd["iteration"])
+        starting_epoch = int(train_state_sd["epoch"])
+        best_loss = train_state_sd.get("best_metric", None)
+        if best_loss is None:
+            # same refuse-don't-fabricate policy as the DeepSpeed branch above
+            raise ValueError(
+                "Cannot resume: DCP train_state has no best_metric lineage. "
+                "Re-save this checkpoint with the current trainer or start a "
+                "fresh run."
+            )
 
         if config.checkpoint.checkpoint_manager.resume_checkpointdir != \
             config.checkpoint.checkpoint_manager.save_checkpointdir:
@@ -319,46 +308,98 @@ def resume_model_state(config: DictConfig, checkpoint_manager):
             )
             Path(config.checkpoint.checkpoint_manager.save_checkpointdir).mkdir(exist_ok=True, parents=True)
 
-        start_iter = int(train_state_sd.get("iteration", 0))
-        start_epoch = int(train_state_sd.get("epoch", 0))
-
         if not Path(config.loggers.logdir).exists():
             logger.warning(
                 f"Log directory {config.loggers.logdir} does not exist. "
-                f"Creating new log directory. New logs from starting epoch {start_epoch} "
+                f"Creating new log directory. New logs from starting epoch {starting_epoch} "
                 f"will not contain any previous training run data!"
             )
             Path(config.loggers.logdir).mkdir(exist_ok=True, parents=True)
 
-        best_metric = train_state_sd.get("best_metric", float("inf"))
-        best_metric_epoch = train_state_sd.get("best_metric_epoch", start_epoch)
-        best_metric_iter = train_state_sd.get("best_metric_iter", start_iter)
-
-        epochs_left = config.schedulers.epochs - start_epoch
-        if epochs_left <= 0:
-            raise ValueError(
-                f"No epochs left to train. Starting epoch {start_epoch} "
-                f"exceeds total epochs {config.schedulers.epochs}."
-            )
-        if best_metric == float("inf") or best_metric_epoch == 0 or best_metric_iter == 0:
-            logger.warning(
-                f"Best metric not found in checkpoint or best_metric_epoch/iter is 0. "
-            )
-
-        return best_metric, start_iter, start_epoch
+        return best_loss, starting_iter, starting_epoch, checkpoint_meta
 
     else:
-        raise ValueError(f"Unsupported backend: {config.backend}") 
+        raise ValueError(f"Unsupported backend: {config.backend}")
+
+
+def initial_best_metric(config: DictConfig) -> float:
+    """Mode-aware initial "best" for fresh runs.
+
+    ``+inf`` is only a valid sentinel for ``val_mode: min``; a max-mode run
+    seeded with ``+inf`` can never record an improvement (BestMetricSaver
+    compares against it with ``operator.gt``).
+    """
+    from omegaconf import OmegaConf as _OC
+
+    mode = str(_OC.select(config, "evaluation.val_mode") or "min").lower()
+    return -np.inf if mode == "max" else np.inf
+
+
+def _resume_dir_has_checkpoint(config: DictConfig) -> bool:
+    """True when the configured resume dir already holds a checkpoint tag.
+
+    A run may be launched with ``resume_checkpointdir`` pre-pointed at its own
+    FUTURE checkpoints dir (restart-friendly submission scripts). Before the
+    first checkpoint exists this must mean "fresh start", not a crash.
+    """
+    resume_dir = config.checkpoint.checkpoint_manager.resume_checkpointdir
+    if not resume_dir:
+        return False
+    # .get: minimal configs (tests) may not carry a backend key
+    if str(config.get("backend", "DEEPSPEED")).upper() == "TORCHTITAN":
+        # DCP layout: <resume_dir>/step-<N>/.metadata
+        return Path(resume_dir).is_dir() and any(Path(resume_dir).glob("step-*/.metadata"))
+    tag = config.checkpoint.checkpoint_manager.get("checkpoint_tag", None) or "best_model"
+    tag_dir = Path(resume_dir) / tag
+    return tag_dir.is_dir() and any(tag_dir.glob("*model_states.pt"))
 
 
 def resume_run(trainer, config: DictConfig):
     Path(config.paths.outdir).mkdir(exist_ok=True, parents=True)
-    if config.paths.resume_checkpointdir:
-        best_loss, iter, epoch = resume_model_state(config, checkpoint_manager=trainer.checkpoint_manager)
+    resume_requested = bool(config.paths.resume_checkpointdir)
+    if resume_requested and _resume_dir_has_checkpoint(config):
+        best_loss, iter, epoch, checkpoint_meta = resume_model_state(
+            config, checkpoint_manager=trainer.checkpoint_manager
+        )
         trainer.event_recorder.resume(iter=iter, epoch=epoch)
+        # Restore trainer/hook state (early-stop counters, best-metric lineage)
+        # persisted in the metadata sidecar. Hooks are registered in
+        # BaseTrainer.__init__, i.e. before resume -- assert so a future
+        # reordering fails loudly instead of silently dropping hook state.
+        trainer_state = (checkpoint_meta or {}).get("trainer_state")
+        if trainer_state is not None:
+            if not getattr(trainer, "_hooks", None):
+                raise RuntimeError(
+                    "trainer_state restore requires hooks to be registered "
+                    "before resume_run() -- hook sub-state has no owners."
+                )
+            trainer.load_state_dict(trainer_state)
 
     else:
-        epoch, iter, best_loss = 0, 0, np.inf
+        if resume_requested:
+            logger.info(
+                f"[Trainer] resume dir {config.checkpoint.checkpoint_manager.resume_checkpointdir} "
+                f"has no checkpoint tag yet — starting fresh."
+            )
+        epoch, iter, best_loss = 0, 0, initial_best_metric(config)
+
+        # Enforce the promise the trainer comment makes ("directories should be
+        # empty if not resuming"): a fresh run pointed at an outdir that already
+        # holds the save tag would silently OVERWRITE it on the first save.
+        _save_dir = Path(config.checkpoint.checkpoint_manager.save_checkpointdir)
+        # .get: minimal configs (tests) may not carry a backend key
+        if str(config.get("backend", "DEEPSPEED")).upper() == "TORCHTITAN":
+            _has_existing = _save_dir.is_dir() and any(_save_dir.glob("step-*/.metadata"))
+        else:
+            _tag = config.checkpoint.checkpoint_manager.get("checkpoint_tag", None) or "best_model"
+            _has_existing = (_save_dir / _tag).is_dir() and any((_save_dir / _tag).glob("*model_states.pt"))
+        if _has_existing:
+            raise RuntimeError(
+                f"save_checkpointdir {_save_dir} already holds a checkpoint "
+                "but resume is not active -- a fresh run here would "
+                "overwrite it on the first save. Point outdir elsewhere or set "
+                "resume_checkpointdir."
+            )
 
         Path(config.loggers.logdir).mkdir(exist_ok=True, parents=True)
         Path(config.checkpoint.checkpoint_manager.save_checkpointdir).mkdir(exist_ok=True, parents=True)
@@ -366,7 +407,7 @@ def resume_run(trainer, config: DictConfig):
         logger.info(f"Output dir: {config.paths.outdir}")
         logger.info(f"Log dir: {config.loggers.logdir}")
         logger.info(f"Checkpoint save dir: {config.checkpoint.checkpoint_manager.save_checkpointdir}")
-    
+
     return best_loss, iter, epoch
 
 
@@ -559,6 +600,7 @@ def log_loss_dict(
     *,
     phase: Optional[str] = None,
     scope: Literal["step", "epoch"] = "step",
+    reduce_method: Optional[Sequence[str]] = None,
 ) -> None:
     """Log a model loss dict to the recorder under the ``loss`` category.
 
@@ -566,19 +608,46 @@ def log_loss_dict(
     are still produced per step by the trainer loop, so they have their own
     entry point. The prediction-based test flow may pass ``None``; that's a
     no-op.
+
+    ``loss_dict`` values may be detached (GPU) tensors — the training loop keeps
+    losses on-device until this logging boundary to avoid a per-step D2H sync
+    before backward. The ``.item()`` here is the single materialization point.
+
+    ``reduce_method`` registers how the recorder pools this metric across
+    steps/ranks at epoch reduction; ``None`` keeps the recorder default
+    (``["median"]``). Validation-loss logging passes the evaluator-configured
+    reduction so checkpoint selection uses the configured statistic.
     """
     if not loss_dict:
         return
     prefix = _resolve_phase_prefix(phase)
+    kwargs = {}
+    if reduce_method is not None:
+        kwargs["reduce_method"] = list(reduce_method)
     trainer.event_recorder.put_scalars(
         scope=scope,
         prefix=prefix,
         category="loss",
-        **{
-            k: (float(v.item()) if torch.is_tensor(v) else float(v))
-            for k, v in loss_dict.items()
-        },
+        **kwargs,
+        **_loss_dict_to_floats(loss_dict),
     )
+
+
+def _loss_dict_to_floats(loss_dict) -> Dict[str, float]:
+    """One D2H transfer for the whole dict: per-key ``.item()`` is ~50 sequential
+    syncs per step for DETR-family loss dicts, and the first blocks on the
+    optimizer step draining."""
+    keys = [k for k, v in loss_dict.items() if torch.is_tensor(v)]
+    out = {k: float(v) for k, v in loss_dict.items() if not torch.is_tensor(v)}
+    if keys:
+        try:
+            stacked = torch.stack(
+                [loss_dict[k].detach().reshape(()).float() for k in keys]
+            ).cpu()                                   # ONE sync
+            out.update({k: float(x) for k, x in zip(keys, stacked)})
+        except RuntimeError:                          # mixed devices -- rare; fall back
+            out.update({k: float(loss_dict[k].detach().item()) for k in keys})
+    return out
 
 def get_metric_full_name(
     name: str,
@@ -895,7 +964,9 @@ def apply_compile(cfg: DictConfig, model: nn.Module):
             model,
             dynamic=cfg_compile.dynamic,
             mode=cfg_compile.mode,
-            fullgraph=False,  # DS causes graph breaks -> keep False here
+            # DS causes graph breaks -> keep False there; the torch-native
+            # backend can opt into fullgraph via config.
+            fullgraph=cfg_compile.get("fullgraph", False),
         )
         # mark whole-model compilation so printer can tag the root
         setattr(model, "_is_compiled", True)
@@ -937,18 +1008,28 @@ def _apply_compile_over_discovered_stacks(cfg, model: nn.Module):
                 )
             cfg_module_blocks.append((entry[0], entry[1]))
 
+    # In-place compile (nn.Module.compile) keeps parameter FQNs canonical (no
+    # `_orig_mod.` segment) — required for DCP checkpoints on the torch-native
+    # path; the default wrapper mode is kept for DeepSpeed-path compatibility
+    # (its checkpoint filter already strips `_orig_mod`).
+    inplace = getattr(cfg, "inplace", False)
+
     for stack_fqn, stack in yield_transformer_stacks(cfg_module_blocks, model):
         for i, block in enumerate(stack):
-            compiled = torch.compile(
-                block,
+            compile_kwargs = dict(
                 fullgraph=getattr(cfg, "blockbased_fullgraph", False),
                 dynamic=getattr(cfg, "dynamic", None),
                 mode=getattr(cfg, "mode", None),
-                backend=getattr(cfg, "backend", None),
+                backend=getattr(cfg, "backend", None) or "inductor",
             )
+            if inplace:
+                block.compile(**compile_kwargs)
+                compiled = block
+            else:
+                compiled = torch.compile(block, **compile_kwargs)
+                stack[i] = compiled
             # mark and re-register
             setattr(compiled, "_is_compiled", True)  # helpful heuristic for printer
-            stack[i] = compiled
             compiled_fqns.add(f"{stack_fqn}.{i}")
             num_blocks_compiled += 1
 
@@ -1145,10 +1226,11 @@ def get_image_sizes(
 
     Returns:
         image_sizes:        list[tuple], per-sample "current" sizes
-        image_sizes_padded: list[tuple], per-sample sizes including any padding
         orig_image_sizes:   list[tuple], per-sample original sizes (or image_sizes)
+        image_sizes_padded: list[tuple], per-sample sizes including any padding
         padding_mask:       torch.BoolTensor of shape [B, Z, Y, X] or [B, Y, X]
                             True = padded voxel, False = valid voxel.
+        (order matches the actual return statement -- orig before padded)
     """
     if input_format == "TZYXC":
         ax_names = ("time", "z", "y", "x")
@@ -1457,18 +1539,6 @@ def df_signature_polars(df_pd) -> int:
     return int(sig_u64.view(np.int64))
 
 
-def assert_same_db_hash_across_ranks(local_hash: int, group=None):
-    if group is None:
-        group = dist.group.WORLD
-    hash_tensor = torch.tensor([local_hash], dtype=torch.int64, device="cuda")
-    dist.all_reduce(hash_tensor, op=dist.ReduceOp.BXOR, group=group)
-    if hash_tensor.item() != 0:
-        raise RuntimeError(
-            f"[RANK {dist.get_rank()}] Database hash mismatch across ranks "
-            f"(xor != 0) - shards / filters not identical!"
-        )
-
-
 def named_replace(
     fn: Callable,
     module: nn.Module,
@@ -1492,3 +1562,17 @@ def named_replace(
     if depth_first and include_root:
         module = fn(module=module, name=name)
     return module
+
+# --------------------------------------------------------------------------- #
+# PARKED (planned return; do NOT delete): cross-rank db-hash check
+# --------------------------------------------------------------------------- #
+# def assert_same_db_hash_across_ranks(local_hash: int, group=None):
+#     if group is None:
+#         group = dist.group.WORLD
+#     hash_tensor = torch.tensor([local_hash], dtype=torch.int64, device="cuda")
+#     dist.all_reduce(hash_tensor, op=dist.ReduceOp.BXOR, group=group)
+#     if hash_tensor.item() != 0:
+#         raise RuntimeError(
+#             f"[RANK {dist.get_rank()}] Database hash mismatch across ranks "
+#             f"(xor != 0) - shards / filters not identical!"
+#         )

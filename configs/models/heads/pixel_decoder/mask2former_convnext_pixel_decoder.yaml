@@ -29,6 +29,6 @@ transformer_encoder_dim_feedforward: 1024
 transformer_encoder_layers: 6
 conv_dim: 256
 mask_dim: ${models.backbones.convnext.dims[0]}
-norm: "GroupNorm"
+norm: "LayerNorm"  # GroupNorm is not implemented in Mask2FormerPixelDecoder
 # dtype: ${quantization}
 use_deform_attention: false

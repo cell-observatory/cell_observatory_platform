@@ -1,6 +1,6 @@
 import sys
 import logging
-from typing import Optional
+from typing import List, Optional
 
 import ray
 import torch
@@ -28,7 +28,6 @@ from cell_observatory_platform.utils.context import (
     torch_gpu_to_numa,
 )
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -52,9 +51,39 @@ def _shape_from_stats(base_shape, layout: str, stats, selected_channel_localizat
             shape[idx] = max(int(shape[idx]), max_value)
     return tuple(shape)
 
+def _build_dataloader_config(
+    config: DictConfig,
+    collate_fn,
+    sample_store_desc,
+    dp_degree: Optional[int],
+    dp_rank: Optional[int],
+    selected_channel_localizations: Optional[List[str]],
+) -> dict:
+    """The kwargs dict the per-epoch rebuild passes to ``get_dataloader_ray``.
+
+    The per-epoch rebuild in ``loops.run_epoch`` consumes THIS dict, not the
+    initial dataloader built in ``get_dataloader`` -- omitting a key here
+    silently disables it for all of training. 
+    Keep it in lockstep with the initial ``get_dataloader_ray`` call.
+    """
+    return {
+        "cfg": config,
+        "batch_size": config.clusters.batch_size_per_gpu,
+        "last_batch_policy": config.datasets.last_batch_policy,
+        "collate_fn": collate_fn,
+        "sample_store_desc": sample_store_desc,
+        "dp_degree": dp_degree,
+        "dp_rank": dp_rank,
+        "selected_channel_localizations": (
+            list(selected_channel_localizations)
+            if selected_channel_localizations is not None else None
+        ),
+    }
+
+
 def get_dataloader(
-    config: DictConfig, 
-    dp_degree: Optional[int] = None, 
+    config: DictConfig,
+    dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
 ):
     if not config.datasets.dataset._target_.endswith("PretrainDatasourceRay"):
@@ -106,6 +135,17 @@ def get_dataloader(
     )
     collator_input_shape = list(buffer_input_shape)
 
+    if tuple(buffer_input_shape) != tuple(config.datasets.input_shape):
+        # Deliberate two-shape scheme: the buffer/collator carry the dataset-max
+        # (padded) shape; the preprocessor transforms must bring data back to
+        # datasets.input_shape, enforced by _assert_input_shape_spatial.
+        logger.info(
+            "[DATALOADERS] buffer shape %s != datasets.input_shape %s; "
+            "preprocessor transforms must resize back to input_shape.",
+            tuple(buffer_input_shape),
+            tuple(config.datasets.input_shape),
+        )
+
     if local_rank() == 0:
         ray.logger.info(f"Starting NumaNodeAffinityScheduler on node {node_id()}")
         ray.logger.info(f"NUMA nodes found on this node: {gpu_numa_nodes}")
@@ -151,16 +191,14 @@ def get_dataloader(
         debug=config.datasets.debug,
     )
 
-    dataloader_config = {
-        "cfg": config,
-        "batch_size": config.clusters.batch_size_per_gpu,
-        "last_batch_policy": config.datasets.last_batch_policy,
-        "collate_fn": collate_fn,
-        "sample_store_desc": sample_store_desc,
-        "dp_degree": dp_degree,
-        "dp_rank": dp_rank,
-        # "collator_input_shape": tuple(collator_input_shape),
-    }
+    dataloader_config = _build_dataloader_config(
+        config=config,
+        collate_fn=collate_fn,
+        sample_store_desc=sample_store_desc,
+        dp_degree=dp_degree,
+        dp_rank=dp_rank,
+        selected_channel_localizations=selected_channel_localizations,
+    )
     train_dataloader, val_dataloader, _ = get_dataloader_ray(
         cfg=config,
         batch_size=config.clusters.batch_size_per_gpu,

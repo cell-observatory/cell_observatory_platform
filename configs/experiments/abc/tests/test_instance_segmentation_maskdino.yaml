@@ -15,7 +15,6 @@ defaults:
   - /models/meta_arch/maskdino/mae_large    # configs/models/maskdino/large.yaml
   - /models/heads/maskdino_decoder/maskdino_decoder           # configs/models/heads/maskdino_decoder/maskdino_decoder.yaml
   - /models/heads/pixel_decoder/maskdino_encoder # configs/models/heads/maskdino_encoder/maskdino_encoder.yaml
-  - /models/adapters/vit_adapter             # configs/models/adapters/vit_adapter.yaml
   - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
   - /models/backbones/maskdino_backbone/maskdino_backbone   # configs/models/backbones/maskdino_backbone/maskdino_backbone.yaml
   - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml

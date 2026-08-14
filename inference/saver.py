@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed, Future
-from typing import Any, Dict, List, Literal, Optional, Tuple, cast
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, Future
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, cast
 
 import numpy as np
 import ray
@@ -22,62 +22,6 @@ from cell_observatory_platform.inference.inference_postprocess import (
     InferenceRecord,
     build_records,
 )
-
-def input_format_to_output_format(
-    input_format: Literal["TZYXC", "ZYXC"],
-    task: Literal["instance_segmentation", "semantic_segmentation", "object_detection"],
-) -> Dict[str, Literal["TZYXC", "ZYXC", "TN6", "N6", "TN", "N"]]:
-    """
-    Convert input format to output format.
-
-    Here, semantically:
-    - T is time
-    - Z is depth
-    - Y is height
-    - X is width
-    - C is channels
-    - N is number of objects / queries
-    - M is number of classes
-
-    """
-
-    output_format = {}
-    if task == "instance_segmentation":
-        if input_format == "TZYXC":
-            output_format["masks"] = "TZYXC"
-            output_format["scores"] = "TN"
-            output_format["labels"] = "TNM"
-            output_format["boxes"] = "TN6"
-        elif input_format == "ZYXC":
-            output_format["masks"] = "ZYXC"
-            output_format["scores"] = "N"
-            output_format["labels"] = "NM"
-            output_format["boxes"] = "N6"
-        else:
-            raise ValueError(f"Unknown input format: {input_format}")
-    elif task == "semantic_segmentation":
-        if input_format == "TZYXC":
-            output_format["masks"] = "TZYXC"
-            output_format["labels"] = "TNM"
-        elif input_format == "ZYXC":
-            output_format["masks"] = "ZYXC"
-            output_format["labels"] = "NM"
-        else:
-            raise ValueError(f"Unknown input format: {input_format}")
-    elif task == "object_detection":
-        if input_format == "TZYXC":
-            output_format["scores"] = "TN"
-            output_format["labels"] = "TNM"
-            output_format["boxes"] = "TN6"
-        elif input_format == "ZYXC":
-            output_format["scores"] = "N"
-            output_format["labels"] = "NM"
-            output_format["boxes"] = "N6"
-        else:
-            raise ValueError(f"Unknown input format: {input_format}")
-    else:
-        raise ValueError(f"Unknown task: {task}")
-    return output_format
 
 
 def _timepoint_idxs_for_batch_idx(
@@ -123,9 +67,10 @@ def save_labelmap(
     save_masks / save_masks_channel_names; the underlying io call does NOT
     validate the name).
     """
-    assert data_format.upper() in ("ZYXC", "TZYXC"), (
-        f"save_labelmap expects ZYXC or TZYXC data_format; got {data_format!r}"
-    )
+    if data_format.upper() not in ("ZYXC", "TZYXC"):  # survives python -O
+        raise ValueError(
+            f"save_labelmap expects ZYXC or TZYXC data_format; got {data_format!r}"
+        )
     io.save_dense_annotations(
         image_path=image_path,
         model_name=model_name,
@@ -162,9 +107,10 @@ def save_dense_image(
     ``dtype`` must be a float dtype (``float32``, ``float64``, etc.).
     ``annotation_name`` must NOT contain ``"mask"`` — use ``save_labelmap`` for masks.
     """
-    assert data_format.upper() in ("ZYXC", "TZYXC"), (
-        f"save_dense_image expects ZYXC or TZYXC data_format; got {data_format!r}"
-    )
+    if data_format.upper() not in ("ZYXC", "TZYXC"):  # survives python -O
+        raise ValueError(
+            f"save_dense_image expects ZYXC or TZYXC data_format; got {data_format!r}"
+        )
     io.save_dense_image(
         image_path=image_path,
         model_name=model_name,
@@ -290,9 +236,10 @@ def save_predictions(
             # zero-pad; cropping to orig_spatial drops that pad so only the original
             # tile is written.
             if save_handler_key in ("save_labelmap", "save_dense_image"):
-                assert data_format.upper() in _DENSE_FORMATS, (
-                    f"Invalid data format for dense handler {save_handler_key!r}: {data_format!r}"
-                )
+                if data_format.upper() not in _DENSE_FORMATS:  # survives python -O
+                    raise ValueError(
+                        f"Invalid data format for dense handler {save_handler_key!r}: {data_format!r}"
+                    )
                 if orig_spatial is not None:
                     data = crop_sample_spatial(
                         data,
@@ -315,48 +262,64 @@ def save_predictions(
         except Exception as e:
             ray.logger.error(f"Failed to save {save_handler_key!r} annotation {output_name} with data format {data_format}: {e}", exc_info=True)
             exceptions[output_name] = e
-    try:
-        io.save_annotations_metadata(
-            image_path=image_path,
-            model_name=model_name,
-            timepoint_idxs=timepoint_idxs,
-            metadata=metadata,
+    if not exceptions:
+        try:
+            io.save_annotations_metadata(
+                image_path=image_path,
+                model_name=model_name,
+                timepoint_idxs=timepoint_idxs,
+                metadata=metadata,
+            )
+        except Exception as e:
+            ray.logger.error(f"Failed to save metadata for {model_name} at {image_path}: {e}", exc_info=True)
+            exceptions["metadata"] = e
+    else:
+        # Do NOT advertise annotations that failed to write: stamping the
+        # metadata on a failed batch leaves an on-disk stub that makes the
+        # model dir look complete to any reader that trusts it.
+        ray.logger.error(
+            f"Skipping annotations metadata for {image_path}: "
+            f"{len(exceptions)} annotation writes failed."
         )
-    except Exception as e:
-        ray.logger.error(f"Failed to save metadata for {model_name} at {image_path}: {e}", exc_info=True)
-        exceptions["metadata"] = e
     if exceptions:
         detail = "\n".join(f"{k}: {v}" for k, v in exceptions.items())
         raise RuntimeError(
             f"{len(exceptions)}/{len(save_tensors_metadata)} failed to save.\n{detail}"
         )
 
-@ray.remote(namespace="saver", lifetime="detached", num_cpus=0)
-class SaveWorker:
+class SaveWorkerBase:
     """
     Worker that pops (slot_handle, metadata) from queue, unpacks byte slots via layout,
     routes each output by output_type config, then buffer_manager.free(slot_handle).
+
+    Plain class holding all logic; ``SaveWorker`` below is its Ray-actor wrapper
+    (kept separate so unit tests can exercise the logic in-process).
     """
 
     def __init__(
         self,
         buffer_manager: BufferManager,
-        save_mode: Literal["overwrite", "create", "append"],
+        save_mode: Literal["overwrite", "create"],
         max_workers: int = 4,
-        columns: List[str] = [
+        # tuple default: a mutable list default is shared across instances
+        columns: Sequence[str] = (
             "server_folder",
             "output_folder",
             "tile_name",
-        ],
+        ),
         shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
         chunk_spatial_shape: Optional[Tuple[int, int, int]] = None,
     ):
-        if save_mode not in ["overwrite", "create", "append"]:
-            raise ValueError(f"Invalid save_mode {save_mode!r}. Must be 'overwrite', 'create', or 'append'")
-        
+        if save_mode not in ["overwrite", "create"]:
+            raise ValueError(
+                f"Invalid save_mode {save_mode!r}. Must be 'overwrite' or 'create' "
+                "('append' is not implemented -- it was previously coerced silently "
+                "to 'overwrite')."
+            )
+
         self.buffer_manager = buffer_manager
         self.save_mode = save_mode
-        self.columns = columns
+        self.columns = list(columns)
         self.thread_pool = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix=f"save_worker_rank_{buffer_manager.global_rank}"
@@ -373,6 +336,12 @@ class SaveWorker:
         
         self.shard_spatial_shape = shard_spatial_shape
         self.chunk_spatial_shape = chunk_spatial_shape
+
+    def ping(self) -> bool:
+        """Side-effect-free liveness probe (used by the inferencer's
+        backpressure heartbeat; get_metrics RESETS metrics and must not be
+        used as a probe)."""
+        return True
 
     def get_metrics(self) -> Dict[str, List[float | bool]]:
         metrics = self._metrics.copy()
@@ -392,10 +361,22 @@ class SaveWorker:
             self._metrics["queue_time_ms"].append((time.perf_counter() - queue_t0) * 1000)
         output_arrays = {}
         slots_to_free = []
+        # Bound before the try: an early failure (bad metainfo) must not raise
+        # NameError/UnboundLocalError in the final error report / finally block.
+        batch_size = -1
+        errors: List[Exception] = []
+        records: List[InferenceRecord] = []
+        batch_futures: List[Future] = []
         t0 = time.perf_counter()
         try:
-            # Do this first so that we can ensure slots get freed even
-            # if inference_outputs has incomplete metadata
+            # Claim EVERY slot for freeing BEFORE resolving any view: a failed
+            # resolution (dead buffer actor, stale segment) aborts the loop, and
+            # the finally must still free the failing slot AND the ones after it
+            # or the detached pool leaks permanently. Two passes, claim first.
+            for name, slot_info in inference_outputs.items():
+                if name == "metainfo" or isinstance(slot_info, np.ndarray):
+                    continue
+                slots_to_free.append(slot_info)
             for name, slot_info in inference_outputs.items():
                 if name == "metainfo":
                     continue
@@ -403,9 +384,7 @@ class SaveWorker:
                     output_arrays[name] = slot_info
                     ray.logger.warning(f"Inference output being passed through the ray plasma store: {name}")
                     continue
-                output_array = self.buffer_manager.slot_info_to_view(slot_info)
-                output_arrays[name] = output_array
-                slots_to_free.append(slot_info)
+                output_arrays[name] = self.buffer_manager.slot_info_to_view(slot_info)
             sample_metainfo = inference_outputs["metainfo"]
             required = (
                 "task",
@@ -420,8 +399,6 @@ class SaveWorker:
             batch_size = sample_metainfo["batch_size_actual"]
             timepoint_idxs_raw = sample_metainfo.get("timepoint_idxs", None)
             save_tensors_metadata = sample_metainfo["save_tensors_metadata"]
-
-            batch_futures: List[Future] = []
 
             orig_image_sizes = sample_metainfo.get("orig_image_sizes", None)
 
@@ -460,7 +437,7 @@ class SaveWorker:
                         ],
                         task,
                     ),
-                    save_mode=cast(Literal["overwrite", "create"], "overwrite" if self.save_mode == "append" else self.save_mode),
+                    save_mode=cast(Literal["overwrite", "create"], self.save_mode),
                     save_tensors_metadata=save_tensors_metadata,
                     timepoint_idxs=_timepoint_idxs_for_batch_idx(
                         timepoint_idxs_raw, record.index, batch_size
@@ -472,7 +449,6 @@ class SaveWorker:
             for record in records:
                 batch_futures.append(self.thread_pool.submit(_save_batch_element, record))
 
-            errors = []
             for future in as_completed(batch_futures):
                 try:
                     future.result()
@@ -484,13 +460,23 @@ class SaveWorker:
         except Exception as e:
             self._metrics["save_successful"].append(False)
             ray.logger.error(f"Failed to save: {e}", exc_info=True)
-            errors = [e]
+            errors.append(e)
         finally:
+            # record.preds are numpy VIEWS into the SHM slots: never free a slot
+            # while a submitted save may still be reading it.
+            wait(batch_futures)
             for slot_info in slots_to_free:
                 self.buffer_manager.free_slot(slot_info)
             self._metrics["save_time_ms"].append((time.perf_counter() - t0) * 1000)
         if errors:
-            raise RuntimeError(f"{errors}\n{len(errors)}/{batch_size} failed.")
+            raise RuntimeError(
+                f"{errors}\n{len(errors)}/{max(batch_size, len(records))} failed."
+            )
+
+
+@ray.remote(namespace="saver", lifetime="detached", num_cpus=1)
+class SaveWorker(SaveWorkerBase):
+    """Ray-actor wrapper around :class:`SaveWorkerBase` (see its docstring)."""
 
 # TODO: Consider using this retry logic
 # def submit_with_state(executor: ThreadPoolExecutor, fn: Callable, arg: Any, attempt: int, future_state: Dict[Future, Dict[str, Any]]):

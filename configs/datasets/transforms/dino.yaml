@@ -5,13 +5,13 @@ BASE:
       value: ${dataset_layout_order}
   - _target_: cell_observatory_platform.data.transforms.multicrop.MultiCrop3D
     crop_transforms:
-      - _target_: cell_observatory_platform.data.transforms.crop.Crop3D
+      - _target_: cell_observatory_platform.data.transforms.crop.Crop
         input_format: ZYXC
         target_spatial_shape: [64, 128, 128]
         crop_dims: ZYX
         crop_type: random
         dtype: bfloat16
-      - _target_: cell_observatory_platform.data.transforms.crop.Crop3D
+      - _target_: cell_observatory_platform.data.transforms.crop.Crop
         input_format: ZYXC
         target_spatial_shape: [32, 64, 64]
         crop_dims: ZYX

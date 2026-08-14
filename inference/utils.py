@@ -6,36 +6,42 @@ Architecture (kept deliberately layered so new plot types are cheap to add):
      :func:`mip_project`, :func:`instance_label_cmap`. These are format/layout
      primitives with no plotting policy and are reused by every higher-level helper.
 
-  2. Per-plot-type helpers   -- :func:`save_predictions` (dense MIP PDF),
+  2. Per-plot-type helpers   -- :func:`save_prediction_plots` (dense MIP PDF),
      :func:`save_instance_predictions` (box/mask overlays), :func:`save_semantic_predictions`
      (per-class semantic panels), :func:`save_feature_visualizations` (PCA /
      patch-cosine feature maps), and :func:`save_bbox_overlay` (predicted boxes).
      Each owns exactly one artifact type and shares the layer-1 primitives.
 
-  3. Controller / dispatch   -- :data:`VISUALIZATION_HANDLERS` maps a declarative
-     ``handler`` name (the config key under ``viz_worker.handler_configs``) to its
-     layer-2 helper. ``inference.visualizer.VizWorker`` is the runtime dispatcher:
-     it materializes buffer slots, unpacks the batch, derives per-sample names,
-     and then calls the matching helper. Adding a plot type = add a layer-2
-     helper + one entry here; the config surface stays declarative.
+  3. Controller / dispatch   -- lives in ``inference/visualizer.py``: each handler
+     name (the config key under ``viz_worker.handler_configs``) is a registered
+     ``viz_handler`` wrapping one layer-2 helper, and ``VizWorker`` is the runtime
+     dispatcher (buffer materialization + batch unpack + per-sample naming).
+     Adding a plot type = add a layer-2 helper here + register a ``viz_handler``
+     wrapper there; the config surface stays declarative.
+
+All plotting uses the object-oriented matplotlib API (``matplotlib.figure.Figure``
+directly, never ``pyplot``): pyplot's global figure registry is not thread-safe and
+these helpers run inside the viz worker's thread pool.
 """
 
 from tqdm import tqdm
 import hashlib
 from pathlib import Path
-from typing import Any, Callable, Dict, Literal, Optional, Sequence, Tuple, Union, List
+from typing import Any, Dict, Literal, Optional, Sequence, Tuple, Union, List
 from torch import Tensor
 import torch
 import numpy as np
 import torch.nn.functional as F
 
-import matplotlib.pyplot as plt
+from matplotlib import colormaps
+from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import ListedColormap, BoundaryNorm
 
 
 from cell_observatory_platform.data.io import save_file
+from cell_observatory_platform.data.data_types import OutputKind
 from cell_observatory_platform.data.datasets.buffers import BufferManager
 from cell_observatory_platform.data.structures import convert_bbox_format
 
@@ -63,148 +69,6 @@ def tile_hash(tile_name: str) -> int:
 # ============================================================================
 # Layer 1: shared low-level utils (normalize / MIP / colormap / volume save)
 # ============================================================================
-
-
-def _reduce_topk_max(
-    pred_masks: torch.Tensor,
-    pred_logits: torch.Tensor,
-    num_classes: int = 1,
-    topk_per_image: int = 1,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    LEGACY reduction: top-k queries per class, combined with max.
-
-    Returns a per-class map in probability space with NO background channel -- callers
-    derive background by thresholding. Retained so checkpoints tuned against this
-    reduction stay scoreable; prefer ``reduction="canonical"`` for new work.
-
-    Args:
-        pred_masks: [B, num_queries, D, H, W] - mask logits (already at target resolution)
-        pred_logits: [B, num_queries, num_classes + 1] - indices 0..num_classes-1 = semantic classes, last = no-object
-        num_classes: Number of foreground classes (default: 1 for binary segmentation)
-        topk_per_image: Number of top queries to use per image (for num_classes=1 case)
-
-    Returns:
-        semantic_map: [B, D, H, W, num_classes] - channels-last dense semantic map (per-class)
-        average_probability: average probability per class. NOTE: rank differs by branch
-            -- [B] when num_classes == 1, [B, num_classes] otherwise.
-    """
-    B, num_queries, D, H, W = pred_masks.shape
-
-    if num_classes == 1:
-        # Binary segmentation: single semantic class at index 0, no-object at index 1
-        probs = pred_logits.softmax(-1)[..., 0]  # [B, Q] - class 0 (foreground) probability per query
-        # Get top k queries by foreground probability
-        topk_indices = probs.topk(k=topk_per_image, dim=1).indices  # [B, K]
-        topk_probs = probs.gather(1, topk_indices)  # [B, K]
-        # Get masks for top k queries: gather output shape = index shape, so expand index to [B, K, D, H, W]
-        topk_indices_expanded = topk_indices.view(B, topk_per_image, 1, 1, 1).expand(B, topk_per_image, D, H, W)
-        topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
-        # Convert mask logits to probabilities
-        topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
-        # Weight masks by foreground probability and sum over top k queries
-        # topk_probs: [B, K] -> [B, K, 1, 1, 1] for broadcasting
-        semantic = (topk_probs.view(B, topk_per_image, 1, 1, 1) * topk_masks).sum(1, keepdim=True)  # [B, 1, D, H, W]
-        # Permute to channels-last: [B, D, H, W, 1]
-        semantic = semantic.permute(0, 2, 3, 4, 1)  # [B, D, H, W, 1]
-        average_probability = topk_probs.mean(dim=1)  # [B, 1]
-        return semantic, average_probability
-    else:
-        # Multi-class segmentation: produce per-class maps
-        # pred_logits: [B, Q, num_classes + 1]; indices 0..num_classes-1 = semantic classes, last index = no-object (DETR/Mask2Former convention, see losses.py empty_weight[-1])
-        class_probs = pred_logits.softmax(-1)[..., :-1]  # [B, Q, num_classes] - keep all semantic classes, drop no-object
-        
-        # For each class, combine masks from queries assigned to that class
-        semantic_per_class = []
-        average_probability_per_class = []
-        for c in range(num_classes):
-            # Get probability of class c for each query: [B, Q]
-            class_c_probs = class_probs[..., c]  # [B, Q]
-            
-            # Get top k queries for this class
-            topk_indices = class_c_probs.topk(k=min(topk_per_image, num_queries), dim=1).indices  # [B, K]
-            topk_probs = class_c_probs.gather(1, topk_indices)  # [B, K]
-            
-            # Get masks for top k queries
-            topk_indices_expanded = topk_indices.view(B, -1, 1, 1, 1).expand(B, -1, D, H, W)
-            topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
-            topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
-            
-            # Weight by class probability and combine (max aggregation for cleaner maps)
-            # Use max instead of sum to avoid over-saturation
-            weighted_masks = topk_probs.view(B, -1, 1, 1, 1) * topk_masks  # [B, K, D, H, W]
-            class_map = weighted_masks.max(dim=1)[0]  # [B, D, H, W] - max over queries
-            semantic_per_class.append(class_map)
-            average_probability_per_class.append(topk_probs.mean(dim=1))
-        
-        # Stack along channel dimension: [B, D, H, W, num_classes]
-        semantic = torch.stack(semantic_per_class, dim=-1)  # [B, D, H, W, num_classes]
-        average_probability = torch.stack(average_probability_per_class, dim=-1)  # [B, num_classes]
-        return semantic, average_probability
-
-
-def _reduce_canonical(
-    pred_masks: torch.Tensor,
-    pred_logits: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Canonical Mask2Former semantic inference.
-
-    Every query contributes, weighted by its class posterior:
-    ``semseg[c] = sum_q softmax(logits)[q, c] * sigmoid(mask)[q]``.
-
-    Args:
-        pred_masks: ``[B, Q, D, H, W]`` mask logits at target resolution.
-        pred_logits: ``[B, Q, num_classes + 1]``; last index is no-object
-            (DETR/Mask2Former convention, see losses.py ``empty_weight[-1]``).
-
-    Returns:
-        semseg: ``[B, D, H, W, 1 + num_classes]`` channels-last, **channel 0 is
-            no-object (background)**, so ``argmax(dim=-1)`` yields a label map in the
-            ``class + 1`` / background ``0`` convention with no threshold.
-        average_probability: ``[B, num_classes]`` mean per-class posterior over queries.
-    """
-    if pred_logits.dim() != 3 or pred_masks.dim() != 5:
-        raise ValueError(
-            f"expected pred_masks (B,Q,D,H,W) and pred_logits (B,Q,C+1); "
-            f"got {tuple(pred_masks.shape)} and {tuple(pred_logits.shape)}"
-        )
-    probs = pred_logits.softmax(-1)                      # [B, Q, C+1], last = no-object
-    masks = pred_masks.sigmoid()                         # [B, Q, D, H, W]
-
-    # [B,Q,K] x [B,Q,D,H,W] -> [B,D,H,W,K], K = C+1 with no-object last.
-    semseg = torch.einsum("bqk,bqdhw->bdhwk", probs, masks)
-    # Roll no-object to channel 0 so argmax gives class+1 / bg-0 directly.
-    semseg = torch.cat([semseg[..., -1:], semseg[..., :-1]], dim=-1)
-
-    average_probability = probs[..., :-1].mean(dim=1)    # [B, C]
-    return semseg, average_probability
-
-
-def reduce_queries_to_semantic_map(
-    pred_masks: torch.Tensor,
-    pred_logits: torch.Tensor,
-    num_classes: int = 1,
-    topk_per_image: int = 1,
-    reduction: str = "canonical",
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Convert Mask2Former query outputs to a dense semantic map.
-
-    ``reduction="canonical"`` (default) sums over all queries and returns a
-    background-first ``[B, D, H, W, 1 + C]`` map -- collapse with ``argmax(dim=-1)``.
-    ``reduction="topk_max"`` is the legacy top-k/max path returning
-    ``[B, D, H, W, C]`` with no background channel -- collapse with
-    ``collapse_to_semantic_map(threshold=0.5, dim=-1)``.
-
-    The layouts differ because the two derive background differently; the caller must
-    pair the reduction with its matching collapse. ``num_classes`` and
-    ``topk_per_image`` apply to ``topk_max`` only; the canonical path infers
-    ``C = pred_logits.shape[-1] - 1``.
-    """
-    if reduction == "canonical":
-        return _reduce_canonical(pred_masks, pred_logits)
-    if reduction == "topk_max":
-        return _reduce_topk_max(pred_masks, pred_logits, num_classes, topk_per_image)
-    raise ValueError(f"reduction must be 'canonical' or 'topk_max'; got {reduction!r}")
 
 
 def normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
@@ -362,12 +226,8 @@ def preds_dict_to_pdf(
     num_types = len(names)
 
     # One figure reused across all (t, z) pages (max_C x num_types is fixed).
-    fig, axes_grid = plt.subplots(
-        max_C,
-        num_types,
-        figsize=(5 * num_types, 4 * max_C),
-        squeeze=False,
-    )
+    fig = Figure(figsize=(5 * num_types, 4 * max_C))
+    axes_grid = fig.subplots(max_C, num_types, squeeze=False)
 
     with PdfPages(out_path) as pdf:
         for t in range(T_ref):
@@ -405,8 +265,6 @@ def preds_dict_to_pdf(
                 fig.tight_layout()
                 pdf.savefig(fig)
 
-    plt.close(fig)
-
 
 def preds_to_pdf(
     preds_tc_or_czyx: np.ndarray,
@@ -443,7 +301,8 @@ def preds_to_pdf(
     # One figure reused across all (t, z) pages (C is fixed): clearing axes each
     # page avoids reallocating a figure per slice.
     C = vol_tzyxc.shape[-1]
-    fig, axes_col = plt.subplots(C, 1, figsize=(18, 7 * C), squeeze=False)
+    fig = Figure(figsize=(18, 7 * C))
+    axes_col = fig.subplots(C, 1, squeeze=False)
     axes_col = axes_col[:, 0]
 
     with PdfPages(out_path) as pdf:
@@ -471,7 +330,6 @@ def preds_to_pdf(
                 fig.tight_layout()
                 pdf.savefig(fig)
 
-    plt.close(fig)
 
 def pca_reduce(
     vol_tzyxc: np.ndarray,   # (T,Z,Y,X,C)
@@ -738,11 +596,8 @@ def save_feature_visualizations(
             for z in range(0, min(Zg, Zf), z_step_pdf):
 
                 if viz == "patch_cosine":
-                    fig, axes = plt.subplots(
-                        2 * Cg, 1,
-                        figsize=(10, 3 * (2 * Cg)),
-                        squeeze=False,
-                    )
+                    fig = Figure(figsize=(10, 3 * (2 * Cg)))
+                    axes = fig.subplots(2 * Cg, 1, squeeze=False)
                     axes = axes[:, 0]
 
                     # --- cosine sim maps (top) ---
@@ -764,11 +619,8 @@ def save_feature_visualizations(
 
                 else:
                     # original PCA layout: 1 (rgb) + Cg rows
-                    fig, axes = plt.subplots(
-                        1 + Cg, 1,
-                        figsize=(10, 3 * (1 + Cg)),
-                        squeeze=False,
-                    )
+                    fig = Figure(figsize=(10, 3 * (1 + Cg)))
+                    axes = fig.subplots(1 + Cg, 1, squeeze=False)
                     axes = axes[:, 0]
 
                     ax0 = axes[0]
@@ -786,12 +638,11 @@ def save_feature_visualizations(
 
                 fig.tight_layout()
                 pdf.savefig(fig)
-                plt.close(fig)
 
     print(f"[save_feature_visualizations] wrote {pdf_path}")
 
 
-def save_predictions(
+def save_prediction_plots(
     name: str,
     predictions: ArrayLike | dict[str, ArrayLike],
     save_tensors: List[str],
@@ -819,7 +670,7 @@ def save_predictions(
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[save_predictions] Plotting predictions for tile {name}...")
+    print(f"[save_prediction_plots] Plotting predictions for tile {name}...")
 
     # Dict case: multi-output
     if isinstance(predictions, dict):
@@ -835,7 +686,7 @@ def save_predictions(
 
         # Single PDF with all outputs on the same pages
         pdf_path = save_dir / f"pred_{name}_MIP.pdf"
-        print(f"[save_predictions] Writing PDF to: {pdf_path}")
+        print(f"[save_prediction_plots] Writing PDF to: {pdf_path}")
         preds_dict_to_pdf(
             arr_map,
             axes_map,
@@ -920,6 +771,20 @@ def _region_str(region: Optional[Dict[str, Any]]) -> str:
     return " | " + " ".join(parts)
 
 
+def _instance_cmap(n: int):
+    """Transparent background + one unique color per instance index 1..n."""
+    if n <= 20:
+        cols = colormaps["tab20"](np.linspace(0, 1, max(n, 1)))
+    else:
+        cols = colormaps["hsv"](np.linspace(0, 1, n, endpoint=False))
+    cols = np.vstack([[0, 0, 0, 0], cols])  # label 0 transparent
+    return ListedColormap(cols), BoundaryNorm(np.arange(n + 2) - 0.5, n + 1)
+
+
+def _empty_label_render():
+    return np.zeros((1, 1), np.int32), ListedColormap([[0, 0, 0, 0]]), BoundaryNorm([-0.5, 0.5], 1)
+
+
 def _label_and_cmap_from_instance_masks(masks_nyx: ArrayLike, thr: float = 0.5):
     """
     masks_nyx: (N,Y,X) binary or logits/probs.
@@ -929,7 +794,7 @@ def _label_and_cmap_from_instance_masks(masks_nyx: ArrayLike, thr: float = 0.5):
     """
     m = _ensure_numpy(masks_nyx)
     if m.size == 0:
-        return np.zeros((1, 1), np.int32), ListedColormap([[0, 0, 0, 0]]), BoundaryNorm([-0.5, 0.5], 1)
+        return _empty_label_render()
 
     # binarize if needed
     if m.dtype != np.bool_:
@@ -942,15 +807,30 @@ def _label_and_cmap_from_instance_masks(masks_nyx: ArrayLike, thr: float = 0.5):
     for i in range(N):
         label[m[i]] = i + 1
 
-    # background transparent + unique color per instance
-    if N <= 20:
-        cols = plt.get_cmap("tab20")(np.linspace(0, 1, max(N, 1)))
-    else:
-        cols = plt.get_cmap("hsv")(np.linspace(0, 1, N, endpoint=False))
+    cmap, norm = _instance_cmap(N)
+    return label, cmap, norm
 
-    cols = np.vstack([[0, 0, 0, 0], cols])  # label 0 transparent
-    cmap = ListedColormap(cols)
-    norm = BoundaryNorm(np.arange(N + 2) - 0.5, N + 1)
+
+def _label_and_cmap_from_label_map(slice_yx: ArrayLike, ids: np.ndarray):
+    """Render one 2D slice of an integer instance label map directly.
+
+    ``ids`` are the volume's sorted non-zero ids (``np.unique``, computed ONCE per
+    volume by the caller) so an instance keeps the same dense index -- hence the
+    same color -- on every slice and ortho plane. ``searchsorted`` instead of a
+    LUT gather: ids can be sparse 64-bit tile-global values, so a max_id-sized
+    LUT is not safe to allocate. Memory O(Y*X + N), never O(N * Y*X).
+
+    Returns the same (label_yx {0..N}, cmap, norm) triple as
+    :func:`_label_and_cmap_from_instance_masks`; because that path also ordered
+    instances by ``np.unique``, the output is bit-identical to the old
+    explode-then-collapse render.
+    """
+    m = _ensure_numpy(slice_yx)
+    if ids.size == 0:
+        return _empty_label_render()
+    pos = np.minimum(np.searchsorted(ids, m), ids.size - 1)
+    label = np.where(ids[pos] == m, pos + 1, 0).astype(np.int32)  # miss (incl. 0) -> bg
+    cmap, norm = _instance_cmap(int(ids.size))
     return label, cmap, norm
 
 
@@ -986,7 +866,8 @@ def save_bbox_overlay(
                     pmin=pmin,
                     pmax=pmax,
                 )
-                fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+                fig = Figure(figsize=(12, 8))
+                ax = fig.subplots(1, 1)
                 ax.imshow(bg, cmap="gray", interpolation="nearest")
                 ax.set_title(f"Pred boxes | T={t} Z={z}")
                 ax.axis("off")
@@ -1006,7 +887,6 @@ def save_bbox_overlay(
                         )
                 fig.tight_layout()
                 pdf.savefig(fig)
-                plt.close(fig)
 
 
 def save_instance_predictions(
@@ -1020,6 +900,7 @@ def save_instance_predictions(
     pred_masks_key: str = "masks",
     gt_boxes_key: str = "boxes",
     gt_masks_key: str = "masks",
+    kinds: Optional[Dict[str, Optional[str]]] = None,
     pred_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "xyzxyz",
     gt_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "cxcyczwhd",
     z_step: int = 10,
@@ -1040,6 +921,10 @@ def save_instance_predictions(
 
     Drops row 2 if BOTH GT+Pred boxes missing/empty.
     Drops row 3 if BOTH GT+Pred masks missing/empty.
+
+    ``kinds`` (record.kinds, ``{name -> declared OutputKind value}``) selects the
+    pred-mask render path: ``instance_label_map`` preds are the raw integer volume
+    and render natively per slice; anything else is a per-object stack.
 
     Writes: <ident>_instances.pdf
     """
@@ -1096,22 +981,58 @@ def save_instance_predictions(
         # ---- Masks ----
         gt_masks = targets[i].get(gt_masks_key, None)
         pr_masks = preds[i].get(pred_masks_key, None)
+        pred_masks_kind = (kinds or {}).get(pred_masks_key)
 
-        # Downstream plotting expects per-instance (N,1,Z,Y,X) stacks. Pred masks
-        # already arrive canonicalized (the record builder normalized them by the
-        # model-declared kind). GT masks come from the dataset as per-instance
-        # stacks, so they keep the legacy (N,Z,Y,X) -> (N,1,Z,Y,X) passthrough.
+        # TODO: fix this kind of shape juggling
+
+        # GT masks (when the preprocessor materialized them: dense-mask heads,
+        # SAM2) arrive as per-instance (N,Z,Y,X) stacks; unsqueeze the singleton
+        # time axis the per-slice renderer indexes. Labelmap-native heads
+        # (MaskDINO) carry "label_map" instead -> gt_masks stays None, no GT row.
+        # Pred masks are either an already-normalized (N,1,Z,Y,X) stack, or --
+        # for INSTANCE_LABEL_MAP -- the raw integer volume, rendered natively
+        # slice by slice (O(volume) memory, independent of instance count).
         if gt_masks is not None:
             gt_masks = _ensure_numpy(gt_masks)
             if gt_masks.ndim == 4:
                 gt_masks = gt_masks[:, None, ...]  # (N,Z,Y,X) -> (N,1,Z,Y,X)
-        if pr_masks is not None:
-            # masks arrive already canonicalized to (N,1,Z,Y,X) by the record builder.
+
+        pr_labelmap = None                          # (T,Z,Y,X), label-map-native path
+        pr_ids = np.zeros(0, dtype=np.int64)
+        if pr_masks is not None and pred_masks_kind == OutputKind.INSTANCE_LABEL_MAP.value:
+            vol = _ensure_numpy(pr_masks)
+            if vol.ndim in (4, 5) and vol.shape[-1] == 1:
+                vol = vol[..., 0]                   # drop trailing channel
+            if vol.ndim == 3:
+                vol = vol[None]                     # (Z,Y,X) -> (T=1,Z,Y,X)
+            if vol.ndim != 4:
+                raise ValueError(
+                    f"instance_label_map pred must be (Z,Y,X[,1]) or (T,Z,Y,X[,1]), "
+                    f"got shape {vol.shape}"
+                )
+            pr_labelmap = vol
+            pr_ids = np.unique(vol)                 # ONE pass; reused for every slice
+            pr_ids = pr_ids[pr_ids != 0]
+            pr_masks = None                         # never enters the stack path
+        elif pr_masks is not None:
+            # already canonicalized to (N,1,Z,Y,X) by the record builder.
             pr_masks = _ensure_numpy(pr_masks)
+
+        # Per-object stacks are (N,1,Z,Y,X) with a SINGLETON axis-1 -- the
+        # renderer indexes that axis with t, which is only correct for T=1.
+        # For multi-timepoint data fail loudly instead of mis-slicing Z as
+        # time (the label-map render path handles real T; use that).
+        for _masks, _side in ((gt_masks, "GT"), (pr_masks, "pred")):
+            if _masks is not None and T > 1 and _masks.shape[1] != T:
+                raise ValueError(
+                    f"{_side} instance stack has axis-1 size {_masks.shape[1]} but the "
+                    f"image has T={T}: (N,1,Z,Y,X) stacks cannot be indexed by time. "
+                    "Use the label-map render path for T>1, or supply (N,T,Z,Y,X) stacks."
+                )
 
         # --- plot ---
         has_boxes_row = _has_nonempty(gt_xyzxyz) or _has_nonempty(pr_xyzxyz)
-        has_masks_row = _has_nonempty(gt_masks) or _has_nonempty(pr_masks)
+        has_masks_row = _has_nonempty(gt_masks) or _has_nonempty(pr_masks) or pr_ids.size > 0
 
         row_kinds: list[str] = ["bg"]
         if has_boxes_row:
@@ -1164,7 +1085,8 @@ def save_instance_predictions(
                         fig_w = 12
                         fig_h = 4.8 * nrows
 
-                    fig, ax = plt.subplots(nrows, ncols, figsize=(fig_w, fig_h), squeeze=False)
+                    fig = Figure(figsize=(fig_w, fig_h))
+                    ax = fig.subplots(nrows, ncols, squeeze=False)
 
                     # Page header: ident + crop info
                     fig.suptitle(f"T={t} Z={z}{region_s}", fontsize=12)
@@ -1281,10 +1203,18 @@ def save_instance_predictions(
                                     a_xy.set_title(f"{'GT' if side==0 else 'Pred'} | Boxes (t={t}, z={z})")
 
                             elif kind == "masks":
+                                use_labelmap = side == 1 and pr_labelmap is not None
                                 masks = gt_masks if side == 0 else pr_masks
-                                if masks is not None and masks.shape[0] > 0:
+                                if use_labelmap or (masks is not None and masks.shape[0] > 0):
                                     # XY @ z
-                                    lab_xy, cmap_xy, norm_xy = _label_and_cmap_from_instance_masks(masks[:, t, z])
+                                    if use_labelmap:
+                                        lab_xy, cmap_xy, norm_xy = _label_and_cmap_from_label_map(
+                                            pr_labelmap[t, z], pr_ids
+                                        )
+                                    else:
+                                        lab_xy, cmap_xy, norm_xy = _label_and_cmap_from_instance_masks(
+                                            masks[:, t, z]
+                                        )
                                     a_xy.imshow(
                                         lab_xy,
                                         cmap=cmap_xy,
@@ -1294,10 +1224,15 @@ def save_instance_predictions(
                                     )
 
                                     if ortho:
-                                        # XZ @ y_line: (N,Z,X)
-                                        lab_xz, cmap_xz, norm_xz = _label_and_cmap_from_instance_masks(
-                                            masks[:, t, :, y_line, :]
-                                        )
+                                        # XZ @ y_line: (Z,X)
+                                        if use_labelmap:
+                                            lab_xz, cmap_xz, norm_xz = _label_and_cmap_from_label_map(
+                                                pr_labelmap[t, :, y_line, :], pr_ids
+                                            )
+                                        else:
+                                            lab_xz, cmap_xz, norm_xz = _label_and_cmap_from_instance_masks(
+                                                masks[:, t, :, y_line, :]
+                                            )
                                         a_xz.imshow(
                                             lab_xz,
                                             cmap=cmap_xz,
@@ -1307,9 +1242,14 @@ def save_instance_predictions(
                                             aspect="auto",
                                         )
 
-                                        # YZ @ x_line: (N,Z,Y) -> (N,Y,Z)
-                                        m_yz = masks[:, t, :, :, x_line].transpose(0, 2, 1)
-                                        lab_yz, cmap_yz, norm_yz = _label_and_cmap_from_instance_masks(m_yz)
+                                        # YZ @ x_line: (Z,Y) -> (Y,Z)
+                                        if use_labelmap:
+                                            lab_yz, cmap_yz, norm_yz = _label_and_cmap_from_label_map(
+                                                pr_labelmap[t, :, :, x_line].transpose(1, 0), pr_ids
+                                            )
+                                        else:
+                                            m_yz = masks[:, t, :, :, x_line].transpose(0, 2, 1)
+                                            lab_yz, cmap_yz, norm_yz = _label_and_cmap_from_instance_masks(m_yz)
                                         a_yz.imshow(
                                             lab_yz,
                                             cmap=cmap_yz,
@@ -1337,7 +1277,6 @@ def save_instance_predictions(
 
                     fig.tight_layout(rect=[0, 0, 1, 0.96])
                     pdf.savefig(fig)
-                    plt.close(fig)
 
         print(f"[save_instance_predictions] wrote {out_pdf}")
 
@@ -1415,12 +1354,8 @@ def visualize_semantic_labels(
     num_cols = 1 + num_classes + num_classes + 1  # add 1 for merged mask labels column
 
     # One figure reused across all (t, z) pages (num_cols is fixed).
-    fig, axes_row = plt.subplots(
-        1,
-        num_cols,
-        figsize=(5 * num_cols, 5),
-        squeeze=False,
-    )
+    fig = Figure(figsize=(5 * num_cols, 5))
+    axes_row = fig.subplots(1, num_cols, squeeze=False)
     axes_row = axes_row[0, :]
 
     with PdfPages(out_path) as pdf:
@@ -1475,7 +1410,8 @@ def visualize_semantic_labels(
                 # get mask_labels by taking argmax over channels (last axis) plus 1, times a foreground mask
                 # Ensure all ops are NumPy, not potentially torch
                 pred_block = np.asarray(masks_labelmap[t, z0:z1, ...])  # [z_block, Y, X]
-                mask_labels = np.max(pred_block, axis=0)  # [Y, X]
+                # Center slice, NOT a max-projection
+                mask_labels = pred_block[pred_block.shape[0] // 2]  # [Y, X]
 
                 axes_row[-1].imshow(mask_labels, cmap="tab20", interpolation="nearest")  # Discrete color map
                 axes_row[-1].set_title(f"Masks labelmap: class labels {pred_labels[t]}")
@@ -1484,8 +1420,6 @@ def visualize_semantic_labels(
 
                 fig.tight_layout()
                 pdf.savefig(fig)
-
-    plt.close(fig)
 
 
 def save_semantic_predictions(
@@ -1532,22 +1466,3 @@ def save_semantic_predictions(
         pmax=pmax,
         mip_depth=mip_depth,
     )
-
-
-# ============================================================================
-# Layer 3: controller / dispatch surface
-# ============================================================================
-#
-# Maps the declarative ``handler`` name used in ``viz_worker.handler_configs``
-# to the layer-2 helper that produces that artifact. ``VizWorker`` performs the
-# runtime dispatch (buffer materialization + batch unpack + per-sample naming)
-# and then calls the matching helper; this table is the single registry that
-# documents which handler names are valid. Add a plot type by adding a layer-2
-# helper above and one entry here.
-VISUALIZATION_HANDLERS: Dict[str, Callable[..., None]] = {
-    "save_predictions": save_predictions,
-    "instance_overlay": save_instance_predictions,
-    "semantic_map": save_semantic_predictions,
-    "feature_viz": save_feature_visualizations,
-    "bbox_overlay": save_bbox_overlay,
-}

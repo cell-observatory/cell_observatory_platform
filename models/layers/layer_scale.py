@@ -20,6 +20,10 @@ class LayerScale(nn.Module):
         self.inplace = inplace
         self.gamma = nn.Parameter(torch.empty(dim, device=device))
         self.init_values = init_values
+        # Initialize here — torch.empty is uninitialized memory and not every
+        # parent module calls reset_parameters(); idempotent with any later
+        # external init.
+        self.reset_parameters()
 
     def reset_parameters(self):
         nn.init.constant_(self.gamma, self.init_values)

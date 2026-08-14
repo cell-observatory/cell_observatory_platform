@@ -18,7 +18,6 @@ from cell_observatory_platform.training.helpers import get_input_data, get_npara
 from cell_observatory_platform.training.losses import Mask2FormerSetLoss
 from cell_observatory_platform.utils.shape_format import get_spatial_shape
 from cell_observatory_platform.models.meta_arch import utils as mo
-from cell_observatory_platform.inference.utils import reduce_queries_to_semantic_map
 
 
 class Mask2Former(nn.Module):
@@ -70,6 +69,8 @@ class Mask2Former(nn.Module):
         if output_metadata is not None:
             self.output_metadata.merge_with(output_metadata)
 
+        self._init_model_weights()
+
     @torch.jit.ignore
     def get_output_metadata(self):
         return self.output_metadata
@@ -86,7 +87,7 @@ class Mask2Former(nn.Module):
         features_dict = self.backbone(data_sample)
         outputs = self.segmentation_head(features_dict)
 
-        losses = self.criterion(outputs, data_sample["metainfo"]["targets"][0])
+        losses = self.criterion(outputs, data_sample["metainfo"]["targets"])
         
         # for k in list(losses.keys()):
         #     if k in self.criterion.weight_dict:
@@ -109,15 +110,15 @@ class Mask2Former(nn.Module):
         Use this for inference/eval when you need masks at 128×256×512 or other full resolution.
         """
         features_dict = self.backbone(data_sample)
-        # NOTE(perf/OOM): segmentation_head.predict() interpolates ALL Q queries at full
-        # (B,Q,D,H,W) resolution before topk and will OOM on large volumes; see MaskMaterializer
-        # in models/meta_arch/maskdino.py for the chunked-materialization solution.
         # NOTE: Remove this in the Inference refactor -- this should be handled by the InferenceWorker or the PostProcessor
         if rescale_size is None:
             rescale_size = self.spatial_shape
-        output = self.segmentation_head.predict(features_dict, rescale_size=rescale_size)
+        # Low-res query masks from the head; the streaming reducer below
+        # upsamples per query chunk so the full (B, Q, D, H, W) volume — ~6.7 GB
+        # fp32 at Q=100, 256³ — is never materialized.
+        output = self.segmentation_head.predict(features_dict)
 
-        # Convert masks to semantic map where each binary mask is replaced with the class index 
+        # Convert masks to semantic map where each binary mask is replaced with the class index
         # and all masks are flattened into a single channel-last tensor
         # classes are reduced to the average probability of the top k queries for each class
         # Reduce queries to a dense per-class map, then collapse to a label map. The
@@ -125,12 +126,10 @@ class Mask2Former(nn.Module):
         # collapse: canonical carries an explicit no-object channel at index 0 (plain
         # argmax); topk_max returns probabilities with no background channel and needs
         # a threshold. See reduce_queries_to_semantic_map.
-        masks_reduced, classes_reduced = reduce_queries_to_semantic_map(
+        masks_reduced, classes_reduced = self._reduce_queries_streaming(
             pred_masks=output["pred_masks"],
             pred_logits=output["pred_logits"],
-            num_classes=self.num_classes,
-            topk_per_image=self.topk_queries,
-            reduction=self.semantic_reduction,
+            rescale_size=tuple(rescale_size),
         )
         if self.semantic_reduction == "canonical":
             mask_labels = masks_reduced.argmax(dim=-1).to(torch.uint16).unsqueeze(-1)
@@ -146,6 +145,81 @@ class Mask2Former(nn.Module):
             "masks_labelmap": mask_labels,
         }
         return final_output
+
+    def _reduce_queries_streaming(
+        self,
+        pred_masks: torch.Tensor,
+        pred_logits: torch.Tensor,
+        rescale_size: tuple,
+        q_chunk: int = 8,
+    ):
+        """Streaming equivalent of ``F.interpolate(all Q) -> reduce_queries_to_semantic_map``.
+
+        Upsampling, sigmoid, gather and per-query weighting are all per-query
+        ops, and both reductions aggregate with sum (canonical / topk nc=1) or
+        max (topk nc>1) — so the reduction streams over query chunks with peak
+        memory ``q_chunk × volume`` instead of ``Q × volume``. Query selection
+        and weights (topk path) depend only on ``pred_logits``, so they are
+        computed once up front; unselected queries get weight 0, which cannot
+        change a sum or a max over the (non-negative) weighted masks. Output
+        contract identical to :func:`reduce_queries_to_semantic_map` applied to
+        fully-materialized upsampled masks (up to float summation order).
+        """
+        B, Q = pred_masks.shape[:2]
+
+        def _up(chunk: torch.Tensor) -> torch.Tensor:
+            return F.interpolate(
+                chunk, size=rescale_size, mode="trilinear", align_corners=False
+            )
+
+        if self.semantic_reduction == "canonical":
+            probs = pred_logits.softmax(-1)                       # [B, Q, C+1]
+            semseg = None
+            for q0 in range(0, Q, q_chunk):
+                m = _up(pred_masks[:, q0 : q0 + q_chunk]).sigmoid()
+                part = torch.einsum("bqk,bqdhw->bdhwk", probs[:, q0 : q0 + q_chunk], m)
+                semseg = part if semseg is None else semseg + part
+            # Roll no-object to channel 0 (class+1 / bg-0 argmax convention).
+            semseg = torch.cat([semseg[..., -1:], semseg[..., :-1]], dim=-1)
+            average_probability = probs[..., :-1].mean(dim=1)     # [B, C]
+            return semseg, average_probability
+
+        # topk_max (legacy): per-class top-k selection from logits, weight 0
+        # for unselected queries, then stream sum (nc==1) / max (nc>1).
+        num_classes, topk = self.num_classes, self.topk_queries
+        if num_classes == 1:
+            probs = pred_logits.softmax(-1)[..., 0]               # [B, Q]
+            topk_idx = probs.topk(k=min(topk, Q), dim=1).indices  # [B, K]
+            topk_probs = probs.gather(1, topk_idx)                # [B, K]
+            weights = torch.zeros_like(probs).scatter(1, topk_idx, topk_probs)
+            semantic = None
+            for q0 in range(0, Q, q_chunk):
+                m = _up(pred_masks[:, q0 : q0 + q_chunk]).sigmoid()
+                part = (weights[:, q0 : q0 + q_chunk].view(B, -1, 1, 1, 1) * m).sum(
+                    1, keepdim=True
+                )
+                semantic = part if semantic is None else semantic + part
+            semantic = semantic.permute(0, 2, 3, 4, 1)            # [B, D, H, W, 1]
+            return semantic, topk_probs.mean(dim=1)               # [B, 1]
+
+        class_probs = pred_logits.softmax(-1)[..., :-1]           # [B, Q, C]
+        weights = torch.zeros_like(class_probs)
+        avg_per_class = []
+        for c in range(num_classes):
+            topk_idx = class_probs[..., c].topk(k=min(topk, Q), dim=1).indices
+            topk_probs = class_probs[..., c].gather(1, topk_idx)
+            weights[..., c] = weights[..., c].scatter(1, topk_idx, topk_probs)
+            avg_per_class.append(topk_probs.mean(dim=1))
+        semantic = None
+        for q0 in range(0, Q, q_chunk):
+            m = _up(pred_masks[:, q0 : q0 + q_chunk]).sigmoid()   # [B, q, D, H, W]
+            # [B, q, 1, 1, 1, C] * [B, q, D, H, W, 1] -> max over q
+            part = (
+                weights[:, q0 : q0 + q_chunk].view(B, m.shape[1], 1, 1, 1, -1)
+                * m.unsqueeze(-1)
+            ).amax(dim=1)                                          # [B, D, H, W, C]
+            semantic = part if semantic is None else torch.maximum(semantic, part)
+        return semantic, torch.stack(avg_per_class, dim=-1)       # [B, C]
 
     @torch.no_grad()
     def evaluate_step(

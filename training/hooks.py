@@ -21,10 +21,12 @@ from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, Sequence, Union
 import torch
 import numpy as np
 import ray
+from omegaconf import OmegaConf
 from fvcore.common.timer import Timer
 from ray.train import Checkpoint, report
 from torch.profiler import ProfilerActivity
-from torchtitan.distributed import utils as dist_utils
+# torchtitan (parked build path) is imported lazily at its single use site
+# (set_pg_timeouts) -- module scope here is walk-imported by every process.
 
 from cell_observatory_platform.utils.memory import (
     read_proc_meminfo,
@@ -51,7 +53,6 @@ from cell_observatory_platform.utils.config import registers_flat_as
 if TYPE_CHECKING:
     from cell_observatory_platform.training.loops import BaseTrainer, Inferencer
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -193,21 +194,35 @@ class HookBase:
 
 @registers_flat_as("hook", "anomaly_detector")
 class AnomalyDetector(HookBase):
-    """Wrap each epoch in torch.autograd.detect_anomaly."""
+    """Wrap each epoch in torch.autograd.detect_anomaly.
+
+    Debug tool — not in the default hook configs. The anomaly context is created
+    and entered per epoch (a single context object cannot be re-entered, which
+    silently limited detection to the first epoch).
+    """
 
     def __init__(self):
         super().__init__()
-        self._anom_ctx = torch.autograd.set_detect_anomaly(True, check_nan=False)
+        self._anom_ctx = None
         self.loss_nans = 0
 
     def before_epoch(self):
+        self._anom_ctx = torch.autograd.set_detect_anomaly(True, check_nan=False)
         self._anom_ctx.__enter__()
 
     def after_epoch(self):
-        self._anom_ctx.__exit__(None, None, None)
+        if self._anom_ctx is not None:
+            self._anom_ctx.__exit__(None, None, None)
+            self._anom_ctx = None
+
+    @staticmethod
+    def _is_nan(value) -> bool:
+        if torch.is_tensor(value):
+            return bool(torch.isnan(value).any().item())
+        return math.isnan(float(value))
 
     def after_step(self, data_sample, outputs, loss_dict):
-        if torch.isnan(torch.tensor(loss_dict["step_loss"])):
+        if self._is_nan(loss_dict["step_loss"]):
             self.loss_nans += 1
             logger.warning(
                 f"Step loss is {loss_dict['step_loss']} \
@@ -218,17 +233,6 @@ class AnomalyDetector(HookBase):
                     f"Step loss is {loss_dict['step_loss']} \
                                 for step {self.trainer._iter} in epoch {self.trainer._epoch}."
                 )
-
-
-@registers_flat_as("hook", "sampler_setter")
-class SamplerSetter(HookBase):
-    """
-    A hook that sets the sampler for the trainer.
-    """
-
-    def before_epoch(self):
-        if self.trainer.ray_context.get_world_size() > 1:
-            self.trainer.train_dataloader.sampler.set_epoch(self.trainer._epoch)
 
 
 @registers_flat_as("hook", "lr_scheduler")
@@ -287,8 +291,16 @@ class LRScheduler(HookBase):
 
         self.trainer.event_recorder.put_scalar("lr", lr)
         if self.update_type == "epoch":
-            self.schedulers.step(epoch=self.trainer._epoch)
-        elif self.update_type == "step":
+            # Epoch-cadence stepping happens ONCE per epoch in after_epoch --
+            # the old per-step placement recomputed every param group's LR
+            # steps_per_epoch times per epoch for a value that changes once.
+            return
+        if self.update_type == "step":
+            # Under gradient accumulation, step the schedule only at optimizer
+            # boundaries -- per micro-batch stepping compresses the schedule by
+            # the accumulation factor. (gas==1 today; True when flag absent.)
+            if not getattr(self.trainer, "_at_accumulation_boundary", True):
+                return
             if self.backend == "TORCHTITAN":
                 self.schedulers.step()
             elif self.backend == "DEEPSPEED":
@@ -297,6 +309,13 @@ class LRScheduler(HookBase):
                 raise NotImplementedError(f"{self.backend=} is not supported")
         else:
             raise NotImplementedError(f"{self.update_type=} is not supported")
+
+    def after_epoch(self):
+        if self.update_type == "epoch":
+            # Step once with the NEXT epoch index so epoch e+1's first step
+            # already trains at LR(e+1). The old per-step placement lagged each
+            # epoch's first step by one epoch (LR(e) first applied mid-epoch e).
+            self.schedulers.step(epoch=self.trainer._epoch + 1)
 
 
 @registers_flat_as("hook", "iteration_timer")
@@ -361,7 +380,9 @@ class IterationTimer(HookBase):
         total_time_minus_hooks = self._total_timer.seconds()
         hook_time = total_time - total_time_minus_hooks
 
-        num_iter = self.trainer._iter + 1 - self.trainer.start_iter - self._warmup_iter
+        # No +1 here: run_step increments _iter AFTER after_step, so by
+        # after_train `_iter` is already one past the last completed step.
+        num_iter = self.trainer._iter - self.trainer.start_iter - self._warmup_iter
 
         if num_iter > 0 and total_time_minus_hooks > 0:
             # speed is meaningful only after warmup
@@ -479,7 +500,20 @@ class IterationTimer(HookBase):
         self._val_step_timer.reset()
 
         log_data_sample_metrics(self.trainer, data_sample, default_phase="validation", scope="epoch")
-        log_loss_dict(self.trainer, loss_dict, phase="validation", scope="epoch")
+        # Register the CONFIGURED reduction for validation losses: these keys
+        # drive checkpoint selection (BestMetricSaver/EarlyStop).
+        _cfg = getattr(self.trainer, "cfg", None)
+        _rm = None
+        if _cfg is not None:
+            _rm = OmegaConf.select(_cfg, "evaluation.evaluator.reduce_method")
+        if _rm is None:
+            _rm = ["mean"]
+        elif isinstance(_rm, str):
+            _rm = [_rm]
+        else:
+            _rm = list(_rm)
+        log_loss_dict(self.trainer, loss_dict, phase="validation", scope="epoch",
+                      reduce_method=_rm)
 
     def before_test(self):
         """
@@ -495,7 +529,8 @@ class IterationTimer(HookBase):
         total_time_minus_hooks = self._total_timer.seconds()
         hook_time = total_time - total_time_minus_hooks
 
-        num_iter = self.trainer._iter + 1 - self.trainer.start_iter - self._warmup_iter
+        # No +1: `_iter` was already incremented past the last test step.
+        num_iter = self.trainer._iter - self.trainer.start_iter - self._warmup_iter
 
         if num_iter > 0 and total_time_minus_hooks > 0:
             # speed is meaningful only after warmup
@@ -569,7 +604,11 @@ class InferenceMetricsHook(HookBase):
     Runs only when trainer has inferencer_worker (i.e. Inferencer).
     """
 
-    PRIORITY = HOOK_PRIORITY.MEDIUM
+    # HIGH so the final after_test _collect_and_record runs BEFORE
+    # PeriodicWriter.after_test (MEDIUM) flushes AND CLOSES the writers --
+    # at equal priority config registration order decided, and periodic_writer
+    # registered first silently dropped the tail of the inference metrics.
+    PRIORITY = HOOK_PRIORITY.HIGH
 
     trainer: "Inferencer"
 
@@ -745,6 +784,9 @@ class PeriodicCheckpointer(HookBase):
         super().__init__()
         self.backend = backend.upper()
         self.file_prefix = file_prefix
+        # iter of the last checkpoint written by this hook — lets after_train
+        # skip a duplicate save of the state after the final epoch.
+        self._last_saved_iter: Optional[int] = None
 
     def before_train(self):
         if self.backend == "DEEPSPEED":
@@ -754,29 +796,36 @@ class PeriodicCheckpointer(HookBase):
         else:
             raise NotImplementedError(f"Backend {self.backend} not supported.")
 
+    def _save(self, epoch: int):
+        wandb_run_id, wandb_entity = _wandb_run_info(self.trainer)
+        meta = build_metadata(
+            model=self.trainer.model,
+            # hash/persist the pristine config captured at trainer
+            # construction, not the instantiate-mutated tree
+            cfg=getattr(self.trainer, "pristine_cfg", self.trainer.cfg),
+            epoch=epoch,
+            iter_=self.trainer._iter,
+            # the historical best, not the (possibly inf/stale) latest metric
+            best_loss=getattr(self.trainer, "best_metric", self.trainer._curr_val_metric),
+            wandb_run_id=wandb_run_id,
+            wandb_entity=wandb_entity,
+            # Persist trainer/hook state (early-stop counters, best-metric
+            # lineage) so resume restores it via resume_run().
+            trainer_state=self.trainer.state_dict(),
+        )
+        self.trainer.checkpoint_manager.save(
+            prefix=self.file_prefix,
+            metadata=meta,
+        )
+        self._last_saved_iter = self.trainer._iter
+
     def after_epoch(self):
         """
         Checkpointing is done after each epoch.
         """
         if self.backend == "DEEPSPEED":
             if (self.trainer._epoch + 1) % self.period == 0:
-                wandb_run_id, wandb_entity = _wandb_run_info(self.trainer)
-                meta = build_metadata(
-                    model=self.trainer.model,
-                    cfg=self.trainer.cfg,
-                    epoch=self.trainer._epoch + 1,
-                    iter_=self.trainer._iter,
-                    best_loss=self.trainer._curr_val_metric,
-                    wandb_run_id=wandb_run_id,
-                    wandb_entity=wandb_entity,
-                )
-                self.trainer.checkpoint_manager.save(
-                    prefix=self.file_prefix,
-                    save_epoch=self.trainer._epoch + 1,
-                    save_best_loss=self.trainer._curr_val_metric,
-                    save_step=self.trainer._iter,
-                    metadata=meta,
-                )
+                self._save(epoch=self.trainer._epoch + 1)
         elif self.backend == "TORCHTITAN":
             self.trainer.checkpoint_manager.save(curr_step=self.trainer._iter, last_step=False)
         else:
@@ -784,39 +833,39 @@ class PeriodicCheckpointer(HookBase):
 
     def after_train(self):
         """
-        Checkpointing is done after the last epoch.
+        Final checkpoint. By after_train, run_epoch has already incremented
+        `_epoch` past the last completed epoch, so `_epoch` IS the number of
+        completed epochs.
         """
         if self.backend == "DEEPSPEED":
-            if self.trainer._epoch + 1 >= self.trainer._max_epochs:
-                wandb_run_id, wandb_entity = _wandb_run_info(self.trainer)
-                meta = build_metadata(
-                    model=self.trainer.model,
-                    cfg=self.trainer.cfg,
-                    epoch=self.trainer._epoch + 1,
-                    iter_=self.trainer._iter,
-                    best_loss=self.trainer._curr_val_metric,
-                    wandb_run_id=wandb_run_id,
-                    wandb_entity=wandb_entity,
-                )
-                self.trainer.checkpoint_manager.save(
-                    prefix=self.file_prefix,
-                    save_epoch=self.trainer._epoch + 1,
-                    save_best_loss=self.trainer._curr_val_metric,
-                    save_step=self.trainer._iter,
-                    metadata=meta,
-                )
+            if self.trainer._iter == self._last_saved_iter:
+                return
+            if self._last_saved_iter is None and \
+                    self.trainer._iter == getattr(self.trainer, "start_iter", 0):
+                # nothing trained this run — don't overwrite the existing tag
+                return
+            self._save(epoch=self.trainer._epoch)
         elif self.backend == "TORCHTITAN":
             self.trainer.checkpoint_manager.save(curr_step=self.trainer._iter, last_step=True)
-        else:
-            raise NotImplementedError(f"Backend {self.backend} not supported.")
-
-        if self.backend == "TORCHTITAN":
             if hasattr(self.trainer, "checkpoint_manager") and self.trainer.checkpoint_manager is not None:
                 self.trainer.checkpoint_manager.close()
+        else:
+            raise NotImplementedError(f"Backend {self.backend} not supported.")
 
 
 @registers_flat_as("hook", "best_checkpointer")
 class BestCheckpointer(HookBase):
+    """Report metrics (+ optionally a checkpoint) to Ray Train each epoch.
+
+    Runs in ``after_epoch`` at LOW priority so it executes AFTER
+    PeriodicCheckpointer has written the epoch's checkpoint. The checkpoint is attached
+    only when the tracked metric improved this epoch, so Ray's best-checkpoint
+    bookkeeping tracks genuine bests.
+    """
+
+    # LOW: must run after PeriodicCheckpointer (MEDIUM) has saved this epoch.
+    PRIORITY = HOOK_PRIORITY.LOW
+
     def __init__(self, checkpointdir: Union[str, Path], backend: str = "DEEPSPEED"):
         super().__init__()
         # NOTE: period is same as in PeriodicCheckpointer
@@ -827,34 +876,32 @@ class BestCheckpointer(HookBase):
         if self.backend == "DEEPSPEED":
             self.period = self.trainer.checkpoint_manager.save_period
         elif self.backend == "TORCHTITAN":
-            self.period = self.trainer.checkpoiunt_save_period
+            self.period = self.trainer.checkpoint_save_period
         else:
             raise NotImplementedError(f"Backend {self.backend} not supported.")
 
-    def after_validation(self):
-        if (self.trainer._epoch + 1) % self.period == 0:
-            checkpoint = Checkpoint.from_directory(self.checkpoint_dir) if is_main_process() else None
-        else:
-            checkpoint = None
+    def _improved_this_epoch(self) -> bool:
+        return getattr(self.trainer, "best_metric_epoch", None) == self.trainer._epoch
 
-        if is_main_process():
-            report(
-                metrics={
-                    "best_loss": self.trainer._curr_val_metric,
-                    "save_step": self.trainer._iter,
-                    "save_epoch": self.trainer._epoch + 1,
-                },
-                checkpoint=checkpoint,
-            )
-        else:
-            report(
-                metrics={
-                    "best_loss": self.trainer._curr_val_metric,
-                    "save_step": self.trainer._iter,
-                    "save_epoch": self.trainer._epoch + 1,
-                },
-                checkpoint=None,
-            )
+    def after_epoch(self):
+        attach = (
+            (self.trainer._epoch + 1) % self.period == 0
+            and self._improved_this_epoch()
+        )
+        checkpoint = (
+            Checkpoint.from_directory(self.checkpoint_dir)
+            if (attach and is_main_process())
+            else None
+        )
+
+        report(
+            metrics={
+                "best_loss": getattr(self.trainer, "best_metric", self.trainer._curr_val_metric),
+                "save_step": self.trainer._iter,
+                "save_epoch": self.trainer._epoch + 1,
+            },
+            checkpoint=checkpoint if is_main_process() else None,
+        )
 
 
 @registers_flat_as("hook", "torch_memory_stats")
@@ -877,9 +924,11 @@ class TorchMemoryStats(HookBase):
         self._logdir.mkdir(parents=True, exist_ok=True)
 
     def before_train(self):
-        assert self._step_period < self.trainer.steps_per_epoch, (
-            f"Step period {self._step_period} must be less than " f"steps per epoch {self.trainer.steps_per_epoch}."
-        )
+        if self._step_period >= self.trainer.steps_per_epoch:  # survives python -O
+            raise ValueError(
+                f"Step period {self._step_period} must be less than "
+                f"steps per epoch {self.trainer.steps_per_epoch}."
+            )
 
     def after_step(self, data_sample, outputs, loss_dict):
         if (self.trainer._iter + 1) % self._step_period == 0:
@@ -992,10 +1041,10 @@ class BestMetricSaver(HookBase):
             metric_key = self._epoch_metric_key(prefix="val")
             latest_metric_val = self.trainer.event_recorder.reduce_epoch_metric(metric_key)
             if latest_metric_val is None:
-                raise ValueError(
-                    f"Metric {metric_key} not found in epoch logs. "
-                    "Make sure to set `val_metric` in the trainer config."
-                )
+                # No validation ran this epoch (period/val_interval mismatch, or
+                # the evaluator produced nothing) -- nothing to rank, skip quietly.
+                logger.debug(f"BestMetricSaver: no fresh {metric_key} this epoch; skipping.")
+                return
             self.trainer._curr_val_metric = latest_metric_val
             self.update_best_metrics(latest_metric_val)
 
@@ -1009,10 +1058,8 @@ class BestMetricSaver(HookBase):
                 metric_key = self._epoch_metric_key(prefix="val")
                 latest_metric_val = self.trainer.event_recorder.reduce_epoch_metric(metric_key)
                 if latest_metric_val is None:
-                    raise ValueError(
-                        f"Metric {metric_key} not found in epoch logs. "
-                        "Make sure to set `val_metric` in the trainer config."
-                    )
+                    logger.debug(f"BestMetricSaver: no fresh {metric_key} this epoch; skipping.")
+                    return
                 self.trainer._curr_val_metric = latest_metric_val
                 self.update_best_metrics(latest_metric_val)
 
@@ -1020,7 +1067,11 @@ class BestMetricSaver(HookBase):
         metric_key = self._epoch_metric_key(prefix="test")
         test_metric_val = self.trainer.event_recorder.reduce_epoch_metric(metric_key)
         if test_metric_val is None:
-            raise ValueError(f"Metric {metric_key} not found in test logs. ")
+            logger.warning(
+                f"BestMetricSaver: metric {metric_key} not found in test logs; "
+                "skipping best-metric update (test evaluator produced no val_metric)."
+            )
+            return
         self._update_best_metrics(test_metric_val)
 
 
@@ -1039,14 +1090,18 @@ class NsysProfilerHook(HookBase):
     def before_step(self):
         if self.closed:
             return
-        if self.trainer._iter == self.start_iter:
+        # Resume-aware: _iter starts at start_iter on resumed runs, so an
+        # absolute-== trigger would never fire post-resume.
+        base = int(getattr(self.trainer, "start_iter", 0))
+        if self.trainer._iter == base + self.start_iter:
             # with torch.cuda.device(self.device):
             torch.cuda.cudart().cudaProfilerStart()
 
     def after_step(self, *args, **kwargs):
         if self.closed:
             return
-        if self.trainer._iter == self.end_iter:
+        base = int(getattr(self.trainer, "start_iter", 0))
+        if self.trainer._iter == base + self.end_iter:
             # with torch.cuda.device(self.device):
             torch.cuda.cudart().cudaProfilerStop()
             self.closed = True
@@ -1094,6 +1149,8 @@ class TorchProfiler(HookBase):
             for a in (activities or (ProfilerActivity.CPU, ProfilerActivity.CUDA))
         )
 
+        # schedule may be omitted/None in configs — fall back to defaults
+        schedule = schedule or {}
         self._wait, self._warmup = schedule.get("wait", 0), schedule.get("warmup", 0)
         self._active, self._repeat = schedule.get("active", 1), schedule.get("repeat", 1)
         self._skip_first = schedule.get("skip_first", 0)
@@ -1164,7 +1221,12 @@ class TorchProfiler(HookBase):
     def after_step(self, *args, **kwargs):
         if self._closed:
             return
-        elif self.trainer._iter == self.profile_times - 1:
+        # Resume-aware window: on a resumed run _iter starts at start_iter, so
+        # the absolute `== profile_times - 1` stop NEVER fired -- the profiler
+        # (entered in before_train with full-detail options) then kept stepping
+        # for the entire epoch on every rank.
+        base = int(getattr(self.trainer, "start_iter", 0))
+        if self.trainer._iter >= base + self.profile_times - 1:
             self._profiler.stop()
             self._flush_traces()
             self._closed, self._profiler = True, None
@@ -1199,22 +1261,26 @@ class EarlyStopHook(HookBase):
         super().__init__()
 
         self.metric_name = metric_name
-        if mode == "min":
-            self.compare_fn = operator.lt
-        elif mode == "max":
-            self.compare_fn = operator.gt
-        else:
+        if mode not in ("min", "max"):
             raise ValueError(f"Invalid mode: {mode}. Use 'min' or 'max'.")
+        self.mode = mode
 
         self.wait_count = 0
         self.patience = patience
         self.stopping_threshold = stopping_threshold
 
-        self.latest_metric_val = math.inf
+        # best-so-far, signed by mode — improvement means beating this by more
+        # than stopping_threshold.
+        self.best_metric_val = math.inf if mode == "min" else -math.inf
+
+    def _improved(self, latest: float) -> bool:
+        if self.mode == "min":
+            return latest < self.best_metric_val - self.stopping_threshold
+        return latest > self.best_metric_val + self.stopping_threshold
 
     def after_validation(self):
         """
-        Check if the validation metric has improved.
+        Check if the validation metric improved over the best so far.
         If not, increment the wait count.
         If the wait count exceeds the patience, stop training.
         """
@@ -1229,11 +1295,26 @@ class EarlyStopHook(HookBase):
             )
 
         if math.isnan(latest_metric_val) or math.isinf(latest_metric_val):
-            raise ValueError(f"Validation metric {self.metric_name} is NaN or Inf. ")
+            # Metrics use NaN as "no evidence this epoch" (nothing matched yet,
+            # constant-target shard, ...). Count it as no-improvement rather
+            # than killing the run; AnomalyDetector owns loss-NaN escalation.
+            self.wait_count += 1
+            logger.warning(
+                f"Validation metric {self.metric_name} is NaN/Inf -- treating as "
+                f"no improvement ({self.wait_count}/{self.patience})."
+            )
+            if self.wait_count >= self.patience:
+                logger.info("Early stopping triggered (patience exhausted on NaN/Inf metrics).")
+                self.trainer.stop_training = True
+            return
 
-        metric_diff = abs(latest_metric_val - self.latest_metric_val)
-
-        if self.compare_fn(metric_diff, self.stopping_threshold):
+        if self._improved(latest_metric_val):
+            logger.info(
+                f"Validation metric {self.metric_name} improved to {latest_metric_val}."
+            )
+            self.best_metric_val = latest_metric_val
+            self.wait_count = 0
+        else:
             self.wait_count += 1
             logger.info(
                 f"Validation metric {self.metric_name} did not improve. "
@@ -1246,14 +1327,20 @@ class EarlyStopHook(HookBase):
                 # before the next epoch starts
                 # see run in EpochBasedTrainer
                 self.trainer.stop_training = True
-        else:
-            logger.info(
-                f"Validation metric {self.metric_name} improved \
-                            to {latest_metric_val}."
-            )
-            self.wait_count = 0
 
-        self.latest_metric_val = latest_metric_val
+    def state_dict(self):
+        # Persisted via BaseTrainer.state_dict()["hooks"]; even if the H6
+        # trainer-state wiring is incomplete, the entries are ready for it.
+        return {
+            "best_metric_val": self.best_metric_val,
+            "wait_count": self.wait_count,
+        }
+
+    def load_state_dict(self, state_dict):
+        self.best_metric_val = state_dict.get(
+            "best_metric_val", math.inf if self.mode == "min" else -math.inf
+        )
+        self.wait_count = int(state_dict.get("wait_count", 0))
 
 
 @registers_flat_as("hook", "ema_scheduler")
@@ -1267,19 +1354,25 @@ class EMASchedulerHook(HookBase):
 
         self.ema_start = ema_start
         self.ema_end = ema_end
+        self._total_steps: Optional[int] = None
 
     def before_train(self):
         self.model = self.trainer.model
-        total_steps = self.trainer._max_epochs * self.trainer.steps_per_epoch
-        self.ema_scheduler = (
-            self.ema_start + i * (self.ema_end - self.ema_start) / total_steps for i in range(total_steps + 1)
-        )
+        self._total_steps = self.trainer._max_epochs * self.trainer.steps_per_epoch
+
+    def _beta_at(self, step: int) -> float:
+        # Clamp instead of the old generator's StopIteration when an epoch
+        # overruns steps_per_epoch; the index form also resumes correctly
+        # (global `_iter` picks up mid-schedule instead of restarting at
+        # ema_start).
+        step = max(0, min(int(step), self._total_steps))
+        return self.ema_start + step * (self.ema_end - self.ema_start) / self._total_steps
 
     def after_step(self, data_sample, outputs, loss_dict):
         """
         Update the EMA beta after each step.
         """
-        self.model.ema_update(beta=next(self.ema_scheduler))
+        self.model.ema_update(beta=self._beta_at(self.trainer._iter))
 
 
 @registers_flat_as("hook", "teacher_temperature_scheduler")
@@ -1367,23 +1460,35 @@ class WeightDecayScheduleHook(HookBase):
                             Weight decay values will not be logged."
             )
 
+    def _scheduled_wd(self, optimizer) -> float:
+        """WD from the first group the scheduler actually drives: group 0 is
+        often a zero-WD opt-out (biases/norms), which would log a constant 0."""
+        skip = getattr(self.wd_schedulers, "_skip", set())
+        for i, g in enumerate(optimizer.param_groups):
+            if i not in skip:
+                return g["weight_decay"]
+        return optimizer.param_groups[0]["weight_decay"]
+
     def after_step(self, **kwargs):
         if self.backend == "DEEPSPEED":
-            # DeepSpeed performs the optimizer step at boundary
-            # after that prepare WD for the next optimizer step
-            # is_gradient_accumulation_boundary queries whether the current
-            # micro-batch is at the boundary of gradient accumulation, and
-            # thus will trigger gradient reductions and an optimizer step
-            if self.trainer.model.is_gradient_accumulation_boundary():
+            # Use the boundary flag captured BEFORE model.step() (run_step sets
+            # trainer._at_accumulation_boundary): querying the engine here is
+            # post-step -- micro_steps already advanced, so the predicate would
+            # refer to the NEXT micro-batch (off-by-one under accumulation).
+            if getattr(self.trainer, "_at_accumulation_boundary", True):
                 self.wd_schedulers.step()
                 if self.event_recorder:
-                    wd0 = self.trainer.optimizers.param_groups[0]["weight_decay"]
+                    wd0 = self._scheduled_wd(self.trainer.optimizers)
                     self.event_recorder.put_scalars(scope="step", wd=wd0)
         elif self.backend == "TORCHTITAN":
-            self.wd_schedulers.step(self.trainer._iter)
-            if self.event_recorder:
-                wd0 = self.trainer.optimizers[0].param_groups[0]["weight_decay"]
-                self.event_recorder.put_scalars(scope="step", wd=wd0)
+            # WDSchedulersContainer.step() is stateful (internal counter) and
+            # takes no step index; gate on the optimizer boundary like the
+            # DEEPSPEED branch so accumulation doesn't compress the schedule.
+            if getattr(self.trainer, "_at_accumulation_boundary", True):
+                self.wd_schedulers.step()
+                if self.event_recorder:
+                    wd0 = self._scheduled_wd(self.trainer.optimizers[0])
+                    self.event_recorder.put_scalars(scope="step", wd=wd0)
         else:
             raise NotImplementedError(f"Backend {self.backend} not supported.")
 
@@ -1467,6 +1572,8 @@ class AdjustTimeoutHook(HookBase):
 
     def before_step(self):
         if self.trainer._iter == 1:
+            from torchtitan.distributed import utils as dist_utils  # lazy: parked path
+
             dist_utils.set_pg_timeouts(
                 timeout=datetime.timedelta(seconds=self.train_timeout_seconds),
                 world_mesh=self.world_mesh,

@@ -88,12 +88,17 @@ def bbox2delta(proposals, gt, means=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0), stds=(1.0, 1
     px, py, pz, pw, ph, pd = proposals.unbind(-1)
     gx, gy, gz, gw, gh, gd = gt.unbind(-1)
 
-    dx = (gx - px) / (pw + 0.1)
-    dy = (gy - py) / (ph + 0.1)
-    dz = (gz - pz) / (pd + 0.1)
-    dw = torch.log(gw / (pw + 0.1))
-    dh = torch.log(gh / (ph + 0.1))
-    dd = torch.log(gd / (pd + 0.1))
+    # Guard degenerate proposals with a tiny clamp instead of the old "+ 0.1"
+    # bias: with normalized boxes the additive bias rivals the widths, making
+    # bbox2delta/delta2bbox non-inverse (round-trip error up to ~0.4).
+    eps = 1e-6
+    pw_, ph_, pd_ = pw.clamp(min=eps), ph.clamp(min=eps), pd.clamp(min=eps)
+    dx = (gx - px) / pw_
+    dy = (gy - py) / ph_
+    dz = (gz - pz) / pd_
+    dw = torch.log(gw.clamp(min=eps) / pw_)
+    dh = torch.log(gh.clamp(min=eps) / ph_)
+    dd = torch.log(gd.clamp(min=eps) / pd_)
     deltas = torch.stack([dx, dy, dz, dw, dh, dd], dim=-1)
 
     # avoid unnecessary sync point if not needed
@@ -149,6 +154,22 @@ def convert_bbox_format(bboxes,
         return boxes
     else:
         raise ValueError(f"Unsupported bbox format conversion from {bbox_input_format} to {bbox_output_format}")
+
+
+def validate_bbox_normalization(normalize_bboxes: bool, bbox_output_format: str) -> None:
+    """Box normalization only happens inside the ``... -> cxcyczwhd`` conversion
+    (see ``convert_bbox_format``); with the ``zyxzyx`` passthrough/permute output
+    the ``normalize`` flag would be a SILENT no-op: boxes emitted absolute while
+    downstream transforms (``boxes_normalized=True``) are told they are normalized
+    -- they would then "denormalize" absolute coords. Reject the combination at
+    construction."""
+    if normalize_bboxes and str(bbox_output_format).lower() == "zyxzyx":
+        raise ValueError(
+            "normalize_bboxes=True is only implemented inside the "
+            "zyxzyx->cxcyczwhd conversion; with bbox_output_format='zyxzyx' "
+            "boxes would be emitted ABSOLUTE while labeled normalized. Set "
+            "bbox_output_format='cxcyczwhd' or normalize_bboxes=false."
+        )
 
 
 def box_cxcyczwhd_to_xyzxyz(boxes: Tensor) -> Tensor:
@@ -263,90 +284,50 @@ def project_masks_on_boxes(gt_masks, boxes, matched_idxs, M):
 
     roi_align = RoIAlign3DFunction.apply
 
-    gt_masks_gpu = gt_masks.to("cuda")
-    rois_gpu = rois.to("cuda")
-
-    result = roi_align(gt_masks_gpu, rois_gpu, (M, M, M), 1.0)[:, 0]
-    result = result.to(gt_masks.device)
+    result = roi_align(gt_masks, rois, (M, M, M), 1.0)[:, 0]
     return result
 
 
-def masks_to_boxes(masks: torch.Tensor) -> Tensor:
-    """
-    Compute the bounding boxes around the provided masks.
-
-    Returns a [N, 6] tensor containing bounding boxes. The boxes are in ``(x1, y1, x2, y2)`` format with
-    ``0 <= x1 <= x2`` and ``0 <= y1 <= y2`` and ``0 <= z1 < z2``.
-
-    .. warning::
-
-        In most cases the output will guarantee ``x1 < x2`` and ``y1 < y2`` and ``0 <= z1 < z2``. But
-        if the input is degenerate, e.g. if a mask is a single row or a single
-        column, then the output may have x1 = x2 or y1 = y2 or z1=z2.
-
-    Args:
-        masks (Tensor[N, D, H, W]): masks to transform where N is the number of masks
-            and (D, H, W) are the spatial dimensions.
-
-    Returns:
-        Tensor[N, 6]: bounding boxes
-    """
-    if masks.numel() == 0:
-        return torch.zeros((0, 6), device=masks.device, dtype=torch.float)
-
-    n = masks.shape[0]
-
-    bounding_boxes = torch.zeros((n, 6), device=masks.device, dtype=torch.float)
-
-    for index, mask in enumerate(masks):
-        z, y, x = torch.where(mask != 0)
-
-        bounding_boxes[index, 0] = torch.min(x)
-        bounding_boxes[index, 1] = torch.min(y)
-        bounding_boxes[index, 2] = torch.min(z)
-        bounding_boxes[index, 3] = torch.max(x)
-        bounding_boxes[index, 4] = torch.max(y)
-        bounding_boxes[index, 5] = torch.max(z)
-
-    return bounding_boxes
-
-
-# TODO: reconcile masks_to_boxes and masks_to_boxes_v2
+# NOTE: the old per-instance-loop `masks_to_boxes` (inclusive-max convention,
+# zero callers) was deleted; `masks_to_boxes_v2` below is the single batched
+# implementation (half-open xyzxyz boxes).
 def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
     """
     Compute the bounding boxes around the provided masks.
     The masks should be in format [N, D, H, W] where N is
     the number of masks, (D, H, W) are the spatial dimensions.
-    Returns a [N, 6] tensors, with the boxes in xyzxyz format
+    Returns a [N, 6] float tensor, boxes in half-open xyzxyz format
+    (x_max/y_max/z_max are last-foreground-index + 1). Empty masks -> all-zero row.
+
+    ``eps`` is kept for signature compatibility; it is unused.
     """
     assert masks.dim() == 4, f"Expected (N, D, H, W), got {masks.shape}"
     if masks.numel() == 0:
         return torch.zeros((0, 6), device=masks.device)
 
-    d, h, w = masks.shape[-3:]
+    m = masks != 0  # [N, D, H, W] bool
+    d, h, w = m.shape[-3:]
 
-    z = torch.arange(0, d, dtype=torch.float, device=masks.device)
-    y = torch.arange(0, h, dtype=torch.float, device=masks.device)
-    x = torch.arange(0, w, dtype=torch.float, device=masks.device)
-    z, y, x = torch.meshgrid(z, y, x, indexing="ij")
+    # Batched axis projections (any over the two other spatial dims) — no
+    # [N, D, H, W] float temporaries, no per-instance torch.where loop.
+    proj_z = m.any(dim=3).any(dim=2)  # [N, D]
+    proj_y = m.any(dim=3).any(dim=1)  # [N, H]
+    proj_x = m.any(dim=2).any(dim=1)  # [N, W]
 
-    x_mask = masks * x.unsqueeze(0) # [N, D, H, W] * [1, D, H, W] -> [N, D, H, W]
-    x_max = x_mask.flatten(1).max(-1)[0]
+    def _minmax(proj: Tensor, size: int):
+        idx = torch.arange(size, device=proj.device)
+        mn = torch.where(proj, idx, torch.full_like(idx, size)).min(dim=1).values
+        mx = torch.where(proj, idx, torch.full_like(idx, -1)).max(dim=1).values
+        return mn.float(), mx.float()
 
-    y_mask = masks * y.unsqueeze(0) # [N, D, H, W] * [1, D, H, W] -> [N, D, H, W]
-    y_max = y_mask.flatten(1).max(-1)[0]
+    z_min, z_max = _minmax(proj_z, d)
+    y_min, y_max = _minmax(proj_y, h)
+    x_min, x_max = _minmax(proj_x, w)
 
-    z_mask = masks * z.unsqueeze(0) # [N, D, H, W] * [1, D, H, W] -> [N, D, H, W]
-    z_max = z_mask.flatten(1).max(-1)[0]
-
-    x_min = x_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
-    y_min = y_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
-    z_min = z_mask.masked_fill(~(masks.bool()), float("inf")).flatten(1).min(-1)[0]
-
-    mask = torch.stack([x_min, y_min, z_min, x_max + 1, y_max + 1, z_max + 1], 1)
-    invalid_mask = (torch.isinf(x_min)) | (torch.isinf(y_min)) | (torch.isinf(z_min))
-    mask[invalid_mask] = 0
-    return mask
+    boxes = torch.stack([x_min, y_min, z_min, x_max + 1, y_max + 1, z_max + 1], 1)
+    invalid = ~m.flatten(1).any(dim=1)
+    boxes[invalid] = 0
+    return boxes
 
 
 def box_xyzxyz_to_cxcyczwhd(boxes: Tensor, 
@@ -525,12 +506,11 @@ def nms_3d(
     if boxes.numel() == 0:
         return torch.empty(0, dtype=torch.long, device=boxes.device)
 
-    order = scores.argsort(descending=True)
+    order = scores.argsort(descending=True).tolist()
     keep = []
     suppressed = torch.zeros(len(boxes), dtype=torch.bool, device=boxes.device)
 
-    for idx in order:
-        i = idx.item()
+    for i in order:
         if suppressed[i]:
             continue
         keep.append(i)
@@ -556,3 +536,50 @@ def is_box_near_crop_edge_3d(
     near_orig = torch.isclose(global_boxes, orig_t[None, :], atol=atol, rtol=0)
     near_crop_only = near_crop & ~near_orig
     return near_crop_only.any(dim=1)
+
+# --------------------------------------------------------------------------- #
+# PARKED (planned return; do NOT delete): original masks_to_boxes
+# --------------------------------------------------------------------------- #
+# # (inclusive-max convention, differs from masks_to_boxes_v2's half-open +1;
+# #  see the 2026-07-21/22 reviews before reuse)
+# def masks_to_boxes(masks: torch.Tensor) -> Tensor:
+#     """
+#     Compute the bounding boxes around the provided masks.
+#
+#     Returns a [N, 6] tensor containing bounding boxes. The boxes are in ``(x1, y1, x2, y2)`` format with
+#     ``0 <= x1 <= x2`` and ``0 <= y1 <= y2`` and ``0 <= z1 < z2``.
+#
+#     .. warning::
+#
+#         In most cases the output will guarantee ``x1 < x2`` and ``y1 < y2`` and ``0 <= z1 < z2``. But
+#         if the input is degenerate, e.g. if a mask is a single row or a single
+#         column, then the output may have x1 = x2 or y1 = y2 or z1=z2.
+#
+#     Args:
+#         masks (Tensor[N, D, H, W]): masks to transform where N is the number of masks
+#             and (D, H, W) are the spatial dimensions.
+#
+#     Returns:
+#         Tensor[N, 6]: bounding boxes
+#     """
+#     if masks.numel() == 0:
+#         return torch.zeros((0, 6), device=masks.device, dtype=torch.float)
+#
+#     n = masks.shape[0]
+#
+#     bounding_boxes = torch.zeros((n, 6), device=masks.device, dtype=torch.float)
+#
+#     for index, mask in enumerate(masks):
+#         z, y, x = torch.where(mask != 0)
+#
+#         bounding_boxes[index, 0] = torch.min(x)
+#         bounding_boxes[index, 1] = torch.min(y)
+#         bounding_boxes[index, 2] = torch.min(z)
+#         bounding_boxes[index, 3] = torch.max(x)
+#         bounding_boxes[index, 4] = torch.max(y)
+#         bounding_boxes[index, 5] = torch.max(z)
+#
+#     return bounding_boxes
+#
+#
+# # TODO: reconcile masks_to_boxes and masks_to_boxes_v2

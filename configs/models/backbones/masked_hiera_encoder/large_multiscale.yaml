@@ -14,8 +14,9 @@ q_stride: [2, 2, 2]
 stages: [2, 6, 36, 4]
 mask_unit_size: [8, 8, 8]
 norm_layer: LayerNorm
-return_intermediates: true
 
-return_multiscale: true
+# Multiscale backbone mode: per-level channel equalization (no fusion heads).
+# Implies intermediates; MaskedHieraEncoder derives with_intermediates from this.
+# multiscale_level_indices defaults to all q_pool+1 levels.
+channel_proj_type: equalization
 multiscale_out_dim: 256
-multiscale_out_indices: null

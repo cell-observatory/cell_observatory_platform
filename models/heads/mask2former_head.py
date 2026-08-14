@@ -34,11 +34,11 @@ class Mask2FormerHead(nn.Module):
     def predict(self, features, rescale_size: Optional[tuple] = None, mask=None):
         output = self.forward_features(features, mask)
         if rescale_size is not None:
-            # TODO(perf/OOM): this interpolates ALL Q queries at full (B,Q,D,H,W) resolution
-            # BEFORE topk, peaking at Q*D*H*W (~6.7GB fp32 at Q=100, 256^3). Will OOM on large
-            # volumes that MaskDINO handles. Fix: route through chunked materialization like
-            # models/layers/maskmaterializer.py MaskMaterializer.chunks(), or interpolate per-query.
-            # Left for future work.
+            # NOTE(perf/OOM): this materializes ALL Q queries at full (B,Q,D,H,W)
+            # resolution. The meta-arch inference
+            # path no longer uses it — Mask2Former._reduce_queries_streaming
+            # upsamples per query chunk instead. Kept for callers that
+            # explicitly want the dense stack on small volumes.
             output["pred_masks"] = F.interpolate(
                 output["pred_masks"], # B, Q, D, H, W
                 size=rescale_size, # D, H, W

@@ -102,6 +102,159 @@ def collapse_to_semantic_map(
 
 
 # ---------------------------------------------------------------------------
+# Mask2Former query -> dense semantic map reduction. The reduce step that pairs
+# with collapse_to_semantic_map above (reduce -> [B,D,H,W,C] -> collapse). The
+# mask2former meta-arch's streaming path is verified equivalent to this reference.
+# ---------------------------------------------------------------------------
+
+def _reduce_topk_max(
+    pred_masks: torch.Tensor,
+    pred_logits: torch.Tensor,
+    num_classes: int = 1,
+    topk_per_image: int = 1,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    LEGACY reduction: top-k queries per class, combined with max.
+
+    Returns a per-class map in probability space with NO background channel -- callers
+    derive background by thresholding. Retained so checkpoints tuned against this
+    reduction stay scoreable; prefer ``reduction="canonical"`` for new work.
+
+    Args:
+        pred_masks: [B, num_queries, D, H, W] - mask logits (already at target resolution)
+        pred_logits: [B, num_queries, num_classes + 1] - indices 0..num_classes-1 = semantic classes, last = no-object
+        num_classes: Number of foreground classes (default: 1 for binary segmentation)
+        topk_per_image: Number of top queries to use per image (for num_classes=1 case)
+
+    Returns:
+        semantic_map: [B, D, H, W, num_classes] - channels-last dense semantic map (per-class)
+        average_probability: average probability per class, [B, num_classes]
+            in BOTH branches ([B, 1] for the single-class case).
+    """
+    B, num_queries, D, H, W = pred_masks.shape
+
+    if num_classes == 1:
+        # Binary segmentation: single semantic class at index 0, no-object at index 1
+        probs = pred_logits.softmax(-1)[..., 0]  # [B, Q] - class 0 (foreground) probability per query
+        # Clamp k like the multi-class branch: k > num_queries is a config
+        # smell, not a crash-worthy contract violation in ONE of two branches.
+        topk_per_image = min(topk_per_image, num_queries)
+        # Get top k queries by foreground probability
+        topk_indices = probs.topk(k=topk_per_image, dim=1).indices  # [B, K]
+        topk_probs = probs.gather(1, topk_indices)  # [B, K]
+        # Get masks for top k queries: gather output shape = index shape, so expand index to [B, K, D, H, W]
+        topk_indices_expanded = topk_indices.view(B, topk_per_image, 1, 1, 1).expand(B, topk_per_image, D, H, W)
+        topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
+        # Convert mask logits to probabilities
+        topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
+        # Weight masks by foreground probability and sum over top k queries
+        # topk_probs: [B, K] -> [B, K, 1, 1, 1] for broadcasting
+        semantic = (topk_probs.view(B, topk_per_image, 1, 1, 1) * topk_masks).sum(1, keepdim=True)  # [B, 1, D, H, W]
+        # Permute to channels-last: [B, D, H, W, 1]
+        semantic = semantic.permute(0, 2, 3, 4, 1)  # [B, D, H, W, 1]
+        # keepdim: uniform [B, num_classes] rank across both branches (the
+        # docstring always promised [B, 1] here; callers no longer branch).
+        average_probability = topk_probs.mean(dim=1, keepdim=True)  # [B, 1]
+        return semantic, average_probability
+    else:
+        # Multi-class segmentation: produce per-class maps
+        # pred_logits: [B, Q, num_classes + 1]; indices 0..num_classes-1 = semantic classes, last index = no-object (DETR/Mask2Former convention, see losses.py empty_weight[-1])
+        class_probs = pred_logits.softmax(-1)[..., :-1]  # [B, Q, num_classes] - keep all semantic classes, drop no-object
+
+        # For each class, combine masks from queries assigned to that class
+        semantic_per_class = []
+        average_probability_per_class = []
+        for c in range(num_classes):
+            # Get probability of class c for each query: [B, Q]
+            class_c_probs = class_probs[..., c]  # [B, Q]
+
+            # Get top k queries for this class
+            topk_indices = class_c_probs.topk(k=min(topk_per_image, num_queries), dim=1).indices  # [B, K]
+            topk_probs = class_c_probs.gather(1, topk_indices)  # [B, K]
+
+            # Get masks for top k queries
+            topk_indices_expanded = topk_indices.view(B, -1, 1, 1, 1).expand(B, -1, D, H, W)
+            topk_masks = pred_masks.gather(1, topk_indices_expanded)  # [B, K, D, H, W]
+            topk_masks = topk_masks.sigmoid()  # [B, K, D, H, W]
+
+            # Weight by class probability and combine (max aggregation for cleaner maps)
+            # Use max instead of sum to avoid over-saturation
+            weighted_masks = topk_probs.view(B, -1, 1, 1, 1) * topk_masks  # [B, K, D, H, W]
+            class_map = weighted_masks.max(dim=1)[0]  # [B, D, H, W] - max over queries
+            semantic_per_class.append(class_map)
+            average_probability_per_class.append(topk_probs.mean(dim=1))
+
+        # Stack along channel dimension: [B, D, H, W, num_classes]
+        semantic = torch.stack(semantic_per_class, dim=-1)  # [B, D, H, W, num_classes]
+        average_probability = torch.stack(average_probability_per_class, dim=-1)  # [B, num_classes]
+        return semantic, average_probability
+
+
+def _reduce_canonical(
+    pred_masks: torch.Tensor,
+    pred_logits: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Canonical Mask2Former semantic inference.
+
+    Every query contributes, weighted by its class posterior:
+    ``semseg[c] = sum_q softmax(logits)[q, c] * sigmoid(mask)[q]``.
+
+    Args:
+        pred_masks: ``[B, Q, D, H, W]`` mask logits at target resolution.
+        pred_logits: ``[B, Q, num_classes + 1]``; last index is no-object
+            (DETR/Mask2Former convention, see losses.py ``empty_weight[-1]``).
+
+    Returns:
+        semseg: ``[B, D, H, W, 1 + num_classes]`` channels-last, **channel 0 is
+            no-object (background)**, so ``argmax(dim=-1)`` yields a label map in the
+            ``class + 1`` / background ``0`` convention with no threshold.
+        average_probability: ``[B, num_classes]`` mean per-class posterior over queries.
+    """
+    if pred_logits.dim() != 3 or pred_masks.dim() != 5:
+        raise ValueError(
+            f"expected pred_masks (B,Q,D,H,W) and pred_logits (B,Q,C+1); "
+            f"got {tuple(pred_masks.shape)} and {tuple(pred_logits.shape)}"
+        )
+    probs = pred_logits.softmax(-1)                      # [B, Q, C+1], last = no-object
+    masks = pred_masks.sigmoid()                         # [B, Q, D, H, W]
+
+    # [B,Q,K] x [B,Q,D,H,W] -> [B,D,H,W,K], K = C+1 with no-object last.
+    semseg = torch.einsum("bqk,bqdhw->bdhwk", probs, masks)
+    # Roll no-object to channel 0 so argmax gives class+1 / bg-0 directly.
+    semseg = torch.cat([semseg[..., -1:], semseg[..., :-1]], dim=-1)
+
+    average_probability = probs[..., :-1].mean(dim=1)    # [B, C]
+    return semseg, average_probability
+
+
+def reduce_queries_to_semantic_map(
+    pred_masks: torch.Tensor,
+    pred_logits: torch.Tensor,
+    num_classes: int = 1,
+    topk_per_image: int = 1,
+    reduction: str = "canonical",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Convert Mask2Former query outputs to a dense semantic map.
+
+    ``reduction="canonical"`` (default) sums over all queries and returns a
+    background-first ``[B, D, H, W, 1 + C]`` map -- collapse with ``argmax(dim=-1)``.
+    ``reduction="topk_max"`` is the legacy top-k/max path returning
+    ``[B, D, H, W, C]`` with no background channel -- collapse with
+    ``collapse_to_semantic_map(threshold=0.5, dim=-1)``.
+
+    The layouts differ because the two derive background differently; the caller must
+    pair the reduction with its matching collapse. ``num_classes`` and
+    ``topk_per_image`` apply to ``topk_max`` only; the canonical path infers
+    ``C = pred_logits.shape[-1] - 1``.
+    """
+    if reduction == "canonical":
+        return _reduce_canonical(pred_masks, pred_logits)
+    if reduction == "topk_max":
+        return _reduce_topk_max(pred_masks, pred_logits, num_classes, topk_per_image)
+    raise ValueError(f"reduction must be 'canonical' or 'topk_max'; got {reduction!r}")
+
+
+# ---------------------------------------------------------------------------
 # Shared token-feature extraction for the pretrain models (MAE / JEPA).
 #
 # inference_step for MAE/JEPA returns full-context per-patch token features for

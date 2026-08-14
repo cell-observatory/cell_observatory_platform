@@ -17,9 +17,19 @@ class MixedPoissonGaussianNoise:
     ):
         """
         Adds realistic mixed Poisson-Gaussian noise to the input data.
-        
-        Assumes that the input data is expressed as incident photons.
-        
+
+        UNITS CONTRACT: the INPUT is interpreted as incident
+        PHOTONS; the OUTPUT is camera COUNTS. The pipeline applies a
+        deterministic sensor gain on top of the stochastic terms:
+
+            E[output] ~= (quantum_efficiency / electrons_per_count) * photons
+                         + mean_background_offset
+
+        (with the shipped task config, ~3.73x + 100). A clean target snapshotted
+        BEFORE this transform therefore lives in the PHOTON domain while the
+        noised output lives in the COUNT domain -- see the denoising
+        preprocessor yaml for the deliberate training contract built on this.
+
         Args:
             quantum_efficiency: float or tuple[float, float] representing quantum efficiency of the camera
             electrons_per_count: float or tuple[float, float] representing the conversion factor from electrons to counts
@@ -28,9 +38,7 @@ class MixedPoissonGaussianNoise:
 
         If tuple, sample uniformly from the range [min, max] giving a random value for each batch element.
 
-        Takes clean images in counts and applies realistic sensor noise model:
-                
-        sensor pipeline with noise (to generate noisy counts):
+        Sensor pipeline (photons in -> noisy counts out):
         1. Convert photons → electrons using quantum_efficiency
         2. Add shot noise (Poisson) in electron space
         3. Add dark/read noise (Gaussian) in electron space
@@ -71,7 +79,17 @@ class MixedPoissonGaussianNoise:
         if device not in self._generators:
             gen = torch.Generator(device=device)
             if self.seed is not None:
-                gen.manual_seed(self.seed)
+                # Fold the rank in: a bare shared ${seed} gives every rank the
+                # SAME noise stream (step-for-step correlated augmentation
+                # across DDP replicas). Lazy import: transforms are built
+                # inside Ray workers where the distributed context exists;
+                # outside one (unit tests) rank falls back to 0.
+                try:
+                    from cell_observatory_platform.utils.context import process_rank
+                    rank = int(process_rank())
+                except Exception:
+                    rank = 0
+                gen.manual_seed(self.seed + rank)
             self._generators[device] = gen
         return self._generators[device]
 
@@ -93,8 +111,11 @@ class MixedPoissonGaussianNoise:
         # Save original dtype of image_batch
         original_dtype = image_batch.dtype
         
-        # Convert to float32 for numerical precision
-        image_batch = image_batch.to(dtype=torch.float32)
+        # Convert to float32 for numerical precision. copy=True is load-bearing:
+        # when the input is already float32, .to() would return the SAME tensor
+        # and the in-place ops below (*=, +=, /=) would mutate the caller's
+        # tensor (e.g. the clean denoising target / a reused buffer slot).
+        image_batch = image_batch.to(dtype=torch.float32, copy=True)
 
         if self.visualization_dir is not None:
             logger.warning(f"Visualization directory set to {self.visualization_dir}. Original image batch will be cloned and images will be saved to this directory.")

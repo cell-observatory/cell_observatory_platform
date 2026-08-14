@@ -94,6 +94,9 @@ def _build_fixedlr(config, *, opt, steps_per_epoch, decay):
         end_factor=1.0,
         total_iters=config.schedulers.epochs,
     )
+    # LRScheduler hook dispatches on `update_type`; without stamping it here the
+    # hook crashes with AttributeError at before_train for `name: fixedlr`.
+    scheduler.update_type = config.schedulers.update_type
     logger.info(f"Training steps: [{steps_per_epoch * config.schedulers.epochs}]")
     return scheduler
 
@@ -114,21 +117,39 @@ def _build_warmup_stable_decay(config, *, opt, steps_per_epoch, decay):
 
 @REGISTRY.register("scheduler", "cosine")
 def _build_cosine(config, *, opt, steps_per_epoch, decay):
+    # REVISIT: timm's create_scheduler_v2 treats cooldown_epochs
+    # as EXTRA epochs APPENDED AFTER num_epochs (t_initial=epochs, horizon=epochs+
+    # cooldown), but the trainer only runs schedulers.epochs epochs -- so the
+    # configured cooldown/min-LR hold NEVER executes and the cosine actually decays
+    # over (epochs - warmup) epochs, not the decay_epochs computed below. WSD, by
+    # contrast, CARVES cooldown out of the horizon: the same config keys
+    # (epochs/warmup/cooldown) mean different curves for name: cosine vs
+    # name: warmup_stable_decay. The honest fix is
+    #   num_epochs = schedulers.epochs - schedulers.cooldown
+    # (making t_initial + cooldown == epochs, like WSD) -- deferred because it
+    # changes the LR trajectory of every cosine run; land it at a fresh
+    # experiment-series boundary. Until then the banner below reports the
+    # ACTUAL curve, not the configured decomposition.
+    # still passed to create_scheduler_v2 below, but timm IGNORES decay_epochs for
+    # sched='cosine' (it parameterizes step/multistep decay only)
     decay_epochs = config.schedulers.epochs - (config.schedulers.warmup + config.schedulers.cooldown)
     total_steps = config.schedulers.epochs * steps_per_epoch
     warmup_steps = config.schedulers.warmup * steps_per_epoch
-    cooldown_steps = config.schedulers.cooldown * steps_per_epoch
-    decay_steps = total_steps - (warmup_steps + cooldown_steps)
 
     cos_min_lr = config.schedulers.cos_min_ratio * config.optimizers.lr
     warmup_min_lr = config.schedulers.warmup_min_ratio * config.optimizers.lr
 
+    actual_decay_epochs = config.schedulers.epochs - config.schedulers.warmup
     logger.info("-" * 80)
     logger.info(
         f"Epochs: {config.schedulers.epochs} = "
-        f"[{config.schedulers.warmup} warmup + {decay_epochs} decay + {config.schedulers.cooldown} cooldown]\n"
+        f"[{config.schedulers.warmup} warmup + {actual_decay_epochs} decay]\n"
+        f"NOTE: cooldown={config.schedulers.cooldown} is appended BEYOND the horizon by "
+        f"timm and never runs (trainer stops at epoch {config.schedulers.epochs}); "
+        f"cosine decays over the full {actual_decay_epochs} post-warmup epochs. "
+        f"See comment in _build_cosine.\n"
         f"Steps: {total_steps} = "
-        f"[{warmup_steps} warmup + {decay_steps} decay + {cooldown_steps} cooldown]\n"
+        f"[{warmup_steps} warmup + {actual_decay_epochs * steps_per_epoch} decay]\n"
         f"LR: {config.optimizers.lr} = [{warmup_min_lr=},  {cos_min_lr=}]"
     )
     logger.info("-" * 80)
@@ -147,12 +168,34 @@ def _build_cosine(config, *, opt, steps_per_epoch, decay):
     return scheduler
 
 
+# Each schedule body is written for exactly one stepping cadence: fixedlr and
+# the timm cosine schedule compute per-EPOCH values (T_max/total_iters in
+# epochs), WSD computes per-STEP values (T_max in steps). A mismatched
+# `update_type` silently stretches/compresses the schedule instead of failing.
+_VALID_SCHEDULER_UPDATE_TYPES: Dict[str, frozenset] = {
+    "fixedlr": frozenset({"epoch"}),
+    "cosine": frozenset({"epoch"}),
+    "warmup_stable_decay": frozenset({"step"}),
+}
+
+
 def get_schedulers(
     opt: torch.optim.Optimizer,
     steps_per_epoch: int,
     config: DictConfig,
     decay: str = 'cosine'
 ):
+    _name = config.schedulers.name
+    _update_type = config.schedulers.update_type
+    if _name in _VALID_SCHEDULER_UPDATE_TYPES and \
+            _update_type not in _VALID_SCHEDULER_UPDATE_TYPES[_name]:
+        raise ValueError(
+            f"Scheduler {_name!r} requires update_type in "
+            f"{sorted(_VALID_SCHEDULER_UPDATE_TYPES[_name])}, got {_update_type!r}. "
+            f"The schedule body is computed for that cadence; a mismatch would "
+            f"silently stretch/compress the LR curve."
+        )
+
     scheduler = REGISTRY.build(
         "scheduler", config.schedulers.name, config,
         opt=opt, steps_per_epoch=steps_per_epoch, decay=decay,
@@ -208,26 +251,36 @@ class WarmupStableDecaySchedule(object):
         self.T_max = T_max - warmup_steps - anneal_steps
         self.update_type = update_type
 
-    def step(self, epoch):
-        self._step += 1
-        if self._step < self.warmup_steps:
-            progress = float(self._step) / float(max(1, self.warmup_steps))
-            new_lr = self.start_lr + progress * (self.ref_lr - self.start_lr)
-        
-        elif self._step < self.T_max + self.warmup_steps:
-            new_lr = self.ref_lr
-        
-        else:
-            _step = self._step - (self.T_max + self.warmup_steps)
-            progress = float(_step) / float(max(1, self.anneal_steps))
-            new_lr = self.ref_lr + progress * (self.final_lr - self.ref_lr)
+        # The optimizer is constructed at peak (ref) lr and the first optimizer
+        # step runs BEFORE any after_step hook fires — without this one-shot the
+        # whole first step trains at ref_lr instead of warmup_min_ratio * lr.
+        self._apply(self._step)
 
+    def _lr_at(self, step) -> float:
+        if step < self.warmup_steps:
+            progress = float(step) / float(max(1, self.warmup_steps))
+            return self.start_lr + progress * (self.ref_lr - self.start_lr)
+        elif step < self.T_max + self.warmup_steps:
+            return self.ref_lr
+        else:
+            _step = step - (self.T_max + self.warmup_steps)
+            # Clamp: past the configured horizon the linear anneal would drive
+            # LR BELOW final_lr (eventually negative) -- hold final_lr instead
+            # (mirrors CosineWeightDecaySchedule's clamp).
+            progress = min(1.0, float(_step) / float(max(1, self.anneal_steps)))
+            return self.ref_lr + progress * (self.final_lr - self.ref_lr)
+
+    def _apply(self, step) -> float:
+        new_lr = self._lr_at(step)
         for group in self.optimizer.param_groups:
             group["lr"] = new_lr
             if "lr_scale" in group:
                 group["lr"] *= group["lr_scale"]
-
         return new_lr
+
+    def step(self, epoch=None):
+        self._step += 1
+        return self._apply(self._step)
     
 
 # from: https://github.com/facebookresearch/vjepa2/blob/main/src/utils/schedulers.py
@@ -246,21 +299,41 @@ class CosineWeightDecaySchedule(object):
 
         self.T_max = T_max
 
+        # A group constructed with weight_decay == 0.0 opted OUT of decay
+        # (biases/norms/embeddings). Only JEPA stamps WD_exclude; treat zero-WD
+        # as the universal opt-out so every model's decay/no-decay split
+        # survives scheduling. Captured once at construction — before the
+        # schedule mutates any group's weight_decay.
+        self._skip = {
+            i for i, g in enumerate(self.optimizer.param_groups)
+            if g.get("WD_exclude") or float(g.get("weight_decay", 0.0)) == 0.0
+        }
+
+        # Apply ref_wd at construction (mirrors WSD's _apply(0) one-shot): the
+        # first optimizer step otherwise runs on the construction-time group
+        # weight_decay -- benign only while configs set ref_wd == optimizers.wd.
+        for i, g in enumerate(self.optimizer.param_groups):
+            if i not in self._skip:
+                g["weight_decay"] = self.ref_wd
+
     def step(self):
         self._step += 1
-        progress = self._step / self.T_max
+        # Clamp: past T_max, cos(pi * progress) climbs back up and the one-sided
+        # max/min guard below only caps from the far side -- WD would rebound
+        # from final_wd toward ref_wd. Hold final_wd instead.
+        progress = min(1.0, self._step / self.T_max)
         new_wd = self.final_wd + (self.ref_wd - self.final_wd) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
         if self.final_wd <= self.ref_wd:
             new_wd = max(self.final_wd, new_wd)
-        
+
         else:
             new_wd = min(self.final_wd, new_wd)
 
-        for group in self.optimizer.param_groups:
-            if ("WD_exclude" not in group) or not group["WD_exclude"]:
+        for i, group in enumerate(self.optimizer.param_groups):
+            if i not in self._skip:
                 group["weight_decay"] = new_wd
-        
+
         return new_wd
 
 

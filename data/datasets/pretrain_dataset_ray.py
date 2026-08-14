@@ -9,7 +9,6 @@ from threading import Thread
 
 import ray
 
-import cupy as cp
 import numpy as np
 import pyarrow as pa
 import tensorstore as ts
@@ -17,9 +16,26 @@ import tensorstore as ts
 import torch
 import ujson
 
-from cupy.cuda import runtime as cudart
 from omegaconf import DictConfig, OmegaConf
- 
+
+# cupy is imported lazily: only the collator actors (which own a GPU) need it,
+# while this module is also imported on the CPU-only LoaderActor path -- a
+# module-scope `import cupy` costs every loader actor the CUDA-stack import
+# (and fails outright on GPU-less workers). Call _ensure_cupy() before using
+# the module-level `cp` / `cudart` names.
+cp = None
+cudart = None
+
+
+def _ensure_cupy() -> None:
+    global cp, cudart
+    if cp is None:
+        import cupy as _cp
+        from cupy.cuda import runtime as _cudart
+        cp = _cp
+        cudart = _cudart
+
+
 from cell_observatory_platform.data.databases.local_metadata_store import (
     MappedTable,
     MappedTableDescriptor,
@@ -27,9 +43,12 @@ from cell_observatory_platform.data.databases.local_metadata_store import (
 )
 from cell_observatory_platform.data.io import read_zarr
 from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, attach_shared_memory, get_buffers
-from cell_observatory_platform.data.structures import convert_bbox_format
-from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
-from cell_observatory_platform.data.datasets.utils import resolve_channel_localization_indices
+from cell_observatory_platform.data.structures import convert_bbox_format, validate_bbox_normalization
+from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TORCH_DTYPES
+from cell_observatory_platform.data.datasets.utils import (
+    remap_channel_mapping_to_selection,
+    resolve_channel_localization_indices,
+)
 from cell_observatory_platform.training.helpers import get_data_dim, get_image_sizes, record_dataset_len
 from cell_observatory_platform.utils.context import (
     bind_current_process_to_node,
@@ -42,7 +61,6 @@ from cell_observatory_platform.utils.context import (
 )
 from cell_observatory_platform.utils.profiling import pprof_class, pprof_func
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -114,6 +132,7 @@ class FinetuneCollatorActor:
         normalize_bboxes: bool = False,
         async_device_copy: bool = False,
     ):
+        _ensure_cupy()  # collator actors own a GPU; loaders never import cupy
         self.columns = columns
         self.debug_device_idx = debug_device_idx
 
@@ -217,6 +236,7 @@ class FinetuneCollatorActor:
         # per-target metadata (boxes / mask_ids / labels).
         self.require_targets = require_targets
         self.normalize_bboxes = normalize_bboxes
+        validate_bbox_normalization(self.normalize_bboxes, self.bbox_output_format)
 
         ray.logger.info(
             f"FinetuneCollatorActor on rank {self.global_rank} and Numa Node {self.numa_node} "
@@ -291,7 +311,11 @@ class FinetuneCollatorActor:
 
     def __del__(self):
         try:
-            if getattr(self, "_pinned", False) and getattr(self, "host_buffer_ptr", None) is not None:
+            if (
+                cp is not None
+                and getattr(self, "_pinned", False)
+                and getattr(self, "host_buffer_ptr", None) is not None
+            ):
                 cp.cuda.runtime.hostUnregister(self.host_buffer_ptr)
             if hasattr(self, "_shm"):
                 self._shm.close()
@@ -367,13 +391,31 @@ class FinetuneCollatorActor:
         return targets
 
     def _copy_h2d(self, dst: torch.Tensor, src: torch.Tensor):
+        # Raw cudaMemcpyAsync serializes storage order and trusts sizes blindly:
+        # guard contiguity on BOTH sides (parity with CollatorActor.copy_h2d)
+        # and shape/byte compatibility before handing pointers to the driver.
+        if not src.is_contiguous():
+            raise ValueError("_copy_h2d: src must be contiguous for a raw memcpy")
+        if not dst.is_contiguous():
+            raise ValueError("_copy_h2d: dst must be contiguous for a raw memcpy")
+        src_bytes = src.numel() * src.element_size()
+        dst_bytes = dst.numel() * dst.element_size()
+        if tuple(dst.shape) != tuple(src.shape):
+            raise ValueError(
+                f"_copy_h2d: shape mismatch dst {tuple(dst.shape)} != src {tuple(src.shape)}"
+            )
+        if dst_bytes < src_bytes:
+            raise ValueError(
+                f"_copy_h2d: dst too small ({dst_bytes} bytes) for src ({src_bytes} bytes)"
+            )
+
         src_ptr = ctypes.c_void_p(src.data_ptr())
         dst_ptr = ctypes.c_void_p(dst.data_ptr())
 
         cudart.memcpyAsync(
             dst_ptr.value,
             src_ptr.value,
-            src.numel() * src.element_size(),
+            src_bytes,
             cudart.memcpyHostToDevice,
             int(self.cp_stream.ptr),
         )
@@ -514,10 +556,10 @@ class FinetuneCollatorActor:
             metainfo["targets"] = targets_gpu
 
             if self.debug:
-                # NOTE: for testing only, put_free(idx) otherwise called by hooks in
-                #       training loop, see training/hooks.py:FreeDeviceBufferHook
-                if self.async_device_copy:
-                    ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+                # NOTE: for testing only, put_free(device idx) otherwise called by
+                #       hooks in training loop (training/hooks.py:FreeDeviceBufferHook).
+                #       The HOST slot is NOT freed here: the sync path already freed
+                #       it above, and in async mode the stream callback frees it.
                 self.device_buffer.put_free(device_buffer_idx)
 
             return {"data_tensor": dst_device, "metainfo": metainfo}
@@ -556,6 +598,7 @@ class CollatorActor:
         debug: bool = False,
         debug_device_idx: Optional[int] = None,
     ):
+        _ensure_cupy()  # collator actors own a GPU; loaders never import cupy
         self.columns = columns
         self.debug_device_idx = debug_device_idx
 
@@ -670,7 +713,11 @@ class CollatorActor:
 
     def __del__(self):
         try:
-            if getattr(self, "_pinned", False) and self.host_buffer_ptr is not None:
+            if (
+                cp is not None
+                and getattr(self, "_pinned", False)
+                and self.host_buffer_ptr is not None
+            ):
                 cp.cuda.runtime.hostUnregister(self.host_buffer_ptr)
             if hasattr(self, "_shm"):
                 self._shm.close()
@@ -678,7 +725,22 @@ class CollatorActor:
             pass
 
     def copy_h2d(self, dst, src):
-        assert src.flags["C_CONTIGUOUS"], "src must be contiguous"
+        # Raw cudaMemcpyAsync serializes storage order and trusts sizes blindly:
+        # guard contiguity on BOTH sides (parity with FinetuneCollatorActor)
+        # and shape/byte compatibility before handing pointers to the driver.
+        if not src.flags["C_CONTIGUOUS"]:
+            raise ValueError("copy_h2d: src must be contiguous for a raw memcpy")
+        if not dst.is_contiguous():
+            raise ValueError("copy_h2d: dst must be contiguous for a raw memcpy")
+        dst_bytes = dst.numel() * dst.element_size()
+        if tuple(dst.shape) != tuple(src.shape):
+            raise ValueError(
+                f"copy_h2d: shape mismatch dst {tuple(dst.shape)} != src {tuple(src.shape)}"
+            )
+        if dst_bytes < src.nbytes:
+            raise ValueError(
+                f"copy_h2d: dst too small ({dst_bytes} bytes) for src ({src.nbytes} bytes)"
+            )
         # __array_interface__ protocol: data field is a
         #  2-tuple whose first argument is a Python integer that points
         # to the data-area storing the array contents
@@ -757,10 +819,11 @@ class CollatorActor:
                 metainfo["valid_mask"] = batch["valid_mask"]
 
             if self.debug:
-                # NOTE: for testing only, put_free(idx) otherwise called by hooks in
-                #       training loop, see training/hooks.py:FreeDeviceBufferHook
-                if self.async_device_copy:
-                    ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+                # NOTE: for testing only, put_free(device idx) otherwise called by
+                #       hooks in training loop (training/hooks.py:FreeDeviceBufferHook).
+                #       The HOST slot is NOT freed here: the sync path already freed
+                #       it above, and in async mode the stream callback / free thread
+                #       frees it.
                 self.device_buffer.put_free(device_buffer_idx)
 
             return {"data_tensor": dst_device, "metainfo": metainfo}
@@ -782,7 +845,6 @@ class LoaderActor:
         batch_size: int,
         input_layout: str,
         context_spec: Dict[str, Any],
-        dtype: str = "fp16",
         buffer_dtype: str = "uint16",
         pin_numa_node: bool = True,
         with_batched_api: bool = True,
@@ -816,14 +878,11 @@ class LoaderActor:
         self.batch_size = batch_size
 
         # dtypes
-        self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-
-        if self.dtype == TENSORSTORE_DTYPES.bf16.value:
-            # ray.logger.warning(
-            #     "Using fp16 for PyArrow, Collator will cast data to bf16"
-            # )
-            self.dtype = TENSORSTORE_DTYPES.fp16.value
-
+        # NOTE: there is deliberately NO read dtype. read_zarr runs with
+        # cast=False (see _get_handle), so tensors arrive in the on-disk dtype
+        # (uint16 counts) and the tensorstore write into the uint16 host buffer
+        # defines the transport dtype. buffer_dtype below is the ONLY dtype the
+        # loader path honors.
         self.buffer_dtype = NUMPY_DTYPES[buffer_dtype].value if isinstance(buffer_dtype, str) else buffer_dtype
 
         # tensorstore
@@ -893,7 +952,10 @@ class LoaderActor:
     def _get_handle(self, path: str):
         h = self._handles.get(path)
         if h is None:
-            h = read_zarr(path, dtype=self.dtype, context=self.ctx, cast=False)
+            # cast=False: read in the on-disk dtype (uint16 counts). Do NOT pass a
+            # float read dtype -- cast=True with fp16 would quantize counts > 2048
+            # and overflow counts > 65504 before they reach the uint16 buffer.
+            h = read_zarr(path, context=self.ctx, cast=False)
             self._handles[path] = h
         return h
 
@@ -1026,6 +1088,23 @@ class LoaderActor:
                         pad_val = v[-1] if actual_len > 0 else None
                         batch[k] = list(v) + [pad_val] * (self.batch_size - actual_len)
 
+        # When channel selection is active the emitted tensor's channels are a
+        # permuted subset of the source channels, so the channel_mapping column
+        # must be remapped to POST-selection positions before it travels
+        # downstream (the preprocessor partitions channels by these indices).
+        # Done after loading/padding: _slice_hypercube above resolves selection
+        # indices against the RAW mapping.
+        if self.selected_channel_localizations is not None and "channel_mapping" in batch:
+            remapped_rows = []
+            for raw in batch["channel_mapping"]:
+                channel_indices = resolve_channel_localization_indices(
+                    raw, self.selected_channel_localizations
+                )
+                remapped_rows.append(
+                    ujson.dumps(remap_channel_mapping_to_selection(raw, channel_indices))
+                )
+            batch["channel_mapping"] = np.array(remapped_rows, dtype=object)
+
         return batch
 
 
@@ -1091,7 +1170,6 @@ def _build_loader_dataset(
             "batch_size": cfg.clusters.batch_size_per_gpu,
             "context_spec": ctx_spec,
             "with_batched_api": cfg.datasets.with_batched_api,
-            "dtype": cfg.dataset_dtype,
             "buffer_dtype": cfg.storage_dtype,
             "pin_numa_node": cfg.datasets.pin_numa_node,
             "input_layout": cfg.datasets.dataset.input_layout.value,
@@ -1124,9 +1202,16 @@ def get_dataset_ray(
     selected_channel_localizations: Optional[List[str]] = None,
     shuffle: bool = False,
     last_batch_policy: str = "drop",
+    skip_batches: int = 0,
 ):
     if seed is not None and not shuffle:
         raise ValueError("Seed provided but shuffle is False.")
+    if skip_batches and seed is None:
+        raise ValueError(
+            "skip_batches (mid-epoch resume) requires a seeded, shuffled "
+            "dataset — the skipped prefix is only meaningful if the row order "
+            "is reproducible."
+        )
 
     set_data_context(cfg)
     ctx_spec = get_context_spec(cfg)
@@ -1161,6 +1246,25 @@ def get_dataset_ray(
         last_batch_policy=last_batch_policy,
     )
 
+    # Mid-epoch resume: the plan above is fully determined by (seed, epoch),
+    # so dropping the first `skip_batches` batches replays the remainder of an
+    # interrupted epoch exactly — no dataloader state to checkpoint.
+    num_planned_rows = len(local_row_ids)
+    if skip_batches:
+        skip_rows = int(skip_batches) * int(cfg.clusters.batch_size_per_gpu)
+        if skip_rows >= num_planned_rows:
+            raise ValueError(
+                f"skip_batches={skip_batches} skips {skip_rows} rows but the "
+                f"epoch plan only has {num_planned_rows} rows on rank {rk}."
+            )
+        local_row_ids = local_row_ids[skip_rows:]
+        ray.logger.info(
+            "[DATASET] mid-epoch resume: skipping %s of %s planned rows (rank=%s)",
+            skip_rows,
+            num_planned_rows,
+            rk,
+        )
+
     local_table = sample_table.take(pa.array(local_row_ids, type=pa.int64()))
     if columns:
         selected_columns = [c for c in columns if c in local_table.column_names]
@@ -1172,7 +1276,10 @@ def get_dataset_ray(
         ctx_spec,
         selected_channel_localizations=selected_channel_localizations,
     )
-    return dataset, local_table.num_rows
+    # NOTE: return the PRE-skip length — record_dataset_len feeds the
+    # steps-per-epoch inference, which must stay epoch-invariant across a
+    # mid-epoch resume.
+    return dataset, num_planned_rows
 
 
 def get_dataloader_ray(
@@ -1185,6 +1292,7 @@ def get_dataloader_ray(
     dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
     selected_channel_localizations: Optional[List[str]] = None,
+    skip_batches: int = 0,
 ):
     assert hasattr(cfg, "seed"), "cfg.seed is required for Ray Dataloader."
     if sample_store_desc is None:
@@ -1209,6 +1317,7 @@ def get_dataloader_ray(
             selected_channel_localizations=selected_channel_localizations,
             shuffle=True,
             last_batch_policy=last_batch_policy,
+            skip_batches=skip_batches,
         )
         val_dataset, val_dataset_len = get_dataset_ray(
             cfg=cfg,
@@ -1244,6 +1353,7 @@ def get_dataloader_ray(
         selected_channel_localizations=selected_channel_localizations,
         shuffle=True,
         last_batch_policy=last_batch_policy,
+        skip_batches=skip_batches,
     )
     record_dataset_len(cfg, train_dataset_len, 0)
 

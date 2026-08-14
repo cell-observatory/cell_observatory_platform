@@ -1,1 +1,5 @@
+# NOTE (round-4 P-20): this config group is currently DEAD -- experiments set
+# `trainer:` as a plain class-path string consumed by get_class(config.trainer)
+# (training/loops.py), not via this _target_ node. Kept for a future migration;
+# editing it does not change any run today.
 _target_: cell_observatory_platform.training.loops.EpochBasedTrainer

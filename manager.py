@@ -25,7 +25,10 @@ from hydra import compose
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf, open_dict
 
-OmegaConf.register_new_resolver("eval", eval)
+if not OmegaConf.has_resolver("eval"):        # runner.py registers it too
+    # NOTE: arbitrary code execution for anyone who can inject config -- configs
+    # are trusted (local repo) by design; do not merge configs from untrusted sources.
+    OmegaConf.register_new_resolver("eval", eval)
 
 from cell_observatory_platform.utils.container import get_container_info
 from cell_observatory_platform.utils.profiling import enable_profiling
@@ -97,8 +100,10 @@ def set_env_from_cfg(cfg: DictConfig) -> None:
 
     for settings in ["optimizations", "clusters"]:
         if not hasattr(cfg[settings], "env"):
-            warnings.warn("No env section found in config.")
-            return
+            # continue, not return: a missing env section in `optimizations`
+            # must not silently skip the `clusters` env (NCCL settings etc.)
+            warnings.warn(f"No env section found in config section {settings!r}.")
+            continue
 
         for key, val in cfg[settings].env.items():
             if val is None:
@@ -331,17 +336,27 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
     )
 
     if cfg.clusters.launcher_type == "local":  # for running jobs on your local workstation without a job scheduler
-        if container_info["ide_type"] is None:
-            print("Running local training job with configuration:")
-            print(ray_wrap)
-            call([ray_wrap], shell=True)
-        else:
-            print(f"Running in {container_info['ide_type']} IDE in {container_info['container_type']} environment")
+        # The in-process IDE path (no container, no ray_wrap cluster script) is a
+        # materially different execution mode; ambient IDE detection alone
+        # (VSCODE_PID leaks into every VS Code integrated terminal) must not
+        # silently select it -- require the explicit opt-in too.
+        if container_info["ide_type"] is not None and os.environ.get("CO_DEBUG_INPROCESS") == "1":
+            print(f"Running in {container_info['ide_type']} IDE in {container_info['container_type']} environment (CO_DEBUG_INPROCESS=1)")
 
             # needs to be here to launch jobs in the IDE
             from cell_observatory_platform.training import runner
 
             runner.main(cfg)
+        else:
+            if container_info["ide_type"] is not None:
+                print(
+                    f"NOTE: {container_info['ide_type']} IDE detected but CO_DEBUG_INPROCESS != 1 -- "
+                    "launching the normal containerized path. Set CO_DEBUG_INPROCESS=1 for the "
+                    "in-process debug shortcut."
+                )
+            print("Running local training job with configuration:")
+            print(ray_wrap)
+            call([ray_wrap], shell=True)
 
     elif cfg.clusters.launcher_type == "slurm":
 
@@ -380,7 +395,11 @@ def launch_job(cfg: DictConfig, run_config_name: str = None):
             sjob_worker_nodes.append(f"--nodelist='{cfg.clusters.nodelist}'")
 
         if cfg.clusters.dependency is not None:
-            sjob_worker_nodes.append(f"--dependency={cfg.clusters.job_name}")
+            # Slurm --dependency wants type:jobid, not a bare job NAME (which is
+            # invalid sbatch syntax). 'singleton' is the name-based semantics:
+            # serialize on (job-name, user) -- mirrors the LSF branch's
+            # -w "done(name)" intent without needing the job id.
+            sjob_worker_nodes.append("--dependency=singleton")
 
         if cfg.clusters.timelimit is not None:
             sjob_worker_nodes.append(f"--time={cfg.clusters.timelimit}")

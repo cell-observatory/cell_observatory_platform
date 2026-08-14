@@ -39,6 +39,9 @@ max_worker_heartbeat_timeout: 2 # in minutes (to prevent indefinite hang if one 
 # Ray ScalingConfig (some variables are set to null to be set in the training loop)
 run_config:
   storage_path: ${paths.outdir}
+  # NOTE (round-4 P-20): this block is NOT read by runner.run_session --
+  # the live CheckpointConfig comes from cfg.checkpoint.ray_checkpoint_config
+  # (and uses 'best_loss', not 'loss'). Kept for reference only.
   checkpoint_config:
     num_to_keep: 3
     checkpoint_score_attribute: loss
@@ -57,8 +60,10 @@ scaling_config:
     GPU: 1
 
 env: # NCCL settings optimized for ethernet without infiniBand
-  NCCL_DEBUG: "TRACE"           
-  NCCL_DEBUG_SUBSYS: "GRAPH"           
+  # Per-collective TRACE logging belongs in the opt-in debug preset
+  # (configs/optimizations/optimizations_debug.yaml) -- at 8+ GPUs it is real
+  # overhead and enormous logs. WARN keeps genuine NCCL errors visible.
+  NCCL_DEBUG: "WARN"
   NCCL_CUMEM_ENABLE: null 
   NCCL_CROSS_NIC: true
   NCCL_P2P_LEVEL: "NVL"

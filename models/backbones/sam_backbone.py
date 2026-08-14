@@ -121,6 +121,14 @@ class SAMBackbone(nn.Module):
         self.out_channels = self.input_shape[-1]
         self.backbone_output_format = backbone_output_format
         self.backbone_returns_sequence = self.backbone_output_format == "sequence"
+        # What the backbone CONSUMES (independent of what it returns):
+        # PatchEmbedding-based encoders (masked_vit / masked_hiera) patchify
+        # channels-last input_format; conv backbones take conv layout. The
+        # hiera-multiscale config returns feature_map but still consumes
+        # channels-last, so this cannot key off backbone_output_format.
+        self.backbone_consumes_channels_last = (
+            getattr(self.backbone, "patch_embedding", None) is not None
+        )
         
     def _unpatchify_if_sequence(self, feats: List[torch.Tensor]) -> List[torch.Tensor]:
         # feats: list of either [B, N, C] or [B, C, D, H, W]
@@ -158,14 +166,41 @@ class SAMBackbone(nn.Module):
             "vision_pos_enc": position_encodings,
         }
 
+    def _to_backbone_layout(self, x: torch.Tensor) -> torch.Tensor:
+        """SAM2 hands every backbone conv layout ``(B*T, C, Z, Y, X)``
+        (``SAM2._to_model_layout``). PatchEmbedding backbones (masked_vit /
+        masked_hiera) patchify **channels-last** ``input_format`` -- with T=1
+        the numel matches and the channels-first tensor would reshape into
+        scrambled tokens silently (every token mixing unrelated voxels and
+        channels). Convert at this boundary; conv backbones keep conv layout.
+        """
+        if not self.backbone_consumes_channels_last:
+            return x
+        x = x.permute(0, 2, 3, 4, 1)              # (B*T, C, Z, Y, X) -> (B*T, Z, Y, X, C)
+        if self.input_format.startswith("T"):
+            x = x.unsqueeze(1)
+        return x
+
+    def _to_adapter_layout(self, x: torch.Tensor) -> torch.Tensor:
+        """EncoderAdapter.forward assumes channels-last ``(B*T, Z, Y, X, C)`` and
+        permutes to conv layout internally. SAM2 hands conv layout
+        ``(B*T, C, Z, Y, X)`` (``SAM2._to_model_layout``); convert at this boundary.
+        Unlike ``_to_backbone_layout`` there is NO temporal unsqueeze -- the
+        adapter's spatial prior module is purely spatial 3D."""
+        return x.permute(0, 2, 3, 4, 1).contiguous()  # (B*T, C, Z, Y, X) -> (B*T, Z, Y, X, C)
+
     def forward(self, data_sample: dict):
-        feats = self.backbone.forward_features(data_sample["data_tensor"])
+        feats = self.backbone.forward_features(
+            self._to_backbone_layout(data_sample["data_tensor"])
+        )
 
         adapter_keys = None
         # NOTE: SAM2 uses FPN neck to extract features from multi-scale backbone
         #       if we use simple ViT backbone, opt for VitDET style adapter instead
         if self.with_backbone_adapter:
-            feats_dict = self.adapter(data_sample["data_tensor"], feats)
+            feats_dict = self.adapter(
+                self._to_adapter_layout(data_sample["data_tensor"]), feats
+            )
             feats_dict = {str(k): v for k, v in feats_dict.items()}  # ensure string keys
             adapter_keys = sorted(feats_dict.keys(), key=lambda s: int(s))
             feats_list = [feats_dict[k] for k in adapter_keys]

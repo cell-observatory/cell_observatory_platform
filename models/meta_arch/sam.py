@@ -150,6 +150,13 @@ class SAM2Base(torch.nn.Module):
         if self.input_fmt == "TZYXC":
             t, z, y, x, c = token_shape
             self.token_shape = [z, y, x]
+            # Per-axis token->voxel strides (full-volume shape / full-volume token
+            # grid). Crop-mode inputs encode crop-sized grids, so spatial frames
+            # are derived from the features in hand × these strides, never from
+            # self.input_shape directly.
+            self.token_strides = tuple(
+                s // t_ for s, t_ in zip(self.input_shape[1:4], self.token_shape)
+            )
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
@@ -288,6 +295,7 @@ class SAM2Base(torch.nn.Module):
         mask_inputs=None,
         high_res_features=None,
         multimask_output=False,
+        with_high_res=True,
     ):
         """
         Forward SAM prompt encoders and mask heads.
@@ -331,9 +339,14 @@ class SAM2Base(torch.nn.Module):
         B = backbone_features.size(0)
         device = backbone_features.device
         if self.input_fmt == "TZYXC":
-            D, H, W = self.token_shape
+            # Derive the token grid from the features actually in hand: crop-mode
+            # inputs encode crop-sized grids, so asserting equality with the
+            # full-volume self.token_shape would reject valid crops.
+            # NOTE: PromptEncoder / MaskDownSampler / MaskDecoder.output_upscaling
+            # still size internal grids from the full-volume config — that rework
+            # is deferred until SAM runs with mask prompts or anisotropic patches.
+            D, H, W = backbone_features.shape[2:]
             assert backbone_features.size(1) == self.sam_prompt_embed_dim
-            assert backbone_features.size(2) == D and backbone_features.size(3) == H and backbone_features.size(4) == W
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
@@ -406,13 +419,19 @@ class SAM2Base(torch.nn.Module):
                 raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
         if self.input_fmt == "TZYXC":
-            high_res_multimasks = F.interpolate(
-                low_res_multimasks,
-                # TODO: less restrictive to upsample based on real image size
-                size=tuple(self.input_shape[1:4]),
-                mode="trilinear",
-                align_corners=False,
-            )
+            if with_high_res:
+                high_res_multimasks = F.interpolate(
+                    low_res_multimasks,
+                    # High-res frame follows the token grid in hand (crop-sized
+                    # for crop-mode), not the full-volume config shape.
+                    size=tuple(t_ * s for t_, s in zip((D, H, W), self.token_strides)),
+                    mode="trilinear",
+                    align_corners=False,
+                )
+            else:
+                # AMG filters on low-res proxies and upsamples survivors itself
+                # — materializing P×M full volumes here would be pure waste.
+                high_res_multimasks = None
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
@@ -422,7 +441,10 @@ class SAM2Base(torch.nn.Module):
             best_iou_inds = torch.argmax(ious, dim=-1)
             batch_inds = torch.arange(B, device=device)
             low_res_masks = low_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
-            high_res_masks = high_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
+            high_res_masks = (
+                high_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
+                if high_res_multimasks is not None else None
+            )
             if sam_output_tokens.size(1) > 1:
                 sam_output_token = sam_output_tokens[batch_inds, best_iou_inds]
         else:
@@ -2023,10 +2045,10 @@ class SAM2(SAM2Base):
 
         (
             low_res_multimasks,  # (P, M, D4, H4, W4)
-            high_res_multimasks, # (P, M, Z, Y, X)
+            _,                   # high-res skipped: filtered survivors are upsampled below
             ious,                # (P, M)
-            low_res_masks,       # (P, 1, D4, H4, W4)
-            high_res_masks,      # (P, 1, Z, Y, X)
+            _low_res_masks,
+            _,
             _obj_ptr,
             _obj_score,
         ) = self._forward_sam_heads(
@@ -2035,29 +2057,49 @@ class SAM2(SAM2Base):
             mask_inputs=None,
             high_res_features=high_res_expanded,
             multimask_output=self._amg_multimask_output,
+            # P×M full-resolution volumes would be materialized only to be
+            # discarded (m2m replaces them) or mostly filtered out (IoU
+            # threshold) — upsample survivors only, below.
+            with_high_res=False,
         )
 
         # Flatten multi-mask dim: (P, M, ...) -> (P*M, ...)
-        masks = high_res_multimasks.flatten(0, 1)      # (P*M, Z, Y, X)
         iou_preds = ious.flatten(0, 1)                  # (P*M,)
         low_res = low_res_multimasks.flatten(0, 1)      # (P*M, D4, H4, W4)
-        M = high_res_multimasks.shape[1]
+        M = low_res_multimasks.shape[1]
         pts_repeated = points_t.repeat_interleave(M, dim=0)  # (P*M, 3)
 
         data = MaskData(
-            masks=masks,
             iou_preds=iou_preds,
             points=pts_repeated,
             low_res_masks=low_res,
         )
 
         if self.debug:
-            print(f"data['masks'].shape: {data['masks'].shape}")
             print(f"data['iou_preds'].shape: {data['iou_preds'].shape}")
             print(f"IOU PREDS: {data['iou_preds']}")
             print(f"data['low_res_masks'].shape: {data['low_res_masks'].shape}")
 
-        # Optionally do mask-to-mask refinement
+        # The exact upsample _forward_sam_heads would have run for these
+        # features (crop-sized token grid × per-axis strides): applying it to
+        # the surviving subset gives bit-identical masks for those rows.
+        if self.input_fmt == "TZYXC":
+            _Dtok, _Htok, _Wtok = backbone_feats.shape[2:]
+            high_res_size = tuple(
+                t_ * s for t_, s in zip((_Dtok, _Htok, _Wtok), self.token_strides)
+            )
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        def _upsample(low: torch.Tensor) -> torch.Tensor:
+            # (K, D4, H4, W4) -> (K, Z, Y, X); channel-independent trilinear ==
+            # the (P, M, ...) interpolate the heads ran before this change.
+            return F.interpolate(
+                low[:, None], size=high_res_size, mode="trilinear", align_corners=False
+            ).squeeze(1)
+
+        # Optionally do mask-to-mask refinement (consumes ALL prompts' low-res
+        # masks, as before — its refined ious drive the IoU filter below).
         if self._amg_use_m2m:
             refined_masks, refined_ious = self._predict_refine_with_m2m(
                 data["points"], data["low_res_masks"], features
@@ -2065,13 +2107,25 @@ class SAM2(SAM2Base):
             data["masks"] = refined_masks.squeeze(1)
             data["iou_preds"] = refined_ious.squeeze(1)
 
-        # Filter by predicted IoU
-        if self._amg_pred_iou_thresh > 0.0:
-            keep = data["iou_preds"] > self._amg_pred_iou_thresh
-            data.filter(keep)
+            # Filter by predicted IoU (refined)
+            if self._amg_pred_iou_thresh > 0.0:
+                keep = data["iou_preds"] > self._amg_pred_iou_thresh
+                data.filter(keep)
 
-            if self.debug:
-                print(f"keep (after iou filter): {keep}")
+                if self.debug:
+                    print(f"keep (after iou filter): {keep}")
+        else:
+            # Filter by predicted IoU BEFORE materializing full volumes:
+            # iou_preds do not depend on the upsample, so outcomes are
+            # identical — only the survivors ever reach full resolution.
+            if self._amg_pred_iou_thresh > 0.0:
+                keep = data["iou_preds"] > self._amg_pred_iou_thresh
+                data.filter(keep)
+
+                if self.debug:
+                    print(f"keep (after iou filter): {keep}")
+
+            data["masks"] = _upsample(data["low_res_masks"])
 
         # Calculate and filter by stability score
         if self.input_fmt == "TZYXC":

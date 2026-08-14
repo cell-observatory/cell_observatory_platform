@@ -5,13 +5,29 @@ inferencer_worker:
   task: instance_segmentation
   # Configures which tensors get passed to the viz / save workers
   outputs_metadata:
+    # data_tensor is the model INPUT volume: the configured viz handlers
+    # (instance_overlay / feature_viz) read record.image, so it must ride a
+    # shared-memory viz pool like every other viz tensor (the plasma fallback
+    # was removed; InferencerWorker validates this at startup). Model-produced
+    # tensor_info entries are merged in at runtime; data_tensor is not a model
+    # output, so its shape/dtype are declared here.
+    tensor_info:
+      data_tensor:
+        shape: ${datasets.input_shape}
+        dtype: ${dataset_dtype}
+        # Declares the image as a DENSE viz tensor (rendered in the processed frame,
+        # same as the predictions, so overlays align).
+        kind: dense
+        data_format: ${dataset_layout_order}
     buffer_tensors:
       - masks
+      - data_tensor
     visualize_tensors:
       - masks
       # - scores
       - labels
       - boxes
+      - data_tensor
     save_tensors:
       masks:
         name: instance_masks
@@ -45,12 +61,15 @@ inferencer_worker:
   vizualize_outputs: true
   block_on_viz: false
 
-  # InferencerWorker expects a single mapping: { name, tile_names } or { name, fraction }.
-  # by_tile: only tiles listed get visualization (saves GPU / disk). Set to null to visualize every batch.
+  # InferencerWorker expects a single mapping: { name, tile_names and/or rois } or { name, fraction }.
+  # by_tile: allowlist filter (saves GPU / disk). Set tile_names (tile filter), rois
+  # (prepared_id ROI filter), or both (that tile within those ROIs) -- a sample must pass
+  # every filter that is set. Set the whole policy to null to visualize every batch.
   viz_sampling_policy:
     name: by_tile
     tile_names:
       - "000x_000y_000z.zarr"
+    # rois: [3, 17]
 
 
 save_worker:

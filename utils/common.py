@@ -10,7 +10,11 @@ from tqdm.auto import tqdm
 from pathlib import Path
 # from astropy import convolution
 import multiprocessing as mp
-from line_profiler_pycharm import profile
+try:
+    from line_profiler_pycharm import profile
+except ImportError:  # dev-only dependency; make @profile a no-op without it
+    def profile(func):
+        return func
 from typing import Any, List, Union, Optional, Generator
 
 try:
@@ -22,11 +26,6 @@ import matplotlib.pyplot as plt
 
 plt.set_loglevel('error')
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 

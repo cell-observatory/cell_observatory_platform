@@ -15,7 +15,6 @@ defaults:
   - /models/meta_arch/maskdino/mae_large
   - /models/heads/maskdino_decoder/maskdino_decoder
   - /models/heads/pixel_decoder/maskdino_encoder
-  - /models/adapters/vit_adapter
   - /models/backbones/masked_encoder/large
   - /models/backbones/maskdino_backbone/maskdino_backbone
   - /checkpoint/checkpoint

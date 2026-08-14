@@ -19,3 +19,12 @@ torch_compile:
   blockbased_fullgraph: false
   enable_compiled_autograd: false
   backend: inductor
+
+# per-block fully_shard groups for TorchNativeTrainer (FSDP2); includes the
+# frozen target_encoder (EMA copy) so its params are sharded too — its blocks
+# are deliberately absent from the AC/compile lists above (runs under no_grad)
+fsdp:
+  modules:
+    - ["input_encoder.encoder", "blocks"]
+    - ["target_predictor.decoder", "transformer_blocks"]
+    - ["target_encoder.encoder", "blocks"]

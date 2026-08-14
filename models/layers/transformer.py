@@ -17,7 +17,6 @@ from cell_observatory_platform.models.layers.attention import (
 from cell_observatory_platform.models.layers.utils import cat_keep_shapes, uncat_with_shapes
 from cell_observatory_platform.models.layers.positional_encoding import _maybe_index_rope
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -103,17 +102,20 @@ class Transformer(nn.Module):
 
         # from:
         # https://github.com/facebookresearch/vjepa2/blob/main/src/models/utils/modules.py
-        if mlp_layer == SwiGLU or mlp_layer == SwiGLUFFN_ListFwdMixin:
-            hidden_features = int(dim * mlp_ratio)
-            if wide_silu:
-                swiglu_hidden_features = int(2 * hidden_features / 3)
-                align_as = 8
-                swiglu_hidden_features = (swiglu_hidden_features + align_as - 1) // align_as * align_as
-                hidden_features = swiglu_hidden_features
+        # Wide-SiLU pre-reduces hidden to 2/3·dim·ratio (aligned to 8) ONLY for
+        # timm's SwiGLU, which uses hidden_features as-is.
+        # SwiGLUFFN_ListFwdMixin applies its own 2/3 reduction internally, so
+        # pre-reducing for it double-applies (4/9·dim·ratio instead of 2/3).
+        hidden_features = int(dim * mlp_ratio)
+        if wide_silu and mlp_layer is SwiGLU:
+            swiglu_hidden_features = int(2 * hidden_features / 3)
+            align_as = 8
+            swiglu_hidden_features = (swiglu_hidden_features + align_as - 1) // align_as * align_as
+            hidden_features = swiglu_hidden_features
 
         self.mlp = mlp_layer(
             in_features=dim,
-            hidden_features=int(dim * mlp_ratio) if not wide_silu else hidden_features,
+            hidden_features=hidden_features,
             drop=proj_drop,
             act_layer=act_layer,
             bias=ffn_bias
@@ -151,6 +153,16 @@ class Transformer(nn.Module):
         residual_scale_factors = [b / sample_subset_size for b, sample_subset_size in zip(b_list, sample_subset_sizes)]
 
         if self.training and self.sample_drop_ratio > 0.0:
+            if any(m is not None for m in masks):
+                # Tripwire: this branch subsets the BATCH (indices_1) and the
+                # rope pos_enc, but `masks`/`spatial_kwargs` are forwarded
+                # un-subset -- per-sample masks would misalign with the subset
+                # batch. No live caller hits this (DINO multi-crop is parked
+                # and passes masks=None); wire the subsetting before enabling.
+                raise NotImplementedError(
+                    "sample_drop_ratio > 0 with per-sample masks: masks are "
+                    "not subset alongside the batch."
+                )
             indices_1_list = [
                 (torch.randperm(b, device=x.device))[:sample_subset_size]
                 for x, b, sample_subset_size in zip(x_list, b_list, sample_subset_sizes)

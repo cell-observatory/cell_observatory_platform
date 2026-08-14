@@ -1,5 +1,4 @@
 import re
-import sys
 import inspect
 import logging
 from typing import Any, Dict, Literal, List, Mapping, Optional, Tuple, Union
@@ -23,7 +22,6 @@ from cell_observatory_platform.models.heads.masked_hiera_predictor import Masked
 from cell_observatory_platform.training.helpers import get_masked_input_data, get_nparams_and_flops
 from cell_observatory_platform.models.meta_arch import utils as mo
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -165,7 +163,10 @@ class MaskedAutoEncoder(nn.Module):
         backbone_type: Literal["vit", "hiera"] = "vit",
         # Hiera-specific parameters
         hiera_q_pool: int = 3,
-        hiera_q_stride: tuple = (2, 2),
+        # int default expands to the token-grid rank inside Hiera; the old
+        # rank-2 tuple default zip-truncated against 3-D/4-D grids (Hiera
+        # now validates rank loudly).
+        hiera_q_stride: Union[tuple, int] = 2,
         hiera_stages: tuple = (2, 3, 16, 3),
         hiera_mask_unit_size: tuple = (8,8,8),
         # Deformable Attention parameters
@@ -232,6 +233,16 @@ class MaskedAutoEncoder(nn.Module):
         self.wide_silu = mlp_wide_silu
         self.rope_random_rotation_per_head = rope_random_rotation_per_head
         self.backbone_type = backbone_type
+
+        if use_deformable_attn:
+            raise NotImplementedError(
+                "use_deformable_attn on the MASKED ENCODER is not supported: the "
+                "DA scatter path needs spatial_kwargs['mask_indices']/'full_seq_len' "
+                "and no producer exists -- the context-subset sequence would be "
+                "interpreted against the full token grid (broadcast crash at best, "
+                "silent OOB kernel reads at worst). JEPA's predictor-side DA and "
+                "the Hiera DA path are unaffected (full-length sequences)."
+            )
 
         if use_deformable_attn:
             _, token_shape = calc_num_patches(
@@ -391,7 +402,9 @@ class MaskedAutoEncoder(nn.Module):
         
         Adapted from https://github.com/facebookresearch/mae/util/lr_decay.py
         """
-        NO_WD_KEYWORDS = ("pos_embedding", "cls_token", "token_param")
+        # "pos_embed" (no trailing "ding") is Hiera's positional embedding param
+        # name — without it the Hiera pos_embed silently received full WD.
+        NO_WD_KEYWORDS = ("pos_embedding", "pos_embed", "cls_token", "token_param")
 
         enc_L = self.masked_encoder.get_num_layers()
         dec_L = self.masked_decoder.get_num_layers()
@@ -572,7 +585,10 @@ class MaskedAutoEncoder(nn.Module):
             inputs, masks=mu_mask, ctx_idx=mu_keep_idx, spatial_kwargs=spatial_kwargs,
             with_intermediates=True,
             with_fusion_heads=True,
-            return_windowed=False,
+            # channel_proj_type="fusion" hard-requires windowed [B, N, *mu, C]
+            # intermediates (masked_hiera_encoder asserts); the fusion heads
+            # emit un-windowed output, so the decoder contract is unchanged.
+            return_windowed=True,
         )
         x = self.masked_decoder(
             x, mu_mask=mu_mask, ctx_idx=mu_keep_idx, spatial_kwargs=spatial_kwargs,

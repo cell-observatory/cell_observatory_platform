@@ -273,6 +273,40 @@ class MaskedHieraEncoder(nn.Module):
     def get_num_patches(self) -> int:
         return self.num_patches
 
+    def forward_features(self, x: torch.Tensor):
+        """Backbone-wrapper contract: SAMBackbone / MaskDinoBackbone /
+        Mask2FormerBackbone all call ``backbone.forward_features(tensor)`` on
+        every wrapped encoder. Unmasked full-grid forward returning
+        channels-FIRST feature maps (one per multiscale level), matching the
+        wrappers' ``backbone_output_format: feature_map`` configs.
+
+        With ``masks=None`` and un-windowed intermediates, ``Reroll`` emits
+        spatial channels-last ``[B, *grid, C]`` per level -- permute to
+        ``[B, C, *grid]`` (squeezing a leading T=1 grid axis for TZYXC).
+        """
+        if self.channel_proj_type not in ("equalization",):
+            raise NotImplementedError(
+                "forward_features (backbone-wrapper contract) requires the "
+                "multiscale backbone mode (channel_proj_type='equalization'); "
+                f"got {self.channel_proj_type!r}. 'fusion' returns windowed "
+                "MU-layout tensors (MAE path) and 'none' returns the raw "
+                "MU-major sequence -- neither is a spatial feature map."
+            )
+        x_list, _ = self.forward(x, masks=None, ctx_idx=None, return_windowed=False)
+        out = []
+        for feat in x_list:
+            # [B, *grid, C] -> [B, C, *grid]
+            feat = torch.movedim(feat, -1, 1)
+            if feat.dim() == 6:
+                if feat.shape[2] != 1:
+                    raise NotImplementedError(
+                        f"wrapper contract expects 5D [B,C,Z,Y,X] maps; got a "
+                        f"4D token grid with T={feat.shape[2]} != 1"
+                    )
+                feat = feat.squeeze(2)            # drop T=1 -> [B, C, Z, Y, X]
+            out.append(feat)
+        return out
+
     @torch.jit.ignore
     def get_num_layers(self) -> int:
         return len(self.encoder.blocks)

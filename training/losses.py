@@ -1295,16 +1295,20 @@ class MultiLabelBinaryPredictionLoss(nn.Module):
         if "auxiliary_outputs" in outputs:
             for i, aux_output in enumerate(outputs["auxiliary_outputs"]):
                 aux_losses = self.loss_binary_predictions({"pred_masks": aux_output}, targets)
-                # NOTE: In the paper they downweight lower resolution features like this. 
+                # NOTE: In the paper they downweight lower resolution features like this.
                 # They actually make it so that they all sum to 1.
                 # Here we just downweight them by 0.5**i without normalizing.
                 # They note this only provides marginal improvement here: https://github.com/MIC-DKFZ/nnUNet/issues/1417
-                aux_loss_weights = {
-                    k + f"_{i}": self.loss_weight_dict[k] * 0.5**i 
-                    for i, k in enumerate(aux_losses.keys())
-                }
-                self.loss_weight_dict.update(aux_loss_weights)
-                aux_losses = {k + f"_{i}": v for k, v in aux_losses.items()}
+                # No enumerate here: reusing `i` inside a comprehension shadowed
+                # the aux LEVEL with the key position, mis-weighting some keys
+                # and (via the consumer's `k in loss_weight_dict` filter in
+                # UNet.step_loss) silently dropping others from the total loss.
+                # setdefault keeps the per-forward mutation idempotent.
+                for k in aux_losses.keys():
+                    self.loss_weight_dict.setdefault(
+                        f"{k}_{i}", self.loss_weight_dict[k] * 0.5**i
+                    )
+                aux_losses = {f"{k}_{i}": v for k, v in aux_losses.items()}
                 losses.update(aux_losses)
 
         return losses

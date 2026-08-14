@@ -188,11 +188,11 @@ class MaskDINO(nn.Module):
         features_dict = self.backbone(data_sample)
 
         outputs, denoise_predictions = self.segmentation_head(
-            features_dict, targets=data_sample["metainfo"]["targets"][0]
+            features_dict, targets=data_sample["metainfo"]["targets"]
         )
 
         # bipartite matching-based loss
-        losses = self.criterion(outputs, data_sample["metainfo"]["targets"][0], denoise_predictions)
+        losses = self.criterion(outputs, data_sample["metainfo"]["targets"], denoise_predictions)
 
         # for loss in list(losses.keys()):
         #     if loss in self.criterion.loss_weight_dict:
@@ -326,10 +326,13 @@ class MaskDINO(nn.Module):
               instances 1 .. K assigned in ascending score order, so the
               highest-confidence instance "wins" overlapping voxels.
 
-        Two passes through the chunked materializer: the first computes
-        mask-confidence so we know the final per-instance score; the second
-        re-materializes in ascending-score order to stamp label IDs. We trade
-        ~2x compute for keeping peak memory at ``mask_chunk_size * D*H*W``.
+        ONE pass through the chunked materializer: each chunk's mask confidence
+        (and hence its final score) depends only on its own masks, so the
+        higher-score-wins collapse can run in the same pass that computes
+        confidence (peak memory stays ``mask_chunk_size * D*H*W``). Provisional
+        per-voxel slot indices are remapped to ascending-score IDs afterwards,
+        and ``boxes``/``labels`` are permuted by the SAME order, so returned row
+        ``j-1`` always corresponds to label-map ID ``j``.
         """
         materializer = MaskMaterializer(
             mask_embeddings=sample["mask_embeddings"],
@@ -344,7 +347,15 @@ class MaskDINO(nn.Module):
         K = int(topk_query_idx.numel())
         mask_confidence = torch.zeros(K, device=device, dtype=torch.float32)
 
-        # Pass 1: per-instance mask confidence in original topk order.
+        spatial = tuple(sample["eval_frame_size"])
+        # Winner-take-all state: best score per voxel, and the 1-based topk SLOT
+        # (original topk order) that claimed it. Higher-score-wins in one pass is
+        # equivalent to the old "stamp in ascending-score order, later overwrite
+        # wins" (ties: the first-seen instance keeps the voxel).
+        best = torch.zeros(spatial, dtype=torch.float32, device=device)
+        slot_map = torch.zeros(spatial, dtype=torch.int32, device=device)
+
+        # ONE materialize pass: confidence + collapse per chunk.
         slot = 0
         for chunk_idx, mask_logits in materializer.chunks(topk_query_idx):
             k = int(chunk_idx.numel())
@@ -352,9 +363,17 @@ class MaskDINO(nn.Module):
             binary = (mask_logits > 0)
             sigm_inside = (sigm * binary.to(sigm.dtype)).flatten(1).sum(dim=1)
             count_inside = binary.flatten(1).sum(dim=1).to(torch.float32)
-            mask_confidence[slot:slot + k] = sigm_inside.to(torch.float32) / torch.clamp(
-                count_inside, min=1.0
-            )
+            conf = sigm_inside.to(torch.float32) / torch.clamp(count_inside, min=1.0)
+            mask_confidence[slot:slot + k] = conf
+
+            chunk_scores = topk_scores[slot:slot + k].to(torch.float32)
+            if not self.focus_on_boxes:
+                chunk_scores = chunk_scores * conf
+
+            for i in range(k):
+                win = binary[i] & (chunk_scores[i] > best)
+                best = torch.where(win, chunk_scores[i], best)
+                slot_map[win] = slot + i + 1
             slot += k
 
         if self.focus_on_boxes:
@@ -362,25 +381,22 @@ class MaskDINO(nn.Module):
         else:
             scores_per_instance = topk_scores.to(torch.float32) * mask_confidence
 
-        # Pass 2: collapse per-instance binary masks into a label map in
-        # ascending-score order so highest-score instances overwrite earlier
-        # ones (matches `collapse_instance_masks` semantics).
+        # Label IDs 1..K in ascending-score order (old semantics: the last —
+        # highest-score — stamp got the highest ID). Remap the provisional slot
+        # indices to those IDs, and permute boxes/labels by the SAME order so
+        # returned row j-1 corresponds to label-map ID j.
         order = scores_per_instance.argsort()  # ascending
-        label_map = torch.zeros(
-            sample["eval_frame_size"], dtype=torch.int32, device=device
+        id_of_slot = torch.empty(K, dtype=torch.int32, device=device)
+        id_of_slot[order] = torch.arange(1, K + 1, dtype=torch.int32, device=device)
+        label_map = torch.where(
+            slot_map > 0,
+            id_of_slot[(slot_map.long() - 1).clamp(min=0)],
+            slot_map,
         )
-        ordered_query_idx = topk_query_idx[order]
-        # Label IDs 1..K assigned in iteration order = ascending-score order.
-        next_id = 1
-        for chunk_idx, mask_logits in materializer.chunks(ordered_query_idx):
-            k = int(chunk_idx.numel())
-            for i in range(k):
-                label_map[mask_logits[i] > 0] = next_id
-                next_id += 1
 
         return {
-            "boxes": sample["boxes"],
-            "labels": scores_per_instance,
+            "boxes": sample["boxes"][order],
+            "labels": scores_per_instance[order],
             "masks": label_map.to(torch.uint16),
         }
 

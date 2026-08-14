@@ -35,7 +35,7 @@ class Unet(nn.Module):
         if output_metadata is not None:
             self.output_metadata.merge_with(output_metadata)
 
-    def init_model_weights(self, buffer_device: str | None = None):
+    def _init_model_weights(self, buffer_device: str | None = None):
         # FIXME: Implement this
         # MedNeXt/ConvNeXt backbones use default PyTorch init; no special handling needed
         pass
@@ -46,7 +46,7 @@ class Unet(nn.Module):
 
     def forward(self, data_sample: dict):
         features = self.backbone(data_sample) # (B, N_classes, spatial)
-        losses = self.criterion(features, data_sample["metainfo"]["targets"][0])
+        losses = self.criterion(features, data_sample["metainfo"]["targets"])
         losses["step_loss"] = sum(
             losses[k] * self.criterion.loss_weight_dict[k] 
             for k in losses.keys() 

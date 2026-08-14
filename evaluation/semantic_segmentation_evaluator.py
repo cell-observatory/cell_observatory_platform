@@ -27,7 +27,12 @@ class SemanticSegmentationEvaluator(DatasetEvaluator):
         num_classes: number of label values (incl. background) the metric iterates over
             (``classes + 1`` in the ``class + 1`` / background ``0`` convention); ``None`` infers
             per image.
-        ignore_index: label value to skip in the mIoU average (e.g. ``0`` for background).
+        ignore_index: GT label value marking unlabeled/void VOXELS. Those voxels are masked
+            out of every class's intersection and union (they are neither hits nor misses
+            for any class). ``None`` disables voxel masking.
+        exclude_from_mean: class label that is fully scored per-voxel but dropped from the
+            final class MEAN (e.g. ``0`` to report foreground-only mIoU while background
+            remains a real, predictable class). 
         gt_mask_source: how the per-image GT is built -- ``"masks"`` (scatter ``label + 1`` from
             per-instance binary masks) or ``"label_map"`` (map instance ids -> ``class + 1``).
         result_name: key under which the aggregated mIoU is reported.
@@ -37,6 +42,7 @@ class SemanticSegmentationEvaluator(DatasetEvaluator):
         self,
         num_classes: Optional[int] = None,
         ignore_index: Optional[int] = None,
+        exclude_from_mean: Optional[int] = None,
         gt_mask_source: str = "masks",
         result_name: str = "mask_miou_semantic",
     ):
@@ -53,6 +59,7 @@ class SemanticSegmentationEvaluator(DatasetEvaluator):
             "mode": "semantic",
             "num_classes": num_classes,
             "ignore_index": ignore_index,
+            "exclude_from_mean": exclude_from_mean,
         }])
         # Single-metric convenience handle used by process().
         self.metric = self.metrics[result_name]

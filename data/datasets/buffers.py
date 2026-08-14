@@ -2,15 +2,14 @@ from __future__ import annotations
 import sys
 import atexit
 import asyncio
+import contextlib
 import ctypes
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from typing_extensions import Buffer
 
-from omegaconf import open_dict
+from omegaconf import DictConfig, open_dict
 
-import cupy as cp
-from cupy.cuda import runtime as cudart
 import numpy as np
 from dataclasses import dataclass, field
 import ray
@@ -30,14 +29,11 @@ from cell_observatory_platform.utils.context import (
     bind_current_process_to_node
 )
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
-BUFFER_NAME_REGEX = re.compile(r"host_pinned_shm_buffer_(?P<pool_name>.*)_numa_(?P<numa_node>\d+)_rank_(?P<global_rank>\d+)")
+# Non-greedy pool_name + anchored end: a greedy `.*` would swallow a literal
+# "_numa_<n>_rank_<n>" inside a pool name and mis-parse the trailing fields.
+BUFFER_NAME_REGEX = re.compile(r"host_pinned_shm_buffer_(?P<pool_name>.+?)_numa_(?P<numa_node>\d+)_rank_(?P<global_rank>\d+)$")
 
 
 def attach_shared_memory(name: str) -> shared_memory.SharedMemory:
@@ -155,6 +151,10 @@ class HostMemoryBuffer:
         self.free = asyncio.Queue(self.cap)
         for i in range(self.cap):
             self.free.put_nowait(i)
+        # Slots currently checked OUT of the free queue. put_free of a slot not
+        # in this set is a double free (or a free of a never-issued slot) and
+        # raises instead of silently over-filling the queue.
+        self._outstanding: set = set()
 
         atexit.register(self._cleanup)
 
@@ -162,16 +162,27 @@ class HostMemoryBuffer:
         if getattr(self, "_cleaned", False):
             return
         self._cleaned = True
-        try: 
+        try:
             self._shm.close()
             self._shm.unlink()
-        except FileNotFoundError: 
+        except FileNotFoundError:
             pass
+
+    def release(self) -> None:
+        """Unlink the segment from inside the owner. atexit does not run under
+        ``ray.kill``, so teardown must be an explicit remote call (see
+        BufferManager.remove_buffer)."""
+        self._cleanup()
+
+    def free_count(self) -> int:
+        """Number of slots currently in the free queue (== capacity when idle)."""
+        return self.free.qsize()
 
     async def get_free(self) -> Dict[str, Any]:
         t0 = time.perf_counter()
         slot = await self.free.get()
         t1 = time.perf_counter()
+        self._outstanding.add(int(slot))
         if self._metrics_enabled:
             self._metrics["get_free_wait_time_ms"].append((t1 - t0) * 1000)
             self._occupied_slots += 1
@@ -192,16 +203,18 @@ class HostMemoryBuffer:
         try:
             slot = self.free.get_nowait()
         except asyncio.QueueEmpty:
+            # The drop counter must live here: after the early return below it
+            # was dead code and pool-exhaustion drops were never counted.
+            self._try_get_free_drops += 1
+            if self._metrics_enabled:
+                self._metrics["try_get_free_drops"].append(self._try_get_free_drops)
             return None
         t1 = time.perf_counter()
+        self._outstanding.add(int(slot))
         if self._metrics_enabled:
             self._metrics["try_get_free_wait_time_ms"].append((t1 - t0) * 1000)
-            if slot is None:
-                self._try_get_free_drops += 1
-                self._metrics["try_get_free_drops"].append(self._try_get_free_drops)
-            else:
-                self._occupied_slots += 1
-                self._metrics["occupied_slots"].append(self._occupied_slots)
+            self._occupied_slots += 1
+            self._metrics["occupied_slots"].append(self._occupied_slots)
         return {
             "slot": slot,
             "name": self.name,
@@ -213,8 +226,17 @@ class HostMemoryBuffer:
         }
 
     async def put_free(self, slot: int):
+        slot = int(slot)
+        if slot not in self._outstanding:
+            # Double free (or free of a never-issued slot): the queue would
+            # exceed capacity / hand the same slot to two writers.
+            raise RuntimeError(
+                f"put_free({slot}) on pool {self.actor_name!r}: slot is not "
+                f"outstanding (double free?). outstanding={sorted(self._outstanding)}"
+            )
+        self._outstanding.discard(slot)
         t0 = time.perf_counter()
-        await self.free.put(int(slot))
+        await self.free.put(slot)
         t1 = time.perf_counter()
         if self._metrics_enabled:
             self._metrics["put_free_wait_time_ms"].append((t1 - t0) * 1000)
@@ -284,6 +306,18 @@ def set_buffers(
                     f"capacity {buffer_cfg['capacity']} vs {buffer_capacity}, "
                     f"batch_shape {buffer_cfg['batch_shape']} vs {expected_batch_shape}, "
                     f"dtype {buffer_cfg['dtype']} vs {dtype}"
+                )
+            # Detached actors survive driver crashes WITH their queue state: a
+            # previous run that died with slots checked out leaves a depleted
+            # free queue, and every save on top of it silently no-ops
+            # (block_on_save: false) or deadlocks (true). Refuse to reuse it.
+            free_count = ray.get(buffer.free_count.remote())
+            if free_count != buffer_capacity:
+                raise RuntimeError(
+                    f"reusing pool {name!r} with a depleted free queue "
+                    f"({free_count}/{buffer_capacity} slots free; a previous run "
+                    f"crashed with slots checked out); kill the actor or reset "
+                    f"the queue before reuse."
                 )
             ray.logger.info(
                 f"Reusing existing shared memory buffer actor '{name}' "
@@ -357,6 +391,33 @@ def get_slot_bytes(shape: tuple[int, ...], dtype: str) -> int:
     )
 
 
+def dense_buffer_formats(output_metadata, layout: Optional[str]) -> Dict[str, str]:
+    """``{name -> data_format}`` for every DENSE buffered tensor, save or viz.
+
+    Dense membership comes from ``save_tensors[name].annotation_type == "dense"``
+    for saved tensors, plus ``tensor_info[name].kind == "dense"`` for viz-only
+    dense tensors (e.g. ``data_tensor``, declared in the inference config).
+    Keying restore/enlarge/crop off save_tensors alone left viz-only dense
+    tensors at processed shape while predictions were restored to the original
+    frame -- misaligned overlays (round-3 H-I3).
+    """
+    tensor_info = output_metadata.get("tensor_info", {}) or {}
+    save_tensors = output_metadata.get("save_tensors", {}) or {}
+    visualize_tensors = list(output_metadata.get("visualize_tensors", []) or [])
+
+    dense_formats: Dict[str, str] = {}
+    for name, meta in (save_tensors.items() if hasattr(save_tensors, "items") else []):
+        if hasattr(meta, "get") and meta.get("annotation_type") == "dense":
+            dense_formats[name] = str(meta.get("data_format", layout)).upper()
+    for name in visualize_tensors:
+        if name in dense_formats:
+            continue
+        info = tensor_info.get(name)
+        if info is not None and hasattr(info, "get") and info.get("kind") == "dense":
+            dense_formats[name] = str(info.get("data_format", layout)).upper()
+    return dense_formats
+
+
 def _resize_dense_output_shapes_for_restore(output_metadata, layout: Optional[str], stats) -> None:
     """Grow dense save/viz buffer shapes to the FULL ORIGINAL TILE.
 
@@ -369,14 +430,14 @@ def _resize_dense_output_shapes_for_restore(output_metadata, layout: Optional[st
     which bounds the largest tile across the batch. A no-op when the model already
     runs at full tile (maxima <= current shape).
 
-    Identifies dense tensors via ``save_tensors[name].annotation_type == "dense"``
-    and uses their ``data_format`` to locate the Z/Y/X axes in the shape tuple.
+    Identifies dense tensors via :func:`dense_buffer_formats` (save-dense via
+    ``annotation_type``, viz-only dense via ``tensor_info[...].kind``) and uses
+    their ``data_format`` to locate the Z/Y/X axes in the shape tuple.
 
     Mutates ``output_metadata`` IN PLACE (the caller passes the live config node, so
     the enlarged shapes are visible to every downstream consumer of that node).
     """
     tensor_info = output_metadata.get("tensor_info", {}) or {}
-    save_tensors = output_metadata.get("save_tensors", {}) or {}
     buffer_tensors = list(output_metadata.get("buffer_tensors", []) or [])
 
     axis_max = {
@@ -385,16 +446,30 @@ def _resize_dense_output_shapes_for_restore(output_metadata, layout: Optional[st
         "X": int(getattr(stats, "max_x_size", 0) or 0),
     }
 
-    dense_formats: Dict[str, str] = {}
-    for name, meta in (save_tensors.items() if hasattr(save_tensors, "items") else []):
-        if hasattr(meta, "get") and meta.get("annotation_type") == "dense":
-            dense_formats[name] = str(meta.get("data_format", layout)).upper()
+    dense_formats = dense_buffer_formats(output_metadata, layout)
 
-    with open_dict(output_metadata):
+    # Buffer tensors that are declared dense MUST be resizable: a dense tensor
+    # missing from tensor_info would keep its (too small) processed shape and
+    # overflow the raw device->host memcpy at restore time. Sparse buffer
+    # tensors (no dense_formats entry) legitimately pass through untouched.
+    unmapped = [n for n in buffer_tensors if n in dense_formats and n not in tensor_info]
+    if unmapped:
+        raise ValueError(
+            f"dense buffer tensors {unmapped} have no tensor_info entry; their "
+            f"SHM slots cannot be resized for full-tile restore and the raw "
+            f"memcpy would overflow. Declare them in the model's "
+            f"output_metadata.tensor_info."
+        )
+
+    # open_dict only applies to DictConfig (the live config node); plain dicts
+    # (tests, programmatic callers) are already writable.
+    ctx = open_dict(output_metadata) if isinstance(output_metadata, DictConfig) \
+        else contextlib.nullcontext()
+    with ctx:
         for name in buffer_tensors:
             fmt = dense_formats.get(name)
-            # TODO: fail hard here?
-            if fmt is None or name not in tensor_info:
+            if fmt is None:
+                # Not declared dense (sparse/aux tensor): nothing to grow.
                 continue
             shape = [int(s) for s in tensor_info[name]["shape"]]
             for axis, max_value in axis_max.items():
@@ -465,6 +540,16 @@ def init_output_memory_pools(
     # config node, so the enlarged shapes are seen by every downstream consumer (the
     # inferencer_worker + save/viz workers built from that same node). No-op / skipped
     # when restore_stats is None (model already runs at full tile).
+
+    # Snapshot the PROCESSED (pre-enlarge) shapes: viz renders the pre-restore,
+    # processed-resolution copies, so viz slots keep the processed shape while the
+    # save pools grow to the full-tile restore shape.
+    processed_shapes = {
+        name: list(output_metadata["tensor_info"][name]["shape"])
+        for name in (output_metadata.get("buffer_tensors") or ())
+        if name in (output_metadata.get("tensor_info") or {})
+    }
+
     if restore_stats is not None:
         _resize_dense_output_shapes_for_restore(output_metadata, layout, restore_stats)
 
@@ -474,6 +559,8 @@ def init_output_memory_pools(
             tensor_dtype = output_metadata["tensor_info"][name]["dtype"]
         except KeyError as e:
             raise ValueError(f"Tensor info for {name} not found in output_metadata: {e}")
+
+        viz_tensor_shape = processed_shapes.get(name, tensor_shape)
 
         if name in output_metadata["save_tensors"]:
             buffer_manager.set_buffer(
@@ -489,7 +576,7 @@ def init_output_memory_pools(
             buffer_manager.set_buffer(
                 pool_name=f"{name}_viz",
                 batch_size=batch_size,
-                input_shape=tensor_shape,
+                input_shape=viz_tensor_shape,
                 dtype=tensor_dtype,
                 buffer_type="host_memory",
                 buffer_capacity=viz_buffer_capacity,
@@ -532,6 +619,7 @@ class BufferManager:
         self._buffer_cfgs: Dict[str, Dict[str, Any]] = {}
         self._buffer_shms: Dict[str, shared_memory.SharedMemory] = {}
         self._pinned_ptrs: Dict[str, int] = {}
+        self._free_refs: List[Any] = []   # outstanding put_free refs (see free_slot)
         self._current_memory_usage_bytes = 0
         self._max_memory_usage_bytes = int(rank_memory_budget_gb * 2**30 * (1 - safety_margin))
 
@@ -541,9 +629,10 @@ class BufferManager:
 
     def __getstate__(self) -> Dict[str, Any]:
         state = self.__dict__.copy()
-        # SharedMemory handles and CUDA pointers are process-local
+        # SharedMemory handles, CUDA pointers, and pending free refs are process-local
         del state["_buffer_shms"]
         del state["_pinned_ptrs"]
+        state["_free_refs"] = []
         state["_is_owner"] = False
         return state
 
@@ -551,8 +640,26 @@ class BufferManager:
         self.__dict__.update(state)
         self._pinned_ptrs = {}
         self._buffer_shms = {}
-        for pool_name, cfg in self._buffer_cfgs.items():
-            self._buffer_shms[pool_name] = attach_shared_memory(cfg["name"])
+        self._free_refs = []
+        for pool_name, cfg in list(self._buffer_cfgs.items()):
+            try:
+                shm = attach_shared_memory(cfg["name"])
+            except FileNotFoundError:
+                # The pickled segment name is stale (the owner recreated the
+                # pool since this manager was serialized). Revalidate against
+                # the LIVE actor rather than attaching blind; a dead actor
+                # makes ray.get raise loudly instead of a confusing ENOENT.
+                actor = self._buffer_actors.get(pool_name)
+                if actor is None:
+                    raise RuntimeError(
+                        f"pool {pool_name!r}: shared memory segment "
+                        f"{cfg['name']!r} is gone and no actor handle is "
+                        f"available to revalidate against."
+                    )
+                fresh = ray.get(actor.get_config.remote(), timeout=30)
+                self._buffer_cfgs[pool_name] = fresh
+                shm = attach_shared_memory(fresh["name"])
+            self._buffer_shms[pool_name] = shm
         atexit.register(self._cleanup_shms)
 
     def pin_buffers(self) -> None:
@@ -561,6 +668,10 @@ class BufferManager:
         Must be called from a process that owns a CUDA context (e.g. the
         inference worker).  Mirrors the pattern used in CollatorActor for H2D.
         """
+        # cupy is imported lazily: pinning only happens in CUDA-owning workers,
+        # while this module is imported by every loader/collator/driver process.
+        from cupy.cuda import runtime as cudart
+
         for pool_name, shm in self._buffer_shms.items():
             if pool_name in self._pinned_ptrs:
                 continue
@@ -569,17 +680,28 @@ class BufferManager:
             self._pinned_ptrs[pool_name] = base_ptr
             logger.info(f"Pinned shared memory for pool {pool_name} ({shm.size} bytes)")
 
+    def _unpin_ptr(self, pool_name: str, ptr: int) -> None:
+        """cudaHostUnregister one pinned base pointer (lazy cupy import)."""
+        from cupy.cuda import runtime as cudart
+
+        cudart.hostUnregister(ptr)
+        logger.info(f"Unpinned shared memory for pool {pool_name}")
+
     def unpin_buffers(self) -> None:
         """Unregister all page-locked shared memory buffers."""
-        for pool_name, ptr in list(self._pinned_ptrs.items()):
+        # getattr: __del__ can run on a partially-constructed instance
+        for pool_name, ptr in list(getattr(self, "_pinned_ptrs", {}).items()):
             try:
-                cudart.hostUnregister(ptr)
+                self._unpin_ptr(pool_name, ptr)
             except Exception as e:
                 logger.exception(f"Failed to unpin buffer {pool_name}: {e}")
-        self._pinned_ptrs.clear()
+        if hasattr(self, "_pinned_ptrs"):
+            self._pinned_ptrs.clear()
 
     def _cleanup_shms(self) -> None:
         """Clean up the BufferManager."""
+        if not hasattr(self, "_buffer_shms"):
+            return  # partially-constructed instance (__del__ during tests/init failure)
         self.unpin_buffers()
         for pool_name, buffer_shm in self._buffer_shms.items():
             try:
@@ -680,14 +802,39 @@ class BufferManager:
     
     def remove_buffer(self, pool_name: str) -> None:
         """
-        Remove a buffer for a given pool.
+        Remove a buffer for a given pool. Owner instances also tear down the
+        underlying detached actor (release the segment, then kill).
         """
         if pool_name not in self._buffer_actors:
             raise ValueError(f"Pool {pool_name} does not exist. Use set_buffer instead.")
         self._current_memory_usage_bytes -= get_slot_bytes(self._buffer_cfgs[pool_name]["batch_shape"], self._buffer_cfgs[pool_name]["dtype"]) * self._buffer_cfgs[pool_name]["capacity"]
+        # Unregister CUDA pinning BEFORE closing/unlinking the segment: the
+        # driver must release the page-lock while the mapping still exists
+        # (unregistering an unmapped VA is swallowed but leaves stale pinning
+        # records if the range is remapped in-process). pop() keeps this
+        # idempotent against _cleanup_shms' bulk unpin fallback.
+        ptr = self._pinned_ptrs.pop(pool_name, None)
+        if ptr is not None:
+            try:
+                self._unpin_ptr(pool_name, ptr)
+            except Exception as e:
+                logger.warning(f"cudaHostUnregister failed for {pool_name}: {e}")
         self._buffer_shms.pop(pool_name).close()
         self._buffer_cfgs.pop(pool_name)
-        self._buffer_actors.pop(pool_name)
+        actor = self._buffer_actors.pop(pool_name)
+        if self._is_owner:
+            # Detached actors outlive drivers; without this the segment AND the
+            # depleted free-queue state leak into the next run (silent no-op
+            # saves / deadlocks). Unlink from inside first -- atexit does not
+            # run under ray.kill.
+            try:
+                ray.get(actor.release.remote(), timeout=30)
+            except Exception as e:
+                logger.warning(f"release() failed for pool {pool_name!r}: {e}")
+            try:
+                ray.kill(actor, no_restart=True)
+            except Exception as e:
+                logger.warning(f"ray.kill failed for pool {pool_name!r}: {e}")
     
     def slot_info_to_view(self, slot_info: Dict[str, Any]) -> np.ndarray:
         """
@@ -699,17 +846,39 @@ class BufferManager:
 
     def free_slot(self, slot_info: Dict[str, Any]) -> None:
         """
-        Free a slot.
+        Free a slot (non-blocking). 
         """
         try:
             pool_name = parse_buffer_name(slot_info["actor_name"])["pool_name"]
             buffer_actor = self.get_buffer(pool_name)
-            buffer_actor.put_free.remote(slot_info["slot"])
+            ref = buffer_actor.put_free.remote(slot_info["slot"])
+            self._free_refs.append(ref)
         except Exception as e:
             logger.error(
                 f"Failed to free slot {slot_info['slot']} for pool "
                 f"{slot_info.get('actor_name', slot_info.get('name'))}: {e}"
             )
+            return
+        # Reap completed frees without blocking. Errors are logged (not raised):
+        # free_slot runs inside teardown finally-loops that must free EVERY
+        # remaining slot; drain_free_refs() is the raising reap point.
+        if len(self._free_refs) >= 64:
+            done, self._free_refs = ray.wait(
+                self._free_refs, num_returns=len(self._free_refs), timeout=0
+            )
+            for ref in done:
+                try:
+                    ray.get(ref)
+                except Exception as e:
+                    logger.error(f"put_free failed (double-free?): {e}")
+
+    def drain_free_refs(self) -> None:
+        """Blocking reap of every outstanding put_free ref; RAISES on the first
+        failed free (double-free etc.) -- call from shutdown/finalize/tests to
+        make producer-side free bugs observable instead of background log noise."""
+        refs, self._free_refs = self._free_refs, []
+        if refs:
+            ray.get(refs)
 
     def enable_metrics_collection(self) -> None:
         """Enable metrics collection for the BufferManager."""
@@ -762,6 +931,12 @@ class BufferManager:
             self._cleanup_shms()
             return
         try:
+            # Reap outstanding frees BEFORE killing the actors: a failed free
+            # (double-free) surfaces here instead of dying with the actor.
+            try:
+                self.drain_free_refs()
+            except Exception as e:
+                logger.error(f"Outstanding slot frees failed during shutdown: {e}")
             self.log_metrics_at_shutdown()
             for pool_name in list(self._buffer_actors.keys()):
                 self.remove_buffer(pool_name)

@@ -1,6 +1,8 @@
 from __future__ import absolute_import, division, print_function
 
-import pytest
+import functools
+import math
+
 import torch
 import torch.nn.functional as F
 from torch.autograd import Function
@@ -19,13 +21,17 @@ def _is_power_of_2(n):
     return (n & (n - 1) == 0) and n != 0
 
 
+@functools.lru_cache(maxsize=None)
 def factors(N):
-    res = []
-    # find all integer divisors of N
-    for i in range(1, N + 1):
+    # Find all integer divisors of N by enumerating to isqrt(N) (O(sqrt N)
+    # instead of O(N)); cached because this runs on every kernel launch spec.
+    small, large = [], []
+    for i in range(1, math.isqrt(N) + 1):
         if N % i == 0:
-            res.append(i)
-    return res
+            small.append(i)
+            if i != N // i:
+                large.append(N // i)
+    return small + large[::-1]
 
 
 def findspec(B, Q, G, C):
@@ -155,7 +161,10 @@ class FlashDeformAttnFunction(Function):
 #   https://numpy.org/doc/2.3/reference/generated/numpy.meshgrid.html
 # ============================================================================
 def ms_deform_attn_core_pytorch_3d(value, value_spatial_shapes, sampling_locations, attention_weights):
-    # for debug / testing only, use cuda version otherwise
+    # for debug / testing only, use cuda version otherwise.
+    # CONTRACT: `attention_weights` are RAW logits, softmaxed over (levels *
+    # points) inside this helper — matching the CUDA kernel, which softmaxes
+    # internally (see the commented-out softmax in FlashDeformAttn3D.forward).
     # N_ = batch_size, S_ = total_spatial_tokens, M_ = num_heads, E_ = embed_dim
     N_, S_, M_, E_ = value.shape
     # Lq = num_query_points, L = num_levels, P = num_points (sampling)
@@ -171,13 +180,17 @@ def ms_deform_attn_core_pytorch_3d(value, value_spatial_shapes, sampling_locatio
         #       hence we unsqueeze and add a dummy dim
         sampling_grid_l_ = sampling_grids[:, :, :, lid_].transpose(1, 2).flatten(0, 1).unsqueeze(1)
         # N_*M_, E_, Lq_, P_
-        sampling_value_l_ = F.grid_sample( # FIXME: axis order issue here
+        # (axis order is documented in the block comment above: the grid's last
+        # dim is (x, y, z) against (B, C, Z, Y, X) tensors)
+        sampling_value_l_ = F.grid_sample(
             value_l_, sampling_grid_l_, mode="bilinear", padding_mode="zeros", align_corners=False
         )
         sampling_value_l_ = sampling_value_l_.squeeze(2)
         sampling_value_list.append(sampling_value_l_)
     # (N_, Lq_, M_, L_, P_) -> (N_, M_, Lq_, L_, P_) -> (N_, M_, 1, Lq_, L_*P_)
     attention_weights = attention_weights.transpose(1, 2).reshape(N_ * M_, 1, Lq_, L_ * P_)
+    # softmax over (levels * points), mirroring the kernel's internal softmax
+    attention_weights = attention_weights.softmax(dim=-1)
     #  List[N_*M_, E_, Lq_, P_] -> (N*M, E, Lq, L, P) -> (broadcast mul & sum last dim) -> (N*M, E, Lq) -> (N, M*E, Lq)
     output = (torch.stack(sampling_value_list, dim=-2).flatten(-2) * attention_weights).sum(-1).view(N_, M_ * E_, Lq_)
     return output.transpose(1, 2).contiguous()  #  (N, Lq, M*E)

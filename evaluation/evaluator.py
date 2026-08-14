@@ -84,15 +84,21 @@ class DatasetEvaluator(metaclass=abc.ABCMeta):
         sufficient statistics (``gather()`` is idempotent and a no-op at
         ``world_size == 1``) and aggregating once over the pooled multiset. A
         metric whose ``aggregate()`` returns a ``Mapping`` (e.g.
-        :class:`PredictedIoUEvalMetric`) is flattened under ``f"{name}/{sub}"``.
+        :class:`PredictedIoUEvalMetric`) is flattened under ``f"{name}/{sub}"``
+        -- unless the metric sets ``flat_result_keys``, in which case its
+        mapping keys are already fully-qualified log keys and are written
+        verbatim (e.g. :class:`BoxMIoUMetric`'s ``box_miou`` +
+        ``box_match_recall``, keeping the historical flat key for dashboards
+        and ``val_metric`` selection).
         """
         results: Dict[str, float] = {}
         for name, metric in self.metrics.items():
             metric.gather()
             value = metric.aggregate()
             if isinstance(value, Mapping):
+                bare = bool(getattr(metric, "flat_result_keys", False))
                 for subkey, subval in value.items():
-                    results[f"{name}/{subkey}"] = float(subval)
+                    results[subkey if bare else f"{name}/{subkey}"] = float(subval)
             else:
                 results[name] = float(value)
         self._results = results

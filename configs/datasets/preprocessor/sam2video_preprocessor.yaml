@@ -26,7 +26,6 @@ input_format: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
 
 seed: ${seed}
-mask_channel_idx: ${datasets.mask_channel_idx}
 
 # debug_savepath: null
 expect_mask_channel: true # ${datasets.collate_fn.expect_mask_channel}

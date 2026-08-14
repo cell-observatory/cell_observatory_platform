@@ -52,7 +52,9 @@ class Resize:
                   Samples uniformly from range on each call.
             mode: Interpolation mode for F.interpolate (trilinear, nearest, area).
             align_corners: Whether to align corners in interpolation.
-            dtype: Data type for output tensor.
+            dtype: Retained for config compatibility; the dense flow now
+                preserves the incoming dtype (the preprocessor's float32 count
+                intermediate) and _finalize owns the narrowing.
             bbox_format: Format of bounding boxes - "zyxzyx" or "cxcyczwhd".
             crop_to_valid: When True (default), each sample is first cropped to
                 its valid region (``metainfo["image_sizes"]``) BEFORE resizing,
@@ -101,7 +103,11 @@ class Resize:
                 input_format="ZYXC",
                 mode=self.mode,
                 align_corners=self.align_corners,
-                dtype=self.dtype,
+                # Keep the input dtype: the preprocessor holds an exact float32
+                # count intermediate through the transform chain and narrows to
+                # the config dtype only in _finalize. Casting here would
+                # quantize counts mid-pipeline (e.g. before the noise model).
+                dtype=None,
             )
 
         if tensor.ndim != 6:
@@ -118,7 +124,7 @@ class Resize:
             input_format="ZYXC",
             mode=self.mode,
             align_corners=self.align_corners,
-            dtype=self.dtype,
+            dtype=None,  # keep input dtype; _finalize owns the narrowing
         )
         resized = resized.reshape(B, T, *target_shape, C)
         return resized, scale_factors
@@ -162,15 +168,21 @@ class Resize:
         else:
             # Fast path: no padding to remove -> single batched resize.
             resized_inputs, scale_factors = self._resize_data_tensor(inputs, target_shape, has_time)
+            # source_sizes must follow the SAME flag that gates the image crop:
+            # with crop_to_valid disabled the image was resized from the FULL
+            # buffer, so targets must be treated the same way -- deriving them
+            # from valid_sizes here would crop GT (and rescale boxes) against a
+            # region the image path never used.
             source_sizes = (
                 [tuple(v) for v in valid_sizes]
-                if valid_sizes is not None
+                if (self.crop_to_valid and valid_sizes is not None)
                 else [full_spatial] * B
             )
             per_sample_scales = [scale_factors] * B
 
         resized_metainfo = self._resize_metainfo(
-            metainfo, per_sample_scales, target_shape, source_sizes, inputs, has_time
+            metainfo, per_sample_scales, target_shape, source_sizes, inputs, has_time,
+            cropped_to_valid=needs_crop,
         )
 
         # All spatial GT rides in metainfo["targets"] (warped in _resize_metainfo);
@@ -235,6 +247,7 @@ class Resize:
         source_sizes: List[Tuple[int, int, int]],
         inputs: torch.Tensor,
         has_time: bool,
+        cropped_to_valid: bool = False,
     ) -> Dict[str, Any]:
         """
         Resize metainfo fields using per-sample scale factors.
@@ -242,8 +255,10 @@ class Resize:
         Note: ``orig_image_sizes`` is intentionally NOT modified here -- it is the
         authoritative original tile size (from the DB) that inference restores
         predictions back to. ``image_sizes`` is updated to the new (resized) size,
-        and ``padding_mask`` is reset to all-valid because crop-to-valid already
-        removed the padding before resizing.
+        and ``padding_mask`` is reset to all-valid ONLY when crop-to-valid
+        actually removed the padding before resizing (``cropped_to_valid``);
+        otherwise the mask is resized alongside the data so padding provenance
+        survives a full-buffer resize.
 
         Args:
             metainfo: Dict containing targets, padding_mask, image_sizes, etc.
@@ -268,8 +283,10 @@ class Resize:
             )
 
         if "image_sizes" in out:
-            assert torch.is_tensor(out["image_sizes"]), \
-                f"Expected image_sizes to be a tensor, got {type(out['image_sizes'])}"
+            if not torch.is_tensor(out["image_sizes"]):  # survives python -O
+                raise TypeError(
+                    f"Expected image_sizes to be a tensor, got {type(out['image_sizes'])}"
+                )
             img_sizes = out["image_sizes"]
             B, n_axes = img_sizes.shape[0], img_sizes.shape[1]
             # image_sizes is (B, 3) for ZYXC or (B, 4) for TZYXC (T, Z, Y, X).
@@ -287,20 +304,27 @@ class Resize:
                 out["image_sizes"] = updated
 
         if "padding_mask" in out:
-            assert torch.is_tensor(out["padding_mask"]) and out["padding_mask"].ndim in (4, 5), \
-                f"Expected padding_mask of shape (B, Z, Y, X) or (B, T, Z, Y, X), got {out['padding_mask'].shape}"
             pm = out["padding_mask"]
-            # After crop-to-valid + resize the content fills target_shape with NO
-            # padding, so the mask is all-valid (False). Preserve any time axis.
-            # TODO: Is this always true? What if padding is introduced separate from 
-            #       any differences in buffer vs true tensor shape? Should be rare/not
-            #       currently a problem - but worth investigating. 
-            if has_time:
-                num_frames = int(inputs.shape[1])
-                new_shape = (pm.shape[0], num_frames, *target_shape)
+            if not (torch.is_tensor(pm) and pm.ndim in (4, 5)):  # survives python -O
+                raise TypeError(
+                    f"Expected padding_mask of shape (B, Z, Y, X) or (B, T, Z, Y, X), got {pm.shape if torch.is_tensor(pm) else type(pm)}"
+                )
+            if cropped_to_valid:
+                # Crop-to-valid removed the padding BEFORE the resize, so the
+                # content genuinely fills target_shape: all-valid (False).
+                if has_time:
+                    num_frames = int(inputs.shape[1])
+                    new_shape = (pm.shape[0], num_frames, *target_shape)
+                else:
+                    new_shape = (pm.shape[0], *target_shape)
+                out["padding_mask"] = torch.zeros(new_shape, dtype=pm.dtype, device=pm.device)
             else:
-                new_shape = (pm.shape[0], *target_shape)
-            out["padding_mask"] = torch.zeros(new_shape, dtype=pm.dtype, device=pm.device)
+                # No crop ran (crop_to_valid=False or nothing to crop): the FULL
+                # padded buffer was resized, squeezing any padding INTO the
+                # output. Blanking the mask here would silently launder padding
+                # into "valid content" -- resize the mask instead (nearest-exact,
+                # dtype-preserving) so provenance survives.
+                out["padding_mask"] = resize_masks(pm, target_shape)
 
         return out
 
@@ -375,7 +399,13 @@ class Resize:
             Resized target dict
         """
         if not isinstance(target, dict):
-            raise TypeError(f"Expected target to be dict, got {type(target)}")
+            raise TypeError(
+                "Crop/Resize expect Form-S targets (per-sample List[Dict] of "
+                f"boxes/masks/labels; see data/data_types.py). Got {type(target)!r} — "
+                "a Form-D role dict (DeepCopyInputsAsTargets clones, semantic maps) "
+                "cannot be warped here; place geometric transforms BEFORE the "
+                "Form-D producer so input and target stay aligned."
+            )
 
         t = dict(target)
         vz, vy, vx = (int(s) for s in source_size)

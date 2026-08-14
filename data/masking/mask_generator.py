@@ -1,5 +1,4 @@
 import math
-import random
 from contextlib import contextmanager
 from enum import Enum
 from multiprocessing import Value
@@ -426,9 +425,10 @@ class MaskGenerator(object):
             )
         mu_t, mu_d, mu_h, mu_w = self.mask_unit_size
         T, D, H, W = self.time, self.depth, self.height, self.width
-        assert T % mu_t == 0 and D % mu_d == 0 and H % mu_h == 0 and W % mu_w == 0, (
-            f"mask_unit_size {self.mask_unit_size} must divide input_shape_patches {(T,D,H,W)}"
-        )
+        if not (T % mu_t == 0 and D % mu_d == 0 and H % mu_h == 0 and W % mu_w == 0):  # survives python -O
+            raise ValueError(
+                f"mask_unit_size {self.mask_unit_size} must divide input_shape_patches {(T,D,H,W)}"
+            )
         Tg = T // mu_t
         Dg = D // mu_d
         Hg = H // mu_h
@@ -723,8 +723,12 @@ class MaskGenerator(object):
         for _ in range(n_samples_masked, B):
             masks_list.append(torch.zeros(N, dtype=torch.bool, device=self.device))
 
-        # Shuffle so masked/unmasked are randomly distributed across the batch
-        random.shuffle(masks_list)
+        # Shuffle so masked/unmasked are randomly distributed across the batch.
+        # Drawn from the SEEDED generator (not the global python RNG): the
+        # which-samples-are-masked assignment must be reproducible from the
+        # mask seed and in lockstep across DDP ranks like every other draw here.
+        perm = torch.randperm(len(masks_list), generator=generator).tolist()
+        masks_list = [masks_list[i] for i in perm]
 
         # Stack into (B, N) and compute derived quantities
         collated_masks = torch.stack(masks_list)  # (B, N) bool
@@ -880,9 +884,10 @@ class MaskGenerator(object):
                 f"{(T,D,H,W)}; got {mu_size}"
             )
         mu_t, mu_d, mu_h, mu_w = mu_size
-        assert T % mu_t == 0 and D % mu_d == 0 and H % mu_h == 0 and W % mu_w == 0, (
-            f"mask_unit_size {mu_size} must divide input_shape_patches {(T,D,H,W)}"
-        )
+        if not (T % mu_t == 0 and D % mu_d == 0 and H % mu_h == 0 and W % mu_w == 0):  # survives python -O
+            raise ValueError(
+                f"mask_unit_size {mu_size} must divide input_shape_patches {(T,D,H,W)}"
+            )
         num_mus_t, num_mus_d = T // mu_t, D // mu_d
         num_mus_h, num_mus_w = H // mu_h, W // mu_w
         num_mus = num_mus_t * num_mus_d * num_mus_h * num_mus_w
@@ -1001,7 +1006,10 @@ class MaskGenerator(object):
 
         flat_mu = mu_t * mu_d * mu_h * mu_w
         N = self.time * self.depth * self.height * self.width
-        assert N == num_mus * flat_mu
+        if N != num_mus * flat_mu:  # survives python -O
+            raise ValueError(
+                f"MU factorization broken: N={N} != num_mus*flat_mu={num_mus * flat_mu}"
+            )
 
         masks_list, ctx_list, tgt_list, orig_list, mu_masks_list = (
             [],

@@ -44,15 +44,21 @@ def _literal_channel_pattern(value: object) -> str:
     return re.escape(normalized)
 
 
-# HACK: OBJECT_SET is a TRANSITIONAL hardcode. The DB will own
+# HACK: _OBJECT_FAMILIES is a TRANSITIONAL hardcode. The DB will own
 # per-channel ROLE labels (channel_mapping[idx] -> role). When that lands, this
 # set must be sourced from the DB role table (same membership API), not edited
 # here.
-OBJECT_SET: frozenset[str] = frozenset(
+#
+# Families, not concrete members: any role equal to a family name or prefixed
+# "<family>_" is an object/GT role. This MUST stay consistent with
+# _role_matches_target in models/layers/preprocessor.py, which already matches
+# by family -- an exact-match version of this predicate is how a GT channel
+# (e.g. "semantic_segmentation_golgi", absent from a literal set) could
+# silently become model input.
+_OBJECT_FAMILIES: frozenset[str] = frozenset(
     {
         "instance_segmentation",
-        "semantic_segmentation_membrane",
-        "semantic_segmentation_nucleus",
+        "semantic_segmentation",
         "object_detection",
         "boundary",
         "foreground",
@@ -61,8 +67,10 @@ OBJECT_SET: frozenset[str] = frozenset(
 
 
 def is_object_role(role: object) -> bool:
-    """True if ``role`` (normalized) is an object/label role in ``OBJECT_SET``."""
-    return _normalize_channel_token(role) in {_normalize_channel_token(r) for r in OBJECT_SET}
+    """True if ``role`` (normalized) is an object/label role: equal to an object
+    family name or prefixed ``"<family>_"`` (family membership, not exact match)."""
+    r = _normalize_channel_token(role)
+    return any(r == f or r.startswith(f + "_") for f in _OBJECT_FAMILIES)
 
 
 class SampleType(str, Enum):

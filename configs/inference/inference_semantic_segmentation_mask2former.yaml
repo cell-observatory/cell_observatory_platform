@@ -9,6 +9,10 @@ inferencer_worker:
       data_tensor:
         shape: ${datasets.input_shape}
         dtype: ${dataset_dtype}
+        # Declares the image as a DENSE viz tensor (rendered in the processed frame,
+        # same as the predictions, so overlays align).
+        kind: dense
+        data_format: ${dataset_layout_order}
     buffer_tensors:
       - pred_masks
       - data_tensor
@@ -19,7 +23,6 @@ inferencer_worker:
       - pred_classes
       - data_tensor
       - masks_labelmap
-      - class_labels
       # - pred_boxes
     save_tensors:
       masks_labelmap:
@@ -27,7 +30,9 @@ inferencer_worker:
         dtype: ${storage_dtype}
         annotation_type: dense
         data_format: ZYXC
-      class_labels:
+      # class_labels was dropped from Mask2Former outputs (duplicate of
+      # pred_classes) -- consumers read pred_classes.
+      pred_classes:
         name: labels
         dtype: ${storage_dtype}
         annotation_type: sparse
