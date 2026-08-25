@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import random
+import re
 from collections import defaultdict
 from operator import attrgetter
 from pathlib import Path
@@ -352,6 +353,42 @@ def _resume_dir_has_checkpoint(config: DictConfig) -> bool:
     tag = config.checkpoint.checkpoint_manager.get("checkpoint_tag", None) or "best_model"
     tag_dir = Path(resume_dir) / tag
     return tag_dir.is_dir() and any(tag_dir.glob("*model_states.pt"))
+
+
+_DURATION_RE = re.compile(
+    r"^\s*(?:(?P<h>\d+(?:\.\d+)?)h)?\s*(?:(?P<m>\d+(?:\.\d+)?)m)?\s*(?:(?P<s>\d+(?:\.\d+)?)s)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_duration(value: Union[int, float, str]) -> float:
+    """Seconds from ``12600``, ``"12600"``, ``"3h30m"``, ``"45m"``, ``"90s"`` or ``"1:30:00"``."""
+    if isinstance(value, bool):  # bool is an int subclass; never a duration
+        raise TypeError(f"duration must be a number or string, got {value!r}")
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+    else:
+        text = str(value).strip()
+        if ":" in text:  # [HH:]MM:SS
+            parts = [float(p) for p in text.split(":")]
+            if len(parts) not in (2, 3):
+                raise ValueError(f"Bad clock duration {value!r}; expected MM:SS or HH:MM:SS")
+            seconds = sum(p * 60**i for i, p in enumerate(reversed(parts)))
+        else:
+            try:
+                seconds = float(text)  # plain number as a string
+            except ValueError:
+                m = _DURATION_RE.match(text)
+                if not m or not any(m.groupdict().values()):
+                    raise ValueError(
+                        f"Bad duration {value!r}; use seconds, 'XhYmZs', or 'HH:MM:SS'"
+                    ) from None
+                seconds = (
+                    float(m["h"] or 0) * 3600 + float(m["m"] or 0) * 60 + float(m["s"] or 0)
+                )
+    if seconds <= 0:
+        raise ValueError(f"duration must be > 0, got {value!r}")
+    return seconds
 
 
 def resume_run(trainer, config: DictConfig):
@@ -1525,7 +1562,7 @@ def get_dense_model_nparams_and_flops(
     return nparams, num_flops_per_token
 
 
-HASH_COLS = ["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_start"]
+HASH_COLS = ["roi_id", "tile_name", "z_start", "y_start", "x_start", "time_start"]
 
 
 def df_signature_polars(df_pd) -> int:

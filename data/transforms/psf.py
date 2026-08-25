@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 class ConvolveWithPSF:
+    # Convolves photon counts upstream of the sensor model, on the same raw
+    # scale; see MixedPoissonGaussianNoise.reads_raw_counts.
+    reads_raw_counts = True
+
     def __init__(
         self,
         psf: torch.Tensor | PathLike[str],

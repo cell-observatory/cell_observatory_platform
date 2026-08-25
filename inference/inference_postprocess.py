@@ -186,7 +186,7 @@ def _rescale_boxes_to_orig(
 # Metainfo columns describing the on-disk / crop location of each tile. Present on
 # the tile-inference path; a record's region is None when they are absent.
 REGION_COLUMNS = (
-    "prepared_id", "tile_name",
+    "roi_id", "tile_name",
     "time_start", "time_size", "z_start", "z_size",
     "y_start", "y_size", "x_start", "x_size",
 )
@@ -274,7 +274,7 @@ def _region_at(metainfo: Dict[str, Any], b: int) -> Optional[Dict[str, Any]]:
     y0, sy = g("y_start"), g("y_size")
     x0, sx = g("x_start"), g("x_size")
     return {
-        "roi": g("prepared_id"),
+        "roi": g("roi_id"),
         "tile_name": str(metainfo["tile_name"][b]),
         "coords": (t0, t0 + T, z0, z0 + sz, y0, y0 + sy, x0, x0 + sx),
         "coord_frame": "voxel",
@@ -294,9 +294,8 @@ def viz_identifier(record: InferenceRecord, rank: int) -> str:
             f"rank{rank:03d}_roi{r['roi']}_{r['tile_name']}"
             f"_t{t0}-{t1}_z{z0}-{z1}_y{y0}-{y1}_x{x0}-{x1}"
         )
-    base = str(record.metadata["output_folder"]).replace("/", "_")
-    ident = f"{base}_{record.metadata['tile_name']}"
-    return ident.replace(".zarr", "").replace(".tiff", "")
+    base = str(record.metadata["tile_relative_path"]).replace("/", "_")
+    return base.replace(".zarr", "").replace(".tiff", "")
 
 
 def to_instance_stack(masks: Any, kind: Optional[str] = None) -> np.ndarray:

@@ -76,7 +76,9 @@ datasets:
   databases:
     max_rois: null
     max_tiles: null
-    roi_list: [653]
+    # roi_list -> roi_ids: prepared_id and roi_id are different
+    # sequences, so the old values were dropped rather than translated.
+    roi_ids: null
     tile_list: ["000x_002y_001z.zarr"]
     timepoint_list: [0]
     cdf_threshold: null
@@ -102,23 +104,6 @@ datasets:
     debug: false
     normalize_bboxes: true
     async_device_copy: false
-    columns:
-      - "x_start"
-      - "y_start"
-      - "z_start"
-      - "time_start"
-      - "channel_size"
-      - "z_size"
-      - "y_size"
-      - "x_size"
-      - "time_size"
-      - "server_folder"
-      - "output_folder"
-      - "tile_name"
-      - "prepared_id"
-      - "annotations_metadata"
-
-
   preserve_order: false
   callback_strategy: grpc
   async_device_copy: false

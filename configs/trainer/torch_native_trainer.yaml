@@ -14,4 +14,7 @@ trainer_loop:
   # checkpoint cadence (pick one; both null -> every epoch)
   checkpoint_save_period: null # in optimizer steps
   checkpoint_every_n_epochs: 1 # epoch-mode convenience (resolved to steps)
+  # Wall-clock cadence is set ON THE HOOK, independent of the above:
+  #   hooks.hooks_list: - name: periodic_checkpointer
+  #                       time_interval: 3h30m   # (job time limit - startup - save time)
   with_perf_metrics: false # tps/tflops/MFU + fwd/bwd/step cuda timings (per-step sync when enabled)

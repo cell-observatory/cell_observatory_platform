@@ -251,8 +251,7 @@ class Hiera(nn.Module):
                 raise ValueError("ctx_idx [B, K] is required when mask is provided (HIERA_MU). Precompute in mask generator.")
             num_mus = N // self.flat_mu_size
             # Unroll layout: token n = intra_mu_offset * num_mus + mu_index, i.e.
-            # the mask-unit index is the FASTEST axis (verified by the layout
-            # test in tests/models/test_fix_regressions_models.py). View
+            # the mask-unit index is the FASTEST axis. View
             # accordingly and gather kept mask units on the MU dim; the result
             # keeps the same convention with num_mus -> K (kept units).
             x = x.view(B, self.flat_mu_size, num_mus, C)

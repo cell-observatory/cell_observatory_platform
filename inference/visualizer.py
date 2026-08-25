@@ -205,7 +205,7 @@ class VizWorkerBase:
             records = build_records(
                 output_arrays,
                 metainfo,
-                columns=("output_folder", "tile_name"),
+                columns=("tile_relative_path", "tile_name"),
                 image_key="data_tensor",
                 targets=inference_outputs.get("targets"),
             )

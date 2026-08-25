@@ -23,3 +23,6 @@ checkpoint_manager:
   load_optimizer: null
   # save cadence (in optimizer steps) is injected by the trainer from
   # trainer_loop.checkpoint_save_period / checkpoint_every_n_epochs
+# Wall-clock cadence (e.g. a hard 4h job limit) is set on the hook, independent of the above:
+#   hooks.hooks_list: - name: periodic_checkpointer
+#                       time_interval: 3h30m   # (job time limit - startup - save time)

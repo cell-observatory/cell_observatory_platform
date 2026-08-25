@@ -108,22 +108,6 @@ datasets:
     bbox_output_format: cxcyczwhd
     with_resize: false
     debug: false
-    columns:
-      - "x_start"
-      - "y_start"
-      - "z_start"
-      - "time_start"
-      - "channel_size"
-      - "z_size"
-      - "y_size"
-      - "x_size"
-      - "time_size"
-      - "server_folder"
-      - "output_folder"
-      - "tile_name"
-      - "prepared_id"
-      - "annotations_metadata"
-
   use_cached_hypercubes_dataframe: true
   hypercubes_dataframe_path: /clusterfs/nvme/hph/git_managed/databases/new_prepared_16_128_128_128_2_hypercube_view.csv
 

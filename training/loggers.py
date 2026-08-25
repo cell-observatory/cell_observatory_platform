@@ -624,11 +624,10 @@ class WandBEventWriter(EventWriter):
         if not scalar_dict:
             return          # mirror LocalEventWriter's tolerant empty-flush early-return
 
-        # Batched flush: every row used to be a separate `log(commit=True)`
-        # call — steps_per_epoch synchronous history commits per epoch flush.
-        # Rows are logged with an explicit, strictly-increasing internal step
-        # (so wandb neither merges nor drops them) and only the LAST row of the
-        # batch commits, flushing the whole batch in one go.
+        # Batched flush: one synchronous history commit per epoch flush rather
+        # than one per row. Rows are logged with an explicit, strictly-increasing
+        # internal step (so wandb neither merges nor drops them) and only the
+        # LAST row of the batch commits, flushing the whole batch in one go.
         if not hasattr(self, "_log_seq"):
             self._log_seq = self._initial_log_seq()
 

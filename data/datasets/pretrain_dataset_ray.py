@@ -2,7 +2,7 @@ import os
 import sys
 import ctypes
 import logging
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence
 
 from queue import Queue
 from threading import Thread
@@ -41,13 +41,18 @@ from cell_observatory_platform.data.databases.local_metadata_store import (
     MappedTableDescriptor,
     SampleIndexPlanner,
 )
+from cell_observatory_platform.data.databases.schema import required_columns
 from cell_observatory_platform.data.io import read_zarr
 from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, attach_shared_memory, get_buffers
 from cell_observatory_platform.data.structures import convert_bbox_format, validate_bbox_normalization
-from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TORCH_DTYPES
+from cell_observatory_platform.data.data_types import (
+    NUMPY_DTYPES,
+    TORCH_DTYPES,
+    parse_annotations_metadata,
+)
 from cell_observatory_platform.data.datasets.utils import (
-    remap_channel_mapping_to_selection,
-    resolve_channel_localization_indices,
+    remap_channel_roles_to_selection,
+    resolve_channel_indices,
 )
 from cell_observatory_platform.training.helpers import get_data_dim, get_image_sizes, record_dataset_len
 from cell_observatory_platform.utils.context import (
@@ -105,27 +110,16 @@ class FinetuneCollatorActor:
         pin_numa_node: bool,
         pin_pages: bool,
         node_id: int,
-        columns: List[str] = [
-            "x_start",
-            "y_start",
-            "z_start",
-            "time_start",
-            "channel_size",
-            "z_size",
-            "y_size",
-            "x_size",
-            "time_size",
-            "server_folder",
-            "output_folder",
-            "tile_name",
-            "prepared_id",
-            "channel_mapping",
-            "annotations_metadata",
-        ],
+        columns: Optional[List[str]] = None,
         input_format: Literal["ZYXC", "TZYXC"] = "ZYXC",
         bbox_data_format: str = "zyxzyx",
         bbox_output_format: str = "zyxzyx",
         require_targets: bool = True,
+        # The api.object_types catalog ({id: nk}), from dataloaders (see
+        # fetch_object_type_names). Used here to map object_type_id -> a
+        # CONTIGUOUS class index, and forwarded into metainfo for the semantic
+        # preprocessor, which needs the NAMES. None means class-agnostic.
+        object_type_names: Optional[dict] = None,
         # with_resize: bool = False,
         debug: bool = False,
         debug_device_idx: Optional[int] = None,
@@ -133,7 +127,10 @@ class FinetuneCollatorActor:
         async_device_copy: bool = False,
     ):
         _ensure_cupy()  # collator actors own a GPU; loaders never import cupy
-        self.columns = columns
+        # The metadata columns carried into metainfo. 
+        self.columns = list(columns) if columns else list(
+            required_columns(with_targets=True)
+        )
         self.debug_device_idx = debug_device_idx
 
         self.node_id = node_id
@@ -149,6 +146,17 @@ class FinetuneCollatorActor:
         self.input_format = input_format.upper()
         if self.input_format not in ["ZYXC", "TZYXC"]:
             raise NotImplementedError(f"FinetuneCollatorActor currently assumes ZYXC, got {self.input_format}")
+
+        # Images ride TZYXC end to end -- the loader
+        # has a full dim==4 branch, Resize folds T into the batch, _split_channels
+        # and mask_ids_to_masks are rank-agnostic -- but TARGETS stop at 3D:
+        # _build_targets emits one dict per sample with no time axis on
+        # boxes/mask_ids/labels, so a T>1 window has nowhere to put frames
+        # 1..T-1. Refuse at actor construction rather than train on frame 0 of
+        # every window and call it 4D.
+        self._assert_targets_supported(
+            self.input_format, self.input_shape, require_targets
+        )
 
         self.bbox_data_format = bbox_data_format
         self.bbox_output_format = bbox_output_format
@@ -234,6 +242,23 @@ class FinetuneCollatorActor:
         # splits it off (int32, before the dtype cast), applies transforms, and
         # builds per-instance binary masks. The collator only emits lightweight
         # per-target metadata (boxes / mask_ids / labels).
+        # object_type_id is a DB PRIMARY KEY (1-based); the model's label space is
+        # 0..num_classes-1 with num_classes itself meaning no-object (DETR /
+        # Mask2Former convention). Feeding the raw id through would put a
+        # single-class dataset's every object on the no-object slot. Map to a
+        # contiguous index instead, ordered by id so it is stable across runs.
+        #
+        # No catalog -> every object is class 0 (class-agnostic).
+        self.object_type_names = (
+            {int(k): str(v) for k, v in dict(object_type_names).items()}
+            if object_type_names
+            else None
+        )
+        self._class_index = (
+            {t_id: i for i, t_id in enumerate(sorted(self.object_type_names))}
+            if self.object_type_names
+            else None
+        )
         self.require_targets = require_targets
         self.normalize_bboxes = normalize_bboxes
         validate_bbox_normalization(self.normalize_bboxes, self.bbox_output_format)
@@ -254,25 +279,40 @@ class FinetuneCollatorActor:
         self.async_device_copy = async_device_copy
 
     @staticmethod
-    def _parse_annotations_metadata(raw: object) -> list[dict[str, Any]]:
-        if hasattr(raw, "as_py"):
-            raw = raw.as_py()
-        if raw is None:
-            return []
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8")
-        if isinstance(raw, str):
-            payload = raw.strip()
-            if not payload or payload.lower() == "null":
-                return []
-            raw = ujson.loads(payload)
+    def _assert_targets_supported(
+        input_format: str, input_shape: tuple, require_targets: bool
+    ) -> None:
+        """Refuse a 4D window on the TARGET path, at construction time.
 
-        if not isinstance(raw, list):
-            raise ValueError(
-                f"annotations_metadata must be a JSON list of objects, got {type(raw).__name__}"
-            )
+        Split out of __init__ so it is testable without Ray/shm/CUDA. See the
+        4D SIGNPOST comment at the call site for why targets, and only targets,
+        stop at 3D.
+        """
+        if not require_targets or input_format.upper() != "TZYXC":
+            return
+        time_extent = int(input_shape[0])
+        if time_extent <= 1:
+            return
+        raise NotImplementedError(
+            f"FinetuneCollatorActor(require_targets=True) cannot build targets for a "
+            f"4D window: input_format='TZYXC' with T={time_extent}. Per-sample targets "
+            f"carry no time axis (boxes (N, 6), mask_ids (N,), labels (N,)), so only "
+            f"the first frame's annotations would be used and the rest would be "
+            f"dropped silently. Set T=1, or run with require_targets=False (inference: "
+            f"the image path is 4D-clean)."
+        )
 
-        return [item for item in raw if isinstance(item, dict)]
+    @staticmethod
+    def _parse_annotations_metadata(
+        raw: object, *, window_offset: int = 0
+    ) -> tuple[list[dict], list[dict]]:
+        """(instance, semantic) leaves for one timepoint bucket.
+
+        Thin passthrough: the payload contract is shared with the semantic
+        preprocessor (which reads the `semantic` list as its class legend), so the
+        parser lives beside the rest of the targets contract in data/data_types.py.
+        """
+        return parse_annotations_metadata(raw, window_offset=window_offset)
 
     def _get_spatial_shape(self, input_shape: tuple, input_format: str) -> tuple:
         input_format = input_format.upper()
@@ -331,6 +371,9 @@ class FinetuneCollatorActor:
         annotations_metadata. The labelmap is NOT touched here: it rides on the
         data_tensor channel to VRAM and is split off + transformed + turned into
         per-instance binary masks by the model preprocessor (single source).
+
+        3D ONLY. Every field here is per-instance with no time axis, so one call
+        covers one timepoint; see the hardcoded window_offset below.
         """
         if self.bbox_data_format != "zyxzyx":
             raise ValueError(
@@ -343,8 +386,21 @@ class FinetuneCollatorActor:
         labels_batch: List[List[int]] = []
         bboxes_batch: List[torch.Tensor] = []
 
+        # TODO: rework this once we have 4D data consumers
+
         for raw in annotations_metadata_batch:
-            annotations = self._parse_annotations_metadata(raw)
+            # Bucket "0" is the ONLY bucket at time_size == 1, which is every
+            # row the training views serve. Hardcoded because the targets built
+            # below have no time axis (boxes (N, 6), mask_ids (N,), labels
+            # (N,)): there is nowhere to put frames 1..T-1, so no other offset
+            # would be useful. A 4D input_format is refused at construction.
+            #
+            # Semantic leaves are ignored here -- they are the class legend for
+            # the semantic labelmap channel and are consumed by the preprocessor
+            # (build_semantic_targets), not turned into per-instance targets.
+            annotations, _semantic = self._parse_annotations_metadata(
+                raw, window_offset=0
+            )
 
             ids: List[int] = []
             labels: List[int] = []
@@ -357,9 +413,10 @@ class FinetuneCollatorActor:
                     continue
 
                 ids.append(int(seg_id))
-                # NOTE: default to 0 if cell_type_id is not present
-                labels.append(int(annotation.get("cell_type_id") or 0))
-                boxes.append([float(value) for value in bbox])
+                labels.append(self._class_label(annotation.get("object_type_id")))
+                box = [float(value) for value in bbox]
+                self._assert_cube_local(box)
+                boxes.append(box)
 
             mask_ids_batch.append(ids)
             labels_batch.append(labels)
@@ -389,6 +446,47 @@ class FinetuneCollatorActor:
             targets.append(t)
 
         return targets
+
+    def _class_label(self, object_type_id: object) -> int:
+        """DB ``object_type_id`` -> the model's contiguous class index.
+        """
+        if object_type_id is None:
+            return 0
+        type_id = int(object_type_id)
+        if self._class_index is None:
+            # class-agnostic: no catalog was supplied
+            return 0
+        try:
+            return self._class_index[type_id]
+        except KeyError:
+            raise KeyError(
+                f"object_type_id={type_id} is not in the object-type catalog "
+                f"{sorted(self._class_index)}; the catalog is stale relative to "
+                f"the annotations (refetch it at startup)"
+            ) from None
+
+    def _assert_cube_local(self, box: List[float]) -> None:
+        """Reject a tile-frame bbox on the cube path.
+
+        The two training views publish DIFFERENT coordinate bases for the same
+        key: api.cube_training gives cube-local CLIPPED bboxes, api.tiles_training
+        gives tile-relative UNCLIPPED ones. Same key, same dtype, same six
+        numbers -- a tile-frame box passes every existing shape check and quietly
+        produces wrong targets.
+
+        Only catches boxes that overflow the cube, not a tile-frame box that
+        happens to land inside the first cube; at a 1536x1408 tile against a 128^3
+        cube that is a small corner of the space, and it costs three comparisons
+        per instance on the CPU side.
+        """
+        z1, y1, x1 = box[3], box[4], box[5]
+        dz, dy, dx = self.spatial_shape
+        if z1 > dz or y1 > dy or x1 > dx:
+            raise ValueError(
+                f"annotation bbox_zyxzyx={box} exceeds the cube extent "
+                f"{(dz, dy, dx)}; this looks like api.tiles_training "
+                f"(tile-relative, unclipped) data on the cube path"
+            )
 
     def _copy_h2d(self, dst: torch.Tensor, src: torch.Tensor):
         # Raw cudaMemcpyAsync serializes storage order and trusts sizes blindly:
@@ -449,6 +547,11 @@ class FinetuneCollatorActor:
                 meta_cpu["batch_size_actual"] = int(np.asarray(bsa).ravel()[0])
             if "valid_mask" in batch:
                 meta_cpu["valid_mask"] = batch["valid_mask"]
+            if self.object_type_names is not None:
+                # Batch metadata, not config: the semantic preprocessor resolves
+                # class NAMES from it, and it reaches that actor the same way
+                # annotations_metadata and channel_mapping do. 
+                meta_cpu["object_type_names"] = self.object_type_names
 
             # Build targets only when requested (training). For inference, produce empty targets
             # so downstream transforms that expect `metainfo["targets"]` still work.
@@ -579,27 +682,19 @@ class CollatorActor:
         node_id: int,
         callback_strategy: Literal["grpc", "queue"] = "grpc",
         async_device_copy: bool = False,
-        columns: List[str] = [
-            # metadata columns to keep from the original dataframe
-            "x_start",
-            "y_start",
-            "z_start",
-            "time_start",
-            "channel_size",
-            "z_size",
-            "y_size",
-            "x_size",
-            "time_size",
-            "server_folder",
-            "output_folder",
-            "tile_name",
-            "prepared_id",
-        ],
+        # Accepted and unused: the pretrain path builds no targets, so it needs
+        # no class taxonomy. Declared so dataloaders can pass the catalog to
+        # whichever collator the config names without branching on its _target_.
+        object_type_names: Optional[dict] = None,
+        columns: Optional[List[str]] = None,
         debug: bool = False,
         debug_device_idx: Optional[int] = None,
     ):
         _ensure_cupy()  # collator actors own a GPU; loaders never import cupy
-        self.columns = columns
+        # The metadata columns carried into metainfo. 
+        self.columns = list(columns) if columns else list(
+            required_columns(with_targets=True)
+        )
         self.debug_device_idx = debug_device_idx
 
         self.node_id = node_id
@@ -925,21 +1020,33 @@ class LoaderActor:
         y = slice(meta["y_start"], meta["y_start"] + meta["y_size"])
         x = slice(meta["x_start"], meta["x_start"] + meta["x_size"])
 
-        if self.selected_channel_localizations is not None:
-            channel_indices = resolve_channel_localization_indices(
-                meta.get("channel_mapping"),
-                self.selected_channel_localizations,
-            )
-            if self.input_format == "ZYXC" or self.input_format == "TZYXC":
-                view = data_tensor[t, z, y, x, channel_indices]
-            else:
-                raise NotImplementedError(f"Channel subsetting not implemented for input format {self.input_format}")
+        # Channel selection against the DB's aligned channel arrays. Two
+        # properties matter here:
+        #   - the returned values index the zarr's C axis. channel_idx is
+        #     required to be dense (resolve_channel_indices raises otherwise),
+        #     so that is the SAME number as the array position -- one numbering
+        #     scheme, not two that happen to agree.
+        #   - selected data channels keep their SOURCE order, so the emitted
+        #     channel layout depends on the row and the selected set only, never
+        #     on the order selected_channel_localizations happens to list them.
+        # Mask channels are always retained and always appended last: a
+        # localization-only selection can never name them (roi_channels forces
+        # localization NULL on a mask channel), and preprocessor._split_channels
+        # requires object channels in the tail.
+        channel_indices = resolve_channel_indices(
+            meta.get("channel_idx"),
+            meta.get("channel_type"),
+            meta.get("localization"),
+            self.selected_channel_localizations,
+        )
+        if self.input_format not in ("ZYXC", "TZYXC"):
+            raise NotImplementedError(f"Input format {self.input_format} not implemented")
+
+        if channel_indices is not None:
+            view = data_tensor[t, z, y, x, channel_indices]
         else:
-            if self.input_format == "ZYXC" or self.input_format == "TZYXC":
-                c = slice(0, meta["channel_size"])
-                view = data_tensor[t, z, y, x, c]
-            else:
-                raise NotImplementedError(f"Input format {self.input_format} not implemented")
+            c = slice(0, meta["channel_size"])
+            view = data_tensor[t, z, y, x, c]
 
         if self.dim == 3:
             if self.input_format == "ZYXC":
@@ -960,7 +1067,7 @@ class LoaderActor:
         return h
 
     def __call__(self, batch):
-        actual_len = len(batch["server_folder"])
+        actual_len = len(batch["tile_relative_path"])
         if actual_len > self.batch_size:
             raise ValueError(
                 f"Batch has {actual_len} elements but batch_size is {self.batch_size}. "
@@ -981,9 +1088,8 @@ class LoaderActor:
         with ts.Batch() as b:
             for i in range(actual_len):
                 p = os.path.join(
-                    batch["server_folder"][i],
-                    batch["output_folder"][i],
-                    batch["tile_name"][i],
+                    batch["storage_root"][i],
+                    batch["tile_relative_path"][i],
                 )
                 meta = {
                     "time_start": batch["time_start"][i],
@@ -996,8 +1102,11 @@ class LoaderActor:
                     "x_size": batch["x_size"][i],
                     "channel_size": batch["channel_size"][i],
                 }
-                if "channel_mapping" in batch:
-                    meta["channel_mapping"] = batch["channel_mapping"][i]
+                # The aligned channel arrays drive selection; see
+                # resolve_channel_indices.
+                for key in ("channel_idx", "channel_type", "localization"):
+                    if key in batch:
+                        meta[key] = batch[key][i]
                 src_view = self._slice_hypercube(self._get_handle(p), meta=meta, ts_batch=b)
 
                 if self.dim == 3:
@@ -1062,9 +1171,8 @@ class LoaderActor:
             batch["existing_zarr_path"] = np.array(
                 [
                     os.path.join(
-                        batch["server_folder"][i],
-                        batch["output_folder"][i],
-                        batch["tile_name"][i],
+                        batch["storage_root"][i],
+                        batch["tile_relative_path"][i],
                     )
                     for i in range(actual_len)
                 ],
@@ -1088,20 +1196,28 @@ class LoaderActor:
                         pad_val = v[-1] if actual_len > 0 else None
                         batch[k] = list(v) + [pad_val] * (self.batch_size - actual_len)
 
-        # When channel selection is active the emitted tensor's channels are a
-        # permuted subset of the source channels, so the channel_mapping column
-        # must be remapped to POST-selection positions before it travels
-        # downstream (the preprocessor partitions channels by these indices).
-        # Done after loading/padding: _slice_hypercube above resolves selection
-        # indices against the RAW mapping.
-        if self.selected_channel_localizations is not None and "channel_mapping" in batch:
+        # The emitted tensor's channels are a subset of the source channels in a
+        # loader-chosen order (data first, masks in the tail), so the role table
+        # must be keyed by POST-selection position before it travels downstream --
+        # the preprocessor partitions channels by exactly those indices.
+        if "channel_idx" in batch and "channel_type" in batch:
             remapped_rows = []
-            for raw in batch["channel_mapping"]:
-                channel_indices = resolve_channel_localization_indices(
-                    raw, self.selected_channel_localizations
+            for row in range(len(batch["channel_idx"])):
+                channel_indices = resolve_channel_indices(
+                    batch["channel_idx"][row],
+                    batch["channel_type"][row],
+                    batch["localization"][row] if "localization" in batch else None,
+                    self.selected_channel_localizations,
                 )
                 remapped_rows.append(
-                    ujson.dumps(remap_channel_mapping_to_selection(raw, channel_indices))
+                    ujson.dumps(
+                        remap_channel_roles_to_selection(
+                            batch["channel_type"][row],
+                            batch["annotation_type"][row] if "annotation_type" in batch else None,
+                            batch["channel_idx"][row],
+                            channel_indices,
+                        )
+                    )
                 )
             batch["channel_mapping"] = np.array(remapped_rows, dtype=object)
 

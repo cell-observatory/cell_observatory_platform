@@ -97,10 +97,10 @@ datasets:
     verbose: true
     diagnostic_verbose: true
     sample_type: cube
-    channel_count: 6
+    data_channel_count: 6
     # required_channel_key_patterns: {0: "membrane"}
     required_channel_localizations: ["membrane", "cytosol"]
-    required_locations: ["exists_abc"]
+    storage_location: abc
 
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
@@ -119,23 +119,6 @@ datasets:
     debug_device_idx: 0
     normalize_bboxes: true
     async_device_copy: false
-    columns:
-      - "x_start"
-      - "y_start"
-      - "z_start"
-      - "time_start"
-      - "channel_size"
-      - "z_size"
-      - "y_size"
-      - "x_size"
-      - "time_size"
-      - "server_folder"
-      - "output_folder"
-      - "tile_name"
-      - "prepared_id"
-      - "channel_mapping"
-      - "annotations_metadata"
-
 schedulers:
   epochs: 1   # one epoch -> train + validation pass
   warmup: 0   # warmup+cooldown must be <= epochs for the cosine scheduler

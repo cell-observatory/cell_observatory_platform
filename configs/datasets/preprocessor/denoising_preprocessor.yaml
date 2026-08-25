@@ -65,7 +65,7 @@ input_shape: ${datasets.train_shape}
 # mask_channel_idx key was removed from every preprocessor signature; the
 # object channel is now identified by channel_mapping roles. VERIFY these
 # counts against each dataset's channel_mapping before real runs.
-max_channel_count: 1
-min_channel_count: 1
+max_data_channel_count: 1
+min_data_channel_count: 1
 
 seed: ${seed}

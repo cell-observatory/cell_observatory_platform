@@ -131,7 +131,8 @@ def resize_tensor_3d(
         tensor: Input tensor of shape (B, Z, Y, X, C) for ZYXC format
         target_shape: Target spatial shape (Z, Y, X)
         input_format: Data format, currently only "ZYXC" supported
-        mode: Interpolation mode for F.interpolate
+        mode: F.interpolate mode -- "trilinear" (default), "area" or "nearest-exact".
+            Plain "nearest" is rejected (edge-aligned; see comment below).
         align_corners: Whether to align corners in interpolation
         dtype: Optional dtype to cast to before resize
 
@@ -154,17 +155,25 @@ def resize_tensor_3d(
     # (B, Z, Y, X, C) -> (B, C, Z, Y, X)
     x_cf = tensor.permute(0, 4, 1, 2, 3).contiguous()
 
-    # TODO: decide how to handle nearest mode
-    # if mode == "nearest":
-    #     # Plain "nearest" uses floor(i * s) -- edge-aligned, half a voxel off
-    #     # the center-aligned convention every other path uses (trilinear
-    #     # align_corners=False for the image, nearest-exact for GT). Routing it
-    #     # through nearest-exact keeps image and GT registered.
-    #     mode = "nearest-exact"
+    # Image resize convention: voxel-CENTER aligned. `trilinear`/`area` with
+    # align_corners=False sample output voxel i at input coord (i + 0.5) * s - 0.5,
+    # and GT (label maps / masks) go through `_resize_nearest_exact_3d`, i.e.
+    # src = floor((i + 0.5) * s). Legacy `"nearest"` is src = floor(i * s): the
+    # LEFT EDGE of the voxel, i.e. shifted s/2 input voxels (= half an output
+    # voxel) toward the origin relative to GT. Using it for the image would
+    # misregister image and GT by up to one voxel at 2x downsample. We refuse it
+    # rather than rewriting it so the config says what actually runs.
+    if mode == "nearest":
+        raise ValueError(
+            "resize_tensor_3d: mode='nearest' is edge-aligned (floor(i*s)) and is "
+            "half a voxel off the center-aligned GT resize; use mode='nearest-exact' "
+            "(floor((i+0.5)*s)), which matches trilinear/align_corners=False and "
+            "the label-map/mask resize."
+        )
 
     if mode in ("nearest-exact", "area"):
         x_cf = F.interpolate(x_cf, size=target_shape, mode=mode)
-    else:
+    else:  # linear family takes align_corners
         x_cf = F.interpolate(x_cf, size=target_shape, mode=mode, align_corners=align_corners)
 
     resized = x_cf.permute(0, 2, 3, 4, 1)

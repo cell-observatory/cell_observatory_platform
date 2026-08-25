@@ -15,6 +15,7 @@ from cell_observatory_platform.data.databases.local_database import LocalArrowDa
 from cell_observatory_platform.data.databases.local_metadata_store import (
     MappedTable,
     TableResolver,
+    fetch_object_type_names,
 )
 from cell_observatory_platform.data.datasets.buffers import set_buffers
 from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
@@ -43,7 +44,9 @@ def _shape_from_stats(base_shape, layout: str, stats, selected_channel_localizat
     dynamic_axes = set(stats.dynamic_axes)
     for axis, max_value in axis_to_max.items():
         if axis == "C" and selected_channel_localizations is not None:
-            max_value = len(selected_channel_localizations)
+            # The EMITTED channel count, measured against the real channel arrays
+            # at fetch time.
+            max_value = int(stats.max_selected_channel_size)
         if axis in layout and max_value > 0:
             if dynamic_axes and axis not in dynamic_axes:
                 continue
@@ -101,12 +104,27 @@ def get_dataloader(
         verbose=bool(config.datasets.databases.verbose),
     )
     resolved_source = TableResolver.resolve_from_config(config, db_client=db)
+
+    # Object-type catalog, resolved ONCE here (one row per type) and handed to
+    # the collator, rather than giving every actor a DB handle.
+    #
+    # The annotation leaves carry object_type_id only -- deliberately, per the
+    # schema ("leaves stay object_type_id + object_subtype_ids; no
+    # object_type_nk"). The collator maps that id to a contiguous class index and
+    # forwards the catalog into metainfo, which is how the semantic preprocessor
+    # gets the class NAMES. It is batch metadata, not config: the registry splats
+    # the preprocessor's config node into its constructor, so a key only one of
+    # the eight preprocessors accepts would break the other seven.
+    object_type_names = fetch_object_type_names(db)
+
     query_spec = TableResolver.build_query_spec_from_config(config, db_client=db)
     selected_channel_localizations = TableResolver.build_loader_channel_selection_from_config(
         config,
         db_client=db,
     )
     store_spec = TableResolver.build_store_spec_from_config(config)
+    # Escape hatch for a cluster whose local mount differs from the catalog's
+    # storage_locations.root_path.
     server_path_override = getattr(config.paths, "server_path_override", None)
     sample_store = MappedTable.create_or_attach(
         db_client=db,
@@ -117,6 +135,7 @@ def get_dataloader(
         local_rank=local_rank(),
         diagnostic_verbose=bool(getattr(config.datasets.databases, "diagnostic_verbose", False)),
         server_path_override=None if server_path_override is None else str(server_path_override),
+        selected_channel_localizations=selected_channel_localizations,
     )
     sample_store_desc = sample_store.descriptor
 
@@ -184,11 +203,14 @@ def get_dataloader(
         numa_node=torch_gpu_to_numa(local_rank())["numa_node"],
     )
 
+    # Both collators declare object_type_names, so no branching on which one the
+    # config names; the pretrain collator ignores it (it builds no targets).
     collate_fn = instantiate(
         config.datasets.collate_fn,
         node_id=node_id(),
         input_shape=collator_input_shape,
         debug=config.datasets.debug,
+        object_type_names=object_type_names,
     )
 
     dataloader_config = _build_dataloader_config(

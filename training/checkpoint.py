@@ -3,12 +3,14 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Union
 
 import ray
 import torch
+import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.stateful import Stateful
 
@@ -20,9 +22,63 @@ from cell_observatory_platform.training.checkpoint_metadata import (
     read_metadata_json,
     write_metadata_json,
 )
-from cell_observatory_platform.utils.context import barrier, is_main_process
+from cell_observatory_platform.utils.context import (
+    barrier,
+    gather_and_reduce,
+    is_main_process,
+    is_torch_dist_initialized,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _collective_device() -> torch.device:
+    """NCCL needs a CUDA tensor; gloo / single-process take CPU."""
+    if is_torch_dist_initialized() and dist.get_backend() == "nccl":
+        return torch.device("cuda", torch.cuda.current_device())
+    return torch.device("cpu")
+
+
+class WallClockTrigger:
+    """Fires once per multiple of ``interval_s`` on the wall clock since construction.
+
+    ``due()`` is COLLECTIVE: every rank must call it at the same point of the
+    step loop. Ranks' clocks start a few seconds apart, so the local verdicts
+    are OR-ed across ranks (one 1-element all_reduce) and every rank gets the
+    same answer -- the checkpoint save that follows is itself collective and
+    would hang if ranks disagreed. Deadlines are anchored to the clock start,
+    not to the last save: a step-cadence save does not push the next
+    wall-clock save past the job's time limit.
+    """
+
+    def __init__(
+        self,
+        interval_s: float,
+        clock: Callable[[], float] = time.monotonic,  # injectable for tests
+    ):
+        if interval_s <= 0:
+            raise ValueError(f"interval_s must be > 0, got {interval_s}")
+        self.interval_s = float(interval_s)
+        self._clock = clock
+        self.start = clock()
+        self.next_deadline = self.start + self.interval_s
+
+    def elapsed(self) -> float:
+        return self._clock() - self.start
+
+    def due(self) -> bool:
+        """Collective. True on every rank iff ANY rank's clock passed the deadline."""
+        local = self._clock() >= self.next_deadline
+        flag = torch.tensor([float(local)], device=_collective_device())
+        fire = bool(gather_and_reduce(flag, "max").item())
+        if fire:
+            # advance on EVERY rank (not only the one whose clock tripped), and
+            # past `now` so a long stall cannot queue up several back-to-back saves
+            now = self._clock()
+            self.next_deadline += self.interval_s
+            while self.next_deadline <= now:
+                self.next_deadline += self.interval_s
+        return fire
 
 
 class CheckpointManager:
@@ -657,12 +713,13 @@ class DCPCheckpointManager:
             trainer_state=trainer.state_dict(),
         )
 
-    def _should_save(self, curr_step: int, last_step: bool) -> bool:
+    def _should_save(self, curr_step: int, force: bool) -> bool:
         if curr_step == self._last_saved_step:
-            return False  # e.g. after_epoch + after_train both fire at the same step
-        if last_step:
+            return False  # after_epoch + after_train at the same step, or the resumed step
+        if force:
             return True
-        return self.save_period > 0 and curr_step % self.save_period == 0
+        # curr_step > 0: PeriodicCheckpointer.before_step probes at iter 0 of a fresh run
+        return curr_step > 0 and self.save_period > 0 and curr_step % self.save_period == 0
 
     def _purge_stale(self) -> None:
         if self.keep_latest_k <= 0 or not is_main_process():
@@ -673,10 +730,13 @@ class DCPCheckpointManager:
             logger.info(f"[DCPCheckpointManager] purged stale checkpoint step-{step}")
 
     # ---------------------------------------------------------------- save --
-    def save(self, curr_step: int, last_step: bool = False) -> bool:
-        """Collective. Saves when ``curr_step`` hits the period (or last_step)."""
-        if not self._should_save(curr_step, last_step):
+    def save(self, curr_step: int, last_step: bool = False, force: bool = False) -> bool:
+        """Collective. Saves when ``curr_step`` hits the period, or on
+        ``last_step`` / ``force`` (wall-clock trigger). Never saves the same
+        step twice."""
+        if not self._should_save(curr_step, force=last_step or force):
             return False
+        t0 = time.monotonic()
         self.save_checkpointdir.mkdir(parents=True, exist_ok=True)
         checkpoint_id = self._checkpoint_id(curr_step)
         dcp.save(self._flattened_sd(), checkpoint_id=checkpoint_id)
@@ -688,7 +748,12 @@ class DCPCheckpointManager:
         self._last_saved_step = curr_step
         self._purge_stale()
         barrier()
-        logger.info(f"[DCPCheckpointManager] saved checkpoint at step {curr_step}")
+        # the save duration is what you subtract from the job time limit when
+        # choosing PeriodicCheckpointer.time_interval -- make it visible
+        logger.info(
+            f"[DCPCheckpointManager] saved checkpoint at step {curr_step} "
+            f"in {time.monotonic() - t0:.1f}s"
+        )
         return True
 
     # ---------------------------------------------------------------- load --
@@ -753,6 +818,10 @@ class DCPCheckpointManager:
         # DCP cannot route the flattened model keys back through a Stateful --
         # route them manually (torchtitan does the same).
         self.states[MODEL].load_state_dict(sd)
+        if not model_only:
+            # resumed state IS the last saved state: the first before_step of
+            # the resumed run must not re-save (and re-write) this step dir
+            self._last_saved_step = step
 
         meta = read_metadata_json(
             Path(checkpoint_id) / "checkpoint_meta.json", allow_missing=True

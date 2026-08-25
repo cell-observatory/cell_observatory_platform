@@ -102,7 +102,9 @@ datasets:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
-    roi_list: [653]
+    # roi_list -> roi_ids: prepared_id and roi_id are different
+    # sequences, so the old values were dropped rather than translated.
+    roi_ids: null
     tile_list: ["000x_002y_001z.zarr"]
     timepoint_list: [0]
 
@@ -131,22 +133,6 @@ datasets:
     debug: false
     normalize_bboxes: true
     async_device_copy: false
-    columns:
-      - "x_start"
-      - "y_start"
-      - "z_start"
-      - "time_start"
-      - "channel_size"
-      - "z_size"
-      - "y_size"
-      - "x_size"
-      - "time_size"
-      - "server_folder"
-      - "output_folder"
-      - "tile_name"
-      - "prepared_id"
-      - "annotations_metadata"
-
   preserve_order: false # only matters for TP
   callback_strategy: grpc # grpc, queue
   async_device_copy: false

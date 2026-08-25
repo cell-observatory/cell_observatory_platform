@@ -5,6 +5,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 class MixedPoissonGaussianNoise:
+    # Models the sensor in absolute counts (Poisson variance == mean), so the
+    # count magnitude is a parameter, not just a scale: it needs the exact
+    # uint16 values rather than a bfloat16 approximation of them. The
+    # preprocessor keeps an fp32 intermediate when any transform sets this.
+    reads_raw_counts = True
+
     def __init__(
         self, 
         quantum_efficiency: float | tuple[float, float], 
@@ -127,25 +133,25 @@ class MixedPoissonGaussianNoise:
         rng = self._get_generator(device)
         
         # Sample parameters for each batch element (image) if parameters are tuples
-        if isinstance(self.quantum_efficiency, tuple):
+        if isinstance(self.quantum_efficiency, (tuple, list)):
             qe = torch.empty(B, device=device)
             qe.uniform_(*self.quantum_efficiency, generator=rng)
         else:
             qe = torch.full((B,), self.quantum_efficiency, device=device)
             
-        if isinstance(self.electrons_per_count, tuple):
+        if isinstance(self.electrons_per_count, (tuple, list)):
             epc = torch.empty(B, device=device)
             epc.uniform_(*self.electrons_per_count, generator=rng)
         else:
             epc = torch.full((B,), self.electrons_per_count, device=device)
             
-        if isinstance(self.sigma_background_noise, tuple):
+        if isinstance(self.sigma_background_noise, (tuple, list)):
             sigma_bg = torch.empty(B, device=device)
             sigma_bg.uniform_(*self.sigma_background_noise, generator=rng)
         else:
             sigma_bg = torch.full((B,), self.sigma_background_noise, device=device)
             
-        if isinstance(self.mean_background_offset, tuple):
+        if isinstance(self.mean_background_offset, (tuple, list)):
             mean_offset = torch.empty(B, device=device)
             mean_offset.uniform_(*self.mean_background_offset, generator=rng)
         else:

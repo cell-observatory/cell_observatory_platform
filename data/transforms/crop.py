@@ -99,7 +99,8 @@ class Crop:
                 preserves the incoming dtype (the preprocessor's float32 count
                 intermediate) and _finalize owns the narrowing.
             patch_size: If set, pad output to multiple of this size.
-            resize_mode: Interpolation mode for resize operations.
+            resize_mode: Interpolation mode for resize operations (trilinear,
+                area, nearest-exact; plain "nearest" is rejected).
             align_corners: Whether to align corners in resize interpolation.
             boxes_normalized: Set True when ``targets[*]["boxes"]`` are normalized
                 to ``[0, 1]`` against the pre-crop spatial shape (as the collator
@@ -445,7 +446,9 @@ class Crop:
                 if fam is DataKind.INSTANCE_MASKS:
                     t[name] = resize_label_map(value, target_shape)
                 elif fam is DataKind.SEMANTIC_MASKS:
-                    t[name] = resize_masks(value, target_shape)
+                    # single integer class labelmap (semantic is one squashed
+                    # channel now), same handling as instance -- see resize.py.
+                    t[name] = resize_label_map(value, target_shape)
                 elif fam is DataKind.BOXES:
                     if self.bbox_format is None:
                         raise ValueError("bbox_format must be set to resize boxes")
@@ -647,10 +650,20 @@ class Crop:
                 t = dict(tgt)
                 for name, kind in field_specs:
                     if name in t and t[name] is not None:
-                        if kind_family(kind) is DataKind.INSTANCE_MASKS and t[name].ndim == 3:
+                        # Both mask kinds are integer labelmaps now (semantic is
+                        # one squashed class channel), so rank -- not kind -- picks
+                        # the kernel: a bare (Z, Y, X) map goes through
+                        # resize_label_map, anything with a leading axis
+                        # ((N, Z, Y, X) / (T, Z, Y, X)) through resize_masks, which
+                        # nearest-resizes per leading slice. Same nearest-exact
+                        # kernel underneath either way.
+                        if (
+                            kind_family(kind)
+                            in (DataKind.INSTANCE_MASKS, DataKind.SEMANTIC_MASKS)
+                            and t[name].ndim == 3
+                        ):
                             t[name] = resize_label_map(t[name], target_shape)
                         else:
-                            # (N, Z, Y, X) / (T, Z, Y, X): nearest per leading slice
                             t[name] = resize_masks(t[name], target_shape)
                 new_targets2.append(t)
             new_targets = new_targets2

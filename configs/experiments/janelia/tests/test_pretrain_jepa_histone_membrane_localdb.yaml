@@ -82,9 +82,9 @@ datasets:
     protocol: cursor
     verbose: true
     sample_type: cube
-    channel_count: 2
+    data_channel_count: 2
     required_channel_localizations: ["histone", "membrane"]
-    required_locations: ["exists_prfs"]
+    storage_location: prfs
     node_local_table_keys:
       cube_without_annotations_3d: cube_without_annotations_1_128_256_256
 

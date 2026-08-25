@@ -288,9 +288,7 @@ def project_masks_on_boxes(gt_masks, boxes, matched_idxs, M):
     return result
 
 
-# NOTE: the old per-instance-loop `masks_to_boxes` (inclusive-max convention,
-# zero callers) was deleted; `masks_to_boxes_v2` below is the single batched
-# implementation (half-open xyzxyz boxes).
+# Single batched implementation; boxes are half-open xyzxyz.
 def masks_to_boxes_v2(masks, eps: float = 1e-1) -> Tensor:
     """
     Compute the bounding boxes around the provided masks.

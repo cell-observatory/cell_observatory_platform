@@ -123,22 +123,6 @@ datasets:
     debug: false
     async_device_copy: false
     normalize_bboxes: false
-    columns:
-      - "x_start"
-      - "y_start"
-      - "z_start"
-      - "time_start"
-      - "channel_size"
-      - "z_size"
-      - "y_size"
-      - "x_size"
-      - "time_size"
-      - "server_folder"
-      - "output_folder"
-      - "tile_name"
-      - "prepared_id"
-      - "annotations_metadata"
-
 # schedulers
 schedulers:
   epochs: 600

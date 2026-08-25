@@ -301,10 +301,9 @@ class SaveWorkerBase:
         buffer_manager: BufferManager,
         save_mode: Literal["overwrite", "create"],
         max_workers: int = 4,
-        # tuple default: a mutable list default is shared across instances
         columns: Sequence[str] = (
-            "server_folder",
-            "output_folder",
+            "storage_root",
+            "tile_relative_path",
             "tile_name",
         ),
         shard_spatial_shape: Optional[Tuple[int, int, int]] = None,
@@ -410,9 +409,8 @@ class SaveWorkerBase:
 
             def _save_batch_element(record: InferenceRecord) -> None:
                 image_path = os.path.join(
-                    record.metadata["server_folder"],
-                    record.metadata["output_folder"],
-                    record.metadata["tile_name"],
+                    record.metadata["storage_root"],
+                    record.metadata["tile_relative_path"],
                 )
                 if not os.path.exists(image_path):
                     raise ValueError(

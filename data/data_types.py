@@ -1,6 +1,9 @@
 import sys
 import logging
+from typing import Any, Optional
+
 import torch
+import ujson
 import numpy
 import tensorstore
 from enum import Enum
@@ -79,9 +82,8 @@ _KIND_FAMILIES = (DataKind.SEMANTIC_MASKS, DataKind.INSTANCE_MASKS)
 
 def kind_family(kind: str) -> DataKind:
     """Resolve a concrete kind string to its canonical :class:`DataKind` family.
-
-    Exact kinds (``dense``, ``boxes``) map to themselves; family kinds match either
-    the bare family name or a ``<family>_<name>`` suffix. Unknown kinds raise.
+    Family kinds match either the bare family name or a ``<family>_<name>`` suffix. 
+    Unknown kinds raise a ValueError.
     """
     for fam in _KIND_FAMILIES:
         if kind == fam.value or kind.startswith(fam.value + "_"):
@@ -126,7 +128,10 @@ def kind_family(kind: str) -> DataKind:
 #   - Form D values stay batched -- never decompose per-sample (de-vectorizes the
 #     loss and Normalize). Form S stays per-sample -- never stack ragged fields.
 #
-# Time (PARKED, not implemented): when a temporal consumer exists, will do.
+# Time: NOT SUPPORTED. Both forms are 3D-spatial on the target side -- Form S
+#   carries boxes (N, 6) / mask_ids (N,) with no time axis, so a time_size > 1
+#   window cannot be represented and parse_annotations_metadata reads a single
+#   bucket. The IMAGE path is already 4D-clean.
 # ---------------------------------------------------------------------------
 
 
@@ -159,3 +164,59 @@ class OutputKind(str, Enum):
     INSTANCE_LABEL_MAP = "instance_label_map"  # integer instance labelmap (one volume, ids)
     INSTANCE_STACK = "instance_stack"          # explicit per-object mask stack (N, ...)
     BOXES = "boxes"                            # coordinate bounding boxes (N, 6)
+
+def parse_annotations_metadata(
+    raw: Any, *, window_offset: int = 0
+) -> tuple[list[dict], list[dict]]:
+    """Split one ``annotations_metadata`` payload into (instance, semantic) leaves.
+
+    The collator builds per-instance targets from the ``instance`` list, and
+    the semantic preprocessor reads the ``semantic`` list as the class legend for
+    the semantic labelmap channel.
+
+    The payload is now a time-outer / kind-inner dictionary with WINDOW-LOCAL keys -- 
+    ``str(timepoint - time_start)``, range ``0 .. time_size-1``, identical 
+    on both training views:
+
+        {"0": {"instance": [{local_segmentation_id, object_type_id,
+                             object_subtype_ids, bbox_zyxzyx}, ...],
+               "semantic": [{local_segmentation_id, object_type_id,
+                             object_subtype_ids}, ...]}}
+
+    ``window_offset`` selects exactly ONE bucket, and stays 0: 4D targets are
+    unimplemented. The per-sample targets contract above carries no time axis
+    (``boxes`` is ``(N, 6)``, ``mask_ids`` is ``(N,)``), so a ``time_size > 1``
+    window has nowhere to put frames ``1 .. T-1``. The image path is already
+    4D-clean.
+
+    A missing key means "no objects in that box".
+    """
+    if hasattr(raw, "as_py"):
+        raw = raw.as_py()
+    if raw is None:
+        return [], []
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    if isinstance(raw, str):
+        payload = raw.strip()
+        if not payload or payload.lower() == "null":
+            return [], []
+        raw = ujson.loads(payload)
+
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"annotations_metadata must be a time-keyed JSON object "
+            f"({{'0': {{'instance': [...], 'semantic': [...]}}}}), got "
+            f"{type(raw).__name__}"
+        )
+
+    bucket = raw.get(str(int(window_offset))) or {}
+    if not isinstance(bucket, dict):
+        raise ValueError(
+            f"annotations_metadata['{window_offset}'] must be a "
+            f"{{instance, semantic}} object, got {type(bucket).__name__}"
+        )
+    return (
+        [item for item in bucket.get("instance", []) if isinstance(item, dict)],
+        [item for item in bucket.get("semantic", []) if isinstance(item, dict)],
+    )

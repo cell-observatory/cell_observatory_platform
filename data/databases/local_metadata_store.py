@@ -17,19 +17,31 @@ import pyarrow.compute as pc
 import pyarrow.ipc as pa_ipc
 from omegaconf import OmegaConf
 
+from cell_observatory_platform.data.data_types import DataKind, kind_family
+from cell_observatory_platform.data.datasets.utils import resolve_channel_indices
+from cell_observatory_platform.data.databases.schema import (
+    required_columns,
+    validate_non_null,
+    validate_projection,
+)
 from cell_observatory_platform.utils.context import barrier
 
 
 logger = logging.getLogger(__name__)
 
 
-LocationKey = Literal["is_available", "exists_prfs", "exists_aws", "exists_oak", "exists_abc"]
 AxisKey = Literal["T", "Z", "Y", "X", "C"]
 
-# HACK: migrate to a DB table
-LOCATION_SERVER_PATHS: dict[str, str] = {
-    "exists_abc": "/clusterfs/vast/Data/cell_observatory_training_datasets",
-    "exists_prfs": "/groups/betzig/betziglab/CellObservatoryData",
+# Per-channel catalog: one row per (roi_id, channel_idx) with SCALAR columns --
+# the indexable form of the same information the training views expose as aligned
+# arrays.
+
+CHANNEL_CATALOG = "api.roi_channels"
+
+# Axis -> the view column that pins it. C is dynamic on every view, so it never
+# gets a shape predicate (the data_channel_count filters cover it).
+_AXIS_COLUMN: dict[str, str] = {
+    "T": "time_size", "Z": "z_size", "Y": "y_size", "X": "x_size",
 }
 
 
@@ -37,40 +49,38 @@ def _normalize_channel_token(value: object) -> str:
     return re.sub(r"\s+", " ", str(value).strip().lower())
 
 
-def _literal_channel_pattern(value: object) -> str:
-    normalized = _normalize_channel_token(value)
-    if not normalized:
-        raise ValueError("Channel localization values must not be empty")
-    return re.escape(normalized)
+def channel_role(channel_type: object, annotation_type: object) -> Optional[str]:
+    """Concrete role for one channel, or ``None`` when it is signal (-> INPUT).
 
-
-# HACK: _OBJECT_FAMILIES is a TRANSITIONAL hardcode. The DB will own
-# per-channel ROLE labels (channel_mapping[idx] -> role). When that lands, this
-# set must be sourced from the DB role table (same membership API), not edited
-# here.
-#
-# Families, not concrete members: any role equal to a family name or prefixed
-# "<family>_" is an object/GT role. This MUST stay consistent with
-# _role_matches_target in models/layers/preprocessor.py, which already matches
-# by family -- an exact-match version of this predicate is how a GT channel
-# (e.g. "semantic_segmentation_golgi", absent from a literal set) could
-# silently become model input.
-_OBJECT_FAMILIES: frozenset[str] = frozenset(
-    {
-        "instance_segmentation",
-        "semantic_segmentation",
-        "object_detection",
-        "boundary",
-        "foreground",
-    }
-)
+    We have :class:`DataKind`: annotation_type + '_masks'  -> instance_masks | semantic_masks
+    """
+    if _normalize_channel_token(channel_type) != "mask":
+        return None
+    nk = _normalize_channel_token(annotation_type)
+    if not nk or nk == "none":
+        raise ValueError("channel_type='mask' with no annotation_type")
+    return f"{nk}_masks"
 
 
 def is_object_role(role: object) -> bool:
-    """True if ``role`` (normalized) is an object/label role: equal to an object
-    family name or prefixed ``"<family>_"`` (family membership, not exact match)."""
-    r = _normalize_channel_token(role)
-    return any(r == f or r.startswith(f + "_") for f in _OBJECT_FAMILIES)
+    """True if ``role`` names a GT channel kind (an instance/semantic mask family).
+
+    Sourced from :class:`DataKind` rather than a second hand-maintained set, so
+    the two vocabularies cannot drift apart.
+
+    An UNKNOWN token is False, not an error. ``partition_channels`` asks this of
+    every channel that carries a role, and a role need not be a DataKind at all --
+    a data channel may legitimately carry a biology token ("membrane"). Raising
+    here would reject the common case. The dangerous case -- a role that matches a
+    declared TARGET family but is not an object role, i.e. GT about to be handed
+    to the model as input -- is caught by ``partition_channels`` itself, which is
+    where the two pieces of information meet.
+    """
+    try:
+        family = kind_family(_normalize_channel_token(role))
+    except ValueError:
+        return False
+    return family in (DataKind.INSTANCE_MASKS, DataKind.SEMANTIC_MASKS)
 
 
 class SampleType(str, Enum):
@@ -78,174 +88,92 @@ class SampleType(str, Enum):
     TILE = "tile"
 
 
-class TrainingTableKind(str, Enum):
-    CUBE_WITH_ANNOTATIONS = "cube_with_annotations"
-    CUBE_WITHOUT_ANNOTATIONS = "cube_without_annotations"
-    TILE_WITH_ANNOTATIONS = "tile_with_annotations"
-    TILE_WITHOUT_ANNOTATIONS = "tile_without_annotations"
-
-
 @dataclass(frozen=True)
-class SourceSpec:
-    # FIXME: `key` reads as a logical source identifier (the SOURCE_TABLES
-    # registry sets it to e.g. "cube_without_annotations", distinct from the
-    # physical `table_name_template`). But `_concrete_source` overwrites it
-    # with the *formatted* table_name_template, so on a resolved source
-    # `key == table_name` and the logical name is discarded. No consumer
-    # currently relies on the distinction (it's used only for the cache-path
-    # hash, the persisted descriptor, and a couple of log lines). Worth a
-    # future look: either make `key` a genuine logical name (if something
-    # ever needs to group shapes/variants under one source) or drop it and
-    # use `table_name` directly to remove the redundancy.
-    key: str
-    training_table_kind: TrainingTableKind
-    table_name_template: str
+class ViewSpec:
+    sample_type: SampleType
+    schema: str
+    view: str
     fixed_axes: tuple[AxisKey, ...]
     dynamic_axes: tuple[AxisKey, ...]
-    time_size: Optional[int]
-    z_size: Optional[int]
-    y_size: Optional[int]
-    x_size: Optional[int]
     order_by: tuple[str, ...]
+    has_occupancy_metrics: bool
 
     @property
-    def sample_type(self) -> SampleType:
-        if self.training_table_kind in {
-            TrainingTableKind.CUBE_WITH_ANNOTATIONS,
-            TrainingTableKind.CUBE_WITHOUT_ANNOTATIONS,
-        }:
-            return SampleType.CUBE
-        return SampleType.TILE
+    def qualified_name(self) -> str:
+        return f"{self.schema}.{self.view}"
 
     @property
-    def has_annotation_payload(self) -> bool:
-        return self.training_table_kind in {
-            TrainingTableKind.CUBE_WITH_ANNOTATIONS,
-            TrainingTableKind.TILE_WITH_ANNOTATIONS,
-        }
-
-    @property
-    def supports_metric_filters(self) -> bool:
-        return self.training_table_kind in {
-            TrainingTableKind.CUBE_WITH_ANNOTATIONS,
-            TrainingTableKind.CUBE_WITHOUT_ANNOTATIONS,
-        }
+    def is_cube(self) -> bool:
+        return self.sample_type is SampleType.CUBE
 
 
-def _general_source(
-    key: str,
-    training_table_kind: TrainingTableKind,
-    table_name_template: str,
-    fixed_axes: tuple[AxisKey, ...],
-    dynamic_axes: tuple[AxisKey, ...],
-    time_size: Optional[int],
-    z_size: Optional[int],
-    y_size: Optional[int],
-    x_size: Optional[int],
-    order_by: tuple[str, ...],
-) -> SourceSpec:
-    return SourceSpec(
-        key=key,
-        training_table_kind=training_table_kind,
-        table_name_template=table_name_template,
-        fixed_axes=fixed_axes,
-        dynamic_axes=dynamic_axes,
-        time_size=time_size,
-        z_size=z_size,
-        y_size=y_size,
-        x_size=x_size,
-        order_by=order_by,
-    )
-
-
-SOURCE_TABLES: dict[str, SourceSpec] = {
-    "cube_with_annotations": _general_source(
-        key="cube_with_annotations",
-        training_table_kind=TrainingTableKind.CUBE_WITH_ANNOTATIONS,
-        table_name_template="prepared_cube_annotation_agg_{time_size}_{z_size}_{y_size}_{x_size}",
+TRAINING_VIEWS: dict[SampleType, ViewSpec] = {
+    SampleType.CUBE: ViewSpec(
+        sample_type=SampleType.CUBE,
+        schema="api",
+        view="cube_training",
+        # A cube is a fixed-size crop: T/Z/Y/X come from cube_shapes and are
+        # filtered on, so only the channel count varies row to row.
         fixed_axes=("T", "Z", "Y", "X"),
         dynamic_axes=("C",),
-        time_size=None,
-        z_size=None,
-        y_size=None,
-        x_size=None,
-        order_by=("prepared_id", "tile_name", "time_start", "z_start", "y_start", "x_start"),
+        # The DB's natural key, in its own order.
+        order_by=(
+            "source_kind", "roi_id", "tile_id",
+            "time_start", "z_start", "y_start", "x_start",
+        ),
+        has_occupancy_metrics=True,
     ),
-    "cube_without_annotations": _general_source(
-        key="cube_without_annotations",
-        training_table_kind=TrainingTableKind.CUBE_WITHOUT_ANNOTATIONS,
-        table_name_template="prepared_cube_channel_agg_{time_size}_{z_size}_{y_size}_{x_size}",
-        fixed_axes=("T", "Z", "Y", "X"),
-        dynamic_axes=("C",),
-        time_size=None,
-        z_size=None,
-        y_size=None,
-        x_size=None,
-        order_by=("prepared_id", "tile_name", "time_start", "z_start", "y_start", "x_start"),
-    ),
-    "tile_with_annotations": _general_source(
-        key="tile_with_annotations",
-        training_table_kind=TrainingTableKind.TILE_WITH_ANNOTATIONS,
-        table_name_template="prepared_tile_annotation_agg_{time_size}",
+    SampleType.TILE: ViewSpec(
+        sample_type=SampleType.TILE,
+        schema="api",
+        # NOTE the plural: api.tiles_training, not api.tile_training.
+        view="tiles_training",
+        # Tiles are natively ragged in space. 
         fixed_axes=(),
         dynamic_axes=("T", "Z", "Y", "X", "C"),
-        time_size=None,
-        z_size=None,
-        y_size=None,
-        x_size=None,
-        order_by=("prepared_id", "tile_name", "time_start"),
-    ),
-    "tile_without_annotations": _general_source(
-        key="tile_without_annotations",
-        training_table_kind=TrainingTableKind.TILE_WITHOUT_ANNOTATIONS,
-        table_name_template="prepared_tile_channel_agg_{time_size}",
-        fixed_axes=(),
-        dynamic_axes=("T", "Z", "Y", "X", "C"),
-        time_size=None,
-        z_size=None,
-        y_size=None,
-        x_size=None,
-        order_by=("prepared_id", "tile_name", "time_start"),
+        order_by=("source_kind", "roi_id", "tile_id", "time_start", "time_size"),
+        has_occupancy_metrics=False,
     ),
 }
 
 
 @dataclass(frozen=True)
 class QuerySpec:
-    roi_list: Optional[Sequence[int]] = None
+    roi_ids: Optional[Sequence[int]] = None
     tile_list: Optional[Sequence[str]] = None
     timepoint_list: Optional[Sequence[int]] = None
     max_rows: Optional[int] = None
     cdf_threshold: Optional[float] = None
     cdf_target: Literal["80", "90", "95", "99"] = "90"
     cdf_threshold_channel_localizations: Optional[Sequence[str]] = None
-    required_locations: Optional[Sequence[LocationKey]] = None
     holdout_split: Optional[Literal["train", "test"]] = None
     synthetic_only: bool = False
-    channel_count: Optional[int] = None
-    min_channel_count: Optional[int] = None
-    max_channel_count: Optional[int] = None
+    complete_tiles_only: bool = False
+    data_channel_count: Optional[int] = None
+    min_data_channel_count: Optional[int] = None
+    max_data_channel_count: Optional[int] = None
     required_channel_key_patterns: Optional[dict[str, str]] = None
-    any_channel_patterns: Optional[Sequence[str]] = None
-    all_channel_patterns: Optional[Sequence[str]] = None
     required_channel_localizations: Optional[Sequence[str]] = None
+    required_fluorophores: Optional[Sequence[str]] = None
+    required_annotation_types: Optional[Sequence[str]] = None
 
     def validate(self) -> None:
-        for key in self.required_locations or ():
-            if key not in {"is_available", "exists_prfs", "exists_aws", "exists_oak", "exists_abc"}:
-                raise ValueError(f"Unknown location key {key!r}")
-        if self.channel_count is not None and int(self.channel_count) < 0:
-            raise ValueError("channel_count must be >= 0")
-        if self.min_channel_count is not None and int(self.min_channel_count) < 0:
-            raise ValueError("min_channel_count must be >= 0")
-        if self.max_channel_count is not None and int(self.max_channel_count) < 0:
-            raise ValueError("max_channel_count must be >= 0")
+        for name in ("data_channel_count", "min_data_channel_count", "max_data_channel_count"):
+            value = getattr(self, name)
+            if value is not None and int(value) < 0:
+                raise ValueError(f"{name} must be >= 0")
         if (
-            self.min_channel_count is not None
-            and self.max_channel_count is not None
-            and int(self.min_channel_count) > int(self.max_channel_count)
+            self.min_data_channel_count is not None
+            and self.max_data_channel_count is not None
+            and int(self.min_data_channel_count) > int(self.max_data_channel_count)
         ):
-            raise ValueError("min_channel_count must be <= max_channel_count")
+            raise ValueError("min_data_channel_count must be <= max_data_channel_count")
+        for nk in self.required_annotation_types or ():
+            if _normalize_channel_token(nk) not in {"instance", "semantic"}:
+                raise ValueError(
+                    f"Unknown annotation_type {nk!r}; dry_lab.annotation_types is "
+                    f"seeded with 'instance' and 'semantic'"
+                )
 
 
 @dataclass(frozen=True)
@@ -255,12 +183,25 @@ class StoreSpec:
 
 @dataclass(frozen=True)
 class ResolvedSource:
-    source: SourceSpec
-    table_name: str
+    view: ViewSpec
     requested_time_size: int
     requested_z_size: int
     requested_y_size: int
     requested_x_size: int
+    with_targets: bool
+    location_id: int
+    location_name: str
+
+    @property
+    def shape_key(self) -> str:
+        return (
+            f"{self.requested_time_size}_{self.requested_z_size}"
+            f"_{self.requested_y_size}_{self.requested_x_size}"
+        )
+
+    @property
+    def cache_key(self) -> str:
+        return f"{self.view.qualified_name}:{self.shape_key}:{self.location_name}"
 
 
 @dataclass(frozen=True)
@@ -275,6 +216,11 @@ class TableStats:
     sample_type: str
     fixed_axes: tuple[AxisKey, ...]
     dynamic_axes: tuple[AxisKey, ...]
+    # Channels the loader will actually EMIT per sample under the configured
+    # selection: matched data channels PLUS the always-retained mask channels.
+    # 0 when no selection is configured (then max_channel_size is the answer).
+    # See _selected_channel_size for why len(selection) is not this number.
+    max_selected_channel_size: int = 0
 
 
 @dataclass(frozen=True)
@@ -297,12 +243,14 @@ def _safe_max(table: pa.Table, column_name: str, default: int = 0) -> int:
     return int(default if value is None else value)
 
 
-def _ordering_fingerprint(table: pa.Table) -> str:
+def _ordering_fingerprint(table: pa.Table, view: ViewSpec) -> str:
+    """
+    Fingerprint the row order, so a silently reordered source is detectable.
+    """
     if table.num_rows == 0:
         return "empty"
 
-    preferred_keys = ["prepared_id", "tile_name", "time_start", "z_start", "y_start", "x_start"]
-    present = [name for name in preferred_keys if name in table.column_names]
+    present = [name for name in view.order_by if name in table.column_names]
     if not present:
         return "no-order-columns"
 
@@ -318,19 +266,99 @@ def _ordering_fingerprint(table: pa.Table) -> str:
     return sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
 
 
-def build_table_stats(table: pa.Table, resolved: ResolvedSource) -> TableStats:
+def _selected_channel_size(
+    table: pa.Table, selected_channel_localizations: Optional[Sequence[str]]
+) -> int:
+    """
+    Max channels the loader will EMIT per sample under this selection.
+    """
+    if not selected_channel_localizations:
+        return 0
+    needed = {"roi_id", "channel_idx", "channel_type", "localization"}
+    if not needed.issubset(table.column_names) or table.num_rows == 0:
+        return 0
+
+    # one row index per distinct roi_id
+    first_seen: dict[int, int] = {}
+    for position, roi_id in enumerate(table["roi_id"].to_pylist()):
+        first_seen.setdefault(roi_id, position)
+
+    sample = table.take(pa.array(sorted(first_seen.values()), type=pa.int64()))
+    idxs = sample["channel_idx"].to_pylist()
+    types = sample["channel_type"].to_pylist()
+    locs = sample["localization"].to_pylist()
+
+    largest = 0
+    for channel_idx, channel_type, localization in zip(idxs, types, locs):
+        selected = resolve_channel_indices(
+            channel_idx, channel_type, localization, selected_channel_localizations
+        )
+        largest = max(largest, len(selected) if selected else len(channel_idx or ()))
+    return largest
+
+
+def build_table_stats(
+    table: pa.Table,
+    resolved: ResolvedSource,
+    selected_channel_localizations: Optional[Sequence[str]] = None,
+) -> TableStats:
+    """Per-axis maxima that size the host buffer (see dataloaders._shape_from_stats).
+    """
     return TableStats(
         num_rows=int(table.num_rows),
-        max_time_size=_safe_max(table, "time_size", resolved.source.time_size or 0),
-        max_z_size=_safe_max(table, "z_size", resolved.source.z_size or 0),
-        max_y_size=_safe_max(table, "y_size", resolved.source.y_size or 0),
-        max_x_size=_safe_max(table, "x_size", resolved.source.x_size or 0),
+        max_time_size=_safe_max(table, "time_size", resolved.requested_time_size),
+        max_z_size=_safe_max(table, "z_size", resolved.requested_z_size),
+        max_y_size=_safe_max(table, "y_size", resolved.requested_y_size),
+        max_x_size=_safe_max(table, "x_size", resolved.requested_x_size),
         max_channel_size=_safe_max(table, "channel_size", 0),
-        ordering_fingerprint=_ordering_fingerprint(table),
-        sample_type=resolved.source.sample_type.value,
-        fixed_axes=resolved.source.fixed_axes,
-        dynamic_axes=resolved.source.dynamic_axes,
+        ordering_fingerprint=_ordering_fingerprint(table, resolved.view),
+        sample_type=resolved.view.sample_type.value,
+        fixed_axes=resolved.view.fixed_axes,
+        dynamic_axes=resolved.view.dynamic_axes,
+        max_selected_channel_size=_selected_channel_size(
+            table, selected_channel_localizations
+        ),
     )
+
+
+def _assert_requested_time_size(table: pa.Table, resolved: ResolvedSource) -> None:
+    """Fail loudly when the view cannot serve the requested temporal extent.
+
+    Cubes are already safe: T is a fixed axis, so _shape_clauses pins time_size
+    and a mismatch is simply 0 rows. Tiles are not. Without this the failure is SILENT:
+    _shape_from_stats keeps the config T=16 (max(16, 1)), the loader slices ONE
+    frame, and the 4D pad branch broadcasts it --
+    `dst[i][tt:T, ...] = dst[i][tt - 1, ...]` -- yielding 16 copies of frame 0.
+    _assert_input_shape_spatial only checks Z/Y/X, so nothing else objects.
+    """
+    if "time_size" not in table.column_names:
+        # Unreachable through create_or_attach: time_size is in
+        # schema.LOADER_COLUMNS, so validate_projection has already run and would
+        # have raised.
+        raise ValueError(
+            f"{resolved.view.qualified_name}: no time_size column, so the "
+            f"temporal-extent guard cannot run. The projection is not the one "
+            f"data/databases/schema.py declares -- call validate_projection first."
+        )
+    if table.num_rows == 0:
+        # Legitimately reachable: any filter may select nothing. Nothing to
+        # compare against, and an empty result is ALREADY reported loudly --
+        # _log_filter_narrowing fires on num_rows == 0 and names the clause that
+        # zeroed it, which for a cube T mismatch is the `time_size=N` step
+        # (cubes pin T in the WHERE, so a bad request is 0 rows rather than
+        # wrong-sized rows). Raising here would duplicate that with a worse
+        # message and would fire on every legitimately-empty query.
+        return
+    got = _safe_max(table, "time_size", resolved.requested_time_size)
+    want = int(resolved.requested_time_size)
+    if got != want:
+        raise ValueError(
+            f"{resolved.view.qualified_name}: requested time_size={want} but the "
+            f"view serves {got}. A 4D config would silently receive {got} real "
+            f"frame(s) broadcast to {want}. Seed dry_lab.tile_time_windows "
+            f"(tiles) or dry_lab.cube_shapes (cubes) with time_size={want}, or "
+            f"set datasets.input_shape[0]={got}."
+        )
 
 
 class FilterBuilder:
@@ -348,90 +376,97 @@ class FilterBuilder:
                 encoded.append("'" + str(value).replace("'", "''") + "'")
         return "(" + ",".join(encoded) + ")"
 
-    @classmethod
-    def _mapping_value_text_expr(cls, value_expr: str) -> str:
-        return f"lower(trim(both '\"' from {value_expr}::text))"
+    # ------------------------------------------------------------------ #
+    # channel predicates -- membership in the aligned arrays
+    # ------------------------------------------------------------------ #
 
     @classmethod
-    def _channel_key_expr(cls, alias: str, channel_pattern: str) -> str:
-        pattern_sql = cls._sql_string(_normalize_channel_token(channel_pattern))
+    def _channel_semijoin(cls, alias: str, **predicates: object) -> str:
+        """``EXISTS`` over :data:`CHANNEL_CATALOG` for one channel requirement.
+
+        The ROI must have at least one channel row matching every predicate::
+
+            EXISTS (SELECT 1 FROM api.roi_channels rc
+                    WHERE rc.roi_id = s.roi_id AND rc.localization = 'membrane')
+
+        Text comparisons are ``lower(rc.col) = <lowered>``, not a bare equality.
+        The DB vocabulary is NOT uniformly cased: localization and annotation_type
+        are lowercase, but fluorophore is mixed ("Electra2", "mTFP1", "mCitrine",
+        "mKOK", "mstaygold").
+        """
+        conditions = [f"rc.roi_id = {alias}.roi_id"]
+        for column, value in predicates.items():
+            if isinstance(value, int):
+                conditions.append(f"rc.{column} = {int(value)}")
+            else:
+                conditions.append(
+                    f"lower(rc.{column}) = "
+                    f"{cls._sql_string(_normalize_channel_token(value))}"
+                )
         return (
-            "("
-            f"SELECT mapping.key "
-            f"FROM jsonb_each(COALESCE({alias}.channel_mapping, '{{}}'::jsonb)) AS mapping(key, value) "
-            f"WHERE {cls._mapping_value_text_expr('mapping.value')} ~ {pattern_sql} "
-            f"ORDER BY mapping.key "
-            f"LIMIT 1"
-            ")"
+            f"EXISTS (SELECT 1 FROM {CHANNEL_CATALOG} rc WHERE "
+            + " AND ".join(conditions)
+            + ")"
         )
 
     @classmethod
-    def _channel_key_matches_clause(cls, alias: str, key: str, pattern: str) -> str:
-        key_sql = cls._sql_string(str(key))
-        pattern_sql = cls._sql_string(_normalize_channel_token(pattern))
-        return (
-            "EXISTS ("
-            f"SELECT 1 "
-            f"FROM jsonb_each(COALESCE({alias}.channel_mapping, '{{}}'::jsonb)) AS mapping(key, value) "
-            f"WHERE mapping.key = {key_sql} "
-            f"  AND {cls._mapping_value_text_expr('mapping.value')} ~ {pattern_sql}"
-            ")"
-        )
+    def _localization_index_expr(cls, alias: str, localization: object) -> str:
+        """1-based position of a localization in the aligned channel arrays.
 
-    @classmethod
-    def _any_channel_matches_clause(cls, alias: str, pattern: str) -> str:
-        pattern_sql = cls._sql_string(_normalize_channel_token(pattern))
-        return (
-            "EXISTS ("
-            f"SELECT 1 "
-            f"FROM jsonb_each(COALESCE({alias}.channel_mapping, '{{}}'::jsonb)) AS mapping(key, value) "
-            f"WHERE {cls._mapping_value_text_expr('mapping.value')} ~ {pattern_sql}"
-            ")"
-        )
+        POSITIONAL only -- filtering goes through _channel_semijoin. This exists to
+        index ``occupancy_cdf*``, which the schema pins as "Length C
+        (= channel_size), aligned to channel_idx", mask slots JSON null.
+        """
+        token = cls._sql_string(_normalize_channel_token(localization))
+        return f"array_position({alias}.localization, {token})"
 
     @staticmethod
-    def _channel_cdf_expr(alias: str, channel: int, target: str) -> str:
-        return (
-            f"(CASE "
-            f"WHEN jsonb_typeof({alias}.channels_metadata -> '{channel}' -> 'cdf_{target}') = 'array' "
-            f"THEN (SELECT min(value::integer) "
-            f"FROM jsonb_array_elements_text("
-            f"COALESCE({alias}.channels_metadata -> '{channel}' -> 'cdf_{target}', '[]'::jsonb)"
-            f") AS cdf(value)) "
-            f"ELSE ({alias}.channels_metadata -> '{channel}' ->> 'cdf_{target}')::integer "
-            f"END)"
-        )
+    def _channel_cdf_expr(alias: str, index_expr: str, target: str) -> str:
+        """
+        ``occupancy_cdf<target>[idx]`` -- a plain array subscript.
+        """
+        return f"({alias}.occupancy_cdf{target})[{index_expr}]"
 
-    @staticmethod
-    def _channel_cdf_expr_for_key(alias: str, channel_key_sql: str, target: str) -> str:
-        return (
-            f"(CASE "
-            f"WHEN jsonb_typeof({alias}.channels_metadata -> ({channel_key_sql}) -> 'cdf_{target}') = 'array' "
-            f"THEN (SELECT min(value::integer) "
-            f"FROM jsonb_array_elements_text("
-            f"COALESCE({alias}.channels_metadata -> ({channel_key_sql}) -> 'cdf_{target}', '[]'::jsonb)"
-            f") AS cdf(value)) "
-            f"ELSE ({alias}.channels_metadata -> ({channel_key_sql}) ->> 'cdf_{target}')::integer "
-            f"END)"
-        )
+    # ------------------------------------------------------------------ #
+    # labeled clause groups
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def _shape_clauses(cls, resolved: "ResolvedSource", alias: str) -> list[tuple[str, str]]:
+        """Shape as a filter, driven by ``ViewSpec.fixed_axes``.
+        """
+        sizes = {
+            "T": resolved.requested_time_size,
+            "Z": resolved.requested_z_size,
+            "Y": resolved.requested_y_size,
+            "X": resolved.requested_x_size,
+        }
+        return [
+            (f"{_AXIS_COLUMN[ax]}={int(sizes[ax])}",
+             f"{alias}.{_AXIS_COLUMN[ax]} = {int(sizes[ax])}")
+            for ax in ("T", "Z", "Y", "X")
+            if ax in resolved.view.fixed_axes
+        ]
 
     @classmethod
     def _labeled_non_channel_clauses(
-        cls, source: SourceSpec, query: QuerySpec, alias: str = "s"
+        cls, resolved: "ResolvedSource", query: QuerySpec, alias: str = "s"
     ) -> list[tuple[str, str]]:
-        """Ordered (label, sql_clause) pairs for non-channel WHERE predicates.
+        """Ordered ``(label, sql_clause)`` pairs for non-channel predicates.
 
-        Labels describe the filter for the diagnostic; clauses are the
-        actual SQL fragments. Single source of truth for which filters
-        get applied -- both build_non_channel_where_sql() and
-        build_filter_diagnostic_sql() consume this.
+        Labels describe the filter for the diagnostic; clauses are the SQL. Single
+        source of truth for which filters get applied -- both
+        ``build_non_channel_where_sql`` and ``build_filter_diagnostic_sql``
+        consume this.
         """
         out: list[tuple[str, str]] = []
 
-        if query.roi_list:
+        out.extend(cls._shape_clauses(resolved, alias))
+
+        if query.roi_ids:
             out.append((
-                f"roi_list={list(query.roi_list)}",
-                f"{alias}.prepared_id IN {cls._sql_list(query.roi_list)}",
+                f"roi_ids={list(query.roi_ids)}",
+                f"{alias}.roi_id IN {cls._sql_list(query.roi_ids)}",
             ))
 
         if query.tile_list:
@@ -447,21 +482,9 @@ class FilterBuilder:
             ))
 
         if query.holdout_split == "train":
-            out.append((
-                "holdout_split=train",
-                f"COALESCE({alias}.is_test_split, false) = false",
-            ))
+            out.append(("holdout_split=train", f"COALESCE({alias}.is_test_split, false) = false"))
         elif query.holdout_split == "test":
-            out.append((
-                "holdout_split=test",
-                f"COALESCE({alias}.is_test_split, false) = true",
-            ))
-
-        for location_key in query.required_locations or ():
-            out.append((
-                f"required_location={location_key}",
-                f"COALESCE({alias}.{location_key}, false) = true",
-            ))
+            out.append(("holdout_split=test", f"COALESCE({alias}.is_test_split, false) = true"))
 
         if query.synthetic_only:
             out.append((
@@ -469,137 +492,148 @@ class FilterBuilder:
                 f"COALESCE({alias}.is_synthetic, false) = true",
             ))
 
-        if source.has_annotation_payload:
-            out.append((
-                "annotation_count>0 (source has_annotation_payload)",
-                f"{alias}.annotation_count > 0",
-            ))
+        if query.complete_tiles_only and resolved.view.is_cube:
+            # is_complete / missing_timepoints are projected on cube_training only;
+            # tiles_training filters overlapping windows out internally.
+            out.append(("complete_tiles_only", f"COALESCE({alias}.is_complete, false) = true"))
 
-        if query.channel_count is not None:
+        if resolved.with_targets:
+            out.append(("has_annotations", f"{alias}.has_annotations"))
+
+        # data_channel_count excludes mask channels.
+        if query.data_channel_count is not None:
             out.append((
-                f"channel_count={int(query.channel_count)}",
-                f"COALESCE({alias}.channel_size, 0) = {int(query.channel_count)}",
+                f"data_channel_count={int(query.data_channel_count)}",
+                f"COALESCE({alias}.data_channel_count, 0) = {int(query.data_channel_count)}",
             ))
-        if query.min_channel_count is not None:
+        if query.min_data_channel_count is not None:
             out.append((
-                f"min_channel_count={int(query.min_channel_count)}",
-                f"COALESCE({alias}.channel_size, 0) >= {int(query.min_channel_count)}",
+                f"min_data_channel_count={int(query.min_data_channel_count)}",
+                f"COALESCE({alias}.data_channel_count, 0) >= {int(query.min_data_channel_count)}",
             ))
-        if query.max_channel_count is not None:
+        if query.max_data_channel_count is not None:
             out.append((
-                f"max_channel_count={int(query.max_channel_count)}",
-                f"COALESCE({alias}.channel_size, 0) <= {int(query.max_channel_count)}",
+                f"max_data_channel_count={int(query.max_data_channel_count)}",
+                f"COALESCE({alias}.data_channel_count, 0) <= {int(query.max_data_channel_count)}",
             ))
 
         return out
 
     @classmethod
     def _labeled_channel_clauses(
-        cls, source: SourceSpec, query: QuerySpec, alias: str = "s"
+        cls, resolved: "ResolvedSource", query: QuerySpec, alias: str = "s"
     ) -> list[tuple[str, str]]:
-        """Ordered (label, sql_clause) pairs for channel-mapping predicates."""
+        """Ordered ``(label, sql_clause)`` pairs for channel predicates.
+        """
         out: list[tuple[str, str]] = []
 
-        for key, pattern in (query.required_channel_key_patterns or {}).items():
+        for key, value in (query.required_channel_key_patterns or {}).items():
+            # Pins a localization to a SPECIFIC channel, which is a different
+            # question from "is it present anywhere".
+            # This matches on rc.channel_idx, NOT on a position in the aligned
+            # arrays. 
             out.append((
-                f"required_channel_key_pattern[{key}]={pattern!r}",
-                cls._channel_key_matches_clause(alias, key, pattern),
+                f"required_channel_key_pattern[{key}]={value!r}",
+                cls._channel_semijoin(alias, channel_idx=int(key), localization=value),
             ))
 
         for localization in query.required_channel_localizations or ():
             out.append((
                 f"required_channel_localization={localization!r}",
-                cls._any_channel_matches_clause(alias, _literal_channel_pattern(localization)),
+                cls._channel_semijoin(alias, localization=localization),
             ))
 
-        if query.any_channel_patterns:
-            any_clauses = [
-                cls._any_channel_matches_clause(alias, pattern)
-                for pattern in query.any_channel_patterns
-            ]
+        for fluorophore in query.required_fluorophores or ():
             out.append((
-                f"any_channel_patterns={list(query.any_channel_patterns)!r}",
-                "(" + " OR ".join(any_clauses) + ")",
+                f"required_fluorophore={fluorophore!r}",
+                cls._channel_semijoin(alias, fluorophore=fluorophore),
             ))
 
-        if query.all_channel_patterns:
-            for pattern in query.all_channel_patterns:
-                out.append((
-                    f"all_channel_pattern={pattern!r}",
-                    cls._any_channel_matches_clause(alias, pattern),
-                ))
+        for nk in query.required_annotation_types or ():
+            out.append((
+                f"required_annotation_type={nk!r}",
+                cls._channel_semijoin(alias, annotation_type=nk),
+            ))
 
         if query.cdf_threshold is not None:
-            if not source.supports_metric_filters:
-                raise NotImplementedError("cdf_threshold is not supported for tile sources")
-            threshold = float(query.cdf_threshold)
-            if query.cdf_threshold_channel_localizations:
-                for localization in query.cdf_threshold_channel_localizations:
-                    channel_key_sql = cls._channel_key_expr(alias, localization)
-                    out.append((
-                        f"cdf_threshold channel resolved for {localization!r}",
-                        f"{channel_key_sql} IS NOT NULL",
-                    ))
-                    out.append((
-                        f"cdf_{query.cdf_target}>={threshold} for {localization!r}",
-                        f"{cls._channel_cdf_expr_for_key(alias, channel_key_sql, query.cdf_target)} >= {threshold}",
-                    ))
-            else:
+            if not resolved.view.has_occupancy_metrics:
+                raise NotImplementedError(
+                    f"cdf_threshold is not supported for "
+                    f"{resolved.view.qualified_name} (no occupancy_cdf* columns)"
+                )
+            if not query.cdf_threshold_channel_localizations:
                 raise NotImplementedError(
                     "cdf_threshold_channel_localizations is required for cube metric filters"
                 )
+            threshold = float(query.cdf_threshold)
+            for localization in query.cdf_threshold_channel_localizations:
+                index_expr = cls._localization_index_expr(alias, localization)
+                # "the ROI has this channel at all" is an indexed semi-join; the
+                # positional subscript below then picks its slot in THIS row's
+                # occupancy array, which no join can answer.
+                out.append((
+                    f"cdf_threshold channel resolved for {localization!r}",
+                    cls._channel_semijoin(alias, localization=localization),
+                ))
+                out.append((
+                    f"cdf_{query.cdf_target}>={threshold} for {localization!r}",
+                    f"{cls._channel_cdf_expr(alias, index_expr, query.cdf_target)} >= {threshold}",
+                ))
 
         return out
 
     @classmethod
     def build_labeled_clauses(
-        cls, source: SourceSpec, query: QuerySpec, alias: str = "s"
+        cls, resolved: "ResolvedSource", query: QuerySpec, alias: str = "s"
     ) -> list[tuple[str, str]]:
-        """All cumulative (label, clause) pairs in apply order.
-
-        Used by SqlQueryPlanner.build_filter_diagnostic_sql to produce a
-        per-step COUNT(*) breakdown.
-        """
+        """All cumulative ``(label, clause)`` pairs in apply order."""
         return (
-            cls._labeled_non_channel_clauses(source, query, alias=alias)
-            + cls._labeled_channel_clauses(source, query, alias=alias)
+            cls._labeled_non_channel_clauses(resolved, query, alias=alias)
+            + cls._labeled_channel_clauses(resolved, query, alias=alias)
         )
 
     @classmethod
-    def build_non_channel_where_sql(cls, source: SourceSpec, query: QuerySpec, alias: str = "s") -> str:
+    def build_non_channel_where_sql(
+        cls, resolved: "ResolvedSource", query: QuerySpec, alias: str = "s"
+    ) -> str:
         query.validate()
-        labeled = cls._labeled_non_channel_clauses(source, query, alias=alias)
+        labeled = cls._labeled_non_channel_clauses(resolved, query, alias=alias)
         if not labeled:
             return "1=1"
         return " AND ".join(clause for _, clause in labeled)
 
     @classmethod
-    def build_channel_where_clauses(cls, source: SourceSpec, query: QuerySpec, alias: str = "s") -> list[str]:
-        return [clause for _, clause in cls._labeled_channel_clauses(source, query, alias=alias)]
+    def build_channel_where_clauses(
+        cls, resolved: "ResolvedSource", query: QuerySpec, alias: str = "s"
+    ) -> list[str]:
+        return [clause for _, clause in cls._labeled_channel_clauses(resolved, query, alias=alias)]
 
     @classmethod
-    def build_missing_channel_mapping_where_sql(
-        cls,
-        source: SourceSpec,
-        query: QuerySpec,
-        alias: str = "s",
+    def build_missing_channel_metadata_where_sql(
+        cls, resolved: "ResolvedSource", query: QuerySpec, alias: str = "s"
     ) -> Optional[str]:
+        """Rows dropped purely because the ROI has no channel rows at all.
+        """
         has_channel_requirements = bool(
             query.cdf_threshold_channel_localizations
             or query.required_channel_localizations
-            or query.any_channel_patterns
-            or query.all_channel_patterns
             or query.required_channel_key_patterns
+            or query.required_fluorophores
+            or query.required_annotation_types
         )
         if not has_channel_requirements:
             return None
-
-        return f"{alias}.channel_mapping IS NULL"
+        return (
+            f"NOT EXISTS (SELECT 1 FROM {CHANNEL_CATALOG} rc "
+            f"WHERE rc.roi_id = {alias}.roi_id)"
+        )
 
     @classmethod
-    def build_where_sql(cls, source: SourceSpec, query: QuerySpec, alias: str = "s") -> str:
-        clauses = [cls.build_non_channel_where_sql(source, query, alias=alias)]
-        clauses.extend(cls.build_channel_where_clauses(source, query, alias=alias))
+    def build_where_sql(
+        cls, resolved: "ResolvedSource", query: QuerySpec, alias: str = "s"
+    ) -> str:
+        clauses = [cls.build_non_channel_where_sql(resolved, query, alias=alias)]
+        clauses.extend(cls.build_channel_where_clauses(resolved, query, alias=alias))
         return " AND ".join(clauses)
 
 
@@ -646,21 +680,52 @@ class TableResolver:
         return [token] if token else []
 
     @classmethod
-    def _fetch_valid_channel_localizations(cls, db_client) -> set[str]:
+    def _fetch_channel_vocabulary(cls, db_client) -> dict[str, set[str]]:
+        """Localization / fluorophore tokens that actually appear on data channels.
+        """
         table = db_client.execute_arrow(
-            """
-            SELECT localization
-            FROM fish_db.tags
-            WHERE localization IS NOT NULL
-              AND COALESCE(is_deleted, false) = false
+            f"""
+            SELECT DISTINCT localization, fluorophore
+            FROM {CHANNEL_CATALOG}
+            WHERE channel_type = 'data'
             """
         )
-        valid: set[str] = set()
-        if "localization" not in table.column_names:
-            return valid
-        for raw in table["localization"].to_pylist():
-            valid.update(cls._iter_localization_tokens(raw))
-        return valid
+        vocabulary: dict[str, set[str]] = {"localization": set(), "fluorophore": set()}
+        for column in vocabulary:
+            if column not in table.column_names:
+                continue
+            for raw in table[column].to_pylist():
+                if raw is None:
+                    continue
+                token = _normalize_channel_token(raw)
+                if token:
+                    vocabulary[column].add(token)
+        return vocabulary
+
+    @classmethod
+    def _assert_known_tokens(
+        cls, db_client, column: str, requested: Optional[Sequence[str]]
+    ) -> None:
+        """Reject a config naming a channel token the data does not have.
+
+        Without this the same typo surfaces either as a silently empty dataset
+        (a filter that matches nothing) or as a per-row ValueError raised deep
+        inside a Ray loader actor, after the whole pipeline is already up. Here it
+        is a startup error that lists what IS available.
+        """
+        if db_client is None or not requested:
+            return
+        known = cls._fetch_channel_vocabulary(db_client)[column]
+        if not known:
+            return
+        unknown = sorted(
+            {_normalize_channel_token(v) for v in requested} - known
+        )
+        if unknown:
+            raise ValueError(
+                f"Unknown channel {column}(s) {unknown}; data channels in "
+                f"{CHANNEL_CATALOG} carry {sorted(known)}"
+            )
 
     @classmethod
     def _loader_channel_config(
@@ -671,16 +736,7 @@ class TableResolver:
         raw_selected = getattr(config.datasets, "selected_channel_localizations", None)
         selected_localizations = cls._normalized_channel_localizations(raw_selected)
 
-        # NOTE: uncomment when new DB image has updated tables
-        # if db_client is not None and selected_localizations:
-        #     valid_localizations = cls._fetch_valid_channel_localizations(db_client)
-        #     invalid = sorted(set(selected_localizations) - valid_localizations)
-        #     if invalid:
-        #         raise ValueError(
-        #             "Unknown selected channel localizations "
-        #             f"{invalid}; expected values drawn from fish_db.tags.localization"
-        #         )
-
+        cls._assert_known_tokens(db_client, "localization", selected_localizations)
         return selected_localizations
 
     @classmethod
@@ -703,16 +759,7 @@ class TableResolver:
                     f"datasets.databases.required_channel_localizations; got invalid values {missing}"
                 )
 
-        # NOTE: uncomment when new DB image has updated tables
-        # if db_client is not None and required:
-        #     valid_localizations = cls._fetch_valid_channel_localizations(db_client)
-        #     invalid = sorted(set(required) - valid_localizations)
-        #     if invalid:
-        #         raise ValueError(
-        #             "Unknown required channel localizations "
-        #             f"{invalid}; expected values drawn from fish_db.tags.localization"
-        #         )
-
+        cls._assert_known_tokens(db_client, "localization", required)
         return required
 
     @classmethod
@@ -733,265 +780,196 @@ class TableResolver:
 
     @classmethod
     def build_query_spec_from_config(cls, config, *, db_client=None) -> QuerySpec:
+        db = config.datasets.databases
         return QuerySpec(
-            roi_list=cls._to_tuple(config.datasets.roi_list),
+            # renamed from roi_list: prepared_id and roi_id are different
+            # sequences, so the old values are not portable (and the stale ones
+            # land inside the new range). base_database.yaml drops `roi_list` so
+            # a stale config fails at load rather than selecting other rows.
+            roi_ids=cls._to_tuple(getattr(config.datasets, "roi_ids", None)),
             tile_list=cls._to_tuple(config.datasets.tile_list),
             timepoint_list=cls._to_tuple(config.datasets.timepoint_list),
             max_rows=config.datasets.get("max_rows", None),
             cdf_threshold=config.datasets.cdf_threshold,
             cdf_target=config.datasets.cdf_target,
-            cdf_threshold_channel_localizations=cls._to_tuple(getattr(
-                config.datasets.databases,
-                "cdf_threshold_channel_localizations",
-                None,
-            )),
-            required_locations=cls._to_tuple(getattr(config.datasets.databases, "required_locations", None)),
-            holdout_split=getattr(config.datasets.databases, "holdout_split", None),
+            cdf_threshold_channel_localizations=cls._to_tuple(
+                getattr(db, "cdf_threshold_channel_localizations", None)
+            ),
+            holdout_split=getattr(db, "holdout_split", None),
             synthetic_only=bool(config.datasets.synthetic_only),
-            channel_count=getattr(config.datasets.databases, "channel_count", None),
-            min_channel_count=getattr(config.datasets.databases, "min_channel_count", None),
-            max_channel_count=getattr(config.datasets.databases, "max_channel_count", None),
-            required_channel_key_patterns=cls._to_dict(getattr(
-                config.datasets.databases, "required_channel_key_patterns", None
-            )),
-            any_channel_patterns=cls._to_tuple(getattr(config.datasets.databases, "any_channel_patterns", None)),
-            all_channel_patterns=cls._to_tuple(getattr(config.datasets.databases, "all_channel_patterns", None)),
+            complete_tiles_only=bool(getattr(db, "complete_tiles_only", False)),
+            # data_channel_count excludes the mask channel; `channel_count` and
+            # friends are deleted from the config rather than renamed in place,
+            # because they counted it.
+            data_channel_count=getattr(db, "data_channel_count", None),
+            min_data_channel_count=getattr(db, "min_data_channel_count", None),
+            max_data_channel_count=getattr(db, "max_data_channel_count", None),
+            required_channel_key_patterns=cls._to_dict(
+                getattr(db, "required_channel_key_patterns", None)
+            ),
             required_channel_localizations=cls._required_channel_localizations_from_config(
-                config,
-                db_client=db_client,
+                config, db_client=db_client
+            ),
+            required_fluorophores=cls._required_fluorophores_from_config(config, db_client=db_client),
+            required_annotation_types=cls._to_tuple(
+                getattr(db, "required_annotation_types", None)
             ),
         )
+
+    @classmethod
+    def _required_fluorophores_from_config(
+        cls, config, db_client=None
+    ) -> Optional[tuple[str, ...]]:
+        """Validated ``required_fluorophores``.
+
+        Same startup check as the localizations, and it matters more here: the
+        fluorophore vocabulary is mixed-case in the DB ("Electra2", "mTFP1"), so a
+        plausible-looking config value is easy to get subtly wrong. The filter
+        itself compares case-insensitively, so the only failure a typo produces is
+        an empty dataset.
+        """
+        requested = cls._normalized_channel_localizations(
+            getattr(config.datasets.databases, "required_fluorophores", None)
+        )
+        cls._assert_known_tokens(db_client, "fluorophore", requested)
+        return requested
 
     @staticmethod
     def build_store_spec_from_config(config) -> StoreSpec:
         return StoreSpec(root_dir=str(config.datasets.databases.node_local_store_root))
 
-    @classmethod
-    def _concrete_source(
-        cls,
-        base: SourceSpec,
-        source_key: str,
-        time_size: Optional[int],
-        z_size: Optional[int],
-        y_size: Optional[int],
-        x_size: Optional[int],
-    ) -> SourceSpec:
-        return SourceSpec(
-            key=source_key,
-            training_table_kind=base.training_table_kind,
-            table_name_template=base.table_name_template,
-            fixed_axes=base.fixed_axes,
-            dynamic_axes=base.dynamic_axes,
-            time_size=time_size,
-            z_size=z_size,
-            y_size=y_size,
-            x_size=x_size,
-            order_by=base.order_by,
-        )
-
     @staticmethod
-    def _materialize_table_name(source: SourceSpec) -> str:
-        return source.table_name_template.format(
-            time_size=source.time_size,
-            z_size=source.z_size,
-            y_size=source.y_size,
-            x_size=source.x_size,
-        )
+    def _storage_location_name(config) -> str:
+        """Config names a location; SQL filters by its id.
+        """
+        name = getattr(config.datasets.databases, "storage_location", None)
+        if not name:
+            raise ValueError(
+                "datasets.databases.storage_location is required (a "
+                "dry_lab.storage_locations name, e.g. 'abc' or 'synthetic'). "
+            )
+        return str(name)
 
     @classmethod
     def resolve_from_config(cls, config, *, db_client=None) -> ResolvedSource:
         requested_time, requested_z, requested_y, requested_x = cls._requested_shape(config)
-        has_annotations = bool(config.datasets.has_annotations)
-        sample_type = cls._sample_type(config)
+        view = TRAINING_VIEWS[cls._sample_type(config)]
 
-        if sample_type == SampleType.CUBE:
-            base_key = "cube_with_annotations" if has_annotations else "cube_without_annotations"
-            t, z, y, x = requested_time, requested_z, requested_y, requested_x
-        else:
-            base_key = "tile_with_annotations" if has_annotations else "tile_without_annotations"
-            t, z, y, x = requested_time, None, None, None
-
-        base = SOURCE_TABLES[base_key]
-        source_key = base.table_name_template.format(
-            time_size=t, z_size=z, y_size=y, x_size=x,
-        )
-        source = cls._concrete_source(
-            base, source_key=source_key,
-            time_size=t, z_size=z, y_size=y, x_size=x,
-        )
-
-        table_name = cls._materialize_table_name(source)
+        location_name = cls._storage_location_name(config)
+        location_id = -1
         if db_client is not None:
-            db_client.assert_relation_exists(table_name)
+            db_client.assert_relation_exists(view.view, schema=view.schema)
+            location_id = resolve_location(db_client, location_name)
 
         return ResolvedSource(
-            source=source,
-            table_name=table_name,
+            view=view,
             requested_time_size=requested_time,
             requested_z_size=requested_z,
             requested_y_size=requested_y,
             requested_x_size=requested_x,
+            # was: a different physical table. now: a WHERE clause.
+            with_targets=bool(config.datasets.has_annotations),
+            location_id=location_id,
+            location_name=location_name,
         )
 
 
+def fetch_storage_locations(db_client) -> dict[str, int]:
+    """``{name -> id}`` for active storage locations."""
+    table = db_client.execute_arrow(
+        "SELECT id, name FROM dry_lab.storage_locations WHERE status = 'active'"
+    )
+    return {
+        str(n): int(i)
+        for i, n in zip(table["id"].to_pylist(), table["name"].to_pylist())
+    }
+
+
+def resolve_location(db_client, name: str) -> int:
+    known = fetch_storage_locations(db_client)
+    if name not in known:
+        raise ValueError(
+            f"Unknown storage location {name!r}; dry_lab.storage_locations has "
+            f"{sorted(known)}"
+        )
+    return known[name]
+
+
+OBJECT_TYPE_RELATIONS = ("api.object_types", "dry_lab.object_types")
+
+
+def fetch_object_type_names(db_client) -> dict[int, str]:
+    """``object_type_id -> nk``, for resolving semantic class names.
+
+    The annotation leaves carry only the integer, deliberately -- the schema says
+    "leaves stay object_type_id + object_subtype_ids; no object_type_nk" -- while
+    ``semantic_classes`` names classes. One row per type, so a single small query
+    at startup.
+    """
+    last_error: Optional[Exception] = None
+    for relation in OBJECT_TYPE_RELATIONS:
+        try:
+            table = db_client.execute_arrow(f"SELECT id, nk FROM {relation}")
+        except Exception as exc:  # relation absent in this export
+            last_error = exc
+            continue
+        if relation != OBJECT_TYPE_RELATIONS[0]:
+            logger.warning(
+                "[metadata_store] %s not present; read the object-type catalog "
+                "from %s instead. Semantic class names resolve either way, but "
+                "the api view is the contract.",
+                OBJECT_TYPE_RELATIONS[0],
+                relation,
+            )
+        return {
+            int(i): str(n)
+            for i, n in zip(table["id"].to_pylist(), table["nk"].to_pylist())
+        }
+    raise RuntimeError(
+        f"No object-type catalog found (tried {list(OBJECT_TYPE_RELATIONS)}); "
+        f"semantic class names cannot be resolved. Last error: {last_error}"
+    )
+
+
 class SqlQueryPlanner:
-    @staticmethod
-    def _cube_without_annotations_select(alias: str) -> list[str]:
-        return [
-            f"{alias}.first_pc_id",
-            f"{alias}.prepared_id",
-            f"{alias}.tile_name",
-            f"{alias}.server_folder",
-            f"{alias}.output_folder",
-            f"{alias}.is_synthetic",
-            f"{alias}.is_available",
-            f"{alias}.exists_prfs",
-            f"{alias}.exists_aws",
-            f"{alias}.exists_oak",
-            f"{alias}.exists_abc",
-            f"{alias}.time_start",
-            f"{alias}.time_size",
-            f"{alias}.z_start",
-            f"{alias}.y_start",
-            f"{alias}.x_start",
-            f"{alias}.z_size",
-            f"{alias}.y_size",
-            f"{alias}.x_size",
-            f"{alias}.channel_size",
-            f"{alias}.is_complete",
-            f"{alias}.is_test_split",
-            f"{alias}.channel_mapping",
-            f"{alias}.channels_metadata",
-            # FIXME: this is a temporary fix to avoid the error when the annotation_count column is not present
-            # We should remove this from the downstream schema entirely as it is not present in the upstream schema
-            "0::integer AS annotation_count",
-            "false AS has_annotations",
-            "NULL::jsonb AS annotations_metadata",
-        ]
+    """Builds the one projection, plus the two diagnostics..
+    """
 
     @staticmethod
-    def _cube_with_annotations_select(alias: str) -> list[str]:
-        return [
-            f"{alias}.first_pc_id",
-            f"{alias}.prepared_id",
-            f"{alias}.tile_name",
-            f"{alias}.server_folder",
-            f"{alias}.output_folder",
-            f"{alias}.is_synthetic",
-            f"{alias}.is_available",
-            f"{alias}.exists_prfs",
-            f"{alias}.exists_aws",
-            f"{alias}.exists_oak",
-            f"{alias}.exists_abc",
-            f"{alias}.time_start",
-            f"{alias}.time_size",
-            f"{alias}.z_start",
-            f"{alias}.y_start",
-            f"{alias}.x_start",
-            f"{alias}.z_size",
-            f"{alias}.y_size",
-            f"{alias}.x_size",
-            f"{alias}.channel_size",
-            f"{alias}.is_complete",
-            f"{alias}.is_test_split",
-            f"{alias}.channel_mapping",
-            f"{alias}.channels_metadata",
-            f"{alias}.annotation_count",
-            "true AS has_annotations",
-            f"{alias}.annotations_metadata",
-        ]
+    def _location_join(alias: str, location_id: int) -> str:
+        """Resolve the absolute storage root server-side.
+        """
+        return (
+            f"JOIN dry_lab.storage_locations loc "
+            f"ON loc.id = {int(location_id)} "
+            f"AND loc.id = ANY({alias}.present_locations)"
+        )
 
-    @staticmethod
-    def _tile_with_annotations_select(alias: str) -> list[str]:
+    @classmethod
+    def _projection(cls, resolved: ResolvedSource, alias: str) -> list[str]:
+        cols = required_columns(
+            with_targets=resolved.with_targets, cube=resolved.view.is_cube
+        )
         return [
-            f"{alias}.first_pc_id",
-            f"{alias}.prepared_id",
-            f"{alias}.tile_name",
-            f"{alias}.server_folder",
-            f"{alias}.output_folder",
-            f"{alias}.is_synthetic",
-            f"{alias}.is_available",
-            f"{alias}.exists_prfs",
-            f"{alias}.exists_aws",
-            f"{alias}.exists_oak",
-            f"{alias}.exists_abc",
-            f"{alias}.time_start",
-            f"{alias}.time_size",
-            f"{alias}.z_start",
-            f"{alias}.y_start",
-            f"{alias}.x_start",
-            f"{alias}.z_size",
-            f"{alias}.y_size",
-            f"{alias}.x_size",
-            f"{alias}.channel_size",
-            f"{alias}.is_complete",
-            f"{alias}.is_test_split",
-            f"{alias}.channel_mapping",
-            "NULL::jsonb AS channels_metadata",
-            f"{alias}.annotation_count",
-            "true AS has_annotations",
-            f"{alias}.annotations_metadata",
-        ]
-
-    @staticmethod
-    def _tile_without_annotations_select(alias: str) -> list[str]:
-        return [
-            f"{alias}.first_pc_id",
-            f"{alias}.prepared_id",
-            f"{alias}.tile_name",
-            f"{alias}.server_folder",
-            f"{alias}.output_folder",
-            f"{alias}.is_synthetic",
-            f"{alias}.is_available",
-            f"{alias}.exists_prfs",
-            f"{alias}.exists_aws",
-            f"{alias}.exists_oak",
-            f"{alias}.exists_abc",
-            f"{alias}.time_start",
-            f"{alias}.time_size",
-            f"{alias}.z_start",
-            f"{alias}.y_start",
-            f"{alias}.x_start",
-            f"{alias}.z_size",
-            f"{alias}.y_size",
-            f"{alias}.x_size",
-            f"{alias}.channel_size",
-            f"{alias}.is_complete",
-            f"{alias}.is_test_split",
-            f"{alias}.channel_mapping",
-            # FIXME: this is a temporary fix to avoid the error when the annotation_count column is not present
-            # We should remove this from the downstream schema entirely as it is not present in the upstream schema
-            "NULL::jsonb AS channels_metadata",
-            "0::integer AS annotation_count",
-            "false AS has_annotations",
-            "NULL::jsonb AS annotations_metadata",
+            ("loc.root_path AS storage_root" if c == "storage_root" else f"{alias}.{c}")
+            for c in cols
+            if c != "row_id"
         ]
 
     @classmethod
     def build_sql(cls, resolved: ResolvedSource, query: QuerySpec) -> str:
-        alias = "s"
-        source = resolved.source
+        alias, view = "s", resolved.view
 
-        if source.training_table_kind == TrainingTableKind.CUBE_WITHOUT_ANNOTATIONS:
-            select_items = cls._cube_without_annotations_select(alias)
-        elif source.training_table_kind == TrainingTableKind.CUBE_WITH_ANNOTATIONS:
-            select_items = cls._cube_with_annotations_select(alias)
-        elif source.training_table_kind == TrainingTableKind.TILE_WITH_ANNOTATIONS:
-            select_items = cls._tile_with_annotations_select(alias)
-        elif source.training_table_kind == TrainingTableKind.TILE_WITHOUT_ANNOTATIONS:
-            select_items = cls._tile_without_annotations_select(alias)
-        else:
-            raise NotImplementedError(source.training_table_kind)
-
-        select_sql = ",\n                ".join(select_items)
-        where_sql = FilterBuilder.build_where_sql(source, query, alias=alias)
-        order_sql = ", ".join(f"{alias}.{name}" for name in source.order_by)
+        select_sql = ",\n                ".join(cls._projection(resolved, alias))
+        where_sql = FilterBuilder.build_where_sql(resolved, query, alias=alias)
+        order_sql = ", ".join(f"{alias}.{name}" for name in view.order_by)
 
         sql = f"""
             SELECT
                 row_number() OVER (ORDER BY {order_sql}) - 1 AS row_id,
                 {select_sql}
-            FROM public.{resolved.table_name} {alias}
+            FROM {view.qualified_name} {alias}
+            {cls._location_join(alias, resolved.location_id)}
             WHERE {where_sql}
             ORDER BY {order_sql}
         """
@@ -1000,16 +978,12 @@ class SqlQueryPlanner:
         return sql
 
     @classmethod
-    def build_missing_channel_mapping_diagnostic_sql(
-        cls,
-        resolved: ResolvedSource,
-        query: QuerySpec,
+    def build_missing_channel_metadata_diagnostic_sql(
+        cls, resolved: ResolvedSource, query: QuerySpec
     ) -> Optional[str]:
         alias = "s"
-        where_sql = FilterBuilder.build_missing_channel_mapping_where_sql(
-            resolved.source,
-            query,
-            alias=alias,
+        where_sql = FilterBuilder.build_missing_channel_metadata_where_sql(
+            resolved, query, alias=alias
         )
         if where_sql is None:
             return None
@@ -1017,32 +991,27 @@ class SqlQueryPlanner:
         return f"""
             SELECT
                 count(*) AS dropped_row_count,
-                count(DISTINCT {alias}.prepared_id) AS dropped_prepared_count
-            FROM public.{resolved.table_name} {alias}
+                count(DISTINCT {alias}.roi_id) AS dropped_roi_count
+            FROM {resolved.view.qualified_name} {alias}
             WHERE {where_sql}
         """
 
     @classmethod
     def build_filter_diagnostic_sql(
-        cls,
-        resolved: ResolvedSource,
-        query: QuerySpec,
+        cls, resolved: ResolvedSource, query: QuerySpec
     ) -> tuple[str, list[str]]:
         """Build a single SQL that returns one COUNT per cumulative filter step.
 
         Returns ``(sql, labels)`` where the SQL produces rows of
-        ``(step int, n_rows bigint)`` ordered by step. Index 0 is the
-        unfiltered baseline; index i (1..N) is "all clauses up to and
-        including filter i applied". Pair the result row's ``step`` with
-        the matching index in ``labels`` to produce the human-readable
-        breakdown.
+        ``(step int, n_rows bigint)`` ordered by step. Index 0 is the unfiltered
+        baseline; index i is "all clauses up to and including filter i".
         """
         alias = "s"
-        labeled = FilterBuilder.build_labeled_clauses(resolved.source, query, alias=alias)
+        relation = f"{resolved.view.qualified_name} {alias}"
+        labeled = FilterBuilder.build_labeled_clauses(resolved, query, alias=alias)
         labels: list[str] = ["baseline (no filter)"]
         parts: list[str] = [
-            f"SELECT 0 AS step, count(*)::bigint AS n_rows "
-            f"FROM public.{resolved.table_name} {alias}"
+            f"SELECT 0 AS step, count(*)::bigint AS n_rows FROM {relation}"
         ]
         cumulative: list[str] = []
         for i, (label, clause) in enumerate(labeled, start=1):
@@ -1051,8 +1020,7 @@ class SqlQueryPlanner:
             where = " AND ".join(cumulative)
             parts.append(
                 f"SELECT {i} AS step, count(*)::bigint AS n_rows "
-                f"FROM public.{resolved.table_name} {alias} "
-                f"WHERE {where}"
+                f"FROM {relation} WHERE {where}"
             )
 
         sql = "\nUNION ALL\n".join(parts) + "\nORDER BY step"
@@ -1067,33 +1035,20 @@ class MappedTable:
         self._table: Optional[pa.Table] = None
 
     @staticmethod
-    def _remap_server_folder(table: pa.Table, query: QuerySpec, server_path_override: Optional[str] = None) -> pa.Table:
-        """Replace server_folder with the path for the target storage location."""
-        if "server_folder" not in table.column_names:
-            raise ValueError("server_folder column not found in table")
-        locations = query.required_locations
-        if not locations:
-            raise ValueError(f"server_folder remapping requires exactly one required_location, got {locations!r}")
-        if len(locations) != 1:
-            raise ValueError(
-                f"server_folder remapping requires exactly one required_location, got {locations!r}"
-            )
-        location_key = locations[0]
-        server_path = LOCATION_SERVER_PATHS.get(location_key)
-        if server_path_override is not None:
-            server_path = server_path_override
-        if server_path is None:
-            raise ValueError(
-                f"No server path configured for location {location_key!r}. "
-                f"Known locations: {sorted(LOCATION_SERVER_PATHS)}"
-            )
-        col_idx = table.column_names.index("server_folder")
-        new_col = pa.array([server_path] * table.num_rows, type=pa.utf8())
-        table = table.set_column(col_idx, "server_folder", new_col)
+    def _apply_server_path_override(table: pa.Table, override: Optional[str]) -> pa.Table:
+        """Point every row at a different mount, for a cluster whose local path
+        differs from the catalog's ``root_path``.
+        """
+        if override is None:
+            return table
+        if "storage_root" not in table.column_names:
+            raise ValueError("storage_root column not found in table")
+        col_idx = table.column_names.index("storage_root")
+        new_col = pa.array([str(override)] * table.num_rows, type=pa.utf8())
+        table = table.set_column(col_idx, "storage_root", new_col)
         logger.info(
-            "[MappedTable] remapped server_folder to %s for location=%s (%d rows)",
-            server_path,
-            location_key,
+            "[MappedTable] storage_root overridden to %s for %d rows",
+            override,
             table.num_rows,
         )
         return table
@@ -1116,7 +1071,7 @@ class MappedTable:
             logger.warning(
                 "[MappedTable] filter narrowing diagnostic skipped for %s "
                 "(no filters configured; trigger=%s)",
-                resolved.table_name,
+                resolved.view.qualified_name,
                 triggered_by,
             )
             return
@@ -1127,7 +1082,7 @@ class MappedTable:
         except Exception as exc:
             logger.warning(
                 "[MappedTable] filter narrowing diagnostic for %s failed: %s",
-                resolved.table_name,
+                resolved.view.qualified_name,
                 exc,
             )
             return
@@ -1144,7 +1099,7 @@ class MappedTable:
         first_zero_step: Optional[int] = None
         line_width = max(len(label) for label in labels)
         lines = [
-            f"[MappedTable] filter narrowing for {resolved.table_name} "
+            f"[MappedTable] filter narrowing for {resolved.view.qualified_name} "
             f"(trigger={triggered_by}, diagnostic took {diag_elapsed:.2f}s):",
             f"  {'step':>4} | {'n_rows':>10} | {'delta':>10} | filter",
             f"  {'-' * 4}-+-{'-' * 10}-+-{'-' * 10}-+-{'-' * line_width}",
@@ -1168,7 +1123,7 @@ class MappedTable:
             logger.warning(
                 "[MappedTable] %s: filter step %d (%r) reduced row count from "
                 "%d to 0. Loosen or remove this filter to recover rows.",
-                resolved.table_name,
+                resolved.view.qualified_name,
                 first_zero_step,
                 labels[first_zero_step],
                 step_to_rows.get(first_zero_step - 1, baseline),
@@ -1178,7 +1133,7 @@ class MappedTable:
     def _root(node_id: str, resolved: ResolvedSource, query: QuerySpec, store: StoreSpec) -> Path:
         payload = {
             "node_id": node_id,
-            "source_key": resolved.source.key,
+            "source_key": resolved.cache_key,
             "query": asdict(query),
         }
         key_hash = sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
@@ -1195,6 +1150,7 @@ class MappedTable:
         local_rank: int,
         diagnostic_verbose: bool = False,
         server_path_override: Optional[str] = None,
+        selected_channel_localizations: Optional[Sequence[str]] = None,
     ) -> "MappedTable":
         total_t0 = time.perf_counter()
         root = cls._root(node_id=node_id, resolved=resolved, query=query, store=store)
@@ -1204,47 +1160,47 @@ class MappedTable:
         sample_path = root / "sample_table.arrow"
 
         if local_rank == 0:
-            diagnostic_sql = SqlQueryPlanner.build_missing_channel_mapping_diagnostic_sql(resolved, query)
+            diagnostic_sql = SqlQueryPlanner.build_missing_channel_metadata_diagnostic_sql(resolved, query)
             if diagnostic_sql is not None:
                 if diagnostic_verbose:
                     logger.warning(
                         "[MappedTable] running channel-mapping diagnostic query for %s; "
                         "this may be slow on large tables (100s+). "
                         "Set datasets.databases.diagnostic_verbose=false to skip.",
-                        resolved.table_name,
+                        resolved.view.qualified_name,
                     )
                     diagnostic_t0 = time.perf_counter()
                     diagnostic_table = db_client.execute_arrow(diagnostic_sql)
                     logger.info(
                         "[MappedTable] diagnostic query for %s completed in %.2fs",
-                        resolved.table_name,
+                        resolved.view.qualified_name,
                         time.perf_counter() - diagnostic_t0,
                     )
                     dropped_rows = int(diagnostic_table["dropped_row_count"][0].as_py() or 0)
-                    dropped_prepared = int(diagnostic_table["dropped_prepared_count"][0].as_py() or 0)
+                    dropped_rois = int(diagnostic_table["dropped_roi_count"][0].as_py() or 0)
                     if dropped_rows > 0:
                         logger.warning(
-                            "[MappedTable] filtering out %s rows across %s prepared_ids from %s because "
-                            "channel_mapping is missing.",
+                            "[MappedTable] filtering out %s rows across %s roi_ids from %s because "
+                            "the ROI has no channel rows (channel_idx IS NULL).",
                             dropped_rows,
-                            dropped_prepared,
-                            resolved.table_name,
+                            dropped_rois,
+                            resolved.view.qualified_name,
                         )
                 else:
                     logger.info(
                         "[MappedTable] skipping channel-mapping diagnostic query for %s "
                         "(set datasets.databases.diagnostic_verbose=true to enable)",
-                        resolved.table_name,
+                        resolved.view.qualified_name,
                     )
             sql = SqlQueryPlanner.build_sql(resolved, query)
             fetch_t0 = time.perf_counter()
             table = db_client.execute_arrow(sql)
-            table = cls._remap_server_folder(table, query, server_path_override=server_path_override)
+            table = cls._apply_server_path_override(table, server_path_override)
             fetch_elapsed = time.perf_counter() - fetch_t0
             logger.info(
                 "[MappedTable] fetched %s rows from %s in %.2fs",
                 table.num_rows,
-                resolved.table_name,
+                resolved.view.qualified_name,
                 fetch_elapsed,
             )
 
@@ -1258,13 +1214,28 @@ class MappedTable:
                     query=query,
                     triggered_by="empty result" if table.num_rows == 0 else "diagnostic_verbose=true",
                 )
+
+            # Boundary checks, rank 0 only, once per run. Everything downstream
+            # (loader, collator, buffer sizing) treats this Arrow table as the
+            # contract, so a violation caught here is a startup error instead of
+            # a KeyError/TypeError several actors deep inside a Ray task.
+            where = f"{resolved.view.qualified_name} projection"
+            validate_projection(
+                table,
+                with_targets=resolved.with_targets,
+                cube=resolved.view.is_cube,
+                where=where,
+            )
+            validate_non_null(table, where=where)
+            _assert_requested_time_size(table, resolved)
+
             write_t0 = time.perf_counter()
             with pa.OSFile(str(sample_path), "wb") as sink:
                 with pa_ipc.new_file(sink, table.schema) as writer:
                     writer.write(table)
             logger.info(
                 "[MappedTable] wrote sample table for %s to %s in %.2fs",
-                resolved.table_name,
+                resolved.view.qualified_name,
                 sample_path,
                 time.perf_counter() - write_t0,
             )
@@ -1273,14 +1244,16 @@ class MappedTable:
                 sample_table=SharedTableDescriptor(
                     path=str(sample_path),
                     num_rows=int(table.num_rows),
-                    source_key=resolved.source.key,
+                    source_key=resolved.cache_key,
                 ),
-                stats=build_table_stats(table, resolved),
+                stats=build_table_stats(
+                    table, resolved, selected_channel_localizations
+                ),
             )
             descriptor_path.write_text(json.dumps(asdict(descriptor)))
             logger.info(
                 "[MappedTable] descriptor for %s materialized in %.2fs",
-                resolved.table_name,
+                resolved.view.qualified_name,
                 time.perf_counter() - total_t0,
             )
 
@@ -1296,7 +1269,7 @@ class MappedTable:
         )
         logger.info(
             "[MappedTable] attached descriptor for %s from %s in %.2fs",
-            resolved.table_name,
+            resolved.view.qualified_name,
             descriptor_path,
             time.perf_counter() - total_t0,
         )

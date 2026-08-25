@@ -18,6 +18,11 @@ def _append_map(targets: dict, m: torch.Tensor, role: str) -> None:
 
 
 class DeepCopyInputsAsTargets:
+    # Snapshots the image as a REGRESSION TARGET (the clean reference for
+    # denoising), so the counts it copies are a label rather than an
+    # intermediate: quantizing them degrades what the loss is measured against.
+    reads_raw_counts = True
+
     def __init__(self, role: str = "denoising"):
         # Form-D role the clone is published under; must match the preprocessor's
         # recon_role (both default to "denoising" so stock configs can't drift).

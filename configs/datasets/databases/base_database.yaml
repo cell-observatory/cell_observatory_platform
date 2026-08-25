@@ -1,19 +1,57 @@
 dbname: 'local' # or 'staging' or 'prod' for remote databases. local is for local postgres database.
 dotenv_path: ${paths.dotenv_path}
+
+# The api training views. Shape is no longer part of a relation name -- it is
+# filtered from datasets.input_shape against dry_lab.cube_shapes (cubes) and
+# dry_lab.tile_time_windows (tile temporal windows) -- so adding a size is a DB
+# seed row, not a migration and not a config change beyond input_shape.
+schema: api
+sample_type: null # cube -> api.cube_training, tile -> api.tiles_training
+
+# Storage location BY NAME (dry_lab.storage_locations.name, e.g. 'abc' or
+# 'synthetic'), resolved to an id at query time and matched against the view's
+# GIN-indexed present_locations smallint[].
+#
+# REPLACES `required_locations: [exists_abc, ...]`, which named boolean columns
+# that no longer exist and were resolved through a 2-entry hardcoded path dict.
+# The old key is deliberately absent so a stale config fails at load.
+storage_location: null
+
 cdf_threshold_channel_localizations: null
-channel_count: null
-min_channel_count: null
-max_channel_count: null
+
+# Channel-count filters now count SIGNAL channels only.
+#
+# REPLACES `channel_count` / `min_channel_count` / `max_channel_count`, which
+# counted the mask channel too -- a config meaning "2 signal channels" was really
+# asking for 1 signal + 1 mask. Renamed rather than reinterpreted so the
+# off-by-one-per-mask-channel cannot happen silently. data_channel_count is
+# btree-indexed.
+data_channel_count: null
+min_data_channel_count: null
+max_data_channel_count: null
+
 required_channel_key_patterns: null
-any_channel_patterns: null
-all_channel_patterns: null
-required_channel_localizations: null # required localizations that must all be present in channel_mapping and define the allowed loader subset universe
+# Channel requirements. All are semi-joins against api.roi_channels (scalar,
+# indexable) rather than tests against the training row's aggregated arrays.
+# Each entry is a separate requirement: [membrane, cytosol] means the ROI has
+# BOTH, possibly on different channels.
+required_channel_localizations: null
+required_fluorophores: null
+
+# Require a mask channel of a given annotation_type ('instance' | 'semantic').
+required_annotation_types: null
+
+# Cube path only: drop cubes drawn from tiles with fabricated/missing timepoints.
+# tiles_training filters overlapping windows out internally, so this is a no-op
+# there.
+complete_tiles_only: false
 
 verbose: true # to print debug messages
-diagnostic_verbose: false # run slow channel-mapping diagnostic query (can take 100s+ on large tables)
+diagnostic_verbose: false # run the slow missing-channel-metadata diagnostic query
 protocol: cursor # protocol used to fetch data from source (default is 'binary', can also be 'csv' or 'cursor')
-sample_type: null
 node_local_store_root: ${oc.env:NODE_LOCAL_STORE_ROOT}
 node_local_table_keys: {}
-required_locations: null
+
+# NB: is_test_split is currently unset on every row upstream, so `test` yields an
+# empty dataset. The filter-narrowing diagnostic names the clause when it happens.
 holdout_split: null

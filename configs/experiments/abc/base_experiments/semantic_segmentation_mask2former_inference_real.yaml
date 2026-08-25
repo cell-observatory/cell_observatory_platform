@@ -116,12 +116,9 @@ datasets:
     max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
     max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 
-    roi_list: [
-      322,
-      333,
-      # 360,
-      # 352
-      ]
+    # roi_list -> roi_ids: prepared_id and roi_id are different
+    # sequences, so the old values were dropped rather than translated.
+    roi_ids: null
     tile_list: [
       "000x_003y_001z.zarr",
       "000x_001y_001z.zarr",
@@ -140,22 +137,6 @@ datasets:
     with_hypercubes_dataframe: true
     mask_channel_idx: null
 
-  columns:
-    - "x_start"
-    - "y_start"
-    - "z_start"
-    - "time_start"
-    - "channel_size"
-    - "z_size"
-    - "y_size"
-    - "x_size"
-    - "time_size"
-    - "server_folder"
-    - "output_folder"
-    - "tile_name"
-    - "prepared_id"
-
-
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
     dtype: ${dataset_dtype}
@@ -172,21 +153,6 @@ datasets:
     debug_device_idx: 0
     normalize_bboxes: true
     async_device_copy: false
-    columns:
-      - "x_start"
-      - "y_start"
-      - "z_start"
-      - "time_start"
-      - "channel_size"
-      - "z_size"
-      - "y_size"
-      - "x_size"
-      - "time_size"
-      - "server_folder"
-      - "output_folder"
-      - "tile_name"
-      - "prepared_id"
-    
   preserve_order: false # only matters for TP
   callback_strategy: grpc # grpc, queue
   async_device_copy: false

@@ -115,7 +115,9 @@ datasets:
     # roi_list: [130, 147]
     # tile_list: ["000x_002y_000z.zarr"]
 
-    roi_list: [322, 333, 360, 352]
+    # roi_list -> roi_ids: prepared_id and roi_id are different
+    # sequences, so the old values were dropped rather than translated.
+    roi_ids: null
     tile_list: ["000x_003y_001z.zarr", "000x_001y_001z.zarr", "000x_001y_000z.zarr", "000x_005y_001z.zarr", "000x_002y_001z.zarr"]
     timepoint_list: [0]
 
@@ -128,21 +130,6 @@ datasets:
 
   preprocessor:
     require_targets: ${datasets.collate_fn.require_targets}
-
-  columns:
-    - "x_start"
-    - "y_start"
-    - "z_start"
-    - "time_start"
-    - "channel_size"
-    - "z_size"
-    - "y_size"
-    - "x_size"
-    - "time_size"
-    - "server_folder"
-    - "output_folder"
-    - "tile_name"
-    - "prepared_id"
 
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
@@ -160,21 +147,6 @@ datasets:
     debug: false
     normalize_bboxes: true
     async_device_copy: false
-    columns:
-      - "x_start"
-      - "y_start"
-      - "z_start"
-      - "time_start"
-      - "channel_size"
-      - "z_size"
-      - "y_size"
-      - "x_size"
-      - "time_size"
-      - "server_folder"
-      - "output_folder"
-      - "tile_name"
-      - "prepared_id"
-
   preserve_order: false # only matters for TP
   callback_strategy: grpc # grpc, queue
   async_device_copy: false

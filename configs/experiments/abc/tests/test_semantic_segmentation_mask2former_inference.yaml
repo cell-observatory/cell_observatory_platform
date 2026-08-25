@@ -128,7 +128,9 @@ datasets:
   # tile_list:
     # - "000x_005y_001z.zarr"
     # - "000x_005y_000z.zarr"
-  roi_list: [5] # for prepared_tile_view.csv
+  # roi_list -> roi_ids: prepared_id and roi_id are different
+  # sequences, so the old values were dropped rather than translated.
+  roi_ids: null
   timepoint_list: [0]
   max_rows: null # maximum number of rows to query from the database
   cdf_threshold: null
@@ -140,10 +142,10 @@ datasets:
     protocol: cursor
     verbose: true
     sample_type: tile
-    channel_count: 2
+    data_channel_count: 2
     required_channel_key_patterns: {0: "membrane"}
     required_channel_localizations: ["membrane"]
-    required_locations: ["exists_abc"]
+    storage_location: abc
 
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
@@ -161,23 +163,6 @@ datasets:
     debug_device_idx: 0
     normalize_bboxes: true
     async_device_copy: false
-    columns:
-      - "x_start"
-      - "y_start"
-      - "z_start"
-      - "time_start"
-      - "channel_size"
-      - "z_size"
-      - "y_size"
-      - "x_size"
-      - "time_size"
-      - "server_folder"
-      - "output_folder"
-      - "tile_name"
-      - "prepared_id"
-      - "channel_mapping"
-      - "annotations_metadata"
-
 # schedulers
 schedulers:
   epochs: 1

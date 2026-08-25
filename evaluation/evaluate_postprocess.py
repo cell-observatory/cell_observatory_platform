@@ -113,8 +113,13 @@ def gt_semantic_map(target: Dict[str, Any], size: Any, source: str) -> torch.Ten
     if source == "masks":
         masks = target["masks"]  # (N, Z, Y, X)
         gt = torch.zeros(tuple(masks.shape[1:]), dtype=torch.long, device=masks.device)
-        # Scatter loop kept: overlap semantics are last-write-wins (later class
-        # wins), which a vectorized gather cannot reproduce.
+        # Scatter loop kept for the general case, but for DB-sourced semantic
+        # classes the overlap it defends against can no longer occur: semantic GT
+        # is one squashed integer channel, one-hotted by build_semantic_targets, so
+        # the classes are mutually exclusive and this scatter is exact. Overlap is
+        # still possible between DERIVED roles (boundary/foreground are thresholded
+        # independently), where last-write-wins remains the semantics -- and a
+        # vectorized gather could not reproduce it.
         for i in range(masks.shape[0]):
             gt[masks[i].bool()] = int(labels[i]) + 1
     else:  # label_map

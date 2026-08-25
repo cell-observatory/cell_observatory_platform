@@ -16,18 +16,24 @@ max_tiles: null # maximum number of tiles (each tile can have thousands of hyper
 max_hypercubes: null # maximum number of hypercubes to return
 
 hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
-roi_list: null # list of specific ROIs to filter
+
+# ROI filter, by api.*_training.roi_id.
+#
+# RENAMED from `roi_list`, which filtered prepared_id. Those are different
+# sequences, so the old VALUES are not portable -- and the stale ones land INSIDE
+# the new roi_id range, which would silently select real-but-wrong ROIs. The old
+# key is deliberately absent so a stale config fails at load instead.
+roi_ids: null
 tile_list: null # list of specific tiles to filter
 timepoint_list: null # list of specific timepoints to filter
 synthetic_only: False
 has_annotations: False
 
-columns: [ 
-  'x_start', 'y_start', 'z_start', 'time_start',
-  'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
-  'server_folder', 'output_folder',
-  'tile_name', 'prepared_id',
-]
+# `columns:` is GONE. The metadata columns carried into metainfo now come from
+# data/databases/schema.py, which is the single Arrow contract. That list used to
+# be duplicated here, in the two collator signatures, and across ~200 experiment
+# configs, with nothing reconciling them -- and the collator copy loop skips
+# missing keys, so a renamed DB column silently vanished from metainfo.
 
 cdf_threshold: 150 # to filter our hypercubes with less than this CDF threshold
 cdf_target: 90 # to filter our hypercubes with less than this CDF target

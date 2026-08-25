@@ -50,7 +50,9 @@ class Resize:
                 - Fixed: (Z, Y, X) or [Z, Y, X]
                 - Range: ((Z_min, Y_min, X_min), (Z_max, Y_max, X_max))
                   Samples uniformly from range on each call.
-            mode: Interpolation mode for F.interpolate (trilinear, nearest, area).
+            mode: Interpolation mode for F.interpolate: trilinear (default), area,
+                or nearest-exact. Plain "nearest" is rejected by resize_tensor_3d
+                (edge-aligned; would misregister image and GT).
             align_corners: Whether to align corners in interpolation.
             dtype: Retained for config compatibility; the dense flow now
                 preserves the incoming dtype (the preprocessor's float32 count
@@ -419,15 +421,21 @@ class Resize:
 
             fam = kind_family(kind)
 
-            if fam is DataKind.INSTANCE_MASKS:
-                # single integer labelmap (Z, Y, X): crop spatial padding, then
-                # nearest-resize (id-preserving).
-                t[name] = resize_label_map(value[..., :vz, :vy, :vx], target_shape)
-
-            elif fam is DataKind.SEMANTIC_MASKS:
-                # stacked labelmaps (N, Z, Y, X): crop spatial padding, then
-                # nearest-resize each slice (id-preserving).
-                t[name] = resize_masks(value[..., :vz, :vy, :vx], target_shape)
+            if fam in (DataKind.INSTANCE_MASKS, DataKind.SEMANTIC_MASKS):
+                # Both mask kinds are INTEGER LABELMAPS now -- semantic is a
+                # single squashed class channel, so it is handled exactly like
+                # instance. RANK, not kind, picks the kernel: a bare (Z, Y, X) map
+                # goes through resize_label_map, anything with a leading axis
+                # ((B, Z, Y, X) Form-D, or (N, Z, Y, X)) through resize_masks,
+                # which nearest-resizes per leading slice. Both delegate to the
+                # same nearest-exact kernel and are dtype-preserving, so this is a
+                # rank dispatch, not a numerics choice.
+                cropped = value[..., :vz, :vy, :vx]
+                t[name] = (
+                    resize_label_map(cropped, target_shape)
+                    if cropped.ndim == 3
+                    else resize_masks(cropped, target_shape)
+                )
 
             elif fam is DataKind.BOXES:
                 # Crop is origin-anchored, so box coords never shift. The per-axis

@@ -295,7 +295,7 @@ class InferencerWorker:
             return True
         if self.viz_sampling_policy["name"] == "by_tile":
             # Allowlist filter over the per-sample region columns. `tile_names`
-            # and `rois` (prepared_id values) are each optional; a sample matches
+            # and `rois` (roi_id values) are each optional; a sample matches
             # when it passes every filter that IS set, so the three modes are:
             #   tile_names only          -> tile filter
             #   rois only                -> ROI filter
@@ -323,7 +323,7 @@ class InferencerWorker:
             tiles = _column("tile_name")
             tile_set = None if tile_allow is None else {str(t) for t in tile_allow}
             roi_set = None if roi_allow is None else {str(r) for r in roi_allow}
-            rois = _column("prepared_id") if roi_set is not None else [None] * len(tiles)
+            rois = _column("roi_id") if roi_set is not None else [None] * len(tiles)
             # Both filters must hit on the SAME sample (zip), not one sample each.
             match_idx = [
                 b for b, (r, t) in enumerate(zip(rois, tiles))

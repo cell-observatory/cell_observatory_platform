@@ -40,12 +40,14 @@ from cell_observatory_platform.utils.memory import (
     bytes_gb,
     ray_memory_summary,
 )
+from cell_observatory_platform.training.checkpoint import WallClockTrigger
 from cell_observatory_platform.training.checkpoint_metadata import build_metadata
 from cell_observatory_platform.training.loggers import EventWriter, WandBEventWriter
 from cell_observatory_platform.training.helpers import (
     get_metric_full_name,
     log_data_sample_metrics,
     log_loss_dict,
+    parse_duration,
 )
 from cell_observatory_platform.training.schedulers import CosineScheduler, linear_warmup_cosine_decay
 from cell_observatory_platform.utils.context import is_main_process, process_rank
@@ -291,9 +293,9 @@ class LRScheduler(HookBase):
 
         self.trainer.event_recorder.put_scalar("lr", lr)
         if self.update_type == "epoch":
-            # Epoch-cadence stepping happens ONCE per epoch in after_epoch --
-            # the old per-step placement recomputed every param group's LR
-            # steps_per_epoch times per epoch for a value that changes once.
+            # Epoch-cadence stepping happens ONCE per epoch in after_epoch:
+            # the LR changes once per epoch, so recomputing it per step would
+            # cost steps_per_epoch param-group updates for the same value.
             return
         if self.update_type == "step":
             # Under gradient accumulation, step the schedule only at optimizer
@@ -313,8 +315,8 @@ class LRScheduler(HookBase):
     def after_epoch(self):
         if self.update_type == "epoch":
             # Step once with the NEXT epoch index so epoch e+1's first step
-            # already trains at LR(e+1). The old per-step placement lagged each
-            # epoch's first step by one epoch (LR(e) first applied mid-epoch e).
+            # already trains at LR(e+1). Stepping with the current index instead
+            # would lag each epoch's first step by one epoch.
             self.schedulers.step(epoch=self.trainer._epoch + 1)
 
 
@@ -588,7 +590,7 @@ def _inference_batch_size_from_sample(data_sample: Optional[Dict[str, Any]]) -> 
         return 0
     if "batch_size_actual" in meta:
         return int(meta["batch_size_actual"])
-    pid = meta.get("prepared_id")
+    pid = meta.get("roi_id")
     if pid is None:
         return 1
     if hasattr(pid, "__len__") and not isinstance(pid, (str, bytes)):
@@ -777,16 +779,41 @@ class PeriodicWriter(HookBase):
 @registers_flat_as("hook", "periodic_checkpointer")
 class PeriodicCheckpointer(HookBase):
     """
-    Checkpointing, executed every ``period`` epoch and after the last epoch.
+    Checkpointing on two independent cadences:
+
+    * step/epoch cadence -- DeepSpeed: every ``save_period`` epochs (after_epoch);
+      torch-native: every ``checkpoint_save_period`` optimizer steps (probed in
+      before_step, gated inside DCPCheckpointManager); both: after the last epoch.
+    * wall-clock cadence (optional, ``time_interval``) -- a save at the first
+      step boundary after each multiple of ``time_interval`` since trainer
+      construction. For clusters with a hard job time limit: set it to
+      (limit - startup - save duration). Accepts seconds or "3h30m" / "1:30:00".
+
+    A step is never saved twice; a wall-clock save does not shift the
+    step/epoch cadence, and vice versa.
     """
 
-    def __init__(self, file_prefix="latest_model", backend: str = "DEEPSPEED"):
+    def __init__(
+        self,
+        file_prefix="latest_model",
+        backend: str = "DEEPSPEED",
+        time_interval: Optional[Union[int, float, str]] = None,
+    ):
         super().__init__()
         self.backend = backend.upper()
         self.file_prefix = file_prefix
         # iter of the last checkpoint written by this hook — lets after_train
-        # skip a duplicate save of the state after the final epoch.
+        # (and a wall-clock save) skip a duplicate save of the same state.
         self._last_saved_iter: Optional[int] = None
+        # The clock starts HERE: BaseTrainer.__init__ builds hooks before the
+        # model / engine / dataloader / resume load, so this is the earliest
+        # trainer-side point. Time spent before (container, Ray cluster) is not
+        # included -- subtract it when choosing time_interval.
+        self._clock = (
+            WallClockTrigger(parse_duration(time_interval))
+            if time_interval is not None
+            else None
+        )
 
     def before_train(self):
         if self.backend == "DEEPSPEED":
@@ -818,6 +845,29 @@ class PeriodicCheckpointer(HookBase):
             metadata=meta,
         )
         self._last_saved_iter = self.trainer._iter
+
+    def before_step(self):
+        """
+        Step-boundary saves. Runs at the START of step ``_iter``, i.e. after every
+        after_step hook of step ``_iter - 1`` (LR/WD schedulers already stepped, so
+        persisted state is self-consistent) and with ``_iter`` == number of
+        completed optimizer steps -- the same value after_epoch saves with.
+        """
+        due = self._clock is not None and self._clock.due()  # collective when set
+        if due and is_main_process():
+            logger.info(
+                f"[PeriodicCheckpointer] wall-clock trigger at iter {self.trainer._iter} "
+                f"({self._clock.elapsed() / 3600:.2f} h since trainer init)"
+            )
+        if self.backend == "DEEPSPEED":
+            # no step cadence on this path (epochs only); wall clock only
+            if due and self.trainer._iter != self._last_saved_iter:
+                self._save(epoch=self.trainer._epoch)
+        elif self.backend == "TORCHTITAN":
+            # period gate + dedup live in the manager; `force` bypasses the gate
+            self.trainer.checkpoint_manager.save(curr_step=self.trainer._iter, force=due)
+        else:
+            raise NotImplementedError(f"Backend {self.backend} not supported.")
 
     def after_epoch(self):
         """

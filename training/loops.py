@@ -590,6 +590,10 @@ class EpochBasedTrainer(ValidationLoopMixin, BaseTrainer):
         # mode-aware sentinel (+inf for min, -inf for max) so max-mode consumers
         # never see a +inf that reads as an unbeatable best.
         self._epoch, self._iter, self._val_iter = self.start_epoch, self.start_iter, 0
+        # mirror TorchNativeTrainer: derive the in-epoch offset from the global
+        # step so a mid-epoch (wall-clock) checkpoint resumes at the exact batch
+        # (one optimizer step per batch -- accumulation is rejected above)
+        self._epoch_step_offset = self._iter % self.steps_per_epoch
         self._curr_val_metric = initial_best_metric(cfg)
 
         if self.start_iter > 0:
@@ -640,9 +644,22 @@ class EpochBasedTrainer(ValidationLoopMixin, BaseTrainer):
         """
         self.before_epoch()
 
+        # mid-epoch resume: skip the already-consumed batches of THIS epoch;
+        # the shuffle is deterministic in (seed, epoch), so the remaining
+        # order matches the interrupted run. One batch per optimizer step, so
+        # the batch offset IS the step offset.
+        skip_batches = 0
+        if self._epoch == self.start_epoch and self._epoch_step_offset > 0:
+            skip_batches = self._epoch_step_offset
+            logger.info(
+                f"[Trainer] mid-epoch resume: skipping {skip_batches} batches "
+                f"of epoch {self._epoch}"
+            )
+
         train_dataloader, val_dataloader, _ = get_dataloader_ray(
             **self.dataloader_config,
-            epoch=self._epoch
+            epoch=self._epoch,
+            skip_batches=skip_batches,
         )
 
         observed_steps = 0
@@ -660,10 +677,12 @@ class EpochBasedTrainer(ValidationLoopMixin, BaseTrainer):
         # once, after the first completed epoch of this run.
         if not getattr(self, "_steps_per_epoch_validated", False):
             # TODO: could this change epoch-to-epoch?
-            if observed_steps != self.steps_per_epoch:
+            expected = self.steps_per_epoch - skip_batches
+            if observed_steps != expected:
                 raise RuntimeError(
                     f"Observed {observed_steps} train steps in epoch {self._epoch} but "
-                    f"steps_per_epoch={self.steps_per_epoch}. LR/WD scheduler horizons "
+                    f"expected {expected} (steps_per_epoch={self.steps_per_epoch}, "
+                    f"skipped={skip_batches}). LR/WD scheduler horizons "
                     f"(T_max) are computed from steps_per_epoch and would desync — fix "
                     f"the steps-per-epoch inference or the dataloader batch policy."
                 )

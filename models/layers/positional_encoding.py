@@ -1528,10 +1528,10 @@ class PositionEmbeddingRandom(nn.Module):
         if self.input_fmt == "ZYXC" or (self.input_fmt == "TZYXC" and self.time_separable):
             assert len(image_size) == 3, "Image size must be (Z, Y, X)"
             # Samplers/AMG emit prompt coordinates as (x, y, z); the dense image
-            # PE grid (see forward()) is built in (z, y, x). Normalize each
-            # coordinate by ITS OWN extent and reorder to match the grid before
-            # projecting — the old code divided x by Z (etc.) and embedded every
-            # prompt at a transposed location.
+            # PE grid (see forward()) is built in (z, y, x). Each coordinate must
+            # be normalized by ITS OWN extent and then reordered to match the
+            # grid: normalizing before the reorder pairs x with Z and embeds
+            # every prompt at a transposed location.
             Z, Y, X = image_size
             x = coords_input[:, :, 0] / X
             y = coords_input[:, :, 1] / Y

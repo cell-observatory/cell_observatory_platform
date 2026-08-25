@@ -13,10 +13,14 @@ import torch
 from omegaconf import DictConfig
 from hydra.utils import get_method, instantiate
 
-from cell_observatory_platform.data.data_types import TORCH_DTYPES
+from cell_observatory_platform.data.data_types import (
+    TORCH_DTYPES,
+    DataKind,
+    get_role,
+    parse_annotations_metadata,
+)
 from cell_observatory_platform.data.io import read_file
 from cell_observatory_platform.data.structures import convert_bbox_format, mask_ids_to_masks
-from cell_observatory_platform.data.data_types import get_role
 from cell_observatory_platform.data.utils import create_na_masks, downsample, resize_mask
 from cell_observatory_platform.data.datasets.utils import _parse_channel_mapping
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
@@ -32,6 +36,32 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # Channel role partition (transitional; the DB will own per-channel roles)
 # --------------------------------------------------------------------------- #
+
+def _object_type_names_from_meta(meta: Any) -> dict[int, str]:
+    """``object_type_id -> nk``, as written into metainfo by the collator.
+    """
+    if not isinstance(meta, Mapping):
+        return {}
+    raw = meta.get("object_type_names") or {}
+    if isinstance(raw, (list, tuple)):  # per-sample column convention
+        raw = raw[0] if raw else {}
+    return {int(k): str(v) for k, v in dict(raw).items()}
+
+
+def _first_annotations_metadata(meta: Any) -> Any:
+    """The per-batch annotations_metadata payload, as one row.
+    """
+    if not isinstance(meta, Mapping):
+        return None
+    raw = meta.get("annotations_metadata")
+    if raw is None:
+        return None
+    if isinstance(raw, np.ndarray):
+        raw = raw.tolist()
+    if isinstance(raw, (list, tuple)):
+        return raw[0] if raw else None
+    return raw
+
 
 def _channel_mapping_from_meta(meta: Any) -> Optional[dict]:
     """Pull the ``{channel_index -> role/token}`` mapping out of metainfo.
@@ -82,12 +112,6 @@ class ChannelPartition:
 
 
 def _role_matches_target(role: str, target_roles) -> bool:
-    """A channel ``role`` is a consumed target if it equals a target role or falls
-    under one as a FAMILY: ``semantic_segmentation`` matches
-    ``semantic_segmentation_membrane``/``_nucleus``/... So a task declares the
-    family once and every ``<family>_<name>`` channel is grabbed, keyed by its
-    concrete role.
-    """
     return any(role == t or role.startswith(t + "_") for t in target_roles)
 
 
@@ -132,6 +156,24 @@ def partition_channels(channel_mapping, num_channels, target_roles):
 
 
 @registers_as("preprocessor", "ray")
+def _reads_raw_counts(transforms) -> bool:
+    """True if any configured transform needs exact integer counts.
+
+    Transforms opt in with a ``reads_raw_counts`` class attribute rather than
+    being named in a list here, so a new one declares its own requirement.
+    Recurses into wrapper transforms (ProbabilisticChoice holds its children in
+    ``.transforms``): a nested sensor-model transform needs the exact counts just
+    as much as a top-level one.
+    """
+    for transform in transforms or ():
+        if getattr(transform, "reads_raw_counts", False):
+            return True
+        nested = getattr(transform, "transforms", None)
+        if nested and _reads_raw_counts(nested):
+            return True
+    return False
+
+
 class RayPreprocessor(torch.nn.Module):
     def __init__(
         self,
@@ -158,6 +200,18 @@ class RayPreprocessor(torch.nn.Module):
             else:
                 # already an instantiated callable object
                 self.transforms.append(t)
+
+        # uint16 counts are not exactly representable below fp32 (bfloat16 is
+        # exact to 256, float16 to 2048 and overflows at 65504), so an fp32
+        # intermediate is kept ONLY when a transform reads the counts. Otherwise
+        # the data is cast once, straight to the model dtype, halving resident
+        # activation memory. A non-floating self.dtype falls back to fp32, since
+        # casting to it would leave integer tensors flowing into the transforms.
+        self._count_dtype = (
+            torch.float32
+            if _reads_raw_counts(self.transforms) or not self.dtype.is_floating_point
+            else self.dtype
+        )
 
         self.input_shape = input_shape
         self.patch_shape = patch_shape
@@ -237,11 +291,10 @@ class RayPreprocessor(torch.nn.Module):
         meta = data_sample["metainfo"]
 
         if inputs.dtype == torch.uint16:
-            # Raw counts > 256 are not representable in bf16 (8-bit mantissa):
-            # 40000 and 40001 both quantize to 39936. Keep an exact float32
-            # intermediate through the transforms (normalize/percentile/noise
-            # operate on true counts); narrow to self.dtype at the END below.
-            inputs = inputs.to(torch.float32)
+            # fp32 when a transform reads raw counts, else straight to the model
+            # dtype (see self._count_dtype). The fp32 path narrows to self.dtype
+            # at the END below; the gated path makes that narrowing a no-op.
+            inputs = inputs.to(self._count_dtype)
         elif inputs.dtype != self.dtype:
             # ray.logger.warning(f"Casting inputs to {self.dtype}")
             inputs = inputs.to(self.dtype)
@@ -824,13 +877,10 @@ class BaseFinetunePreprocessor(RayPreprocessor):
 
         images = inputs[..., :n_in]                # uint16 basic-slice view; no gather
         if images.dtype == torch.uint16:
-            # Raw counts > 256 are not representable in bf16 (8-bit mantissa):
-            # 40000 and 40001 both quantize to 39936. Lift to an EXACT float32
-            # intermediate here; PSF/noise/normalize transforms then operate on
-            # true counts and each forward path narrows to self.dtype at its END
-            # (_finalize / the RayPreprocessor return). No /65535 scaling: the
-            # physical noise model needs actual counts.
-            images = images.to(torch.float32)
+            # fp32 when a transform reads raw counts, else straight to the model
+            # dtype (see self._count_dtype). No /65535 scaling either way: the
+            # sensor model works in actual counts.
+            images = images.to(self._count_dtype)
 
         targets_by_role: dict[str, torch.Tensor] = {}
         if n_in < C:
@@ -1363,9 +1413,9 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         self.require_targets = require_targets
         # When True, materialize per-instance binary masks on-device from the
         # integer labelmap (last channel of data_tensor) and attach them as
-        # targets[b]["masks"]. The collator no longer builds masks on CPU, so
-        # dense-mask heads (Mask2Former / PlainDETR / multilabel) opt in here.
-        # Labelmap-native heads (MaskDINO) leave this off and read "label_map".
+        # targets[b]["masks"]. Dense-mask heads (Mask2Former / PlainDETR /
+        # multilabel) opt in here; labelmap-native heads (MaskDINO) leave this
+        # off and read "label_map" directly.
         self.materialize_binary_masks = materialize_binary_masks
 
     def _data_types(self) -> Dict[str, Dict[str, Any]]:
@@ -1376,7 +1426,7 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         return {
             "data_tensor": self.base_dense_data_type,
             "label_map": {"kind": "instance_masks", "layout": self.input_format,
-                          "role": "target", "channel_role": "instance_segmentation"},
+                          "role": "target", "channel_role": "instance_masks"},
             "boxes": {"kind": "boxes", "layout": self.bbox_output_format, "role": "target"},
         }
 
@@ -1411,7 +1461,7 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
         # channels off the int32 tail. `label_map` rides the targets so Resize
         # warps it in lockstep with the image and boxes.
         images, targets_by_role = self._split_channels(raw_inputs, meta)
-        labelmap = targets_by_role.get("instance_segmentation")
+        labelmap = targets_by_role.get(DataKind.INSTANCE_MASKS.value)
 
         # Attach the per-target labelmap BEFORE transforms so Crop / Resize
         # warp `label_map` in lockstep with the image (and boxes). Labelmap-
@@ -1448,8 +1498,8 @@ class InstanceSegmentationPreprocessor(BaseFinetunePreprocessor):
             ]
 
         # Dense-mask heads (Mask2Former / PlainDETR / multilabel) consume
-        # targets[b]["masks"]. The collator no longer builds them on CPU, so
-        # materialize them here on-device from the per-target integer "label_map".
+        # targets[b]["masks"]; build them here on-device from the per-target
+        # integer "label_map" so the CPU collator never materializes them.
         if self.materialize_binary_masks:
             self._materialize_target_masks(targets, inputs.device)
 
@@ -1584,50 +1634,79 @@ def build_semantic_targets(
     targets: dict,
     semantic_classes,
     *,
-    channel_roles: list[str],
+    semantic_map: Optional[torch.Tensor],
+    semantic_legend: list[dict],
+    object_type_names: dict[int, str],
     batch_size: int,
     spatial: tuple[int, ...],
     device,
 ) -> tuple[list[dict], list[str]]:
-    """Package Form-D semantic maps into Form-S set-loss GT — the ONE form
-    conversion in the pipeline (see data/data_types.py for the nomenclature).
+    """Package semantic GT into Form-S set-loss targets.
 
-    ``targets`` is the Form-D role dict (one batched ``(B, Z, Y, X)`` map per
-    role); ``semantic_classes`` selects roles, in order:
+    All semantic classes are squashed onto ONE integer channel whose voxel
+    values are ``local_segmentation_id``, and the annotation bucket's ``semantic``
+    list is the legend (``local_segmentation_id -> object_type_id``). A class is
+    resolved from whichever source owns it:
 
-      * ``"all"`` -- every DB-matched channel role (``channel_roles``, captured
-        BEFORE any transform published a derived role). The common case: the DB
-        supplies the classes directly (membrane, cytosol, golgi...) and nobody
-        has to enumerate them.
-      * ``[a, b, ...]`` -- exactly those roles, in that order. Use this to select
-        derived maps, subset, or reorder.
+      * a legend class -> ``semantic_map == local_segmentation_id``
+      * a derived role -> ``targets[name] > 0``, published by a transform
+        (``InstanceToBoundaryMask``, ``ForegroundMasks``)
 
-    Class index is position in the resolved list, so the config controls both the
-    taxonomy and the label values, and a role that is not listed (a transform's
-    source channel, a dropped extra) is simply not a class.
+    Both still exist, so ``semantic_classes: [boundary, foreground]`` keeps
+    working unchanged.
 
-    Returns ``(per_sample_targets, resolved_classes)`` where ``per_sample_targets``
-    is Form S: ``[{"masks": (N, Z, Y, X) bool, "labels": (N,)}, ...]`` length B.
-    ``masks`` is multi-label: a voxel may belong to several classes, which is what
-    the per-class binary criteria consume. The single-label map the mIoU metric
-    wants is NOT built here -- it is a pure function of these two and is derived
-    at eval time by ``evaluate_postprocess.gt_semantic_map(source="masks")``.
+    Background needs no special case -- it is simply absent from the legend, so
+    it cannot become a class.
+
+    Returns ``(per_sample_targets, resolved_classes)`` where the first is Form S:
+    ``[{"masks": (N, *spatial) bool, "labels": (N,)}, ...]`` of length B.
     """
-    roles = list(targets.keys())
+    # name -> the integer to compare the labelmap against
+    name_to_value: dict[str, int] = {}
+    for leaf in semantic_legend or ():
+        type_id = leaf.get("object_type_id")
+        if type_id is None:
+            continue
+        name = object_type_names.get(int(type_id))
+        if name is None:
+            raise KeyError(
+                f"object_type_id={type_id} has no name; the api.object_types "
+                f"cache is stale -- refetch it at startup"
+            )
+        name_to_value[name] = int(leaf["local_segmentation_id"])
+
+    derived = set(targets.keys())
+
     if semantic_classes == "all":
-        resolved = list(channel_roles)
+        # Legend order, which is the DB's own ordering of the bucket.
+        resolved = list(name_to_value)
     else:
         resolved = [str(c) for c in semantic_classes]
-    missing = [c for c in resolved if c not in roles]
-    if missing:
+
+    unknown = [c for c in resolved if c not in name_to_value and c not in derived]
+    if unknown:
         raise KeyError(
-            f"semantic_classes {missing} not present in target roles {roles}. "
-            "List only roles the preprocessor actually produced, or use 'all'."
+            f"semantic_classes {unknown} are neither legend classes "
+            f"{sorted(name_to_value)} nor derived roles {sorted(derived)}. "
+            f"List only classes something actually produced, or use 'all'."
+        )
+    if any(c in name_to_value for c in resolved) and semantic_map is None:
+        raise ValueError(
+            f"semantic_classes {resolved} reference legend classes but no semantic "
+            f"channel was present (channel_type='mask', annotation_type='semantic')"
         )
 
-    if resolved:
-        # (B, N, Z, Y, X) bool — one batched stack, per-sample dicts are views.
-        masks = torch.stack([targets[c] for c in resolved], dim=1) > 0
+    per_class: list[torch.Tensor] = []
+    for c in resolved:
+        if c in derived:
+            # transform-published binary map
+            per_class.append(targets[c] > 0)
+        else:
+            # legend class: one-hot straight out of the integer labelmap
+            per_class.append(semantic_map == name_to_value[c])
+
+    if per_class:
+        masks = torch.stack(per_class, dim=1)          # (B, N, *spatial) bool
     else:
         masks = torch.zeros((batch_size, 0, *spatial), dtype=torch.bool, device=device)
     labels = torch.arange(masks.shape[1], dtype=torch.int64, device=masks.device)
@@ -1699,7 +1778,7 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
     def _data_types(self) -> Dict[str, Dict[str, Any]]:
         """Semantic seg: image + semantic map targets.
 
-        Every ``semantic_segmentation_*`` channel is grabbed (role family) and
+        Every ``semantic_masks*`` channel is grabbed (role family) and
         published as a Form-D target role -- a batched ``(B, Z, Y, X)`` integer
         labelmap per role (see data/data_types.py). Optional boundary/foreground
         transforms publish derived roles. NOTE: the ``semantic_maps`` field
@@ -1710,7 +1789,7 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         return {
             "data_tensor": self.base_dense_data_type,
             "semantic_maps": {"kind": "semantic_masks", "layout": self.input_format,
-                              "role": "target", "channel_role": "semantic_segmentation"},
+                              "role": "target", "channel_role": "semantic_masks"},
         }
 
     def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
@@ -1757,8 +1836,20 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         # records the DB-matched roles BEFORE any transform publishes a derived
         # role (boundary/foreground) -- this is what semantic_classes="all"
         # resolves to at packaging.
+        # Semantic GT is ONE integer channel now, keyed by class id, so pull it
+        # out of the role dict: what remains is purely DERIVED roles (boundary,
+        # foreground) published by transforms. It goes back in under its kind for
+        # the transform pass so geometric ops warp it in lockstep with the image,
+        # then comes out again for packaging.
+        semantic_map = targets_by_role.pop(DataKind.SEMANTIC_MASKS.value, None)
+        _instances, semantic_legend = parse_annotations_metadata(
+            _first_annotations_metadata(meta), window_offset=0
+        )
+
         channel_roles = sorted(targets_by_role.keys())
         meta["targets"] = {r: targets_by_role[r] for r in channel_roles}
+        if semantic_map is not None:
+            meta["targets"][DataKind.SEMANTIC_MASKS.value] = semantic_map
 
         sample = {"data_tensor": images, "metainfo": meta}
         sample, transform_time = self._apply_transforms(sample)
@@ -1768,10 +1859,15 @@ class SemanticSegmentationPreprocessor(BaseFinetunePreprocessor):
         # set-loss GT out (the ONE form conversion in the pipeline). The taxonomy
         # comes from config (see build_semantic_targets): "all" = every matched
         # channel role, or an explicit ordered list.
+        post_transform = dict(meta["targets"])
+        semantic_map = post_transform.pop(DataKind.SEMANTIC_MASKS.value, None)
+
         targets, semantic_classes = build_semantic_targets(
-            meta["targets"],
+            post_transform,
             self.semantic_classes,
-            channel_roles=channel_roles,
+            semantic_map=semantic_map,
+            semantic_legend=semantic_legend,
+            object_type_names=_object_type_names_from_meta(meta),
             batch_size=B,
             spatial=tuple(sample["data_tensor"].shape[1:-1]),
             device=images.device,
@@ -2214,7 +2310,7 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         return {
             "data_tensor": self.base_dense_data_type,
             "label_map": {"kind": "instance_masks", "layout": self.input_format,
-                          "role": "target", "channel_role": "instance_segmentation"},
+                          "role": "target", "channel_role": "instance_masks"},
             "boxes": {"kind": "boxes", "layout": self.bbox_format, "role": "target"},
         }
 
@@ -2433,22 +2529,11 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         inputs = data_sample["data_tensor"]
         meta = data_sample.get("metainfo", {})
 
-        # HACK: the DB does not yet carry the instance_segmentation role
-        # in channel_mapping. We know the LAST channel (the 6th, idx C-1) is the
-        # instance-seg label, so inject that role here so the role-driven partition
-        # strips it off the model input AND snapshots it as the int32 labelmap.
-        # Remove once the DB owns the channel role table.
-        if isinstance(meta, dict) and self.expect_mask_channel:
-            _C = inputs.shape[-1]
-            _cm = dict(_channel_mapping_from_meta(meta) or {})
-            _cm[_C - 1] = "instance_segmentation"
-            meta["channel_mapping"] = _cm
-
         # Fast split: signal channels off the front (view + dtype cast), object
         # channels off the int32 tail. `mask_labelmap` is (B, T, Z, Y, X) or None
         # at inference (no mask channel -> no labelmap, no masks built).
         images, targets_by_role = self._split_channels(inputs, meta)
-        mask_labelmap = targets_by_role.get("instance_segmentation")
+        mask_labelmap = targets_by_role.get(DataKind.INSTANCE_MASKS.value)
 
         # Attach the per-target labelmap BEFORE transforms so geometric ops
         # (Crop / Resize / flip) warp it in lockstep with the image and

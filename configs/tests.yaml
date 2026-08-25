@@ -95,7 +95,9 @@ datasets:
   exec_async: true
   exec_pipelined: true
 
-  roi_list: null 
+  # roi_list -> roi_ids: prepared_id and roi_id are different
+  # sequences, so the old values were dropped rather than translated.
+  roi_ids: null
   cdf_threshold: null
   cdf_target: null
 
@@ -104,9 +106,9 @@ datasets:
     protocol: cursor
     verbose: true
     sample_type: cube
-    channel_count: 2
+    data_channel_count: 2
     cdf_threshold_channel_localizations: null
-    required_locations: ["exists_prfs"] 
+    storage_location: prfs
 
 evaluation:
   val_begin: 0
