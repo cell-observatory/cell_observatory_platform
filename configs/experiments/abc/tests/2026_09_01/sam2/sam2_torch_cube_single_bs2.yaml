@@ -1,0 +1,10 @@
+# @package _global_
+# Feature: 2 cubes per GPU (torch-native forbids grad accumulation, so batch_size = 2 x 8).
+defaults:
+  - base_sam2_torch
+  - _self_
+
+experiment_name: sam2_abc_torch_single_cube_128_bs2
+
+clusters:
+  batch_size: 16

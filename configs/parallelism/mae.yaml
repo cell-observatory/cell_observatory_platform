@@ -1,7 +1,5 @@
 # Torch-native parallelism config for TorchNativeTrainer (pure data parallel:
 # FSDP2 via fully_shard, optionally HSDP with data_parallel_replicate_degree > 1).
-# Higher-dimensional parallelism (TP/CP/PP/EP) was descoped — see
-# docs/analysis/2026-07-29-torch-native-trainer.md §8.1.
 
 # ----- Core training + parallel degrees -----
 training:

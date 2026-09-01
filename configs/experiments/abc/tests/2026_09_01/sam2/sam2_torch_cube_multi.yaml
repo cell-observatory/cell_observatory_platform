@@ -1,0 +1,7 @@
+# @package _global_
+# Permutation: torch backend, cube mode (128^3), Hiera-L multiscale. Base settings.
+defaults:
+  - base_sam2_torch_multiscale
+  - _self_
+
+experiment_name: sam2_abc_torch_multi_cube_128

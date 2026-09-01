@@ -1,0 +1,55 @@
+# @package _global_
+# Feature: validation split + SAM2 instance evaluator (mask_map) + best-checkpoint hooks.
+defaults:
+  - base_sam2_torch
+  - _self_
+
+experiment_name: sam2_abc_torch_single_cube_128_eval
+
+datasets:
+  split: 0.1 # 10% held out -> validation pass after the epoch
+
+# Inline copy of /evaluation/sam2_instance_evaluator (a nested group cannot be
+# swapped with `override` from a variant, so the block is spelled out here).
+evaluation:
+  val_begin: 0
+  val_interval: 1
+  val_metric: mask_map
+  val_mode: max
+  evaluator:
+    name: instance_segmentation
+    _recursive_: false
+    mask_chunk_size: 8
+    score_threshold: 0.0
+    match_labels: false # SAM2 is class-agnostic (sentinel class id -1)
+    gt_mask_source: label_map
+    gt_box_format: cxcyczwhd
+    gt_boxes_normalized: true
+    metrics:
+      - box_map
+      - box_miou
+      - box_f1
+      - mask_map
+      - name: mask_miou
+        mode: instance
+      - name: predicted_iou
+        key: pred_iou_eval
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: periodic_checkpointer
+    file_prefix: latest_model
+    backend: TORCHTITAN
+    time_interval: 3h30m
+  - name: best_checkpointer
+    backend: TORCHTITAN
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - name: best_metric_saver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true

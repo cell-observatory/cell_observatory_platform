@@ -1,5 +1,7 @@
-# Torch-native parallelism config for TorchNativeTrainer (pure data parallel:
-# FSDP2 via fully_shard, optionally HSDP with data_parallel_replicate_degree > 1).
+# Torch-native parallelism config for TorchNativeTrainer with the SAM2 meta
+# arch (pure data parallel: FSDP2 via fully_shard, optionally HSDP with
+# data_parallel_replicate_degree > 1). Same shape as mae.yaml; the quantize
+# block defaults to the MX backend because this profile targets B200+/B300.
 
 # ----- Core training + parallel degrees -----
 training:
@@ -17,12 +19,14 @@ training:
 
   fsdp_reshard_after_forward: default # default | always | never
 
-# ----- Low-precision linears (hardware-gated; raises on unsupported GPUs) -----
+# ----- Low-precision linears (hardware-gated in parallelism/quantize.py; raises on unsupported GPUs) -----
+#   float8 -> SM89+ (H100/H200): recipes tensorwise | rowwise | rowwise_with_gw_hp
+#   mx     -> SM100+ (B200/B300): recipes mxfp8_cublas | mxfp8_cublas_rceil | mxfp4_cutlass
 quantize:
   enable: false
-  backend: float8 # float8 (SM89+: H100/H200) | mx (SM100+: B200; mxfp8/mxfp4 recipes)
-  recipe: tensorwise # float8: tensorwise | rowwise | rowwise_with_gw_hp; mx: mxfp8_cublas | mxfp8_cublas_rceil | mxfp4_cutlass
-  fsdp_float8_all_gather: true # tensorwise only: FP8 param all-gather + post-step scale precompute
+  backend: mx # float8 on H100/H200, mx on B200+
+  recipe: mxfp8_cublas
+  fsdp_float8_all_gather: true # float8/tensorwise only: FP8 param all-gather + post-step scale precompute (ignored for mx)
   filter_fqns: [] # substring excludes, on top of built-in guards (dims % 16, exact nn.Linear type)
 
 # ----- Distributed comm settings -----
