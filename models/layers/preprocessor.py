@@ -155,7 +155,6 @@ def partition_channels(channel_mapping, num_channels, target_roles):
 # --------------------------------------------------------------------------- #
 
 
-@registers_as("preprocessor", "ray")
 def _reads_raw_counts(transforms) -> bool:
     """True if any configured transform needs exact integer counts.
 
@@ -174,6 +173,7 @@ def _reads_raw_counts(transforms) -> bool:
     return False
 
 
+@registers_as("preprocessor", "ray")
 class RayPreprocessor(torch.nn.Module):
     def __init__(
         self,
