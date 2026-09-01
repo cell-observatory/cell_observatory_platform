@@ -2,25 +2,23 @@
 
 These tests exercise the SAM2 direct-binary-mask source path of
 ``InstanceSegmentationEvaluator._process_one`` (the ``pred_masks`` branch) WITHOUT
-needing a GPU or real SAM2 weights. We build FAKE per-image sample dicts in the
+needing real SAM2 weights. We build FAKE per-image sample dicts in the
 exact shape ``SAM2.evaluate_step`` returns (see its docstring / the frozen
 contract) and a matching synthetic GT target, then drive ``process()`` +
 ``evaluate()`` with a ``PredictedIoUEvalMetric`` (plus ``MaskMAP`` / ``MaskMIoU``)
 registered.
 
 Coverage:
-  1. END-TO-END (also closes the WF1 coverage gap): pred_ious actually reach the
-     metric, calibration MAE matches a hand computation, flattened keys appear.
+  1. END-TO-END: pred_ious actually reach the metric, calibration MAE matches a
+     hand computation, flattened keys appear.
   2. NO iou-pred key -> PredictedIoUEvalMetric skipped gracefully while MaskMAP /
      box metrics still populate.
   3. Per-class slice alignment with ``match_labels=True`` and >1 class.
-  4. DEVICE HARDENING: pred_ious / masks / indices on (possibly mismatched)
-     devices don't crash the coercion path.
-  5. SAM2.evaluate_step shape/dtype/key contract -- run against the REAL
-     method by faking only ``_predict_generate_masks`` (no GPU / real backbone),
-     plus a CUDA-gated structural smoke if a model can be built.
+  4. DEVICE HARDENING: pred_masks / iou_preds / boxes on CUDA with CPU indices
+     are coerced onto the index device (CUDA-only).
 
-All CPU-only except the explicitly CUDA-gated cases.
+The ``SAM2.evaluate_step`` dict contract itself lives in ``tests/models``.
+All CPU-only except the explicitly CUDA-marked case.
 """
 
 import math
@@ -32,9 +30,6 @@ import torch
 from cell_observatory_platform.evaluation.instance_segmentation_evaluator import (
     InstanceSegmentationEvaluator,
 )
-
-
-CUDA = torch.cuda.is_available()
 
 
 # ---------------------------------------------------------------------------
@@ -78,8 +73,9 @@ def _sam2_sample(
     return sample
 
 
-def _data_sample(target, nested=True):
-    targets = [[target]] if nested else [target]
+def _data_sample(target):
+    # Form S (see data/data_types.py): a plain per-sample list — no wrap exists anymore.
+    targets = [target]
     return {"metainfo": {"targets": targets}}
 
 
@@ -189,9 +185,10 @@ def test_sam2_stream_pushed_to_pred_iou_metric_carries_true_iou_rows():
     entry = stream[0]
     assert entry["class_id"] == -1
     assert entry["n_gt"] == 1
-    # True IoU rows: (k=2, n_gt=1) == [[1.0], [0.5]].
+    # True IoU rows: (k=2, n_gt=1) == [[1.0], [0.5]]. IoU fragments are stored
+    # fp16; these values are fp16-exact, compare through fp32.
     torch.testing.assert_close(
-        entry["ious"], torch.tensor([[1.0], [0.5]]), atol=1e-6, rtol=0
+        entry["ious"].to(torch.float32), torch.tensor([[1.0], [0.5]]), atol=1e-6, rtol=0
     )
     torch.testing.assert_close(
         entry["pred_ious"], torch.tensor([0.9, 0.3]), atol=1e-6, rtol=0
@@ -245,8 +242,11 @@ def test_no_iou_pred_key_skips_predicted_iou_but_mask_and_box_populate():
     assert len(evaluator.metrics["mask_map"]._stream) == 1
 
     results = evaluator.evaluate()
-    # PredictedIoUEvalMetric still aggregates to its zero-dict (flattened).
-    assert results["pred_iou/iou_head_mae"] == 0.0
+    # PredictedIoUEvalMetric aggregates its empty stream to NaN calibration
+    # (undefined, was 0.0 == "perfect") with an explicit zero count; the
+    # ranked-AP keys keep the empty-set 0.0 convention.
+    assert results["pred_iou/iou_head_n"] == 0.0
+    assert math.isnan(results["pred_iou/iou_head_mae"])
     assert results["pred_iou/map_rank_score"] == 0.0
     # MaskMAP populated (prop 0 is an exact TP -> AP > 0).
     assert math.isfinite(results["mask_map"]) and results["mask_map"] > 0.0
@@ -308,14 +308,15 @@ def test_per_class_slice_alignment_match_labels_true_two_classes():
     # proposal whose true IoU row is [[1.0]] and the right pred_iou.
     stream = {e["class_id"]: e for e in evaluator.metrics["pred_iou"]._stream}
     assert set(stream.keys()) == {1, 2}
+    # IoU fragments are stored fp16; 1.0 is fp16-exact, compare through fp32.
     torch.testing.assert_close(
-        stream[1]["ious"], torch.tensor([[1.0]]), atol=1e-6, rtol=0
+        stream[1]["ious"].to(torch.float32), torch.tensor([[1.0]]), atol=1e-6, rtol=0
     )
     torch.testing.assert_close(
         stream[1]["pred_ious"], torch.tensor([0.88]), atol=1e-6, rtol=0
     )
     torch.testing.assert_close(
-        stream[2]["ious"], torch.tensor([[1.0]]), atol=1e-6, rtol=0
+        stream[2]["ious"].to(torch.float32), torch.tensor([[1.0]]), atol=1e-6, rtol=0
     )
     torch.testing.assert_close(
         stream[2]["pred_ious"], torch.tensor([0.77]), atol=1e-6, rtol=0
@@ -335,257 +336,27 @@ def test_per_class_slice_alignment_match_labels_true_two_classes():
 # ---------------------------------------------------------------------------
 
 
-def test_device_hardening_all_cpu_does_not_crash():
-    """The documented CPU-only trajectory: indices/masks/pred_ious all on CPU.
-    The coercion-to-device path (device read from topk_query_indices) must be a
-    no-op and not crash. Uses 2 proposals so PredictedIoUEvalMetric's
-    calibration block (which requires n >= 2 pooled detections) activates and we
-    can assert the hand-computed MAE actually flowed through the coercion."""
+@pytest.mark.cuda
+def test_pred_masks_on_cuda_with_cpu_indices_are_coerced():
+    """DirectMaskSource indexes on the masks' own device and moves each chunk to
+    the index device; iou_preds / boxes on CUDA are pulled to it as well."""
     target = _classagnostic_target_single_gt()
-    gt_mask = (target["label_map"] == 5)
-    # prop 0: exact GT -> true IoU 1.0; prop 1: half -> true IoU 0.5.
     pred_masks = torch.zeros(2, 4, 4, 4, dtype=torch.bool)
-    pred_masks[0] = gt_mask
-    pred_masks[1, 0, 0, :2] = True
-    sample = _sam2_sample(pred_masks, [0.90, 0.40], [0.95, 0.6])
-    # Everything is CPU.
-    assert sample["topk_query_indices"].device.type == "cpu"
-    assert sample["pred_masks"].device.type == "cpu"
-    assert sample["iou_preds"].device.type == "cpu"
-
-    evaluator = InstanceSegmentationEvaluator(
-        metrics=[
-            {"name": "predicted_iou", "key": "pred_iou",
-             "iou_thresholds": [0.5]},
-            "mask_map",
-        ],
-        mask_chunk_size=1,
-        match_labels=False,
-        gt_mask_source="label_map",
-    )
-    evaluator.process(_data_sample(target), outputs=[sample])
-    results = evaluator.evaluate()
-    # true_iou = [1.0, 0.5], pred = [0.90, 0.40] -> MAE = mean(0.10, 0.10) = 0.10.
-    assert results["pred_iou/iou_head_mae"] == pytest.approx(0.1, abs=1e-6)
-
-
-def test_device_hardening_masks_on_other_device_branch():
-    """Mimic a producer that returns pred_masks on a DIFFERENT device than the
-    indexing mask. The evaluator indexes on the masks' own device then moves the
-    chunk to the index device. With CUDA we use cuda for masks; without CUDA we
-    fall back to asserting the CPU path is robust (still meaningful coverage of
-    the .to(src_device) / .to(device) coercion logic, which is a no-op on CPU
-    but must not raise). Uses 2 proposals so the calibration block (n >= 2)
-    activates."""
-    target = _classagnostic_target_single_gt()
-    gt_mask = (target["label_map"] == 5)
-    pred_masks = torch.zeros(2, 4, 4, 4, dtype=torch.bool)
-    pred_masks[0] = gt_mask                     # true IoU 1.0
-    pred_masks[1, 0, 0, :2] = True              # true IoU 0.5
-
+    pred_masks[0] = target["label_map"] == 5     # true IoU 1.0
+    pred_masks[1, 0, 0, :2] = True               # true IoU 0.5
     sample = _sam2_sample(pred_masks, [0.85, 0.65], [0.9, 0.7])
-    if CUDA:
-        # Put masks + boxes + iou_preds on CUDA, indices/scores/class_ids on CPU.
-        sample["pred_masks"] = sample["pred_masks"].cuda()
-        sample["iou_preds"] = sample["iou_preds"].cuda()
-        sample["boxes"] = sample["boxes"].cuda()
-        # topk_query_indices stays CPU -> device = CPU; masks indexed on CUDA.
+    # topk_query_indices stays on CPU (the index device); the heavy tensors do not.
+    sample["pred_masks"] = sample["pred_masks"].cuda()
+    sample["iou_preds"] = sample["iou_preds"].cuda()
+    sample["boxes"] = sample["boxes"].cuda()
 
     evaluator = InstanceSegmentationEvaluator(
-        metrics=[
-            {"name": "predicted_iou", "key": "pred_iou",
-             "iou_thresholds": [0.5]},
-            "mask_map",
-        ],
+        metrics=[{"name": "predicted_iou", "key": "pred_iou", "iou_thresholds": [0.5]}, "mask_map"],
         mask_chunk_size=1,
         match_labels=False,
         gt_mask_source="label_map",
     )
-    # Must not crash regardless of device placement.
     evaluator.process(_data_sample(target), outputs=[sample])
     results = evaluator.evaluate()
-    # true_iou = [1.0, 0.5], pred = [0.85, 0.65] -> MAE = mean(0.15, 0.15) = 0.15.
+    # true_iou [1.0, 0.5] vs pred [0.85, 0.65] -> MAE 0.15
     assert results["pred_iou/iou_head_mae"] == pytest.approx(0.15, abs=1e-6)
-
-
-# ---------------------------------------------------------------------------
-# 5. SAM2.evaluate_step CONTRACT (faked _predict_generate_masks, no GPU)
-# ---------------------------------------------------------------------------
-
-
-def test_evaluate_step_dict_contract_against_real_method():
-    """Run the REAL SAM2.evaluate_step by stubbing only the heavy backbone
-    call ``_predict_generate_masks`` with a tiny MaskData. Asserts the per-image
-    dict has EXACTLY the documented keys with documented shapes/dtypes, batch
-    length 1, and that to_numpy() was NOT applied (tensors preserved)."""
-    from cell_observatory_platform.models.meta_arch.sam import SAM2
-    from cell_observatory_platform.inference.amg import MaskData
-
-    z = y = x = 4
-    n = 3
-    md = MaskData(
-        masks=(torch.rand(n, z, y, x) > 0.5),
-        iou_preds=torch.tensor([0.7, 0.8, 0.9], dtype=torch.float32),
-        stability_score=torch.tensor([0.6, 0.7, 0.8], dtype=torch.float32),
-        boxes=torch.zeros(n, 6, dtype=torch.float32),
-    )
-
-    class _Stub:
-        # Reuse the unbound real method; supply only the attributes it touches.
-        evaluate_step = SAM2.evaluate_step
-        # evaluate_step converts the platform layout at the model boundary;
-        # the stub borrows the method, so it needs the helper too.
-        # staticmethod(): a bare function assigned to a class attribute would
-        # re-bind as an instance method and receive self as the first arg.
-        _to_model_layout = staticmethod(SAM2._to_model_layout)
-        training = False
-        iou_prediction_use_sigmoid = True
-
-        def eval(self):
-            return self
-
-        def train(self):
-            return self
-
-        def _predict_generate_masks(self, vol):
-            return md
-
-    stub = _Stub()
-    vol = torch.zeros(1, 1, z, y, x, 1)  # (B=1, T=1, Z, Y, X, C=1) platform layout
-    data_sample = {"data_tensor": vol}
-
-    with torch.no_grad():
-        out = stub.evaluate_step(data_sample)
-
-    assert isinstance(out, list) and len(out) == 1
-    d = out[0]
-    expected_keys = {
-        "mask_source",
-        "topk_query_indices", "topk_class_scores", "topk_class_ids",
-        "boxes", "eval_frame_size", "pred_masks", "iou_preds",
-    }
-    assert set(d.keys()) == expected_keys
-    # The model DECLARES its mask source; the evaluator no longer sniffs keys.
-    assert d["mask_source"] == "direct"
-    # Forbidden keys absent.
-    assert "mask_embeddings" not in d
-    assert "pixel_decoder_output" not in d
-    assert "points" not in d
-    assert "stability_score" not in d
-
-    assert d["topk_query_indices"].shape == (n,)
-    assert d["topk_query_indices"].dtype == torch.long
-    torch.testing.assert_close(d["topk_query_indices"], torch.arange(n))
-
-    assert d["topk_class_scores"].shape == (n,)
-    assert d["topk_class_scores"].dtype == torch.float32
-    # topk_class_scores carries stability_score (NOT iou_preds) -> distinct.
-    torch.testing.assert_close(
-        d["topk_class_scores"], md["stability_score"]
-    )
-    assert not torch.equal(d["topk_class_scores"], d["iou_preds"])
-
-    assert d["topk_class_ids"].shape == (n,)
-    assert d["topk_class_ids"].dtype == torch.long
-    assert torch.all(d["topk_class_ids"] == -1)
-
-    assert d["boxes"].shape == (n, 6)
-    assert d["boxes"].dtype == torch.float32
-
-    assert d["pred_masks"].shape == (n, z, y, x)
-    assert d["pred_masks"].dtype == torch.bool
-    assert d["pred_masks"].device.type == "cpu"
-
-    assert d["iou_preds"].shape == (n,)
-    assert d["iou_preds"].dtype == torch.float32
-    assert isinstance(d["eval_frame_size"], tuple)
-    assert d["eval_frame_size"] == (z, y, x)
-
-
-def test_evaluate_step_empty_case_shapes():
-    """N == 0 must yield correctly-typed zero-leading-dim tensors."""
-    from cell_observatory_platform.models.meta_arch.sam import SAM2
-    from cell_observatory_platform.inference.amg import MaskData
-
-    z = y = x = 4
-    md = MaskData()  # empty
-
-    class _Stub:
-        evaluate_step = SAM2.evaluate_step
-        # evaluate_step converts the platform layout at the model boundary;
-        # the stub borrows the method, so it needs the helper too.
-        # staticmethod(): a bare function assigned to a class attribute would
-        # re-bind as an instance method and receive self as the first arg.
-        _to_model_layout = staticmethod(SAM2._to_model_layout)
-        training = False
-        iou_prediction_use_sigmoid = True
-
-        def eval(self):
-            return self
-
-        def train(self):
-            return self
-
-        def _predict_generate_masks(self, vol):
-            return md
-
-    stub = _Stub()
-    data_sample = {"data_tensor": torch.zeros(1, 1, z, y, x, 1)}  # B=1, T=1
-    with torch.no_grad():
-        out = stub.evaluate_step(data_sample)
-    d = out[0]
-    assert d["pred_masks"].shape == (0, z, y, x)
-    assert d["pred_masks"].dtype == torch.bool
-    assert d["boxes"].shape == (0, 6)
-    assert d["iou_preds"].shape == (0,)
-    assert d["topk_query_indices"].shape == (0,)
-    assert d["topk_class_ids"].shape == (0,)
-    assert d["topk_class_scores"].shape == (0,)
-
-
-def test_evaluate_step_asserts_batch_size_one():
-    from cell_observatory_platform.models.meta_arch.sam import SAM2
-    from cell_observatory_platform.inference.amg import MaskData
-
-    class _Stub:
-        evaluate_step = SAM2.evaluate_step
-        # evaluate_step converts the platform layout at the model boundary;
-        # the stub borrows the method, so it needs the helper too.
-        # staticmethod(): a bare function assigned to a class attribute would
-        # re-bind as an instance method and receive self as the first arg.
-        _to_model_layout = staticmethod(SAM2._to_model_layout)
-        training = False
-        iou_prediction_use_sigmoid = True
-
-        def eval(self):
-            return self
-
-        def train(self):
-            return self
-
-        def _predict_generate_masks(self, vol):
-            return MaskData()
-
-    stub = _Stub()
-    # B*T == 2 must trip the assert.
-    data_sample = {"data_tensor": torch.zeros(2, 1, 4, 4, 4, 1)}
-    with pytest.raises(AssertionError, match="single volume"):
-        stub.evaluate_step(data_sample)
-
-
-@pytest.mark.skipif(
-    not CUDA,
-    reason="Full SAM2.evaluate_step smoke needs CUDA + a real backbone/weights; "
-           "skipped on CPU-only. The dict contract is covered by the stubbed test.",
-)
-def test_evaluate_step_real_backbone_smoke():
-    # Intentionally a structural placeholder: building a real SAM2 (image
-    # encoder + mask decoder + prompt encoder + criterion) requires a Hydra
-    # config and weights not available in the unit-test environment. The
-    # stubbed contract test above fully validates the dict shape/dtype/keys
-    # without GPU. If a fixture for a tiny real backbone is added later, wire it
-    # here.
-    pytest.skip(
-        "No tiny real-backbone SAM2 fixture available; dict contract covered by "
-        "test_evaluate_step_dict_contract_against_real_method."
-    )

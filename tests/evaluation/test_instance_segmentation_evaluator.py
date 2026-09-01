@@ -1,3 +1,4 @@
+import logging
 import math
 
 import pytest
@@ -39,10 +40,10 @@ def _make_fake_predict_for_eval_output():
     }
 
 
-def _make_data_sample(target=None, nested=True):
+def _make_data_sample(target=None):
+    # Form S (see data/data_types.py): a plain per-sample list — no wrap exists anymore.
     target = _make_target() if target is None else target
-    targets = [[target]] if nested else [target]
-    return {"metainfo": {"targets": targets}}
+    return {"metainfo": {"targets": [target]}}
 
 
 def test_metric_factory_string_and_errors():
@@ -82,8 +83,10 @@ def test_pairwise_mask_iou_3d_bool_manual_cases():
     assert ious[2, 2].item() == pytest.approx(1.0 / 3.0)
 
 
-def test_greedy_match_per_class_score_sorted():
-    scores = torch.tensor([0.9, 0.8, 0.7])
+def test_match_per_class_hungarian_optimal():
+    # Hungarian on the (thresholded) IoU matrix: optimal assignment is
+    # pred0->gt0 (0.6) + pred1->gt1 (0.8) = 1.4 (vs 0.1 + 0.7 = 0.8 swapped);
+    # pred2 stays unmatched (only two GTs).
     ious = torch.tensor(
         [
             [0.6, 0.1],
@@ -93,7 +96,7 @@ def test_greedy_match_per_class_score_sorted():
         dtype=torch.float32,
     )
 
-    matched = InstanceSegmentationEvaluator._greedy_match_per_class(scores, ious)
+    matched = InstanceSegmentationEvaluator._match_per_class(ious, iou_threshold=0.5)
 
     assert matched == pytest.approx([0.6, 0.8])
 
@@ -176,3 +179,194 @@ def test_reset_clears_metrics_results_and_image_counter():
     assert evaluator._image_id_counter == 0
     assert evaluator.metrics["mask_map"]._stream == []
     assert all(value is None for value in evaluator._results.values())
+
+
+def test_label_map_id_zero_raises():
+    """label_map contract: instance ids are >= 1, 0 is reserved for background."""
+    evaluator = InstanceSegmentationEvaluator(metrics=["mask_map"], match_labels=True)
+    target = _make_target()
+    target["mask_ids"] = torch.tensor([0, 9], dtype=torch.long)
+    with pytest.raises(ValueError, match="ids must be >= 1"):
+        evaluator.process(_make_data_sample(target), outputs=[_make_fake_predict_for_eval_output()])
+
+
+def test_instance_miou_reports_match_recall_for_missed_gt():
+    """One perfect match + one completely missed GT: the matched mean stays
+    1.0 and match_recall exposes the miss. Driven through the STREAMING00
+    evaluator so the always-push (even for match-less images) path is covered."""
+    # Image: two GT instances; the model only predicts one of them.
+    label_map = torch.zeros(2, 2, 2, dtype=torch.long)
+    label_map[0, 0, 0] = 7
+    label_map[1, 1, 1] = 9
+    target = {
+        "label_map": label_map,
+        "mask_ids": torch.tensor([7, 9], dtype=torch.long),
+        "labels": torch.tensor([1, 1], dtype=torch.long),
+        "boxes": torch.zeros(2, 6, dtype=torch.float32),
+    }
+    pred_masks = torch.zeros(1, 2, 2, 2, dtype=torch.bool)
+    pred_masks[0, 0, 0, 0] = True  # exact match for instance 7 only
+    sample = {
+        "mask_source": "direct",
+        "pred_masks": pred_masks,
+        "topk_query_indices": torch.tensor([0], dtype=torch.long),
+        "topk_class_scores": torch.tensor([0.9], dtype=torch.float32),
+        "topk_class_ids": torch.tensor([1], dtype=torch.long),
+        "boxes": torch.zeros(1, 6, dtype=torch.float32),
+        "eval_frame_size": (2, 2, 2),
+    }
+
+    evaluator = InstanceSegmentationEvaluator(
+        metrics=[{"name": "mask_miou", "mode": "instance"}],
+        mask_chunk_size=1,
+        match_labels=True,
+    )
+    evaluator.process({"metainfo": {"targets": [target]}}, outputs=[sample])
+    results = evaluator.evaluate()
+
+    assert results["mask_miou"] == pytest.approx(1.0)       # matched mean kept
+    assert results["mask_match_recall"] == pytest.approx(0.5)  # 1 of 2 GTs
+
+
+# ---------------------------------------------------------------------------
+# GT-axis chunking equivalence
+# ---------------------------------------------------------------------------
+
+
+def _three_gt_target():
+    label_map = torch.zeros(3, 3, 3, dtype=torch.long)
+    label_map[0, 0, :2] = 5
+    label_map[1, 1, :3] = 6
+    label_map[2, 2, 2] = 7
+    return {
+        "label_map": label_map,
+        "mask_ids": torch.tensor([5, 6, 7], dtype=torch.long),
+        "labels": torch.tensor([1, 1, 1], dtype=torch.long),
+        "boxes": torch.zeros(3, 6, dtype=torch.float32),
+    }
+
+
+def _three_pred_sample(label_map):
+    pred_masks = torch.stack([
+        label_map == 5,                                   # exact instance 5
+        (label_map == 6) | (label_map == 7),              # merges 6 and 7
+        torch.zeros_like(label_map, dtype=torch.bool),    # empty prediction
+    ])
+    pred_masks[2, 0, 0, 0] = True                         # partial overlap w/ 5
+    return {
+        "mask_source": "direct",
+        "pred_masks": pred_masks,
+        "topk_query_indices": torch.arange(3, dtype=torch.long),
+        "topk_class_scores": torch.tensor([0.9, 0.8, 0.7], dtype=torch.float32),
+        "topk_class_ids": torch.ones(3, dtype=torch.long),
+        "boxes": torch.zeros(3, 6, dtype=torch.float32),
+        "eval_frame_size": (3, 3, 3),
+    }
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2])
+def test_mask_chunk_size_does_not_change_iou_matrix_or_metrics(chunk_size):
+    """The IoU matrix pushed to MaskMAP and the aggregated metrics are
+    independent of `mask_chunk_size`."""
+    def run(cs):
+        evaluator = InstanceSegmentationEvaluator(
+            metrics=["mask_map", {"name": "mask_miou", "mode": "instance"}],
+            mask_chunk_size=cs,
+            match_labels=True,
+        )
+        target = _three_gt_target()
+        evaluator.process(
+            {"metainfo": {"targets": [target]}},
+            outputs=[_three_pred_sample(target["label_map"])],
+        )
+        return evaluator
+
+    chunked = run(chunk_size)
+    unchunked = run(64)  # one chunk covers everything on both axes
+
+    stream_c = chunked.metrics["mask_map"]._stream
+    stream_u = unchunked.metrics["mask_map"]._stream
+    assert len(stream_c) == len(stream_u) == 1
+    torch.testing.assert_close(stream_c[0]["ious"], stream_u[0]["ious"])
+    assert stream_c[0]["n_gt"] == stream_u[0]["n_gt"] == 3
+
+    res_c, res_u = chunked.evaluate(), unchunked.evaluate()
+    assert res_c["mask_map"] == pytest.approx(res_u["mask_map"], abs=1e-9)
+    for key in ("mask_miou", "mask_match_recall"):
+        if math.isnan(res_u[key]):
+            assert math.isnan(res_c[key])
+        else:
+            assert res_c[key] == pytest.approx(res_u[key], abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Build-time validation of metric specs
+# ---------------------------------------------------------------------------
+
+
+class TestConflictingInstanceThresholds:
+    """Matches are computed once at a single IoU threshold and shared by every
+    instance-mode mIoU metric, so differing thresholds are rejected at build."""
+
+    def _make(self, metrics):
+        return InstanceSegmentationEvaluator(metrics=metrics)
+
+    def test_two_differing_thresholds_raise(self):
+        with pytest.raises(ValueError, match="differing"):
+            self._make([
+                {"name": "mask_miou", "key": "a", "mode": "instance", "iou_threshold": 0.5},
+                {"name": "mask_miou", "key": "b", "mode": "instance", "iou_threshold": 0.25},
+            ])
+
+    def test_equal_thresholds_ok(self):
+        ev = self._make([
+            {"name": "mask_miou", "key": "a", "mode": "instance", "iou_threshold": 0.5},
+            {"name": "mask_miou", "key": "b", "mode": "instance", "iou_threshold": 0.5},
+        ])
+        assert len(ev.metrics) == 2
+
+    def test_semantic_metric_not_counted(self):
+        ev = self._make([
+            {"name": "mask_miou", "key": "a", "mode": "instance", "iou_threshold": 0.5},
+            {"name": "mask_miou", "key": "s", "mode": "semantic", "num_classes": 2,
+             "iou_threshold": 0.1},
+        ])
+        assert len(ev.metrics) == 2
+
+
+_EV_LOGGER = "cell_observatory_platform.evaluation.instance_segmentation_evaluator"
+
+
+def test_box_miou_match_labels_diverging_from_evaluator_warns_at_build(caplog):
+    """The evaluator's match_labels is not forwarded to box metrics; a
+    diverging box_miou setting is surfaced as a build-time warning."""
+    with caplog.at_level(logging.WARNING, logger=_EV_LOGGER):
+        InstanceSegmentationEvaluator(
+            metrics=[{"name": "box_miou", "match_labels": False}],
+            match_labels=True,
+        )
+    assert any("ACROSS classes" in r.message for r in caplog.records)
+
+
+def test_box_f1_score_threshold_diverging_from_evaluator_warns_at_build(caplog):
+    """The evaluator's score_threshold is not forwarded to box metrics; a
+    diverging box_f1 gate is surfaced as a build-time warning."""
+    with caplog.at_level(logging.WARNING, logger=_EV_LOGGER):
+        InstanceSegmentationEvaluator(
+            metrics=[{"name": "box_f1", "score_threshold": 0.05}],
+            score_threshold=0.3,
+        )
+    assert any("NOT forwarded" in r.message for r in caplog.records)
+
+
+def test_default_box_gates_do_not_warn_and_are_not_overwritten(caplog):
+    # shipped configs (score_threshold 0.0) must stay warning-free
+    with caplog.at_level(logging.WARNING, logger=_EV_LOGGER):
+        ev = InstanceSegmentationEvaluator(
+            metrics=[{"name": "box_f1"}, {"name": "box_miou", "match_labels": True}],
+            score_threshold=0.0,
+            match_labels=True,
+        )
+    assert not caplog.records
+    # and the warning path never mutates the metrics' own gates
+    assert float(ev.metrics["box_f1"].score_threshold) == 0.05

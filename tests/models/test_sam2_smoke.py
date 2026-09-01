@@ -6,14 +6,7 @@ finite + grads flow. This validates that the labelmap target view, criterion
 path, prompt sampling rewire, and low-res multimask consumer all hold up
 when wired into the actual decoder + memory attention stack.
 
-Run inside the apptainer image so ops3d (RoIAlign3D, FlashDeformAttn) is
-available, e.g.
-
-    apptainer exec --nv \\
-      -B /clusterfs/nvme/martinalvarez -B /global/home/users/martinalvarezkuglen \\
-      /clusterfs/nvme/martinalvarez/apptainer_images/feature_local_db_torch_26_01.sif \\
-      bash -c "PYTHONPATH=/global/home/users/martinalvarezkuglen/.cursor/worktrees/sam2-pointrend-7f3e9a2c \\
-        python -m pytest tests/training/test_sam2_smoke.py -v"
+Needs a GPU and the ops3d extension (RoIAlign3D, FlashDeformAttn).
 """
 from __future__ import annotations
 
@@ -22,8 +15,6 @@ from pathlib import Path
 import pytest
 import torch
 from omegaconf import OmegaConf
-
-CUDA_AVAILABLE = torch.cuda.is_available()
 
 
 def _repo_root() -> Path:
@@ -146,6 +137,12 @@ def _make_data_sample(
     `data_tensor`: (B, T, Z, Y, X, C_in + 1). Last channel is the integer
     labelmap (uint16-style ids), preceding channels are image floats. Two
     distinct nonzero ids appear in each volume.
+
+    `metainfo` carries a `channel_mapping` naming the labelmap channel's ROLE.
+    It is REQUIRED: the role table comes from the DB's
+    channel_type/annotation_type arrays, and nothing infers the labelmap from
+    its position. A fixture that omits the role gets both channels partitioned
+    as model INPUT, which surfaces downstream as a patchify channel-count error.
     """
     g = torch.Generator(device="cpu").manual_seed(seed)
 
@@ -176,7 +173,13 @@ def _make_data_sample(
             }
         )
 
-    return {"data_tensor": data_tensor, "metainfo": {"targets": targets}}
+    return {
+        "data_tensor": data_tensor,
+        "metainfo": {
+            "targets": targets,
+            "channel_mapping": {C_in: "instance_masks"},
+        },
+    }
 
 
 # Build the (use_point_sampling, low_res_multimasks, pred_obj_scores) matrix.
@@ -199,7 +202,7 @@ _SMOKE_PARAMS = [
 ]
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="SAM2 smoke needs CUDA")
+@pytest.mark.cuda
 @pytest.mark.parametrize("flags", _SMOKE_PARAMS)
 def test_sam2_forward_smoke(flags):
     """Drive both loss paths end-to-end. The preprocessor materializes the

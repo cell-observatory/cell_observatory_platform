@@ -6,15 +6,16 @@ Two call sites splat whole config nodes, and they are exactly the two that drift
     ``instantiate_as`` (utils/config.py), which pops only ``name``/``BUILD`` -- every
     remaining key in ``inference.inferencer_worker`` becomes a constructor kwarg.
   * ``inference/visualizer.py`` submits each ``handler_configs.<handler>`` block as
-    ``**kwargs`` to the handler's wrapped plotter.
+    ``**kwargs`` to the handler; four handlers splat that on into a plotter.
 
 The ``save_worker`` / ``viz_worker`` blocks are passed as explicit named kwargs instead,
 so a stray key there is silently IGNORED rather than a TypeError -- hence the inverse
 assertion for those.
 
-NOTE: configs are read WITHOUT resolving. They are fragments full of interpolations
-(``${storage_dtype}``, ``${datasets.input_shape}``) that only resolve inside a full
-experiment; a kwarg contract only needs key sets.
+Configs are fragments full of interpolations (``${storage_dtype}``,
+``${datasets.input_shape}``) that only resolve inside a full experiment. Key sets are
+read without resolving; the few root-level dtype leaves the save-handler derivation
+needs are resolved against a stub root.
 """
 
 import inspect
@@ -24,6 +25,7 @@ import pytest
 from omegaconf import OmegaConf
 
 from cell_observatory_platform.inference import utils as inference_utils
+from cell_observatory_platform.inference import visualizer as viz_module
 from cell_observatory_platform.inference.inferencer import InferencerWorker
 from cell_observatory_platform.inference.saver import _derive_save_handler
 from cell_observatory_platform.utils.registry import REGISTRY
@@ -48,18 +50,21 @@ _NAMED = {
     "viz_worker": {"output_dir", "handler_configs", "max_workers"},
 }
 
-# viz handler -> (wrapped plotter attr on inference.utils, kwargs the wrapper binds itself).
-# A config key colliding with a bound name is a duplicate-kwarg TypeError even though it
-# IS a parameter of the plotter.
+# handler -> (callable whose signature a handler_configs block must satisfy, names the
+# handler binds itself). Four handlers splat **kwargs into a plotter; bbox_overlay
+# consumes explicit kwargs and SWALLOWS the rest in **kwargs, so a stray key there is
+# silently ignored -- the handler signature is the contract, with var_kw NOT honoured.
 _VIZ = {
-    "semantic_map": ("save_semantic_predictions",
-                     {"name", "preds", "image", "targets", "save_dir"}),
-    "instance_overlay": ("save_instance_predictions",
-                         {"save_dir", "identifier", "image", "preds", "targets", "region"}),
-    "save_predictions": ("save_predictions", {"name", "predictions", "save_dir"}),
-    "feature_viz": ("save_feature_visualizations", {"name", "predictions", "save_dir"}),
-    "bbox_overlay": ("save_bbox_overlay", {"save_dir", "identifier", "image"}),
+    "semantic_map": (inference_utils.save_semantic_predictions, {"name", "preds", "image", "targets", "save_dir"}),
+    "instance_overlay": (inference_utils.save_instance_predictions,
+                         {"save_dir", "identifier", "image", "preds", "targets", "region", "kinds"}),
+    "save_predictions": (inference_utils.save_prediction_plots, {"name", "predictions", "save_dir"}),
+    "feature_viz": (inference_utils.save_feature_visualizations, {"name", "predictions", "save_dir"}),
+    "bbox_overlay": (viz_module.bbox_overlay_handler, {"record", "save_dir", "global_rank"}),
 }
+# Root-level interpolations the inference fragments reference (values as in
+# configs/experiments/abc/base_experiments/*_inference.yaml).
+_DTYPE_STUBS = {"dataset_dtype": "float16", "storage_dtype": "uint16"}
 
 _CONFIGS = sorted(CONFIG_DIR.glob("*.yaml"))
 
@@ -81,16 +86,23 @@ def _sig(fn):
 
 
 def _load(path: Path):
-    cfg = OmegaConf.load(path)
+    root = OmegaConf.merge(OmegaConf.create(_DTYPE_STUBS), OmegaConf.load(path))
     # Neither surviving config carries a package directive, so composing by name would
-    # nest under `inference`; tolerate both shapes.
-    return cfg.get("inference", cfg)
+    # nest under `inference`; tolerate both shapes. The child keeps its parent, so
+    # ${storage_dtype} still resolves.
+    return root.get("inference", root)
 
 
 def test_configs_present():
     """Guard against the glob silently matching nothing (which would make every
     parametrized test below vacuous)."""
     assert _CONFIGS, f"no inference configs found under {CONFIG_DIR}"
+
+
+def test_every_registered_viz_handler_has_a_contract_entry():
+    """A newly registered viz handler must declare its kwarg contract here, or the
+    signature check below would KeyError on the first config that uses it."""
+    assert set(REGISTRY.names("viz_handler")) == set(_VIZ)
 
 
 @pytest.mark.parametrize("path", _CONFIGS, ids=lambda p: p.stem)
@@ -128,7 +140,7 @@ def test_named_kwarg_blocks_are_actually_read(path):
 
 @pytest.mark.parametrize("path", _CONFIGS, ids=lambda p: p.stem)
 def test_viz_handler_kwargs_match_signature(path):
-    """Each handler_configs block is splatted into its plotter as **kwargs."""
+    """Each handler_configs block is splatted into its handler / plotter as **kwargs."""
     cfg = _load(path)
     handler_configs = OmegaConf.select(cfg, "viz_worker.handler_configs")
     if handler_configs is None:
@@ -138,24 +150,24 @@ def test_viz_handler_kwargs_match_signature(path):
         assert REGISTRY.has("viz_handler", handler_name), (
             f"{path.name}: '{handler_name}' is not a registered viz_handler"
         )
-        target_name, bound = _VIZ[handler_name]
-        names, required, _ = _sig(getattr(inference_utils, target_name))
+        target, bound = _VIZ[handler_name]
+        names, required, _ = _sig(target)
         keys = _keys(kwargs_node)
 
         unknown = keys - names
         assert not unknown, (
-            f"{path.name}: handler '{handler_name}' passes kwargs {target_name} does not "
+            f"{path.name}: handler '{handler_name}' passes kwargs {target.__name__} does not "
             f"accept: {sorted(unknown)}"
         )
         collide = keys & bound
         assert not collide, (
-            f"{path.name}: handler '{handler_name}' passes kwargs the handler already "
-            f"binds (duplicate-kwarg TypeError): {sorted(collide)}"
+            f"{path.name}: handler '{handler_name}' re-passes handler-bound kwargs "
+            f"(duplicate-kwarg TypeError): {sorted(collide)}"
         )
         missing = required - keys - bound
         assert not missing, (
             f"{path.name}: handler '{handler_name}' is missing required kwargs for "
-            f"{target_name}: {sorted(missing)}"
+            f"{target.__name__}: {sorted(missing)}"
         )
 
 
@@ -163,24 +175,27 @@ def test_viz_handler_kwargs_match_signature(path):
 def test_save_tensors_entries_resolve_to_a_handler(path):
     """`save_tensors` is read key-by-key rather than splatted, so the signature checks
     above cannot see it. This guards the dispatch that silently no-op'd: every entry
-    must carry the schema keys AND derive to a registered save_handler."""
+    must carry the schema keys AND derive to a registered save_handler, with its
+    dtype resolved against the real root-level interpolation targets."""
     cfg = _load(path)
-    save_tensors = OmegaConf.select(cfg, "inferencer_worker.outputs_metadata.save_tensors")
+    base = "inferencer_worker.outputs_metadata.save_tensors"
+    save_tensors = OmegaConf.select(cfg, base)
     if save_tensors is None:
         pytest.skip("no save_tensors block")
 
     registered = set(REGISTRY.names("save_handler"))
-    for tensor, meta in save_tensors.items():
-        meta = OmegaConf.to_container(meta, resolve=False)
+    for tensor in save_tensors:
+        meta = OmegaConf.to_container(save_tensors[tensor], resolve=False)
         required = {"name", "dtype", "annotation_type", "data_format"}
         assert required <= set(meta), (
             f"{path.name}: save_tensors.{tensor} is missing schema keys "
             f"{sorted(required - set(meta))}"
         )
-        # dtype may be an unresolved interpolation; only the derivation matters here.
-        if str(meta.get("dtype", "")).startswith("${"):
-            meta["dtype"] = "uint16" if "mask" in str(meta["name"]).lower() else "float32"
-        handler = _derive_save_handler(meta)
+        meta["dtype"] = str(OmegaConf.select(cfg, f"{base}.{tensor}.dtype"))   # resolve ONLY this leaf
+        assert not meta["dtype"].startswith("${"), (
+            f"{path.name}: save_tensors.{tensor} has an unstubbed interpolation {meta['dtype']}"
+        )
+        handler = _derive_save_handler(meta)      # raises on dense non-mask with a non-float dtype
         assert handler in registered, (
             f"{path.name}: save_tensors.{tensor} derives to unregistered handler {handler!r}"
         )

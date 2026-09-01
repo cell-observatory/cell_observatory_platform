@@ -8,11 +8,35 @@ need full parity with ``runner.py`` (which sets ``working_dir``) can pass
 """
 from __future__ import annotations
 
+import contextlib
 import os
+import tempfile
 from pathlib import Path
 
 from ray import init
 from ray.runtime_env import RuntimeEnv
+
+
+@contextlib.contextmanager
+def local_cwd_for_ray_start():
+    """Run ``ray.init`` from a local-disk cwd, then restore the caller's cwd.
+
+    The raylet and every worker it spawns inherit the driver's cwd at init
+    time, and ``setup_worker.py`` calls ``os.getcwd()`` on startup. On the
+    NFS-backed repo path (/clusterfs) that dentry is occasionally invalidated
+    for minutes at a time (``/proc/<pid>/cwd`` shows the unchanged directory
+    as ``(deleted)``); new workers then die with FileNotFoundError and any
+    test waiting on a fresh worker hangs until the mount revalidates (a
+    32-minute stall was observed on 2026-08-20). Starting Ray from /tmp
+    keeps worker start-up independent of the network filesystem. Absolute
+    ``py_modules`` paths are unaffected.
+    """
+    prev = os.getcwd()
+    os.chdir(tempfile.gettempdir())
+    try:
+        yield
+    finally:
+        os.chdir(prev)
 
 
 def repository_root() -> Path:
@@ -54,4 +78,5 @@ def init_ray_like_training(
         kwargs["num_gpus"] = num_gpus
     if object_store_memory is not None:
         kwargs["object_store_memory"] = object_store_memory
-    init(**kwargs)
+    with local_cwd_for_ray_start():
+        init(**kwargs)

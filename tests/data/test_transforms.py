@@ -1,6 +1,7 @@
 import pytest
 
 import torch
+import torch.nn.functional as F
 
 # NOTE: ChannelDropout (data/transforms/channel_dropout.py) and MultiCrop3D
 # (data/transforms/multicrop.py) are commented out at the source; crop.py exports
@@ -78,16 +79,49 @@ def test_resize_tensor_3d_shape():
     assert abs(factors[2] - 0.5) < 1e-6
 
 
-def test_resize_masks_shape():
-    masks = torch.ones(3, 4, 8, 8)
-    out = resize_masks(masks, (2, 4, 4))
-    assert out.shape == (3, 2, 4, 4)
+def test_resize_tensor_3d_rejects_nearest_mode():
+    """Plain "nearest" is edge-aligned and would misregister image and GT; the
+    error points at the supported "nearest-exact" mode."""
+    x = torch.rand(1, 7, 9, 5, 2)
+    with pytest.raises(ValueError, match="nearest-exact"):
+        resize_tensor_3d(x, (3, 4, 2), mode="nearest")
 
 
-def test_resize_label_map_shape():
-    lm = torch.randint(0, 5, (4, 8, 8))
-    out = resize_label_map(lm, (2, 4, 4))
-    assert out.shape == (2, 4, 4)
+class TestNearestExactResize:
+    """resize_label_map / resize_masks: nearest-exact, id-preserving GT resampling."""
+
+    def test_matches_f_interpolate_nearest_exact(self):
+        lm = torch.randint(0, 50, (7, 9, 11), dtype=torch.int32)
+        ref = (
+            F.interpolate(
+                lm.float().unsqueeze(0).unsqueeze(0),
+                size=(3, 4, 5),
+                mode="nearest-exact",
+            )
+            .squeeze(0)
+            .squeeze(0)
+            .to(torch.int32)
+        )
+        got = resize_label_map(lm, (3, 4, 5))
+        assert got.dtype == torch.int32
+        assert torch.equal(got, ref)
+
+    def test_masks_keep_dtype_and_large_ids(self):
+        """16777217 is not representable in float32: an index-gather path keeps
+        such ids exact where a float round-trip would corrupt them."""
+        big = 16_777_217
+        stack = torch.zeros((1, 2, 2, 2), dtype=torch.int64)
+        stack[0, 0, 0, 0] = big
+        out = resize_masks(stack, (2, 2, 2))
+        assert out.dtype == torch.int64
+        assert out[0, 0, 0, 0].item() == big
+
+    def test_bool_masks_supported(self):
+        m = torch.zeros((2, 4, 4, 4), dtype=torch.bool)
+        m[0, 0, 0, 0] = True
+        out = resize_masks(m, (2, 2, 2))
+        assert out.dtype == torch.bool
+        assert out.shape == (2, 2, 2, 2)
 
 
 def test_resize_boxes_zyxzyx():
@@ -186,24 +220,18 @@ class TestResize:
         assert out["data_tensor"].shape == (1, 2, 4, 4, 2)
 
     def test_dict_with_targets(self):
-        r = Resize(
-            target_spatial_shape=(2, 4, 4),
-            bbox_format="zyxzyx",
-        )
+        """Which target fields get resized (and how) is driven by data_types:
+        stacked semantic masks and the instance label map are nearest-exact
+        resampled (dtype kept), boxes are scaled by target / source per axis."""
+        r = Resize(target_spatial_shape=(2, 4, 4), bbox_format="zyxzyx")
         masks = torch.ones(3, 4, 8, 8, dtype=torch.bool)
-        label_map = torch.randint(0, 5, (4, 8, 8))
-        boxes = torch.rand(3, 6)
+        label_map = torch.randint(0, 5, (4, 8, 8), dtype=torch.int32)
+        boxes = torch.tensor([[0.0, 2.0, 4.0, 4.0, 8.0, 8.0], [1.0, 1.0, 1.0, 3.0, 5.0, 7.0]])
         data = {
             "data_tensor": torch.randn(1, 4, 8, 8, 2),
             "metainfo": {
-                # Which target fields get resized (and how) is driven by data_types,
-                # not by their presence in the target dict -- see
-                # Resize._target_field_specs (resize.py:307).
                 "data_types": {
-                    "data_tensor": {"kind": "dense", "layout": "ZYXC",
-                                    "role": "input", "has_time": False},
-                    # stacked (N, Z, Y, X) -> resize_masks; a single (Z, Y, X)
-                    # labelmap is "instance_masks" -> resize_label_map.
+                    "data_tensor": {"kind": "dense", "layout": "ZYXC", "role": "input", "has_time": False},
                     "masks": {"kind": "semantic_masks", "layout": "ZYXC", "role": "target"},
                     "label_map": {"kind": "instance_masks", "layout": "ZYXC", "role": "target"},
                     "boxes": {"kind": "boxes", "layout": "zyxzyx", "role": "target"},
@@ -211,11 +239,11 @@ class TestResize:
                 "targets": [{"masks": masks, "label_map": label_map, "boxes": boxes}],
             },
         }
-        out = r(data)
-        tgt = out["metainfo"]["targets"][0]
-        assert tgt["masks"].shape == (3, 2, 4, 4)
-        assert tgt["label_map"].shape == (2, 4, 4)
-        assert tgt["boxes"].shape == (3, 6)
+        tgt = r(data)["metainfo"]["targets"][0]
+        assert tgt["masks"].shape == (3, 2, 4, 4) and tgt["masks"].dtype == torch.bool and tgt["masks"].all()
+        ref = F.interpolate(label_map[None, None].float(), size=(2, 4, 4), mode="nearest-exact")[0, 0].to(torch.int32)
+        assert torch.equal(tgt["label_map"], ref)
+        torch.testing.assert_close(tgt["boxes"], boxes * 0.5)            # every axis halves
 
     def test_random_range(self):
         r = Resize(target_spatial_shape=((2, 4, 4), (4, 8, 8)))
@@ -223,6 +251,112 @@ class TestResize:
         out = r(_sample(x))["data_tensor"]
         assert 2 <= out.shape[1] <= 4
         assert 4 <= out.shape[2] <= 8
+
+    def test_tzyxc_resizes_each_frame_independently(self):
+        """TZYXC folds T into the batch: every frame is resized exactly as the
+        corresponding single-frame ZYXC call would."""
+        r = Resize(target_spatial_shape=(2, 4, 4))
+        x = torch.rand(1, 3, 4, 8, 8, 2)                                   # (B, T, Z, Y, X, C)
+        out = r(_sample(x, has_time=True))["data_tensor"]
+        assert out.shape == (1, 3, 2, 4, 4, 2)
+        for t in range(3):
+            ref = F.interpolate(x[:, t].permute(0, 4, 1, 2, 3), size=(2, 4, 4),
+                                mode="trilinear", align_corners=False).permute(0, 2, 3, 4, 1)
+            torch.testing.assert_close(out[:, t], ref)
+
+    def test_crop_to_valid_resizes_only_the_content_region(self):
+        """crop_to_valid (default) resizes the valid region only, so trailing
+        buffer padding is never interpolated into the content; image_sizes and
+        padding_mask then describe a fully valid output. With crop_to_valid=False
+        the full buffer (padding included) is resized."""
+        x = torch.rand(1, 4, 8, 8, 1)
+        x[:, :, 4:, :, :] = 0                                              # trailing Y padding
+        pm = torch.zeros(1, 4, 8, 8, dtype=torch.bool)
+        pm[:, :, 4:, :] = True
+        sizes = torch.tensor([[4, 4, 8]])
+        out = Resize(target_spatial_shape=(4, 8, 8))(_sample(x.clone(), image_sizes=sizes, padding_mask=pm.clone()))
+        ref = F.interpolate(x[:, :, :4, :, :].permute(0, 4, 1, 2, 3), size=(4, 8, 8),
+                            mode="trilinear", align_corners=False).permute(0, 2, 3, 4, 1)
+        torch.testing.assert_close(out["data_tensor"], ref)               # padding never interpolated in
+        assert out["metainfo"]["image_sizes"].tolist() == [[4, 8, 8]]
+        assert not out["metainfo"]["padding_mask"].any()
+        full = Resize(target_spatial_shape=(4, 8, 8), crop_to_valid=False)(_sample(x.clone(), image_sizes=sizes))
+        assert (full["data_tensor"][:, :, 4:, :, :] == 0).all()           # without the crop, padding stays
+
+    def test_normalized_boxes_renormalized_from_buffer_to_valid(self):
+        """boxes_normalized=True: crop_to_valid changes the normalization base
+        from the buffer to the valid region, so boxes scale by buffer / valid
+        per axis (the resize itself leaves normalized coords invariant)."""
+        r = Resize(target_spatial_shape=(4, 4, 4), bbox_format="zyxzyx", boxes_normalized=True)
+        boxes = torch.tensor([[0.0, 0.0, 0.0, 1.0, 0.25, 0.5]])            # normalized to the (4, 8, 8) buffer
+        data = {"data_tensor": torch.zeros(1, 4, 8, 8, 1), "metainfo": {
+            "data_types": {
+                "data_tensor": {"kind": "dense", "layout": "ZYXC", "role": "input", "has_time": False},
+                "boxes": {"kind": "boxes", "layout": "zyxzyx", "role": "target"}},
+            "image_sizes": torch.tensor([[4, 4, 4]]),                      # valid = half of Y and X
+            "targets": [{"boxes": boxes}]}}
+        got = r(data)["metainfo"]["targets"][0]["boxes"]
+        torch.testing.assert_close(got, torch.tensor([[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]))   # x (8/4) on Y, X
+
+    def test_keeps_float32_input_dtype(self):
+        """The configured dtype does not narrow the dense tensor: float32 in, float32 out."""
+        r = Resize(target_spatial_shape=(2, 4, 4), dtype="bfloat16")
+        out = r(_sample(torch.rand(1, 4, 8, 8, 1, dtype=torch.float32)))
+        assert out["data_tensor"].dtype == torch.float32
+
+    def test_keeps_label_map_int_dtype(self):
+        """An integer label map keeps its dtype through the nearest-exact resize."""
+        lm = torch.randint(0, 5, (1, 4, 8, 8), dtype=torch.int32)
+        meta = {
+            "data_types": {
+                "data_tensor": {"has_time": False},
+                "label_map": {"kind": "instance_masks", "layout": "ZYXC",
+                              "role": "target"},
+            },
+            "targets": [{"label_map": lm[0]}],
+        }
+        r = Resize(target_spatial_shape=(2, 4, 4), dtype="bfloat16")
+        out = r({"data_tensor": torch.rand(1, 4, 8, 8, 1), "metainfo": meta})
+        assert out["metainfo"]["targets"][0]["label_map"].dtype == torch.int32
+
+    def test_rejects_form_d_targets(self):
+        """A Form-D role dict (DeepCopyInputsAsTargets clones) cannot be warped
+        coherently and is rejected with a TypeError naming the form."""
+        r = Resize(target_spatial_shape=(2, 4, 4))
+        s = _sample(torch.rand(1, 4, 8, 8, 1),
+                    targets={"denoising": torch.rand(1, 4, 8, 8, 1)})
+        with pytest.raises(TypeError, match="Form-D role dict"):
+            r(s)
+
+    def test_padding_mask_resized_when_no_crop_ran(self):
+        """When no crop-to-valid ran the full padded buffer was resized, so the
+        padding mask is resized alongside it (provenance survives) rather than blanked."""
+        r = Resize(target_spatial_shape=(4, 4, 4), mode="trilinear", align_corners=False)
+        pm = torch.zeros(1, 8, 8, 8, dtype=torch.bool)
+        pm[0, :, 4:, :] = True                       # half the buffer is padding
+        out = r._resize_metainfo(
+            {"padding_mask": pm}, [(0.5, 0.5, 0.5)], (4, 4, 4),
+            [(8, 8, 8)], torch.zeros(1, 8, 8, 8, 1), False,
+            cropped_to_valid=False,
+        )
+        out_pm = out["padding_mask"]
+        assert out_pm.shape == (1, 4, 4, 4)
+        assert out_pm.any(), "padding provenance must survive a full-buffer resize"
+        assert out_pm[0, :, 2:, :].all() and not out_pm[0, :, :2, :].any()
+
+    def test_padding_mask_blanked_after_crop_to_valid(self):
+        """When crop-to-valid removed the padding before the resize, the content
+        fills the target shape and the mask is reset to all-valid."""
+        r = Resize(target_spatial_shape=(4, 4, 4), mode="trilinear", align_corners=False)
+        pm = torch.zeros(1, 8, 8, 8, dtype=torch.bool)
+        pm[0, :, 4:, :] = True
+        out = r._resize_metainfo(
+            {"padding_mask": pm}, [(0.5, 0.5, 0.5)], (4, 4, 4),
+            [(8, 4, 8)], torch.zeros(1, 8, 8, 8, 1), False,
+            cropped_to_valid=True,
+        )
+        assert not out["padding_mask"].any()
+        assert out["padding_mask"].shape == (1, 4, 4, 4)
 
 
 # ---------------------------------------------------------------------------

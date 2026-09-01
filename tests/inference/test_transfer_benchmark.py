@@ -1,10 +1,9 @@
 """Optional benchmarks: SHM-buffer vs Ray-serialized mask transfer via InferencerWorker.
 
-Run with::
+Opt-in: skipped unless ``pytest --run-benchmarks`` (tests/conftest.py); needs CUDA::
 
-    pytest tests/inference/test_transfer_benchmark.py -v -s
+    pytest tests/inference/test_transfer_benchmark.py --run-benchmarks -v -s
 
-These tests require CUDA and are gated behind ``@pytest.mark.benchmark``.
 They exercise the real ``InferencerWorker.predict()`` path, comparing:
 
   * **buffer path** – masks listed in ``buffer_tensors`` → async ``cudaMemcpyAsync``
@@ -187,6 +186,20 @@ def _kill_safe(handle):
         pass
 
 
+def _wait_all_slots_free(buffer_actor, *, timeout_s: float = 5.0, poll_s: float = 0.05) -> None:
+    """Block until every slot is back in the free queue (``put_free`` is issued
+    asynchronously by the worker's ``free_slot``). Fails if any slot leaked."""
+    capacity = ray.get(buffer_actor.get_config.remote())["capacity"]
+    deadline = time.monotonic() + timeout_s
+    while True:
+        free = ray.get(buffer_actor.free_count.remote())
+        if free == capacity:
+            return
+        if time.monotonic() > deadline:
+            raise AssertionError(f"{free}/{capacity} slots free after {timeout_s}s: slot(s) leaked")
+        time.sleep(poll_s)
+
+
 def _patch_context():
     class _MultiPatch:
         def __init__(self, *patches):
@@ -236,7 +249,7 @@ def _make_outputs_metadata(spatial: Tuple[int, ...], *, use_buffer: bool):
         "visualize_tensors": [],
         "buffer_tensors": ["masks"] if use_buffer else [],
         "tensor_info": {
-            "masks": {"shape": spatial, "dtype": "uint16"},
+            "masks": {"shape": (*spatial, 1), "dtype": "uint16"},    # channels-last, == model output[1:]
             "boxes": {"shape": (_TOPK, 6), "dtype": "float32"},
             "labels": {"shape": (_TOPK,), "dtype": "float32"},
         },
@@ -267,7 +280,7 @@ def _make_data_sample(spatial: Tuple[int, ...], device: torch.device) -> dict:
     return {
         "data_tensor": data_tensor,
         "metainfo": {
-            "prepared_id": [0],
+            "roi_id": [0],
             "tile_name": "bench_tile.zarr",
             # Batched (B, 3), matching production; postprocess() reads both keys.
             "image_sizes": torch.tensor([spatial] * _BATCH_SIZE, device=device),
@@ -382,6 +395,8 @@ class TestTransferBenchmark:
                     f"got {save_metrics}"
                 )
                 assert save_metrics["save_successful"].count(True) == BENCH_ITERS
+                for a in actors:
+                    _wait_all_slots_free(a)        # buffer path: every slot returned after BENCH_ITERS
 
                 results[label] = {
                     "median_ms": statistics.median(times),

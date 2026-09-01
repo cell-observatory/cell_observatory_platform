@@ -200,7 +200,11 @@ def test_lazy_data_view_empty_targets_all_pad():
 # --------------------------------------------------------------------------- #
 
 
-def _make_forward_pp(max_masks: int, expect_mask_channel: bool = True) -> SAM2VideoPreprocessor:
+def _make_forward_pp(
+    max_masks: int,
+    expect_mask_channel: bool = True,
+    input_shape: tuple = (2, 2, 3, 4, 2),
+) -> SAM2VideoPreprocessor:
     pp = SAM2VideoPreprocessor.__new__(SAM2VideoPreprocessor)
     pp.max_masks = max_masks
     pp.bbox_format = "zyxzyx"
@@ -214,6 +218,10 @@ def _make_forward_pp(max_masks: int, expect_mask_channel: bool = True) -> SAM2Vi
     # bypasses __init__, so stub them or the property raises AttributeError (masked by
     # nn.Module.__getattr__ into a confusing "no attribute 'TARGET_ROLES'").
     pp.input_format = "TZYXC"
+    # _apply_transforms now runs the post-transform spatial guard for every
+    # task, which compares against input_shape (T, Z, Y, X, C) -- set it to the
+    # POST-transform shape the test expects.
+    pp.input_shape = tuple(input_shape)
     pp.base_dense_data_type = {
         "kind": "dense",
         "layout": pp.input_format,
@@ -244,7 +252,18 @@ def test_forward_splits_labelmap_from_channel_and_builds_views():
     ]
 
     pp = _make_forward_pp(max_masks=4)
-    out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": targets}}, 0.0, 0)
+    # channel_mapping names the labelmap channel's ROLE. forward used to inject
+    # `_cm[C - 1] = "instance_segmentation"` itself on the positional assumption
+    # that the labelmap is last; the DB names the channel now, so the fixture
+    # supplies what the loader's role table would.
+    out = pp.forward(
+        {
+            "data_tensor": inputs,
+            "metainfo": {"targets": targets, "channel_mapping": {C: "instance_masks"}},
+        },
+        0.0,
+        0,
+    )
     dv = out["metainfo"]["sam2_views"]
 
     # Image channel was stripped: flat batch is (T*B, C, Z, Y, X).
@@ -281,7 +300,7 @@ def test_forward_no_mask_channel_emits_empty_views():
 
 class _CropLastX:
     """Minimal geometric transform: crop the X axis on image + label_map in
-    lockstep, mirroring how Crop3D warps both entities together."""
+    lockstep, mirroring how Crop warps both entities together."""
 
     def __init__(self, xkeep: int):
         self.xkeep = xkeep
@@ -315,15 +334,38 @@ def test_forward_transform_keeps_image_and_labelmap_coherent():
         }
     ]
 
-    pp = _make_forward_pp(max_masks=2)
+    # input_shape reflects the POST-transform spatial shape (the guard in
+    # _apply_transforms checks against it): (T, Z, Y, XKEEP, C).
+    pp = _make_forward_pp(max_masks=2, input_shape=(T, Z, Y, XKEEP, C))
     pp.transforms = [_CropLastX(XKEEP)]
-    out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": targets}}, 0.0, 0)
+    out = pp.forward(
+        {
+            "data_tensor": inputs,
+            "metainfo": {"targets": targets, "channel_mapping": {C: "instance_masks"}},
+        },
+        0.0,
+        0,
+    )
     dv = out["metainfo"]["sam2_views"]
 
     # Image and labelmap were cropped identically along X.
     assert out["data_tensor"].shape == (B, T, Z, Y, XKEEP, C)
     assert dv["labelmaps"].shape == (B * T, Z, Y, XKEEP)
     assert torch.equal(targets[0]["label_map"], lm[..., :XKEEP][0].to(torch.int32))
+
+    # masks/instance_ids are built from the CROPPED labelmap: id 9 (x=1) survives, id 4 (x=3) is gone.
+    K_FULL = 2
+    ids = dv["instance_ids"][0]                      # frame 0, rows = B*K_full
+    assert ids.tolist() == [9, -1]                   # one real row + one pad sentinel
+    assert dv["valid"][0].tolist() == [True, False]
+    assert dv["presence_t"][0].tolist() == [True, False]
+
+    m = dv["masks"][0]                               # _LazyFrameMasks -> (B*K_full, Z, Y, XKEEP) bool
+    assert m.shape == (B * K_FULL, Z, Y, XKEEP) and m.dtype == torch.bool
+    assert torch.equal(m[0], targets[0]["label_map"][0] == 9)
+    assert m[0].sum().item() == 1 and bool(m[0, 0, 0, 1])
+    assert not m[1].any()                            # pad row is empty
+    assert not torch.any(dv["labelmaps"] == 4)
 
 
 # --------------------------------------------------------------------------- #
@@ -352,10 +394,10 @@ def test_split_channels_int32_precast_preserves_large_ids():
     img = torch.randn(1, 4, 2)
     lm = torch.tensor([[300.0, 0.0, 4097.0, 0.0]]).unsqueeze(-1)  # ids > bf16-exact
     x = torch.cat([img, lm], dim=-1)  # (1, 4, 3)
-    meta = {"channel_mapping": {2: "instance_segmentation"}}
+    meta = {"channel_mapping": {2: "instance_masks"}}
 
     images, targets_by_role = pp._split_channels(x, meta)
-    labelmap = targets_by_role["instance_segmentation"]
+    labelmap = targets_by_role["instance_masks"]
     assert images.shape == (1, 4, 2)
     assert labelmap.dtype == torch.int32
     assert labelmap.tolist() == [[300, 0, 4097, 0]]

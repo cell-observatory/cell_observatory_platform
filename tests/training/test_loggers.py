@@ -1,19 +1,18 @@
-import os
-import sys
-from pathlib import Path
+"""Single-process unit tests for training/loggers.py and the metric-logging
+helpers: structured metric names, data-sample metric routing, loss-dict
+logging, the EventRecorder's reduce bookkeeping, the W&B writer's payloads,
+and LocalEventWriter's column-aligned CSV appends. CPU-only."""
+
+import math
 import tempfile
+from pathlib import Path
 from unittest import mock
 
 import pandas as pd
 import pytest
-import ray
 import torch
-from hydra.utils import get_class
-from omegaconf import DictConfig, OmegaConf, open_dict
-from ray.train import report
-from ray.train import Checkpoint
+from omegaconf import OmegaConf
 
-from cell_observatory_platform.tests.conftest import config, distributed_test
 from cell_observatory_platform.training.helpers import (
     METRIC_CATEGORY_NAMES,
     get_metric_full_name,
@@ -22,7 +21,6 @@ from cell_observatory_platform.training.helpers import (
     make_timing_metric,
 )
 from cell_observatory_platform.training.loggers import EventRecorder, EventWriterList, LocalEventWriter, WandBEventWriter
-from cell_observatory_platform.utils.context import get_world_size, process_rank, is_main_process
 
 
 def test_metric_full_name_uses_prefix_and_system_category():
@@ -249,6 +247,27 @@ def test_log_loss_dict_uses_phase_prefix():
     assert recorded[expected_step_loss][0][0] == pytest.approx(1.25)
 
 
+def test_log_loss_dict_materializes_tensors_and_registers_reduce_method():
+    """Tensor losses are materialized to floats at the logging boundary and the
+    caller's reduce_method is registered for the key (not the recorder default)."""
+    class _Trainer:
+        event_recorder = EventRecorder()
+
+    trainer = _Trainer()
+    loss_dict = {"step_loss": torch.tensor(0.25), "aux": 0.5}
+
+    log_loss_dict(trainer, loss_dict, phase="validation", scope="epoch",
+                  reduce_method=["mean"])
+
+    key = get_metric_full_name(name="step_loss", scope="epoch",
+                               category="loss", prefix="val")
+    records = trainer.event_recorder.get_epoch_scalars()[key]
+    assert len(records) == 1
+    val = records[0][0]
+    assert isinstance(val, float) and val == pytest.approx(0.25)
+    assert trainer.event_recorder.get_reduce_op(key) == ["mean"]
+
+
 def test_log_data_sample_metrics_empty_inputs_are_noop():
     """None / empty / missing metrics list should not raise and should record nothing."""
     class _Trainer:
@@ -258,9 +277,34 @@ def test_log_data_sample_metrics_empty_inputs_are_noop():
     log_data_sample_metrics(_Trainer(), {})
     log_data_sample_metrics(_Trainer(), {"metainfo": {}})
     log_data_sample_metrics(_Trainer(), {"metainfo": {"metrics": []}})
-    assert _Trainer.event_recorder.get_step_scalars() == {} or all(
-        len(v) == 0 for v in _Trainer.event_recorder.get_step_scalars().values()
-    )
+    assert all(len(v) == 0 for v in _Trainer.event_recorder.get_step_scalars().values())
+    assert all(len(v) == 0 for v in _Trainer.event_recorder.get_epoch_scalars().values())
+
+
+def test_reduce_epoch_metric_defaults_to_median():
+    """With no reduce_method registered, reduce_epoch_metric reduces the epoch
+    buffer by median; an explicit reduce_op overrides it; an unbuffered key
+    reduces to None."""
+    rec = EventRecorder()
+    for v in (1.0, 10.0, 2.0):
+        rec.put_scalar("x", v, scope="epoch")
+    key = get_metric_full_name(name="x", scope="epoch")
+    assert rec.get_reduce_op(key) is None
+    assert rec.reduce_epoch_metric(key) == pytest.approx(2.0)
+    assert rec.reduce_epoch_metric(key, reduce_op="mean") == pytest.approx(13.0 / 3)
+    assert rec.reduce_epoch_metric("epoch/missing") is None
+
+
+def test_put_scalar_conflicting_reregistration_warns_and_keeps_first():
+    """Re-registering a key with a different reduce_method warns, keeps the
+    first registration, and still records the value."""
+    rec = EventRecorder()
+    rec.put_scalar("m", 1.0, reduce_method=["median"])
+    with pytest.warns(UserWarning, match="already registered"):
+        rec.put_scalar("m", 2.0, reduce_method=["mean"])
+    key = get_metric_full_name(name="m", scope="step")
+    assert rec.get_reduce_op(key) == ["median"]
+    assert [v for v, *_ in rec.get_step_scalars()[key]] == [1.0, 2.0]
 
 
 def test_wandb_writer_preserves_scoped_metric_names():
@@ -289,13 +333,29 @@ def test_wandb_writer_preserves_scoped_metric_names():
     assert "epoch/epoch/val_loss" not in epoch_payload
 
 
+def test_wandb_writer_empty_flush_logs_nothing():
+    """An empty flush logs nothing and never starts the batched log sequence;
+    a non-rank-0 writer (run=None) is silent even with scalars."""
+    writer = object.__new__(WandBEventWriter)
+    writer.run = mock.Mock()
+    writer._write_scalar_impl({}, scope="step")
+    writer._write_scalar_impl({}, scope="epoch")
+    writer.run.log.assert_not_called()
+    assert not hasattr(writer, "_log_seq")
+    writer.run = None
+    writer._write_scalar_impl({get_metric_full_name(name="loss", scope="step"): [(1.0, 0, 0)]})
+    assert not hasattr(writer, "_log_seq")
+
+
 def test_wandb_writer_defines_system_metric_category():
     run = mock.Mock()
     with tempfile.TemporaryDirectory() as tmpdir:
         with mock.patch("cell_observatory_platform.training.loggers.process_rank", return_value=0), \
              mock.patch("cell_observatory_platform.training.loggers.load_dotenv"), \
-             mock.patch("cell_observatory_platform.training.loggers.wandb.login"), \
-             mock.patch("cell_observatory_platform.training.loggers.wandb.init", return_value=run):
+             mock.patch("wandb.login"), \
+             mock.patch("wandb.init", return_value=run):
+            # wandb is imported lazily inside WandBEventWriter.__init__ (P-P3),
+            # so the patch targets the real wandb module, not a loggers attr.
             WandBEventWriter(EventRecorder(), project="test", dir=tmpdir)
 
     run.define_metric.assert_any_call(
@@ -326,29 +386,6 @@ def test_wandb_writer_saves_resolved_config_file():
             base_path=tmpdir,
             policy="now",
         )
-
-
-def _simple_dataloader(config: DictConfig):
-    with open_dict(config):
-        config.runtime = {
-            "train_steps_per_epoch": 1,
-            "val_steps_per_epoch": 1,
-            "n_train_rows": 2,
-            "n_val_rows": 1,
-        }
-
-    class _DummyDeviceBuffer:
-        def put_free(self, idx):
-            pass
-
-    dataloader_config = {
-        "cfg": config,
-        "batch_size": config.clusters.batch_size_per_gpu,
-        "last_batch_policy": "pad",
-        "collate_fn": None,
-        "database": None,
-    }
-    return [], [], dataloader_config, None, _DummyDeviceBuffer(), pd.DataFrame()
 
 
 def test_put_scalar_batch_recorder_and_reduce():
@@ -400,123 +437,25 @@ def test_put_scalar_batch_recorder_and_reduce():
         assert pytest.approx(epoch_scalars[max_step_name][0][0]) == 3.0
 
 
-def _test_loggers_dist(cfg: DictConfig):
-
-    rank = process_rank()
-    world = get_world_size()
-
-    trainer_cls = get_class(cfg.trainer)
-    with mock.patch(
-        "cell_observatory_platform.training.loops.get_dataloader",
-        side_effect=_simple_dataloader,
-    ):
-        trainer = trainer_cls(cfg)
-
-    recorder = trainer.event_recorder
-    writers_list = trainer.event_writers_list
-    writer = writers_list.writers[0]
-    assert isinstance(writer, LocalEventWriter), "Expected LocalEventWriter for testing writers"
-
-    step_csv = writer.step_scalars_savepath
-    epoch_csv = writer.epoch_scalars_savepath
-
-    assert Path(step_csv).parent.exists(), f"Step scalars directory does not exist: {Path(step_csv).parent}"
-    assert Path(epoch_csv).parent.exists(), f"Epoch scalars directory does not exist: {Path(epoch_csv).parent}"
-
-    if Path(step_csv).exists() and Path(step_csv).is_file() and Path(step_csv).match("*.csv"):
-        # remove old step scalars CSV if it exists
-        Path(step_csv).unlink()
-        print("Step scalars CSV removed from previous test runs.")
-    if Path(epoch_csv).exists() and Path(epoch_csv).is_file() and Path(epoch_csv).match("*.csv"):
-        # remove old epoch scalars CSV if it exists
-        Path(epoch_csv).unlink()
-        print("Epoch scalars CSV removed from previous test runs.")
-
-    # test putting scalars
-    n_steps = 3
-    for it in range(n_steps):
-        trainer._iter, recorder._iter = it, it
-        trainer._epoch, recorder._epoch = 0, 0
-        recorder.put_scalar("loss", float(rank + it + 1), scope="step")
-
-    # test all gathers scalars from all workers
-    step_scalars, _ = writers_list.reduce_scalars()
-    # test write scalars on rank 0
-    writer._write_scalar_impl(step_scalars, scope="step")
-
-    # test clearing scalars method.
-    # EventRecorder stores under the structured key produced by
-    # get_metric_full_name, not the raw "loss" handle.
-    loss_step_key = get_metric_full_name(name="loss", scope="step")
-    assert len(recorder.get_step_scalars()[loss_step_key]) == n_steps
-    recorder.clear_scalars()
-    assert all(len(v) == 0 for v in recorder.get_step_scalars().values())
-
-    # test putting epoch scalars
-    trainer._epoch, recorder._epoch = 0, 0
-    recorder.put_scalar("val_loss", float(rank + 10), scope="epoch")
-
-    # test all gathers epoch scalars from all workers
-    _, epoch_scalars = writers_list.reduce_scalars()
-    # test write epoch scalars on rank 0
-    writer._write_scalar_impl(epoch_scalars, scope="epoch")
-
-    # no-op for LocalEventWriter
-    writers_list.close()
-
-    # test that the scalars were written
-    # and reduced correctly
-    # TODO: remove old CSVs to prevent counting
-    #       old rows
-    if rank == 0:
-        assert step_csv.exists(), "step CSV missing"
-        step_df = pd.read_csv(step_csv)
-        # CSV columns use the structured-key form produced by get_metric_full_name
-        # plus the reduce-op suffix.
-        step_loss_col = get_metric_full_name(name="loss", scope="step") + "_median"
-        epoch_val_loss_col = get_metric_full_name(name="val_loss", scope="epoch") + "_median"
-        expected_means = {it: sum(float(k + it + 1) for k in range(world)) / world for it in range(n_steps)}
-        for _, row in step_df.iterrows():
-            assert pytest.approx(row[step_loss_col]) == expected_means[row["iter"]]
-
-        assert epoch_csv.exists(), "epoch CSV missing"
-        epoch_df = pd.read_csv(epoch_csv)
-        mean_val_loss = sum(float(k + 10) for k in range(world)) / world
-        assert len(epoch_df) == 1
-        assert pytest.approx(epoch_df.loc[0, epoch_val_loss_col]) == mean_val_loss
-
-    # TODO: test appending to existing CSVs
-
-    metrics = {"success": True}
-    with tempfile.TemporaryDirectory() as tmpdir:
-        checkpoint = Checkpoint.from_directory(tmpdir)
-        if is_main_process():
-            return report(metrics=metrics, checkpoint=checkpoint)
-        else:
-            return report(metrics=metrics, checkpoint=None)
+def test_csv_append_grows_header_and_aligns_columns(tmp_path):
+    """Appending a flush with new/reordered columns rewrites the file with the
+    union header and keeps every value under its own column."""
+    savepath = tmp_path / "epoch_scalars.csv"
+    df1 = pd.DataFrame([{"a": 1.0, "b": 2.0}])
+    df2 = pd.DataFrame([{"b": 3.0, "c": 4.0}])
+    LocalEventWriter._append_csv_aligned(df1, savepath)
+    LocalEventWriter._append_csv_aligned(df2, savepath)
+    out = pd.read_csv(savepath)
+    assert list(out.columns) == ["a", "b", "c"]
+    assert out.loc[0, "b"] == 2.0 and out.loc[1, "b"] == 3.0
+    assert math.isnan(out.loc[1, "a"]) and math.isnan(out.loc[0, "c"])
 
 
-def test_loggers(config):
-    if not torch.cuda.is_available():
-        pytest.skip("No GPUs available for testing")
-
-    ray.shutdown()
-
-    with open_dict(config):
-        config.experiment_name = "test_event_logging"
-        config.paths.resume_checkpointdir = None
-
-        # Event writers are REGISTRY specs keyed by `name` (see
-        # configs/loggers/loggers.yaml); keep only the local CSV writer so the
-        # test does not touch W&B.
-        local_writers = [w for w in config.loggers.event_writers if w.name == "local"]
-        assert local_writers, (
-            "no event writer named 'local' in config.loggers.event_writers; "
-            "the registered name may have been renamed"
-        )
-        config.loggers.event_writers = local_writers
-
-    metrics = distributed_test(
-        cfg=config, test="cell_observatory_platform.tests.training.test_loggers._test_loggers_dist"
-    )
-    assert metrics.get("success", False), "Distributed event-logging test failed"
+def test_csv_append_subset_reindexes_to_existing_header(tmp_path):
+    """Appending a flush whose columns are a subset of the header reindexes to
+    the existing column order, leaving absent columns empty."""
+    savepath = tmp_path / "s.csv"
+    LocalEventWriter._append_csv_aligned(pd.DataFrame([{"a": 1, "b": 2}]), savepath)
+    LocalEventWriter._append_csv_aligned(pd.DataFrame([{"b": 5}]), savepath)
+    out = pd.read_csv(savepath)
+    assert out.loc[1, "b"] == 5 and math.isnan(out.loc[1, "a"])

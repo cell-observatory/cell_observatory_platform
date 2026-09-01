@@ -9,6 +9,7 @@ from hydra.utils import get_class
 from omegaconf import DictConfig, open_dict
 from ray.train import report, Checkpoint
 
+from cell_observatory_platform.evaluation.base_evaluation import BaseEvaluator
 from cell_observatory_platform.tests.conftest import config, distributed_test
 from cell_observatory_platform.utils.context import is_main_process
 
@@ -56,9 +57,6 @@ def _test_base_evaluation(cfg: DictConfig):
 @pytest.mark.localdb
 @pytest.mark.cuda
 def test_evaluation(config):
-    if not torch.cuda.is_available():
-        pytest.skip("No GPUs available for testing")
-
     with open_dict(config):
         config.experiment_name = "test_evaluation"
         config.paths.resume_checkpointdir = None
@@ -78,3 +76,29 @@ def test_evaluation(config):
         cfg=config, test="cell_observatory_platform.tests.evaluation.test_base_evaluation._test_base_evaluation"
     )
     assert metrics.get("success", False), "Distributed base_evaluation test failed"
+
+
+def test_base_evaluator_rejects_loss_dict_none():
+    """BaseEvaluator.process raises a clear TypeError when loss_dict is None
+    (otherwise the loss_dict[metric] subscript would raise an opaque error)."""
+    evaluator = BaseEvaluator(
+        training_metrics=[{"name": "train_loss", "key": "step_loss", "reduce_method": "mean"}]
+    )
+    with pytest.raises(TypeError):
+        evaluator.process({}, {}, None)
+
+
+def test_base_evaluator_reset_clears_metric_state_between_epochs():
+    """Epoch 1 aggregates 1.0; after reset(), epoch 2 aggregates 3.0 -- the
+    metric accumulator is cleared, not just the cached results."""
+    evaluator = BaseEvaluator(
+        training_metrics=[{"name": "train_loss", "key": "step_loss", "reduce_method": "mean"}]
+    )
+    evaluator.process(None, None, {"step_loss": torch.tensor(1.0)})
+    assert evaluator.evaluate()["step_loss"] == pytest.approx(1.0)
+
+    evaluator.reset()
+    assert evaluator.metrics["step_loss"].loss_values == []
+
+    evaluator.process(None, None, {"step_loss": torch.tensor(3.0)})
+    assert evaluator.evaluate()["step_loss"] == pytest.approx(3.0)

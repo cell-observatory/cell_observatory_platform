@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 
 import torch
@@ -7,7 +9,6 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import Checkpoi
 
 from omegaconf import open_dict
 
-from cell_observatory_platform.tests.conftest import config
 from cell_observatory_platform.training.helpers import (
     apply_activation_checkpointing,
     _apply_ac_to_module,
@@ -95,13 +96,14 @@ def _get_input(B=2, T=8, D=32):
 
 
 def make_config(
-    config=config,
+    config,
     ac_enabled: bool = True,
     mode: str = "full",
     selective_ac_option=None,
     fqn_filters=None,
     mm_recompute_frac: int = 2,
 ):
+    config = copy.deepcopy(config)  # never mutate the session-scoped fixture
     with open_dict(config):
         if "models" not in config.optimizations:
             config.optimizations.models = {}

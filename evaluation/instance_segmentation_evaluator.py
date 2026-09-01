@@ -2,6 +2,7 @@
 Streaming, memory-bounded instance-segmentation evaluator.
 """
 
+import logging
 from typing import Any, Dict, List, Optional
 
 import torch
@@ -15,6 +16,7 @@ from cell_observatory_platform.evaluation.metrics import (
     MaskMAPMetric,
     MaskMIoUMetric,
     PredictedIoUEvalMetric,
+    _hungarian_match,
     build_metrics,
 )
 from cell_observatory_platform.evaluation.mask_source import build_mask_source
@@ -22,6 +24,9 @@ from cell_observatory_platform.evaluation.mask_source import build_mask_source
 from cell_observatory_platform.utils.registry import REGISTRY
 from cell_observatory_platform.utils.config import registers_as
 
+logger = logging.getLogger(__name__)
+
+# TODO: requires further review
 
 @registers_as("evaluator", "instance_segmentation")
 class InstanceSegmentationEvaluator(DatasetEvaluator):
@@ -35,9 +40,15 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         mask_chunk_size: queries to materialize at full resolution at once.
             Trades compute for peak GPU memory (``~chunk_size * D*H*W * 4 B``
             for fp32 logits during materialization).
-        score_threshold: per-prediction score threshold applied before
-            metrics computation. Predictions below threshold are dropped from
-            both ranking and matching.
+        score_threshold: score gate applied ONLY to the streaming instance
+            mask-mIoU matching subset (mirrors dense
+            ``MaskMIoUMetric._update_instance``). Mask-AP is intentionally
+            computed on the FULL unfiltered prediction set (the pooled global
+            score-sort must reproduce dense per-class AP). Box metrics
+            (BoxMAP/BoxMIoU/BoxF1) filter with their OWN configured
+            ``score_threshold`` and are NOT governed by this value;
+            ``match_labels`` below is likewise NOT forwarded to them
+            (a mismatch logs a warning at build time).
         match_labels: when True (recommended for COCO-style mAP), only count
             a prediction as TP when its predicted class matches the GT class.
         gt_mask_source: either ``"label_map"`` (build per-instance binary
@@ -76,6 +87,46 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         self.gt_boxes_normalized = bool(gt_boxes_normalized)
 
         self.metrics: Dict[str, Any] = build_metrics(metrics)
+
+        # Hungarian matches are computed ONCE per image at a single IoU
+        # threshold (the first instance-mode mIoU metric's) and pushed to EVERY
+        # instance-mode mIoU metric -- a second such metric at a different
+        # threshold would silently receive matches gated at the wrong one.
+        # Fail loud at build instead of quietly mis-scoring.
+        inst_thresholds = {
+            float(m.iou_threshold)
+            for m in self.metrics.values()
+            if isinstance(m, MaskMIoUMetric) and m.mode == "instance"
+        }
+        if len(inst_thresholds) > 1:
+            raise ValueError(
+                "Multiple instance-mode MaskMIoUMetric entries with differing "
+                f"iou_thresholds {sorted(inst_thresholds)}: matches are computed "
+                "once at the FIRST metric's threshold and shared, so the others "
+                "would be scored at the wrong gate. Use a single instance-mode "
+                "mIoU metric (or equal thresholds) until per-threshold matching "
+                "is implemented."
+            )
+
+        # The evaluator's score_threshold/match_labels govern only the instance
+        # mask-mIoU subset; box metrics carry their own (config-built) values.
+        # Warn if a caller set a nonzero/label-aware evaluator gate expecting it
+        # to reach the box metrics -- surfacing the divergence without silently
+        # overwriting deliberately configured per-metric thresholds.
+        for name, m in self.metrics.items():
+            if isinstance(m, BoxMIoUMetric) and self.match_labels and not m.match_labels:
+                logger.warning(
+                    f"evaluator match_labels=True but box metric '{name}' has "
+                    "match_labels=False: box_miou will match ACROSS classes. Set "
+                    "match_labels: true on that metric's config for class-aware IoU."
+                )
+            if isinstance(m, (BoxMIoUMetric, BoxF1Metric)) and self.score_threshold > 0.0:
+                if abs(float(m.score_threshold) - self.score_threshold) > 1e-9:
+                    logger.warning(
+                        f"evaluator score_threshold={self.score_threshold} != box metric "
+                        f"'{name}' score_threshold={m.score_threshold}: box metrics use "
+                        "their own gate (the evaluator value is NOT forwarded)."
+                    )
 
         # Stable per-image id counter; we need it as the bucketing key for
         # per-class GT matching across images in MaskMAPMetric.
@@ -144,7 +195,7 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         # score_threshold belongs ONLY to the mIoU/F1 matching subsets, and
         # those metrics apply it themselves internally (BoxMIoUMetric /
         # BoxF1Metric filter inside __call__; the streaming instance-mIoU is
-        # filtered explicitly below before greedy matching). So we deliberately
+        # filtered explicitly below before Hungarian matching). So we deliberately
         # do NOT pre-filter here.
         # ``device`` is read from topk_query_indices above; coerce every tensor
         # sliced by the per-class boolean mask (derived from topk_class_ids) onto
@@ -219,6 +270,37 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
             sample, target_size=sample["eval_frame_size"]
         )
 
+        # ---- PF-1: one-time per-image GT statistics (label_map source). ----
+        # Instead of re-materializing per-instance GT masks per (pred chunk x
+        # GT chunk) pair — a full-volume compare per instance, quadratic in
+        # chunks — remap the resized label map to dense codes once; a single
+        # bincount then yields every instance's voxel count, and each predicted
+        # mask needs ONE bincount pass to get its intersection with ALL GT
+        # instances at once. Zero GT mask materialization.
+        lm_dense_flat = None
+        lm_uniq = gt_voxels_dense = None
+        n_bins = 0
+        if self.gt_mask_source == "label_map":
+            mask_ids_all = target["mask_ids"]
+            if mask_ids_all.numel() and bool((mask_ids_all < 1).any()):
+                raise ValueError(
+                    "label_map contract violated: instance ids must be >= 1 "
+                    "with 0 reserved for background; got min id "
+                    f"{int(mask_ids_all.min())}."
+                )
+            label_map_f = ep.resize_label_map(
+                target["label_map"], eval_frame_size
+            ).to(device)
+            # Dense remap via unique: bincount over dense codes stays O(#ids)
+            # regardless of raw id magnitude (ids may be sparse tile-global
+            # values; bincount over RAW ids would allocate max_id+1 bins).
+            lm_uniq, lm_dense_flat = torch.unique(
+                label_map_f.reshape(-1), return_inverse=True
+            )
+            n_bins = int(lm_uniq.numel())
+            gt_voxels_dense = torch.bincount(lm_dense_flat, minlength=n_bins)
+            del label_map_f
+
         # Per-(image, class) loop when labels matter; a single sentinel bucket
         # when evaluating class-agnostically. Without the sentinel, the
         # class-agnostic path would duplicate the same all-vs-all IoU matrix
@@ -236,7 +318,7 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         # match) across classes per image and push them in one shot.
         per_image_matched_ious: List[float] = []
 
-        # Gate greedy matches on the consuming instance-mode mIoU metric's
+        # Gate Hungarian matches on the consuming instance-mode mIoU metric's
         # IoU threshold so a trivial-IoU prediction can't steal a GT from a
         # better-overlapping, lower-scored prediction.
         match_iou_threshold = next(
@@ -264,32 +346,86 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
             )
             n_gt_c = int(gt_mask_c.sum().item())
 
-            # Materialize GT masks for this class on the fly (one class at a
-            # time bounds memory: ``n_gt_c * D*H*W`` bool).
-            if n_gt_c > 0:
-                gt_masks_c = ep.gt_masks_for_class(
-                    target, gt_mask_c, sample["eval_frame_size"], self.gt_mask_source
-                ).to(device)
-            else:
-                gt_masks_c = None
-
             # Stream chunks of predicted binary masks (already on ``device``)
-            # from the mask source and accumulate IoU rows. Peak memory is bound
-            # to ``chunk_size * D*H*W`` regardless of the underlying model.
+            # from the mask source. Peak GPU memory stays bounded to
+            # ``pred_chunk * D*H*W`` (label_map source: no GT materialization
+            # at all; masks source: + one cached GT chunk).
+            gt_idx_c = gt_mask_c.nonzero(as_tuple=True)[0]
             ious_rows: List[torch.Tensor] = []
-            if pred_query_idx_c.numel() > 0 and gt_masks_c is not None:
-                for pred_bin in mask_source.binary_mask_chunks(
-                    pred_query_idx_c, self.mask_chunk_size, device
-                ):
-                    iou_chunk = _pairwise_mask_iou_3d_bool(pred_bin, gt_masks_c)
-                    ious_rows.append(iou_chunk.cpu())
-                    del pred_bin
+            if pred_query_idx_c.numel() > 0 and n_gt_c > 0:
+                if lm_dense_flat is not None:
+                    # label_map source: one bincount per predicted mask gives
+                    # its intersection with EVERY GT instance in one volume
+                    # pass; unions come from the hoisted per-instance voxel
+                    # counts. Exact integer counts — bit-identical IoUs to the
+                    # materializing path.
+                    ids_c = target["mask_ids"][gt_mask_c].to(device=device)
+                    pos_c = torch.searchsorted(lm_uniq, ids_c).clamp(max=n_bins - 1)
+                    # An id can vanish under nearest-resize (tiny instance):
+                    # absent id -> 0 voxels, 0 intersection — matching the old
+                    # all-False materialized mask exactly.
+                    hit_c = lm_uniq[pos_c] == ids_c
+                    zeros_c = torch.zeros_like(pos_c)
+                    gtv_c = torch.where(
+                        hit_c, gt_voxels_dense[pos_c], zeros_c
+                    ).to(torch.float32)
+                    for pred_bin in mask_source.binary_mask_chunks(
+                        pred_query_idx_c, self.mask_chunk_size, device
+                    ):
+                        inter_rows: List[torch.Tensor] = []
+                        for j in range(pred_bin.shape[0]):
+                            counts = torch.bincount(
+                                lm_dense_flat[pred_bin[j].reshape(-1)],
+                                minlength=n_bins,
+                            )
+                            inter_rows.append(
+                                torch.where(hit_c, counts[pos_c], zeros_c)
+                            )
+                        inter = torch.stack(inter_rows).to(torch.float32)  # (k, n_gt_c)
+                        pred_vox = (
+                            pred_bin.reshape(pred_bin.shape[0], -1)
+                            .sum(1, keepdim=True)
+                            .to(torch.float32)
+                        )
+                        union = pred_vox + gtv_c.unsqueeze(0) - inter
+                        ious_rows.append(
+                            (inter / torch.clamp(union, min=1e-12)).cpu()
+                        )
+                        del pred_bin
+                else:
+                    # "masks" source: no label map to bincount. Materialize
+                    # each GT chunk ONCE (CPU cache) and reuse it across every
+                    # pred chunk.
+                    gt_chunks: List[torch.Tensor] = []
+                    for g0 in range(0, n_gt_c, self.mask_chunk_size):
+                        gt_chunk_mask = torch.zeros_like(gt_mask_c)
+                        gt_chunk_mask[gt_idx_c[g0:g0 + self.mask_chunk_size]] = True
+                        gt_chunks.append(
+                            ep.gt_masks_for_class(
+                                target, gt_chunk_mask, sample["eval_frame_size"],
+                                self.gt_mask_source,
+                            ).cpu()
+                        )
+                    for pred_bin in mask_source.binary_mask_chunks(
+                        pred_query_idx_c, self.mask_chunk_size, device
+                    ):
+                        ious_rows.append(torch.cat(
+                            [
+                                _pairwise_mask_iou_3d_bool(
+                                    pred_bin, g.to(device)
+                                ).cpu()
+                                for g in gt_chunks
+                            ],
+                            dim=1,
+                        ))
+                        del pred_bin
+                    del gt_chunks
             if ious_rows:
                 ious_c = torch.cat(ious_rows, dim=0)
             else:
                 # No predictions -> empty IoU matrix but still need to record n_gt so this class contributes to the recall denominator.
                 # 1) no predictions of this class -> (0, n_gt)
-                # 2) predictions but no GT (gt_masks_c is None) -> (k, 0)
+                # 2) predictions but no GT (n_gt_c == 0) -> (k, 0)
                 ious_c = torch.zeros((pred_scores_c.numel(), n_gt_c), dtype=torch.float32) # (k, n_gt)
 
             # Push to MaskMAP via streaming API. AP must see the FULL,
@@ -320,7 +456,7 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
                         pred_ious=pred_ious_c,
                     )
 
-            # Greedy match for instance-mode mIoU (per-class to keep label
+            # Hungarian match for instance-mode mIoU (per-class to keep label
             # constraint when match_labels=True). Unlike the AP push, mIoU sees
             # only the score-thresholded subset: this mirrors the dense
             # MaskMIoUMetric._update_instance which does
@@ -329,23 +465,22 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
             # they stay aligned.
             if pred_scores_c.numel() and ious_c.numel():
                 miou_keep = pred_scores_c >= self.score_threshold
-                pred_scores_miou = pred_scores_c[miou_keep]
                 ious_miou = ious_c[miou_keep]
-                if pred_scores_miou.numel() and ious_miou.numel():
+                if ious_miou.numel():
                     per_image_matched_ious.extend(
-                        self._greedy_match_per_class(
-                            pred_scores_miou, ious_miou, iou_threshold=match_iou_threshold
+                        self._match_per_class(
+                            ious_miou, iou_threshold=match_iou_threshold
                         )
                     )
 
-            # Free GPU mask now that we're done with this class.
-            del gt_masks_c
-
-        # Push matched IoUs once per image.
-        if per_image_matched_ious:
-            for metric in self.metrics.values():
-                if isinstance(metric, MaskMIoUMetric) and metric.mode == "instance":
-                    metric.add_matched_ious(per_image_matched_ious)
+        # Push matched IoUs (and the image's GT count -- the match_recall
+        # denominator) once per image. Pushed even when NOTHING matched:
+        # skipping empty images made the matched-pairs-only mean recall-blind.
+        for metric in self.metrics.values():
+            if isinstance(metric, MaskMIoUMetric) and metric.mode == "instance":
+                metric.add_matched_ious(
+                    per_image_matched_ious, n_gt=int(gt_labels.numel())
+                )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -385,35 +520,23 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
                 metric([pred_dict], [gt_dict], None)
 
     @staticmethod
-    def _greedy_match_per_class(
-        scores: torch.Tensor, ious: torch.Tensor, iou_threshold: float = 0.0
+    def _match_per_class(
+        ious: torch.Tensor, iou_threshold: float = 0.0
     ) -> List[float]:
-        """Greedy score-sorted matching; returns matched-pair IoUs.
+        """Hungarian (optimal 1:1) matching; returns matched-pair IoUs.
 
-        Only pairs whose IoU is ``>= iou_threshold`` are accepted, so a
-        trivial-IoU prediction cannot consume a GT that a better-overlapping,
-        lower-scored prediction would have matched.
+        Runs ``scipy.optimize.linear_sum_assignment`` on the IoU matrix
+        thresholded at ``iou_threshold`` and keeps only assigned pairs whose
+        IoU clears the threshold -- mirroring the dense
+        :meth:`MaskMIoUMetric._update_instance`.
+
+        .. note::
+            Scores do not influence matching at all. Score-sorted greedy
+            matching would let a high-scored prediction steal a GT that a
+            different prediction overlapped better, undercounting matches and
+            skewing the matched mean.
         """
-        # stable=True mirrors the dense MaskMIoUMetric._update_instance so that,
-        # under exactly-equal scores competing for the same GT, the streaming
-        # path reproduces the dense matched-IoU list byte-for-byte.
-        order = torch.argsort(scores, descending=True, stable=True)
-        matched_gt = torch.zeros(ious.shape[1], dtype=torch.bool)
-        matched_ious: List[float] = []
-        for i in order.tolist():
-            row = ious[i].clone()
-            if matched_gt.any():
-                row[matched_gt] = -1.0
-            best, best_idx = torch.max(row, dim=0)
-            if best.item() >= iou_threshold:
-                matched_ious.append(float(best.item()))
-                matched_gt[int(best_idx.item())] = True
-            else:
-                # A sub-threshold best for this prediction must not abort
-                # matching: a lower-scored prediction may still validly match a
-                # different remaining GT.
-                continue
-        return matched_ious
+        return [iou for _, _, iou in _hungarian_match(ious, iou_threshold)]
 
 
 def _pairwise_mask_iou_3d_bool(masks_a: torch.Tensor, masks_b: torch.Tensor) -> torch.Tensor:
@@ -421,7 +544,13 @@ def _pairwise_mask_iou_3d_bool(masks_a: torch.Tensor, masks_b: torch.Tensor) -> 
 
     Mirrors :func:`evaluation.metrics._pairwise_mask_iou_3d` but kept here so
     we can keep the computation on the prediction's device when it's CUDA
-    (the metrics-module helper assumes CPU)."""
+    (the metrics-module helper assumes CPU).
+
+    Precision note (why the CUDA matmul is safe under the repo-wide TF32
+    setting): the operands are exactly 0.0/1.0 — representable in TF32's
+    10-bit mantissa — and TF32 accumulates in fp32, so intersection counts are
+    exact up to 2**24 voxels (256^3). Do NOT feed non-binary floats through
+    this path."""
     if masks_a.shape[0] == 0 or masks_b.shape[0] == 0:
         return masks_a.new_zeros((masks_a.shape[0], masks_b.shape[0]), dtype=torch.float32)
     a = masks_a.flatten(1).to(torch.float32)

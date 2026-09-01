@@ -1,18 +1,7 @@
 import pytest
 import torch
-from torch import nn
 
 from cell_observatory_platform.models.heads.maskdino_decoder import MaskDINODecoder
-from cell_observatory_platform.models.heads.maskdino_head import MaskDINOHead
-
-try:
-    from ops3d import _C
-    OPS3D_AVAILABLE = True
-except ImportError:
-    OPS3D_AVAILABLE = False
-
-
-CUDA_AVAILABLE = torch.cuda.is_available()
 
 
 def _make_tiny_decoder(device="cpu"):
@@ -43,7 +32,16 @@ def _make_tiny_decoder(device="cpu"):
     ).to(device)
 
 
-def test_forward_prediction_heads_return_mask_embeddings_cpu_or_cuda():
+def _pyramid(batch_size, in_channels, device):
+    # 3D FPN-like pyramid: (B, C, D, H, W), [fine, mid, coarse]
+    return [
+        torch.randn(batch_size, in_channels, 8, 8, 8, device=device),
+        torch.randn(batch_size, in_channels, 4, 4, 4, device=device),
+        torch.randn(batch_size, in_channels, 2, 2, 2, device=device),
+    ]
+
+
+def test_forward_prediction_heads_returns_mask_embeddings_without_masks():
     decoder = _make_tiny_decoder()
     output_queries = torch.randn(4, 2, 16)
     pixel_decoder_output = torch.randn(2, 5, 2, 2, 2)
@@ -84,58 +82,17 @@ def test_forward_prediction_heads_mask_einsum_parity():
     torch.testing.assert_close(outputs_mask, expected)
 
 
-def test_maskdino_head_forwards_predict_mask_false_with_mock_decoder():
-    class FakePixelDecoder(nn.Module):
-        def forward_features(self, features, mask):
-            return "mask_features", "transformer_encoder_features", ["multi_scale_features"]
-
-    class FakeDecoder(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.seen_predict_mask = None
-
-        def forward(self, multi_scale_features, mask_features, mask, targets=None, predict_mask=True):
-            self.seen_predict_mask = predict_mask
-            return {"pred_logits": torch.zeros(1, 1, 1), "pred_masks": None}, None
-
-    decoder = FakeDecoder()
-    head = MaskDINOHead(
-        num_classes=1,
-        pixel_decoders=FakePixelDecoder(),
-        decoders=decoder,
-    )
-
-    predictions, denoise_predictions = head.forward(
-        features={},
-        targets=None,
-        predict_mask=False,
-    )
-
-    assert decoder.seen_predict_mask is False
-    assert predictions["pred_masks"] is None
-    assert denoise_predictions is None
-
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_maskdino_gen_encoder_output_proposals():
-    device = torch.device("cuda")
+    torch.manual_seed(0)
+    device = torch.device("cpu")
 
     batch_size = 2
     hidden_dim = 64
-    num_levels = 3
 
-    # realistic 3D pyramid: 32^3, 16^3, 8^3
-    level_shapes = torch.tensor(
-        [
-            [32, 32, 32],
-            [16, 16, 16],
-            [8, 8, 8],
-        ],
-        dtype=torch.long,
-        device=device,
-    )  # (num_levels, 3)
+    # small 3D pyramid: 8^3, 4^3, 2^3
+    level_shapes = [(8, 8, 8), (4, 4, 4), (2, 2, 2)]
 
-    tokens_per_level = level_shapes.prod(dim=1)  # (num_levels,)
-    total_tokens = int(tokens_per_level.sum().item())
+    total_tokens = sum(d * h * w for d, h, w in level_shapes)
 
     # memory: (N, SUM{D*H*W}, C)
     memory = torch.randn(batch_size, total_tokens, hidden_dim, device=device)
@@ -151,13 +108,32 @@ def test_maskdino_gen_encoder_output_proposals():
     assert output_proposals.shape == (batch_size, total_tokens, 6)
 
 
-@pytest.mark.skipif(
-    not OPS3D_AVAILABLE,
-    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
-)
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+def test_gen_encoder_output_proposals_coarser_level_gets_larger_prior():
+    """Shapes arrive coarsest-first; the 0.05 * 2^k size prior must index from the
+    fine end so the coarsest level carries the LARGEST anchor prior."""
+    shapes = [(2, 2, 2), (4, 4, 4)]
+    total = sum(d * h * w for d, h, w in shapes)
+    memory = torch.zeros(1, total, 8)
+    padding = torch.zeros(1, total, dtype=torch.bool)
+    _, proposals = MaskDINODecoder.gen_encoder_output_proposals(memory, padding, shapes)
+
+    # invert the logit transform to recover normalized whd
+    whd = torch.sigmoid(proposals[..., 3:])
+    n_coarse = shapes[0][0] * shapes[0][1] * shapes[0][2]
+    coarse = whd[0, :n_coarse]
+    fine = whd[0, n_coarse:]
+    # finite entries only (out-of-range proposals are masked to inf pre-sigmoid)
+    coarse = coarse[torch.isfinite(coarse).all(-1)]
+    fine = fine[torch.isfinite(fine).all(-1)]
+    assert coarse.numel() > 0 and fine.numel() > 0
+    # lvl 0 = coarsest must carry the LARGER prior (0.05 * 2^(L-1-lvl))
+    assert torch.allclose(coarse, torch.full_like(coarse, 0.10), atol=1e-6)
+    assert torch.allclose(fine, torch.full_like(fine, 0.05), atol=1e-6)
+
+
 def test_maskdino_decoder_forward_no_two_stage_no_denoise():
-    device = torch.device("cuda")
+    torch.manual_seed(0)
+    device = torch.device("cpu")
 
     batch_size = 2
     in_channels = 64
@@ -201,15 +177,11 @@ def test_maskdino_decoder_forward_no_two_stage_no_denoise():
 
     # 3D FPN-like feature maps: (B, C, D, H, W)
     # order here is [fine, mid, coarse]; the decoder just treats them as levels
-    x = [
-        torch.randn(batch_size, in_channels, 32, 32, 32, device=device),
-        torch.randn(batch_size, in_channels, 16, 16, 16, device=device),
-        torch.randn(batch_size, in_channels, 8, 8, 8, device=device),
-    ]
+    x = _pyramid(batch_size, in_channels, device)
 
     # pixel decoder output: channels must match mask_dim
     # shape: (B, mask_dim, D_mask, H_mask, W_mask)
-    pixel_decoder_output = torch.randn(batch_size, mask_dim, 16, 16, 16, device=device)
+    pixel_decoder_output = torch.randn(batch_size, mask_dim, 4, 4, 4, device=device)
 
     masks = None
     targets = None  # no denoising, so not needed
@@ -232,26 +204,25 @@ def test_maskdino_decoder_forward_no_two_stage_no_denoise():
     assert pred_logits.shape == (batch_size, num_queries, num_classes)
 
     # masks: (B, num_queries, D_mask, H_mask, W_mask)
-    assert pred_masks.shape == (batch_size, num_queries, 16, 16, 16)
+    assert pred_masks.shape == (batch_size, num_queries, 4, 4, 4)
 
     # boxes: (B, num_queries, 6) – (cx, cy, cz, w, h, d) in [0,1]
     assert pred_boxes.shape == (batch_size, num_queries, 6)
+    assert ((pred_boxes >= 0) & (pred_boxes <= 1)).all()
 
-    # aux outputs: list of dicts (can be empty, but must be a list)
+    # aux outputs: one entry per decoder layer plus the initial prediction, minus the final one;
+    # in eval mode only the final layer's masks are materialised (deep supervision is train-only)
     assert isinstance(aux, list)
+    assert len(aux) == decoder_num_layers
     for entry in aux:
-        assert "pred_logits" in entry
-        assert "pred_masks" in entry
-        assert "pred_boxes" in entry
+        assert entry["pred_logits"].shape == pred_logits.shape
+        assert entry["pred_masks"] is None
+        assert entry["pred_boxes"].shape == pred_boxes.shape
 
 
-@pytest.mark.skipif(
-    not OPS3D_AVAILABLE,
-    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
-)
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
-def test_maskdino_decoder_forward_predict_mask_false_inference():
-    device = torch.device("cuda")
+def test_forward_predict_mask_false_returns_embeddings_and_pixel_features():
+    torch.manual_seed(0)
+    device = torch.device("cpu")
     batch_size = 2
     in_channels = 64
     hidden_dim = 64
@@ -287,12 +258,8 @@ def test_maskdino_decoder_forward_predict_mask_false_inference():
         query_dim=6,
         share_decoder_layers=False,
     ).to(device)
-    x = [
-        torch.randn(batch_size, in_channels, 32, 32, 32, device=device),
-        torch.randn(batch_size, in_channels, 16, 16, 16, device=device),
-        torch.randn(batch_size, in_channels, 8, 8, 8, device=device),
-    ]
-    pixel_decoder_output = torch.randn(batch_size, mask_dim, 16, 16, 16, device=device)
+    x = _pyramid(batch_size, in_channels, device)
+    pixel_decoder_output = torch.randn(batch_size, mask_dim, 4, 4, 4, device=device)
 
     decoder.eval()
     outputs, denoise_metadata = decoder(
@@ -306,25 +273,13 @@ def test_maskdino_decoder_forward_predict_mask_false_inference():
     assert denoise_metadata is None
     assert outputs["pred_masks"] is None
     assert outputs["mask_embeddings"].shape == (batch_size, num_queries, mask_dim)
-    assert outputs["pixel_decoder_output"].shape == (batch_size, mask_dim, 16, 16, 16)
+    assert outputs["pixel_decoder_output"] is pixel_decoder_output
+    assert outputs["pixel_decoder_output"].shape == (batch_size, mask_dim, 4, 4, 4)
 
 
-def _make_pyramid_features(batch_size, in_channels, device):
-    # 3D FPN-like pyramid: (B, C, D, H, W)
-    return [
-        torch.randn(batch_size, in_channels, 32, 32, 32, device=device),
-        torch.randn(batch_size, in_channels, 16, 16, 16, device=device),
-        torch.randn(batch_size, in_channels, 8, 8, 8, device=device),
-    ]
-
-
-@pytest.mark.skipif(
-    not OPS3D_AVAILABLE,
-    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
-)
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_maskdino_decoder_forward_two_stage_no_denoise():
-    device = torch.device("cuda")
+    torch.manual_seed(0)
+    device = torch.device("cpu")
 
     batch_size = 2
     in_channels = 64
@@ -362,8 +317,8 @@ def test_maskdino_decoder_forward_two_stage_no_denoise():
         share_decoder_layers=False,
     ).to(device)
 
-    x = _make_pyramid_features(batch_size, in_channels, device)
-    pixel_decoder_output = torch.randn(batch_size, mask_dim, 16, 16, 16, device=device)
+    x = _pyramid(batch_size, in_channels, device)
+    pixel_decoder_output = torch.randn(batch_size, mask_dim, 4, 4, 4, device=device)
 
     masks = None
     targets = None
@@ -379,29 +334,28 @@ def test_maskdino_decoder_forward_two_stage_no_denoise():
     aux = outputs["auxiliary_outputs"]
 
     assert pred_logits.shape == (batch_size, num_queries, num_classes)
-    assert pred_masks.shape == (batch_size, num_queries, 16, 16, 16)
+    assert pred_masks.shape == (batch_size, num_queries, 4, 4, 4)
     assert pred_boxes.shape == (batch_size, num_queries, 6)
     assert isinstance(aux, list)
+    assert len(aux) == decoder_num_layers
     for entry in aux:
-        assert "pred_logits" in entry
-        assert "pred_masks" in entry
-        assert "pred_boxes" in entry
+        assert entry["pred_logits"].shape == pred_logits.shape
+        assert entry["pred_masks"] is None  # eval mode: only the final layer's masks are materialised
+        assert entry["pred_boxes"].shape == pred_boxes.shape
 
-    # two-stage should also populate 'intermediates'
+    # two-stage should also populate 'intermediates' with the encoder's top-k proposals
     assert "intermediates" in outputs
     inter = outputs["intermediates"]
-    assert "pred_logits" in inter
-    assert "pred_boxes" in inter
-    assert "pred_masks" in inter
+    assert inter["pred_logits"].shape == (batch_size, num_queries, num_classes)
+    assert inter["pred_boxes"].shape == (batch_size, num_queries, 6)
+    assert ((inter["pred_boxes"] >= 0) & (inter["pred_boxes"] <= 1)).all()
+    # the encoder proposals always carry masks (mask2box initialisation reads them)
+    assert inter["pred_masks"].shape == (batch_size, num_queries, 4, 4, 4)
 
 
-@pytest.mark.skipif(
-    not OPS3D_AVAILABLE,
-    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
-)
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_maskdino_decoder_forward_two_stage_with_box_init_mask2box():
-    device = torch.device("cuda")
+    torch.manual_seed(0)
+    device = torch.device("cpu")
 
     batch_size = 2
     in_channels = 64
@@ -439,8 +393,8 @@ def test_maskdino_decoder_forward_two_stage_with_box_init_mask2box():
         share_decoder_layers=False,
     ).to(device)
 
-    x = _make_pyramid_features(batch_size, in_channels, device)
-    pixel_decoder_output = torch.randn(batch_size, mask_dim, 16, 16, 16, device=device)
+    x = _pyramid(batch_size, in_channels, device)
+    pixel_decoder_output = torch.randn(batch_size, mask_dim, 4, 4, 4, device=device)
 
     masks = None
     targets = None
@@ -456,17 +410,15 @@ def test_maskdino_decoder_forward_two_stage_with_box_init_mask2box():
 
     # same basic shape expectations
     assert pred_logits.shape == (batch_size, num_queries, num_classes)
-    assert pred_masks.shape == (batch_size, num_queries, 16, 16, 16)
+    assert pred_masks.shape == (batch_size, num_queries, 4, 4, 4)
     assert pred_boxes.shape == (batch_size, num_queries, 6)
+    assert torch.isfinite(pred_boxes).all()
+    assert ((pred_boxes >= 0) & (pred_boxes <= 1)).all()
 
 
-@pytest.mark.skipif(
-    not OPS3D_AVAILABLE,
-    reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
-)
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_maskdino_decoder_forward_with_denoise():
-    device = torch.device("cuda")
+    torch.manual_seed(0)
+    device = torch.device("cpu")
 
     batch_size = 2
     in_channels = 64
@@ -477,6 +429,7 @@ def test_maskdino_decoder_forward_with_denoise():
     decoder_num_layers = 2
     mask_dim = 16
     num_feature_levels = 3
+    total_denosing_queries = 8
 
     decoder = MaskDINODecoder(
         in_channels=in_channels,
@@ -490,7 +443,7 @@ def test_maskdino_decoder_forward_with_denoise():
         two_stage_flag=False,  # no two-stage, use learnable queries
         denoise_queries_flag=True,  # enable denoising pipeline
         noise_scale=0.5,
-        total_denosing_queries=8,  # some non-zero number
+        total_denosing_queries=total_denosing_queries,
         initialize_box_type=None,
         with_initial_prediction=True,
         learn_query_embeddings=True,
@@ -504,15 +457,15 @@ def test_maskdino_decoder_forward_with_denoise():
         share_decoder_layers=False,
     ).to(device)
 
-    x = _make_pyramid_features(batch_size, in_channels, device)
-    pixel_decoder_output = torch.randn(batch_size, mask_dim, 16, 16, 16, device=device)
+    x = _pyramid(batch_size, in_channels, device)
+    pixel_decoder_output = torch.randn(batch_size, mask_dim, 4, 4, 4, device=device)
 
     masks = None
 
     # simple synthetic targets with at least one GT per image
+    num_gt = 2
     targets = []
     for b in range(batch_size):
-        num_gt = 2
         labels = torch.randint(low=0, high=num_classes, size=(num_gt,), device=device)
         # normalized 6D boxes: (cx, cy, cz, w, h, d) in [0, 1]
         boxes = torch.rand(num_gt, 6, device=device)
@@ -523,25 +476,24 @@ def test_maskdino_decoder_forward_with_denoise():
 
     # denoise pipeline should have been active
     assert denoise_metadata is not None
-    assert "max_query_pad_size" in denoise_metadata
-    assert "denoise_queries_per_label" in denoise_metadata
+    # total_denosing_queries shared over the max GT per image -> copies per label,
+    # padded to max_labels * copies
+    assert denoise_metadata["denoise_queries_per_label"] == total_denosing_queries // num_gt
+    assert denoise_metadata["max_query_pad_size"] == num_gt * (total_denosing_queries // num_gt)
 
     pred_logits = outputs["pred_logits"]
     pred_masks = outputs["pred_masks"]
     pred_boxes = outputs["pred_boxes"]
     aux = outputs["auxiliary_outputs"]
 
-    # After denoise_post_process, outputs should correspond to *non-denoising* queries only
-    assert pred_logits.shape[:2] == (batch_size, num_queries)
-    assert pred_logits.shape[2] == num_classes
-
-    assert pred_masks.shape[:2] == (batch_size, num_queries)
-    assert pred_masks.shape[2:] == (16, 16, 16)
-
+    # denoise queries are stripped again: the returned predictions cover the matching queries only
+    assert pred_logits.shape == (batch_size, num_queries, num_classes)
+    assert pred_masks.shape == (batch_size, num_queries, 4, 4, 4)
     assert pred_boxes.shape == (batch_size, num_queries, 6)
 
     assert isinstance(aux, list)
+    assert len(aux) == decoder_num_layers
     for entry in aux:
-        assert "pred_logits" in entry
-        assert "pred_masks" in entry
-        assert "pred_boxes" in entry
+        assert entry["pred_logits"].shape == pred_logits.shape
+        assert entry["pred_masks"].shape == pred_masks.shape
+        assert entry["pred_boxes"].shape == pred_boxes.shape

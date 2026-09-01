@@ -6,15 +6,13 @@ Tests cover the full zarr IO lifecycle:
   - Reading zarr data back (read_zarr)
   - Appending mask channels to root array (update_zarr_data mode="append")
   - Overwriting mask channels selectively (update_zarr_data mode="overwrite")
-  - Creating label arrays under <source>/<label> groups (save_zarr_labels)
   - Creating or overwriting label arrays via save_zarr_annotations (overwrite upserts)
   - High-level save_masks orchestration
   - Existence checks (annotation_exists)
-  - Shape normalization helpers (normalize_data_shape, normalize_idxs)
+  - Index normalization helper (normalize_idxs)
 
 All spatial tests are parameterized for both ZYXC (3D+C) and TZYXC (4D+C) layouts.
 """
-import re
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -201,7 +199,17 @@ class TestSaveAndReadZarrData:
                 zarr_driver=ZARR_DRIVER,
                 dtype=DTYPE,
             )
-    
+
+    def test_read_zarr_cast_requires_dtype(self, tmp_path):
+        """read_zarr(cast=True) needs a target dtype; without one it raises instead
+        of silently returning the uncast store."""
+        zarr_path = str(tmp_path / "a.zarr")
+        save_zarr_data(
+            image_path=zarr_path, data=_make_data("ZYXC"), shard_spatial_shape=SHARD_SPATIAL_SHAPE,
+            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE, data_format="ZYXC", zarr_driver=ZARR_DRIVER, dtype=DTYPE,
+        )
+        with pytest.raises(ValueError, match="dtype is required when cast is True"):
+            read_zarr(zarr_path, zarr_driver=ZARR_DRIVER, cast=True)
 
 
 # ===========================================================================
@@ -252,15 +260,18 @@ class TestSaveZarrDataTimeArgs:
         assert stored.shape[0] == 1
 
     def test_tzyxc_time_dim_size_alone_ok(self, tmp_path):
-        """T-bearing formats should not enforce the both-or-neither rule."""
+        """T-bearing formats accept time_dim_size without a time-index argument,
+        and the stored array is the full (T, Z, Y, X, C) payload."""
         n_t = 3
         data = _make_data("TZYXC", n_timepoints=n_t)
         save_zarr_data(
             image_path=str(tmp_path / "a.zarr"), data=data,
-            shard_spatial_shape=SHARD_SPATIAL_SHAPE,
-            chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
-            data_format="TZYXC", time_dim_size=n_t,
+            shard_spatial_shape=SHARD_SPATIAL_SHAPE, chunk_spatial_shape=CHUNK_SPATIAL_SHAPE,
+            data_format="TZYXC", time_dim_size=n_t, zarr_driver=ZARR_DRIVER, dtype=DTYPE,
         )
+        stored = _read_root(str(tmp_path / "a.zarr"))
+        assert stored.shape == data.shape
+        np.testing.assert_array_equal(stored, data.astype(np.uint16))
 
 
 # ===========================================================================
@@ -323,11 +334,8 @@ class TestUpdateZarrAppend:
         np.testing.assert_array_equal(stored[..., :2], _to_disk(data, data_format).astype(np.uint16))
         np.testing.assert_array_equal(stored[..., 2:], _to_disk(mask, data_format).astype(np.uint16))
 
-    @FORMAT_PARAMS
-    def test_append_with_timepoint_idxs(self, tmp_path, data_format):
-        if data_format == "ZYXC":
-            pytest.skip("multi-timepoint subset indexing only applicable to TZYXC")
-
+    def test_append_with_timepoint_idxs(self, tmp_path):
+        data_format = "TZYXC"          # subset time indexing only exists for T-bearing layouts
         n_t = 5
         data = _make_data(data_format, n_channels=2, n_timepoints=n_t)
         zarr_path = str(tmp_path / "img.zarr")
@@ -504,11 +512,8 @@ class TestUpdateZarrOverwrite:
         np.testing.assert_array_equal(stored[..., :2], orig_data, err_msg="Data channels corrupted")
         np.testing.assert_array_equal(stored[..., 2:], _to_disk(new_masks, data_format), err_msg="Mask channels not updated")
 
-    @FORMAT_PARAMS
-    def test_overwrite_with_timepoint_idxs(self, tmp_path, data_format):
-        if data_format == "ZYXC":
-            pytest.skip("multi-timepoint subset indexing only applicable to TZYXC")
-
+    def test_overwrite_with_timepoint_idxs(self, tmp_path):
+        data_format = "TZYXC"          # subset time indexing only exists for T-bearing layouts
         n_t = 4
         zarr_path = str(tmp_path / "img.zarr")
         data = _make_data(data_format, n_channels=2, n_timepoints=n_t)
@@ -759,11 +764,8 @@ class TestSaveZarrAnnotations:
         stored = _read_annotation(zarr_path, "modelA", "semantic_masks")
         np.testing.assert_array_equal(stored, _to_disk(mask, data_format).astype(np.uint16))
 
-    @FORMAT_PARAMS
-    def test_overwrite_with_timepoint_idxs(self, tmp_path, data_format):
-        if data_format == "ZYXC":
-            pytest.skip("multi-timepoint subset indexing only applicable to TZYXC")
-
+    def test_overwrite_with_timepoint_idxs(self, tmp_path):
+        data_format = "TZYXC"          # subset time indexing only exists for T-bearing layouts
         n_t = 4
         data = _make_data(data_format, n_channels=2, n_timepoints=n_t)
         zarr_path = str(tmp_path / "img.zarr")
@@ -870,16 +872,8 @@ class TestSaveZarrAnnotations:
 
 class TestSaveMasks:
     @FORMAT_PARAMS
-    @pytest.mark.parametrize(
-        "task, mask_root_name",
-        [
-            ("semantic_segmentation", "semantic_masks"),
-            ("instance_segmentation", "instance_masks"),
-        ],
-    )
-    def test_save_masks_append_creates_root_and_annotation(
-        self, tmp_path, data_format, task, mask_root_name
-    ):
+    @pytest.mark.parametrize("mask_root_name", ["semantic_masks", "instance_masks"])
+    def test_save_masks_append_creates_root_and_annotation(self, tmp_path, data_format, mask_root_name):
         data = _make_data(data_format, n_channels=2)
         zarr_path = str(tmp_path / "img.zarr")
         save_zarr_data(

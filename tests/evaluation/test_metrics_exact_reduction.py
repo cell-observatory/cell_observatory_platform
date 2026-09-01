@@ -62,7 +62,6 @@ def test_mask_map_streaming_equals_dense_multi_image():
     iou_thr = 0.5
 
     # ---- Dense inputs (materialized bool masks). ----
-    full = [(0, 0, 0), (0, 0, 1), (1, 1, 1)]  # arbitrary distinct voxels
 
     img0_gt = _voxel_mask([(0, 0, 0)])
     img0_pred = _voxel_mask([(0, 0, 0)])  # IoU 1.0 with gt
@@ -143,16 +142,17 @@ def test_mask_miou_instance_streaming_equals_dense():
 
     dense = MaskMIoUMetric(mode="instance", iou_threshold=iou_thr)
     dense(preds, targets)
-    dense_value = dense.aggregate()
+    dense_value = dense.aggregate()["mask_miou"]
 
-    # Greedy by score: pred0 -> gt0 (IoU 0.5), pred1 -> gt1 (IoU 1.0).
+    # Hungarian (== greedy here): pred0 -> gt0 (IoU 0.5), pred1 -> gt1 (1.0).
     # Both >= 0.5, so matched list = [0.5, 1.0].
     stream = MaskMIoUMetric(mode="instance", iou_threshold=iou_thr)
-    stream.add_matched_ious([0.5, 1.0])
-    stream_value = stream.aggregate()
+    stream.add_matched_ious([0.5, 1.0], n_gt=2)
+    stream_result = stream.aggregate()
 
     assert dense_value == pytest.approx((0.5 + 1.0) / 2)
-    assert stream_value == pytest.approx(dense_value, abs=1e-6)
+    assert stream_result["mask_miou"] == pytest.approx(dense_value, abs=1e-6)
+    assert stream_result["mask_match_recall"] == pytest.approx(1.0)
 
 
 # ===========================================================================
@@ -259,11 +259,11 @@ def test_mask_miou_instance_merge_matched_ious_equals_union_mean():
     merged = MaskMIoUMetric._merge_matched_ious([rank0, rank1])
     m = MaskMIoUMetric(mode="instance", iou_threshold=0.5)
     m._matched_ious = merged
-    merged_value = m.aggregate()
+    merged_value = m.aggregate()["mask_miou"]
 
     ref = MaskMIoUMetric(mode="instance", iou_threshold=0.5)
     ref.add_matched_ious(rank0 + rank1)
-    ref_value = ref.aggregate()
+    ref_value = ref.aggregate()["mask_miou"]
 
     assert merged == rank0 + rank1
     assert merged_value == pytest.approx(sum(rank0 + rank1) / 5)
@@ -356,8 +356,11 @@ def test_box_miou_merge_matched_ious_equals_union_mean():
     merged = BoxMIoUMetric._merge_matched_ious([rank0, rank1])
     m = BoxMIoUMetric()
     m._matched_ious = merged
+    m._n_gt = 3
     assert merged == rank0 + rank1
-    assert m.aggregate() == pytest.approx(sum(rank0 + rank1) / 3)
+    result = m.aggregate()
+    assert result["box_miou"] == pytest.approx(sum(rank0 + rank1) / 3)
+    assert result["box_match_recall"] == pytest.approx(1.0)
 
 
 def test_class_ap_merge_score_target_lists_equals_union():
@@ -422,6 +425,10 @@ def _eval_sample_with_subthreshold_pred():
     }
 
 
+def _make_sample_wrap(target):
+    return {"metainfo": {"targets": [target]}}
+
+
 def test_evaluator_ap_sees_all_dets_but_miou_applies_score_threshold():
     """With score_threshold=0.5, the sub-threshold class-2 detection (score
     0.05) is PUSHED to MaskMAP (AP) but is EXCLUDED from the matched-IoU list
@@ -463,10 +470,6 @@ def test_evaluator_ap_sees_all_dets_but_miou_applies_score_threshold():
     assert results["mask_map"] == pytest.approx(1.0)
 
 
-def _make_sample_wrap(target):
-    return {"metainfo": {"targets": [[target]]}}
-
-
 def test_evaluator_subthreshold_only_pred_still_pushed_to_ap():
     """A class whose ONLY prediction is below score_threshold still contributes
     its detection (and GT denominator) to AP, while contributing NOTHING to the
@@ -497,6 +500,9 @@ def test_evaluator_subthreshold_only_pred_still_pushed_to_ap():
     assert mask_miou._matched_ious == []
 
     results = evaluator.evaluate()
-    assert results["mask_miou"] == pytest.approx(0.0)
+    # Nothing matched -> NaN (no evidence), not the old 0.0 sentinel; the new
+    # match_recall key exposes the 2 unmatched GT instances.
+    assert math.isnan(results["mask_miou"])
+    assert results["mask_match_recall"] == pytest.approx(0.0)
     # AP still recovers the (perfect-IoU) TPs since AP ignores score_threshold.
     assert results["mask_map"] == pytest.approx(1.0)

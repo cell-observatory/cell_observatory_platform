@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from cell_observatory_platform.inference.utils import reduce_queries_to_semantic_map
+from cell_observatory_platform.models.meta_arch.utils import _reduce_topk_max, reduce_queries_to_semantic_map
 
 
 def test_multiclass_disjoint_queries_produce_distinct_class_maps():
@@ -40,7 +40,7 @@ def test_multiclass_disjoint_queries_produce_distinct_class_maps():
     assert sem[0, 0, 0, 0, 1] > 0.5
 
 
-def test_binary_branch_unchanged_shape():
+def test_topk_max_binary_returns_single_channel_and_avg_b_by_1():
     B, Q, D, H, W = 1, 3, 4, 4, 4
     pred_logits = torch.randn(B, Q, 2)
     pred_masks = torch.randn(B, Q, D, H, W)
@@ -49,7 +49,8 @@ def test_binary_branch_unchanged_shape():
         reduction="topk_max",
     )
     assert sem.shape == (B, D, H, W, 1)
-    assert avg.shape == (B,)  # mean over top-k queries drops the K dim
+    # both reductions return avg as [B, num_classes]
+    assert avg.shape == (B, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -120,3 +121,14 @@ def test_unknown_reduction_raises():
         reduce_queries_to_semantic_map(
             torch.randn(1, 1, 1, 2, 2), torch.randn(1, 1, 2), reduction="nonsense"
         )
+
+
+def test_single_class_topk_clamped_to_num_queries():
+    """topk_per_image larger than the query count is clamped: a single-class
+    reduction yields one semantic map and one per-class average per image."""
+    B, Q, D, H, W = 1, 3, 2, 4, 4
+    masks = torch.zeros(B, Q, D, H, W)
+    logits = torch.zeros(B, Q, 2)
+    sem, avg = _reduce_topk_max(masks, logits, num_classes=1, topk_per_image=10)
+    assert sem.shape == (B, D, H, W, 1)
+    assert avg.shape == (B, 1)

@@ -45,6 +45,12 @@ def _true_quality_np(ious_row):
     return float(ious_row.max()) if ious_row.size else 0.0
 
 
+def _f16(values):
+    """IoU fragments are stored fp16 — exact references must quantize the
+    true-IoU side identically."""
+    return np.asarray(torch.tensor(values, dtype=torch.float16).to(torch.float32))
+
+
 def _selection_auc_bruteforce(selector, true_iou):
     """Reference for PredictedIoUEvalMetric._selection_auc.
 
@@ -101,9 +107,10 @@ def test_calibration_mae_rmse_pearson_spearman_exact():
 
     out = metric.aggregate()
 
-    # Pooled in stream order (image 0 then image 1).
+    # Pooled in stream order (image 0 then image 1). true side fp16-quantized
+    # to match the metric's fragment storage.
     pred = np.array([0.70, 0.30, 0.60, 0.90, 0.15])
-    true = np.array([0.80, 0.20, 0.55, 0.95, 0.10])
+    true = _f16([0.80, 0.20, 0.55, 0.95, 0.10]).astype(np.float64)
     err = pred - true
 
     assert out["iou_head_mae"] == pytest.approx(np.abs(err).mean(), abs=1e-6)
@@ -134,7 +141,7 @@ def test_calibration_spearman_handles_ties():
     )
     out = metric.aggregate()
     pred = np.array([0.50, 0.50, 0.30, 0.80])
-    true = np.array([0.10, 0.90, 0.40, 0.60])
+    true = _f16([0.10, 0.90, 0.40, 0.60]).astype(np.float64)
     assert out["iou_head_spearman"] == pytest.approx(
         stats.spearmanr(pred, true)[0], abs=1e-6
     )
@@ -195,7 +202,7 @@ def test_selection_true_miou_precision_coverage_bruteforce():
     out = metric.aggregate()
 
     pred = np.array([0.90, 0.50, 0.10, 0.70, 0.35])
-    true = np.array([0.80, 0.45, 0.20, 0.60, 0.30])
+    true = _f16([0.80, 0.45, 0.20, 0.60, 0.30]).astype(np.float64)
     total = pred.size
     for t in thresholds:
         keep = pred >= t
@@ -228,7 +235,7 @@ def test_selection_auc_keys_present_and_bruteforce():
 
     pred = np.array([0.85, 0.25, 0.50, 0.99])
     score = np.array([0.30, 0.90, 0.60, 0.10])
-    true = np.array([0.80, 0.20, 0.55, 0.95])
+    true = _f16([0.80, 0.20, 0.55, 0.95]).astype(np.float64)
     assert out["selection_auc_prediou"] == pytest.approx(
         _selection_auc_bruteforce(pred, true), abs=1e-6
     )
@@ -574,11 +581,15 @@ def test_non_finite_pred_iou_sanitized_consistently():
         pred_ious=torch.tensor([float("nan"), 0.5]),
     )
     out = metric.aggregate()
-    # NaN -> 0.0: pairs become (0.0, true 1.0) and (0.5, true 1.0); all finite.
+    # NaN -> 0.0: pairs become (0.0, true 1.0) and (0.5, true 1.0); mae/rmse
+    # are finite (not NaN-poisoned by the sanitized input).
     assert math.isfinite(out["iou_head_mae"])
     assert math.isfinite(out["iou_head_rmse"])
-    assert math.isfinite(out["iou_head_pearson"])
-    assert math.isfinite(out["iou_head_spearman"])
+    # true_iou is CONSTANT ([1.0, 1.0]) here, so the correlations are
+    # genuinely undefined -> NaN (matching scipy), no longer the fake 0.0.
+    assert math.isnan(out["iou_head_pearson"])
+    assert math.isnan(out["iou_head_spearman"])
+    assert out["iou_head_n"] == pytest.approx(2.0)
     exp_mae = (abs(0.0 - 1.0) + abs(0.5 - 1.0)) / 2
     assert out["iou_head_mae"] == pytest.approx(exp_mae, abs=1e-6)
     # The sanitized det (pred_iou 0.0) is consistently EXCLUDED from selection.
@@ -600,13 +611,35 @@ def test_call_is_noop_and_reset_clears_state():
     assert metric._gathered is False
 
 
-def test_empty_stream_aggregate_returns_zero_dict():
+def test_empty_stream_aggregate_calibration_nan_with_count():
     metric = PredictedIoUEvalMetric(
         iou_thresholds=[0.5], pred_iou_thresholds=[0.5]
     )
     out = metric.aggregate()
-    assert out["iou_head_mae"] == 0.0
-    assert out["iou_head_pearson"] == 0.0
+    # No pooled detections: calibration is undefined -> NaN + an explicit
+    # iou_head_n count (was: 0.0, indistinguishable from perfect calibration).
+    assert out["iou_head_n"] == 0.0
+    assert math.isnan(out["iou_head_mae"])
+    assert math.isnan(out["iou_head_rmse"])
+    assert math.isnan(out["iou_head_pearson"])
+    assert math.isnan(out["iou_head_spearman"])
+    # Selection / ranked-AP keep their empty-set conventions.
     assert out["selection_auc_prediou"] == 0.0
     assert out["map_rank_score"] == 0.0
     assert all(isinstance(v, float) for v in out.values())
+
+
+def test_single_detection_calibration_nan_with_count():
+    """A single pooled detection cannot be calibrated (correlation undefined):
+    every calibration key is NaN while iou_head_n still reports the count."""
+    metric = PredictedIoUEvalMetric(iou_thresholds=[0.5], pred_iou_thresholds=[0.5])
+    metric.add_image_class(
+        image_id=0, class_id=1,
+        scores=torch.tensor([0.9]), ious=torch.tensor([[1.0]]),
+        n_gt=1, pred_ious=torch.tensor([0.8]),
+    )
+    out = metric.aggregate()
+    assert out["iou_head_n"] == pytest.approx(1.0)
+    for key in ("iou_head_mae", "iou_head_rmse",
+                "iou_head_pearson", "iou_head_spearman"):
+        assert math.isnan(out[key]), key

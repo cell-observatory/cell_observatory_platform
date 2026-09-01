@@ -1,25 +1,12 @@
-"""Session-scoped Ray fixtures for ``tests/inference/``.
+"""Session-scoped Ray cluster for ``tests/inference/`` + per-test scrub of
+test-owned named actors and the SHM segments they leave behind (``ray.kill``
+skips ``HostMemoryBuffer``'s atexit unlink). Tests that never request
+``ray_ctx``/``ray_node_id`` never start Ray.
 
-One Ray cluster per pytest session (instead of per test) — amortizes the
-~3-5s ``ray.init``/``ray.shutdown`` cycle that previously dominated CI time.
-
-Robustness to running subsets of tests is preserved by:
-
-  * **Per-test ``unique_suffix``** (uuid4) — every actor / pool name is unique
-    so cross-test name collisions in detached namespaces cannot happen.
-  * **Per-test scrub autouse** — overrides the parent
-    ``tests/conftest.py::_reset_ray_and_cuda_before_test`` autouse so the
-    session cluster survives between tests, and additionally hard-kills any
-    leaked named actors and unlinks any leaked ``/dev/shm`` segments left
-    behind by ``ray.kill`` (which skips ``atexit`` handlers).
-  * **Lazy session init** — pure utility tests (Tier-0) that never request
-    ``ray_ctx`` / ``ray_node_id`` never trigger ``ray.init`` at all.
-  * **Lazy re-init guard** — if a sibling test directory's autouse tore the
-    cluster down between inference batches, the next inference test
-    transparently re-initializes.
-
-Test files are unchanged: the public fixture API (``ray_ctx``, ``ray_node_id``,
-``unique_suffix``) is identical to the previous per-test implementation.
+The SHM scrub is scoped to segments that either belonged to an actor killed
+by the scrub itself or appeared during the test: segments owned by a
+concurrent pytest session or a live inference run on the same host are never
+touched.
 """
 from __future__ import annotations
 
@@ -46,7 +33,7 @@ _TEST_SHM_PREFIXES = ("wnsm_", "psm_")
 # Namespaces whose detached / named actors are owned exclusively by tests
 # in this directory; safe to mass-kill on per-test scrub.
 _TEST_OWNED_NS_PREFIXES = ("buffers_node_",)
-_TEST_OWNED_NS_EXACT = frozenset({"saver", "visualizer"})
+_TEST_OWNED_NS_EXACT = frozenset({"saver", "visualizer", "test_buffers"})
 
 _RAY_NUM_CPUS = 4
 _RAY_NUM_GPUS = 0
@@ -54,6 +41,28 @@ _RAY_NUM_GPUS = 0
 
 def _init_ray_for_tests() -> None:
     init_ray_like_training(num_cpus=_RAY_NUM_CPUS, num_gpus=_RAY_NUM_GPUS)
+
+
+def _test_shm_names() -> set[str]:
+    """Multiprocessing-default segment names owned by this uid, right now."""
+    try:
+        entries = list(_SHM_DIR.iterdir())
+    except OSError:
+        return set()
+    try:
+        euid = os.geteuid()
+    except AttributeError:
+        return set()
+    names: set[str] = set()
+    for p in entries:
+        if not p.name.startswith(_TEST_SHM_PREFIXES):
+            continue
+        try:
+            if p.stat().st_uid == euid:
+                names.add(p.name)
+        except OSError:
+            pass
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -64,25 +73,32 @@ def _init_ray_for_tests() -> None:
 @pytest.fixture(scope="session")
 def _ray_session_init_once():
     """Initialize Ray once per pytest session for this directory."""
+    baseline = _test_shm_names()  # pre-existing segments are never ours
     _init_ray_for_tests()
     try:
         yield
     finally:
+        owned: set[str] = set()
         if ray.is_initialized():
             try:
-                _kill_test_named_actors()
+                owned = _kill_test_named_actors()
             except Exception:
                 pass
             try:
                 ray.shutdown()
             except Exception:
                 pass
-        _unlink_orphan_test_shm_segments()
+        _unlink_shm_segments(owned | (_test_shm_names() - baseline))
+
+
+# ---------------------------------------------------------------------------
+# Public fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def _ensure_ray(_ray_session_init_once):
-    """Re-init if a non-inference test's autouse tore the session cluster down.
+def ray_ctx(_ray_session_init_once):
+    """Session cluster; re-inits if a sibling directory's autouse tore it down.
 
     The parent ``tests/conftest.py`` autouse calls ``ray.shutdown()`` after
     every test. That autouse is overridden below for inference tests, but
@@ -94,23 +110,8 @@ def _ensure_ray(_ray_session_init_once):
     yield
 
 
-# ---------------------------------------------------------------------------
-# Public fixtures (identical signatures to the previous per-test version)
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
-def ray_ctx(_ensure_ray):
-    """Backwards-compatible alias for the per-test ``ray_ctx`` fixture.
-
-    No per-test ``ray.init``/``ray.shutdown``: the cluster is session-scoped.
-    Existing tests that request this fixture continue to work unchanged.
-    """
-    yield
-
-
-@pytest.fixture
-def ray_node_id(_ensure_ray):
+def ray_node_id(ray_ctx):
     """Hex node-ID of the single-node test cluster."""
     return ray.nodes()[0]["NodeID"]
 
@@ -134,23 +135,25 @@ def _reset_ray_and_cuda_before_test():
     session-scoped Ray cluster is **not** torn down between tests. Instead:
 
       1. hard-kill any named actors left behind in test-owned namespaces
-         (``buffers_node_*``, ``saver``, ``visualizer``)
-      2. unlink any orphan ``/dev/shm`` segments owned by the current uid
-         with the multiprocessing-default prefixes — ``ray.kill`` skips
-         ``atexit`` handlers so ``HostMemoryBuffer._cleanup`` does not run
-         and the OS segment leaks otherwise
+         (``buffers_node_*``, ``buffers``-style test namespaces, ``saver``,
+         ``visualizer``)
+      2. unlink ONLY the ``/dev/shm`` segments that (a) belonged to an actor
+         killed in step 1 or (b) appeared during this test -- never a
+         concurrent session's or a live run's pools
       3. flush CUDA caches (matches parent behavior)
 
     All three steps are best-effort; failures are swallowed so a flaky
     cleanup never masks the real test failure.
     """
+    before = _test_shm_names()
     yield
+    owned: set[str] = set()
     if ray.is_initialized():
         try:
-            _kill_test_named_actors()
+            owned = _kill_test_named_actors()
         except Exception:
             pass
-    _unlink_orphan_test_shm_segments()
+    _unlink_shm_segments(owned | (_test_shm_names() - before))
     try:
         import torch
         if torch.cuda.is_available():
@@ -165,94 +168,63 @@ def _reset_ray_and_cuda_before_test():
 # ---------------------------------------------------------------------------
 
 
-def _kill_test_named_actors() -> None:
+def _kill_test_named_actors() -> set[str]:
     """Hard-kill every named actor in test-owned namespaces.
 
-    Targets:
-      * ``HostMemoryBuffer`` (``lifetime="detached"``) in
-        ``buffers_node_<NodeID>`` namespaces — survive driver exits, so a
-        failed test would leak them across the session otherwise.
-      * Stub ``saver`` / ``visualizer`` actors used by
-        ``test_inferencer_worker.py`` and ``test_transfer_benchmark.py``.
+    Returns the SHM segment names those actors owned, read via
+    ``get_config`` *before* the kill (stub ``saver``/``visualizer`` actors
+    have no ``get_config`` and contribute nothing).
 
     Idempotent: repeat invocations are no-ops once the actor is gone.
     """
+    owned: set[str] = set()
     if not ray.is_initialized():
-        return
+        return owned
     try:
         actors = list_named_actors(all_namespaces=True)
     except Exception:
-        return
+        return owned
     for entry in actors:
         ns = entry.get("namespace") or ""
         name = entry.get("name") or ""
         if not name:
             continue
-        if not (
-            any(ns.startswith(p) for p in _TEST_OWNED_NS_PREFIXES)
-            or ns in _TEST_OWNED_NS_EXACT
-        ):
+        if not (ns.startswith(_TEST_OWNED_NS_PREFIXES) or ns in _TEST_OWNED_NS_EXACT):
             continue
         try:
             handle = ray.get_actor(name, namespace=ns)
         except Exception:
             continue
         try:
+            owned.add(ray.get(handle.get_config.remote(), timeout=5)["name"])
+        except Exception:
+            pass
+        try:
             ray.kill(handle, no_restart=True)
         except Exception:
             pass
+    return owned
 
 
-def _unlink_orphan_test_shm_segments() -> int:
-    """Unlink leaked POSIX SHM segments left by hard-killed test actors.
-
-    ``ray.kill`` short-circuits ``atexit``, so ``HostMemoryBuffer._cleanup``
-    (which unlinks the underlying segment) does not run. Without this scrub
-    ``/dev/shm`` accumulates one ``wnsm_*`` segment per killed actor across
-    the session.
-
-    Scoped to the current uid + the multiprocessing-default prefixes so a
-    shared host's other users' segments are never touched.
-    """
-    if not _SHM_DIR.is_dir():
-        return 0
-    try:
-        euid = os.geteuid()
-    except AttributeError:
-        return 0
-    try:
-        entries = list(_SHM_DIR.iterdir())
-    except OSError:
-        return 0
+def _unlink_shm_segments(names: set[str]) -> int:
+    """Unlink the given POSIX SHM segments (best-effort, idempotent)."""
     removed = 0
-    for p in entries:
-        if not any(p.name.startswith(pref) for pref in _TEST_SHM_PREFIXES):
-            continue
+    for name in names:
         try:
-            if p.stat().st_uid != euid:
-                continue
-        except (FileNotFoundError, OSError):
-            continue
-        try:
-            shm = shared_memory.SharedMemory(name=p.name)
+            shm = shared_memory.SharedMemory(name=name)
         except FileNotFoundError:
             continue
         except Exception:
             try:
-                p.unlink()
+                (_SHM_DIR / name).unlink()
                 removed += 1
-            except (FileNotFoundError, PermissionError, OSError):
+            except OSError:
                 pass
             continue
         try:
             shm.close()
-        except Exception:
-            pass
-        try:
             shm.unlink()
             removed += 1
-        except FileNotFoundError:
-            pass
-        except (PermissionError, OSError):
+        except (FileNotFoundError, OSError):
             pass
     return removed

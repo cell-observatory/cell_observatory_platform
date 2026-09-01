@@ -6,19 +6,23 @@ Tests are organised in three tiers:
   Tier 3 -- BufferManager integration (requires Ray, mocks CUDA)
 """
 
+import asyncio
 import pickle
 import time
 import uuid
 from multiprocessing import shared_memory
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
 import pytest
 import ray
+from omegaconf import OmegaConf
 
-from cell_observatory_platform.data.datasets.buffers import (
+from cell_observatory_platform.data.datasets.buffers import (  # private: _resize_dense_output_shapes_for_restore
     BufferManager,
     HostMemoryBuffer,
+    _resize_dense_output_shapes_for_restore,
     attach_shared_memory,
     get_buffer_name,
     get_slot_bytes,
@@ -266,6 +270,69 @@ class TestSlotInfoToView:
             shm.unlink()
 
 
+def _plain_host_buffer(capacity: int = 2):
+    """Instantiate the HostMemoryBuffer implementation class without Ray."""
+    cls = HostMemoryBuffer.__ray_metadata__.modified_class
+    return cls(
+        numa_node=0,
+        name="test_pool",
+        capacity=capacity,
+        input_shape=(2, 2),
+        batch_size=1,
+        dtype="uint16",
+        pin_numa_node=False,
+    )
+
+
+class TestHostMemoryBufferGuards:
+    """HostMemoryBuffer queue bookkeeping, exercised on the plain implementation
+    class (no Ray actor)."""
+
+    def test_try_get_free_counts_drops_when_empty(self):
+        buf = _plain_host_buffer(capacity=1)
+        try:
+            assert buf.try_get_free() is not None
+            assert buf.try_get_free() is None          # exhausted
+            assert buf._try_get_free_drops == 1
+            assert buf.try_get_free() is None
+            assert buf._try_get_free_drops == 2
+        finally:
+            buf.release()
+
+    def test_free_count_reflects_checkouts(self):
+        buf = _plain_host_buffer(capacity=2)
+        try:
+            assert buf.free_count() == 2
+            info = buf.try_get_free()
+            assert buf.free_count() == 1
+            asyncio.run(buf.put_free(info["slot"]))
+            assert buf.free_count() == 2
+        finally:
+            buf.release()
+
+    def test_release_is_idempotent(self):
+        buf = _plain_host_buffer(capacity=1)
+        buf.release()
+        buf.release()  # second call must be a no-op, not an error
+
+
+def test_buffer_manager_shutdown_is_idempotent():
+    """training/loops.py calls shutdown() inside a teardown `finally` and the atexit
+    hook calls it again: both calls (and the shm cleanup after all pools are gone)
+    must be clean no-ops, not KeyErrors / double releases."""
+    bm = BufferManager(
+        local_rank=0,
+        global_rank=0,
+        node_id=0,
+        numa_node=0,
+        rank_memory_budget_gb=1,
+        max_concurrent_calls=1,
+    )
+    bm.shutdown()
+    bm.shutdown()
+    bm._cleanup_shms()
+
+
 # ===========================================================================
 # Tier 2: HostMemoryBuffer Actor (requires Ray)
 # ===========================================================================
@@ -321,13 +388,18 @@ class TestHostMemoryBuffer:
         finally:
             _kill_safe(actor)
 
-    def test_try_get_free_returns_slot_when_available(self, ray_ctx, unique_suffix):
-        name = f"hb_tg_{unique_suffix}"
-        actor = _make_host_buffer(name, capacity=2)
+    def test_put_free_rejects_double_free_and_unissued_slot(self, ray_ctx, unique_suffix):
+        """put_free of a slot that is not checked out (freed twice, or never issued)
+        raises instead of over-filling the free queue."""
+        actor = _make_host_buffer(f"hb_df_{unique_suffix}", capacity=2)
         try:
-            result = ray.get(actor.try_get_free.remote())
-            assert result is not None
-            assert "slot" in result
+            slot = ray.get(actor.get_free.remote())["slot"]
+            assert ray.get(actor.put_free.remote(slot)) is True
+            with pytest.raises(RuntimeError, match="double free"):
+                ray.get(actor.put_free.remote(slot))                 # second free of the same slot
+            with pytest.raises(RuntimeError, match="not outstanding"):
+                ray.get(actor.put_free.remote(1 - slot))             # never issued
+            assert ray.get(actor.free_count.remote()) == 2           # queue never over-filled
         finally:
             _kill_safe(actor)
 
@@ -385,25 +457,22 @@ class TestHostMemoryBuffer:
             _kill_safe(actor)
 
     def test_driver_attaches_shared_memory_using_actor_config(self, ray_ctx, unique_suffix):
-        """Driver borrows the actor-owned segment without taking unlink ownership."""
-        name = f"hb_sm_{unique_suffix}"
-        actor = _make_host_buffer(
-            name, capacity=2, input_shape=(4,), batch_size=1, dtype="uint16"
-        )
-        local_shm = None
+        """Driver borrows the actor-owned OS segment (same bytes, actor-sized) and
+        closing its handle does not unlink it (resource tracker unregistered)."""
+        actor = _make_host_buffer(f"hb_sm_{unique_suffix}", capacity=2, input_shape=(4,), batch_size=1, dtype="uint16")
+        writer = reader = None
         try:
             cfg = ray.get(actor.get_config.remote())
-            local_shm = attach_shared_memory(cfg["name"])
-            arr = np.ndarray((1, 4), dtype=np.uint16, buffer=local_shm.buf)
-            arr[:] = 42
-            assert (arr == 42).all()
-            local_shm.close()
-            local_shm = None
-            probe = attach_shared_memory(cfg["name"])
-            probe.close()
+            writer = attach_shared_memory(cfg["name"])
+            assert writer.size >= cfg["capacity"] * cfg["slot_bytes"]
+            np.ndarray((1, 4), dtype=np.uint16, buffer=writer.buf)[:] = np.arange(4)
+            writer.close(); writer = None                               # borrower closes: no unlink
+            reader = attach_shared_memory(cfg["name"])                  # second, independent attach
+            np.testing.assert_array_equal(np.ndarray((1, 4), dtype=np.uint16, buffer=reader.buf), np.arange(4)[None])
         finally:
-            if local_shm is not None:
-                local_shm.close()
+            for h in (writer, reader):
+                if h is not None:
+                    h.close()
             _kill_safe(actor)
 
     def test_get_config(self, ray_ctx, unique_suffix):
@@ -562,7 +631,7 @@ class TestBufferManagerSetGet:
             _kill_safe(actor)
 
     def test_remove_buffer(self, ray_ctx, ray_node_id, unique_suffix):
-        """remove_buffer drops manager bookkeeping and closes local shm; it does not ray.kill the detached actor."""
+        """remove_buffer drops manager bookkeeping, closes local shm, and (owner-side) releases + kills the detached actor."""
         pool = f"rm_{unique_suffix}"
         bm = _make_buffer_manager(ray_node_id)
         actor = None
@@ -609,6 +678,24 @@ class TestBufferManagerSetGet:
                 bm.remove_buffer("nonexistent_pool")
         finally:
             bm.shutdown()
+
+    def test_remove_buffer_unpins_before_closing_segment(self):
+        """cudaHostUnregister must run while the mapping still exists: unpin
+        precedes the segment close, and the pinned-pointer record is dropped."""
+        bm = object.__new__(BufferManager)
+        order = []
+        shm = SimpleNamespace(close=lambda: order.append("close"))
+        bm._buffer_actors = {"p": mock.MagicMock()}
+        bm._buffer_cfgs = {"p": {"batch_shape": (1, 2, 2, 2, 1), "dtype": "float32",
+                                 "capacity": 1}}
+        bm._buffer_shms = {"p": shm}
+        bm._pinned_ptrs = {"p": 1234}
+        bm._current_memory_usage_bytes = 10**6
+        bm._is_owner = False   # skip the actor release/kill tail
+        bm._unpin_ptr = lambda name, ptr: order.append(("unpin", name, ptr))
+        bm.remove_buffer("p")
+        assert order == [("unpin", "p", 1234), "close"]
+        assert bm._pinned_ptrs == {}
 
 
 class TestBufferManagerSlotOps:
@@ -673,29 +760,23 @@ class TestBufferManagerSlotOps:
             if actor:
                 _kill_safe(actor)
 
-    def test_clear_metrics(self, ray_ctx, ray_node_id, unique_suffix):
-        pool = f"clm_{unique_suffix}"
+    def test_free_slot_double_free_raises_at_drain(self, ray_ctx, ray_node_id, unique_suffix):
+        """free_slot is non-blocking and retains the put_free refs; drain_free_refs
+        is the raising reap point and empties the list even when a free failed."""
+        pool = f"dbl_{unique_suffix}"
         bm = _make_buffer_manager(ray_node_id)
         actor = None
         try:
-            actor, _ = bm.set_buffer(
-                pool_name=pool, batch_size=2, input_shape=(4,),
-                dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_numa_node=False,
-            )
-            bm.enable_metrics_collection()
-            ray.get(actor.get_free.remote())
-            # First call returns accumulated metrics AND clears
-            _ = ray.get(actor.get_metrics.remote())
-            # Second call returns the cleared (empty) state
-            direct = ray.get(actor.get_metrics.remote())
-            assert len(direct["get_free_wait_time_ms"]) == 0
-            assert len(direct["put_free_wait_time_ms"]) == 0
-            assert direct["occupied_slots"] == []
-            # bm.get_metrics() also clears; subsequent call returns empty
-            _ = bm.get_metrics()
-            metrics = bm.get_metrics()
-            assert len(metrics[pool]["get_free_wait_time_ms"]) == 0
+            actor, _ = bm.set_buffer(pool_name=pool, batch_size=1, input_shape=(4,), dtype="uint16",
+                                     buffer_type="host_memory", buffer_capacity=2, pin_numa_node=False)
+            slot = ray.get(actor.get_free.remote())
+            bm.free_slot(slot)
+            bm.free_slot(slot)                                  # producer-side double free
+            assert len(bm._free_refs) == 2                      # private: refs retained until drain
+            with pytest.raises(RuntimeError, match="double free"):   # RayTaskError is-a RuntimeError
+                bm.drain_free_refs()
+            assert bm._free_refs == []                          # drained even on failure
+            assert ray.get(actor.free_count.remote()) == 2      # the one valid free landed, no over-fill
         finally:
             bm.shutdown()
             if actor:
@@ -795,7 +876,7 @@ class TestBufferManagerSerialization:
 class TestInitOutputMemoryPools:
 
     def test_save_only(self, ray_ctx, ray_node_id, unique_suffix):
-        bm = _make_buffer_manager(ray_node_id, global_rank=hash(unique_suffix) % 10000)
+        bm = _make_buffer_manager(ray_node_id, global_rank=int(unique_suffix, 16) % 10000)
         actors = []
         try:
             meta = {
@@ -817,7 +898,7 @@ class TestInitOutputMemoryPools:
                 _kill_safe(a)
 
     def test_viz_only(self, ray_ctx, ray_node_id, unique_suffix):
-        rank = (hash(unique_suffix) % 10000) + 10000
+        rank = (int(unique_suffix, 16) % 10000) + 10000
         bm = _make_buffer_manager(ray_node_id, global_rank=rank)
         actors = []
         try:
@@ -840,7 +921,7 @@ class TestInitOutputMemoryPools:
                 _kill_safe(a)
 
     def test_both_save_and_viz(self, ray_ctx, ray_node_id, unique_suffix):
-        rank = (hash(unique_suffix) % 10000) + 20000
+        rank = (int(unique_suffix, 16) % 10000) + 20000
         bm = _make_buffer_manager(ray_node_id, global_rank=rank)
         actors = []
         try:
@@ -869,7 +950,7 @@ class TestInitOutputMemoryPools:
 
     def test_empty_buffer_tensors_creates_no_pools(self, ray_ctx, ray_node_id, unique_suffix):
         """Small tensors may be listed in save_tensors but omitted from buffer_tensors."""
-        rank = (hash(unique_suffix) % 10000) + 21000
+        rank = (int(unique_suffix, 16) % 10000) + 21000
         bm = _make_buffer_manager(ray_node_id, global_rank=rank)
         try:
             meta = {
@@ -888,7 +969,7 @@ class TestInitOutputMemoryPools:
             bm.shutdown()
 
     def test_missing_tensor_info_raises(self, ray_ctx, ray_node_id, unique_suffix):
-        rank = (hash(unique_suffix) % 10000) + 30000
+        rank = (int(unique_suffix, 16) % 10000) + 30000
         bm = _make_buffer_manager(ray_node_id, global_rank=rank)
         try:
             meta = {
@@ -959,6 +1040,66 @@ class TestInitOutputMemoryPools:
                 )
         finally:
             bm.shutdown()
+
+    def test_viz_pools_keep_processed_shape_while_save_pools_grow(self):
+        """Viz renders the pre-restore frame: viz pools keep the processed shape
+        while dense save pools grow to the full-tile restore maxima."""
+        meta = {
+            "tensor_info": {
+                "masks": {"shape": [4, 4, 4, 1], "dtype": "float32"},
+                "data_tensor": {"shape": [4, 4, 4, 1], "dtype": "float32",
+                                "kind": "dense", "data_format": "ZYXC"},
+            },
+            "buffer_tensors": ["masks", "data_tensor"],
+            "visualize_tensors": ["masks", "data_tensor"],
+            "save_tensors": {
+                "masks": {"annotation_type": "dense", "data_format": "ZYXC"},
+            },
+        }
+        calls = {}
+        bm = SimpleNamespace(set_buffer=lambda **kw: calls.__setitem__(kw["pool_name"], list(kw["input_shape"])))
+        stats = SimpleNamespace(max_z_size=16, max_y_size=16, max_x_size=16)
+        init_output_memory_pools(
+            buffer_manager=bm, output_metadata=meta,
+            batch_size=1, save=True, viz=True,
+            save_buffer_capacity=1, viz_buffer_capacity=1,
+            layout="ZYXC", restore_stats=stats,
+        )
+        assert calls["masks_save"] == [16, 16, 16, 1]        # full-tile for save
+        assert calls["masks_viz"] == [4, 4, 4, 1]            # processed for viz
+        assert calls["data_tensor_viz"] == [4, 4, 4, 1]
+
+    def test_dense_buffer_tensor_without_tensor_info_raises(self):
+        """A buffered tensor declared dense but absent from tensor_info cannot be
+        resized for the full-tile restore: refuse instead of overflowing the memcpy."""
+        meta = {"tensor_info": {},                                  # masks declared dense but unsized
+                "buffer_tensors": ["masks"], "visualize_tensors": [],
+                "save_tensors": {"masks": {"annotation_type": "dense", "data_format": "ZYXC"}}}
+        stats = SimpleNamespace(max_z_size=16, max_y_size=16, max_x_size=16)
+        with pytest.raises(ValueError, match="no tensor_info entry"):
+            _resize_dense_output_shapes_for_restore(meta, "ZYXC", stats)
+
+    def test_mapped_dense_tensor_grows_to_stats_maxima(self):
+        """A dense buffer tensor's spatial axes grow to the DB maxima in place,
+        through the live DictConfig node."""
+        stats = SimpleNamespace(max_z_size=8, max_y_size=8, max_x_size=8)
+        output_metadata = OmegaConf.create(
+            {
+                "tensor_info": {"pred": {"shape": [4, 4, 4], "dtype": "float32"}},
+                "save_tensors": {
+                    "pred": {"annotation_type": "dense", "data_format": "ZYX"}
+                },
+                "buffer_tensors": ["pred"],
+            }
+        )
+        _resize_dense_output_shapes_for_restore(output_metadata, "ZYX", stats)
+        assert list(output_metadata["tensor_info"]["pred"]["shape"]) == [8, 8, 8]
+
+    def test_sparse_buffer_tensor_without_tensor_info_passes_resize(self):
+        meta = {"tensor_info": {}, "buffer_tensors": ["boxes"], "visualize_tensors": [],
+                "save_tensors": {"boxes": {"annotation_type": "sparse", "data_format": "N6"}}}
+        _resize_dense_output_shapes_for_restore(meta, "ZYXC", SimpleNamespace(max_z_size=16, max_y_size=16, max_x_size=16))
+        assert meta["tensor_info"] == {}                            # sparse: nothing to grow, no raise
 
 
 # ===========================================================================
@@ -1032,14 +1173,34 @@ class TestSetBuffers:
             if actor:
                 _kill_safe(actor)
 
-    def test_unsupported_type_raises(self, ray_ctx, ray_node_id, unique_suffix):
+    def test_reuse_of_depleted_pool_refused(self, ray_ctx, ray_node_id, unique_suffix):
+        """A detached pool left with slots checked out (crashed run) must not be reused."""
+        kw = dict(local_rank=0, global_rank=0, numa_node=0, dtype="uint16", batch_size=1,
+                  input_shape=(4,), buffer_type="host_memory", buffer_capacity=2,
+                  pin_numa_node=False, node_id=ray_node_id, pool_name=f"dep_{unique_suffix}")
+        actor, _ = set_buffers(**kw)
+        try:
+            reused, cfg = set_buffers(**kw)                     # idle: idempotent reuse is fine
+            assert cfg["name"] == ray.get(actor.get_config.remote())["name"]   # same segment == same actor
+            ray.get(actor.get_free.remote())                    # leave one slot checked out
+            with pytest.raises(RuntimeError, match="depleted"):
+                set_buffers(**kw)
+        finally:
+            try:
+                ray.get(actor.release.remote(), timeout=10)
+            except Exception:
+                pass
+            _kill_safe(actor)
+
+    def test_unsupported_type_raises(self):
+        """The buffer-type check fires before any Ray call."""
         with pytest.raises(ValueError, match="Unsupported buffer type"):
             set_buffers(
                 local_rank=0, global_rank=0, numa_node=0,
                 dtype=np.uint16, batch_size=2,
                 input_shape=(4,), buffer_type="gpu_memory",
                 buffer_capacity=3, pin_numa_node=False,
-                node_id=ray_node_id, pool_name=f"sbfu_{unique_suffix}",
+                node_id="unused", pool_name="sbfu",
             )
 
 
@@ -1051,7 +1212,12 @@ class TestSetBuffers:
 class TestLeakDetection:
 
     def test_no_shm_leak_after_full_lifecycle(self, ray_ctx, ray_node_id, unique_suffix):
-        """SharedMemory segment should be released after actor termination."""
+        """Owner shutdown() tears the actor down AND unlinks the SHM segment.
+
+        remove_buffer on owner instances now releases the segment from inside the
+        actor (atexit does not run under ray.kill) and kills the detached actor,
+        so nothing survives the owner's shutdown -- neither actor nor segment.
+        """
         pool = f"lk_{unique_suffix}"
         bm = _make_buffer_manager(ray_node_id)
         actor = None
@@ -1071,13 +1237,22 @@ class TestLeakDetection:
             assert len(bm._buffer_actors) == 0
             assert len(bm._buffer_cfgs) == 0
             assert len(bm._buffer_shms) == 0
-            # Actor is still running; segment still owned by worker until teardown.
-            assert ray.get(actor.get_config.remote())["name"] == shm_name
-            # Simulate graceful exit by calling __ray_terminate__ and waiting for actor to exit.
-            actor.__ray_terminate__.remote()
 
+            # Owner shutdown released + killed the detached actor.
             deadline = time.monotonic() + 5.0
+            actor_dead = False
+            while time.monotonic() < deadline:
+                try:
+                    ray.get(actor.get_config.remote(), timeout=2)
+                    time.sleep(0.2)
+                except Exception:
+                    actor_dead = True
+                    break
+            assert actor_dead, "expected owner shutdown() to kill the buffer actor"
+
+            # ... and the OS segment was unlinked (release() ran inside the actor).
             cleaned = False
+            deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 try:
                     probe = shared_memory.SharedMemory(name=shm_name)
@@ -1095,36 +1270,10 @@ class TestLeakDetection:
                 leftover.close()
                 leftover.unlink()
                 pytest.fail(
-                    "SharedMemory was still present after __ray_terminate__ + 5s grace; "
-                    "expected HostMemoryBuffer atexit/_cleanup to unlink it. "
+                    "SharedMemory was still present after owner shutdown() + 5s grace; "
+                    "expected HostMemoryBuffer.release() to unlink it. "
                     "Manual unlink was applied so the OS segment does not leak to later tests."
                 )
-        finally:
-            if actor:
-                _kill_safe(actor)
-
-    def test_no_actor_leak_after_kill(self, ray_ctx, ray_node_id, unique_suffix):
-        """Detached actors are not retrievable after explicit kill."""
-        pool = f"alk_{unique_suffix}"
-        bm = _make_buffer_manager(ray_node_id)
-        actor = None
-        try:
-            actor, _ = bm.set_buffer(
-                pool_name=pool, batch_size=2, input_shape=(4,),
-                dtype="uint16", buffer_type="host_memory",
-                buffer_capacity=2, pin_numa_node=False,
-            )
-            actor_name = get_buffer_name(pool, 0, 0)
-            namespace = f"buffers_node_{ray_node_id}"
-
-            bm.shutdown()
-            ray.kill(actor)
-            actor = None
-            time.sleep(0.5)
-
-            # ray.get_actor raises ValueError when the named actor is not registered.
-            with pytest.raises(ValueError):
-                ray.get_actor(actor_name, namespace=namespace)
         finally:
             if actor:
                 _kill_safe(actor)

@@ -25,9 +25,12 @@ def test_slugify_special_chars_and_long():
 
 
 def test_build_run_tag_wandb_vs_iso():
+    """The run tag is the W&B run id when present, else the slugified
+    save timestamp."""
     t = "2026-04-14T12:00:00+00:00"
     assert build_run_tag("4zhhl9i7", t) == "run_4zhhl9i7"
-    assert build_run_tag(None, t).startswith("run_")
+    assert build_run_tag(None, t) == f"run_{slugify(t, max_len=48)}"
+    assert build_run_tag(None, t) == "run_2026-04-14t12-00-00-00-00"
 
 
 def test_build_model_name_slug():
@@ -76,6 +79,18 @@ def test_build_metadata_roundtrip_json(tmp_path):
     assert loaded["model_name_slug"] == meta["model_name_slug"]
 
 
+def test_build_metadata_carries_trainer_state():
+    """trainer_state (iteration, epoch, per-hook state) is persisted verbatim
+    in the sidecar so resume can restore hook counters."""
+    meta = build_metadata(
+        model=torch.nn.Linear(2, 2), cfg={"a": 1}, epoch=1, iter_=10,
+        best_loss=0.5, trainer_state={"iteration": 10, "epoch": 1,
+                                      "hooks": {"EarlyStopHook": {"wait_count": 2}}},
+    )
+    assert meta["trainer_state"]["hooks"]["EarlyStopHook"]["wait_count"] == 2
+    assert meta["trainer_state"]["iteration"] == 10
+
+
 def test_read_metadata_json_missing(tmp_path):
     p = tmp_path / "nope.json"
     with pytest.raises(FileNotFoundError, match="Missing checkpoint metadata"):
@@ -99,7 +114,10 @@ def test_read_metadata_json_missing_allow_missing_warns_and_defaults(tmp_path, c
     assert meta["synthesized_default"] is True
     assert meta["epoch"] == 0
     assert meta["iter"] == 0
-    assert meta["best_loss"] == float("inf")
+    # best_loss is None for the synthesized default; resume_model_state now
+    # REFUSES on this (2026-07-27) rather than fabricating a baseline -- a
+    # sidecar-less checkpoint has no best-metric lineage to resume from.
+    assert meta["best_loss"] is None
     assert meta["model_name_slug"] == "legacy__unknown"
 
 

@@ -13,37 +13,22 @@ ROLE = "semantic_segmentation_membrane"
 
 
 def _sample(labels: torch.Tensor, role: str = ROLE) -> dict:
-    """Wrap a (B, D, H, W) labelmap in the semantic_maps/semantic_roles contract these
-    transforms consume: one target dict per batch element, each carrying a single
-    (1, D, H, W) stack tagged with `role`.
+    """Wrap a (B, D, H, W) labelmap in the Form-D role dict these transforms
+    consume (see data/data_types.py): one batched map per role.
 
-    Mirrors SemanticSegmentationPreprocessor.forward (preprocessor.py:1615-1629), which
-    is the only production producer of this shape.
+    Mirrors SemanticSegmentationPreprocessor.forward, which is the only
+    production producer of this shape.
     """
-    return {
-        "metainfo": {
-            "targets": [
-                {
-                    "semantic_maps": labels[b].unsqueeze(0).to(torch.int32),
-                    "semantic_roles": [role],
-                    "channel_roles": [role],
-                }
-                for b in range(labels.shape[0])
-            ]
-        }
-    }
+    return {"metainfo": {"targets": {role: labels.to(torch.int32)}}}
 
 
 def _derived(out: dict, tag: str) -> torch.Tensor:
-    """Re-extract an appended slice (e.g. "boundary") as (B, D, H, W).
+    """Read a derived role (e.g. "boundary") back out as (B, D, H, W).
 
-    The transforms mutate the stack in place rather than returning a tensor, so
-    assertions read the slice back out by its role tag.
+    The transforms publish derived maps as new Form-D roles rather than
+    returning a tensor, so assertions read the role back out by name.
     """
-    ts = out["metainfo"]["targets"]
-    return torch.stack(
-        [t["semantic_maps"][t["semantic_roles"].index(tag)] for t in ts]
-    )
+    return out["metainfo"]["targets"][tag]
 
 
 def test_deep_copy_inputs_as_targets_clones_tensor():
@@ -51,11 +36,17 @@ def test_deep_copy_inputs_as_targets_clones_tensor():
     transform = DeepCopyInputsAsTargets()
 
     result = transform({"data_tensor": data_tensor})
-    result["metainfo"]["targets"][0].add_(1.0)
+    clone = result["metainfo"]["targets"]["denoising"]   # Form-D role (default)
+    clone.add_(1.0)
 
     assert torch.equal(result["data_tensor"], data_tensor), "Data tensor is was modified"
-    assert not torch.equal(result["metainfo"]["targets"][0], result["data_tensor"]), "Modifying targets changed data tensor"
-    assert result["metainfo"]["targets"][0].data_ptr() != result["data_tensor"].data_ptr(), "Targets and data tensor share the same memory"
+    assert not torch.equal(clone, result["data_tensor"]), "Modifying targets changed data tensor"
+    assert clone.data_ptr() != result["data_tensor"].data_ptr(), "Targets and data tensor share the same memory"
+
+
+def test_deep_copy_inputs_as_targets_publishes_configured_role():
+    result = DeepCopyInputsAsTargets(role="custom")({"data_tensor": torch.zeros(2, 3)})
+    assert list(result["metainfo"]["targets"]) == ["custom"]
 
 # FIXME: I think we want this behavior, but for now the implementation 
 # generates targets before data hits the preprocessor (during initial mask generation).
@@ -178,25 +169,18 @@ def test_non_batched_tensor_raises_error():
         transform._instance_to_boundary_mask(labels_3d)
 
 
-@pytest.mark.parametrize("connectivity", [1, 2, 3])
-def test_connectivity_modes_produce_different_boundaries(connectivity):
-    # Create a test case with two adjacent voxels
-    labels = torch.zeros(1, 2, 2, 2, dtype=torch.int)
-    labels[0, 0, 0, 0] = 1
-    labels[0, 0, 0, 1] = 2  # Adjacent in x-direction
-    
-    transform = InstanceToBoundaryMask(ROLE, connectivity=connectivity)
-    boundary = transform._instance_to_boundary_mask(labels)
-    assert isinstance(boundary, torch.Tensor)
-    
-    # All connectivity modes should detect the boundary between the two voxels
-    assert boundary[0, 0, 0, 0] or boundary[0, 0, 0, 1], f"connectivity={connectivity} should detect boundary between adjacent voxels"
-    
-    # Verify connectivity=3 has more shifts than connectivity=1
-    if connectivity == 3:
-        # connectivity=3 should detect boundaries that connectivity=1 doesn't (diagonal neighbors)
-        # For this simple case, both should detect the same boundary, but connectivity=3 has more shifts
-        assert len(transform.shifts) > 6
+@pytest.mark.parametrize("connectivity, expected_boundary", [
+    (1, {(0, 0), (0, 1), (1, 0)}),              # 6-neighbourhood: face contacts only
+    (2, {(0, 0), (0, 1), (1, 0), (1, 1)}),      # 18: edge diagonal (1,1) now touches the 2
+    (3, {(0, 0), (0, 1), (1, 0), (1, 1)}),      # 26: same as 18 with no z extent
+])
+def test_connectivity_controls_which_neighbours_make_a_boundary(connectivity, expected_boundary):
+    """A voxel is a boundary when any neighbour in the chosen neighbourhood carries
+    a different label: the in-plane diagonal counts only for connectivity >= 2."""
+    labels = torch.ones(1, 1, 3, 3, dtype=torch.int)   # no background: only the 1|2 contact counts
+    labels[0, 0, 0, 0] = 2
+    boundary = InstanceToBoundaryMask(ROLE, connectivity=connectivity)._instance_to_boundary_mask(labels)
+    assert {tuple(p) for p in boundary[0, 0].nonzero().tolist()} == expected_boundary
 
 
 def test_edge_cases():
@@ -242,21 +226,21 @@ def test_edge_cases():
 
 
 # ---------------------------------------------------------------------------
-# Role-tagged dict contract (what the preprocessor actually feeds these)
+# Form-D role-dict contract (what the preprocessor actually feeds these)
 # ---------------------------------------------------------------------------
 
 
-def test_appends_boundary_slice_tagged_by_role():
-    """The transform mutates each target's semantic_maps stack in place, appending the
-    derived map and its "boundary" role tag -- it does not return a tensor."""
+def test_publishes_boundary_role():
+    """The transform publishes the derived batched map under its own Form-D role
+    -- it does not return a tensor."""
     labels = torch.zeros(1, 3, 3, 3, dtype=torch.int)
     labels[0, 1, 1, 1] = 1
 
     out = InstanceToBoundaryMask(ROLE, connectivity=1)(_sample(labels))
 
-    tgt = out["metainfo"]["targets"][0]
-    assert tgt["semantic_roles"] == [ROLE, "boundary"], "boundary tag appended in order"
-    assert tgt["semantic_maps"].shape[0] == 2, "one slice appended to the stack"
+    tgt = out["metainfo"]["targets"]
+    assert list(tgt) == [ROLE, "boundary"], "boundary role published after the source"
+    assert tgt["boundary"].shape == labels.shape, "batched (B, D, H, W) derived map"
     assert _derived(out, "boundary")[0, 1, 1, 1], "isolated voxel is a boundary"
 
 
@@ -277,15 +261,36 @@ def test_unknown_source_role_raises():
         InstanceToBoundaryMask("not_a_role")(_sample(labels))
 
 
-def test_foreground_masks_consumes_the_appended_boundary():
-    """ForegroundMasks(remove_boundary=True) reads the "boundary" slice that
-    InstanceToBoundaryMask appended, so the two are order-dependent."""
+def test_foreground_masks_consumes_the_published_boundary():
+    """ForegroundMasks(remove_boundary=True) reads the "boundary" role that
+    InstanceToBoundaryMask published, so the two are order-dependent."""
     labels = torch.zeros(1, 3, 3, 3, dtype=torch.int)
     labels[0, 1, 1, 1] = 1
 
     data = InstanceToBoundaryMask(ROLE, connectivity=1)(_sample(labels))
     out = ForegroundMasks(ROLE, remove_boundary=True)(data)
 
-    tgt = out["metainfo"]["targets"][0]
-    assert tgt["semantic_roles"] == [ROLE, "boundary", "foreground"]
-    assert tgt["semantic_maps"].shape[0] == 3
+    tgt = out["metainfo"]["targets"]
+    assert list(tgt) == [ROLE, "boundary", "foreground"]
+    assert tgt["foreground"].shape == labels.shape
+
+
+def test_foreground_uses_logical_not_on_int_boundary_map():
+    """An integer-typed boundary map (e.g. loaded from storage) is negated
+    logically, never bitwise: foreground = (label != 0) & (boundary == 0)."""
+    fm = ForegroundMasks(source_role="instance", remove_boundary=True)
+    labels = torch.tensor([[[[0, 1], [2, 3]]]], dtype=torch.int32)   # (1,1,2,2)
+    boundary = torch.tensor([[[[0, 1], [0, 1]]]], dtype=torch.int32)  # int, not bool
+    out = fm._foreground_masks(labels, boundary)
+    expected = (labels != 0) & (boundary == 0)
+    assert torch.equal(out, expected)
+
+
+def test_foreground_without_boundary_removal_is_every_nonzero_label():
+    """remove_boundary=False needs no published "boundary" role: foreground is
+    simply every non-background voxel."""
+    labels = torch.tensor([[[[0, 1], [2, 0]]]], dtype=torch.int32)
+    out = ForegroundMasks(source_role=ROLE, remove_boundary=False)(_sample(labels))
+    fg = _derived(out, "foreground")
+    assert fg.dtype == torch.bool
+    assert torch.equal(fg, labels != 0)

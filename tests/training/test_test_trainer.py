@@ -1,12 +1,16 @@
+"""TestTrainer.run_test_step dispatches model.evaluate_step and feeds the
+postprocessed predictions to the evaluator with loss_dict=None; a model without
+evaluate_step fails loudly. CPU-only."""
+
 from unittest.mock import Mock
 
 import pytest
 
-from cell_observatory_platform.training.loops import TestTrainer
+import cell_observatory_platform.training.loops as loops
 
 
 def _make_test_trainer(model, evaluator):
-    trainer = TestTrainer.__new__(TestTrainer)
+    trainer = object.__new__(loops.TestTrainer)
     trainer.model = model
     trainer.evaluator = evaluator
     trainer.before_test_step = lambda: None
@@ -16,6 +20,8 @@ def _make_test_trainer(model, evaluator):
 
 
 def test_run_test_step_calls_evaluate_step():
+    """evaluate_step's output is handed to evaluator.process with loss_dict=None
+    and the step counter advances."""
     model = Mock()
     model.evaluate_step = Mock(return_value=[{"eval": True}])
     evaluator = Mock(spec=["process"])
@@ -30,6 +36,8 @@ def test_run_test_step_calls_evaluate_step():
 
 
 def test_run_test_step_missing_evaluate_step_raises():
+    """A model that does not implement evaluate_step raises an AttributeError
+    naming the missing method."""
     class ModelWithoutEvaluateStep:
         pass
 

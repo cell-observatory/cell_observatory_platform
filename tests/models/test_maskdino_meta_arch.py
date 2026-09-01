@@ -17,10 +17,6 @@ except ImportError:
     OPS3D_AVAILABLE = False
 
 
-
-CUDA_AVAILABLE = torch.cuda.is_available()
-
-
 class DummyBackbone(nn.Module):
     """
     Returns feature maps matching the input_shape we pass to MaskDINOEncoder.
@@ -37,13 +33,12 @@ class DummyBackbone(nn.Module):
     def forward(self, x):
         if isinstance(x, dict):
             x = x["data_tensor"]
-        B = x.shape[0]
-        device = x.device
-        dtype = x.dtype
-        features = {}
-        for name, (D, H, W) in self.feature_shapes.items():
-            features[name] = torch.randn(B, self.channels, D, H, W, device=device, dtype=dtype)
-        return features
+        B, device, dtype = x.shape[0], x.device, x.dtype
+        gen = torch.Generator().manual_seed(0)
+        return {
+            name: torch.randn(B, self.channels, D, H, W, generator=gen).to(device=device, dtype=dtype)
+            for name, (D, H, W) in self.feature_shapes.items()
+        }
 
     def forward_features(self, x):
         return self.forward(x)
@@ -53,13 +48,11 @@ class DummyBackbone(nn.Module):
     not OPS3D_AVAILABLE,
     reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
 )
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for this test")
-def test_maskdino_forward_train(monkeypatch):
-    """
-    Full forward pass:
-      DummyBackbone -> MaskDINOEncoder -> MaskDINODecoder -> DETR_Set_Loss -> MaskDINO
-    with no denoising queries, real matcher and real losses.
-    """
+@pytest.mark.cuda
+def test_maskdino_forward_train_returns_loss_dict(monkeypatch):
+    """Full train-mode forward (DummyBackbone -> MaskDINOEncoder -> MaskDINODecoder ->
+    DETR_Set_Loss) returns predictions of the expected shapes and a loss dict holding
+    every weighted loss plus step_loss, all finite scalars with gradients."""
     # avoid torch.distributed in tests
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
     monkeypatch.setattr(losses_mod, "is_torch_dist_initialized", lambda: False)
@@ -190,13 +183,13 @@ def test_maskdino_forward_train(monkeypatch):
     data_sample = {
         "data_tensor": data_tensor,
         "metainfo": {
-            "targets": [[{
+            "targets": [{
                 "labels": labels,
                 "boxes": boxes,
                 "masks": masks,
                 "mask_ids": mask_ids,
                 "label_map": label_map,
-            }]],
+            }],
             "image_sizes": torch.tensor([[D_in, H_in, W_in]], dtype=torch.long, device=device),
             "orig_image_sizes": torch.tensor([[D_in, H_in, W_in]], dtype=torch.long, device=device),
         },
@@ -237,8 +230,10 @@ def test_maskdino_forward_train(monkeypatch):
     not OPS3D_AVAILABLE,
     reason="FlashDeformAttn3D (OPS3D_AVAILABLE) is not installed.",
 )
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for this test")
-def test_maskdino_predict():
+@pytest.mark.cuda
+def test_maskdino_inference_step_returns_collapsed_label_map_boxes_scores():
+    """inference_step collapses the top-k instance masks into one (B, D, H, W, 1)
+    label map and returns top-k boxes and finite scores."""
     device = torch.device("cuda")
 
     batch_size = 1
@@ -369,3 +364,37 @@ def test_maskdino_predict():
     assert pred["labels"].dim() == 2
     assert pred["labels"].shape == (batch_size, topk_per_image)
     assert torch.isfinite(pred["labels"]).all()
+
+
+def test_maskdino_head_passes_predict_mask_to_decoder():
+    """MaskDINOHead forwards predict_mask to its decoder and returns its
+    (predictions, denoise_predictions) pair untouched."""
+    class FakePixelDecoder(nn.Module):
+        def forward_features(self, features, mask):
+            return "mask_features", "transformer_encoder_features", ["multi_scale_features"]
+
+    class FakeDecoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.seen_predict_mask = None
+
+        def forward(self, multi_scale_features, mask_features, mask, targets=None, predict_mask=True):
+            self.seen_predict_mask = predict_mask
+            return {"pred_logits": torch.zeros(1, 1, 1), "pred_masks": None}, None
+
+    decoder = FakeDecoder()
+    head = MaskDINOHead(
+        num_classes=1,
+        pixel_decoders=FakePixelDecoder(),
+        decoders=decoder,
+    )
+
+    predictions, denoise_predictions = head.forward(
+        features={},
+        targets=None,
+        predict_mask=False,
+    )
+
+    assert decoder.seen_predict_mask is False
+    assert predictions["pred_masks"] is None
+    assert denoise_predictions is None

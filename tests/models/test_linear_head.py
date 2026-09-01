@@ -1,119 +1,72 @@
 import pytest
 import torch
 
-from cell_observatory_platform.models.heads.linear_head import LinearHead
-from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
+from cell_observatory_platform.models.heads.linear_head import LinearHead, LinearProbe, _extract_model_kwargs
 
 
-def _num_patches(input_format, input_shape, axial_patch, lateral_patch, temporal_patch):
-    if "T" not in input_format:
-        patch_shape = (axial_patch, lateral_patch, lateral_patch, None)
-    else:
-        patch_shape = (temporal_patch, axial_patch, lateral_patch, lateral_patch, None)
-
-    num_patches, _ = calc_num_patches(input_fmt=input_format, input_shape=input_shape, patch_shape=patch_shape)
-    return int(num_patches)
-
-
-def _pixels_per_patch(input_format, input_shape, axial_patch, lateral_patch, temporal_patch):
-    C = input_shape[-1]
-    Zp = axial_patch
-    Yp = lateral_patch
-    Xp = lateral_patch
-    Tp = temporal_patch if "T" in input_format else 1
-    return int(Tp * Zp * Yp * Xp * C)
-
-
-@pytest.mark.parametrize(
-    "input_format,input_shape,axial_patch,lateral_patch,temporal_patch,in_dim,bottleneck_dim",
-    [
-        # TZYXC: (B, T, Z, Y, X, C)
-        ("TZYXC", (2, 4, 8, 8, 8, 16), 1, 4, 1, 128, 64),
-        # ZYXC:  (B, Z, Y, X, C)
-        ("ZYXC", (3, 16, 16, 16, 32), 2, 4, 1, 256, 128),
-    ],
-)
-def test_linear_head_default_shapes(
-    input_format, input_shape, axial_patch, lateral_patch, temporal_patch, in_dim, bottleneck_dim
-):
-    B = input_shape[0]
-    L = _num_patches(input_format, input_shape, axial_patch, lateral_patch, temporal_patch)
-    P = _pixels_per_patch(input_format, input_shape, axial_patch, lateral_patch, temporal_patch)
-
+@pytest.mark.parametrize("B,L,in_dim,out_dim,bottleneck_dim", [(2, 5, 128, 48, 64), (3, 7, 256, 96, 128)])
+def test_linear_head_default_shapes(B, L, in_dim, out_dim, bottleneck_dim):
     head = LinearHead(
         in_dim=in_dim,
-        output_dim=P,
+        output_dim=out_dim,
         use_bn=False,
         nlayers=3,
-        hidden_dim=max(2 * bottleneck_dim, bottleneck_dim),
+        hidden_dim=2 * bottleneck_dim,
         bottleneck_dim=bottleneck_dim,
         mlp_bias=True,
     )
-
-    x = torch.randn(B, L, in_dim)
     with torch.no_grad():
-        y = head(x)
+        y = head(torch.randn(B, L, in_dim))
+    assert y.shape == (B, L, out_dim) and torch.isfinite(y).all()
 
-    assert y.shape == (B, L, P)
 
-
-@pytest.mark.parametrize(
-    "input_format,input_shape,axial_patch,lateral_patch,temporal_patch,in_dim,bottleneck_dim",
-    [
-        ("TZYXC", (1, 2, 4, 4, 4, 8), 1, 2, 1, 64, 32),
-        ("ZYXC", (2, 8, 8, 8, 16), 2, 2, 1, 128, 64),
-    ],
-)
-def test_linear_head_no_last_layer_shapes(
-    input_format, input_shape, axial_patch, lateral_patch, temporal_patch, in_dim, bottleneck_dim
-):
-    B = input_shape[0]
-    L = _num_patches(input_format, input_shape, axial_patch, lateral_patch, temporal_patch)
-    P = _pixels_per_patch(input_format, input_shape, axial_patch, lateral_patch, temporal_patch)
-
+@pytest.mark.parametrize("B,L,in_dim,bottleneck_dim", [(1, 5, 64, 32), (2, 7, 128, 64)])
+def test_linear_head_no_last_layer_returns_l2_normalized_bottleneck(B, L, in_dim, bottleneck_dim):
+    """With no_last_layer=True the head returns the MLP bottleneck, L2-normalised per token."""
     head = LinearHead(
         in_dim=in_dim,
-        output_dim=P,
+        output_dim=11,
         use_bn=False,
         nlayers=2,
-        hidden_dim=max(2 * bottleneck_dim, bottleneck_dim),
+        hidden_dim=2 * bottleneck_dim,
         bottleneck_dim=bottleneck_dim,
         mlp_bias=True,
     )
-
-    x = torch.randn(B, L, in_dim)
     with torch.no_grad():
-        y = head(x, no_last_layer=True)
-
+        y = head(torch.randn(B, L, in_dim), no_last_layer=True)
     assert y.shape == (B, L, bottleneck_dim)
+    torch.testing.assert_close(y.norm(dim=-1), torch.ones(B, L))  # bottleneck is unit-norm
 
 
-@pytest.mark.parametrize(
-    "input_format,input_shape,axial_patch,lateral_patch,temporal_patch,bottleneck_dim",
-    [
-        ("TZYXC", (2, 3, 6, 6, 6, 10), 1, 3, 1, 64),
-        ("ZYXC", (1, 10, 10, 10, 20), 2, 5, 1, 128),
-    ],
-)
-def test_linear_head_only_last_layer_shapes(
-    input_format, input_shape, axial_patch, lateral_patch, temporal_patch, bottleneck_dim
-):
-    B = input_shape[0]
-    L = _num_patches(input_format, input_shape, axial_patch, lateral_patch, temporal_patch)
-    P = _pixels_per_patch(input_format, input_shape, axial_patch, lateral_patch, temporal_patch)
-
+@pytest.mark.parametrize("B,L,out_dim,bottleneck_dim", [(2, 4, 30, 64), (1, 9, 50, 128)])
+def test_linear_head_only_last_layer_shapes(B, L, out_dim, bottleneck_dim):
+    """With only_last_layer=True the MLP and the normalisation are skipped entirely."""
     head = LinearHead(
         in_dim=999,
-        output_dim=P,
+        output_dim=out_dim,
         use_bn=False,
         nlayers=3,
-        hidden_dim=bottleneck_dim * 2,
+        hidden_dim=2 * bottleneck_dim,
         bottleneck_dim=bottleneck_dim,
         mlp_bias=True,
     )
-
     x = torch.randn(B, L, bottleneck_dim)
     with torch.no_grad():
         y = head(x, only_last_layer=True)
+    assert y.shape == (B, L, out_dim)
+    torch.testing.assert_close(y, head.last_layer(x))  # MLP and normalisation are skipped
 
-    assert y.shape == (B, L, P)
+
+def test_linear_probe_forward_and_extract_kwargs_filters_by_cls():
+    """LinearProbe is a single Linear; _extract_model_kwargs maps input_dim -> in_dim and
+    keeps only the ctor args of the class being built."""
+    probe = LinearProbe(in_dim=8, output_dim=4)
+    out = probe(torch.randn(2, 8))
+    assert out.shape == (2, 4)
+
+    # allowed-args filtering must come from the class being built
+    cfg = {"input_dim": 8, "output_dim": 4, "nlayers": 3, "hidden_dim": 32}
+    kwargs = _extract_model_kwargs(cfg, cls=LinearProbe)
+    assert kwargs == {"in_dim": 8, "output_dim": 4}
+    assert "nlayers" not in kwargs and "hidden_dim" not in kwargs
+    LinearProbe(**kwargs)

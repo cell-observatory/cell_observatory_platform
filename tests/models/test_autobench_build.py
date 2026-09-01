@@ -100,7 +100,7 @@ def _make_cfg(*, task: str, input_fmt: str = "ZYXC"):
         ("upsample_spacetime", autobench.UpsampleSpaceTimeAutoBench),
     ],
 )
-def test_BUILD_dispatch_and_injects_decoder_dims(task, expected_cls):
+def test_build_dispatches_task_to_variant_and_injects_decoder_dims(task, expected_cls):
     cfg = _make_cfg(task=task)
     model = REGISTRY.build("model", f"{task}_autobench", cfg)
 
@@ -120,7 +120,7 @@ def test_BUILD_dispatch_and_injects_decoder_dims(task, expected_cls):
     assert OmegaConf.is_struct(model.decoder_args), "decoder_args should remain struct=True after BUILD()"
 
 
-def test_BUILD_rejects_non_ZYXC_input_fmt():
+def test_build_rejects_non_zyxc_input_fmt():
     cfg = _make_cfg(task="denoising", input_fmt="TZYXC")
     with pytest.raises(ValueError, match="only supports 'ZYXC'"):
         REGISTRY.build("model", "denoising_autobench", cfg)

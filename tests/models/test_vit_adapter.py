@@ -2,7 +2,6 @@ import pytest
 import torch
 
 
-from cell_observatory_platform.models.layers.attention import FlashDeformAttn3D
 from cell_observatory_platform.models.adapters.vit_adapter import (
     ConvFFN,
     CrossAttention,
@@ -216,7 +215,7 @@ def test_encoder_adapter_metadata_shapes(B, dim, input_format, spatial_shape, pa
 
     # spatial_shapes should describe a single 3D patch grid
     assert spatial_shapes.shape == (1, 3)
-    assert tuple(spatial_shapes[0].tolist()) == adapter.spatial_patchified_shape
+    assert tuple(spatial_shapes[0].tolist()) == (4, 4, 4)  # (32, 32, 32) / patch 8
 
     # valid_ratios: [B, 1, 3]
     assert vr.shape == (B, 1, 3)
@@ -267,9 +266,78 @@ def test_encoder_adapter_forward_deform_attn():
 
     f1, f2, f3, f4 = y["1"], y["2"], y["3"], y["4"]
 
-    # Expected pyramid shapes given SPM strides:
-    # c1 ~ Z/2,  c2 ~ Z/8, c3 ~ Z/16, c4 ~ Z/32
-    assert f1.shape == (B, embed_dim, Z // 2, Y // 2, X // 2)
+    # Expected pyramid shapes given SPM strides (reference ViT-Adapter
+    # semantics: f1 = up(c2) + c1 at c1's NATIVE stride-4 — the old
+    # ConvTranspose emitted a stride-2 map that contradicted the declared
+    # stride and was deleted):
+    # c1 ~ Z/4,  c2 ~ Z/8, c3 ~ Z/16, c4 ~ Z/32
+    assert f1.shape == (B, embed_dim, Z // 4, Y // 4, X // 4)
     assert f2.shape == (B, embed_dim, Z // 8, Y // 8, X // 8)
     assert f3.shape == (B, embed_dim, Z // 16, Y // 16, X // 16)
     assert f4.shape == (B, embed_dim, Z // 32, Y // 32, X // 32)
+
+
+# --- EncoderAdapter geometry: reference points, SPM level shapes, layout guard --- #
+
+
+def _make_adapter(input_zyx=(32, 32, 32)):
+    return EncoderAdapter(
+        dim=3,
+        input_shape=(*input_zyx, 2),
+        patch_shape=(8, 8, 8),
+        backbone_embed_dim=16,
+        input_format="ZYXC",
+        num_backbone_features=1,
+        conv_inplane=4,
+        use_deform_attention=False,
+        deform_num_heads=2,
+        with_cffn=False,
+        use_extra_extractor=False,
+        dtype="float32",
+        buffer_device="cpu",
+    )
+
+
+def test_encoder_adapter_reference_points_are_xyz_token_centers():
+    """Deformable reference points are normalized token centers in (x, y, z)
+    order: ((x+0.5)/X, (y+0.5)/Y, (z+0.5)/Z) for the first query level."""
+    adapter = _make_adapter()
+    x = torch.zeros(2, 8, 8, 8, 16)  # only shape/device are read
+    ref, spatial_shapes, level_start_index, valid_ratios = (
+        adapter._get_deformable_and_ffn_metadata(x)
+    )
+    # first query level is c2 (= query_level_shapes[1])
+    Z2, Y2, X2 = adapter.query_level_shapes[1]
+    n2 = Z2 * Y2 * X2
+    lvl = ref[0, :n2, 0, :].reshape(Z2, Y2, X2, 3)
+    for (z, y, xx) in [(0, 0, 0), (Z2 - 1, 0, X2 - 1), (1, 2, 3)]:
+        expected = torch.tensor([
+            (xx + 0.5) / X2, (y + 0.5) / Y2, (z + 0.5) / Z2,
+        ])
+        torch.testing.assert_close(lvl[z, y, xx], expected, atol=1e-6, rtol=1e-6)
+
+
+def test_spm_level_shapes_use_ceil_division_and_match_conv_outputs():
+    """query_level_shapes halve with ceil (100 -> 50 -> 25 -> 13 -> 7 -> 4) and the
+    SpatialPriorModule emits exactly those token counts per level."""
+    adapter = _make_adapter(input_zyx=(100, 100, 100))
+    assert adapter.query_level_shapes == [
+        (25, 25, 25), (13, 13, 13), (7, 7, 7), (4, 4, 4),
+    ]
+    with torch.no_grad():
+        c1, c2, c3, c4 = adapter.spatial_prior_module(torch.zeros(1, 2, 100, 100, 100))
+    assert c1.shape[1] == 25 ** 3
+    assert c2.shape[1] == 13 ** 3
+    assert c3.shape[1] == 7 ** 3
+    assert c4.shape[1] == 4 ** 3
+
+
+def test_encoder_adapter_forward_rejects_channels_first_input():
+    """forward takes channels-last input; a conv-layout tensor (trailing dim is
+    not the channel count) fails loudly instead of being permuted into scrambled tokens."""
+    a = object.__new__(EncoderAdapter)
+    a.dim = 3
+    a.in_channels = 2
+    x = torch.zeros(1, 2, 4, 4, 4)                   # conv layout, trailing dim 4 != 2
+    with pytest.raises(ValueError, match="channels-last"):
+        EncoderAdapter.forward(a, x, features=None)

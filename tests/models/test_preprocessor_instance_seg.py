@@ -86,10 +86,12 @@ def test_materialize_skips_when_label_map_absent():
 # --------------------------------------------------------------------------- #
 
 
-def _make_forward_pp(materialize: bool = True, mask_channel_idx: int = -1) -> InstanceSegmentationPreprocessor:
+def _make_forward_pp(
+    materialize: bool = True,
+    input_shape: tuple = (2, 3, 4, 2),
+) -> InstanceSegmentationPreprocessor:
     pp = InstanceSegmentationPreprocessor.__new__(InstanceSegmentationPreprocessor)
     pp.dtype = torch.float32
-    pp.mask_channel_idx = mask_channel_idx
     pp.transforms = None
     pp.debug_savepath = None
     pp.materialize_binary_masks = materialize
@@ -100,6 +102,9 @@ def _make_forward_pp(materialize: bool = True, mask_channel_idx: int = -1) -> In
     # raises AttributeError (masked by nn.Module.__getattr__ into a confusing
     # "no attribute 'TARGET_ROLES'").
     pp.input_format = "ZYXC"
+    # _apply_transforms now runs the post-transform spatial guard for every
+    # task, which compares against input_shape (Z, Y, X, C).
+    pp.input_shape = tuple(input_shape)
     pp.bbox_output_format = "zyxzyx"
     pp.base_dense_data_type = {
         "kind": "dense",
@@ -131,8 +136,8 @@ def test_forward_populates_label_map_and_masks_from_channel():
     ]
 
     pp = _make_forward_pp(materialize=True)
-    out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": targets, "channel_mapping": {C: "instance_segmentation"}}}, 0.0, 0)
-    tgt = out["metainfo"]["targets"][0][0]
+    out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": targets, "channel_mapping": {C: "instance_masks"}}}, 0.0, 0)
+    tgt = out["metainfo"]["targets"][0]   # Form S: sample 0, no wrap
 
     # Mask channel stripped from the image tensor.
     assert out["data_tensor"].shape[-1] == C
@@ -153,9 +158,9 @@ def test_forward_no_mask_channel_skips_label_map():
         }
     ]
 
-    pp = _make_forward_pp(materialize=True, mask_channel_idx=None)
+    pp = _make_forward_pp(materialize=True)
     out = pp.forward({"data_tensor": inputs, "metainfo": {"targets": targets}}, 0.0, 0)
-    tgt = out["metainfo"]["targets"][0][0]
+    tgt = out["metainfo"]["targets"][0]   # Form S: sample 0, no wrap
 
     assert out["data_tensor"].shape[-1] == C
     assert "label_map" not in tgt

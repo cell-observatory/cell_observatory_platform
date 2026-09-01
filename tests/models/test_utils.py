@@ -2,57 +2,42 @@ import pytest
 import torch
 
 from cell_observatory_platform.models.layers.utils import (
-    _max_by_axis,
-    batch_tensors,
     compute_unmasked_ratio,
     get_reference_points,
     get_uncertain_point_coords_with_randomness,
     point_sample,
     point_sample_labelmap,
     point_sample_labelmap_batched,
+    sample_box_points,
     sample_box_points_from_boxes,
+    sample_random_points_from_errors,
 )
 
-CUDA_AVAILABLE = torch.cuda.is_available()
 
-
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_get_reference_points_shapes_and_range():
-    device = torch.device("cuda")
-
+    """Reference points are (x, y, z) voxel centres in [0, 1], concatenated level by level."""
+    device = torch.device("cpu")
     batch_size = 2
-    # realistic 3D pyramid
-    shapes = torch.tensor(
-        [
-            [32, 32, 32],  # level 0
-            [16, 16, 16],  # level 1
-            [8, 8, 8],  # level 2
-        ],
-        dtype=torch.long,
-        device=device,
-    )  # (L, 3)
+    shapes = torch.tensor([[32, 32, 32], [16, 16, 16], [8, 8, 8]], dtype=torch.long, device=device)
     num_levels = shapes.shape[0]
-
-    # valid ratios all ones -> no padding
     valid_ratios = torch.ones(batch_size, num_levels, 3, device=device)
 
     ref_pts = get_reference_points(shapes, valid_ratios, device)
 
-    # S = sum(D*H*W)
-    num_tokens_per_level = shapes.prod(dim=1)
-    total_tokens = int(num_tokens_per_level.sum().item())
-
-    # shape: (B, S, L, 3)
+    total_tokens = int(shapes.prod(dim=1).sum().item())
     assert ref_pts.shape == (batch_size, total_tokens, num_levels, 3)
+    assert torch.all(ref_pts >= 0.0) and torch.all(ref_pts <= 1.0)
+    # voxel centres: first token of level 0 is (0.5/32,)*3 in (x, y, z); second token steps x by 1/32
+    assert torch.allclose(ref_pts[0, 0, 0], torch.full((3,), 0.5 / 32))
+    assert torch.allclose(ref_pts[0, 1, 0], torch.tensor([1.5 / 32, 0.5 / 32, 0.5 / 32]))
+    # level-1 block starts at token 32**3 with spacing 1/16
+    assert torch.allclose(ref_pts[0, 32 ** 3, 0], torch.full((3,), 0.5 / 16))
+    # identical across batch when valid_ratios are all ones
+    assert torch.equal(ref_pts[0], ref_pts[1])
 
-    # coordinates should lie in [0, 1] after final scaling
-    assert torch.all(ref_pts >= 0.0)
-    assert torch.all(ref_pts <= 1.0)
 
-
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_point_sample_vector_coords():
-    device = torch.device("cuda")
+    device = torch.device("cpu")
 
     N, C, D, H, W = 2, 3, 5, 6, 7
     P = 10
@@ -65,13 +50,16 @@ def test_point_sample_vector_coords():
     assert out.shape == (N, C, P)
     assert out.dtype == x.dtype
 
-    assert torch.all(out >= 0.0)
-    assert torch.all(out <= 1.0)
+    # Interpolating an all-ones volume is 1.0 up to matmul precision: under
+    # TF32 (which an earlier test in the batch may leave enabled) grid_sample
+    # can overshoot by ~1e-5, so the bound needs an epsilon -- exact <= 1.0
+    # made this test order-dependent within the suite.
+    assert torch.all(out >= -1e-4)
+    assert torch.all(out <= 1.0 + 1e-4)
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_point_sample_grid_coords():
-    device = torch.device("cuda")
+    device = torch.device("cpu")
 
     N, C, D, H, W = 1, 2, 4, 4, 4
     Dz, Hy, Wx = 3, 2, 5
@@ -84,9 +72,8 @@ def test_point_sample_grid_coords():
     assert out.shape == (N, C, Dz, Hy, Wx)
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_get_uncertain_point_coords_with_randomness_shapes_and_range():
-    device = torch.device("cuda")
+    device = torch.device("cpu")
 
     N, C, D, H, W = 2, 1, 8, 8, 8
     coarse_logits = torch.randn(N, C, D, H, W, device=device)
@@ -113,9 +100,8 @@ def test_get_uncertain_point_coords_with_randomness_shapes_and_range():
     assert torch.all(coords <= 1.0)
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_get_uncertain_point_coords_with_randomness_all_random():
-    device = torch.device("cuda")
+    device = torch.device("cpu")
 
     N, C, D, H, W = 1, 1, 4, 4, 4
     coarse_logits = torch.randn(N, C, D, H, W, device=device)
@@ -140,14 +126,13 @@ def test_get_uncertain_point_coords_with_randomness_all_random():
     assert torch.all(coords <= 1.0)
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 @pytest.mark.parametrize("align_corners", [False, True])
 def test_point_sample_labelmap_batched_matches_grid_sample_nearest(align_corners):
     # Regression test for the labelmap coord-order fix.
     # point_sample_labelmap_batched must follow the same grid_sample convention
     # as point_sample: coords[..., 0]=x (W), [..., 1]=y (H), [..., 2]=z (D).
     # A non-symmetric labelmap is required so a swapped order would be detected.
-    device = torch.device("cuda")
+    device = torch.device("cpu")
     Z, Y, X = 3, 5, 7
 
     labelmap_single = (
@@ -182,11 +167,10 @@ def test_point_sample_labelmap_batched_matches_grid_sample_nearest(align_corners
     )
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 @pytest.mark.parametrize("align_corners", [False, True])
 def test_point_sample_labelmap_matches_grid_sample_nearest(align_corners):
     # Same regression contract for the single-batch matcher variant.
-    device = torch.device("cuda")
+    device = torch.device("cpu")
     Z, Y, X = 3, 5, 7
 
     labelmap_single = (
@@ -229,9 +213,8 @@ def test_point_sample_labelmap_matches_grid_sample_nearest(align_corners):
     )
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
 def test_compute_unmasked_ratio_all_valid_and_partial():
-    device = torch.device("cuda")
+    device = torch.device("cpu")
 
     B, D, H, W = 2, 4, 3, 5
 
@@ -380,3 +363,98 @@ def test_sample_box_points_from_boxes_rejects_bad_shape():
         sample_box_points_from_boxes(
             boxes=boxes, box_format="xyzxyz", image_shape=(4, 5, 6),
         )
+
+
+# ----------------------------------------------------------------------------- #
+# sample_box_points (mask -> noised corner prompts)
+# ----------------------------------------------------------------------------- #
+
+
+def test_sample_box_points_noise_keeps_batch_shape_and_bounds():
+    """Each of the B boxes gets its own 2 corners (no [B,B,6] broadcast), every
+    corner moves at most min(noise*extent, noise_bound) per axis from the
+    half-open xyzxyz corner, and stays inside the image (0..size-1)."""
+    torch.manual_seed(0)
+    masks = torch.zeros(3, 1, 8, 8, 8)
+    masks[0, 0, 1:4, 2:5, 3:6] = 1      # corners (x,y,z) = (3,2,1) .. (6,5,4), extent 3
+    masks[1, 0, 0:2, 0:2, 0:2] = 1      # (0,0,0) .. (2,2,2), extent 2
+    masks[2, 0, 4:8, 4:8, 4:8] = 1      # (4,4,4) .. (8,8,8), extent 4
+    coords, labels = sample_box_points(
+        input_fmt="ZYXC", masks=masks, noise=0.9, noise_bound=2
+    )
+    assert coords.shape == (3, 2, 3) and labels.shape == (3, 2)
+    assert torch.equal(labels, torch.tensor([[2, 3]] * 3, dtype=labels.dtype))
+
+    corners = torch.tensor([
+        [[3., 2., 1.], [6., 5., 4.]],
+        [[0., 0., 0.], [2., 2., 2.]],
+        [[4., 4., 4.], [8., 8., 8.]],
+    ])
+    # min(0.9 * extent, 2): 2.7->2, 1.8, 3.6->2
+    max_delta = torch.tensor([2.0, 1.8, 2.0]).view(3, 1, 1)
+    lo = (corners - max_delta).clamp(0, 7)
+    hi = (corners + max_delta).clamp(0, 7)
+    assert torch.all(coords >= lo - 1e-6) and torch.all(coords <= hi + 1e-6), (coords, lo, hi)
+    # noise was actually applied (seeded, so deterministic)
+    assert not torch.equal(coords, corners.clamp(0, 7))
+
+
+# ----------------------------------------------------------------------------- #
+# sample_random_points_from_errors
+# ----------------------------------------------------------------------------- #
+
+
+def _sample_from_errors(gt, pred, num_pt=8):
+    return sample_random_points_from_errors("ZYXC", gt, pred, num_pt=num_pt)
+
+
+def test_sample_random_points_from_errors_fp_only_gives_negative_clicks():
+    """With only a false-positive voxel, every click is negative and sits on it (x, y, z)."""
+    gt = torch.zeros(1, 1, 4, 4, 4, dtype=torch.bool)
+    pred = torch.zeros_like(gt)
+    pred[0, 0, 1, 2, 3] = True  # single FP voxel
+    points, labels = _sample_from_errors(gt, pred)
+    assert (labels == 0).all()
+    assert (points == torch.tensor([3.0, 2.0, 1.0])).all()
+
+
+def test_sample_random_points_from_errors_fn_only_gives_positive_clicks():
+    """With only a false-negative voxel, every click is positive and sits on it."""
+    gt = torch.zeros(1, 1, 4, 4, 4, dtype=torch.bool)
+    gt[0, 0, 2, 1, 0] = True  # single FN voxel (pred empty)
+    pred = torch.zeros_like(gt)
+    points, labels = _sample_from_errors(gt, pred)
+    assert (labels == 1).all()
+    assert (points == torch.tensor([0.0, 1.0, 2.0])).all()
+
+
+def test_sample_random_points_from_errors_no_errors_samples_background():
+    """A perfect prediction yields negative clicks drawn from the background."""
+    gt = torch.zeros(1, 1, 4, 4, 4, dtype=torch.bool)
+    gt[0, 0, :2] = True
+    pred = gt.clone()
+    points, labels = _sample_from_errors(gt, pred, num_pt=16)
+    assert (labels == 0).all()
+    for p in points[0]:
+        x, y, z = (int(v) for v in p)
+        assert not gt[0, 0, z, y, x]
+
+
+def test_sample_random_points_from_errors_mixed_points_land_in_their_pools():
+    """Positive clicks land on FN voxels, negative clicks on FP voxels, and with
+    one voxel in each pool neither label monopolizes the sample."""
+    torch.manual_seed(0)
+    gt = torch.zeros(2, 1, 4, 4, 4, dtype=torch.bool)
+    pred = torch.zeros_like(gt)
+    gt[:, 0, 0, 0, 0] = True                    # FN (pred misses it)
+    pred[:, 0, 3, 3, 3] = True                  # FP
+    points, labels = _sample_from_errors(gt, pred, num_pt=32)
+    assert points.shape == (2, 32, 3) and labels.shape == (2, 32)
+    for b in range(2):
+        for p, l in zip(points[b], labels[b]):
+            x, y, z = (int(v) for v in p)
+            if l == 1:
+                assert gt[b, 0, z, y, x] and not pred[b, 0, z, y, x]
+            else:
+                assert pred[b, 0, z, y, x] and not gt[b, 0, z, y, x]
+    assert 0 < int(labels.sum()) < labels.numel()

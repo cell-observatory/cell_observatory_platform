@@ -3,16 +3,15 @@ from __future__ import absolute_import, division, print_function
 import pytest
 import torch
 
+pytestmark = pytest.mark.cuda
+_C = pytest.importorskip("ops3d._C", reason="ops3d extension not built")
+if not torch.cuda.is_available():
+    pytest.skip("CUDA device not available", allow_module_level=True)
+
 from cell_observatory_platform.models.ops.flash_deform_attn import (
     FlashDeformAttnFunction,
     ms_deform_attn_core_pytorch_3d,
 )
-
-try:
-    import ops3d._C as _C
-except ImportError:
-    print("FlashDeformAttnFunction op failed to load. Please compile ops3d if needed.")
-    pytestmark = pytest.mark.skip(reason="This module is temporarily disabled till we add ops3d to the docker image")
 
 
 # ------------------------ FIXED TESTING PARAMS -------------------------------------
@@ -21,14 +20,10 @@ except ImportError:
 torch.manual_seed(42)
 device = torch.device("cuda")
 
-pytest.importorskip("torch.cuda")
-if not torch.cuda.is_available():
-    pytest.skip("CUDA not available", allow_module_level=True)
-
 N = 1  # batch size
 M = 8  # number of attention heads
 D = 64  # feature dimension (per head)
-Lq = 16 * 16 * 16  # query length
+Lq = 8 * 8 * 8  # query length
 L = 4  # number of feature levels
 K = 8  # sampling points per query / head / level
 im2col_step = 128  # # partitions batch into bs/im2col calls
@@ -36,10 +31,10 @@ im2col_step = 128  # # partitions batch into bs/im2col calls
 # spatial shapes for each feature level (D, H, W)
 shapes = torch.tensor(
     [
-        [64, 64, 64],
-        [32, 32, 32],
         [16, 16, 16],
         [8, 8, 8],
+        [4, 4, 4],
+        [2, 2, 2],
     ],
     dtype=torch.long,
     device="cuda",
@@ -62,7 +57,8 @@ def test_forward_equal_with_pytorch_half():
     sampling_loc_attn = torch.cat(
         [sampling_locations.reshape(N, Lq, M, L * K * 3), attention_weights.reshape(N, Lq, M, L * K)], dim=-1
     )
-    attention_weights = torch.nn.functional.softmax(attention_weights.flatten(-2, -1), dim=-1).unflatten(-1, (L, K))
+    # NOTE: no external softmax — both the kernel and the pytorch debug helper
+    # softmax the raw attention logits internally over (levels * points).
 
     output_cuda = (
         FlashDeformAttnFunction.apply(

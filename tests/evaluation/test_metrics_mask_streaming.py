@@ -102,26 +102,15 @@ def test_mask_map_reset_clears_stream_and_batched_state():
 
 def test_mask_miou_add_matched_ious_threshold_and_semantic_guard():
     metric = MaskMIoUMetric(mode="instance", iou_threshold=0.5)
-    metric.add_matched_ious([0.49, 0.5, 0.9])
+    metric.add_matched_ious([0.49, 0.5, 0.9], n_gt=3)
 
-    assert metric.aggregate() == pytest.approx((0.5 + 0.9) / 2)
+    result = metric.aggregate()
+    assert result["mask_miou"] == pytest.approx((0.5 + 0.9) / 2)
+    assert result["mask_match_recall"] == pytest.approx(2 / 3)
 
     semantic_metric = MaskMIoUMetric(mode="semantic")
     with pytest.raises(RuntimeError, match="mode='instance'"):
         semantic_metric.add_matched_ious([1.0])
-
-
-def test_mask_map_batched_path_smoke():
-    metric = MaskMAPMetric(iou_thresholds=[0.5])
-    masks = torch.zeros(1, 2, 2, 2, dtype=torch.bool)
-    masks[:, 0, 0, 0] = True
-    pred = {"masks": masks.clone(), "labels": torch.tensor([1]), "scores": torch.tensor([1.0])}
-    target = {"masks": masks.clone(), "labels": torch.tensor([1])}
-
-    metric([pred], [target])
-
-    assert math.isfinite(metric.aggregate())
-    assert metric.aggregate() == pytest.approx(1.0)
 
 
 def test_mask_map_stream_shape_validation():
@@ -181,3 +170,31 @@ def test_mask_map_streaming_precedence_over_batched_state():
     )
 
     assert metric.aggregate() == pytest.approx(1.0)
+
+
+def test_mask_map_stream_rejects_duplicate_image_class_key():
+    """Each (image_id, class_id) may be pushed once; a repeat raises and leaves
+    no fragment behind."""
+    metric = MaskMAPMetric(iou_thresholds=[0.5])
+    metric.add_image_class(image_id=0, class_id=1, scores=torch.tensor([0.9]), ious=torch.tensor([[1.0]]), n_gt=1)
+    with pytest.raises(ValueError, match="Duplicate add_image_class"):
+        metric.add_image_class(image_id=0, class_id=1, scores=torch.tensor([0.8]), ious=torch.tensor([[0.0]]), n_gt=1)
+    assert len(metric._stream) == 1       # the rejected push left no fragment behind
+
+
+def test_mask_map_stream_stores_iou_fragments_as_fp16():
+    m = MaskMAPMetric()
+    m.add_image_class(
+        image_id=0, class_id=0, scores=torch.rand(2),
+        ious=torch.rand(2, 2), n_gt=2,
+    )
+    assert m._stream[0]["ious"].dtype == torch.float16
+
+
+def test_mask_miou_add_matched_ious_rejects_zero_overlap_at_thr_zero():
+    """At iou_threshold=0.0 a zero-overlap pair is still not a match."""
+    metric = MaskMIoUMetric(mode="instance", iou_threshold=0.0)
+    metric.add_matched_ious([0.0, 0.3], n_gt=2)
+    result = metric.aggregate()
+    assert result["mask_miou"] == pytest.approx(0.3)  # the 0.0 was rejected
+    assert result["mask_match_recall"] == pytest.approx(0.5)

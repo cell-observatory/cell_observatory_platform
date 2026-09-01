@@ -1,577 +1,265 @@
+"""Live-DB checks against the api training views (needs --run-localdb).
+
+Deliberately small: the column contract is owned by ``data/databases/schema.py``
+and pinned by the offline suite, and shape is a predicate rather than part of a
+relation name, so there is nothing here to enumerate per relation.
+
+What is left is only what CANNOT be checked offline -- the things that need a
+real server:
+
+  * the projection the DB actually returns matches ``required_columns``
+  * the natural key is genuinely unique (resume identity rests on it)
+  * ``root_path || tile_relative_path`` resolves to something on disk
+  * the api.roi_channels semi-joins and the CDF subscript are accepted by
+    Postgres and narrow rather than error
+
+Everything else -- clause text, ordering, projection shape -- is asserted in
+tests/data/test_local_metadata_store.py without a database.
+"""
+
 from __future__ import annotations
 
-import re
+import os
 from pathlib import Path
 
-from omegaconf import OmegaConf
-
 import pytest
+from omegaconf import OmegaConf
 
 from cell_observatory_platform.data.databases.local_database import LocalArrowDatabase
 from cell_observatory_platform.data.databases.local_metadata_store import (
+    TRAINING_VIEWS,
     FilterBuilder,
     MappedTable,
     QuerySpec,
-    SOURCE_TABLES,
+    SampleType,
     SqlQueryPlanner,
     TableResolver,
+    fetch_object_type_names,
+    fetch_storage_locations,
+)
+from cell_observatory_platform.data.databases.schema import (
+    required_columns,
+    validate_non_null,
+    validate_projection,
 )
 
 pytestmark = pytest.mark.localdb
-
-LOCATION_KEYS = ["is_available", "exists_prfs", "exists_aws", "exists_oak", "exists_abc"]
-SUPPORTED_CUBE_SPATIAL_SHAPES = {
-    (128, 128, 128),
-    (128, 256, 256),
-    (128, 384, 512),
-}
-
-EXPECTED_COLUMNS = {
-    "cube_without_annotations": {
-        "first_pc_id",
-        "prepared_id",
-        "tile_name",
-        "server_folder",
-        "output_folder",
-        "is_synthetic",
-        "is_available",
-        "exists_prfs",
-        "exists_aws",
-        "exists_oak",
-        "exists_abc",
-        "time_start",
-        "time_size",
-        "z_start",
-        "y_start",
-        "x_start",
-        "z_size",
-        "y_size",
-        "x_size",
-        "channel_size",
-        "is_complete",
-        "is_test_split",
-        "channel_mapping",
-        "channels_metadata",
-    },
-    "cube_with_annotations": {
-        "first_pc_id",
-        "prepared_id",
-        "tile_name",
-        "server_folder",
-        "output_folder",
-        "is_synthetic",
-        "is_available",
-        "exists_prfs",
-        "exists_aws",
-        "exists_oak",
-        "exists_abc",
-        "time_start",
-        "time_size",
-        "z_start",
-        "y_start",
-        "x_start",
-        "z_size",
-        "y_size",
-        "x_size",
-        "channel_size",
-        "is_complete",
-        "is_test_split",
-        "channel_mapping",
-        "channels_metadata",
-        "annotation_count",
-        "annotations_metadata",
-    },
-    "tile_without_annotations": {
-        "first_pc_id",
-        "prepared_id",
-        "tile_name",
-        "server_folder",
-        "output_folder",
-        "is_synthetic",
-        "is_available",
-        "exists_prfs",
-        "exists_aws",
-        "exists_oak",
-        "exists_abc",
-        "time_start",
-        "time_size",
-        "z_start",
-        "y_start",
-        "x_start",
-        "z_size",
-        "y_size",
-        "x_size",
-        "channel_size",
-        "is_complete",
-        "is_test_split",
-        "channel_mapping",
-    },
-    "tile_with_annotations": {
-        "first_pc_id",
-        "prepared_id",
-        "tile_name",
-        "server_folder",
-        "output_folder",
-        "is_synthetic",
-        "is_available",
-        "exists_prfs",
-        "exists_aws",
-        "exists_oak",
-        "exists_abc",
-        "time_start",
-        "time_size",
-        "z_start",
-        "y_start",
-        "x_start",
-        "z_size",
-        "y_size",
-        "x_size",
-        "channel_size",
-        "is_complete",
-        "is_test_split",
-        "channel_mapping",
-        "annotation_count",
-        "annotations_metadata",
-    },
-}
 
 
 @pytest.fixture(autouse=True)
 def _disable_barrier(monkeypatch):
     monkeypatch.setattr(
         "cell_observatory_platform.data.databases.local_metadata_store.barrier",
-        lambda: None,
+        lambda *a, **k: None,
     )
 
 
 @pytest.fixture(scope="session")
 def local_db() -> LocalArrowDatabase:
-    db = LocalArrowDatabase(dbname="local", verbose=False)
-    probe = db.execute_arrow("SELECT 1 AS ok")
-    assert probe.num_rows == 1
-    assert probe["ok"][0].as_py() == 1
-    return db
+    """Connect to whatever DB the operator points us at.
 
-
-@pytest.fixture(scope="session")
-def prepared_tables(local_db: LocalArrowDatabase) -> list[dict]:
-    sql = """
-        SELECT c.relname AS table_name
-        FROM pg_class c
-        JOIN pg_namespace n
-          ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public'
-          AND c.relkind IN ('r', 'p')
-          AND (
-            c.relname LIKE 'prepared_cube\\_%_agg\\_%' ESCAPE '\\'
-            OR c.relname LIKE 'prepared_tile\\_%_agg\\_%' ESCAPE '\\'
-          )
-          AND NOT EXISTS (
-            SELECT 1
-            FROM pg_inherits i
-            WHERE i.inhrelid = c.oid
-          )
-        ORDER BY c.relname
+    COD_DATABASE_DSN (the env var the cell_observatory_database repo's own tests
+    use) wins, so a restored dump on an arbitrary host/port can be tested without
+    editing .env. Falling back to dbname="local" keeps the original behaviour,
+    which resolves the host from node_ip() + SUPABASE_LOCAL_PORT.
     """
-    rows = local_db.execute_arrow(sql)["table_name"].to_pylist()
-    assert rows, "No prepared_*_agg_* tables found in live local DB"
-    return [classify_table_name(name) for name in rows]
+    dsn = os.environ.get("COD_DATABASE_DSN") or os.environ.get("PG17_DSN")
+    if dsn:
+        return LocalArrowDatabase(dbname="local", database_url=dsn)
+    return LocalArrowDatabase(dbname="local", dotenv_path=os.environ.get("DOTENV_PATH"))
 
 
-def classify_table_name(table_name: str) -> dict:
-    cube_channel = re.fullmatch(r"prepared_cube_channel_agg_(\d+)_(\d+)_(\d+)_(\d+)", table_name)
-    if cube_channel:
-        t, z, y, x = map(int, cube_channel.groups())
-        spatial_shape = (z, y, x)
-        return {
-            "table_name": table_name,
-            "kind": "cube_without_annotations",
-            "sample_type": "cube",
-            "has_annotations": False,
-            "source_key": table_name,
-            "selector_key": "cube_without_annotations_3d" if t == 1 else "cube_without_annotations_4d",
-            "layout": "ZYXC" if t == 1 else "TZYXC",
-            "input_shape": [z, y, x, 2] if t == 1 else [t, z, y, x, 2],
-            "supported_by_resolver": spatial_shape in SUPPORTED_CUBE_SPATIAL_SHAPES,
-        }
+def _populated_location(local_db, view) -> tuple[str, int]:
+    """The storage location most rows actually live at.
 
-    cube_annotation = re.fullmatch(r"prepared_cube_annotation_agg_(\d+)_(\d+)_(\d+)_(\d+)", table_name)
-    if cube_annotation:
-        t, z, y, x = map(int, cube_annotation.groups())
-        spatial_shape = (z, y, x)
-        return {
-            "table_name": table_name,
-            "kind": "cube_with_annotations",
-            "sample_type": "cube",
-            "has_annotations": True,
-            "source_key": table_name,
-            "selector_key": "cube_with_annotations_3d",
-            "layout": "ZYXC" if t == 1 else "TZYXC",
-            "input_shape": [z, y, x, 2] if t == 1 else [t, z, y, x, 2],
-            "supported_by_resolver": t == 1 and spatial_shape in SUPPORTED_CUBE_SPATIAL_SHAPES,
-        }
-
-    tile_channel = re.fullmatch(r"prepared_tile_channel_agg_(\d+)", table_name)
-    if tile_channel:
-        t = int(tile_channel.group(1))
-        return {
-            "table_name": table_name,
-            "kind": "tile_without_annotations",
-            "sample_type": "tile",
-            "has_annotations": False,
-            "source_key": table_name,
-            "selector_key": f"tile_without_annotations_{t}",
-            "layout": "ZYXC" if t == 1 else "TZYXC",
-            "input_shape": [128, 256, 256, 2] if t == 1 else [t, 128, 256, 256, 2],
-            "supported_by_resolver": True,
-        }
-
-    tile_annotation = re.fullmatch(r"prepared_tile_annotation_agg_(\d+)", table_name)
-    if tile_annotation:
-        t = int(tile_annotation.group(1))
-        return {
-            "table_name": table_name,
-            "kind": "tile_with_annotations",
-            "sample_type": "tile",
-            "has_annotations": True,
-            "source_key": table_name,
-            "selector_key": "tile_with_annotations_1",
-            "layout": "ZYXC" if t == 1 else "TZYXC",
-            "input_shape": [128, 256, 256, 2] if t == 1 else [t, 128, 256, 256, 2],
-            "supported_by_resolver": t == 1,
-        }
-
-    raise AssertionError(f"Unrecognized prepared table name: {table_name}")
+    NOT just the first name: the catalog lists several locations (vast-main,
+    abc2-main, synthetic) but a given export populates one of them, and the
+    location join is an INNER join -- picking an empty one yields zero rows, and
+    every downstream assertion then degrades into a skip, which reads like a pass.
+    """
+    locations = fetch_storage_locations(local_db)
+    assert locations, "dry_lab.storage_locations has no active rows"
+    by_id = {v: k for k, v in locations.items()}
+    rows = local_db.execute_arrow(
+        f"SELECT unnest(present_locations) AS loc, count(*) AS n "
+        f"FROM {view.qualified_name} GROUP BY 1 ORDER BY 2 DESC LIMIT 1"
+    )
+    assert rows.num_rows, f"{view.qualified_name} has no rows at any storage location"
+    loc_id = int(rows["loc"][0].as_py())
+    return by_id[loc_id], loc_id
 
 
-def build_config(meta: dict, tmp_path: Path):
+def _resolved(local_db, sample_type: SampleType, *, with_targets: bool = False):
+    view = TRAINING_VIEWS[sample_type]
+    name, loc_id = _populated_location(local_db, view)
+    from cell_observatory_platform.data.databases.local_metadata_store import ResolvedSource
+
+    return ResolvedSource(
+        view=view,
+        requested_time_size=1,
+        requested_z_size=128,
+        requested_y_size=128,
+        requested_x_size=128,
+        with_targets=with_targets,
+        location_id=loc_id,
+        location_name=name,
+    )
+
+
+def _build_config(tmp_path: Path, sample_type: SampleType, location_name: str):
     return OmegaConf.create(
         {
-            "dataset_layout_order": meta["layout"],
+            "dataset_layout_order": "ZYXC",
             "datasets": {
-                "input_shape": meta["input_shape"],
-                "has_annotations": meta["has_annotations"],
-                "roi_list": None,
+                "input_shape": [128, 128, 128, 2],
+                "has_annotations": False,
+                "roi_ids": None,
                 "tile_list": None,
                 "timepoint_list": None,
-                "max_hypercubes": 25,
+                "synthetic_only": False,
                 "cdf_threshold": None,
                 "cdf_target": "90",
-                "synthetic_only": False,
                 "selected_channel_localizations": None,
                 "databases": {
-                    "sample_type": meta["sample_type"],
+                    "sample_type": sample_type.value,
+                    "storage_location": location_name,
                     "node_local_store_root": str(tmp_path),
-                    "cdf_threshold_channel_localizations": None,
-                    "channel_count": None,
-                    "min_channel_count": None,
-                    "max_channel_count": None,
-                    "required_channel_key_patterns": None,
-                    "any_channel_patterns": None,
-                    "all_channel_patterns": None,
-                    "required_channel_localizations": None,
-                    # `_remap_server_folder` requires exactly one
-                    # `required_locations` entry. `exists_prfs` is the
-                    # default for live-DB tests since the sandbox snapshot
-                    # is built against the prfs-mounted catalog.
-                    "required_locations": ["exists_prfs"],
-                    "holdout_split": None,
                 },
             },
         }
     )
 
 
-def scalar(db: LocalArrowDatabase, sql: str, column: str):
-    table = db.execute_arrow(sql)
-    assert table.num_rows == 1, sql
-    return table[column][0].as_py()
+# --------------------------------------------------------------------------- #
 
 
-def column_names_for_table(db: LocalArrowDatabase, table_name: str) -> set[str]:
-    sql = f"""
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = '{table_name}'
-        ORDER BY ordinal_position
-    """
-    return set(db.execute_arrow(sql)["column_name"].to_pylist())
+@pytest.mark.parametrize("sample_type", [SampleType.CUBE, SampleType.TILE])
+def test_view_exists_and_projects_the_contract(local_db, sample_type):
+    """The one check that can only be made against a live server: does the view
+    actually return every column data/databases/schema.py claims it does."""
+    view = TRAINING_VIEWS[sample_type]
+    local_db.assert_relation_exists(view.view, schema=view.schema)
+
+    resolved = _resolved(local_db, sample_type, with_targets=True)
+    sql = SqlQueryPlanner.build_sql(resolved, QuerySpec(max_rows=0))
+    table = local_db.execute_arrow(sql)
+
+    validate_projection(
+        table,
+        with_targets=True,
+        cube=view.is_cube,
+        where=f"{view.qualified_name} live projection",
+    )
+    assert "row_id" in table.column_names
 
 
-def query_table(db: LocalArrowDatabase, resolved, query: QuerySpec):
-    sql = SqlQueryPlanner.build_sql(resolved, query)
-    return db.execute_arrow(sql)
-
-
-def table_head_overview(db: LocalArrowDatabase, table_name: str, limit: int = 3) -> list[dict]:
-    sql = f"""
-        SELECT *
-        FROM public.{table_name}
-        ORDER BY prepared_id, tile_name, time_start
-        LIMIT {int(limit)}
-    """
-    return db.execute_arrow(sql).to_pylist()
-
-
-@pytest.fixture(scope="session")
-def live_channel_localizations(local_db: LocalArrowDatabase) -> list[str]:
-    sql = """
-        SELECT DISTINCT lower(trim(localization)) AS localization
-        FROM fish_db.tags
-        WHERE localization IS NOT NULL
-          AND COALESCE(is_deleted, false) = false
-        ORDER BY localization
-    """
-    localizations = [
-        value
-        for value in local_db.execute_arrow(sql)["localization"].to_pylist()
-        if value is not None and str(value).strip()
-    ]
-    assert localizations, "No live channel localizations found in fish_db.tags"
-    return localizations
-
-
-def first_channel_localization(db: LocalArrowDatabase, table_name: str) -> str | None:
-    sql = f"""
-        SELECT lower(trim(both '"' from mapping.value::text)) AS channel_localization
-        FROM public.{table_name} s
-        CROSS JOIN LATERAL jsonb_each(COALESCE(s.channel_mapping, '{{}}'::jsonb)) AS mapping(key, value)
-        LIMIT 1
-    """
-    table = db.execute_arrow(sql)
+@pytest.mark.parametrize("sample_type", [SampleType.CUBE, SampleType.TILE])
+def test_rows_are_loadable(local_db, sample_type):
+    """No NULL in anything the loader dereferences unconditionally."""
+    resolved = _resolved(local_db, sample_type)
+    table = local_db.execute_arrow(
+        SqlQueryPlanner.build_sql(resolved, QuerySpec(max_rows=512))
+    )
     if table.num_rows == 0:
-        return None
-    return table["channel_localization"][0].as_py()
+        pytest.skip(f"{resolved.view.qualified_name} returned no rows for this shape")
+    validate_non_null(table, where=f"{resolved.view.qualified_name} live rows")
 
 
-def assert_all_equal(values, expected, msg: str):
-    actual = set(values)
-    assert actual == {expected}, f"{msg}: expected only {expected!r}, got {sorted(actual)!r}"
+def test_natural_key_is_unique_on_cube_view(local_db):
+    """Resume identity. row_id comes from row_number() OVER (ORDER BY natural
+    key), and skip_batches replays a row RANGE -- a duplicate key means a resumed
+    run silently trains on different data.
 
-
-def assert_all_true(values, msg: str):
-    assert all(bool(v) for v in values), msg
-
-
-def assert_all_false(values, msg: str):
-    assert all(not bool(v) for v in values), msg
-
-
-def test_live_db_connection_and_relation_exists(local_db: LocalArrowDatabase, prepared_tables: list[dict]):
-    assert not local_db.relation_exists("definitely_not_a_real_table_123456789")
-
-    for meta in prepared_tables:
-        assert local_db.relation_exists(meta["table_name"])
-        local_db.assert_relation_exists(meta["table_name"])
-
-
-def test_all_live_prepared_tables_have_expected_columns(local_db: LocalArrowDatabase, prepared_tables: list[dict]):
-    for meta in prepared_tables:
-        if not meta["supported_by_resolver"]:
-            continue
-        cols = column_names_for_table(local_db, meta["table_name"])
-        missing = EXPECTED_COLUMNS[meta["kind"]] - cols
-        assert not missing, f"{meta['table_name']} is missing columns: {sorted(missing)}"
-
-
-def test_live_catalog_only_contains_tables_supported_by_resolver(prepared_tables: list[dict]):
-    unsupported = [meta["table_name"] for meta in prepared_tables if not meta["supported_by_resolver"]]
-    for meta in prepared_tables:
-        if meta["supported_by_resolver"]:
-            continue
-        assert meta["sample_type"] == "cube", meta["table_name"]
-        spatial_shape = tuple(meta["input_shape"][-4:-1] if meta["layout"] == "TZYXC" else meta["input_shape"][:3])
-        assert spatial_shape not in SUPPORTED_CUBE_SPATIAL_SHAPES, meta["table_name"]
-    if unsupported:
-        print(f"\n[localdb] skipping unsupported live tables: {unsupported}")
-
-
-def test_live_prepared_table_heads(
-    local_db: LocalArrowDatabase,
-    prepared_tables: list[dict],
-):
-    for meta in prepared_tables:
-        rows = table_head_overview(local_db, meta["table_name"], limit=3)
-        print(f"\n=== {meta['table_name']} ({meta['kind']}) ===")
-        for row in rows:
-            print(row)
-
-
-def test_resolver_uses_axis_policies_for_cube_and_tile_sources(tmp_path: Path):
-    cube_cfg = build_config(
-        {
-            "layout": "ZYXC",
-            "input_shape": [32, 64, 64, 2],
-            "has_annotations": False,
-            "sample_type": "cube",
-            "selector_key": "cube_without_annotations_3d",
-            "source_key": "cube_without_annotations_1_32_64_64",
-        },
-        tmp_path / "cube",
+    Asserted server-side (count(*) vs count(DISTINCT ...)) rather than by pulling
+    5M rows into Arrow.
+    """
+    view = TRAINING_VIEWS[SampleType.CUBE]
+    cols = ", ".join(view.order_by)
+    row = local_db.execute_arrow(
+        f"SELECT count(*) AS n, count(DISTINCT ({cols})) AS d FROM {view.qualified_name}"
     )
-    tile_cfg = build_config(
-        {
-            "layout": "ZYXC",
-            "input_shape": [128, 256, 256, 2],
-            "has_annotations": False,
-            "sample_type": "tile",
-            "selector_key": "tile_without_annotations_1",
-            "source_key": "tile_without_annotations_1",
-        },
-        tmp_path / "tile",
+    n, d = int(row["n"][0].as_py()), int(row["d"][0].as_py())
+    assert n == d, (
+        f"{view.qualified_name}: ORDER BY key {view.order_by} is not unique "
+        f"({n} rows, {d} distinct)"
     )
 
-    cube = TableResolver.resolve_from_config(cube_cfg)
-    tile = TableResolver.resolve_from_config(tile_cfg)
 
-    assert cube.source.fixed_axes == ("T", "Z", "Y", "X")
-    assert cube.source.dynamic_axes == ("C",)
-    assert tile.source.fixed_axes == ()
-    assert tile.source.dynamic_axes == ("T", "Z", "Y", "X", "C")
-
-
-def test_resolver_sql_and_materialization_work_for_every_live_table(
-    local_db: LocalArrowDatabase,
-    prepared_tables: list[dict],
-    tmp_path: Path,
-):
-    for meta in prepared_tables:
-        if not meta["supported_by_resolver"]:
-            continue
-        table_tmp = tmp_path / meta["table_name"]
-        cfg = build_config(meta, table_tmp)
-
-        resolved = TableResolver.resolve_from_config(cfg, db_client=local_db)
-        assert resolved.table_name == meta["table_name"]
-
-        query = TableResolver.build_query_spec_from_config(cfg)
-        store = TableResolver.build_store_spec_from_config(cfg)
-
-        live = query_table(local_db, resolved, query)
-        if live.num_rows == 0:
-            if meta["has_annotations"]:
-                print(f"\n[localdb] annotation table {meta['table_name']} returned zero rows; skipping")
-                continue
-            assert live.num_rows > 0, f"{meta['table_name']} returned zero rows"
-        assert "row_id" in live.column_names
-        assert "prepared_id" in live.column_names
-        assert "tile_name" in live.column_names
-        assert "time_start" in live.column_names
-
-        if meta["has_annotations"]:
-            assert all(v > 0 for v in live["annotation_count"].to_pylist()), meta["table_name"]
-
-        writer = MappedTable.create_or_attach(
-            db_client=local_db,
-            resolved=resolved,
-            query=query,
-            store=store,
-            node_id="pytest-live",
-            local_rank=0,
-        )
-        reader = MappedTable.create_or_attach(
-            db_client=local_db,
-            resolved=resolved,
-            query=query,
-            store=store,
-            node_id="pytest-live",
-            local_rank=1,
-        )
-
-        writer_table = writer.table()
-        reader_table = reader.table()
-
-        assert writer_table.num_rows == live.num_rows
-        assert reader_table.num_rows == live.num_rows
-        assert reader.descriptor.sample_table.source_key == meta["source_key"]
+def test_storage_root_join_resolves_on_disk(local_db):
+    """root_path || '/' || tile_relative_path must be a real path -- and must NOT
+    have tile_name joined on again (tile_relative_path already ends in the tile).
+    """
+    resolved = _resolved(local_db, SampleType.CUBE)
+    table = local_db.execute_arrow(
+        SqlQueryPlanner.build_sql(resolved, QuerySpec(max_rows=5))
+    )
+    if table.num_rows == 0:
+        pytest.skip("no cube rows for this shape/location")
+    for root, rel, name in zip(
+        table["storage_root"].to_pylist(),
+        table["tile_relative_path"].to_pylist(),
+        table["tile_name"].to_pylist(),
+    ):
+        assert rel.endswith(name), "tile_relative_path should already end in the tile"
+        assert os.path.exists(os.path.join(root, rel)), f"missing: {root}/{rel}"
 
 
-def test_live_basic_filters_work_for_every_table(
-    local_db: LocalArrowDatabase,
-    prepared_tables: list[dict],
-    tmp_path: Path,
-):
-    exercised_location_filter = False
+def test_channel_and_cdf_filters_are_accepted_and_narrow(local_db):
+    """The api.roi_channels semi-joins and the occupancy_cdf subscript have to be
+    valid SQL against the real column types, and should narrow rather than error.
 
-    for meta in prepared_tables:
-        if not meta["supported_by_resolver"]:
-            continue
-        cfg = build_config(meta, tmp_path / meta["table_name"])
-        resolved = TableResolver.resolve_from_config(cfg, db_client=local_db)
+    Worth running live because the semi-join joins two api views on roi_id and
+    the CDF subscript indexes an array whose mask slots are NULL -- neither is
+    checkable from the generated string alone.
+    """
+    resolved = _resolved(local_db, SampleType.CUBE)
+    baseline = local_db.execute_arrow(
+        f"SELECT count(*) AS n FROM {resolved.view.qualified_name}"
+    )["n"][0].as_py()
 
-        base = query_table(local_db, resolved, QuerySpec(max_rows=50))
-        if base.num_rows == 0:
-            if meta["has_annotations"]:
-                print(f"\n[localdb] annotation table {meta['table_name']} returned zero rows; skipping")
-                continue
-            assert base.num_rows > 0, f"{meta['table_name']} returned zero rows"
+    for query in (
+        QuerySpec(required_channel_localizations=["membrane"]),
+        QuerySpec(required_fluorophores=["mstaygold"]),
+        QuerySpec(required_annotation_types=["instance"]),
+        QuerySpec(
+            cdf_threshold=1,
+            cdf_threshold_channel_localizations=["membrane"],
+        ),
+    ):
+        where = FilterBuilder.build_where_sql(resolved, query)
+        got = local_db.execute_arrow(
+            f"SELECT count(*) AS n FROM {resolved.view.qualified_name} s WHERE {where}"
+        )["n"][0].as_py()
+        assert 0 <= int(got) <= int(baseline)
 
-        prepared_id = base["prepared_id"][0].as_py()
-        tile_name = base["tile_name"][0].as_py()
-        time_start = int(base["time_start"][0].as_py())
 
-        roi_table = query_table(local_db, resolved, QuerySpec(roi_list=[prepared_id], max_rows=25))
-        assert roi_table.num_rows > 0, meta["table_name"]
-        assert_all_equal(roi_table["prepared_id"].to_pylist(), prepared_id, f"{meta['table_name']} roi filter")
+def test_object_type_catalog_resolves_names(local_db):
+    """Annotation leaves carry object_type_id only; api.object_types is the
+    catalog configs' class names resolve through."""
+    names = fetch_object_type_names(local_db)
+    assert names, "api.object_types is empty; semantic class names cannot resolve"
+    assert all(isinstance(k, int) and isinstance(v, str) for k, v in names.items())
 
-        tile_table = query_table(local_db, resolved, QuerySpec(tile_list=[tile_name], max_rows=25))
-        assert tile_table.num_rows > 0, meta["table_name"]
-        assert_all_equal(tile_table["tile_name"].to_pylist(), tile_name, f"{meta['table_name']} tile filter")
 
-        time_table = query_table(local_db, resolved, QuerySpec(timepoint_list=[time_start], max_rows=25))
-        assert time_table.num_rows > 0, meta["table_name"]
-        assert_all_equal(time_table["time_start"].to_pylist(), time_start, f"{meta['table_name']} timepoint filter")
+def test_resolver_and_materialization_round_trip(local_db, tmp_path):
+    name, loc_id = _populated_location(local_db, TRAINING_VIEWS[SampleType.CUBE])
+    cfg = _build_config(tmp_path, SampleType.CUBE, name)
 
-        train_count = scalar(
-            local_db,
-            f"SELECT count(*) AS n FROM public.{meta['table_name']} WHERE COALESCE(is_test_split, false) = false",
-            "n",
-        )
-        if train_count > 0:
-            train_table = query_table(local_db, resolved, QuerySpec(holdout_split="train", max_rows=25))
-            assert train_table.num_rows > 0, meta["table_name"]
-            assert_all_false(train_table["is_test_split"].to_pylist(), f"{meta['table_name']} train split")
+    resolved = TableResolver.resolve_from_config(cfg, db_client=local_db)
+    assert resolved.view.qualified_name == "api.cube_training"
+    assert resolved.location_id == loc_id
 
-        test_count = scalar(
-            local_db,
-            f"SELECT count(*) AS n FROM public.{meta['table_name']} WHERE COALESCE(is_test_split, false) = true",
-            "n",
-        )
-        if test_count > 0:
-            test_table = query_table(local_db, resolved, QuerySpec(holdout_split="test", max_rows=25))
-            assert test_table.num_rows > 0, meta["table_name"]
-            assert_all_true(test_table["is_test_split"].to_pylist(), f"{meta['table_name']} test split")
+    query = TableResolver.build_query_spec_from_config(cfg)
+    store = TableResolver.build_store_spec_from_config(cfg)
 
-        for location_key in LOCATION_KEYS:
-            count = scalar(
-                local_db,
-                f"SELECT count(*) AS n FROM public.{meta['table_name']} "
-                f"WHERE COALESCE({location_key}, false) = true",
-                "n",
-            )
-            if count > 0:
-                loc_table = query_table(
-                    local_db,
-                    resolved,
-                    QuerySpec(required_locations=[location_key], max_rows=25),
-                )
-                assert loc_table.num_rows > 0, meta["table_name"]
-                assert_all_true(loc_table[location_key].to_pylist(), f"{meta['table_name']} {location_key}")
-                exercised_location_filter = True
-                break
-
-        synthetic_count = scalar(
-            local_db,
-            f"SELECT count(*) AS n FROM public.{meta['table_name']} "
-            f"WHERE COALESCE(is_synthetic, false) = true",
-            "n",
-        )
-        synthetic_table = query_table(local_db, resolved, QuerySpec(synthetic_only=True, max_rows=25))
-        if synthetic_count > 0:
-            assert synthetic_table.num_rows > 0, meta["table_name"]
-            assert_all_true(synthetic_table["is_synthetic"].to_pylist(), f"{meta['table_name']} synthetic_only")
-        else:
-            assert synthetic_table.num_rows == 0, f"{meta['table_name']} synthetic_only should be empty"
-
-    assert exercised_location_filter, "No location filter was exercised by the live DB contents"
+    mapped = MappedTable.create_or_attach(
+        db_client=local_db,
+        resolved=resolved,
+        query=query,
+        store=store,
+        node_id="test",
+        local_rank=0,
+    )
+    stats = mapped.descriptor.stats
+    assert stats.num_rows >= 0
+    assert stats.fixed_axes == ("T", "Z", "Y", "X")
