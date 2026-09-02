@@ -579,3 +579,29 @@ def test_unknown_token_raises_and_lists_what_exists():
 def test_validation_is_skipped_without_a_db_client():
     """Offline config construction must not require a connection."""
     TableResolver._assert_known_tokens(None, "localization", ["anything"])
+
+
+# --------------------------------------------------------------------------- #
+# seeded row sampling / tile shape bound
+# --------------------------------------------------------------------------- #
+
+def test_seeded_row_sample_ranks_by_md5_and_restores_natural_order():
+    sql = SqlQueryPlanner.build_sql(_resolved(), QuerySpec(max_rows=3, row_sample_seed=7))
+    compact = " ".join(sql.split())
+    assert "md5(concat_ws('/', s.source_kind::text" in compact and "/7')" in compact
+    assert "LIMIT 3" in compact
+    # outer query: row_id over the natural key of the sampled subset, natural order restored
+    assert "row_number() OVER (ORDER BY q.source_kind, q.roi_id" in compact
+    assert compact.rstrip().endswith("ORDER BY q.source_kind, q.roi_id, q.tile_id, q.time_start, q.z_start, q.y_start, q.x_start")
+
+
+def test_unseeded_max_rows_keeps_natural_order_limit():
+    sql = SqlQueryPlanner.build_sql(_resolved(), QuerySpec(max_rows=3))
+    assert "md5(" not in sql and sql.rstrip().endswith("LIMIT 3")
+
+
+def test_max_tile_shape_bounds_each_axis_on_tiles_only():
+    where = FilterBuilder.build_where_sql(_resolved(SampleType.TILE), QuerySpec(max_tile_shape=(128, 512, 3328)))
+    assert "s.z_size <= 128" in where and "s.y_size <= 512" in where and "s.x_size <= 3328" in where
+    where_cube = FilterBuilder.build_where_sql(_resolved(SampleType.CUBE), QuerySpec(max_tile_shape=(128, 512, 3328)))
+    assert "<=" not in where_cube

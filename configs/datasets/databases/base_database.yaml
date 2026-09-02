@@ -55,3 +55,8 @@ node_local_table_keys: {}
 # NB: is_test_split is currently unset on every row upstream, so `test` yields an
 # empty dataset. The filter-narrowing diagnostic names the clause when it happens.
 holdout_split: null
+
+# Tiles only: upper bound on (Z, Y, X). The loader sizes its pinned buffers to the
+# per-axis maximum over the selected rows, so without a bound one oversized tile
+# dictates the buffer for every sample.
+max_tile_shape: null

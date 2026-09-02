@@ -95,6 +95,7 @@ def parse_target_shape_range(
 def sample_target_shape(
     target_min: Tuple[int, int, int],
     target_max: Tuple[int, int, int],
+    rng: Optional["random.Random"] = None,
 ) -> Tuple[int, int, int]:
     """
     Sample target shape uniformly from range [target_min, target_max].
@@ -108,10 +109,11 @@ def sample_target_shape(
     Returns:
         Sampled shape (Z, Y, X)
     """
+    r = rng if rng is not None else random
     return (
-        random.randint(target_min[0], target_max[0]),
-        random.randint(target_min[1], target_max[1]),
-        random.randint(target_min[2], target_max[2]),
+        r.randint(target_min[0], target_max[0]),
+        r.randint(target_min[1], target_max[1]),
+        r.randint(target_min[2], target_max[2]),
     )
 
 

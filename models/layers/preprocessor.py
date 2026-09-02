@@ -2191,8 +2191,11 @@ class _LazyFrameMasks:
     per frame, ~268 MB/frame at production shapes). Consumers that never read
     ``masks`` (the point-loss criterion path, empty inference views) pay
     nothing; the dense-loss / correction-sampler path materializes exactly the
-    frames it touches. Not cached: repeated access rebuilds (compute is cheap;
-    peak memory is the constraint).
+    frames it touches. A materialized frame is cached: the SAM2 forward holds
+    every frame it reads for the whole step (correction-point sampling), so
+    the criterion's later read of the same frame must not rebuild it -- that
+    was a second ``B*K*Z*Y*X`` bool per step for nothing. ``release()`` drops
+    the cache when the step's data views are discarded.
     """
 
     def __init__(
@@ -2209,6 +2212,10 @@ class _LazyFrameMasks:
         self._B = int(mask_labelmap.shape[0])
         self._T = int(mask_labelmap.shape[1])
         self._spatial = tuple(mask_labelmap.shape[2:])
+        self._cache: dict[int, torch.Tensor] = {}
+
+    def release(self) -> None:
+        self._cache.clear()
 
     def __len__(self) -> int:
         return self._T
@@ -2223,6 +2230,9 @@ class _LazyFrameMasks:
             t += self._T
         if not (0 <= t < self._T):
             raise IndexError(f"frame index {t} out of range [0, {self._T})")
+        cached = self._cache.get(t)
+        if cached is not None:
+            return cached
         frame = torch.zeros(
             (self._B * self._K_full, *self._spatial), dtype=torch.bool, device=self._device
         )
@@ -2236,6 +2246,7 @@ class _LazyFrameMasks:
             frame[lo:lo + K] = (
                 lm_bt.unsqueeze(0) == sampled.to(lm_bt.dtype).view(K, 1, 1, 1)
             )
+        self._cache[t] = frame
         return frame
 
 
@@ -2264,6 +2275,7 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         max_masks: int | None = None,
         require_targets: bool = True,
         bbox_format: str = "zyxzyx",
+        boxes_normalized: bool = False,
         min_channel_count: int | None = None,
         max_channel_count: int | None = None,
     ):
@@ -2301,6 +2313,10 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         # downstream consumers (SAM2 box-prompt sampler) convert at the boundary
         # without inferring silently.
         self.bbox_format = bbox_format
+        # True when the collator normalized boxes to [0, 1] against the buffer
+        # spatial shape; the box-prompt sampler works in voxels, so the view
+        # denormalizes once when it copies the sampled boxes.
+        self.boxes_normalized = bool(boxes_normalized)
 
     def _data_types(self) -> Dict[str, Dict[str, Any]]:
         """SAM2 video: image + per-target integer ``label_map`` (nearest) and
@@ -2389,7 +2405,16 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         """
         B = num_videos
         T = num_frames
-        K_full = self.max_masks
+        # Rows per video: the largest instance count sampled in this batch,
+        # capped by max_masks. max_masks is the memory/supervision cap; the
+        # decoder and point sampler run over every row, so padding to it when
+        # each sample has fewer instances is pure overhead.
+        counts = [
+            min(int(t["mask_ids"].numel()), self.max_masks)
+            for t in targets[:B]
+            if t.get("mask_ids", None) is not None
+        ]
+        K_full = max(1, max(counts)) if counts else 1
 
         if mask_labelmap.shape[0] != B or mask_labelmap.shape[1] != T:
             raise ValueError(
@@ -2475,6 +2500,16 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
                 boxes_src = sampled_boxes_per_b[b]
                 if boxes_src is not None:
                     boxes_b_t = boxes_src.to(device=device, dtype=torch.float32)
+                    if self.boxes_normalized:
+                        Z_, Y_, X_ = (float(v) for v in spatial)
+                        fmt = self.bbox_format.lower()
+                        if fmt in ("cxcyczwhd", "xyzxyz"):
+                            scale = boxes_b_t.new_tensor([X_, Y_, Z_, X_, Y_, Z_])
+                        elif fmt == "zyxzyx":
+                            scale = boxes_b_t.new_tensor([Z_, Y_, X_, Z_, Y_, X_])
+                        else:
+                            raise ValueError(f"unsupported bbox_format {self.bbox_format!r}")
+                        boxes_b_t = boxes_b_t * scale
                     # sampled_boxes is gathered with the same perm as sampled_ids, so
                     # it must already have exactly K rows.
                     if boxes_b_t.shape[0] != K:

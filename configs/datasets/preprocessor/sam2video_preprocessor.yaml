@@ -31,3 +31,7 @@ seed: ${seed}
 expect_mask_channel: true # ${datasets.collate_fn.expect_mask_channel}
 require_targets: true #${datasets.collate_fn.require_targets}
 max_masks: 40 # 38 on single-gpu, 35 on multi-gpu
+# Boxes as the collator emits them (format + normalization); the target view
+# denormalizes to voxels once so the box-prompt sampler sees real coordinates.
+bbox_format: ${datasets.collate_fn.bbox_output_format}
+boxes_normalized: ${datasets.collate_fn.normalize_bboxes}

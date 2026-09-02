@@ -895,6 +895,7 @@ def sample_random_points_from_errors(
         pred_masks: torch.Tensor,
         time_separable: bool = True,
         num_pt: int = 1,
+        max_chunk_bytes: int = 512 * 1024 * 1024,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Sample `num_pt` random points (along with their labels) independently from the error regions.
@@ -904,11 +905,19 @@ def sample_random_points_from_errors(
     - gt_masks: [B, 1, D, H, W] masks, dtype=torch.bool
     - pred_masks: [B, 1, D, H, W] masks, dtype=torch.bool or None
     - num_pt: int, number of points to sample independently for each of the B error maps
+    - max_chunk_bytes: budget for the float32 sampling weights; rows are processed
+      in chunks that fit it (one multinomial launch per chunk, no host syncs)
 
     Outputs:
     - points: [B, num_pt, 3], dtype=torch.float, contains (x, y, z) coordinates of each sampled point
     - labels: [B, num_pt], dtype=torch.int32, where 1 means positive clicks and 0 means
       negative clicks
+
+    Sampling distribution, per row: uniform over the union of the negative pool
+    (false positives, or the whole background when the prediction is exact) and
+    the positive pool (false negatives), so a negative click is drawn with
+    probability |neg| / (|neg| + |pos|). A row with an empty union (all-foreground
+    GT with an exact prediction) yields voxel 0 with label 0.
     """
     if input_fmt == "ZYXC" or (input_fmt == "TZYXC" and time_separable):
         if pred_masks is None:  # if pred_masks is not provided, treat it as empty
@@ -919,58 +928,38 @@ def sample_random_points_from_errors(
 
         B, _, D_im, H_im, W_im = gt_masks.shape
         device = gt_masks.device
+        V = D_im * H_im * W_im
 
-        # false positive region, a new point sampled in this region should have
-        # negative label to correct the FP error
-        fp_masks = ~gt_masks & pred_masks
-        # false negative region, a new point sampled in this region should have
-        # positive label to correct the FN error
-        fn_masks = gt_masks & ~pred_masks
-        # whether the prediction completely match the ground-truth on each mask
-        # all_correct: [B, 1]
-        all_correct = torch.all((gt_masks == pred_masks).flatten(2), dim=2)
-        # all_correct: [B, 1, 1, 1, 1]
-        all_correct = all_correct[..., None, None, None]
+        gt = gt_masks.reshape(B, V)
+        pred = pred_masks.reshape(B, V)
+        # false negatives -> positive clicks; false positives -> negative clicks
+        pos = gt & ~pred
+        fp = ~gt & pred
+        # exact prediction: negative clicks come from the whole background
+        all_correct = ~(pos | fp).any(dim=1, keepdim=True)
+        neg = torch.where(all_correct, ~gt, fp)
+        pool = pos | neg
 
-        # Index-sampling formulation of the original argmax-over-noise trick
-        # (which allocated a (B, num_pt, D, H, W, 2) noise volume — ~0.5 GB at
-        # 128^3). The old joint argmax over iid U(0,1) noise masked by the two
-        # pools picks UNIFORMLY over the union
-        #   {(voxel, neg) : voxel in FP (or background when all-correct)}
-        #   ∪ {(voxel, pos) : voxel in FN}
-        # independently per (b, point) — so a negative click is drawn with
-        # probability |neg_pool| / (|neg_pool| + |fn_pool|). Reproduce exactly
-        # by flat-index sampling from the concatenated pools.
         points = torch.zeros(B, num_pt, 3, dtype=torch.float, device=device)
         labels = torch.zeros(B, num_pt, dtype=torch.int32, device=device)
-        for b in range(B):
-            if bool(all_correct[b, 0, 0, 0, 0]):
-                # prediction is perfect: negative clicks come from background
-                neg_pool = (~gt_masks[b, 0]).reshape(-1).nonzero(as_tuple=True)[0]
-            else:
-                neg_pool = fp_masks[b, 0].reshape(-1).nonzero(as_tuple=True)[0]
-            pos_pool = fn_masks[b, 0].reshape(-1).nonzero(as_tuple=True)[0]
-            n_neg, n_pos = neg_pool.numel(), pos_pool.numel()
-            if n_neg + n_pos == 0:
-                # degenerate (gt all-foreground & perfect pred): the old argmax
-                # of an all-zero volume returned voxel 0 with label 0 — keep it.
-                continue
-            sel = torch.randint(n_neg + n_pos, (num_pt,), device=device)
-            is_pos = sel >= n_neg
-            neg_sel = (
-                neg_pool[sel.clamp(max=max(n_neg - 1, 0))]
-                if n_neg else torch.zeros_like(sel)
-            )
-            pos_sel = (
-                pos_pool[(sel - n_neg).clamp(min=0)]
-                if n_pos else torch.zeros_like(sel)
-            )
-            flat = torch.where(is_pos, pos_sel, neg_sel)
-            labels[b] = is_pos.to(torch.int32)
-            pts_x = flat % W_im
-            pts_y = (flat // W_im) % H_im
-            pts_z = flat // (W_im * H_im)
-            points[b] = torch.stack([pts_x, pts_y, pts_z], dim=1).to(torch.float)
+        if num_pt == 0:
+            return points, labels
+
+        # Degenerate rows (empty union) keep the historical result: voxel 0,
+        # label 0. Give them weight on voxel 0 so multinomial has a valid
+        # distribution; pos[.., 0] is False there, so the label stays 0.
+        empty = ~pool.any(dim=1)
+        rows_per_chunk = max(1, int(max_chunk_bytes // (V * 4)))
+        for lo in range(0, B, rows_per_chunk):
+            hi = min(B, lo + rows_per_chunk)
+            w = pool[lo:hi].to(torch.float32)
+            w[:, 0] = torch.where(empty[lo:hi], torch.ones_like(w[:, 0]), w[:, 0])
+            idx = torch.multinomial(w, num_pt, replacement=True)          # (rows, num_pt)
+            labels[lo:hi] = torch.gather(pos[lo:hi], 1, idx).to(torch.int32)
+            pts_x = idx % W_im
+            pts_y = (idx // W_im) % H_im
+            pts_z = idx // (W_im * H_im)
+            points[lo:hi] = torch.stack([pts_x, pts_y, pts_z], dim=-1).to(torch.float)
     else:
         raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
     return points, labels

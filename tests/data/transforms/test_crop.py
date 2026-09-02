@@ -288,3 +288,73 @@ def test_rejects_non_dict_target_elements():
     s = _crop_sample(torch.rand(1, 4, 8, 8, 1), targets=[torch.rand(4, 8, 8, 1)])
     with pytest.raises(TypeError, match="Form-S"):
         c(s)
+
+
+# ---------------------------------------------------------------------------
+# TZYXC (4D) path: boxes and the padding mask follow the crop; seeded RNG
+# ---------------------------------------------------------------------------
+
+_DENSE_4D = {"kind": "dense", "layout": "TZYXC", "role": "input", "has_time": True}
+
+
+def _sam2_types():
+    return {
+        "data_tensor": _DENSE_4D,
+        "label_map": {"kind": "instance_masks", "layout": "TZYXC", "role": "target",
+                      "channel_role": "instance_masks"},
+        "boxes": {"kind": "boxes", "layout": "zyxzyx", "role": "target"},
+    }
+
+
+def test_4d_crop_windows_label_map_padding_mask_and_filters_boxes():
+    c = Crop(target_spatial_shape=(2, 4, 4), crop_dims="ZYX", crop_type="start",
+             bbox_format="zyxzyx", dtype="float32")
+    x = torch.zeros(1, 1, 4, 8, 8, 1)
+    lm = torch.arange(4 * 8 * 8, dtype=torch.int32).reshape(1, 4, 8, 8)   # (T, Z, Y, X)
+    boxes = torch.tensor([
+        [0.0, 0.0, 0.0, 2.0, 3.0, 3.0],   # inside the window
+        [3.0, 5.0, 5.0, 4.0, 8.0, 8.0],   # fully outside -> dropped
+    ])
+    pm = torch.zeros(1, 1, 4, 8, 8, dtype=torch.bool)
+    pm[..., 6:, :] = True                 # trailing padding along Y
+    out = c(_crop_sample(x, _sam2_types(), padding_mask=pm, targets=[{
+        "label_map": lm, "boxes": boxes,
+        "mask_ids": torch.tensor([7, 9]), "labels": torch.tensor([0, 1]),
+    }]))
+    assert out["data_tensor"].shape == (1, 1, 2, 4, 4, 1)
+    tgt = out["metainfo"]["targets"][0]
+    assert torch.equal(tgt["label_map"], lm[:, :2, :4, :4])
+    assert tgt["boxes"].shape == (1, 6) and tgt["mask_ids"].tolist() == [7] and tgt["labels"].tolist() == [0]
+    assert out["metainfo"]["padding_mask"].shape == (1, 1, 2, 4, 4)
+    assert not out["metainfo"]["padding_mask"].any()
+
+
+def test_4d_crop_shifts_normalized_cxcyczwhd_boxes_into_the_window():
+    c = Crop(target_spatial_shape=(2, 4, 4), crop_dims="YX", crop_type="center",
+             bbox_format="cxcyczwhd", boxes_normalized=True, dtype="float32")
+    x = torch.zeros(1, 1, 2, 8, 8, 1)
+    lm = torch.zeros(1, 2, 8, 8, dtype=torch.int32)
+    # a box centred at (x=4, y=4, z=1) of size (2, 2, 2) in voxels, normalized to the 8x8 frame
+    boxes = torch.tensor([[4 / 8, 4 / 8, 1 / 2, 2 / 8, 2 / 8, 2 / 2]])
+    out = c(_crop_sample(x, {**_sam2_types(), "boxes": {"kind": "boxes", "layout": "cxcyczwhd", "role": "target"}},
+                         targets=[{"label_map": lm, "boxes": boxes, "mask_ids": torch.tensor([1])}]))
+    b = out["metainfo"]["targets"][0]["boxes"][0]
+    # centre crop of 4x4 from 8x8 starts at (2, 2): the box lands at the window centre,
+    # renormalized against the 4-wide window
+    assert torch.allclose(b, torch.tensor([0.5, 0.5, 0.5, 0.5, 0.5, 1.0]))
+
+
+def test_seeded_crop_is_reproducible_and_seeds_differ():
+    x = torch.arange(4 * 16 * 16, dtype=torch.float32).reshape(1, 1, 4, 16, 16, 1)
+    lm = torch.zeros(1, 4, 16, 16, dtype=torch.int32)
+    def offsets(seed):
+        c = Crop(target_spatial_shape=(2, 4, 4), crop_dims="ZYX", crop_type="random",
+                 bbox_format="zyxzyx", dtype="float32", seed=seed)
+        outs = []
+        for _ in range(4):
+            o = c(_crop_sample(x, _sam2_types(),
+                               targets=[{"label_map": lm, "boxes": torch.zeros(0, 6), "mask_ids": torch.zeros(0, dtype=torch.long)}]))
+            outs.append(float(o["data_tensor"][0, 0, 0, 0, 0, 0]))   # window origin voxel value
+        return outs
+    assert offsets(0) == offsets(0)
+    assert offsets(0) != offsets(1)

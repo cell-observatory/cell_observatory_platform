@@ -52,8 +52,8 @@ class Crop:
 
     Supports:
       - input_format="ZYXC": tensor shape (B, Z, Y, X, C) — full annotations
-      - input_format="TZYXC": tensor shape (B, T, Z, Y, X, C) — dense + label maps only
-        (boxes/masks are rejected at boot by the verifier).
+      - input_format="TZYXC": tensor shape (B, T, Z, Y, X, C) — same target handling,
+        T is a leading axis every handler passes through.
 
     What gets cropped/resized is metadata-driven (mirroring ``Resize``): the owning
     preprocessor declares ``metainfo["data_types"]`` (``{name -> {"kind", ...}}``)
@@ -80,6 +80,7 @@ class Crop:
         resize_mode: str = "trilinear",
         align_corners: bool = False,
         boxes_normalized: bool = False,
+        seed: Optional[int] = None,
     ) -> None:
         """
         Args:
@@ -110,6 +111,9 @@ class Crop:
                 normalized coords invariant. When False (default), boxes are
                 treated as absolute voxel coords.
         """
+        # Own RNG (mode, target shape, window offsets): seeded per transform so
+        # crops are reproducible across ranks and resumes.
+        self._rng = random.Random(seed)
 
         # Parse target shape (fixed or range)
         self.target_min, self.target_max, self.random_target = parse_target_shape_range(
@@ -145,11 +149,11 @@ class Crop:
 
     def _sample_target_shape(self) -> Tuple[int, int, int]:
         """Sample target shape (uniform from range, or fixed if no range)."""
-        return sample_target_shape(self.target_min, self.target_max)
+        return sample_target_shape(self.target_min, self.target_max, rng=self._rng)
 
     def _sample_mode(self) -> str:
         """Sample mode according to mode_probs distribution."""
-        r = random.random()
+        r = self._rng.random()
         cumsum = 0.0
         for mode, prob in self.mode_probs.items():
             cumsum += prob
@@ -203,9 +207,9 @@ class Crop:
             crop_X = min(tX, X) if crop_x else X
 
             # Random offsets within valid range
-            off_z = random.randint(0, max(0, Z - crop_Z)) if crop_z else 0
-            off_y = random.randint(0, max(0, Y - crop_Y)) if crop_y else 0
-            off_x = random.randint(0, max(0, X - crop_X)) if crop_x else 0
+            off_z = self._rng.randint(0, max(0, Z - crop_Z)) if crop_z else 0
+            off_y = self._rng.randint(0, max(0, Y - crop_Y)) if crop_y else 0
+            off_x = self._rng.randint(0, max(0, X - crop_X)) if crop_x else 0
 
         elif self.crop_type == "center":
             # Center crop to target size (clamped to input size)
@@ -584,8 +588,9 @@ class Crop:
 
     def _run_4d(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        TZYXC crop path — dense + label maps only; T axis preserved.
-        NOTE: not fully adapted for all tasks yet.
+        TZYXC crop path: T is preserved on the image, label maps and the
+        padding mask; boxes are shifted/clipped/filtered exactly as in 3D
+        (per-instance fields carry no time axis).
         """
         if "data_tensor" not in data:
             raise KeyError("Crop expects 'data_tensor' in input dict")
@@ -595,13 +600,7 @@ class Crop:
         metainfo = data.get("metainfo", {})
         targets = metainfo.get("targets", [])
         _require_dict_targets(targets)
-        # Only labelmap kinds are supported at 4D; boxes are rejected at boot by
-        # the verifier, so drop them from the walk here.
-        field_specs = [
-            (name, kind)
-            for name, kind in self._target_field_specs(metainfo)
-            if kind_family(kind) in (DataKind.INSTANCE_MASKS, DataKind.SEMANTIC_MASKS)
-        ]
+        field_specs = self._target_field_specs(metainfo)
 
         if inputs.ndim != 6:
             raise ValueError(
@@ -617,18 +616,19 @@ class Crop:
         oz, oy, ox = offsets
         cz, cy, cx = crop_size
 
-        # Crop the spatial axes; T is preserved: (B, T, Z, Y, X, C) → (B, T, cz, cy, cx, C)
+        # Crop the spatial axes; T is preserved: (B, T, Z, Y, X, C) -> (B, T, cz, cy, cx, C)
         inputs = inputs[:, :, oz:oz + cz, oy:oy + cy, ox:ox + cx, :]
 
-        # Crop declared labelmap targets (spatial-only; trailing 3 axes)
-        new_targets = []
-        for tgt in targets:
-            t = dict(tgt)
-            for name, _kind in field_specs:
-                if name in t and t[name] is not None:
-                    # (Z, Y, X), (N, Z, Y, X) or (T, Z, Y, X) -> crop trailing 3 axes
-                    t[name] = t[name][..., oz:oz + cz, oy:oy + cy, ox:ox + cx]
-            new_targets.append(t)
+        # Label maps ((T, Z, Y, X) per target) are sliced on their trailing 3
+        # axes; boxes are shifted/clipped/filtered and mask_ids/labels follow.
+        new_targets = self._adjust_targets_for_crop(
+            targets, field_specs, offsets, crop_size, current_shape
+        )
+
+        padding_mask = metainfo.get("padding_mask")
+        has_pm = torch.is_tensor(padding_mask) and padding_mask.ndim == 5
+        if has_pm:
+            padding_mask = padding_mask[:, :, oz:oz + cz, oy:oy + cy, ox:ox + cx]
 
         # Handle resize if needed (actual crop smaller than target)
         actual_shape = (int(inputs.shape[2]), int(inputs.shape[3]), int(inputs.shape[4]))
@@ -644,32 +644,43 @@ class Crop:
                 dtype=None,  # keep input dtype; _finalize owns the narrowing
             )
             inputs = resized_folded.reshape(B, T, *target_shape, C)
-            # Resize declared labelmap targets
             new_targets2 = []
             for tgt in new_targets:
                 t = dict(tgt)
                 for name, kind in field_specs:
-                    if name in t and t[name] is not None:
-                        # Both mask kinds are integer labelmaps now (semantic is
-                        # one squashed class channel), so rank -- not kind -- picks
-                        # the kernel: a bare (Z, Y, X) map goes through
-                        # resize_label_map, anything with a leading axis
-                        # ((N, Z, Y, X) / (T, Z, Y, X)) through resize_masks, which
-                        # nearest-resizes per leading slice. Same nearest-exact
-                        # kernel underneath either way.
-                        if (
-                            kind_family(kind)
-                            in (DataKind.INSTANCE_MASKS, DataKind.SEMANTIC_MASKS)
-                            and t[name].ndim == 3
-                        ):
-                            t[name] = resize_label_map(t[name], target_shape)
-                        else:
-                            t[name] = resize_masks(t[name], target_shape)
+                    value = t.get(name)
+                    if value is None:
+                        continue
+                    fam = kind_family(kind)
+                    if fam in (DataKind.INSTANCE_MASKS, DataKind.SEMANTIC_MASKS):
+                        # rank picks the kernel: a bare (Z, Y, X) map goes
+                        # through resize_label_map, anything with a leading axis
+                        # ((T, Z, Y, X)) through resize_masks (nearest-exact per
+                        # leading slice; same kernel underneath).
+                        t[name] = (
+                            resize_label_map(value, target_shape)
+                            if value.ndim == 3
+                            else resize_masks(value, target_shape)
+                        )
+                    elif fam is DataKind.BOXES:
+                        if self.bbox_format is None:
+                            raise ValueError("bbox_format must be set to resize boxes")
+                        if not self.boxes_normalized:
+                            # normalized coords are invariant under a pure resize
+                            t[name] = resize_boxes(value, scale_factors, self.bbox_format)
+                    else:
+                        raise ValueError(
+                            f"Crop has no resize handler for kind {kind!r} (field {name!r})"
+                        )
                 new_targets2.append(t)
             new_targets = new_targets2
+            if has_pm:
+                padding_mask = resize_masks(padding_mask, target_shape)
 
         metainfo = dict(metainfo)
         metainfo["targets"] = new_targets
+        if has_pm:
+            metainfo["padding_mask"] = padding_mask
 
         final_shape = (int(inputs.shape[2]), int(inputs.shape[3]), int(inputs.shape[4]))
         self._update_image_sizes(

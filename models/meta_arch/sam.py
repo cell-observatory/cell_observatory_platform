@@ -1685,12 +1685,10 @@ class SAM2(SAM2Base):
             all_point_inputs.append(point_inputs)
             all_object_score_logits.append(object_score_logits)
 
-        # Concatenate the masks along channel (to compute losses on all of them,
-        # using `MultiStepIteractiveMasks`)
-        current_out["multistep_pred_masks"] = torch.cat(all_pred_masks, dim=1)
-        current_out["multistep_pred_masks_high_res"] = torch.cat(
-            all_pred_high_res_masks, dim=1
-        )
+        # Per-round mask lists; nothing downstream reads a concatenated view
+        # (the criterion consumes the multimask lists), so no copies are made.
+        current_out["multistep_pred_masks"] = all_pred_masks
+        current_out["multistep_pred_masks_high_res"] = all_pred_high_res_masks
         current_out["multistep_pred_multimasks"] = all_pred_multimasks
         current_out["multistep_pred_multimasks_high_res"] = all_pred_high_res_multimasks
         current_out["multistep_pred_ious"] = all_pred_ious
@@ -1977,8 +1975,10 @@ class SAM2(SAM2Base):
             self._prepare_backbone_features(backbone_out)
         )
 
-        # Add no_mem_embed for single-image SAM mode
-        if self.directly_add_no_mem_embed:
+        # no_mem_embed is only part of the training-path features when memory is
+        # in use (num_maskmem > 0); with memory disabled the training forward
+        # returns the raw backbone features, so inference must match.
+        if self.directly_add_no_mem_embed and self.num_maskmem > 0:
             vision_feats[-1] = vision_feats[-1] + self.no_mem_embed
 
         if self.input_fmt == "TZYXC":

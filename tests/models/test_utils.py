@@ -458,3 +458,62 @@ def test_sample_random_points_from_errors_mixed_points_land_in_their_pools():
             else:
                 assert pred[b, 0, z, y, x] and not gt[b, 0, z, y, x]
     assert 0 < int(labels.sum()) < labels.numel()
+
+
+# --------------------------------------------------------------------------- #
+# sample_random_points_from_errors: correction-click distribution and chunking
+# --------------------------------------------------------------------------- #
+
+def _flat(points, D, H, W):
+    x, y, z = points[..., 0].long(), points[..., 1].long(), points[..., 2].long()
+    return z * (H * W) + y * W + x
+
+
+def test_sampler_points_lie_in_the_error_pools_with_matching_labels():
+    torch.manual_seed(0)
+    D, H, W = 4, 6, 8
+    gt = torch.zeros(1, 1, D, H, W, dtype=torch.bool)
+    pred = torch.zeros_like(gt)
+    gt[0, 0, 0, :, :] = True            # 48 GT voxels
+    pred[0, 0, 0, :3, :] = True         # 24 predicted inside GT -> 24 FN
+    pred[0, 0, 1, 0, :8] = True         # 8 FP
+    pts, labels = sample_random_points_from_errors("TZYXC", gt, pred, num_pt=2000)
+    flat = _flat(pts, D, H, W)[0]
+    fn = (gt & ~pred).reshape(-1)
+    fp = (~gt & pred).reshape(-1)
+    pos = labels[0] == 1
+    assert fn[flat[pos]].all() and fp[flat[~pos]].all()
+    # negative clicks with probability |FP| / (|FP| + |FN|) = 8 / 32
+    frac_neg = (~pos).float().mean().item()
+    assert abs(frac_neg - 0.25) < 0.04
+
+
+def test_sampler_exact_prediction_samples_negatives_from_background():
+    torch.manual_seed(0)
+    gt = torch.zeros(1, 1, 2, 3, 4, dtype=torch.bool)
+    gt[0, 0, 0, 0, :2] = True
+    pts, labels = sample_random_points_from_errors("TZYXC", gt, gt.clone(), num_pt=64)
+    flat = _flat(pts, 2, 3, 4)[0]
+    assert (labels == 0).all() and (~gt.reshape(-1))[flat].all()
+
+
+def test_sampler_degenerate_row_returns_origin_label_zero_and_batches_are_independent():
+    gt = torch.ones(2, 1, 2, 2, 2, dtype=torch.bool)
+    gt[1, 0, 0, 0, 0] = False           # row 1 has one background voxel -> FP-free, exact
+    pred = gt.clone()
+    pts, labels = sample_random_points_from_errors("ZYXC", gt, pred, num_pt=3)
+    assert (pts[0] == 0).all() and (labels[0] == 0).all()   # empty union
+    assert (pts[1] == 0).all() and (labels[1] == 0).all()   # only background voxel is (0,0,0)
+
+
+def test_sampler_chunking_matches_single_chunk():
+    torch.manual_seed(1)
+    gt = torch.rand(6, 1, 3, 4, 5) > 0.5
+    pred = torch.rand(6, 1, 3, 4, 5) > 0.5
+    torch.manual_seed(2)
+    a = sample_random_points_from_errors("ZYXC", gt, pred, num_pt=4)
+    torch.manual_seed(2)
+    b = sample_random_points_from_errors("ZYXC", gt, pred, num_pt=4, max_chunk_bytes=60 * 4)  # 1 row per chunk
+    assert torch.equal(a[1], b[1]) and torch.equal(a[0], b[0])
+    empty = sample_random_points_from_errors("ZYXC", gt, pred, num_pt=0)
+    assert empty[0].shape == (6, 0, 3) and empty[1].shape == (6, 0)

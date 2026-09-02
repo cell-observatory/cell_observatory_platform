@@ -179,3 +179,11 @@ def test_mask_without_annotation_type_raises():
 def test_none_selection_means_every_channel():
     roles = remap_channel_roles_to_selection(TYPES, ANNOS, IDX, None)
     assert roles == {"3": "instance_masks"}
+
+
+def test_as_list_parses_json_serialized_lists():
+    from cell_observatory_platform.data.datasets.utils import _as_list
+    assert _as_list('["data", "data", "mask"]') == ["data", "data", "mask"]
+    assert _as_list('[0, 1, 2]') == [0, 1, 2]
+    assert _as_list(["a", "b"]) == ["a", "b"]
+    assert _as_list(None) is None

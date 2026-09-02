@@ -23,6 +23,9 @@ def _as_list(value: Any) -> Optional[list]:
         value = value.as_py()
     if value is None:
         return None
+    if isinstance(value, (str, bytes)):
+        # JSON-serialized list (the loader emits its channel arrays this way)
+        return list(ujson.loads(value))
     return list(value)
 
 

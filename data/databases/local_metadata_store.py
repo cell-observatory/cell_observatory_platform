@@ -156,6 +156,12 @@ class QuerySpec:
     required_channel_localizations: Optional[Sequence[str]] = None
     required_fluorophores: Optional[Sequence[str]] = None
     required_annotation_types: Optional[Sequence[str]] = None
+    # tiles only: upper bound on (Z, Y, X) so the loader's per-axis buffer max
+    # is bounded by config rather than by the largest tile in the view
+    max_tile_shape: Optional[Sequence[int]] = None
+    # with max_rows: take a seeded pseudo-random subset instead of the first
+    # max_rows rows in natural order
+    row_sample_seed: Optional[int] = None
 
     def validate(self) -> None:
         for name in ("data_channel_count", "min_data_channel_count", "max_data_channel_count"):
@@ -462,6 +468,13 @@ class FilterBuilder:
         out: list[tuple[str, str]] = []
 
         out.extend(cls._shape_clauses(resolved, alias))
+        if not resolved.view.is_cube and query.max_tile_shape is not None:
+            # tiles are ragged (no fixed-axis predicate); bound each spatial axis
+            for ax, bound in zip(("Z", "Y", "X"), query.max_tile_shape):
+                out.append((
+                    f"{_AXIS_COLUMN[ax]}<={int(bound)}",
+                    f"{alias}.{_AXIS_COLUMN[ax]} <= {int(bound)}",
+                ))
 
         if query.roi_ids:
             out.append((
@@ -790,6 +803,8 @@ class TableResolver:
             tile_list=cls._to_tuple(config.datasets.tile_list),
             timepoint_list=cls._to_tuple(config.datasets.timepoint_list),
             max_rows=config.datasets.get("max_rows", None),
+            row_sample_seed=config.datasets.get("row_sample_seed", None),
+            max_tile_shape=cls._to_tuple(getattr(db, "max_tile_shape", None)),
             cdf_threshold=config.datasets.cdf_threshold,
             cdf_target=config.datasets.cdf_target,
             cdf_threshold_channel_localizations=cls._to_tuple(
@@ -963,6 +978,30 @@ class SqlQueryPlanner:
         select_sql = ",\n                ".join(cls._projection(resolved, alias))
         where_sql = FilterBuilder.build_where_sql(resolved, query, alias=alias)
         order_sql = ", ".join(f"{alias}.{name}" for name in view.order_by)
+
+        if query.max_rows is not None and query.row_sample_seed is not None:
+            # Seeded pseudo-random subset: rank rows by md5(natural key || seed),
+            # keep max_rows, then restore natural order so row_id (and resume)
+            # are as stable as the unsampled query. Deterministic across
+            # restores, unlike TABLESAMPLE.
+            key_sql = ", ".join(f"{alias}.{name}::text" for name in view.order_by)
+            sampled_order = ", ".join(f"q.{name}" for name in view.order_by)
+            sql = f"""
+            SELECT
+                row_number() OVER (ORDER BY {sampled_order}) - 1 AS row_id,
+                q.*
+            FROM (
+                SELECT
+                    {select_sql}
+                FROM {view.qualified_name} {alias}
+                {cls._location_join(alias, resolved.location_id)}
+                WHERE {where_sql}
+                ORDER BY md5(concat_ws('/', {key_sql}) || '/{int(query.row_sample_seed)}')
+                LIMIT {int(query.max_rows)}
+            ) q
+            ORDER BY {sampled_order}
+            """
+            return sql
 
         sql = f"""
             SELECT

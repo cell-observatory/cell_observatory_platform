@@ -10,6 +10,9 @@ patch_shape: [4, 16, 16, 16]
 mask_channel_idx: 1
 
 max_rows: null # maximum number of rows to query from the database
+# With max_rows: seeded pseudo-random subset (md5 of the natural key + seed) instead
+# of the first max_rows rows in natural order (= a couple of tiles). null keeps natural order.
+row_sample_seed: null
 # FIXME: Are these not used?? If so, remove them.
 max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
 max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)

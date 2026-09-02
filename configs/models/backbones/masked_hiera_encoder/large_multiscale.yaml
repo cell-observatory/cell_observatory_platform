@@ -10,9 +10,9 @@ embed_dim: 144
 num_heads: 2
 drop_path_rate: 0.0
 q_pool: 2
-q_stride: [2, 2, 2]
+q_stride: [2, 2, 2] # rank of the token grid: 3 for ZYXC; a TZYXC experiment overrides to [1, 2, 2, 2]
 stages: [2, 6, 36, 4]
-mask_unit_size: [8, 8, 8]
+mask_unit_size: [8, 8, 8] # same rank rule as q_stride ([1, 8, 8, 8] under TZYXC)
 norm_layer: LayerNorm
 
 # Multiscale backbone mode: per-level channel equalization (no fusion heads).

@@ -14,14 +14,18 @@ from __future__ import annotations
 import pytest
 import torch
 
-from cell_observatory_platform.models.layers.preprocessor import SAM2VideoPreprocessor
+from cell_observatory_platform.models.layers.preprocessor import SAM2VideoPreprocessor, _LazyFrameMasks
 
 
-def _make_preprocessor(max_masks: int, bbox_format: str = "zyxzyx") -> SAM2VideoPreprocessor:
-    # Bypass __init__: the data-view builder only needs max_masks, bbox_format, rng.
+def _make_preprocessor(
+    max_masks: int, bbox_format: str = "zyxzyx", boxes_normalized: bool = False
+) -> SAM2VideoPreprocessor:
+    # Bypass __init__: the data-view builder only needs max_masks, bbox_format,
+    # boxes_normalized, rng.
     pp = SAM2VideoPreprocessor.__new__(SAM2VideoPreprocessor)
     pp.max_masks = max_masks
     pp.bbox_format = bbox_format
+    pp.boxes_normalized = boxes_normalized
     pp.rng = torch.Generator()
     pp.rng.manual_seed(0)
     return pp
@@ -30,7 +34,8 @@ def _make_preprocessor(max_masks: int, bbox_format: str = "zyxzyx") -> SAM2Video
 def test_lazy_data_view_fields_shapes_and_pad_sentinel():
     device = torch.device("cpu")
     B, T, Z, Y, X = 2, 3, 2, 4, 5
-    K_full = 4
+    # rows per video = largest sampled count in the batch (2), capped by max_masks (4)
+    K_full = 2
 
     # Construct a labelmap whose voxels are mostly background (0) plus a few
     # objects with known integer ids placed deterministically.
@@ -58,7 +63,7 @@ def test_lazy_data_view_fields_shapes_and_pad_sentinel():
         },
     ]
 
-    pp = _make_preprocessor(max_masks=K_full, bbox_format="zyxzyx")
+    pp = _make_preprocessor(max_masks=4, bbox_format="zyxzyx")
     view = pp._build_data_views(
         targets=targets,
         num_frames=T,
@@ -172,7 +177,8 @@ def test_lazy_data_view_presence_tracks_frame_membership():
 
 
 def test_lazy_data_view_empty_targets_all_pad():
-    # Missing targets entry (e.g. inference) should produce all-pad rows.
+    # Missing targets entry (e.g. inference) should produce a single pad row
+    # (rows follow the batch's instance counts, never max_masks).
     device = torch.device("cpu")
     B, T, Z, Y, X = 1, 1, 2, 2, 2
     K_full = 3
@@ -189,7 +195,7 @@ def test_lazy_data_view_empty_targets_all_pad():
         mask_labelmap=labelmap,
     )
 
-    assert torch.equal(view["instance_ids"][0], torch.tensor([-1, -1, -1], dtype=torch.int64))
+    assert torch.equal(view["instance_ids"][0], torch.tensor([-1], dtype=torch.int64))
     assert not torch.any(view["valid"][0])
     assert not torch.any(view["presence_t"][0])
     assert torch.all(view["boxes"][0] == 0)
@@ -208,6 +214,7 @@ def _make_forward_pp(
     pp = SAM2VideoPreprocessor.__new__(SAM2VideoPreprocessor)
     pp.max_masks = max_masks
     pp.bbox_format = "zyxzyx"
+    pp.boxes_normalized = False
     pp.rng = torch.Generator()
     pp.rng.manual_seed(0)
     pp.expect_mask_channel = expect_mask_channel
@@ -354,17 +361,16 @@ def test_forward_transform_keeps_image_and_labelmap_coherent():
     assert torch.equal(targets[0]["label_map"], lm[..., :XKEEP][0].to(torch.int32))
 
     # masks/instance_ids are built from the CROPPED labelmap: id 9 (x=1) survives, id 4 (x=3) is gone.
-    K_FULL = 2
+    K_FULL = 1                                       # one instance in the batch -> one row (max_masks 2 caps, no pad)
     ids = dv["instance_ids"][0]                      # frame 0, rows = B*K_full
-    assert ids.tolist() == [9, -1]                   # one real row + one pad sentinel
-    assert dv["valid"][0].tolist() == [True, False]
-    assert dv["presence_t"][0].tolist() == [True, False]
+    assert ids.tolist() == [9]
+    assert dv["valid"][0].tolist() == [True]
+    assert dv["presence_t"][0].tolist() == [True]
 
     m = dv["masks"][0]                               # _LazyFrameMasks -> (B*K_full, Z, Y, XKEEP) bool
     assert m.shape == (B * K_FULL, Z, Y, XKEEP) and m.dtype == torch.bool
     assert torch.equal(m[0], targets[0]["label_map"][0] == 9)
     assert m[0].sum().item() == 1 and bool(m[0, 0, 0, 1])
-    assert not m[1].any()                            # pad row is empty
     assert not torch.any(dv["labelmaps"] == 4)
 
 
@@ -413,3 +419,98 @@ def test_split_channels_no_target_role_returns_image_view():
     # the signal prefix. Shared storage is what matters -- no gather, no copy.
     assert images.data_ptr() == x.data_ptr()
     assert images.shape == x.shape
+
+
+def _targets(id_lists, boxes=None, device="cpu"):
+    out = []
+    for i, ids in enumerate(id_lists):
+        t = {"mask_ids": torch.tensor(ids, dtype=torch.long, device=device)}
+        if boxes is not None:
+            t["boxes"] = boxes[i]
+        out.append(t)
+    return out
+
+
+def _labelmap(B, T, Z, Y, X, id_lists):
+    lm = torch.zeros((B, T, Z, Y, X), dtype=torch.int32)
+    for b, ids in enumerate(id_lists):
+        for j, i in enumerate(ids):
+            lm[b, :, 0, j % Y, (j * 2) % X] = i
+    return lm
+
+
+# --------------------------------------------------------------------------- #
+# rows per video follow the batch's instance counts (capped by max_masks)
+# --------------------------------------------------------------------------- #
+
+def test_rows_per_video_follow_batch_max_not_max_masks():
+    ids = [[1, 2, 3], [4, 5, 6, 7, 8]]
+    lm = _labelmap(2, 1, 2, 4, 8, ids)
+    view = _make_preprocessor(max_masks=32)._build_data_views(
+        targets=_targets(ids), num_frames=1, num_videos=2, device=torch.device("cpu"), mask_labelmap=lm
+    )
+    assert view["masks"][0].shape[0] == 2 * 5      # 5 = largest count, not 32
+    assert view["valid"][0].sum().item() == 8       # 3 + 5 real rows
+
+
+def test_rows_per_video_capped_by_max_masks():
+    ids = [[1, 2, 3, 4, 5, 6]]
+    lm = _labelmap(1, 1, 2, 4, 8, ids)
+    view = _make_preprocessor(max_masks=4)._build_data_views(
+        targets=_targets(ids), num_frames=1, num_videos=1, device=torch.device("cpu"), mask_labelmap=lm
+    )
+    assert view["masks"][0].shape[0] == 4
+    assert view["valid"][0].sum().item() == 4
+
+
+def test_rows_per_video_at_least_one_with_empty_targets():
+    lm = torch.zeros((1, 1, 2, 2, 2), dtype=torch.int32)
+    view = _make_preprocessor(max_masks=8)._build_data_views(
+        targets=[{"mask_ids": torch.zeros(0, dtype=torch.long)}], num_frames=1, num_videos=1,
+        device=torch.device("cpu"), mask_labelmap=lm,
+    )
+    assert view["masks"][0].shape[0] == 1 and not view["valid"][0].any()
+
+
+# --------------------------------------------------------------------------- #
+# _LazyFrameMasks: per-frame cache
+# --------------------------------------------------------------------------- #
+
+def test_lazy_frame_masks_cache_returns_same_tensor_until_release():
+    lm = _labelmap(1, 2, 2, 4, 8, [[3, 5]])
+    masks = _LazyFrameMasks(
+        mask_labelmap=lm, sampled_ids_per_b=[torch.tensor([3, 5])], max_masks=2, device=torch.device("cpu")
+    )
+    a = masks[0]
+    assert masks[0] is a
+    assert masks[1] is not a and masks[1] is masks[1]
+    masks.release()
+    b = masks[0]
+    assert b is not a and torch.equal(a, b)
+
+
+# --------------------------------------------------------------------------- #
+# normalized collator boxes are denormalized to voxels in the view
+# --------------------------------------------------------------------------- #
+
+def test_normalized_boxes_are_scaled_to_voxels_in_the_view():
+    Z, Y, X = 2, 4, 8
+    ids = [[1]]
+    lm = _labelmap(1, 1, Z, Y, X, ids)
+    boxes = [torch.tensor([[0.5, 0.25, 0.5, 0.25, 0.5, 1.0]])]  # cxcyczwhd, normalized
+    view = _make_preprocessor(max_masks=2, bbox_format="cxcyczwhd", boxes_normalized=True)._build_data_views(
+        targets=_targets(ids, boxes), num_frames=1, num_videos=1, device=torch.device("cpu"), mask_labelmap=lm
+    )
+    got = view["boxes"][0][0]
+    assert torch.allclose(got, torch.tensor([0.5 * X, 0.25 * Y, 0.5 * Z, 0.25 * X, 0.5 * Y, 1.0 * Z]))
+    assert view["box_format"] == "cxcyczwhd"
+
+
+def test_absolute_boxes_are_left_alone():
+    ids = [[1]]
+    lm = _labelmap(1, 1, 2, 4, 8, ids)
+    boxes = [torch.tensor([[0.0, 1.0, 2.0, 1.0, 3.0, 6.0]])]
+    view = _make_preprocessor(max_masks=2, bbox_format="zyxzyx", boxes_normalized=False)._build_data_views(
+        targets=_targets(ids, boxes), num_frames=1, num_videos=1, device=torch.device("cpu"), mask_labelmap=lm
+    )
+    assert torch.equal(view["boxes"][0][0], boxes[0][0])

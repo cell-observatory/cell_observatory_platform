@@ -5,10 +5,12 @@
 # settings from the 2026-09-01 ABC sanity runs / max_masks probes:
 #   * max_masks 10 per sample at 128x384x1024 (probe: 8 -> 57.5 GiB max active,
 #     90-100 % util during steps; 16 and 32 OOM on the A100-80GB);
-#   * datasets.roi_ids = the 266 synthetic ROIs whose annotated tiles are all
-#     128 x 512 x {1408..3328} (4550 tiles, ~60k annotated frames); the ~12 ROIs
-#     with 256- or 1536-sized tiles are excluded so the pinned buffer max stays
+#   * databases.max_tile_shape [128, 512, 3328] keeps every annotated synthetic
+#     tile up to that size (266 ROIs, 4550 tiles, ~60k frames) and excludes the
+#     ~12 ROIs with 256- or 1536-sized tiles, so the pinned buffer max stays
 #     1x128x512x3328x6 (~2.6 GB/sample) instead of 13 GB;
+#   * a random 128x384x1024 window is CROPPED from each tile at native
+#     resolution (Crop transform; no resize, no anisotropic squash);
 #   * 5 % validation split (loss-based in-loop evaluator) + best-checkpoint hooks.
 # Budget: ~60k frames / 8 per step = ~7.5k steps/epoch; the mm8 probe ran ~4 s
 # per step (data + compute), i.e. ~8 h/epoch -> 50 epochs is ~2.5 weeks on this
@@ -127,7 +129,9 @@ datasets:
 
   use_cached_hypercubes_dataframe: false
   max_rows: null # all annotated frames of the ROIs below (~60k)
-  roi_ids: [12,13,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,256,257,258,259,260,261,262,263,264,265,266,267,268,269,270,271,272,273,274,275,276,277,278,279,280]
+  # databases.max_tile_shape (below) bounds the per-axis buffer max in SQL:
+  # 1x128x512x3328x6 (~2.6 GB/sample); the ~12 ROIs with 256- or 1536-sized
+  # tiles (13 GB/sample buffers) are excluded.
   cdf_threshold: null
   cdf_target: null
   selected_channel_localizations: ["membrane", "cytosol"]
@@ -140,6 +144,7 @@ datasets:
     verbose: true
     diagnostic_verbose: false
     sample_type: tile # api.tiles_training (ragged; only T pinned)
+    max_tile_shape: [128, 512, 3328] # (Z, Y, X) upper bound per axis
     data_channel_count: 5 # SIGNAL channels only (mask excluded); 6 -> 0 rows
     required_channel_localizations: ["membrane", "cytosol"]
     storage_location: synthetic # dry_lab.storage_locations name (vast-main | abc2-main | synthetic)
@@ -147,19 +152,18 @@ datasets:
   preprocessor:
     max_masks: 10 # A100-80GB at 128x384x1024: 8 -> 57.5 GiB max active; 16 OOMs
     transforms_list:
-      # 1) Resize the (valid region of the) tile to input_shape: the collator
-      #    buffer is the dataset max; the preprocessor must land on
-      #    datasets.input_shape (_assert_input_shape_spatial). Trilinear on the
-      #    image, nearest on the labelmap, coordinate scaling on the boxes.
-      - _target_: cell_observatory_platform.data.transforms.resize.Resize
+      # 1) Random 128x384x1024 window at native resolution (no resize): the
+      #    collator buffer is the dataset max; the crop lands on input_shape
+      #    (_assert_input_shape_spatial). Boxes are shifted/clipped/filtered
+      #    with mask_ids/labels; the padding mask follows the window.
+      - _target_: cell_observatory_platform.data.transforms.crop.Crop
         target_spatial_shape: [128, 384, 1024] # (Z, Y, X) == input_shape spatial
-        mode: trilinear
-        align_corners: false
-        dtype: ${quantization}
+        crop_dims: YX # Z is already 128
+        crop_type: random
         bbox_format: ${datasets.collate_fn.bbox_output_format}
         boxes_normalized: ${datasets.collate_fn.normalize_bboxes}
-        crop_to_valid: true
-      # 2) Normalize after resize (sam2video_preprocessor default).
+        seed: ${seed}
+      # 2) Normalize after the crop (sam2video_preprocessor default).
       - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
         input_layout:
           _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
