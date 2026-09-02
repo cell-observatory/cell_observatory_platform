@@ -222,16 +222,18 @@ def resize_masks(
     (dtype-preserving; no float cast).
 
     Args:
-        masks: Tensor of shape (N, Z, Y, X) - N binary masks / labelmap slices
+        masks: Tensor of shape (..., Z, Y, X) with at least one leading axis --
+            (N, Z, Y, X) binary masks / labelmap slices, or a (B, T, Z, Y, X)
+            padding mask under a TZYXC layout. Leading axes are untouched.
         target_shape: Target spatial shape (Z, Y, X)
 
     Returns:
-        Resized masks tensor of shape (N, tZ, tY, tX)
+        Resized masks tensor of shape (..., tZ, tY, tX)
     """
-    if masks.ndim == 4:
+    if masks.ndim >= 4:
         return _resize_nearest_exact_3d(masks, target_shape)
     else:
-        raise ValueError(f"Unsupported masks ndim={masks.ndim}; expected 4 dims.")
+        raise ValueError(f"Unsupported masks ndim={masks.ndim}; expected >= 4 dims (..., Z, Y, X).")
 
 
 def resize_label_map(

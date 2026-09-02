@@ -64,6 +64,14 @@ clusters:
 # overrides
 # --------------------------------------------------------------------------------
 
+optimizations:
+  env:
+    # The launcher's apptainer exec inherits the host env and binds $HOME, so the
+    # user's ~/.local site-packages shadows the image's `numa` module
+    # (ImportError: cannot import name 'schedule' from 'numa'). Exported by
+    # manager.py before launch; workers inherit it.
+    PYTHONNOUSERSITE: "1"
+
 # Use the PointRend point-sampling loss path (labelmap-native).
 models:
   backbones:
@@ -73,8 +81,29 @@ models:
       # space only (T=1 here).
       q_stride: [1, 2, 2, 2]
       mask_unit_size: [1, 8, 8, 8] # same rank rule as q_stride
+    sam_backbone:
+      # large_multiscale uses channel_proj_type=equalization, so every level the
+      # wrapper receives is already multiscale_out_dim (256) wide -- the group
+      # default of 1152 (raw Hiera-L final stage) sizes the wrapper's LayerNorms
+      # and 1x1 projection for a width that never arrives.
+      backbone_native_channels: ${models.backbones.masked_hiera_encoder.multiscale_out_dim}
+      # Each level is projected to backbone_embed_dims[-1]; SAM2's mask-decoder
+      # high-res convs (conv_s0/conv_s1) and memory attention are built at
+      # sam_embed_dim, so the per-level width must be sam_embed_dim, as the
+      # single-scale wrapper config already ties it. The group default (256)
+      # only matches a 256-wide SAM2.
+      backbone_embed_dims:
+        - ${models.meta_arch.sam.sam_embed_dim}
+        - ${models.meta_arch.sam.sam_embed_dim}
+        - ${models.meta_arch.sam.sam_embed_dim}
   meta_arch:
     sam:
+      # effective stride of the coarsest Hiera level (patch 4 x 2 pools): the
+      # prompt encoder / memory attention / mask-input grids are derived from
+      # train_shape / patch_shape and must match that level, not the patchify.
+      patch_shape: [1, 16, 16, 16, null]
+      memory_attention_args:
+        patch_shape: [1, 16, 16, 16, null]
       criterion_args:
         use_point_sampling: true
         num_points: 26000          # kept from the H200 unit (~10% of its 32x64x128
@@ -92,11 +121,18 @@ paths:
 
 datasets:
   batch_size: ${clusters.batch_size_per_gpu}
+  # This node is used from a 16-core Slurm cpuset (cores 0-7,64-71); the per-GPU
+  # NUMA bind (bind_current_process_to_node) raises when a GPU's NUMA node has
+  # no CPUs in the cpuset. Pinning cannot help with 16 cores anyway.
+  pin_numa_node: false
   # cod_db_20260824 materializes only shape_id 1 (1x128x128x128) cubes; the cube
   # query pins T/Z/Y/X, so other shapes return 0 rows. 5 signal + 1 mask channel.
   train_shape: [1, 128, 128, 128, 5]
   input_shape: [1, 128, 128, 128, 6]
-  patch_shape: [1, 16, 16, 16, null]
+  # Hiera patchifies at 4 and pools twice (q_pool 2, q_stride 2): levels at
+  # stride 4/8/16, coarsest = SAM2's image embedding at stride 16 (original
+  # SAM2 geometry). The SAM2-side nodes below carry the effective stride.
+  patch_shape: [1, 4, 4, 4, null]
   mask_channel_idx: 5
   last_batch_policy: drop
 
@@ -116,7 +152,7 @@ datasets:
   synthetic_only: true
 
   preprocessor:
-    max_masks: 26 # A100-80GB value proven at 128x384x512; 128^3 is 12x smaller, so ample headroom
+    max_masks: 8 # deliberately low for sanity runs (A100 fits 26 at 128x384x512); throughput is not the goal here
 
   databases:
     dbname: local

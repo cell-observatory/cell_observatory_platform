@@ -318,6 +318,14 @@ class EventWriter:
         distributed: bool = True,
         keep_steps_data: bool = False
     ):
+        # Records may hold detached GPU scalars (the trainers defer .item() to
+        # this boundary). Materialize to floats BEFORE the object gather: a
+        # pickled CUDA tensor unpickles onto its source device index, so rank 0
+        # would otherwise reduce a mix of cuda:0/cuda:1/... tensors.
+        scalars = {
+            name: [(float(v) if torch.is_tensor(v) else v, it, ep) for (v, it, ep) in records]
+            for name, records in scalars.items()
+        }
         if distributed and world > 1:
             gathered = [None] * world
             torch.distributed.all_gather_object(gathered, scalars)

@@ -1,10 +1,10 @@
 # @package _global_
-# Feature: wall-clock checkpoint trigger every 5 min (exercises the timer path within a sanity run); more rows so the run outlives the interval.
+# Feature: wall-clock checkpoint trigger every 2 min (exercises the timer path within a sanity run); more rows so the run outlives the interval.
 defaults:
   - base_sam2_torch
   - _self_
 
-experiment_name: sam2_abc_torch_single_cube_128_timer5m
+experiment_name: sam2_abc_torch_single_cube_128_timer2m
 
 datasets:
   max_rows: 1024
@@ -19,4 +19,4 @@ hooks:
   - name: periodic_checkpointer
     file_prefix: latest_model
     backend: TORCHTITAN
-    time_interval: 5m
+    time_interval: 2m # trainer-init -> end is ~4-5 min here (dataloader init ~3 min + 128 steps ~1.5 min); 5m never fired

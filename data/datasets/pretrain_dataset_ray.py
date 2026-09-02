@@ -128,9 +128,13 @@ class FinetuneCollatorActor:
     ):
         _ensure_cupy()  # collator actors own a GPU; loaders never import cupy
         # The metadata columns carried into metainfo. 
-        self.columns = list(columns) if columns else list(
-            required_columns(with_targets=True)
-        )
+        self.columns = list(columns) if columns else [
+            *required_columns(with_targets=True),
+            # synthesized by LoaderActor.__call__ (not a DB column): the
+            # post-selection {channel_idx -> role} table the preprocessor
+            # partitions signal vs. mask channels with.
+            "channel_mapping",
+        ]
         self.debug_device_idx = debug_device_idx
 
         self.node_id = node_id
@@ -692,9 +696,13 @@ class CollatorActor:
     ):
         _ensure_cupy()  # collator actors own a GPU; loaders never import cupy
         # The metadata columns carried into metainfo. 
-        self.columns = list(columns) if columns else list(
-            required_columns(with_targets=True)
-        )
+        self.columns = list(columns) if columns else [
+            *required_columns(with_targets=True),
+            # synthesized by LoaderActor.__call__ (not a DB column): the
+            # post-selection {channel_idx -> role} table the preprocessor
+            # partitions signal vs. mask channels with.
+            "channel_mapping",
+        ]
         self.debug_device_idx = debug_device_idx
 
         self.node_id = node_id

@@ -9,12 +9,19 @@ experiment_name: sam2_abc_deepspeed_multi_tile_128x384x1024
 datasets:
   train_shape: [1, 128, 384, 1024, 5]
   input_shape: [1, 128, 384, 1024, 6] # post-Resize model input; patch grid 8x24x64 at 16^3
+  # The pinned buffers are sized to the per-axis MAX over the selected rows;
+  # unfiltered, the first 128 tile rows mix 256x1536x2816 tiles -> 13 GB per
+  # sample and the workers OOM. synthetic ROI 16 = 10 annotated tiles x 16
+  # frames, all 128x512x1408 (~1.1 GB per sample uint16), and the resize to
+  # 128x384x1024 is a mild downscale.
+  roi_ids: [16]
+  buffer_capacity: 4 # host pinned slots per GPU (16 x 1.1 GB would be excessive for a probe)
 
   databases:
     sample_type: tile # api.tiles_training: synthetic tiles are 128 x 512 x {2560,2816,3328}
 
   preprocessor:
-    max_masks: 12 # A100-80GB: 26 was proven at 128x384x512; this volume is 2x, so ~half
+    max_masks: 4 # deliberately low: the resized tile is 2x the proven 128x384x512 volume
     transforms_list:
       # 1) Resize the (valid region of the) tile to input_shape. The collator
       #    buffer is the dataset max (1x128x512x3328x6); the preprocessor must

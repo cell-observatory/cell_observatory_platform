@@ -1,10 +1,18 @@
 # @package _global_
-# Feature: validation split + best-checkpoint hooks keyed on the validation loss.
-# Self-contained copy of base_sam2_deepspeed. The in-loop validation path
-# (ValidationLoopMixin.run_validation_step) feeds the TRAINING forward's outputs
-# to the evaluator; instance-mask metrics (sam2_instance_evaluator, mask_map)
-# consume model.evaluate_step intermediates and belong to job_type=test, so the
-# loss-based base_evaluator is the one that works here.
+# SAM2 finetune, TILE mode, all uniform-shape synthetic data, 50 epochs --
+# ViT-L single-scale, torch-native (FSDP2, DCP). Self-contained copy of
+# base_sam2_torch with the tile-mode block from sam2_torch_tile_single and the
+# settings from the 2026-09-01 ABC sanity runs / max_masks probes:
+#   * max_masks 10 per sample at 128x384x1024 (probe: 8 -> 57.5 GiB max active,
+#     90-100 % util during steps; 16 and 32 OOM on the A100-80GB);
+#   * datasets.roi_ids = the 266 synthetic ROIs whose annotated tiles are all
+#     128 x 512 x {1408..3328} (4550 tiles, ~60k annotated frames); the ~12 ROIs
+#     with 256- or 1536-sized tiles are excluded so the pinned buffer max stays
+#     1x128x512x3328x6 (~2.6 GB/sample) instead of 13 GB;
+#   * 5 % validation split (loss-based in-loop evaluator) + best-checkpoint hooks.
+# Budget: ~60k frames / 8 per step = ~7.5k steps/epoch; the mm8 probe ran ~4 s
+# per step (data + compute), i.e. ~8 h/epoch -> 50 epochs is ~2.5 weeks on this
+# node. Trim with schedulers.epochs or datasets.max_rows if that is not intended.
 defaults:
   - /tasks/instance_segmentation
   - /paths/local
@@ -18,26 +26,25 @@ defaults:
   - /models/meta_arch/sam/base_single_scale
   - /models/backbones/masked_encoder/large
   - /models/backbones/sam_backbone/sam_backbone
-  - /checkpoint/checkpoint
+  - /checkpoint/checkpoint_dcp
   - /loggers/loggers
-  - /evaluation/base_evaluator # in-loop validation is loss-based (val step_loss, min)
-  - /deepspeed/zero2
+  - /evaluation/base_evaluator
+  - /parallelism/sam2
+  - /trainer/torch_native_trainer
   - /optimizers/adamw_torch
-  - /schedulers/warmup_cosine_decay
+  - /schedulers/warmup_cosine_decay_torch
   - /optimizations/models/sam/large
   - /optimizations/optimizations
   - /profiling/profiling
   - /clusters/local
   - _self_
 
-experiment_name: sam2_abc_deepspeed_single_cube_128_eval
-wandb_project: testing
+experiment_name: sam2_abc_torch_single_tile_128x384x1024_alldata_50ep
+wandb_project: sam2_tile
 
-backend: DEEPSPEED
 distributed_framework: ray
 run_type: single_run
 job_type: train
-trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
 loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
 
 quantization: bfloat16
@@ -48,7 +55,6 @@ seed: 42
 
 task: finetuning
 network: baseline
-engine: deepspeed
 
 # dgx0.abc0 node shape: 8x A100-80GB, 128 cores, ~2 TB RAM. bs_per_gpu = batch_size // 8.
 clusters:
@@ -70,6 +76,15 @@ optimizations:
     # manager.py before launch; workers inherit it.
     PYTHONNOUSERSITE: "1"
 
+trainer_loop:
+  iteration_mode: epoch
+  checkpoint_every_n_epochs: 1
+  with_perf_metrics: false
+
+parallelism:
+  quantize:
+    enable: false # A100 is SM80: float8 needs SM89+, mx needs SM100+; must stay off here
+
 # Use the PointRend point-sampling loss path (labelmap-native).
 models:
   meta_arch:
@@ -82,7 +97,7 @@ models:
                                     # dense iou_loss reads HIGH-RES forward-only
 
 paths:
-  outdir: ${paths.data_path}/testing/${experiment_name}
+  outdir: ${paths.data_path}/sam2/${experiment_name}
   # null -> dry_lab.storage_locations.root_path from the DB
   # (synthetic: /clusterfs/vast/forsynthetic/.../synthetic_data_iteration_2, mounted on abc).
   server_path_override: null
@@ -97,39 +112,58 @@ datasets:
   pin_numa_node: false
   # cod_db_20260824 materializes only shape_id 1 (1x128x128x128) cubes; the cube
   # query pins T/Z/Y/X, so other shapes return 0 rows. 5 signal + 1 mask channel.
-  train_shape: [1, 128, 128, 128, 5]
-  input_shape: [1, 128, 128, 128, 6]
+  train_shape: [1, 128, 384, 1024, 5]
+  input_shape: [1, 128, 384, 1024, 6] # post-Resize model input; patch grid 8x24x64 at 16^3
   patch_shape: [1, 16, 16, 16, null]
   mask_channel_idx: 5
   last_batch_policy: drop
 
-  split: 0.1 # 10% held out -> validation pass after the epoch
+  split: 0.05 # held-out validation (loss-based evaluator); best_checkpointer keys on val step_loss
   return_dataloader: true
   distributed_sampler: true
-  buffer_capacity: 16
+  buffer_capacity: 4 # pinned host slots per GPU; buffer max is 1x128x512x3328x6 (~2.6 GB) per slot
   num_actors_min: 4
   num_actors_max: 12
 
   use_cached_hypercubes_dataframe: false
-  max_rows: 128 # sanity probe: 128 cubes -> 16 steps/epoch at 8 per step
+  max_rows: null # all annotated frames of the ROIs below (~60k)
+  roi_ids: [12,13,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,256,257,258,259,260,261,262,263,264,265,266,267,268,269,270,271,272,273,274,275,276,277,278,279,280]
   cdf_threshold: null
   cdf_target: null
   selected_channel_localizations: ["membrane", "cytosol"]
   has_annotations: true
   synthetic_only: true
 
-  preprocessor:
-    max_masks: 8 # deliberately low for sanity runs (A100 fits 26 at 128x384x512); throughput is not the goal here
-
   databases:
     dbname: local
     protocol: cursor
     verbose: true
     diagnostic_verbose: false
-    sample_type: cube
+    sample_type: tile # api.tiles_training (ragged; only T pinned)
     data_channel_count: 5 # SIGNAL channels only (mask excluded); 6 -> 0 rows
     required_channel_localizations: ["membrane", "cytosol"]
     storage_location: synthetic # dry_lab.storage_locations name (vast-main | abc2-main | synthetic)
+
+  preprocessor:
+    max_masks: 10 # A100-80GB at 128x384x1024: 8 -> 57.5 GiB max active; 16 OOMs
+    transforms_list:
+      # 1) Resize the (valid region of the) tile to input_shape: the collator
+      #    buffer is the dataset max; the preprocessor must land on
+      #    datasets.input_shape (_assert_input_shape_spatial). Trilinear on the
+      #    image, nearest on the labelmap, coordinate scaling on the boxes.
+      - _target_: cell_observatory_platform.data.transforms.resize.Resize
+        target_spatial_shape: [128, 384, 1024] # (Z, Y, X) == input_shape spatial
+        mode: trilinear
+        align_corners: false
+        dtype: ${quantization}
+        bbox_format: ${datasets.collate_fn.bbox_output_format}
+        boxes_normalized: ${datasets.collate_fn.normalize_bboxes}
+        crop_to_valid: true
+      # 2) Normalize after resize (sam2video_preprocessor default).
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}
 
   collate_fn:
     _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
@@ -150,9 +184,9 @@ datasets:
     async_device_copy: false
 
 schedulers:
-  epochs: 1
-  warmup: 0   # group defaults (30/15) would swallow a 1-epoch run
-  cooldown: 0
+  epochs: 50
+  warmup: 2   # epochs (cosine, step-based via the torch scheduler)
+  cooldown: 5
 
 optimizers:
   wd: ${eval:'${optimizers.lr} * 0.1'}
@@ -162,17 +196,24 @@ hooks:
   hooks_list:
   - name: free_device_buffer
   - name: lr_scheduler
-    backend: DEEPSPEED
+    backend: TORCHTITAN
   - name: iteration_timer
   - name: periodic_writer
   - name: periodic_checkpointer
     file_prefix: latest_model
-    backend: DEEPSPEED
+    backend: TORCHTITAN
+    # wall-clock checkpoint cadence on top of the per-epoch save (verified to
+    # fire and dedup in the timer sanity run); ~8 h epochs make this the one
+    # that matters if the node goes away.
     time_interval: 3h30m
   - name: best_checkpointer
-    backend: DEEPSPEED
+    backend: TORCHTITAN
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - name: best_metric_saver
     metric_name: ${evaluation.val_metric}
     compare_fn: ${evaluation.val_mode}
     eval_after_validation: true
+  - name: torch_memory_stats
+    step_period: 50
+    epoch_period: 1
+    logdir: ${loggers.logdir}
