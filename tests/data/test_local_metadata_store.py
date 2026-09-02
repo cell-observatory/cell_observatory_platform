@@ -604,4 +604,25 @@ def test_max_tile_shape_bounds_each_axis_on_tiles_only():
     where = FilterBuilder.build_where_sql(_resolved(SampleType.TILE), QuerySpec(max_tile_shape=(128, 512, 3328)))
     assert "s.z_size <= 128" in where and "s.y_size <= 512" in where and "s.x_size <= 3328" in where
     where_cube = FilterBuilder.build_where_sql(_resolved(SampleType.CUBE), QuerySpec(max_tile_shape=(128, 512, 3328)))
-    assert "<=" not in where_cube
+    assert "s.z_size <= 128" not in where_cube and "s.x_size <= 3328" not in where_cube
+
+
+def test_out_of_bounds_cubes_raise_unless_dropping_is_opted_in():
+    from cell_observatory_platform.data.databases.local_metadata_store import validate_cube_bounds
+    table = pa.table({
+        "z_start": [0, 0], "y_start": [0, 384], "x_start": [0, 0],
+        "z_size": [128, 128], "y_size": [384, 384], "x_size": [384, 384],
+        "array_shape": [[1, 128, 512, 3328, 6], [1, 128, 512, 3328, 6]],
+    })
+    with pytest.raises(ValueError, match=r"1 of 2 cubes extend past.*128x384x384"):
+        validate_cube_bounds(table, _resolved(SampleType.CUBE), QuerySpec(), where="t")
+    validate_cube_bounds(table, _resolved(SampleType.CUBE), QuerySpec(in_bounds_only=True), where="t")  # warns only
+    validate_cube_bounds(table, _resolved(SampleType.TILE), QuerySpec(), where="t")                     # tiles: no-op
+    ok = table.slice(0, 1)
+    validate_cube_bounds(ok, _resolved(SampleType.CUBE), QuerySpec(), where="t")
+
+
+def test_in_bounds_clause_only_when_opted_in():
+    assert "array_shape" not in FilterBuilder.build_where_sql(_resolved(SampleType.CUBE), QuerySpec())
+    assert "s.y_start + s.y_size <= s.array_shape[3]" in FilterBuilder.build_where_sql(
+        _resolved(SampleType.CUBE), QuerySpec(in_bounds_only=True))

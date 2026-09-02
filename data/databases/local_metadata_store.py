@@ -162,6 +162,10 @@ class QuerySpec:
     # with max_rows: take a seeded pseudo-random subset instead of the first
     # max_rows rows in natural order
     row_sample_seed: Optional[int] = None
+    # cubes only. False (default): a cube whose window extends past the tile's
+    # array extent is an error at attach time (the DB grid is broken). True:
+    # such cubes are dropped in SQL, with a warning.
+    in_bounds_only: bool = False
 
     def validate(self) -> None:
         for name in ("data_channel_count", "min_data_channel_count", "max_data_channel_count"):
@@ -367,6 +371,50 @@ def _assert_requested_time_size(table: pa.Table, resolved: ResolvedSource) -> No
         )
 
 
+def validate_cube_bounds(table: pa.Table, resolved: ResolvedSource, query: QuerySpec, *, where: str) -> None:
+    """Refuse cubes that extend past their tile (they fail at the zarr read).
+
+    ``array_shape`` is the tile's (T, Z, Y, X, C) extent. With
+    ``in_bounds_only=True`` the SQL already excluded them; say so loudly since
+    rows were silently removed from the training set.
+    """
+    if not resolved.view.is_cube:
+        return
+    if query.in_bounds_only:
+        logger.warning(
+            "[MappedTable] %s: in_bounds_only=true -- cubes overflowing their tile were DROPPED in "
+            "SQL (label 'z/y/x_start+size<=array_shape'); the DB cube grid is inconsistent for this "
+            "shape. Run with diagnostic_verbose=true to see how many, and report it DB-side.",
+            where,
+        )
+        return
+    needed = ("z_start", "y_start", "x_start", "z_size", "y_size", "x_size", "array_shape")
+    if any(c not in table.column_names for c in needed) or table.num_rows == 0:
+        return
+    shapes = table["array_shape"].to_pylist()
+    starts = {ax: np.asarray(table[f"{ax}_start"].to_pylist()) for ax in "zyx"}
+    sizes = {ax: np.asarray(table[f"{ax}_size"].to_pylist()) for ax in "zyx"}
+    ext = {ax: np.asarray([sh[i] if sh is not None and len(sh) > i else np.iinfo(np.int64).max
+                           for sh in shapes]) for ax, i in (("z", 1), ("y", 2), ("x", 3))}
+    over = {ax: (starts[ax] + sizes[ax] > ext[ax]) for ax in "zyx"}
+    bad = over["z"] | over["y"] | over["x"]
+    n_bad = int(bad.sum())
+    if n_bad == 0:
+        return
+    per_shape: dict[tuple, int] = {}
+    for i in np.flatnonzero(bad)[:100000]:
+        key = (int(sizes["z"][i]), int(sizes["y"][i]), int(sizes["x"][i]))
+        per_shape[key] = per_shape.get(key, 0) + 1
+    raise ValueError(
+        f"{where}: {n_bad} of {table.num_rows} cubes extend past their tile's array extent "
+        f"(z/y/x overflow: {int(over['z'].sum())}/{int(over['y'].sum())}/{int(over['x'].sum())}; "
+        f"by cube shape ZxYxX: { {f'{k[0]}x{k[1]}x{k[2]}': v for k, v in per_shape.items()} }). "
+        "The DB cube grid does not fit the tiles for this shape (cube size does not divide the "
+        "tile extent) -- fix the cube tables DB-side. To train on the in-bounds cubes anyway set "
+        "datasets.databases.in_bounds_only: true (drops them in SQL, with a warning)."
+    )
+
+
 class FilterBuilder:
     @staticmethod
     def _sql_string(value: str) -> str:
@@ -468,6 +516,16 @@ class FilterBuilder:
         out: list[tuple[str, str]] = []
 
         out.extend(cls._shape_clauses(resolved, alias))
+        if resolved.view.is_cube and query.in_bounds_only:
+            # array_shape is the tile's (T, Z, Y, X, C) extent (1-indexed in SQL);
+            # a cube must fit inside it or the zarr read raises OUT_OF_RANGE.
+            for ax, idx in (("Z", 2), ("Y", 3), ("X", 4)):
+                col = _AXIS_COLUMN[ax]
+                start = col.replace("_size", "_start")
+                out.append((
+                    f"{start}+{col}<=array_shape[{idx}]",
+                    f"{alias}.{start} + {alias}.{col} <= {alias}.array_shape[{idx}]",
+                ))
         if not resolved.view.is_cube and query.max_tile_shape is not None:
             # tiles are ragged (no fixed-axis predicate); bound each spatial axis
             for ax, bound in zip(("Z", "Y", "X"), query.max_tile_shape):
@@ -805,6 +863,7 @@ class TableResolver:
             max_rows=config.datasets.get("max_rows", None),
             row_sample_seed=config.datasets.get("row_sample_seed", None),
             max_tile_shape=cls._to_tuple(getattr(db, "max_tile_shape", None)),
+            in_bounds_only=bool(getattr(db, "in_bounds_only", False)),
             cdf_threshold=config.datasets.cdf_threshold,
             cdf_target=config.datasets.cdf_target,
             cdf_threshold_channel_localizations=cls._to_tuple(
@@ -1267,6 +1326,7 @@ class MappedTable:
             )
             validate_non_null(table, where=where)
             _assert_requested_time_size(table, resolved)
+            validate_cube_bounds(table, resolved, query, where=where)
 
             write_t0 = time.perf_counter()
             with pa.OSFile(str(sample_path), "wb") as sink:

@@ -52,7 +52,7 @@ from cell_observatory_platform.data.data_types import (
 )
 from cell_observatory_platform.data.datasets.utils import (
     remap_channel_roles_to_selection,
-    _as_list,
+    _json_list,
     resolve_channel_indices,
 )
 from cell_observatory_platform.training.helpers import get_data_dim, get_image_sizes, record_dataset_len
@@ -1235,9 +1235,7 @@ class LoaderActor:
             # _as_list, which parses JSON strings.
             for key in ("channel_idx", "channel_type", "localization", "annotation_type"):
                 if key in batch:
-                    batch[key] = np.array(
-                        [ujson.dumps(_as_list(v)) for v in batch[key]], dtype=object
-                    )
+                    batch[key] = np.array([_json_list(v) for v in batch[key]], dtype=object)
 
         return batch
 

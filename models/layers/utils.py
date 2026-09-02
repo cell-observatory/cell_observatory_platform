@@ -945,16 +945,18 @@ def sample_random_points_from_errors(
         if num_pt == 0:
             return points, labels
 
-        # Degenerate rows (empty union) keep the historical result: voxel 0,
-        # label 0. Give them weight on voxel 0 so multinomial has a valid
-        # distribution; pos[.., 0] is False there, so the label stays 0.
-        empty = ~pool.any(dim=1)
+        # Uniform draw over each row's pool via an integer prefix sum and
+        # searchsorted: exact for any V (torch.multinomial caps categories at
+        # 2^24 and float weights lose integer precision there). Degenerate rows
+        # (empty union) keep the historical result: voxel 0, label 0.
         rows_per_chunk = max(1, int(max_chunk_bytes // (V * 4)))
         for lo in range(0, B, rows_per_chunk):
             hi = min(B, lo + rows_per_chunk)
-            w = pool[lo:hi].to(torch.float32)
-            w[:, 0] = torch.where(empty[lo:hi], torch.ones_like(w[:, 0]), w[:, 0])
-            idx = torch.multinomial(w, num_pt, replacement=True)          # (rows, num_pt)
+            cdf = pool[lo:hi].cumsum(dim=1, dtype=torch.int32)             # (rows, V)
+            total = cdf[:, -1:]                                              # (rows, 1)
+            u = (torch.rand(hi - lo, num_pt, device=device) * total.clamp(min=1)).floor().to(torch.int32) + 1
+            idx = torch.searchsorted(cdf, u).clamp(max=V - 1)                # first voxel with cdf >= u
+            idx = torch.where(total > 0, idx, torch.zeros_like(idx)).long()
             labels[lo:hi] = torch.gather(pos[lo:hi], 1, idx).to(torch.int32)
             pts_x = idx % W_im
             pts_y = (idx // W_im) % H_im

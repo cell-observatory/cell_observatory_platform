@@ -187,3 +187,14 @@ def test_as_list_parses_json_serialized_lists():
     assert _as_list('[0, 1, 2]') == [0, 1, 2]
     assert _as_list(["a", "b"]) == ["a", "b"]
     assert _as_list(None) is None
+
+
+def test_json_list_serializes_numpy_scalars_and_nulls():
+    import numpy as np
+    from cell_observatory_platform.data.datasets.utils import _as_list, _json_list
+    idx = np.array([0, 1, 2], dtype=np.int16)
+    assert _json_list(idx) == "[0,1,2]" and _as_list(_json_list(idx)) == [0, 1, 2]
+    loc = np.array(["membrane", None, "cytosol"], dtype=object)
+    assert _as_list(_json_list(loc)) == ["membrane", None, "cytosol"]
+    assert _json_list(np.array(["data", "mask"])) == '["data","mask"]'
+    assert _json_list(None) == "null" and _as_list("null") is None

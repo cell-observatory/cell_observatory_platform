@@ -60,3 +60,9 @@ holdout_split: null
 # per-axis maximum over the selected rows, so without a bound one oversized tile
 # dictates the buffer for every sample.
 max_tile_shape: null
+
+# Cubes only. false: a cube whose window extends past the tile's array extent is
+# an ERROR at attach time (the DB cube grid is broken for that shape -- e.g.
+# 384-wide cubes on 512-wide tiles; such rows would fail at the zarr read).
+# true: drop those cubes in SQL and warn.
+in_bounds_only: false

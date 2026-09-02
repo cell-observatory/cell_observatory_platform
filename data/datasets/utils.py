@@ -7,6 +7,7 @@ aligned array describes channel ``channel_idx[k]``.
 """
 
 import ujson
+import numpy as np
 
 from typing import Any, List, Optional, Sequence
 
@@ -25,8 +26,22 @@ def _as_list(value: Any) -> Optional[list]:
         return None
     if isinstance(value, (str, bytes)):
         # JSON-serialized list (the loader emits its channel arrays this way)
-        return list(ujson.loads(value))
+        parsed = ujson.loads(value)
+        return None if parsed is None else list(parsed)
     return list(value)
+
+
+def _json_list(value: Any) -> str:
+    """JSON-serialize a per-row list column (Arrow / numpy / list input).
+
+    numpy scalars (``np.int16`` channel indices, ``np.str_``) are not JSON
+    serializable; convert element-wise. ``None`` entries (a mask channel's
+    localization) are kept as JSON ``null``.
+    """
+    items = _as_list(value)
+    if items is None:
+        return "null"
+    return ujson.dumps([x.item() if isinstance(x, np.generic) else x for x in items])
 
 
 def _parse_channel_mapping(raw: object) -> dict[str, str]:
