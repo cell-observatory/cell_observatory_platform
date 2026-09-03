@@ -18,6 +18,8 @@ clusters:                     # 1 node x 8 B300 (janelia_b300: partition b300, 4
   batch_size: 40              # 5/GPU x 8 (S2b: 1.68 s/step, 2.98 samples/s/GPU)
 
 datasets:
+  train_shape: [1, 128, 384, 512, 5]   # the recipe's shape (see recipe_r1)
+  input_shape: [1, 128, 384, 512, 6]
   buffer_capacity: 16
   preprocessor:
     max_masks: 48             # ~50 instances per cube; multiple of 16 for the GEMMs

@@ -1,5 +1,5 @@
 # @package _global_
-# Stage 1 (LR sweep) base: the Stage-0 recipe (1 click, bs 8/GPU) on the full 2026-09-03 snapshot, 10 epochs, one B300 node,
+# Stage 1 (LR sweep) base: the Stage-0 recipe (1 click, bs 8/GPU) on the full 2026-09-03 snapshot, 20 epochs, one B300 node,
 # chained 4 h jobs. Plan + budget: docs/analysis/2026-09-03-sam2-stage1-lr-plan.md. Only optimizers.lr varies (lr_sweep.yaml).
 defaults:
   - /experiments/janelia/tests/2026_09_02/sam2/recipe_r1
@@ -13,17 +13,17 @@ clusters:
   gpus_per_worker: 8
   batch_size: 64              # 8 per GPU (global 64; the old good run used global 40 at lr 1e-4)
   timelimit: 04:00
-  chain_jobs: 12              # 10 epochs x 3.6 h = 36 h -> ~11 x 3.5 h links + 1 spare; stops at TRAINING_DONE
+  chain_jobs: 14              # 20 epochs x 1.8 h = 36 h -> ~11 x 3.5 h links + spares; stops at TRAINING_DONE
   chain_min_runtime: 1200
 
 datasets:
-  split: 0.02                 # ~10 k val cubes (~5 min/epoch); train ~497 k of the 507,538 in-bounds cubes
+  split: 0.02                 # ~5 k val cubes (~3 min/epoch); train ~247 k of the 252,431 in-bounds cubes
   max_rows: null              # full dataset
   timepoint_list: null
 
 schedulers:
-  epochs: 10
-  warmup: 2                   # 20 % of the run, as in the old baseline
+  epochs: 20                  # 5 M samples = 2x the old H100 run's budget, ~1.5 days
+  warmup: 4                   # 20 % of the run, as in the old baseline
   cooldown: 0
   cos_min_ratio: 0.05
 

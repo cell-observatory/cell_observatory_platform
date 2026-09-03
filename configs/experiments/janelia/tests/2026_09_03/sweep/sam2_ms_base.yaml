@@ -14,7 +14,10 @@ defaults:
 experiment_name: sam2_ms_base
 
 datasets:
-  patch_shape: [1, 16, 16, 16, null]
+  # Hiera patchifies at 4 and pools twice (q_pool 2, q_stride 2): levels at stride 4/8/16; the coarsest = SAM2's
+  # image embedding at stride 16. The SAM2-side grids below carry the effective stride (as the ABC multiscale base).
+  # First attempt (r1) with patch 16 everywhere crashed in predict_masks: dense PE grid (stride 16) vs src (stride 64).
+  patch_shape: [1, 4, 4, 4, null]
 
 models:
   backbones:
@@ -23,6 +26,9 @@ models:
       mask_unit_size: [1, 8, 8, 8]
   meta_arch:
     sam:
+      patch_shape: [1, 16, 16, 16, null]        # effective stride of the coarsest Hiera level
+      memory_attention_args:
+        patch_shape: [1, 16, 16, 16, null]
       debug: false
       num_correction_pt_per_frame: 1
       correction_on_low_res: true

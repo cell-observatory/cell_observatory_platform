@@ -18,6 +18,10 @@ clusters:                     # 1 node x 8 B300 (janelia_b300: partition b300, 4
   batch_size: 64              # 8 per GPU: 237 GiB (86 %) at 1.68 s/step, 4.77 samples/s/GPU (bs 7: 209 GiB, 4.38)
 
 datasets:
+  # The recipe's shape. The bring-up base leaves train_shape at 128^3; without these two lines every config inheriting
+  # the recipe (Stage-1 lr, sweep leaves) silently trains on 128^3 cubes (found 2026-09-03 19:10).
+  train_shape: [1, 128, 384, 512, 5]
+  input_shape: [1, 128, 384, 512, 6]
   buffer_capacity: 16
   preprocessor:
     max_masks: 48             # ~50 instances per cube; multiple of 16 for the GEMMs
