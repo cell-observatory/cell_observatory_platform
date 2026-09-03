@@ -11,10 +11,13 @@ from cell_observatory_platform.models.layers.norm import get_norm
 from cell_observatory_platform.models.backbones.encoder import Encoder
 from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.data.masking.mask_generator import apply_masks
-from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
+from cell_observatory_platform.models.layers.patch_embeddings import (
+    ChannelAdaptivePatchEmbedding,
+    PatchEmbedding,
+    calc_num_patches,
+)
 from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding, make_axial_rope_freqs
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -118,6 +121,8 @@ class MaskedEncoder(nn.Module):
         mlp_wide_silu: bool = False,
         out_layers: List[int] = None,
         dtype: torch.dtype = torch.bfloat16,
+        patch_embed_type: Literal["joint", "channel_adaptive"] = "joint",
+        patch_embed_args: Optional[Mapping[str, Any]] = None,
         **kwargs,
     ):
         super().__init__()
@@ -156,13 +161,23 @@ class MaskedEncoder(nn.Module):
 
         self.norm = self.norm_layer(self.embed_dim) if norm_layer is not None else nn.Identity()
 
-        self.patch_embedding = PatchEmbedding(
-            input_fmt=self.input_fmt,
-            input_shape=self.input_shape,
-            patch_shape=self.patch_shape,
-            embed_dim=self.embed_dim,
-            channels=self.in_chans,
-        )
+        self.patch_embed_type = patch_embed_type
+        # tokens per patch the encoder sees: 1 (joint / attn_pool) or C (concat)
+        self.tokens_per_patch = 1
+        if patch_embed_type == "joint":
+            self.patch_embedding = PatchEmbedding(
+                input_fmt=self.input_fmt,
+                input_shape=self.input_shape,
+                patch_shape=self.patch_shape,
+                embed_dim=self.embed_dim,
+                channels=self.in_chans,
+            )
+        elif patch_embed_type == "channel_adaptive":
+            self.patch_embedding = self._build_channel_adaptive_patch_embed(patch_embed_args)
+            if self.patch_embedding.channel_fusion == "concat":
+                self.tokens_per_patch = int(self.in_chans)
+        else:
+            raise ValueError(f"unknown patch_embed_type {patch_embed_type!r}; expected joint | channel_adaptive")
 
         # positional encoding parameters
         self.abs_sincos_enc = abs_sincos_enc
@@ -191,6 +206,10 @@ class MaskedEncoder(nn.Module):
                 dim=self.embed_dim // self.num_heads,
                 theta=self.rope_theta,
             )
+            if self.tokens_per_patch > 1:
+                # concat fusion: token order is (patch, channel); every channel token
+                # of a patch sits at that patch's position
+                freqs_cis = freqs_cis.repeat_interleave(self.tokens_per_patch, dim=0)
             self.register_buffer("freqs_cis", freqs_cis)
         else:
             self.freqs_cis = None
@@ -223,6 +242,45 @@ class MaskedEncoder(nn.Module):
         self.out_layers = out_layers
 
         self._init_model_weights()
+
+    def _build_channel_adaptive_patch_embed(self, patch_embed_args) -> ChannelAdaptivePatchEmbedding:
+        """Per-channel patch tokens + token embedding, sized from the frozen vocab.
+
+        ``channel_vocab`` is the resolved ``{localization: {tok: id}, fluorophore:
+        {tok: id}}`` table (data/channel_vocab.py injects it into the config
+        before the model is built); ``vocab_extra_slots`` spare rows let tokens
+        appended later load into the same weights.
+        """
+        args = dict(patch_embed_args or {})
+        channel_embed = str(args.pop("channel_embed", "factorized"))
+        vocab = args.pop("channel_vocab", None)
+        extra = int(args.pop("vocab_extra_slots", 16))
+        args.pop("unknown_policy", None)
+        sizes = {}
+        if channel_embed != "none":
+            if vocab is None:
+                raise ValueError(
+                    "patch_embed_type=channel_adaptive with channel_embed="
+                    f"{channel_embed!r} needs patch_embed_args.channel_vocab (resolved by "
+                    "data/channel_vocab.py at dataloader construction, or pinned in the config)"
+                )
+            table_size = vocab.get("table_size") or {}
+            for kind in ("localization", "fluorophore"):
+                table = vocab.get(kind)
+                if table is None:
+                    raise ValueError(f"channel_vocab is missing the {kind!r} table")
+                # the frozen table_size IS the checkpointed weight shape; a vocab
+                # without one (unit tests, hand-pinned) gets tokens + extra slots
+                sizes[f"{kind}_vocab_size"] = int(table_size.get(kind, len(table) + extra))
+        return ChannelAdaptivePatchEmbedding(
+            input_fmt=self.input_fmt,
+            patch_shape=self.patch_shape,
+            embed_dim=self.embed_dim,
+            use_channel_embed=channel_embed != "none",
+            channel_embed="single" if channel_embed == "none" else channel_embed,
+            **sizes,
+            **args,
+        )
 
     def _init_model_weights(self):
         def _init_weights(m):
@@ -266,11 +324,24 @@ class MaskedEncoder(nn.Module):
             )
             return num_patches
 
-    def forward(self, inputs, masks=None, concat_masks=True, spatial_kwargs: Optional[dict] = None):
-        x, patches = self.patch_embedding(inputs, return_patches=True)
+    def forward(
+        self,
+        inputs,
+        masks=None,
+        concat_masks=True,
+        spatial_kwargs: Optional[dict] = None,
+        channel_ids: Optional[torch.Tensor] = None,
+    ):
+        if self.patch_embed_type == "channel_adaptive":
+            x, patches, _ = self.patch_embedding(inputs, return_patches=True, channel_ids=channel_ids)
+        else:
+            x, patches = self.patch_embedding(inputs, return_patches=True)
 
         if self.abs_sincos_enc:
-            x += self.pos_embedding(inputs)
+            pos = self.pos_embedding(inputs)
+            if self.tokens_per_patch > 1:
+                pos = pos.repeat_interleave(self.tokens_per_patch, dim=1)
+            x += pos
 
         if masks is not None:
             x = apply_masks(x, masks, concat=concat_masks)
@@ -287,15 +358,25 @@ class MaskedEncoder(nn.Module):
         x = self.norm(x)
         return x, patches
 
-    def forward_features(self, inputs, masks=None, concat_masks=True, spatial_kwargs: Optional[dict] = None):
-        x, _ = self.forward(inputs, masks=masks, concat_masks=concat_masks, spatial_kwargs=spatial_kwargs)
+    def forward_features(
+        self,
+        inputs,
+        masks=None,
+        concat_masks=True,
+        spatial_kwargs: Optional[dict] = None,
+        channel_ids: Optional[torch.Tensor] = None,
+    ):
+        x, _ = self.forward(
+            inputs, masks=masks, concat_masks=concat_masks, spatial_kwargs=spatial_kwargs,
+            channel_ids=channel_ids,
+        )
         return x
 
 
 def _extract_model_encoder_kwargs(cfg: Mapping[str, Any]) -> dict:
     sig = inspect.signature(MaskedEncoder.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
 
     kwargs = {}
     for k, v in cfg.items():
@@ -305,6 +386,10 @@ def _extract_model_encoder_kwargs(cfg: Mapping[str, Any]) -> dict:
     return kwargs
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("backbone", "masked_vit")
 def BUILD(cfg: Mapping[str, Any]) -> MaskedEncoder:
     """
     Hydra entrypoint for MaskedEncoder.

@@ -1,0 +1,16 @@
+# @package _global_
+# P5: correction rounds 3 instead of 7 (SAM2 2D default) on the production point c512 bs 2 mm 48. Cost curve in R; the
+# choice itself is a Step-2 quality decision.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P5_rounds3_c512
+
+clusters:
+  batch_size: 16
+
+models:
+  meta_arch:
+    sam:
+      num_correction_pt_per_frame: 3

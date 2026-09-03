@@ -72,7 +72,9 @@ class RoIAlign3DFunction(Function):
         grad_input = grad_rois = None
 
         if ctx.needs_input_grad[0]:
-            grad_input = rois.new_zeros(batch_size, num_channels, data_depth, data_height, data_width)
+            # dtype/device must follow grad_output (the features' grad), not the
+            # rois tensor — rois may be a different dtype than the feature map.
+            grad_input = grad_output.new_zeros(batch_size, num_channels, data_depth, data_height, data_width)
             _C.roi_align_3d_backward(
                 grad_output.contiguous(), rois, grad_input, out_d, out_h, out_w, spatial_scale, sampling_ratio, order
             )

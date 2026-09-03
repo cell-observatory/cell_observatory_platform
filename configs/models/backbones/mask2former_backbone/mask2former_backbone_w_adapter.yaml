@@ -1,4 +1,4 @@
-BUILD: cell_observatory_platform.models.backbones.mask2former_backbone.BUILD
+name: mask2former
 backbone_embed_dims: 
   - ${models.backbones.masked_encoder.embed_dim} # [1024, 1024, 1024, 1024]x4 if using all layers
   - ${models.backbones.masked_encoder.embed_dim}

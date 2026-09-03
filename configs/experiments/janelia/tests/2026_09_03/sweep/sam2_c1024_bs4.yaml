@@ -1,0 +1,10 @@
+# @package _global_
+# Recipe (1 click, full stack) at 128x384x1024, bs 4/GPU. VRAM guess from c512 bs 8 = 237 GiB and 2x voxels -> bs 4 ~ 237 GiB.
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/c1024_base
+  - _self_
+
+experiment_name: sam2_c1024_bs4
+
+clusters:
+  batch_size: 32

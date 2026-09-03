@@ -1,0 +1,20 @@
+# @package _global_
+# Torch-native trainer selection: include as `- /trainer/torch_native_trainer`
+# in an experiment's defaults, together with `/parallelism/<arch>`,
+# `/checkpoint/checkpoint_dcp`, a `*_torch` optimizer, and a `*_torch`
+# scheduler. Replaces `/deepspeed/zeroN`.
+
+backend: TORCHTITAN # hooks branch on this literal (lr_scheduler, checkpointers, wd schedule)
+trainer: cell_observatory_platform.training.loops.TorchNativeTrainer
+
+trainer_loop:
+  iteration_mode: epoch # "epoch" | "step"
+  max_steps: null # required iff iteration_mode == step
+  val_every_n_steps: null # step-cadence validation; null -> epoch cadence (evaluation.val_begin/val_interval)
+  # checkpoint cadence (pick one; both null -> every epoch)
+  checkpoint_save_period: null # in optimizer steps
+  checkpoint_every_n_epochs: 1 # epoch-mode convenience (resolved to steps)
+  # Wall-clock cadence is set ON THE HOOK, independent of the above:
+  #   hooks.hooks_list: - name: periodic_checkpointer
+  #                       time_interval: 3h30m   # (job time limit - startup - save time)
+  with_perf_metrics: false # tps/tflops/MFU + fwd/bwd/step cuda timings (per-step sync when enabled)

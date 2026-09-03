@@ -1,0 +1,22 @@
+# @package _global_
+# Stage 0c P1+P2+P3: the full stack. P2/P3 are exact; P1 carries the stride-4 approximation.
+# This is the capacity candidate -- if P1 frees the predicted 30-40 GiB, retry at bs 3 next.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P123_c512
+
+clusters:
+  batch_size: 16              # 2 per GPU
+
+models:
+  meta_arch:
+    sam:
+      correction_on_low_res: true
+      criterion_args:
+        iou_on_low_res: true
+      mask_decoder_args:
+        upscaling: linear_shuffle
+      prompt_encoder_args:
+        mask_downscaling: linear_shuffle

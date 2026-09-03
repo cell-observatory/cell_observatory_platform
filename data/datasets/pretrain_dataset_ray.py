@@ -1,42 +1,73 @@
-import ctypes
-import logging
 import os
 import sys
-from multiprocessing import shared_memory
+import ctypes
+import logging
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence
+
 from queue import Queue
 from threading import Thread
-from typing import Any, Callable, Dict, List, Literal, Optional
 
-import cupy as cp
-import numpy as np
-import pandas as pd
-import pyarrow as pa
 import ray
+
+import numpy as np
+import pyarrow as pa
 import tensorstore as ts
+
 import torch
 import ujson
-from cupy.cuda import runtime as cudart
-from hydra.utils import get_method, instantiate
-from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import random_split
 
-from cell_observatory_platform.data.data_types import NUMPY_DTYPES, TENSORSTORE_DTYPES, TORCH_DTYPES
-from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, get_buffers
+from omegaconf import DictConfig, OmegaConf
+
+# cupy is imported lazily: only the collator actors (which own a GPU) need it,
+# while this module is also imported on the CPU-only LoaderActor path -- a
+# module-scope `import cupy` costs every loader actor the CUDA-stack import
+# (and fails outright on GPU-less workers). Call _ensure_cupy() before using
+# the module-level `cp` / `cudart` names.
+cp = None
+cudart = None
+
+
+def _ensure_cupy() -> None:
+    global cp, cudart
+    if cp is None:
+        import cupy as _cp
+        from cupy.cuda import runtime as _cudart
+        cp = _cp
+        cudart = _cudart
+
+
+from cell_observatory_platform.data.databases.local_metadata_store import (
+    MappedTable,
+    MappedTableDescriptor,
+    SampleIndexPlanner,
+)
+from cell_observatory_platform.data.databases.schema import required_columns
 from cell_observatory_platform.data.io import read_zarr
-from cell_observatory_platform.data.structures import convert_bbox_format, mask_ids_to_masks
-from cell_observatory_platform.inference.utils import tile_owner
-from cell_observatory_platform.training.helpers import get_data_dim, get_image_sizes, record_dataset_len, df_signature_polars
+from cell_observatory_platform.data.datasets.buffers import DeviceMemoryBuffer, attach_shared_memory, get_buffers
+from cell_observatory_platform.data.structures import convert_bbox_format, validate_bbox_normalization
+from cell_observatory_platform.data.data_types import (
+    NUMPY_DTYPES,
+    TORCH_DTYPES,
+    parse_annotations_metadata,
+)
+from cell_observatory_platform.data.datasets.utils import (
+    channel_tokens_for_selection,
+    remap_channel_roles_to_selection,
+    _json_list,
+    resolve_channel_indices,
+)
+from cell_observatory_platform.training.helpers import get_data_dim, get_image_sizes, record_dataset_len
 from cell_observatory_platform.utils.context import (
     bind_current_process_to_node,
     get_world_size,
     local_rank,
     node_id,
     process_rank,
+    ray_assigned_gpu_to_torch_ordinal,
     torch_gpu_to_numa,
 )
 from cell_observatory_platform.utils.profiling import pprof_class, pprof_func
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +81,7 @@ class FinetuneCollatorActor:
       - Read hypercubes from shared host buffer.
       - On CPU:
           * split off mask channel,
-          * build per-instance binary masks and boxes from mask_bbox_dict,
+          * build per-instance targets from annotations_metadata,
           * compute image_sizes / orig_image_sizes / padding_mask,
           * optionally apply Resize() (image + masks + boxes + padding_mask).
       - Copy resized image tensor into DeviceMemoryBuffer on GPU.
@@ -81,37 +112,34 @@ class FinetuneCollatorActor:
         pin_numa_node: bool,
         pin_pages: bool,
         node_id: int,
-        columns: List[str] = [
-            "x_start",
-            "y_start",
-            "z_start",
-            "time_start",
-            "channel_size",
-            "z_size",
-            "y_size",
-            "x_size",
-            "time_size",
-            "server_folder",
-            "output_folder",
-            "tile_name",
-            "prepared_id",
-            "mask_bbox_dict",
-        ],
+        columns: Optional[List[str]] = None,
         input_format: Literal["ZYXC", "TZYXC"] = "ZYXC",
-        mask_channel_idx: int = -1,
         bbox_data_format: str = "zyxzyx",
         bbox_output_format: str = "zyxzyx",
-        transforms_list: Optional[List[DictConfig]] = None,
-        use_masks: bool = False,
-        generate_binary_masks: bool = False,
         require_targets: bool = True,
+        # The api.object_types catalog ({id: nk}), from dataloaders (see
+        # fetch_object_type_names). Used here to map object_type_id -> a
+        # CONTIGUOUS class index, and forwarded into metainfo for the semantic
+        # preprocessor, which needs the NAMES. None means class-agnostic.
+        object_type_names: Optional[dict] = None,
         # with_resize: bool = False,
         debug: bool = False,
         debug_device_idx: Optional[int] = None,
         normalize_bboxes: bool = False,
         async_device_copy: bool = False,
     ):
-        self.columns = columns
+        _ensure_cupy()  # collator actors own a GPU; loaders never import cupy
+        # The metadata columns carried into metainfo. 
+        self.columns = list(columns) if columns else [
+            *required_columns(with_targets=True),
+            # synthesized by LoaderActor.__call__ (not a DB column): the
+            # post-selection {channel_idx -> role} table the preprocessor
+            # partitions signal vs. mask channels with, and the post-selection
+            # [localization, fluorophore] token per channel (null on masks) the
+            # channel embedding looks up.
+            "channel_mapping",
+            "channel_tokens",
+        ]
         self.debug_device_idx = debug_device_idx
 
         self.node_id = node_id
@@ -128,11 +156,21 @@ class FinetuneCollatorActor:
         if self.input_format not in ["ZYXC", "TZYXC"]:
             raise NotImplementedError(f"FinetuneCollatorActor currently assumes ZYXC, got {self.input_format}")
 
-        self.mask_channel_idx = mask_channel_idx
+        # Images ride TZYXC end to end -- the loader
+        # has a full dim==4 branch, Resize folds T into the batch, _split_channels
+        # and mask_ids_to_masks are rank-agnostic -- but TARGETS stop at 3D:
+        # _build_targets emits one dict per sample with no time axis on
+        # boxes/mask_ids/labels, so a T>1 window has nowhere to put frames
+        # 1..T-1. Refuse at actor construction rather than train on frame 0 of
+        # every window and call it 4D.
+        self._assert_targets_supported(
+            self.input_format, self.input_shape, require_targets
+        )
+
         self.bbox_data_format = bbox_data_format
         self.bbox_output_format = bbox_output_format
 
-        self.numa_node = torch_gpu_to_numa(self.local_rank)["numa_node"]
+        self.numa_node = torch_gpu_to_numa(self._get_device_index())["numa_node"]
         if pin_numa_node:
             bind_current_process_to_node(self.numa_node)
 
@@ -141,6 +179,7 @@ class FinetuneCollatorActor:
 
         self.host_buffer_actor = get_buffers(
             type="host_memory",
+            pool_name="loader",
             numa_node=self.numa_node,
             local_rank=self.local_rank,
             global_rank=self.global_rank,
@@ -150,7 +189,7 @@ class FinetuneCollatorActor:
         self.slot_bytes = int(cfg["slot_bytes"])
         self.batch_shape = tuple(cfg["batch_shape"])
         self.capacity = int(cfg["capacity"])
-        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+        self._shm = attach_shared_memory(cfg["name"])
 
         # original input shape (without batch) from host buffer
         # e.g. (Z_raw, Y_raw, X_raw, C_full)
@@ -193,18 +232,6 @@ class FinetuneCollatorActor:
             device_idx=idx,
         )
 
-        self.transforms = []
-        for t in transforms_list or []:
-            if isinstance(t, DictConfig):
-                # not yet instantiated
-                self.transforms.append(instantiate(t))
-            elif isinstance(t, str):
-                # a dotted‑path string
-                self.transforms.append(get_method(t))
-            else:
-                # already an instantiated callable object
-                self.transforms.append(t)
-
         # TODO: deprecate
         # self.with_resize = with_resize
         # if self.with_resize:
@@ -217,10 +244,33 @@ class FinetuneCollatorActor:
         #         pin_memory=True,
         #     )
 
-        self.use_masks = use_masks
-        self.generate_binary_masks = generate_binary_masks
+        # Labelmap ownership lives entirely on the model preprocessor (GPU).
+        # The collator never clones, splits, or materializes the labelmap; the
+        # integer labelmap simply rides on the last channel of data_tensor and
+        # is transferred to VRAM in the single H2D copy. The preprocessor then
+        # splits it off (int32, before the dtype cast), applies transforms, and
+        # builds per-instance binary masks. The collator only emits lightweight
+        # per-target metadata (boxes / mask_ids / labels).
+        # object_type_id is a DB PRIMARY KEY (1-based); the model's label space is
+        # 0..num_classes-1 with num_classes itself meaning no-object (DETR /
+        # Mask2Former convention). Feeding the raw id through would put a
+        # single-class dataset's every object on the no-object slot. Map to a
+        # contiguous index instead, ordered by id so it is stable across runs.
+        #
+        # No catalog -> every object is class 0 (class-agnostic).
+        self.object_type_names = (
+            {int(k): str(v) for k, v in dict(object_type_names).items()}
+            if object_type_names
+            else None
+        )
+        self._class_index = (
+            {t_id: i for i, t_id in enumerate(sorted(self.object_type_names))}
+            if self.object_type_names
+            else None
+        )
         self.require_targets = require_targets
         self.normalize_bboxes = normalize_bboxes
+        validate_bbox_normalization(self.normalize_bboxes, self.bbox_output_format)
 
         ray.logger.info(
             f"FinetuneCollatorActor on rank {self.global_rank} and Numa Node {self.numa_node} "
@@ -236,6 +286,42 @@ class FinetuneCollatorActor:
 
         self.debug = debug
         self.async_device_copy = async_device_copy
+
+    @staticmethod
+    def _assert_targets_supported(
+        input_format: str, input_shape: tuple, require_targets: bool
+    ) -> None:
+        """Refuse a 4D window on the TARGET path, at construction time.
+
+        Split out of __init__ so it is testable without Ray/shm/CUDA. See the
+        4D SIGNPOST comment at the call site for why targets, and only targets,
+        stop at 3D.
+        """
+        if not require_targets or input_format.upper() != "TZYXC":
+            return
+        time_extent = int(input_shape[0])
+        if time_extent <= 1:
+            return
+        raise NotImplementedError(
+            f"FinetuneCollatorActor(require_targets=True) cannot build targets for a "
+            f"4D window: input_format='TZYXC' with T={time_extent}. Per-sample targets "
+            f"carry no time axis (boxes (N, 6), mask_ids (N,), labels (N,)), so only "
+            f"the first frame's annotations would be used and the rest would be "
+            f"dropped silently. Set T=1, or run with require_targets=False (inference: "
+            f"the image path is 4D-clean)."
+        )
+
+    @staticmethod
+    def _parse_annotations_metadata(
+        raw: object, *, window_offset: int = 0
+    ) -> tuple[list[dict], list[dict]]:
+        """(instance, semantic) leaves for one timepoint bucket.
+
+        Thin passthrough: the payload contract is shared with the semantic
+        preprocessor (which reads the `semantic` list as its class legend), so the
+        parser lives beside the rest of the targets contract in data/data_types.py.
+        """
+        return parse_annotations_metadata(raw, window_offset=window_offset)
 
     def _get_spatial_shape(self, input_shape: tuple, input_format: str) -> tuple:
         input_format = input_format.upper()
@@ -264,7 +350,7 @@ class FinetuneCollatorActor:
     def _get_device_index(self) -> int:
         gpu_ids = ray.get_gpu_ids()
         if gpu_ids:
-            return int(gpu_ids[0])
+            return ray_assigned_gpu_to_torch_ordinal(gpu_ids)
         # Fallback for debug mode (running outside Ray Train workers)
         elif self.debug_device_idx is not None:
             ray.logger.warning(f"Using debug device index {self.debug_device_idx}. If not debugging this could lead to unexpected behavior.")
@@ -274,145 +360,169 @@ class FinetuneCollatorActor:
 
     def __del__(self):
         try:
-            if getattr(self, "_pinned", False) and getattr(self, "host_buffer_ptr", None) is not None:
+            if (
+                cp is not None
+                and getattr(self, "_pinned", False)
+                and getattr(self, "host_buffer_ptr", None) is not None
+            ):
                 cp.cuda.runtime.hostUnregister(self.host_buffer_ptr)
             if hasattr(self, "_shm"):
                 self._shm.close()
         except Exception:
             pass
 
-    def _get_masks(self, inputs: torch.Tensor):
-        assert self.input_format.upper().endswith("C"), "Input format must end with 'C' (channels)"
-        C = inputs.shape[-1]
-        if C < 2:
-            raise ValueError(f"Expected at least 2 channels (image + mask), got C={C}")
-        # For zero-copy we *require* the mask to be the last channel
-        if self.mask_channel_idx not in (-1, C - 1):
-            raise ValueError(
-                f"For zero-copy split, mask_channel_idx must be -1 or C-1; " f"got mask_channel_idx={self.mask_channel_idx}, C={C}."
-            )
-        masks = inputs[..., -1].clone()
-        return inputs, masks
-
     def _build_targets(
         self,
-        masks_labelmap: torch.Tensor,  # (B, Z, Y, X) on CPU
-        mask_bbox_dict_batch: List[str],
-        legacy_data_format: bool = True,
+        annotations_metadata_batch: List[object],
     ):
         """
-        Build per-sample targets from labelmap + mask_bbox_dict.
-        If self.use_masks is False, no binary masks are constructed and
-        the "masks" key is omitted entirely from the targets.
+        Build per-sample targets (boxes / mask_ids / labels) from
+        annotations_metadata. The labelmap is NOT touched here: it rides on the
+        data_tensor channel to VRAM and is split off + transformed + turned into
+        per-instance binary masks by the model preprocessor (single source).
+
+        3D ONLY. Every field here is per-instance with no time axis, so one call
+        covers one timepoint; see the hardcoded window_offset below.
         """
-        # FIXME: remove legacy_data_format once database is updated to 
-        #        reflect timepoint of annotations
-        if legacy_data_format:
-            if self.input_format == "ZYXC":
-                B, Zm, Ym, Xm = masks_labelmap.shape
-                spatiotemporal_shape = (Zm, Ym, Xm)
-            elif self.input_format == "TZYXC":
-                # NOTE: will only be used for T=1 edge case, see note above
-                B, T, Zm, Ym, Xm = masks_labelmap.shape
-                spatiotemporal_shape = (T, Zm, Ym, Xm)
+        if self.bbox_data_format != "zyxzyx":
+            raise ValueError(
+                f"annotations_metadata provides bbox_zyxzyx, so bbox_data_format must be 'zyxzyx', got {self.bbox_data_format}"
+            )
+
+        device = torch.device("cpu")
+
+        mask_ids_batch: List[List[int]] = []
+        labels_batch: List[List[int]] = []
+        bboxes_batch: List[torch.Tensor] = []
+
+        # TODO: rework this once we have 4D data consumers
+
+        for raw in annotations_metadata_batch:
+            # Bucket "0" is the ONLY bucket at time_size == 1, which is every
+            # row the training views serve. Hardcoded because the targets built
+            # below have no time axis (boxes (N, 6), mask_ids (N,), labels
+            # (N,)): there is nowhere to put frames 1..T-1, so no other offset
+            # would be useful. A 4D input_format is refused at construction.
+            #
+            # Semantic leaves are ignored here -- they are the class legend for
+            # the semantic labelmap channel and are consumed by the preprocessor
+            # (build_semantic_targets), not turned into per-instance targets.
+            annotations, _semantic = self._parse_annotations_metadata(
+                raw, window_offset=0
+            )
+
+            ids: List[int] = []
+            labels: List[int] = []
+            boxes: List[List[float]] = []
+
+            for annotation in annotations:
+                seg_id = annotation.get("local_segmentation_id")
+                bbox = annotation.get("bbox_zyxzyx")
+                if seg_id is None or not isinstance(bbox, (list, tuple)) or len(bbox) != 6:
+                    continue
+
+                ids.append(int(seg_id))
+                labels.append(self._class_label(annotation.get("object_type_id")))
+                box = [float(value) for value in bbox]
+                self._assert_cube_local(box)
+                boxes.append(box)
+
+            mask_ids_batch.append(ids)
+            labels_batch.append(labels)
+
+            if boxes:
+                box_tensor = torch.as_tensor(boxes, device=device, dtype=torch.float32)
             else:
-                raise NotImplementedError(f"Unsupported input_format={self.input_format}")
+                box_tensor = torch.zeros((0, 6), device=device, dtype=torch.float32)
 
-            device = masks_labelmap.device
+            if self.bbox_output_format != "zyxzyx":
+                box_tensor = convert_bbox_format(
+                    box_tensor,
+                    "zyxzyx",
+                    self.bbox_output_format,
+                    self.normalize_bboxes,
+                    self.spatial_shape[::-1],
+                )
+            bboxes_batch.append(box_tensor)
 
-            mask_ids_batch: List[List[int]] = []
-            bboxes_batch: List[torch.Tensor] = []
+        targets: List[Dict[str, Any]] = []
+        for ids, labels, boxes in zip(mask_ids_batch, labels_batch, bboxes_batch):
+            t: Dict[str, Any] = {
+                "boxes": boxes,
+                "mask_ids": torch.as_tensor(ids, device=device, dtype=torch.long),
+                "labels": torch.as_tensor(labels, device=device, dtype=torch.long),
+            }
+            targets.append(t)
 
-            for raw in mask_bbox_dict_batch:
-                instances = ujson.loads(raw)
-
-                ids: List[int] = []
-                boxes: List[List[float]] = []
-
-                for cell_id_str, bbox in instances.items():
-                    ids.append(int(cell_id_str))
-                    if isinstance(bbox, (list, tuple)) and len(bbox) == 6:
-                        if self.bbox_data_format == "zyxzyx":
-                            zmin, ymin, xmin, zmax, ymax, xmax = bbox
-                        elif self.bbox_data_format == "xyzxyz":
-                            xmin, ymin, zmin, xmax, ymax, zmax = bbox
-                        else:
-                            raise ValueError(f"Unsupported bbox_data_format={self.bbox_data_format}")
-                    elif isinstance(bbox, dict):
-                        zmin = bbox.get("zmin")
-                        ymin = bbox.get("ymin")
-                        xmin = bbox.get("xmin")
-                        zmax = bbox.get("zmax")
-                        ymax = bbox.get("ymax")
-                        xmax = bbox.get("xmax")
-                    else:
-                        continue
-
-                    if None in (zmin, ymin, xmin, zmax, ymax, xmax):
-                        continue
-
-                    boxes.append([zmin, ymin, xmin, zmax, ymax, xmax])
-
-                mask_ids_batch.append(ids)
-
-                if boxes:
-                    bboxes_batch.append(torch.as_tensor(boxes, device=device, dtype=torch.float32))
-                else:
-                    bboxes_batch.append(torch.zeros((0, 6), device=device, dtype=torch.float32))
-
-            if self.use_masks and self.generate_binary_masks:
-                    # binary_masks_batch: List[Tensor[N, *spatial]] of size B
-                    binary_masks_batch = mask_ids_to_masks(
-                        batch_size=B,
-                        spatiotemporal_shape=spatiotemporal_shape,
-                        mask_ids_batch=mask_ids_batch,
-                        masks=masks_labelmap,
-                        device=device,
-                    )
-            else:
-                binary_masks_batch = [None] * B
-
-            if self.bbox_data_format != self.bbox_output_format:
-                bboxes_batch = [
-                    convert_bbox_format(b, 
-                        self.bbox_data_format, 
-                        self.bbox_output_format, 
-                        self.normalize_bboxes, 
-                        # spatial shape is (Z, Y, X), need (X, Y, Z)
-                        self.spatial_shape[::-1]) for b in bboxes_batch
-                ]
-
-            targets: List[Dict[str, Any]] = []
-            for b, (ids, bm, boxes) in enumerate(zip(mask_ids_batch, binary_masks_batch, bboxes_batch)):
-                mask_ids_tensor = torch.as_tensor(ids, device=device, dtype=torch.long)
-                labels = torch.zeros(len(ids), device=device, dtype=torch.long)
-                t: Dict[str, Any] = {
-                    "boxes": boxes,
-                    "mask_ids": mask_ids_tensor,
-                    "labels": labels,
-                }
-                if self.use_masks:
-                    if self.generate_binary_masks:
-                        t["masks"] = bm
-                    else:
-                        t["label_map"] = masks_labelmap[b]
-                targets.append(t)
-        
-        else:
-            # TODO: once database is updated to reflect timepoint of annotations,
-            #       implement new build targets logic
-            raise NotImplementedError("New build targets logic not implemented yet.")
-        
         return targets
 
+    def _class_label(self, object_type_id: object) -> int:
+        """DB ``object_type_id`` -> the model's contiguous class index.
+        """
+        if object_type_id is None:
+            return 0
+        type_id = int(object_type_id)
+        if self._class_index is None:
+            # class-agnostic: no catalog was supplied
+            return 0
+        try:
+            return self._class_index[type_id]
+        except KeyError:
+            raise KeyError(
+                f"object_type_id={type_id} is not in the object-type catalog "
+                f"{sorted(self._class_index)}; the catalog is stale relative to "
+                f"the annotations (refetch it at startup)"
+            ) from None
+
+    def _assert_cube_local(self, box: List[float]) -> None:
+        """Reject a tile-frame bbox on the cube path.
+
+        The two training views publish DIFFERENT coordinate bases for the same
+        key: api.cube_training gives cube-local CLIPPED bboxes, api.tiles_training
+        gives tile-relative UNCLIPPED ones. Same key, same dtype, same six
+        numbers -- a tile-frame box passes every existing shape check and quietly
+        produces wrong targets.
+
+        Only catches boxes that overflow the cube, not a tile-frame box that
+        happens to land inside the first cube; at a 1536x1408 tile against a 128^3
+        cube that is a small corner of the space, and it costs three comparisons
+        per instance on the CPU side.
+        """
+        z1, y1, x1 = box[3], box[4], box[5]
+        dz, dy, dx = self.spatial_shape
+        if z1 > dz or y1 > dy or x1 > dx:
+            raise ValueError(
+                f"annotation bbox_zyxzyx={box} exceeds the cube extent "
+                f"{(dz, dy, dx)}; this looks like api.tiles_training "
+                f"(tile-relative, unclipped) data on the cube path"
+            )
+
     def _copy_h2d(self, dst: torch.Tensor, src: torch.Tensor):
+        # Raw cudaMemcpyAsync serializes storage order and trusts sizes blindly:
+        # guard contiguity on BOTH sides (parity with CollatorActor.copy_h2d)
+        # and shape/byte compatibility before handing pointers to the driver.
+        if not src.is_contiguous():
+            raise ValueError("_copy_h2d: src must be contiguous for a raw memcpy")
+        if not dst.is_contiguous():
+            raise ValueError("_copy_h2d: dst must be contiguous for a raw memcpy")
+        src_bytes = src.numel() * src.element_size()
+        dst_bytes = dst.numel() * dst.element_size()
+        if tuple(dst.shape) != tuple(src.shape):
+            raise ValueError(
+                f"_copy_h2d: shape mismatch dst {tuple(dst.shape)} != src {tuple(src.shape)}"
+            )
+        if dst_bytes < src_bytes:
+            raise ValueError(
+                f"_copy_h2d: dst too small ({dst_bytes} bytes) for src ({src_bytes} bytes)"
+            )
+
         src_ptr = ctypes.c_void_p(src.data_ptr())
         dst_ptr = ctypes.c_void_p(dst.data_ptr())
 
         cudart.memcpyAsync(
             dst_ptr.value,
             src_ptr.value,
-            src.numel() * src.element_size(),
+            src_bytes,
             cudart.memcpyHostToDevice,
             int(self.cp_stream.ptr),
         )
@@ -421,7 +531,7 @@ class FinetuneCollatorActor:
         """
         batch: Ray batch containing at least:
           - "buffer_idx"
-          - "mask_bbox_dict"
+          - "annotations_metadata"
           - columns listed in self.columns (z_size, y_size, x_size, etc.)
         """
         with torch.cuda.device(self.device.index), cp.cuda.Device(self.device.index):
@@ -433,30 +543,37 @@ class FinetuneCollatorActor:
                 offset=host_buffer_idx * self.slot_bytes,
             )
 
-            inputs_full = torch.from_numpy(h_view)
-            # In inference we may have no labelmap channel at all.
-            if self.mask_channel_idx is not None:
-                inputs, masks_labelmap = self._get_masks(inputs_full)
-            else:
-                inputs, masks_labelmap = inputs_full, None
+            # The full tensor (image channels + any labelmap channel) rides to
+            # VRAM untouched; the preprocessor owns labelmap extraction.
+            inputs = torch.from_numpy(h_view)
 
             meta_cpu: Dict[str, Any] = {}
             for k in self.columns:
                 if k in batch:
                     meta_cpu[k] = batch[k]
+            if "batch_size_actual" in batch:
+                bsa = batch["batch_size_actual"]
+                meta_cpu["batch_size_actual"] = int(np.asarray(bsa).ravel()[0])
+            if "valid_mask" in batch:
+                meta_cpu["valid_mask"] = batch["valid_mask"]
+            if self.object_type_names is not None:
+                # Batch metadata, not config: the semantic preprocessor resolves
+                # class NAMES from it, and it reaches that actor the same way
+                # annotations_metadata and channel_mapping do. 
+                meta_cpu["object_type_names"] = self.object_type_names
 
             # Build targets only when requested (training). For inference, produce empty targets
             # so downstream transforms that expect `metainfo["targets"]` still work.
             if self.require_targets:
-                if "mask_bbox_dict" not in meta_cpu:
-                    raise KeyError("FinetuneCollatorActor expects 'mask_bbox_dict' in columns when require_targets=True.")
-                mask_bbox_dict_batch = list(meta_cpu["mask_bbox_dict"])
+                if "annotations_metadata" not in meta_cpu:
+                    raise KeyError(
+                        "FinetuneCollatorActor expects 'annotations_metadata' in columns when require_targets=True."
+                    )
+                annotations_metadata_batch = list(meta_cpu["annotations_metadata"])
                 targets_cpu = self._build_targets(
-                    masks_labelmap=masks_labelmap,
-                    mask_bbox_dict_batch=mask_bbox_dict_batch,
+                    annotations_metadata_batch=annotations_metadata_batch,
                 )
             else:
-                # FIXME: once we migrate to new database format, we need to update this logic
                 B = inputs.shape[0]
                 device = torch.device("cpu")
                 targets_cpu = []
@@ -481,26 +598,13 @@ class FinetuneCollatorActor:
             meta_cpu["image_sizes_padded"] = torch.as_tensor(image_sizes_padded)
             meta_cpu["padding_mask"] = torch.as_tensor(padding_mask)
 
-            sample_cpu = {
-                "data_tensor": inputs,
-                "metainfo": {
-                    **meta_cpu,
-                    "targets": targets_cpu,
-                    # "resize_buffer": self.resize_buffer if self.with_resize else None,
-                },
+            # No CPU transforms: augmentation is owned entirely by the GPU
+            # preprocessor (single source of truth for spatiotemporal ops).
+            inputs_transformed = inputs
+            metainfo_transformed = {
+                **meta_cpu,
+                "targets": targets_cpu,
             }
-
-            if self.transforms:
-                for t in self.transforms:
-                    sample_cpu = t(sample_cpu)
-                inputs_transformed = sample_cpu["data_tensor"]
-                metainfo_transformed = sample_cpu["metainfo"]
-            else:
-                inputs_transformed = inputs
-                metainfo_transformed = {
-                    **meta_cpu,
-                    "targets": targets_cpu,
-                }
 
             device_buffer_idx = self.device_buffer.get_free()
             dst_device = self.device_buffer.device_buffers[device_buffer_idx]
@@ -564,10 +668,10 @@ class FinetuneCollatorActor:
             metainfo["targets"] = targets_gpu
 
             if self.debug:
-                # NOTE: for testing only, put_free(idx) otherwise called by hooks in
-                #       training loop, see training/hooks.py:FreeDeviceBufferHook
-                if self.async_device_copy:
-                    ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+                # NOTE: for testing only, put_free(device idx) otherwise called by
+                #       hooks in training loop (training/hooks.py:FreeDeviceBufferHook).
+                #       The HOST slot is NOT freed here: the sync path already freed
+                #       it above, and in async mode the stream callback frees it.
                 self.device_buffer.put_free(device_buffer_idx)
 
             return {"data_tensor": dst_device, "metainfo": metainfo}
@@ -587,26 +691,26 @@ class CollatorActor:
         node_id: int,
         callback_strategy: Literal["grpc", "queue"] = "grpc",
         async_device_copy: bool = False,
-        columns: List[str] = [
-            # metadata columns to keep from the original dataframe
-            "x_start",
-            "y_start",
-            "z_start",
-            "time_start",
-            "channel_size",
-            "z_size",
-            "y_size",
-            "x_size",
-            "time_size",
-            "server_folder",
-            "output_folder",
-            "tile_name",
-            "prepared_id",
-        ],
+        # Accepted and unused: the pretrain path builds no targets, so it needs
+        # no class taxonomy. Declared so dataloaders can pass the catalog to
+        # whichever collator the config names without branching on its _target_.
+        object_type_names: Optional[dict] = None,
+        columns: Optional[List[str]] = None,
         debug: bool = False,
         debug_device_idx: Optional[int] = None,
     ):
-        self.columns = columns
+        _ensure_cupy()  # collator actors own a GPU; loaders never import cupy
+        # The metadata columns carried into metainfo. 
+        self.columns = list(columns) if columns else [
+            *required_columns(with_targets=True),
+            # synthesized by LoaderActor.__call__ (not a DB column): the
+            # post-selection {channel_idx -> role} table the preprocessor
+            # partitions signal vs. mask channels with, and the post-selection
+            # [localization, fluorophore] token per channel (null on masks) the
+            # channel embedding looks up.
+            "channel_mapping",
+            "channel_tokens",
+        ]
         self.debug_device_idx = debug_device_idx
 
         self.node_id = node_id
@@ -617,7 +721,7 @@ class CollatorActor:
         self.input_shape = tuple(input_shape)
         self.device_buffer_capacity = device_buffer_capacity
 
-        self.numa_node = torch_gpu_to_numa(self.local_rank)["numa_node"]
+        self.numa_node = torch_gpu_to_numa(self._get_device_index())["numa_node"]
         if pin_numa_node:
             bind_current_process_to_node(self.numa_node)
 
@@ -626,6 +730,7 @@ class CollatorActor:
 
         self.host_buffer_actor = get_buffers(
             type="host_memory",
+            pool_name="loader",
             numa_node=self.numa_node,
             local_rank=self.local_rank,
             global_rank=self.global_rank,
@@ -635,7 +740,7 @@ class CollatorActor:
         self.slot_bytes = int(cfg["slot_bytes"])
         self.batch_shape = tuple(cfg["batch_shape"])
         self.capacity = int(cfg["capacity"])
-        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+        self._shm = attach_shared_memory(cfg["name"])
 
         self.pin_pages = pin_pages
         if pin_pages:
@@ -709,7 +814,7 @@ class CollatorActor:
     def _get_device_index(self) -> int:
         gpu_ids = ray.get_gpu_ids()
         if gpu_ids:
-            return int(gpu_ids[0])
+            return ray_assigned_gpu_to_torch_ordinal(gpu_ids)
         # Fallback for debug mode (running outside Ray Train workers)
         elif self.debug_device_idx is not None:
             ray.logger.warning(f"Using debug device index {self.debug_device_idx}. If not debugging this could lead to unexpected behavior.")
@@ -719,7 +824,11 @@ class CollatorActor:
 
     def __del__(self):
         try:
-            if getattr(self, "_pinned", False) and self.host_buffer_ptr is not None:
+            if (
+                cp is not None
+                and getattr(self, "_pinned", False)
+                and self.host_buffer_ptr is not None
+            ):
                 cp.cuda.runtime.hostUnregister(self.host_buffer_ptr)
             if hasattr(self, "_shm"):
                 self._shm.close()
@@ -727,7 +836,22 @@ class CollatorActor:
             pass
 
     def copy_h2d(self, dst, src):
-        assert src.flags["C_CONTIGUOUS"], "src must be contiguous"
+        # Raw cudaMemcpyAsync serializes storage order and trusts sizes blindly:
+        # guard contiguity on BOTH sides (parity with FinetuneCollatorActor)
+        # and shape/byte compatibility before handing pointers to the driver.
+        if not src.flags["C_CONTIGUOUS"]:
+            raise ValueError("copy_h2d: src must be contiguous for a raw memcpy")
+        if not dst.is_contiguous():
+            raise ValueError("copy_h2d: dst must be contiguous for a raw memcpy")
+        dst_bytes = dst.numel() * dst.element_size()
+        if tuple(dst.shape) != tuple(src.shape):
+            raise ValueError(
+                f"copy_h2d: shape mismatch dst {tuple(dst.shape)} != src {tuple(src.shape)}"
+            )
+        if dst_bytes < src.nbytes:
+            raise ValueError(
+                f"copy_h2d: dst too small ({dst_bytes} bytes) for src ({src.nbytes} bytes)"
+            )
         # __array_interface__ protocol: data field is a
         #  2-tuple whose first argument is a Python integer that points
         # to the data-area storing the array contents
@@ -799,12 +923,18 @@ class CollatorActor:
             for k in self.columns:
                 if k in batch:
                     metainfo[k] = batch[k]
+            if "batch_size_actual" in batch:
+                bsa = batch["batch_size_actual"]
+                metainfo["batch_size_actual"] = int(np.asarray(bsa).ravel()[0])
+            if "valid_mask" in batch:
+                metainfo["valid_mask"] = batch["valid_mask"]
 
             if self.debug:
-                # NOTE: for testing only, put_free(idx) otherwise called by hooks in
-                #       training loop, see training/hooks.py:FreeDeviceBufferHook
-                if self.async_device_copy:
-                    ray.get(self.host_buffer_actor.put_free.remote(host_buffer_idx))
+                # NOTE: for testing only, put_free(device idx) otherwise called by
+                #       hooks in training loop (training/hooks.py:FreeDeviceBufferHook).
+                #       The HOST slot is NOT freed here: the sync path already freed
+                #       it above, and in async mode the stream callback / free thread
+                #       frees it.
                 self.device_buffer.put_free(device_buffer_idx)
 
             return {"data_tensor": dst_device, "metainfo": metainfo}
@@ -826,19 +956,23 @@ class LoaderActor:
         batch_size: int,
         input_layout: str,
         context_spec: Dict[str, Any],
-        dtype: str = "fp16",
         buffer_dtype: str = "uint16",
         pin_numa_node: bool = True,
         with_batched_api: bool = True,
-        channels_subset: Optional[List[int]] = None,
+        selected_channel_localizations: Optional[List[str]] = None,
         pad_mode: Literal["zero"] = "zero",
+        last_batch_policy: str = "drop",
+        save_mode: Optional[Literal["overwrite", "append"]] = None,
     ):
         self.dim = dim
         self.input_format = input_format.upper()
         self.pad_mode = pad_mode
+        self.last_batch_policy = last_batch_policy
+        self.save_mode = save_mode
 
         self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
         self.driver_process_numa_node = numa_node
+        self.numa_node = numa_node  # default; replaced by scheduler when pin_numa_node
         if pin_numa_node:
             self.actor_scheduler = ray.get_actor(
                 f"numa_node_affinity_scheduler_node_{self.node_id}", namespace="schedulers"
@@ -848,19 +982,18 @@ class LoaderActor:
             bind_current_process_to_node(self.numa_node)
 
         # input data layout
-        self.channels_subset = list(channels_subset) if channels_subset is not None else None
+        self.selected_channel_localizations = (
+            list(selected_channel_localizations) if selected_channel_localizations is not None else None
+        )
         self.input_layout = input_layout.upper()
         self.batch_size = batch_size
 
         # dtypes
-        self.dtype = TENSORSTORE_DTYPES[dtype].value if isinstance(dtype, str) else dtype
-
-        if self.dtype == TENSORSTORE_DTYPES.bf16.value:
-            # ray.logger.warning(
-            #     "Using fp16 for PyArrow, Collator will cast data to bf16"
-            # )
-            self.dtype = TENSORSTORE_DTYPES.fp16.value
-
+        # NOTE: there is deliberately NO read dtype. read_zarr runs with
+        # cast=False (see _get_handle), so tensors arrive in the on-disk dtype
+        # (uint16 counts) and the tensorstore write into the uint16 host buffer
+        # defines the transport dtype. buffer_dtype below is the ONLY dtype the
+        # loader path honors.
         self.buffer_dtype = NUMPY_DTYPES[buffer_dtype].value if isinstance(buffer_dtype, str) else buffer_dtype
 
         # tensorstore
@@ -870,7 +1003,8 @@ class LoaderActor:
 
         # memory buffer
         self.buffer_actor = get_buffers(
-            type=f"host_memory",
+            type="host_memory",
+            pool_name="loader",
             node_id=self.node_id,
             local_rank=self.local_rank,
             global_rank=self.global_rank,
@@ -880,7 +1014,7 @@ class LoaderActor:
         cfg = ray.get(self.buffer_actor.get_config.remote())
         self.slot_bytes = int(cfg["slot_bytes"])
         self.batch_shape = tuple(cfg["batch_shape"])
-        self._shm = shared_memory.SharedMemory(name=cfg["name"])
+        self._shm = attach_shared_memory(cfg["name"])
 
         ray.logger.info(
             f"LoaderActor on global rank {self.global_rank} and numa node {self.driver_process_numa_node} "
@@ -902,17 +1036,33 @@ class LoaderActor:
         y = slice(meta["y_start"], meta["y_start"] + meta["y_size"])
         x = slice(meta["x_start"], meta["x_start"] + meta["x_size"])
 
-        if self.channels_subset is not None:
-            if self.input_format == "ZYXC" or self.input_format == "TZYXC":
-                view = data_tensor[t, z, y, x, self.channels_subset]
-            else:
-                raise NotImplementedError(f"Channel subsetting not implemented for input format {self.input_format}")
+        # Channel selection against the DB's aligned channel arrays. Two
+        # properties matter here:
+        #   - the returned values index the zarr's C axis. channel_idx is
+        #     required to be dense (resolve_channel_indices raises otherwise),
+        #     so that is the SAME number as the array position -- one numbering
+        #     scheme, not two that happen to agree.
+        #   - selected data channels keep their SOURCE order, so the emitted
+        #     channel layout depends on the row and the selected set only, never
+        #     on the order selected_channel_localizations happens to list them.
+        # Mask channels are always retained and always appended last: a
+        # localization-only selection can never name them (roi_channels forces
+        # localization NULL on a mask channel), and preprocessor._split_channels
+        # requires object channels in the tail.
+        channel_indices = resolve_channel_indices(
+            meta.get("channel_idx"),
+            meta.get("channel_type"),
+            meta.get("localization"),
+            self.selected_channel_localizations,
+        )
+        if self.input_format not in ("ZYXC", "TZYXC"):
+            raise NotImplementedError(f"Input format {self.input_format} not implemented")
+
+        if channel_indices is not None:
+            view = data_tensor[t, z, y, x, channel_indices]
         else:
-            if self.input_format == "ZYXC" or self.input_format == "TZYXC":
-                c = slice(0, meta["channel_size"])
-                view = data_tensor[t, z, y, x, c]
-            else:
-                raise NotImplementedError(f"Input format {self.input_format} not implemented")
+            c = slice(0, meta["channel_size"])
+            view = data_tensor[t, z, y, x, c]
 
         if self.dim == 3:
             if self.input_format == "ZYXC":
@@ -925,23 +1075,37 @@ class LoaderActor:
     def _get_handle(self, path: str):
         h = self._handles.get(path)
         if h is None:
-            h = read_zarr(path, dtype=self.dtype, context=self.ctx, cast=False)
+            # cast=False: read in the on-disk dtype (uint16 counts). Do NOT pass a
+            # float read dtype -- cast=True with fp16 would quantize counts > 2048
+            # and overflow counts > 65504 before they reach the uint16 buffer.
+            h = read_zarr(path, context=self.ctx, cast=False)
             self._handles[path] = h
         return h
 
     def __call__(self, batch):
+        actual_len = len(batch["tile_relative_path"])
+        if actual_len > self.batch_size:
+            raise ValueError(
+                f"Batch has {actual_len} elements but batch_size is {self.batch_size}. "
+                "Partitioning should ensure batch_size is never exceeded."
+            )
+
         buffer = ray.get(self.buffer_actor.get_free.remote())
         dst = np.ndarray(
             self.batch_shape, dtype=self.buffer_dtype, buffer=self._shm.buf, offset=buffer["slot"] * self.slot_bytes
         )
 
+        # When last_batch_policy == "pad" and batch is partial, pad with zeros
+        need_pad = self.last_batch_policy == "pad" and actual_len < self.batch_size
+        if need_pad:
+            dst.fill(0)
+
         write_futs = []
         with ts.Batch() as b:
-            for i in range(self.batch_size):
+            for i in range(actual_len):
                 p = os.path.join(
-                    batch["server_folder"][i],
-                    batch["output_folder"][i],
-                    batch["tile_name"][i],
+                    batch["storage_root"][i],
+                    batch["tile_relative_path"][i],
                 )
                 meta = {
                     "time_start": batch["time_start"][i],
@@ -954,6 +1118,11 @@ class LoaderActor:
                     "x_size": batch["x_size"][i],
                     "channel_size": batch["channel_size"][i],
                 }
+                # The aligned channel arrays drive selection; see
+                # resolve_channel_indices.
+                for key in ("channel_idx", "channel_type", "localization"):
+                    if key in batch:
+                        meta[key] = batch[key][i]
                 src_view = self._slice_hypercube(self._get_handle(p), meta=meta, ts_batch=b)
 
                 if self.dim == 3:
@@ -1010,6 +1179,84 @@ class LoaderActor:
 
         batch["buffer_name"] = np.array([buffer["name"]] * self.batch_size)
         batch["buffer_idx"] = np.full((self.batch_size,), buffer["slot"], dtype=np.int32)
+        # Ray map_batches requires dict values to be list or ndarray (not Python int).
+        batch["batch_size_actual"] = np.full((self.batch_size,), actual_len, dtype=np.int64)
+        batch["valid_mask"] = np.array([i < actual_len for i in range(self.batch_size)], dtype=bool)
+
+        if self.save_mode == "append":
+            batch["existing_zarr_path"] = np.array(
+                [
+                    os.path.join(
+                        batch["storage_root"][i],
+                        batch["tile_relative_path"][i],
+                    )
+                    for i in range(actual_len)
+                ],
+                dtype=object,
+            )
+
+        if need_pad:
+            for k, v in list(batch.items()):
+                if k in ("buffer_name", "buffer_idx", "batch_size_actual", "valid_mask"):
+                    continue
+                if hasattr(v, "__len__") and len(v) == actual_len and actual_len < self.batch_size:
+                    if isinstance(v, np.ndarray):
+                        if v.dtype.kind in ("U", "S", "O"):
+                            pad_val = v[-1] if actual_len > 0 else ""
+                            batch[k] = np.concatenate([v, np.array([pad_val] * (self.batch_size - actual_len))])
+                        else:
+                            batch[k] = np.pad(
+                                v, (0, self.batch_size - actual_len), mode="edge"
+                            )
+                    else:
+                        pad_val = v[-1] if actual_len > 0 else None
+                        batch[k] = list(v) + [pad_val] * (self.batch_size - actual_len)
+
+        # The emitted tensor's channels are a subset of the source channels in a
+        # loader-chosen order (data first, masks in the tail), so the role table
+        # must be keyed by POST-selection position before it travels downstream --
+        # the preprocessor partitions channels by exactly those indices.
+        if "channel_idx" in batch and "channel_type" in batch:
+            remapped_rows = []
+            token_rows = []
+            for row in range(len(batch["channel_idx"])):
+                channel_indices = resolve_channel_indices(
+                    batch["channel_idx"][row],
+                    batch["channel_type"][row],
+                    batch["localization"][row] if "localization" in batch else None,
+                    self.selected_channel_localizations,
+                )
+                remapped_rows.append(
+                    ujson.dumps(
+                        remap_channel_roles_to_selection(
+                            batch["channel_type"][row],
+                            batch["annotation_type"][row] if "annotation_type" in batch else None,
+                            batch["channel_idx"][row],
+                            channel_indices,
+                        )
+                    )
+                )
+                token_rows.append(
+                    ujson.dumps(
+                        channel_tokens_for_selection(
+                            batch["channel_type"][row],
+                            batch["localization"][row] if "localization" in batch else None,
+                            batch["fluorophore"][row] if "fluorophore" in batch else None,
+                            batch["channel_idx"][row],
+                            channel_indices,
+                        )
+                    )
+                )
+            batch["channel_mapping"] = np.array(remapped_rows, dtype=object)
+            batch["channel_tokens"] = np.array(token_rows, dtype=object)
+            # The per-row channel arrays are lists; Ray Data cannot build an
+            # Arrow column from object arrays of lists and falls back to pickling
+            # (one traceback per batch). Downstream readers go through
+            # _as_list, which parses JSON strings.
+            for key in ("channel_idx", "channel_type", "localization", "fluorophore", "annotation_type"):
+                if key in batch:
+                    batch[key] = np.array([_json_list(v) for v in batch[key]], dtype=object)
+
         return batch
 
 
@@ -1025,179 +1272,46 @@ def set_data_context(cfg: DictConfig):
 
 
 def get_context_spec(cfg: DictConfig) -> Dict[str, Any]:
+    """Build a :class:`tensorstore.Context` JSON spec from ``cfg.datasets.context``.
+
+    **Stripping:** Keys whose value is ``None`` (Hydra ``null``) are **omitted**, so TensorStore
+    uses its **default** resource for that id (see TensorStore "Context framework" docs).
+
+    **TensorStore (google.github.io/tensorstore/context.html):**
+
+    - ``cache_pool``: ``{"total_bytes_limit": N}`` — LRU cache soft cap in bytes. Default ``N`` is
+      ``0`` (no cached bytes). Raising this can reuse decoded chunks across reads (memory tradeoff).
+    - ``data_copy_concurrency``: ``{"limit": <int>}`` or ``{"limit": "shared"}`` — cap on CPU cores
+      used for encode/decode/copy; ``"shared"`` uses all host cores/threads.
+    - ``file_io_concurrency``: ``{"limit": <int>}`` — cap on concurrent file I/O ops (same pattern).
+
+    **Ray Data (this file, ``map_batches``):** Parallelism across batches is mostly
+    ``num_actors_min`` / ``num_actors_max`` (separate process pool), not these TensorStore limits.
+
+    LoaderActor passes ``ctx_spec`` to ``tensorstore.Context`` and ``read_zarr(..., context=...)``.
+    """
     ts_ctx = OmegaConf.to_container(cfg.datasets.context, resolve=True)
     ctx_spec = {k: v for k, v in ts_ctx.items() if v is not None}
     return ctx_spec
 
 
-def partition_indices_for_inference(
-    df: pd.DataFrame,
-    world_size: int,
-    batch_size: int,
-    drop_last_policy: bool,
-    roi_col: str = "prepared_id",
-    tile_col: str = "tile_name",
-) -> list[list[int]]:
-    total = len(df)
-    num_samples_per_rank = total // world_size
-
-    if drop_last_policy:
-        num_samples_per_rank = (num_samples_per_rank // batch_size) * batch_size
-
-    # round-robin assignment if not enough samples
-    if num_samples_per_rank == 0:
-        rows_per_rank = [[] for _ in range(world_size)]
-        for i, idx in enumerate(df.index.tolist()):
-            rows_per_rank[i % world_size].append(int(idx))
-        return rows_per_rank
-
-    df_sub = df.iloc[: world_size * num_samples_per_rank]
-
-    df_row_by_rank = df_sub.apply(lambda r: tile_owner(int(r[roi_col]), str(r[tile_col]), world_size), axis=1)
-    idxs = df_sub.index.to_numpy()
-
-    df_rank_to_row = {r: [] for r in range(world_size)}
-    for i, own in zip(idxs, df_row_by_rank.to_numpy()):
-        df_rank_to_row[int(own)].append(int(i))
-
-    rows_per_rank = [[] for _ in range(world_size)]
-    row_remainders = []
-    for r in range(world_size):
-        locality_matched_samples = df_rank_to_row[r][:num_samples_per_rank]
-        rank_row_remainders = df_rank_to_row[r][num_samples_per_rank:]
-        rows_per_rank[r].extend(locality_matched_samples)
-        row_remainders.extend(rank_row_remainders)
-
-    for r in range(world_size):
-        non_locality_matched_rows = num_samples_per_rank - len(rows_per_rank[r])
-        if non_locality_matched_rows > 0:
-            rows_per_rank[r].extend(row_remainders[:non_locality_matched_rows])
-            row_remainders = row_remainders[non_locality_matched_rows:]
-
-    assert all(
-        len(x) == num_samples_per_rank for x in rows_per_rank
-    ), "Not all ranks have equal size data shards after partitioning."
-
-    return rows_per_rank
-
-
-def shuffle_table(table: pa.Table, seed: int) -> pa.Table:
-    n = table.num_rows
-    rng = np.random.default_rng(seed)
-    perm = rng.permutation(n)
-    return table.take(pa.array(perm, type=pa.int64()))
-
-
-def get_dataset_ray(
+def _build_loader_dataset(
     cfg: DictConfig,
-    seed: Optional[int],
-    indices: Optional[List[int]],
-    database: Optional[Any] = None,
-    columns: list = [
-        # metadata columns to keep from the original dataframe
-        # adding more columns may slow down collate
-        "x_start",
-        "y_start",
-        "z_start",
-        "time_start",
-        "channel_size",
-        "z_size",
-        "y_size",
-        "x_size",
-        "time_size",
-        "server_folder",
-        "output_folder",
-        "tile_name",
-        "prepared_id",
-        "mask_bbox_dict",
-    ],
-    dp_degree: Optional[int] = None,
-    dp_rank: Optional[int] = None,
-    shuffle: bool = False,
-    drop_last: bool = True,
+    local_table: pa.Table,
+    ctx_spec: Dict[str, Any],
+    selected_channel_localizations: Optional[List[str]] = None,
 ):
-    if seed is not None and not shuffle:
-        raise ValueError("Seed provided but shuffle is False.")
-
-    if cfg.datasets.channels_subset is not None:
-        # NOTE: this always works because dataset_layout_order is 1-1 matched
-        num_channels = cfg.datasets.input_shape[cfg.dataset_layout_order.index("C")]
-        assert len(list(cfg.datasets.channels_subset)) == num_channels, (
-            f"channels_subset length {len(cfg.datasets.channels_subset)} "
-            f"does not match number of channels {num_channels} in input_shape {cfg.datasets.input_shape}"
-        )
-
-    set_data_context(cfg)
-    ctx_spec = get_context_spec(cfg)
-
-    print(database.hypercubes_dataframe)
-    print(f"Trying to get dataset with \ncolumns: {columns} from \n{database.hypercubes_dataframe.columns}")
-    base_df = database.hypercubes_dataframe[columns]
-    if indices is not None:
-        base_df = base_df.iloc[indices]
-
-    # sort dataframe for consistent sharding across TP/CP/PP ranks
-    base_df = base_df.sort_values(
-        ["prepared_id", "tile_name", "z_start", "y_start", "x_start", "time_start"]
-    ).reset_index(drop=True)
-
-    # TODO: consider checking dataframe consistency before sharding
-    local_db_hash = df_signature_polars(base_df)
-    print(f"Dataset dataframe signature hash on rank {process_rank()}: {local_db_hash}")
-    # assert_same_db_hash_across_ranks(local_db_hash)
-
-    if dp_degree is not None and dp_rank is not None:
-        ws, rk = dp_degree, dp_rank
-    else:
-        ws, rk = get_world_size(), process_rank()
-
-    if cfg.job_type == "predict":
-        per_rank_indices = partition_indices_for_inference(
-            df=base_df,
-            world_size=ws,
-            batch_size=cfg.clusters.batch_size_per_gpu,
-            drop_last_policy=drop_last,
-            roi_col="prepared_id",
-            tile_col="tile_name",
-        )
-        local_idx = per_rank_indices[rk]
-        local_df = base_df.loc[local_idx]
-
-        ray.logger.info(f"Rank {rk} assigned dataframe: {local_df}")
-        ray.logger.info(f"Rank {rk} dataframe unique tiles: {local_df['tile_name'].nunique()}")
-
-        table = pa.table(local_df)
-        dataset = ray.data.from_arrow(table)
-
-        dataset_len = len(local_df)
-
-    else:
-        table = pa.table(base_df)
-        if shuffle:
-            table = shuffle_table(table, seed=seed)
-        
-        n = table.num_rows
-        n_shard = (n // ws) * ws
-        table = table.slice(0, n_shard)
-
-        shard_len = n_shard // ws
-        local_table = table.slice(rk * shard_len, shard_len)
-
-        if drop_last:
-            B = cfg.clusters.batch_size_per_gpu
-            keep = (local_table.num_rows // B) * B
-            local_table = local_table.slice(0, keep)
-
-        dataset = ray.data.from_arrow(local_table)
-        dataset_len = local_table.num_rows
-
-    # NOTE: this is necessary to avoid slow startup
+    dataset = ray.data.from_arrow(local_table)
     dataset = dataset.repartition(target_num_rows_per_block=cfg.datasets.rows_per_block, shuffle=False)
 
     scheduling_strategy = ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
         node_id=node_id(),
         soft=False,
     )
+    if "inference" in cfg.keys():
+        save_mode = cfg.inference.save_worker.save_mode
+    else:
+        save_mode = None
     dataset = dataset.map_batches(
         LoaderActor,
         scheduling_strategy=scheduling_strategy,
@@ -1208,22 +1322,116 @@ def get_dataset_ray(
             "batch_size": cfg.clusters.batch_size_per_gpu,
             "context_spec": ctx_spec,
             "with_batched_api": cfg.datasets.with_batched_api,
-            "dtype": cfg.dataset_dtype,
             "buffer_dtype": cfg.storage_dtype,
             "pin_numa_node": cfg.datasets.pin_numa_node,
             "input_layout": cfg.datasets.dataset.input_layout.value,
-            "channels_subset": cfg.datasets.channels_subset,
+            "selected_channel_localizations": selected_channel_localizations,
             "local_rank": local_rank(),
             "global_rank": process_rank(),
             "node_id": node_id(),
             "numa_node": torch_gpu_to_numa(local_rank())["numa_node"],
             "dim": get_data_dim(cfg.dataset_layout_order),
             "input_format": cfg.dataset_layout_order,
+            "last_batch_policy": cfg.datasets.last_batch_policy,
+            "save_mode": save_mode,
         },
-        compute=ray.data.ActorPoolStrategy(min_size=cfg.datasets.num_actors_min, max_size=cfg.datasets.num_actors_max),
+        compute=ray.data.ActorPoolStrategy(
+            min_size=cfg.datasets.num_actors_min,
+            max_size=cfg.datasets.num_actors_max,
+        ),
+    )
+    return dataset
+
+
+def get_dataset_ray(
+    cfg: DictConfig,
+    seed: Optional[int],
+    indices: Optional[List[int]],
+    sample_store_desc: MappedTableDescriptor,
+    columns: Optional[List[str]] = None,
+    dp_degree: Optional[int] = None,
+    dp_rank: Optional[int] = None,
+    selected_channel_localizations: Optional[List[str]] = None,
+    shuffle: bool = False,
+    last_batch_policy: str = "drop",
+    skip_batches: int = 0,
+):
+    if seed is not None and not shuffle:
+        raise ValueError("Seed provided but shuffle is False.")
+    if skip_batches and seed is None:
+        raise ValueError(
+            "skip_batches (mid-epoch resume) requires a seeded, shuffled "
+            "dataset — the skipped prefix is only meaningful if the row order "
+            "is reproducible."
+        )
+
+    set_data_context(cfg)
+    ctx_spec = get_context_spec(cfg)
+
+    store = MappedTable(sample_store_desc)
+    sample_table = store.table()
+
+    ray.logger.info(
+        "[DATASET] source=%s rows=%s fingerprint=%s rank=%s",
+        sample_store_desc.sample_table.source_key,
+        sample_store_desc.stats.num_rows,
+        sample_store_desc.stats.ordering_fingerprint,
+        process_rank(),
     )
 
-    return dataset, dataset_len
+    if indices is not None:
+        base_row_ids = np.asarray(indices, dtype=np.int64)
+    else:
+        base_row_ids = np.arange(sample_table.num_rows, dtype=np.int64)
+
+    if dp_degree is not None and dp_rank is not None:
+        ws, rk = dp_degree, dp_rank
+    else:
+        ws, rk = get_world_size(), process_rank()
+
+    planner = SampleIndexPlanner(world_size=ws, rank=rk)
+    local_row_ids = planner.plan_epoch(
+        base_row_ids=base_row_ids,
+        seed=seed,
+        shuffle=shuffle,
+        batch_size=cfg.clusters.batch_size_per_gpu,
+        last_batch_policy=last_batch_policy,
+    )
+
+    # Mid-epoch resume: the plan above is fully determined by (seed, epoch),
+    # so dropping the first `skip_batches` batches replays the remainder of an
+    # interrupted epoch exactly — no dataloader state to checkpoint.
+    num_planned_rows = len(local_row_ids)
+    if skip_batches:
+        skip_rows = int(skip_batches) * int(cfg.clusters.batch_size_per_gpu)
+        if skip_rows >= num_planned_rows:
+            raise ValueError(
+                f"skip_batches={skip_batches} skips {skip_rows} rows but the "
+                f"epoch plan only has {num_planned_rows} rows on rank {rk}."
+            )
+        local_row_ids = local_row_ids[skip_rows:]
+        ray.logger.info(
+            "[DATASET] mid-epoch resume: skipping %s of %s planned rows (rank=%s)",
+            skip_rows,
+            num_planned_rows,
+            rk,
+        )
+
+    local_table = sample_table.take(pa.array(local_row_ids, type=pa.int64()))
+    if columns:
+        selected_columns = [c for c in columns if c in local_table.column_names]
+        local_table = local_table.select(selected_columns)
+
+    dataset = _build_loader_dataset(
+        cfg,
+        local_table,
+        ctx_spec,
+        selected_channel_localizations=selected_channel_localizations,
+    )
+    # NOTE: return the PRE-skip length — record_dataset_len feeds the
+    # steps-per-epoch inference, which must stay epoch-invariant across a
+    # mid-epoch resume.
+    return dataset, num_planned_rows
 
 
 def get_dataloader_ray(
@@ -1231,52 +1439,56 @@ def get_dataloader_ray(
     batch_size: int,
     collate_fn: Optional[Callable],
     epoch: int = 0,
-    drop_last: bool = True,
-    database: Optional[Any] = None,
+    last_batch_policy: str = "drop",
+    sample_store_desc: Optional[MappedTableDescriptor] = None,
     dp_degree: Optional[int] = None,
     dp_rank: Optional[int] = None,
+    selected_channel_localizations: Optional[List[str]] = None,
+    skip_batches: int = 0,
+    val_collate_fn: Optional[Callable] = None,
 ):
+    """``val_collate_fn``: a collator of its own for the validation iterator.
+    Required whenever validation runs while the train iterator is still live
+    (step-cadence validation): both iterators finalize through the collator's
+    device buffer, and the train iterator's prefetch keeps its slots until the
+    trainer steps them, so a validation batch collating into the same buffer
+    waits forever. None -> the validation iterator shares ``collate_fn``."""
     assert hasattr(cfg, "seed"), "cfg.seed is required for Ray Dataloader."
+    if sample_store_desc is None:
+        raise ValueError("sample_store_desc is required.")
 
-    if database is None:
-        db = instantiate(cfg.datasets.databases)
-    else:
-        db = database
+    dataset_len = int(sample_store_desc.stats.num_rows)
+    train_indices, val_indices = SampleIndexPlanner.split_train_val(
+        num_rows=dataset_len,
+        split_fraction=cfg.datasets.split,
+        seed=int(cfg.seed),
+    )
 
-    database_df = db.hypercubes_dataframe
-    dataset_len = len(db.hypercubes_dataframe)
-
-    if cfg.datasets.split is not None and 0.0 < float(cfg.datasets.split) < 1.0:
-        g = torch.Generator()
-        g.manual_seed(int(cfg.seed))
-
-        val_size = round(dataset_len * cfg.datasets.split)
-        train_subset, val_subset = random_split(
-            range(dataset_len), lengths=[dataset_len - val_size, val_size], generator=g
-        )
-        train_indices, val_indices = train_subset.indices, val_subset.indices
-
+    if len(val_indices) > 0:
         train_dataset, train_dataset_len = get_dataset_ray(
-            cfg,
-            indices=train_indices,
-            database=db,
-            columns=list(cfg.datasets.columns),
+            cfg=cfg,
+            seed=int(cfg.seed) + int(epoch),
+            indices=train_indices.tolist(),
+            sample_store_desc=sample_store_desc,
+            columns=None,
             dp_degree=dp_degree,
             dp_rank=dp_rank,
-            seed=int(cfg.seed) + int(epoch),
+            selected_channel_localizations=selected_channel_localizations,
             shuffle=True,
-            drop_last=drop_last,
+            last_batch_policy=last_batch_policy,
+            skip_batches=skip_batches,
         )
         val_dataset, val_dataset_len = get_dataset_ray(
-            cfg,
-            indices=val_indices,
-            database=db,
-            columns=list(cfg.datasets.columns),
+            cfg=cfg,
+            seed=None,
+            indices=val_indices.tolist(),
+            sample_store_desc=sample_store_desc,
+            columns=None,
             dp_degree=dp_degree,
             dp_rank=dp_rank,
-            seed=None,
+            selected_channel_localizations=selected_channel_localizations,
             shuffle=False,
-            drop_last=drop_last,
+            last_batch_policy=last_batch_policy,
         )
 
         record_dataset_len(cfg, train_dataset_len, val_dataset_len)
@@ -1285,19 +1497,26 @@ def get_dataloader_ray(
             batch_size=batch_size, _finalize_fn=collate_fn, batch_format="numpy"
         )
         val_dataloader = val_dataset.iterator()._iter_batches(
-            batch_size=batch_size, _finalize_fn=collate_fn, batch_format="numpy"
+            batch_size=batch_size, _finalize_fn=val_collate_fn or collate_fn, batch_format="numpy"
         )
-        return train_dataloader, val_dataloader, database_df
+        return train_dataloader, val_dataloader, None
 
-    else:
-        train_dataset, train_dataset_len = get_dataset_ray(
-            cfg, indices=None, database=db, columns=list(cfg.datasets.columns), 
-            dp_degree=dp_degree, dp_rank=dp_rank, 
-            seed=int(cfg.seed) + int(epoch), shuffle=True, drop_last=drop_last
-        )
-        record_dataset_len(cfg, train_dataset_len, 0)
+    train_dataset, train_dataset_len = get_dataset_ray(
+        cfg=cfg,
+        seed=int(cfg.seed) + int(epoch),
+        indices=train_indices.tolist() if len(train_indices) > 0 else None,
+        sample_store_desc=sample_store_desc,
+        columns=None,
+        dp_degree=dp_degree,
+        dp_rank=dp_rank,
+        selected_channel_localizations=selected_channel_localizations,
+        shuffle=True,
+        last_batch_policy=last_batch_policy,
+        skip_batches=skip_batches,
+    )
+    record_dataset_len(cfg, train_dataset_len, 0)
 
-        train_dataloader = train_dataset.iterator()._iter_batches(
-            batch_size=batch_size, _finalize_fn=collate_fn, batch_format="numpy"
-        )
-        return train_dataloader, None, database_df
+    train_dataloader = train_dataset.iterator()._iter_batches(
+        batch_size=batch_size, _finalize_fn=collate_fn, batch_format="numpy"
+    )
+    return train_dataloader, None, None

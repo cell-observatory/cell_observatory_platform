@@ -76,6 +76,7 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/
 
 # PyBuilder
 target/
@@ -170,3 +171,16 @@ src/LV_auto_batch.bat_predict_rois
 pytests/
 .specstory/
 .cursorignore
+pyrightconfig.json
+.agents
+scripts/db/sandbox/
+scripts/db/*.tar.gz
+scripts/db/*.tar.zst
+scripts/db/*.backup
+scripts/db/pgcopydb_work/
+/.vscode/settings.json
+
+# CI-built Apptainer images and pytest artifacts (must not pollute the
+# self-hosted runner working tree / block branch switches)
+*.sif
+test_results/

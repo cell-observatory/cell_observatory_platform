@@ -1,0 +1,37 @@
+# @package _global_
+# Diag F4: F1 + 4 loader actors per rank instead of 12 (CPU-contention test: 96 decompressing actors vs 8 trainer launch threads on 192 cores). K1 setup (cube 128x384x512, bs 1/GPU, mm 48) with every timer on, 12 steps, clean finish
+# so the logbook flushes: perf fwd/bwd/step, iteration timer data/preprocess/transform, memory per step.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: F4_actors4_c512_mm48
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/diag/${experiment_name}
+
+clusters:
+  batch_size: 8
+
+datasets:
+  max_rows: 256
+  num_actors_min: 2
+  num_actors_max: 4
+  databases:
+    diagnostic_verbose: true  # reports how many fringe cubes in_bounds_only dropped
+
+trainer_loop:
+  max_steps: 12
+  with_perf_metrics: true
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: torch_memory_stats
+    step_period: 1
+    epoch_period: 1
+    logdir: ${loggers.logdir}

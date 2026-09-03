@@ -1,0 +1,152 @@
+# @package _global_
+defaults:
+  - /tasks/instance_segmentation
+  - /paths/local
+  - /hydra/overrides
+  - /clusters/janelia_l4
+  - /datasets/databases/base_database
+  - /datasets/transforms/ray_transforms
+  - /datasets/preprocessor/ray_preprocessor
+  - /datasets/pretrain_dataset_ray
+  - /datasets/preprocessor/instance_segmentation_preprocessor
+  - /datasets/masking/mask_generator
+  - /models/meta_arch/maskdino/mae_large
+  - /models/heads/maskdino_decoder/maskdino_decoder
+  - /models/heads/pixel_decoder/maskdino_encoder
+  - /models/backbones/masked_encoder/large
+  - /models/backbones/maskdino_backbone/maskdino_backbone
+  - /checkpoint/checkpoint
+  - /loggers/loggers
+  - /evaluation/base_evaluator
+  - /deepspeed/zero2
+  - /optimizers/lamb
+  - /schedulers/warmup_cosine_decay
+  - /optimizations/models/maskdino/mae_large
+  - /optimizations/optimizations
+  - /profiling/profiling
+  - _self_
+
+experiment_name: instance_segmentation_maskdino_baseline_128x384x512_new_pointrend_l4
+wandb_project: testing
+
+# debug_mode: true
+backend: DEEPSPEED
+distributed_framework: ray
+run_type: single_run # single_run, multi_run, or tune
+job_type: train # train or test
+trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+quantization: bfloat16 # data type for training, options: float32, float16
+# NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model
+dataset_dtype: float16 # data type for loading data, options: float32, float16
+storage_dtype: uint16
+dataset_layout_order: ZYXC
+seed: 42
+
+task: finetuning
+network: baseline
+engine: deepspeed
+
+# overrides
+# --------------------------------------------------------------------------------
+
+clusters:
+  batch_size: 48 # 40GB memory
+  # batch_size: 96 # 80GB memory
+  worker_nodes: 2 # number of worker nodes
+  # partition: gpu_a100 # 4 gpus per node: max 12 cpus per gpu
+  # gpus_per_worker: 4 # number of gpus per worker node
+  # cpus_per_gpu: 12 # number of cpu cores per gpu
+  # mem_per_cpu: 15000 # ram per cpu core
+  # ray_queue_memory: 0.35
+
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/testing/${experiment_name}
+  server_path_override: /groups/betzig/betziglab/CellObservatoryData/synthetic_data/fixed/05052026_mem_cyto_1k_volumes_77_tiles/
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+
+# data
+datasets:
+  # mainly used by other configs but determined here for ease of access
+  batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  train_shape: [128, 384, 512, 5]
+  input_shape: [128, 384, 512, 6]
+  patch_shape: [16, 16, 16, null]
+  mask_channel_idx: 5
+  last_batch_policy: drop
+
+  split: 0.0
+  return_dataloader: true
+  distributed_sampler: true
+
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+
+  use_cached_hypercubes_dataframe: false
+  # tile_list:
+    # - "000x_005y_001z.zarr"
+    # - "000x_005y_000z.zarr"
+  # roi_list: [314] 
+  # timepoint_list: [0]
+  max_rows: 1000 # maximum number of rows to query from the database
+  cdf_threshold: null
+  cdf_target: null
+  selected_channel_localizations: ["membrane", "cytosol"]
+  has_annotations: true
+  synthetic_only: true
+
+  databases:
+    dbname: local
+    protocol: cursor
+    verbose: true
+    diagnostic_verbose: true
+    sample_type: cube
+    data_channel_count: 6
+    # required_channel_key_patterns: {0: "membrane"}
+    required_channel_localizations: ["membrane", "cytosol"]
+    storage_location: abc
+
+  collate_fn:
+    _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
+    require_targets: true
+    dtype: ${dataset_dtype}
+    buffer_dtype: ${storage_dtype}
+    batch_size: ${clusters.batch_size_per_gpu}
+    input_shape: ${datasets.input_shape}
+    device_buffer_capacity: 2
+    pin_numa_node: ${datasets.pin_numa_node}
+    pin_pages: ${datasets.pin_memory}
+    bbox_data_format: zyxzyx
+    bbox_output_format: cxcyczwhd
+    debug: false
+    debug_device_idx: 0
+    normalize_bboxes: true
+    async_device_copy: false
+schedulers:
+  epochs: 5
+
+optimizers:
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-4
+
+# hooks
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: DEEPSPEED
+  - name: iteration_timer
+  - name: periodic_writer
+  # - name: periodic_checkpointer
+  #   file_prefix: latest_model
+  #   backend: DEEPSPEED
+  # - name: best_checkpointer
+  #   checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  # - name: best_metric_saver
+  #   metric_name: ${evaluation.val_metric}
+  #   compare_fn: ${evaluation.val_mode}
+  #   eval_after_validation: true

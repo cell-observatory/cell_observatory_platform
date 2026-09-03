@@ -1,0 +1,17 @@
+# @package _global_
+# Stage 0a B3_fp8_cube: MX-FP8 linears (B300 only; hardware-gated), cube max point; worth E6 only if >= 15 % faster
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/local_base
+  - _self_
+
+experiment_name: B3_fp8_cube
+
+clusters:
+  batch_size: 32              # TODO(A1): 8 x BS_CUBE
+
+parallelism:
+  quantize:
+    enable: true
+    backend: mx
+    recipe: mxfp8_cublas
+    filter_fqns: []

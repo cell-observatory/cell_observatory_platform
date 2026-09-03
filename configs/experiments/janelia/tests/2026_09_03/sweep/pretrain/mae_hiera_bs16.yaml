@@ -1,0 +1,25 @@
+# @package _global_
+# MAE with the hierarchical (Hiera-L multiscale) backbone, as the legacy janelia test_pretrain_mae_hiera: patch 4^3 (Hiera
+# downsamples by stages), hiera_mu masking with rank-4 mask units for the generator ([1,8,8,8]; the model keeps [8,8,8]),
+# patch masks generated too (the MAE head reads masks/target_masks/patches_used). bs 16/GPU guess (393 k stage-1 tokens).
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/pretrain/mae_vit_base
+  - /models/meta_arch/mae/large_hiera
+  - /optimizations/models/mae/large_hiera
+  - _self_
+experiment_name: mae_hiera_bs16
+clusters: {batch_size: 128}
+datasets:
+  patch_shape: [4, 4, 4, null]
+  masking:
+    mask_generators:
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
+        mask_mode:
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "hiera_mu"
+        mask_unit_size: [1, 8, 8, 8]
+        random_masking_ratio: 0.75

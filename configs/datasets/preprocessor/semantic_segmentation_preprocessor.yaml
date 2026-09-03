@@ -1,4 +1,13 @@
-_target_: cell_observatory_platform.models.layers.preprocessor.SemanticSegmentationPreprocessor
+name: semantic_segmentation
+
+# Class taxonomy. "all" = every class in the DB legend (the `semantic` list in
+# annotations_metadata, local_segmentation_id -> object_type_id), which is
+# what you want when the DB supplies the classes directly (membrane, cytosol, golgi...).
+# Give an explicit ordered list to select named slices instead -- e.g. the membrane-only
+# setup here, where the two derived maps are the classes and the raw source channel is
+# just their input.
+# Class index is list position, so this also fixes the label values.
+semantic_classes: [boundary, foreground]
 
 with_masking: false
 mask_generator: null
@@ -15,12 +24,17 @@ transforms_list:
   #   bbox_format: ${datasets.preprocessor.bbox_output_format}
   #   crop_to_meta_spatial: true
 
-  # 1) Convert instance labels to boundary masks
+  # 1) Convert the membrane instance labelmap to boundary masks.
+  #    source_role was `semantic_segmentation_membrane`; the channel is an
+  #    INSTANCE labelmap and the DB now reports that truthfully
+  #    (channel_type='mask', annotation_type='instance' -> role instance_masks).
   - _target_: cell_observatory_platform.data.transforms.make_targets.InstanceToBoundaryMask
+    source_role: instance_masks
     connectivity: 1
 
-  # 2) Convert instance labels to foreground masks
+  # 2) Convert the membrane instance labelmap to foreground masks
   - _target_: cell_observatory_platform.data.transforms.make_targets.ForegroundMasks
+    source_role: instance_masks
     remove_boundary: true
 
   # 2) Normalize after transforms
@@ -32,6 +46,5 @@ transforms_list:
 patch_shape: ${datasets.patch_shape}
 input_format: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
-mask_channel_idx: ${datasets.mask_channel_idx}
 
 seed: ${seed}

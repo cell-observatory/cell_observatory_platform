@@ -88,6 +88,9 @@ class DeformableTransformerDecoderLayer(nn.Module):
         self.dropout4 = nn.Dropout(dropout)
         self.norm3 = nn.LayerNorm(embed_dim)
 
+        # NOTE: summarize_memory_method="projection_mean" requires
+        # memory_projection to be wired (it is currently always None and would
+        # AttributeError at use) — do not enable without adding the projection.
         self.summarize_memory_method = summarize_memory_method
         self.memory_projection = None
 
@@ -124,6 +127,12 @@ class DeformableTransformerDecoderLayer(nn.Module):
             m = self_attention_mask.to(device)
             if m.dtype != torch.bool and not torch.is_floating_point(m):
                 m = m.bool()
+            if m.dtype == torch.bool:
+                # Upstream masks use nn.MultiheadAttention semantics
+                # (True = CANNOT attend); F.scaled_dot_product_attention bool
+                # masks mean the opposite (True = attend). Convert once here at
+                # the SDPA boundary; do NOT flip the mask builders.
+                m = ~m
             # (L, L) -> (1, 1, L, L) so it broadcasts over batch & heads
             attn_mask = m.unsqueeze(0).unsqueeze(0)  # (1, 1, L, L)
         return attn_mask
@@ -215,6 +224,15 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 memory_key_padding_mask,
             ).transpose(0, 1)
         else:
+            if memory_key_padding_mask is not None and memory_key_padding_mask.any():
+                raise NotImplementedError(
+                    "non-deformable fallback cross-attention does not consume "
+                    "memory_key_padding_mask -- with variable-size padding it "
+                    "would attend into padded voxels (the deformable path does "
+                    "not): a silent, config-dependent train/eval divergence. "
+                    "Thread the mask into CrossAttention before enabling "
+                    "variable-size inputs on this path."
+                )
             target_cross_attn = self.cross_attention(
                 self.with_pos_embeddings(target, target_query_pos_embeddings).transpose(0, 1),  # (bs, num_queries, embed_dim)
                 self.with_pos_embeddings(memory, memory_pos_embeddings).transpose(0, 1),  # (bs, num_tokens, embed_dim)
@@ -261,9 +279,16 @@ class TransformerDecoder(nn.Module):
         self.embed_dim = embed_dim  # transformer decoder hidden dim
         self.modulate_dhw_attn = modulate_dhw_attn
 
-        # query dimension (3D (x, y, z) or 6D (x, y, z, w, h, d))
+        # query dimension: only 6D (x, y, z, w, h, d) is implemented. 3 was
+        # previously accepted but the forward unconditionally builds 6-wide
+        # reference tensors (cat([valid_ratios] * 2)) and the sine embedding
+        # indexes all six slots -- an accepted-then-broken config value.
         self.query_dim = query_dim
-        assert query_dim in [3, 6], "query_dim should be 3 or 6 but got {}".format(query_dim)
+        if query_dim != 6:
+            raise NotImplementedError(
+                f"query_dim={query_dim}: the 3-point query path was never "
+                "completed (forward builds 6-wide reference tensors); use 6."
+            )
 
         # return decoder outputs from all layers
         self.return_intermediates = return_intermediates

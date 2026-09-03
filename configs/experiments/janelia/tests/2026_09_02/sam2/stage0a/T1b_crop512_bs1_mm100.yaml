@@ -1,0 +1,16 @@
+# @package _global_
+# Stage 0a T1: tile-crop 128x384x512, back-off after T1 (bs 2 OOM at > 264 GiB): bs 1/GPU, mm 100.
+# Fixes the crop-512 mm-100 memory point; bs 2 mm 50 is the alternative max if this sits ~50 %.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/shapes/crop_128x384x512
+  - _self_
+
+experiment_name: T1b_crop512_bs1_mm100
+
+clusters:
+  batch_size: 8               # 1 per GPU
+
+datasets:
+  buffer_capacity: 8          # > bs/GPU host slots in flight
+  preprocessor:
+    max_masks: 100

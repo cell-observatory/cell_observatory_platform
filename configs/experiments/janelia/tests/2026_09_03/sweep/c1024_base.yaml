@@ -1,0 +1,13 @@
+# @package _global_
+# Recipe at DB-side cube 128x384x1024 (shape id 7, 314,203 annotated rows) = the Stage-1.5 tile-inference shape.
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/local_recipe_base
+  - _self_
+
+experiment_name: c1024_base
+
+datasets:
+  train_shape: [1, 128, 384, 1024, 5]
+  input_shape: [1, 128, 384, 1024, 6]
+  max_rows: 8192
+  buffer_capacity: 12

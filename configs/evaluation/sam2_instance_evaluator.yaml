@@ -1,0 +1,46 @@
+defaults:
+  - _self_
+
+# Used by the trainer to decide which checkpoint is "best". The evaluator
+# returns a flat metric dict; pick a key from `metrics` below.
+val_begin: 0
+val_interval: 1
+val_metric: mask_map
+val_mode: max  # 'min' or 'max'
+
+evaluator:
+  name: instance_segmentation
+  _recursive_: false
+  # SAM2 emits masks directly; mask_chunk_size only bounds the pairwise-IoU
+  # working set per class (chunk_size * Z*Y*X bool masks at a time).
+  mask_chunk_size: 8
+  # Drop predictions below this score before metrics. 0.0 = use everything.
+  score_threshold: 0.0
+  # MUST be False: SAM2 is class-agnostic (sentinel class id -1). With True the
+  # evaluator raises, because no prediction class could match a real GT class
+  # and every metric would collapse to ~0.
+  match_labels: false
+  # GT per-instance masks are built from `target["label_map"]` + `mask_ids`
+  # (the dataset format shared with MaskDINO).
+  gt_mask_source: label_map
+
+  # GT boxes come from the same dataset pipeline as MaskDINO
+  # (bbox_output_format=cxcyczwhd, normalize_bboxes=true), while SAM2's predicted
+  # boxes are absolute xyzxyz. The evaluator rescales GT to absolute xyzxyz
+  # before the box metrics.
+  gt_box_format: cxcyczwhd
+  gt_boxes_normalized: true
+
+  # Each entry is either a string naming a default factory or a Hydra dict with
+  # a `name` key plus `_target_` to instantiate a custom metric. The
+  # predicted-IoU metric is meaningful here because SAM2 has an IoU head
+  # (`iou_preds`); MaskDINO would emit no such key and the evaluator skips it.
+  metrics:
+    - box_map
+    - box_miou
+    - box_f1
+    - mask_map
+    - name: mask_miou
+      mode: instance
+    - name: predicted_iou
+      key: pred_iou_eval

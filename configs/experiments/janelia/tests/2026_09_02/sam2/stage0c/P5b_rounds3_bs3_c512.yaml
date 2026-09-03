@@ -1,0 +1,16 @@
+# @package _global_
+# P5b: rounds 3 at bs 3 (capacity point after rounds 3 freed ~40 % HBM).
+# choice itself is a Step-2 quality decision.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P5b_rounds3_bs3_c512
+
+clusters:
+  batch_size: 24              # 3 per GPU: rounds 3 freed memory (133 GiB at bs 2)
+
+models:
+  meta_arch:
+    sam:
+      num_correction_pt_per_frame: 3

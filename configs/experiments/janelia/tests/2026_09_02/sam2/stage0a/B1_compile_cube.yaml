@@ -1,0 +1,19 @@
+# @package _global_
+# Stage 0a B1_compile_cube: per-block inductor compile on the ViT stack, cube max point; keep if >= 8 % faster steady-state
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/local_base
+  - _self_
+
+experiment_name: B1_compile_cube
+
+clusters:
+  batch_size: 32              # TODO(A1): 8 x BS_CUBE
+
+trainer_loop:
+  max_steps: 200            # steady state = steps 50-200
+
+optimizations:
+  models:
+    sam:
+      torch_compile:
+        enable: true

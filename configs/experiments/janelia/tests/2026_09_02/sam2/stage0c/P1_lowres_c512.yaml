@@ -1,0 +1,22 @@
+# @package _global_
+# Stage 0c P1: correction loop + IoU target on the stride-4 stream. No full-res upsample in training,
+# clicks sampled against the max-pooled GT (jittered inside the 4^3 cell), IoU target quantized to
+# stride-4 cells. Approximate (that quantization), so it needs the Step-2 mAP check before adoption.
+# Expect the biggest memory win: the 8 retained full-res multimask tensors go away.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P1_lowres_c512
+
+clusters:
+  batch_size: 16              # 2 per GPU
+
+models:
+  meta_arch:
+    sam:
+      # requires criterion_args.low_res_multimasks (base_study sets it) and
+      # force-sets criterion_args.iou_on_low_res at build time.
+      correction_on_low_res: true
+      criterion_args:
+        iou_on_low_res: true

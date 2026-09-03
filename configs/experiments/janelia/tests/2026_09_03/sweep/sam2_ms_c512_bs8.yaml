@@ -1,0 +1,10 @@
+# @package _global_
+# Multi-scale SAM2 (Hiera-L) on the recipe at 128x384x512, bs 8/GPU (same bs as the single-scale recipe; back off on OOM).
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/sam2_ms_base
+  - _self_
+
+experiment_name: sam2_ms_c512_bs8
+
+clusters:
+  batch_size: 64

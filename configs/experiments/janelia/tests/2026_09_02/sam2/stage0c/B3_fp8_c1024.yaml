@@ -1,0 +1,18 @@
+# @package _global_
+# Stage 0c B3_fp8_c1024: MX-FP8 linears (B300 only); worth a stage-0b grid only if >= 15 % faster (bs = K max, TODO)
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x1024
+  - _self_
+
+experiment_name: B3_fp8_c1024
+
+clusters:
+  batch_size: 8               # 1 per GPU
+
+parallelism:
+  quantize:
+    enable: true
+    backend: mx
+    recipe: mxfp8_cublas
+    filter_fqns: []
+    include_fqns: [image_encoder]   # ViT blocks only: the decoder/prompt linears have row counts that are not multiples of 32 (torchao MX assert)

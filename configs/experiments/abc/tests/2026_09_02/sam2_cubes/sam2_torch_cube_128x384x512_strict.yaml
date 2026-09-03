@@ -1,0 +1,44 @@
+# @package _global_
+# cod_20260902 snapshot: 128x384x512 cubes (annotated after Martin's 2026-09-02 refresh),
+# ViT-L single-scale, torch-native. Cube mode pins the buffer to input_shape, so
+# only the shape, the mask budget and the point-loss sample count change vs the
+# 128^3 base. max_masks is deliberately low (A100-80GB, sanity run).
+defaults:
+  - /experiments/abc/tests/2026_09_01/sam2/base_sam2_torch
+  - _self_
+
+experiment_name: sam2_abc_torch_single_cube_128x384x512_strict
+
+datasets:
+  train_shape: [1, 128, 384, 512, 5]
+  input_shape: [1, 128, 384, 512, 6]
+  max_rows: 128
+  row_sample_seed: 42 # seeded subset instead of the first 128 rows of the first tile
+  databases:
+    # strict: a cube overflowing its tile is an error at attach (default); this
+    # config exists to check whether a DB export has a consistent cube grid.
+    in_bounds_only: false
+  preprocessor:
+    max_masks: 8
+
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        num_points: 39000 # ~10% of the stride-4 grid (32x96x128)
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: periodic_checkpointer
+    file_prefix: latest_model
+    backend: TORCHTITAN
+    time_interval: 3h30m
+  - name: torch_memory_stats
+    step_period: 1
+    epoch_period: 1
+    logdir: ${loggers.logdir}

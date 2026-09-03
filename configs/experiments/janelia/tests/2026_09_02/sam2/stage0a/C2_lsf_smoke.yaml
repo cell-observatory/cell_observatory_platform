@@ -1,0 +1,17 @@
+# @package _global_
+# Stage 0a C2: the stage-0b launch path. Submit from a login node (submission only): two LSF jobs
+# through ray_lsf_cluster.sh via bench_base (/clusters/janelia_b300). Pass = both jobs finish 60
+# steps, names/outdirs/W&B tags correct.
+run_type: multi_run
+data_base_dir: sam2_study/stage0a/C2
+wandb_tags: ["sam2_study", "bench", "stage0a", "C2"]
+
+sweep:
+  - datasets: {preprocessor: {max_masks: [50, 100]}}
+
+runs:
+  - cfg: experiments/janelia/tests/2026_09_02/sam2/shapes/crop_128x384x512.yaml    # lsf launcher
+    name: crop512.yaml
+    overrides:
+      clusters: {batch_size: 16}         # TODO(T1): 8 x BS_CROP
+      datasets: {buffer_capacity: 8, preprocessor: {max_masks: 100}}

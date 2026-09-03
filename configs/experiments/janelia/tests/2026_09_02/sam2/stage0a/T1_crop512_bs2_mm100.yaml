@@ -1,0 +1,16 @@
+# @package _global_
+# Stage 0a T1: tile-crop 128x384x512, first guess at the VRAM max: bs 2/GPU, mm 100.
+# On OOM back off to bs 1 (T1b); if < 40 % HBM go to bs 4 (T1c).
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/shapes/crop_128x384x512
+  - _self_
+
+experiment_name: T1_crop512_bs2_mm100
+
+clusters:
+  batch_size: 16              # 2 per GPU
+
+datasets:
+  buffer_capacity: 8          # > bs/GPU host slots in flight
+  preprocessor:
+    max_masks: 100

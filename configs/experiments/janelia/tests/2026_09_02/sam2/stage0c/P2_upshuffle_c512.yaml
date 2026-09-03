@@ -1,0 +1,18 @@
+# @package _global_
+# Stage 0c P2: decoder upscaling as Linear + depth-to-space instead of ConvTranspose3d(k=s=2).
+# EXACT (kernel == stride is a per-token linear map); removes the cuDNN 3D transposed-conv paths and
+# keeps the decoder tail channels-last. Compare step time vs K2_c512_bs2_mm48 at the same bs/mm.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P2_upshuffle_c512
+
+clusters:
+  batch_size: 16              # 2 per GPU
+
+models:
+  meta_arch:
+    sam:
+      mask_decoder_args:
+        upscaling: linear_shuffle

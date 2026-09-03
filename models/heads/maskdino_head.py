@@ -26,7 +26,17 @@ class MaskDINOHead(nn.Module):
         self.decoder = decoders
         self.pixel_decoder = pixel_decoders
 
-    def forward(self, features, mask = None, targets = None):
+    def forward(self, features, mask=None, targets=None, predict_mask: bool = True):
+        """Run the pixel decoder + transformer decoder.
+
+        Args:
+            features: backbone feature pyramid (dict).
+            mask: optional padding mask (currently unsupported in 3D).
+            targets: ground-truth dicts (training/denoising).
+            predict_mask: forwarded to ``MaskDINODecoder.forward``. Set to
+                ``False`` at inference when the caller drives chunked mask
+                materialization itself (skips the last-layer einsum).
+        """
         if mask is not None:
             # we currently do not properly ensure that masks are sorted in the correct
             # coarse to fine order anywhere so better to raise an error for now since we 
@@ -35,5 +45,11 @@ class MaskDINOHead(nn.Module):
 
         mask_features, transformer_encoder_features, \
             multi_scale_features = self.pixel_decoder.forward_features(features, mask)
-        predictions, denoise_predictions = self.decoder(multi_scale_features, mask_features, mask, targets = targets)
+        predictions, denoise_predictions = self.decoder(
+            multi_scale_features,
+            mask_features,
+            mask,
+            targets=targets,
+            predict_mask=predict_mask,
+        )
         return predictions, denoise_predictions

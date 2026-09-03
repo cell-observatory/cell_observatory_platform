@@ -1,0 +1,200 @@
+# @package _global_
+defaults:
+  - /tasks/semantic_segmentation             # configs/tasks/semantic_segmentation.yaml
+  - /paths/abc                         # configs/paths/coreweave.yaml
+  - /hydra/overrides                         # configs/hydra/overrides.yaml (not working)
+  - /clusters/local                  # configs/clusters/coreweave_h100.yaml
+  - /datasets/pretrain_dataset_ray           # configs/datasets/pretrain_dataset.yaml
+  - /datasets/preprocessor/semantic_segmentation_preprocessor # configs/datasets/preprocessor/semantic_segmentation_preprocessor.yaml
+  - /models/meta_arch/mask2former/mae_large_vitdet    # configs/models/mask2former/mae_large_vitdet.yaml
+  - /models/backbones/masked_encoder/large   # configs/models/mae/large.yaml
+  - /models/backbones/mask2former_backbone/mask2former_backbone_w_vitdet   # configs/models/mask2former_backbone/mask2former_backbone.yaml
+  - /models/adapters/vit_det   # configs/models/adapters/vit_det.yaml
+  - /models/heads/pixel_decoder/mask2former_vitdet_pixel_decoder  # configs/models/heads/pixel_decoder/mask2former_decoder.yaml
+  - /models/heads/mask2former_decoder/mask2former_vitdet_transformer_decoder # configs/models/heads/mask2former_decoder/mask2former_decoder.yaml
+  - /checkpoint/checkpoint                   # configs/checkpoint/checkpoint.yaml
+  - /loggers/loggers                         # configs/loggers/loggers.yaml
+  - /evaluation/semantic_evaluator           # configs/evaluation/semantic_evaluator.yaml
+  - /deepspeed/zero2                         # configs/deepspeed/zero2.yaml
+  - /optimizers/lamb                         # configs/optimizers/lamb.yaml
+  - /schedulers/warmup_cosine_decay          # configs/schedulers/test_warmup_cosine_decay.yaml
+  - /optimizations/models/mask2former/base                # configs/optimizations/models/mask2former/base.yaml
+  - /optimizations/optimizations             # configs/optimizations/optimizations.yaml
+  - /profiling/profiling                     # configs/profiling/profiling.yaml
+  - _self_
+
+# experiment name (used for logging)
+wandb_project: testing
+experiment_name: test_twoclass_semantic_segmentation_mask2former_vitdet_pred_stride_4_transformer_in_features_1_2_3_queries_100
+
+backend: DEEPSPEED
+
+# run type
+run_type: single_run # single_run, multi_run, or tune
+
+# job type
+job_type: train # train or test
+
+# trainer type
+trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+
+# loop per worker script
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+# training quantization
+quantization: bfloat16 # data type for training, options: float32, float16
+
+# NOTE: numpy doesn't support bfloat16, the preprocessor will cast data before we feed it to the model
+dataset_dtype: float16 # data type for loading data, options: float32, float16
+storage_dtype: uint16
+
+# dataset layout in the zarr files
+dataset_layout_order: ZYXC
+
+# seed
+seed: 42
+
+# overrides
+# --------------------------------------------------------------------------------
+
+# Two semantic classes (decoder and criterion must match)
+models:
+  meta_arch:
+    mask2former:
+      decoder_args:
+        num_classes: 2
+      criterion_args:
+        num_classes: 2
+
+# # # clusters config for debugging on single GPU
+# clusters:
+#   batch_size: 8 # total batch size (batch size per gpu * total gpus)
+#   worker_nodes: 1 # number of worker nodes
+#   gpus_per_worker: 1 # number of gpus per worker node
+#   cpus_per_gpu: 16 # number of cpu cores per gpu
+#   mem_per_cpu: 21000 # ram per cpu core
+#   ray_queue_memory: 0.2
+
+
+# clusters
+clusters:
+  batch_size: 40 # total batch size (batch size per gpu * total gpus)
+  worker_nodes: 1 # number of worker nodes
+  gpus_per_worker: 4 # number of gpus per worker node
+  cpus_per_gpu: 4 # number of cpu cores per gpu
+  mem_per_cpu: 21000 # ram per cpu core
+  ray_queue_memory: 0.2
+
+#paths:
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/pretrained_models/${experiment_name}
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+
+# data
+datasets:
+  # # Preprocessor (instantiated as cfg.datasets.preprocessor)
+  # preprocessor:
+  #   debug_savepath: /clusterfs/nvme/martinalvarez/GitHub/scratch/semantic_preprocessor_viz/test_semantic_segmentation_preprocessor.png
+  # mainly used by other configs but determined here for ease of access
+  batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
+  train_shape: [128, 256, 512, 1]
+  input_shape: [128, 256, 512, 2]
+  patch_shape: [16, 16, 16, null]
+  occupancy_threshold: 0.9
+
+  split: 0.0
+  return_dataloader: true
+  distributed_sampler: true
+
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+
+  # max_hypercubes: 50
+  # max_hypercubes: 256
+  max_hypercubes: 1000
+  # max_hypercubes: 10000
+  # max_hypercubes: 2000000
+  # max_hypercubes: 50000
+  # max_hypercubes: 1000000
+  # max_hypercubes: null
+
+  use_cached_hypercubes_dataframe: true
+  # hypercubes_dataframe_path: ${paths.server_folder_path}/databases/prepared_1_128_128_128_2_hypercube_view.csv
+  hypercubes_dataframe_path:  /clusterfs/nvme/segment_4d/databases/prepared_1_128_128_128_2_hypercube_view.csv
+
+  databases:
+    cdf_threshold: null
+    occupancy_threshold_filter_type: 'min_ch0'
+    synthetic_only: true
+    has_annotations: true
+    # server_folder_path: ${paths.server_folder_path}/synthetic
+    server_folder_path: /clusterfs/vast/forsynthetic/benchmark_tests/data/synthetic_data_iteration_1
+    with_hypercubes_dataframe: true
+    mask_channel_idx: 1
+
+  collate_fn:
+    _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
+    dtype: ${dataset_dtype}
+    buffer_dtype: ${storage_dtype}
+    batch_size: ${clusters.batch_size_per_gpu}
+    input_shape: ${datasets.input_shape}
+    device_buffer_capacity: 2
+    pin_numa_node: ${datasets.pin_numa_node}
+    pin_pages: ${datasets.pin_memory}
+    bbox_data_format: zyxzyx
+    bbox_output_format: cxcyczwhd
+    debug: false
+    debug_device_idx: 0
+    normalize_bboxes: true
+    async_device_copy: false
+# schedulers
+schedulers:
+  epochs: 50
+
+optimizers:
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-3
+
+# hooks
+hooks:
+  hooks_list:
+    # general hooks
+    - name: free_device_buffer
+    - name: lr_scheduler
+      backend: DEEPSPEED
+    - name: anomaly_detector
+    - name: iteration_timer
+    - name: periodic_writer
+
+    # checkpointing
+    - name: periodic_checkpointer
+      file_prefix: latest_model
+    - name: best_checkpointer
+      checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+    - name: torch_memory_stats
+      step_period: 1
+      epoch_period: 1
+      logdir: ${loggers.logdir}
+    - name: best_metric_saver
+      metric_name: ${evaluation.val_metric}
+      compare_fn: ${evaluation.val_mode}
+      eval_after_validation: true
+
+    # # profiling
+    # - name: torch_profiler
+    #   output_dir: ${paths.outdir}/profiler
+    #   schedule:
+    #     skip_first: 10
+    #     warmup: 1
+    #     active: 2
+    #     repeat: 1
+    #     wait: 1
+    #   activities:
+    #     - CUDA
+    #     - CPU
+    #   save_tensorboard: true
+    #   shutdown_after_profile: true
+    #   save_memory_trace: true

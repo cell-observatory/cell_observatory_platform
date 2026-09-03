@@ -1,0 +1,21 @@
+# @package _global_
+# attn_pool factorized + ChannelDropout p 0.25 with shuffle (channel ids follow the permutation): the Stage-2 B variant.
+# No expected perf change; run to flush the transform on the Janelia DB path.
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/sam2_ch_attnpool_c512_bs8
+  - _self_
+
+experiment_name: sam2_ch_dropout_c512_bs8
+
+datasets:
+  preprocessor:
+    transforms_list:
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}
+      - _target_: cell_observatory_platform.data.transforms.channel_dropout.ChannelDropout
+        p: 0.25
+        always_keep: [membrane]
+        shuffle: true
+        seed: ${seed}

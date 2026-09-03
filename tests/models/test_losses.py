@@ -11,8 +11,6 @@ from cell_observatory_platform.models.ops.losses import (
     sigmoid_focal_loss,
 )
 
-CUDA_AVAILABLE = torch.cuda.is_available()
-
 
 class DummyMatcher(torch.nn.Module):
     """
@@ -166,7 +164,7 @@ def test_calculate_uncertainty_ordering():
 # DETR_Set_Loss tests
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.cuda
 def test_detr_set_loss_basic(monkeypatch):
     # Make world_size=1 and no distributed init for deterministic behavior
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -228,7 +226,7 @@ def test_detr_set_loss_basic(monkeypatch):
         assert torch.isfinite(v)
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.cuda
 def test_detr_set_loss_focal_branch(monkeypatch):
     # Test the focal-loss classification branch (semantic_ce_loss=False)
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -278,7 +276,7 @@ def test_detr_set_loss_focal_branch(monkeypatch):
     assert torch.isfinite(v)
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.cuda
 def test_detr_set_loss_denoise_without_predictions(monkeypatch):
     # denoise=True but no denoise_predictions -> zero-valued *_denoise keys
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -341,7 +339,7 @@ def test_detr_set_loss_denoise_without_predictions(monkeypatch):
         assert float(losses[key].item()) == 0.0
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.cuda
 def test_detr_set_loss_denoise_with_predictions(monkeypatch):
     # denoise=True and valid denoise_predictions -> *_denoise keys non-zero/finate
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
@@ -423,23 +421,18 @@ def test_detr_set_loss_denoise_with_predictions(monkeypatch):
         assert torch.isfinite(losses[key])
 
 
-@pytest.mark.skipif(not CUDA_AVAILABLE, reason="CUDA is required for these tests")
+@pytest.mark.cuda
 def test_detr_set_loss_with_aux_and_intermediate(monkeypatch):
-    # Exercise auxiliary_outputs and intermediate_outputs branches
+    """Aux layers get `_{i}` suffixed losses (train mode only); two-stage encoder
+    predictions under `outputs["intermediates"]` get `_intermediate` suffixed losses."""
     monkeypatch.setattr(losses_mod, "get_world_size", lambda: 1)
     monkeypatch.setattr(losses_mod, "is_torch_dist_initialized", lambda: False)
-
     device = torch.device("cuda")
+    B, Q, num_classes, D = 1, 3, 2, 4
 
-    batch_size = 1
-    num_queries = 3
-    num_classes = 2
-    D = H = W = 4
-
-    matcher = DummyMatcher()
     criterion = losses_mod.DETR_Set_Loss(
         num_classes=num_classes,
-        matcher=matcher,
+        matcher=DummyMatcher(),
         loss_weight_dict={},
         no_object_loss_weight=0.1,
         losses=["labels"],
@@ -449,56 +442,34 @@ def test_detr_set_loss_with_aux_and_intermediate(monkeypatch):
         denoise=False,
         semantic_ce_loss=True,
     ).to(device)
+    criterion.train()  # auxiliary losses are only computed in train mode
 
-    # Main outputs
-    main_logits = torch.randn(batch_size, num_queries, num_classes + 1, device=device)
-    main_boxes = torch.rand(batch_size, num_queries, 6, device=device)
-    main_masks = torch.randn(batch_size, num_queries, D, H, W, device=device)
+    def _pred():
+        return {
+            "pred_logits": torch.randn(B, Q, num_classes + 1, device=device),
+            "pred_boxes": torch.rand(B, Q, 6, device=device),
+            "pred_masks": torch.randn(B, Q, D, D, D, device=device),
+        }
 
-    # One auxiliary layer
-    aux_logits = torch.randn(batch_size, num_queries, num_classes + 1, device=device)
-    aux_boxes = torch.rand(batch_size, num_queries, 6, device=device)
-    aux_masks = torch.randn(batch_size, num_queries, D, H, W, device=device)
-
-    outputs = {
-        "pred_logits": main_logits,
-        "pred_boxes": main_boxes,
-        "pred_masks": main_masks,
-        "auxiliary_outputs": [
-            {
-                "pred_logits": aux_logits,
-                "pred_boxes": aux_boxes,
-                "pred_masks": aux_masks,
-            }
-        ],
-        # Also add an intermediate_outputs dict to trigger the intermediate branch
-        "intermediate_outputs": {
-            "pred_logits": main_logits.clone(),
-            "pred_boxes": main_boxes.clone(),
-            "pred_masks": main_masks.clone(),
-        },
-    }
-
-    labels = torch.randint(0, num_classes, (2,), device=device)
-    boxes = torch.rand(2, 6, device=device)
-    masks = torch.randint(0, 2, (2, D, H, W), device=device, dtype=torch.float32)
-    targets = [{"labels": labels, "boxes": boxes, "masks": masks}]
+    outputs = {**_pred(), "auxiliary_outputs": [_pred()], "intermediates": _pred()}
+    targets = [{
+        "labels": torch.randint(0, num_classes, (2,), device=device),
+        "boxes": torch.rand(2, 6, device=device),
+        "masks": torch.randint(0, 2, (2, D, D, D), device=device, dtype=torch.float32),
+    }]
 
     losses = criterion(outputs, targets)
 
-    # Main loss
-    assert "loss_ce" in losses
+    assert set(losses) == {"loss_ce", "loss_ce_0", "loss_ce_intermediate"}
+    for v in losses.values():
+        assert v.ndim == 0 and torch.isfinite(v)
 
-    # Aux layer 0 loss
-    assert "loss_ce_0" in losses
-
-    for key in ["loss_ce", "loss_ce_0"]:
-        assert losses[key].ndim == 0
-        assert torch.isfinite(losses[key])
+    criterion.eval()
+    assert set(criterion(outputs, targets)) == {"loss_ce", "loss_ce_intermediate"}
 
 
 # -------------------------------------------------------------------------
-# DETR_Set_Loss tests
+# PlainDETR_Set_Loss tests
 # -------------------------------------------------------------------------
 
 
@@ -754,3 +725,50 @@ def test_plain_detr_set_loss_forward_with_aux_and_enc_outputs_cpu():
     for k, v in loss_dict.items():
         assert v.ndim == 0, f"{k} is not scalar"
         assert torch.isfinite(v), f"{k} is not finite"
+
+
+# -------------------------------------------------------------------------
+# MultiStepMultiMasksAndIousLoss._sample_points_and_labels
+# -------------------------------------------------------------------------
+
+
+@pytest.mark.cuda
+def test_sample_points_and_labels_yields_binary_labels():
+    """point_labels must be strictly {0, 1}: labels are sampled with nearest-exact,
+    never interpolated, so focal/dice never see fractional labels."""
+    device = torch.device("cuda")
+    torch.manual_seed(0)
+
+    criterion = losses_mod.MultiStepMultiMasksAndIousLoss(
+        input_fmt="TZYXC",
+        weight_dict={
+            "loss_mask": 20.0,
+            "loss_dice": 1.0,
+            "loss_iou": 1.0,
+            "loss_class": 0.0,
+        },
+        use_point_sampling=True,
+        num_points=64,
+        oversample_ratio=3,
+        importance_sample_ratio=0.75,
+        low_res_multimasks=False,
+    ).to(device)
+
+    # src_masks: [N=2, M=1, Z=8, Y=8, X=8] coarse logits (any finite values are fine).
+    src_masks = torch.randn(2, 1, 8, 8, 8, device=device)
+    # target_masks: [N=2, 1, Z=8, Y=8, X=8] strictly {0, 1}.
+    target_masks = torch.zeros(2, 1, 8, 8, 8, device=device, dtype=torch.float32)
+    target_masks[0, 0, 2:6, 2:6, 2:6] = 1.0
+    target_masks[1, 0, 1:4, 3:7, 2:5] = 1.0
+
+    point_coords_flat, point_labels = criterion._sample_points_and_labels(
+        src_masks, target_masks
+    )
+
+    # Shape: [N=2, M=1, P=64]
+    assert point_labels.shape == (2, 1, 64)
+    unique_vals = torch.unique(point_labels)
+    assert torch.all((point_labels == 0.0) | (point_labels == 1.0)), (
+        "_sample_points_and_labels must emit strictly binary labels (mode="
+        f"'nearest' contract); unique values seen: {unique_vals.tolist()}"
+    )

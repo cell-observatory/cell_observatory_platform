@@ -20,6 +20,7 @@ Repository = "https://github.com/cell-observatory/cell_observatory_platform"
 
 [tool.setuptools.packages.find]
 where = ["."]
+exclude = ["scripts.db", "scripts.db.*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
@@ -27,12 +28,17 @@ dependencies = {file = ["requirements.txt"]}
 [tool.setuptools.package-data]
 configs = ["**/*.yaml"]
 
-[tool.pytest.ini_options]
+# pytest >= 9 reads the native [tool.pytest] table
+[tool.pytest]
 testpaths = ["tests", "pytests"]
 python_files = ["test_*.py"]
-addopts = "--strict-markers -v"
+addopts = ["--strict-markers", "-v"]
+# pytest .
+filterwarnings = ["error::pytest.PytestUnknownMarkWarning"]
 markers = [
     "cuda: marks tests as requiring CUDA",
+    "localdb: marks tests as requiring the local sandbox database",
+    "benchmark: marks optional performance benchmark tests (opt-in via --run-benchmarks)",
 ]
 
 [tool.black]

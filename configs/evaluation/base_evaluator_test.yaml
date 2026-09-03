@@ -3,10 +3,12 @@ defaults:
 
 val_begin: 0
 val_interval: 1
-val_metric: test_step_loss 
+val_metric: step_loss 
 val_mode: min # 'min' or 'max'
 
 evaluator:
-  _target_: cell_observatory_platform.evaluation.base_evaluation.BaseEvaluator
+  name: base
   training_metrics:
-    - "step_loss": "mean"
+    - name: train_loss
+      key: step_loss
+      reduce_method: mean

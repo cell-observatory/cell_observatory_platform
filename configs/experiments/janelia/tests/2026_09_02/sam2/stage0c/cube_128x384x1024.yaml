@@ -1,0 +1,11 @@
+# @package _global_
+# Cube 128x384x1024 rows from api.cube_training (DB-side cut, ~603 MB uint16 read per sample).
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/local_cube_base
+  - _self_
+
+experiment_name: bench_cube_128x384x1024
+
+datasets:
+  train_shape: [1, 128, 384, 1024, 5]
+  input_shape: [1, 128, 384, 1024, 6]

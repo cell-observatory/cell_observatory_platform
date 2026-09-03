@@ -3,11 +3,11 @@ Adapted from:
 https://github.com/facebookresearch/dinov3/blob/main/dinov3/eval/segmentation/models/heads/mask2former_head.py
 """
 
-from typing import Dict, Optional, Tuple
+from typing import Optional
 
 from torch import nn
 from torch.nn import functional as F
-
+import torch
 from cell_observatory_platform.models.heads.mask2former_decoder import MultiScaleMaskedTransformerDecoder
 from cell_observatory_platform.models.heads.pixel_decoders import Mask2FormerPixelDecoder
 
@@ -15,7 +15,6 @@ from cell_observatory_platform.models.heads.pixel_decoders import Mask2FormerPix
 class Mask2FormerHead(nn.Module):
     def __init__(
         self,
-        num_classes: int,
         pixel_decoder: Mask2FormerPixelDecoder,
         predictor: MultiScaleMaskedTransformerDecoder,
     ):
@@ -24,7 +23,6 @@ class Mask2FormerHead(nn.Module):
         
         self.pixel_decoder = pixel_decoder
         self.predictor = predictor
-        self.num_classes = num_classes
 
     def forward_features(self, features, mask=None):
         return self.layers(features, mask)
@@ -36,9 +34,14 @@ class Mask2FormerHead(nn.Module):
     def predict(self, features, rescale_size: Optional[tuple] = None, mask=None):
         output = self.forward_features(features, mask)
         if rescale_size is not None:
+            # NOTE(perf/OOM): this materializes ALL Q queries at full (B,Q,D,H,W)
+            # resolution. The meta-arch inference
+            # path no longer uses it — Mask2Former._reduce_queries_streaming
+            # upsamples per query chunk instead. Kept for callers that
+            # explicitly want the dense stack on small volumes.
             output["pred_masks"] = F.interpolate(
-                output["pred_masks"],
-                size=rescale_size,
+                output["pred_masks"], # B, Q, D, H, W
+                size=rescale_size, # D, H, W
                 mode="trilinear",
                 align_corners=False,
             )

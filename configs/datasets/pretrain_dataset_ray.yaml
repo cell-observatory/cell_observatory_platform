@@ -5,45 +5,48 @@ defaults:
   # - preprocessor: ray_preprocessor    # Loads configs/datasets/preprocessor/ray_preprocessor.yaml
   - _self_
 
-# mainly used by other configs but determined here for ease of access
-batch_size: ${clusters.batch_size_per_gpu} # batch size = (total_batch_size * total_gpus)
 input_shape: [16, 128, 128, 128, 2]
-train_shape: ${datasets.input_shape}
 patch_shape: [4, 16, 16, 16]
 mask_channel_idx: 1
 
+max_rows: null # maximum number of rows to query from the database
+# With max_rows: seeded pseudo-random subset (md5 of the natural key + seed) instead
+# of the first max_rows rows in natural order (= a couple of tiles). null keeps natural order.
+row_sample_seed: null
+# FIXME: Are these not used?? If so, remove them.
 max_rois: null # maximum number of ROIs (each ROI can have dozens of tiles)
 max_tiles: null # maximum number of tiles (each tile can have thousands of hypercubes)
 max_hypercubes: null # maximum number of hypercubes to return
 
 hpf_list: null # list of specific HPFs (hours-post-fertilization in hours) to filter
-roi_list: null # list of specific ROIs to filter
+
+# ROI filter, by api.*_training.roi_id.
+#
+# RENAMED from `roi_list`, which filtered prepared_id. Those are different
+# sequences, so the old VALUES are not portable -- and the stale ones land INSIDE
+# the new roi_id range, which would silently select real-but-wrong ROIs. The old
+# key is deliberately absent so a stale config fails at load instead.
+roi_ids: null
 tile_list: null # list of specific tiles to filter
+timepoint_list: null # list of specific timepoints to filter
 synthetic_only: False
 has_annotations: False
 
-columns: [ 
-  'x_start', 'y_start', 'z_start', 'time_start',
-  'channel_size', 'z_size', 'y_size', 'x_size', 'time_size',
-  'server_folder', 'output_folder',
-  'tile_name', 'prepared_id',
-]
+# `columns:` is GONE. The metadata columns carried into metainfo now come from
+# data/databases/schema.py, which is the single Arrow contract. That list used to
+# be duplicated here, in the two collator signatures, and across ~200 experiment
+# configs, with nothing reconciling them -- and the collator copy loop skips
+# missing keys, so a renamed DB column silently vanished from metainfo.
 
-occupancy_threshold: 0. # to filter our hypercubes with less than this occupancy ratio (0.0-1.0)
 cdf_threshold: 150 # to filter our hypercubes with less than this CDF threshold
 cdf_target: 90 # to filter our hypercubes with less than this CDF target
 
-use_cached_hypercubes_dataframe: false # whether to use the cached hypercubes dataframe
 hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv # path to the hypercubes dataframe (path/to/repo/databases/default_hypercubes_dataframe.csv)
 server_folder_path: ${paths.server_folder_path}
 
 split: 0.2
-return_dataloader: true
-distributed_sampler: true
-prefetch_factor: 1 # prefetch factor for the dataloader
-num_workers: ${clusters.cpus_per_worker}  # number of workers for the dataloader
-
-drop_last_policy: true # whether to drop the last batch if it is smaller than the batch size
+# "drop" = drop last incomplete batch; "pad" = pad last batch with zeros, set batch_size_actual and valid_mask
+last_batch_policy: "drop"
 
 collate_fn:
   _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.CollatorActor
@@ -57,23 +60,13 @@ collate_fn:
 
 dataset:
   _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.PretrainDatasourceRay
-  hypercubes_dataframe_path: ${datasets.hypercubes_dataframe_path}
-  server_folder_path: ${datasets.server_folder_path}
-  max_rois: ${datasets.max_rois}
-  max_tiles: ${datasets.max_tiles}
-  max_hypercubes: ${datasets.max_hypercubes}
-  hpf_list: ${datasets.hpf_list}
-  roi_list: ${datasets.roi_list}
-  tile_list: ${datasets.tile_list}
-  synthetic_only: ${datasets.synthetic_only}
-  has_annotations: ${datasets.has_annotations}
-  columns: ${datasets.columns}
   input_layout:
     _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
     value: ${dataset_layout_order}
 
 use_arrow_tensor_v2: true # use Arrow Tensor v2
 locality_with_output: true # whether to use locality with output for the Ray tasks
+# Ray Dataset block size (rows per block). Smaller blocks = more tasks; often match batch_size_per_gpu.
 rows_per_block: ${clusters.batch_size_per_gpu} # ${clusters.batch_size} # number of rows per block for the Ray dataset
 buffer_capacity: 24
 pin_numa_node: true
@@ -81,20 +74,29 @@ pin_memory: true
 max_concurrent_calls: 512
 numa_node_affinity_policy: "distance"
 numa_oversub_factor: 2.0
+# map_batches CPU request is 1/actor_oversub_factor per actor; higher = more actors share one CPU slot (Ray scheduling).
 actor_oversub_factor: 2.0
 
-channels_subset: null # subset of channels to use, e.g. [0, 1] for first two channels
+selected_channel_localizations: null # preferred semantic channel selection for training/inference input construction
 num_actors_min: 12
 num_actors_max: 12
 with_batched_api: true
+# Passed to tensorstore.Context (see get_context_spec in pretrain_dataset_ray.py). TensorStore docs: context.html
 context:
-  file_io_concurrency: null # concurrency for file I/O operations
-  data_copy_concurrency: null # concurrency for data copy operations
-  cache_pool: 
+  # null => omit key => TensorStore default for that resource
+  file_io_concurrency: null
+  # Example: { limit: 32 }  # cap concurrent file I/O operations
+  data_copy_concurrency: null
+  # Example: { limit: 8 }   # or limit: "shared" for all host cores for encode/decode/copy
+  cache_pool:
+    # LRU byte budget for TensorStore in-process cache; 0 = default (no retained cache bytes per TensorStore docs).
+    # Example: 1e9–4e9 if repeated reads of the same zarr chunks should hit RAM (memory tradeoff).
     total_bytes_limit: 0
 
-debug: false
+# BufferManager / output pools (training/loops.Inferencer expects cfg.datasets.buffers)
+buffers:
+  rank_memory_budget_gb: ${clusters.mem_per_worker}
+  max_concurrent_calls: 256
+  safety_margin: 0.05
 
-preserve_order: false # only matters for TP
-callback_strategy: grpc # grpc, queue
-async_device_copy: false
+debug: false

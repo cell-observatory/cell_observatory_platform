@@ -1,0 +1,43 @@
+# @package _global_
+# Tile-mode probe on top of base_sam2_torch (base lr/bs/max_masks): reads whole
+# synthetic tiles from api.tiles_training instead of 128^3 cubes and RESIZES
+# them to 128x384x1024 in the SAM2 preprocessor.
+#
+# How the shapes fit together (data/dataloaders.py, "two-shape scheme"):
+#   * tiles are ragged (cod_db_20260824 synthetic tiles: 128 x 512 x {2560,2816,3328}),
+#     so the collator/pinned buffers take the dataset MAX (1x128x512x3328x6),
+#     not datasets.input_shape;
+#   * the preprocessor transforms must bring every sample back to
+#     datasets.input_shape -- enforced by _assert_input_shape_spatial -- hence
+#     Resize (crop_to_valid trims each tile's buffer padding first, then
+#     trilinear on the image, nearest on the labelmap, coordinate scaling on
+#     the boxes) BEFORE Normalize.
+defaults:
+  - base_sam2_torch
+  - _self_
+
+experiment_name: sam2_b300_torch_tile_128x384x1024
+
+datasets:
+  train_shape: [1, 128, 384, 1024, 5]
+  input_shape: [1, 128, 384, 1024, 6] # post-Resize model input; patch grid 8x24x64 at 16^3
+
+  databases:
+    sample_type: tile # api.tiles_training (T/Z/Y/X ragged; only T is pinned via tile_time_windows)
+
+  preprocessor:
+    transforms_list:
+      # 1) Resize the (valid region of the) tile to input_shape.
+      - _target_: cell_observatory_platform.data.transforms.resize.Resize
+        target_spatial_shape: [128, 384, 1024] # (Z, Y, X) == input_shape spatial
+        mode: trilinear
+        align_corners: false
+        dtype: ${quantization}
+        bbox_format: ${datasets.collate_fn.bbox_output_format} # boxes as the collator emits them
+        boxes_normalized: ${datasets.collate_fn.normalize_bboxes}
+        crop_to_valid: true # crop to metainfo["image_sizes"] so buffer padding is never squeezed in
+      # 2) Normalize after resize (same as the sam2video_preprocessor default).
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}

@@ -39,8 +39,7 @@ class SAMBackbone(nn.Module):
         if use_sam_channel_projection:
             assert backbone_native_channels is not None, "backbone_native_channels required when use_sam_channel_projection=True"
 
-        BUILD_BACKBONE = get_method(backbone_args["BUILD"])
-        self.backbone = BUILD_BACKBONE(backbone_args)
+        self.backbone = REGISTRY.build("backbone", backbone_args.name, backbone_args)
 
         self.backbone_embed_dims = backbone_embed_dims
 
@@ -92,8 +91,7 @@ class SAMBackbone(nn.Module):
 
         if adapter_args is not None:
             self.with_backbone_adapter = True
-            BUILD_ADAPTER = get_method(adapter_args["BUILD"])
-            self.adapter = BUILD_ADAPTER(adapter_args)
+            self.adapter = REGISTRY.build("adapter", adapter_args.name, adapter_args)
         else:
             # TODO: implement logic to handle positional encodings without adapter
             self.with_backbone_adapter = False
@@ -123,6 +121,14 @@ class SAMBackbone(nn.Module):
         self.out_channels = self.input_shape[-1]
         self.backbone_output_format = backbone_output_format
         self.backbone_returns_sequence = self.backbone_output_format == "sequence"
+        # What the backbone CONSUMES (independent of what it returns):
+        # PatchEmbedding-based encoders (masked_vit / masked_hiera) patchify
+        # channels-last input_format; conv backbones take conv layout. The
+        # hiera-multiscale config returns feature_map but still consumes
+        # channels-last, so this cannot key off backbone_output_format.
+        self.backbone_consumes_channels_last = (
+            getattr(self.backbone, "patch_embedding", None) is not None
+        )
         
     def _unpatchify_if_sequence(self, feats: List[torch.Tensor]) -> List[torch.Tensor]:
         # feats: list of either [B, N, C] or [B, C, D, H, W]
@@ -130,9 +136,16 @@ class SAMBackbone(nn.Module):
             return feats
 
         out = []
+        n_tokens = 1
+        for d in self.token_shape:
+            n_tokens *= int(d)
         for feat in feats:
             if feat.dim() == 3:  # [B, N, C]
                 B, N, C = feat.shape
+                if N != n_tokens and N % n_tokens == 0:
+                    # concat channel fusion: (patch, channel) token order, C_in tokens
+                    # per patch -> one feature map for SAM2 by averaging over channels
+                    feat = feat.view(B, n_tokens, N // n_tokens, C).mean(dim=2)
                 out.append(feat.transpose(1, 2).reshape(B, C, *self.token_shape))
             else:
                 out.append(feat)
@@ -160,14 +173,64 @@ class SAMBackbone(nn.Module):
             "vision_pos_enc": position_encodings,
         }
 
+    def _to_backbone_layout(self, x: torch.Tensor) -> torch.Tensor:
+        """SAM2 hands every backbone conv layout ``(B*T, C, Z, Y, X)``
+        (``SAM2._to_model_layout``). PatchEmbedding backbones (masked_vit /
+        masked_hiera) patchify **channels-last** ``input_format`` -- with T=1
+        the numel matches and the channels-first tensor would reshape into
+        scrambled tokens silently (every token mixing unrelated voxels and
+        channels). Convert at this boundary; conv backbones keep conv layout.
+        """
+        if not self.backbone_consumes_channels_last:
+            return x
+        x = x.permute(0, 2, 3, 4, 1)              # (B*T, C, Z, Y, X) -> (B*T, Z, Y, X, C)
+        if self.input_format.startswith("T"):
+            x = x.unsqueeze(1)
+        return x
+
+    def _to_adapter_layout(self, x: torch.Tensor) -> torch.Tensor:
+        """EncoderAdapter.forward assumes channels-last ``(B*T, Z, Y, X, C)`` and
+        permutes to conv layout internally. SAM2 hands conv layout
+        ``(B*T, C, Z, Y, X)`` (``SAM2._to_model_layout``); convert at this boundary.
+        Unlike ``_to_backbone_layout`` there is NO temporal unsqueeze -- the
+        adapter's spatial prior module is purely spatial 3D."""
+        return x.permute(0, 2, 3, 4, 1).contiguous()  # (B*T, C, Z, Y, X) -> (B*T, Z, Y, X, C)
+
+    @staticmethod
+    def _channel_ids_for(data_sample: dict, x: torch.Tensor) -> Optional[torch.Tensor]:
+        """``metainfo["channel_ids"]`` aligned to the flattened frame batch.
+
+        The SAM2 preprocessor emits ids per VIDEO ``[B, C, 2]``; the backbone sees
+        ``B*T`` frames, so expand each video's row over its T frames (frame order
+        is ``b*T + t``). Already-flat ids pass through.
+        """
+        ids = (data_sample.get("metainfo") or {}).get("channel_ids")
+        if ids is None:
+            return None
+        n = int(x.shape[0])
+        if int(ids.shape[0]) != n:
+            if n % int(ids.shape[0]) != 0:
+                raise ValueError(
+                    f"channel_ids batch {int(ids.shape[0])} does not divide the frame batch {n}"
+                )
+            ids = ids.repeat_interleave(n // int(ids.shape[0]), dim=0)
+        return ids.to(x.device)
+
     def forward(self, data_sample: dict):
-        feats = self.backbone.forward_features(data_sample["data_tensor"])
+        x = self._to_backbone_layout(data_sample["data_tensor"])
+        channel_ids = self._channel_ids_for(data_sample, x)
+        if channel_ids is not None:
+            feats = self.backbone.forward_features(x, channel_ids=channel_ids)
+        else:
+            feats = self.backbone.forward_features(x)
 
         adapter_keys = None
         # NOTE: SAM2 uses FPN neck to extract features from multi-scale backbone
         #       if we use simple ViT backbone, opt for VitDET style adapter instead
         if self.with_backbone_adapter:
-            feats_dict = self.adapter(data_sample["data_tensor"], feats)
+            feats_dict = self.adapter(
+                self._to_adapter_layout(data_sample["data_tensor"]), feats
+            )
             feats_dict = {str(k): v for k, v in feats_dict.items()}  # ensure string keys
             adapter_keys = sorted(feats_dict.keys(), key=lambda s: int(s))
             feats_list = [feats_dict[k] for k in adapter_keys]
@@ -193,6 +256,10 @@ class SAMBackbone(nn.Module):
         return self._make_backbone_output(feats_list)
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("backbone", "sam")
 def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> nn.Module:
     out_layers = backbone_wrapper_args.get("out_layers", None)
     if out_layers is not None:

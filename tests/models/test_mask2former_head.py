@@ -12,6 +12,10 @@ try:
 except ImportError:
     OPS3D_AVAILABLE = False
 
+# deformable attention is the only GPU-only piece; without the kernel the head runs on CPU
+pytestmark = [pytest.mark.cuda] if OPS3D_AVAILABLE else []
+DEVICE = torch.device("cuda" if OPS3D_AVAILABLE else "cpu")
+
 
 def _make_input_shape_dict_for_m2f(c1, c2, c3, c4) -> Dict[str, Dict[str, int]]:
     return {
@@ -22,11 +26,10 @@ def _make_input_shape_dict_for_m2f(c1, c2, c3, c4) -> Dict[str, Dict[str, int]]:
     }
 
 
-@pytest.mark.cuda
-def test_mask2former_head_forward_shapes_cuda():
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for Mask2FormerHead (deformable attention uses GPU)")
-
+def test_mask2former_head_forward_shapes():
+    """pixel decoder + transformer predictor emit logits (B, Q, K+1), masks at the finest
+    feature resolution and one auxiliary prediction per decoder layer."""
+    torch.manual_seed(0)
     B = 2
     hidden_dim = 64
     num_classes = 7
@@ -52,7 +55,7 @@ def test_mask2former_head_forward_shapes_cuda():
         conv_dim=hidden_dim,
         mask_dim=hidden_dim,
         norm="GroupNorm",
-        use_deform_attention=True if OPS3D_AVAILABLE else False,
+        use_deform_attention=OPS3D_AVAILABLE,
     )
 
     predictor = MultiScaleMaskedTransformerDecoder(
@@ -74,14 +77,11 @@ def test_mask2former_head_forward_shapes_cuda():
     head = Mask2FormerHead(
         pixel_decoder=pixel_decoder,
         predictor=predictor,
-        num_classes=num_classes,
-    ).cuda()
+    ).to(DEVICE)
 
     features = {
-        "1": torch.randn(B, input_shape_metadata["1"]["channels"], *res1, device="cuda"),
-        "2": torch.randn(B, input_shape_metadata["2"]["channels"], *res2, device="cuda"),
-        "3": torch.randn(B, input_shape_metadata["3"]["channels"], *res3, device="cuda"),
-        "4": torch.randn(B, input_shape_metadata["4"]["channels"], *res4, device="cuda"),
+        k: torch.randn(B, input_shape_metadata[k]["channels"], *res, device=DEVICE)
+        for k, res in zip(("1", "2", "3", "4"), (res1, res2, res3, res4))
     }
 
     out = head(features)
@@ -91,11 +91,12 @@ def test_mask2former_head_forward_shapes_cuda():
 
     # logits: [B, Q, num_classes+1]
     assert out["pred_logits"].shape == (B, num_queries, num_classes + 1)
-    assert out["pred_logits"].is_cuda
+    assert out["pred_logits"].device.type == DEVICE.type
 
     # masks: [B, Q, D, H, W] -> finest level (res1)
     assert out["pred_masks"].shape == (B, num_queries, *res1)
-    assert out["pred_masks"].is_cuda
+    assert out["pred_masks"].device.type == DEVICE.type
+    assert torch.isfinite(out["pred_logits"]).all() and torch.isfinite(out["pred_masks"]).all()
 
     aux = out["auxiliary_outputs"]
     assert isinstance(aux, list)
@@ -103,4 +104,4 @@ def test_mask2former_head_forward_shapes_cuda():
     for a in aux:
         assert a["pred_logits"].shape == (B, num_queries, num_classes + 1)
         assert a["pred_masks"].shape == (B, num_queries, *res1)
-        assert a["pred_logits"].is_cuda and a["pred_masks"].is_cuda
+        assert a["pred_logits"].device.type == DEVICE.type and a["pred_masks"].device.type == DEVICE.type

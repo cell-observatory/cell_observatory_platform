@@ -1,0 +1,18 @@
+# @package _global_
+# Stage 0c K3: decoder act-ckpt halves memory (B2_acdec: ~112 GB at bs 2) -> bs 4/GPU predicted ~80 % HBM.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: K3_c512_bs4_acdec
+
+clusters:
+  batch_size: 32              # 4 per GPU
+
+datasets:
+  buffer_capacity: 8
+
+models:
+  meta_arch:
+    sam:
+      use_act_ckpt_iterative_pt_sampling: true

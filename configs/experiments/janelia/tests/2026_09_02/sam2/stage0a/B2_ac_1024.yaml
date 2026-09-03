@@ -1,0 +1,20 @@
+# @package _global_
+# Stage 0a B2_ac_1024: encoder act-ckpt as a fit lever for crop 1024; only if A5 was > 80 % HBM or OOM
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/shapes/crop_128x384x1024
+  - _self_
+
+experiment_name: B2_ac_1024
+
+clusters:
+  batch_size: 8
+
+datasets:
+  preprocessor:
+    max_masks: 100
+
+optimizations:
+  models:
+    sam:
+      activation_checkpoint:
+        enable: true

@@ -10,12 +10,16 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class ConvolveWithPSF:
+    # Convolves photon counts upstream of the sensor model, on the same raw
+    # scale; see MixedPoissonGaussianNoise.reads_raw_counts.
+    reads_raw_counts = True
+
     def __init__(
-        self, 
+        self,
         psf: torch.Tensor | PathLike[str],
         pad_type: str,
-        input_format: str,
         input_shape: tuple[int, ...],
         input_pixel_size_um: tuple[float, float, float],
         psf_format: str,
@@ -24,17 +28,15 @@ class ConvolveWithPSF:
         psf_centered: bool = True,
         visualization_dir: str | None = None,
     ):
-        # NOTE: Always normalize spatial dimensions to ZYX for consistency
-        # between input and PSF.
-        if input_format == "ZYXC":
-            z_idx = input_format.index("Z")
-            y_idx = input_format.index("Y")
-            x_idx = input_format.index("X")
-            self.data_spatial_dim_indices = (z_idx, y_idx, x_idx)
-            self.data_spatial_dim_indices_batched = (z_idx + 1, y_idx + 1, x_idx + 1) # +1 to account for batch dimension
-            self.input_spatial_shape = (input_shape[z_idx], input_shape[y_idx], input_shape[x_idx])
-        else:
-            raise ValueError(f"Unsupported input_format {input_format}")
+        # Spatial dims are always ZYX: input_shape is the per-frame (Z, Y, X, C)
+        # shape. For movies the T axis is folded into the batch in _run_4d, so the
+        # convolution core only ever sees a (B, Z, Y, X, C) view. Layout (3D vs 4D)
+        # is decided per-call from metainfo["data_types"] in __call__.
+        zyxc = "ZYXC"
+        z_idx, y_idx, x_idx = zyxc.index("Z"), zyxc.index("Y"), zyxc.index("X")
+        self.data_spatial_dim_indices = (z_idx, y_idx, x_idx)
+        self.data_spatial_dim_indices_batched = (z_idx + 1, y_idx + 1, x_idx + 1)
+        self.input_spatial_shape = (input_shape[z_idx], input_shape[y_idx], input_shape[x_idx])
         if psf_format == "ZYX":
             z_idx = psf_format.index("Z")
             y_idx = psf_format.index("Y")
@@ -82,7 +84,7 @@ class ConvolveWithPSF:
         # new_shape[i] ~= old_shape[i] * (psf_pixel_size_um[i] / input_pixel_size_um[i]).
         scale_zyx = tuple(psf_pixel_size_um[i] / input_pixel_size_um[i] for i in range(3))
         target_shape = tuple(max(1, int(round(psf.shape[i] * scale_zyx[i]))) for i in range(3))
-        print(f"\n\nDEBUG ConvolveWithPSF: psf.shape={psf.shape}, target_shape={target_shape}, scale_zyx={scale_zyx}")
+        logger.debug(f"ConvolveWithPSF: psf.shape={psf.shape}, target_shape={target_shape}, scale_zyx={scale_zyx}")
         if target_shape != tuple(psf.shape):
             psf = psf.view(1, 1, *psf.shape)
             psf = torch.nn.functional.interpolate(
@@ -111,19 +113,30 @@ class ConvolveWithPSF:
         #   - do FFT-conv at the padded size,
         #   - crop back to the original size.
         # This yields a "same"-shaped output with reflect boundary conditions.
-        
+        #
+        # The padding/OTF are SHAPE-DEPENDENT: the collator can deliver data at
+        # the (larger, padded) buffer shape rather than datasets.input_shape
+        # (the two-shape scheme), so they are prepared lazily per incoming
+        # spatial shape (_prepare_otf, cached by shape) instead of being baked
+        # for input_shape once at construction.
+        self._prepared_spatial: tuple[int, ...] | None = None
+        self._prepare_otf(self.input_spatial_shape)
+
+    def _prepare_otf(self, input_spatial_shape: tuple[int, ...]) -> None:
+        """Build padding plan + OTF for a given incoming spatial (Z, Y, X) shape."""
+        psf = self.psf
         # The common padded real-space spatial shape used for FFT convolution.
         spatial_shape_padded = tuple(
             spatial_shape + kernel_shape - 1
-            for spatial_shape, kernel_shape 
-            in zip(self.input_spatial_shape, psf.shape)
+            for spatial_shape, kernel_shape
+            in zip(input_spatial_shape, psf.shape)
         )
         # Optimal FFT sizes for performance (uses FFTW-style optimal lengths)
         common_real_space_shape = tuple(int(next_fast_len(s)) for s in spatial_shape_padded)
         self.common_real_space_shape = common_real_space_shape
         # Compute optimal padding for sample to make it the same size as the FFT shape
         sample_padding = []
-        for fft_size, sample_size in zip(common_real_space_shape, self.input_spatial_shape):
+        for fft_size, sample_size in zip(common_real_space_shape, input_spatial_shape):
             diff = fft_size - sample_size
             pad_before = diff // 2
             pad_after = diff - pad_before  # Handle odd differences correctly
@@ -188,14 +201,14 @@ class ConvolveWithPSF:
         
         # Compute shape to broadcast OTF to data dimensions (with batch dim)
         # Use actual OTF sizes instead of -1 since view() only allows one inferred dim
-        broadcast_shape = [1] * (len(input_shape) + 1)  # +1 for batch dimension
+        broadcast_shape = [1] * 5  # (B, Z, Y, X, C)
         for i, spatial_dim_idx in enumerate(self.data_spatial_dim_indices_batched):
             broadcast_shape[spatial_dim_idx] = otf.shape[i]
-        
+
         # Broadcast OTF to data dimensions (with batch dim)
         self.otf = otf.view(*broadcast_shape).contiguous()
-        
-        
+        self._prepared_spatial = tuple(int(s) for s in input_spatial_shape)
+
         if self.visualization_dir is not None:
             # For visualization we prefer a full fftn (not rfftn) so the X frequency axis is
             # symmetric around DC after fftshift. This avoids misleading half-spectrum plots.
@@ -212,9 +225,6 @@ class ConvolveWithPSF:
                 log=True,
             )
         
-
-
-
     def _convolve_with_psf(self, data: torch.Tensor) -> torch.Tensor:
         """
         Convolve data with PSF.
@@ -243,6 +253,16 @@ class ConvolveWithPSF:
         if data.ndim != 5:
             raise ValueError(f"Expected 5D input tensor (BZYXC); got shape {tuple(data.shape)}")
 
+        # Rebuild the padding/OTF when the incoming spatial shape differs from
+        # what was prepared (e.g. buffer_input_shape > datasets.input_shape).
+        in_spatial = tuple(int(s) for s in data.shape[1:4])
+        if in_spatial != self._prepared_spatial:
+            logger.info(
+                f"ConvolveWithPSF: incoming spatial {in_spatial} != prepared "
+                f"{self._prepared_spatial}; rebuilding OTF/padding for this shape."
+            )
+            self._prepare_otf(in_spatial)
+
         # BZYXC -> BCZYX for F.pad.
         data = data.permute(0, 4, 1, 2, 3)
         # NOTE: F.pad uses reverse order: (Xl, Xr, Yl, Yr, Zl, Zr)
@@ -255,11 +275,12 @@ class ConvolveWithPSF:
 
         # BCZYX -> BZYXC.
         data = data.permute(0, 2, 3, 4, 1)
-        assert tuple(data.shape[1:4]) == tuple(self.common_real_space_shape), (
-            "\nConvolveWithPSF: Padded data spatial shape does not match common real space shape"
-            + f"\n\tPadded data shape: {tuple(data.shape)} (spatial dims: {tuple(data.shape[1:4])})"
-            + f"\n\tCommon real space shape: {tuple(self.common_real_space_shape)}"
-        )
+        if tuple(data.shape[1:4]) != tuple(self.common_real_space_shape):  # survives python -O
+            raise ValueError(
+                "\nConvolveWithPSF: Padded data spatial shape does not match common real space shape"
+                + f"\n\tPadded data shape: {tuple(data.shape)} (spatial dims: {tuple(data.shape[1:4])})"
+                + f"\n\tCommon real space shape: {tuple(self.common_real_space_shape)}"
+            )
 
         # FFT, multiply by OTF, inverse FFT
         data = torch.fft.rfftn(
@@ -277,15 +298,20 @@ class ConvolveWithPSF:
         # Compile list of slices to crop back to original size
         crop_slices = [slice(None)] * data.ndim
         for padding, spatial_dim_idx in zip(self.sample_padding, self.data_spatial_dim_indices_batched):
-            crop_slices[spatial_dim_idx] = slice(padding[0], -padding[1])
+            # NOT slice(pad0, -pad1): when pad_after == 0 that is slice(p, 0),
+            # an EMPTY slice -- compute the end from the padded axis length.
+            crop_slices[spatial_dim_idx] = slice(
+                padding[0], data.shape[spatial_dim_idx] - padding[1]
+            )
 
         # Crop back to original shape
         data = data[tuple(crop_slices)]
-        assert data.shape == original_shape, (
-            "\nConvolveWithPSF: Processed data shape does not match original shape"
-            + f"\n\tProcessed data shape: {tuple(data.shape)}"
-            + f"\n\tOriginal data shape: {tuple(original_shape)}"
-        )
+        if tuple(data.shape) != tuple(original_shape):  # survives python -O
+            raise ValueError(
+                "\nConvolveWithPSF: Processed data shape does not match original shape"
+                + f"\n\tProcessed data shape: {tuple(data.shape)}"
+                + f"\n\tOriginal data shape: {tuple(original_shape)}"
+            )
         
         # Clamp negative values
         data = torch.clamp(data, min=0)
@@ -302,15 +328,36 @@ class ConvolveWithPSF:
             )
         return data
 
-    def __call__(self, data: torch.Tensor | dict) -> torch.Tensor | dict:
-        if isinstance(data, torch.Tensor):
-            return self._convolve_with_psf(data)
-        elif isinstance(data, dict):
-            if "data_tensor" not in data:
-                raise KeyError("ConvolveWithPSF expects 'data_tensor' in dict.")
-            data["data_tensor"] = self._convolve_with_psf(data["data_tensor"])
-            return data
-        raise TypeError(f"ConvolveWithPSF expects torch.Tensor or dict, got {type(data)}")
+    def __call__(self, data: dict) -> dict:
+        # dict in -> inspect data_types layout -> dispatch 3D/4D -> dict out.
+        if not isinstance(data, dict):
+            raise TypeError(f"ConvolveWithPSF expects a dict sample, got {type(data)}")
+        if "data_tensor" not in data:
+            raise KeyError("ConvolveWithPSF expects 'data_tensor' in dict.")
+        has_time = data["metainfo"]["data_types"]["data_tensor"]["has_time"]
+        return self._run_4d(data) if has_time else self._run_3d(data)
+
+    def _run_3d(self, sample: dict) -> dict:
+        """ZYXC (B, Z, Y, X, C): convolve directly."""
+        if "data_tensor" not in sample:
+            raise KeyError("ConvolveWithPSF expects 'data_tensor' in dict.")
+        sample["data_tensor"] = self._convolve_with_psf(sample["data_tensor"])
+        return sample
+
+    def _run_4d(self, sample: dict) -> dict:
+        """TZYXC (B, T, Z, Y, X, C): fold T into the batch, convolve per-frame, unfold."""
+        if "data_tensor" not in sample:
+            raise KeyError("ConvolveWithPSF expects 'data_tensor' in dict.")
+        tensor = sample["data_tensor"]
+        if tensor.ndim != 6:
+            raise ValueError(
+                f"_run_4d expects 6D (B, T, Z, Y, X, C), got shape {tuple(tensor.shape)}"
+            )
+        B, T = tensor.shape[0], tensor.shape[1]
+        folded = tensor.reshape(B * T, *tensor.shape[2:])
+        convolved = self._convolve_with_psf(folded)
+        sample["data_tensor"] = convolved.reshape(B, T, *tensor.shape[2:])
+        return sample
     
     def _plot_data_before_and_after_convolution(self, original_data: torch.Tensor, data: torch.Tensor) -> None:
         """
@@ -392,7 +439,7 @@ class ConvolveWithPSF:
             )
         arr_flat = arr.flatten()
         vmin, vmax = np.percentile(arr_flat[arr_flat != 0], (1, 99))
-        print(f"DEBUG _plot_psf_orthoslices: arr.min={arr.min():.6f}, arr.max={arr.max():.6f}, vmin={vmin}, vmax={vmax}")
+        logger.debug(f"_plot_psf_orthoslices: arr.min={arr.min():.6f}, arr.max={arr.max():.6f}, vmin={vmin}, vmax={vmax}")
 
         fig, ax = plt.subplots(1, 3, figsize=(12, 4))
         if slices is None:

@@ -1,0 +1,32 @@
+# @package _global_
+# 200-step efficiency probe (torch-native): no val, no checkpoint, perf metrics + memory stats.
+# Launcher = /clusters/janelia_b300 (lsf) via the bring-up base; stage0a/ swaps it to local.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/base_study
+  - _self_
+
+experiment_name: sam2_bench
+wandb_project: sam2_study_bench
+
+datasets:
+  max_rows: 16384             # >= 60 steps x 32/GPU x 8 GPUs; cube rows are cheap
+  timepoint_list: [0]         # one frame per tile -> rows span many tiles
+
+trainer_loop:
+  iteration_mode: step
+  max_steps: 200            # ~200 steps so the steady cadence is visible; numbers = medians over steps >= 50
+  checkpoint_every_n_epochs: null
+  checkpoint_save_period: 1000000    # never (and no periodic_checkpointer hook)
+  with_perf_metrics: true
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: torch_memory_stats
+    step_period: 10           # must be < steps_per_epoch
+    epoch_period: 1
+    logdir: ${loggers.logdir}

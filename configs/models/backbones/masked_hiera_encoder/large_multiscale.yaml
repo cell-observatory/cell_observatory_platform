@@ -1,6 +1,6 @@
 # Hiera large backbone for decoders (SAM/MaskDINO/etc.)
 # With q_pool=2: returns 3 scales (intermediates[:2] + final); backbone_embed_dims needs 3 entries
-BUILD: cell_observatory_platform.models.backbones.masked_hiera_encoder.BUILD
+name: masked_hiera
 
 input_fmt: ${dataset_layout_order}
 input_shape: ${datasets.train_shape}
@@ -10,12 +10,13 @@ embed_dim: 144
 num_heads: 2
 drop_path_rate: 0.0
 q_pool: 2
-q_stride: [2, 2, 2]
+q_stride: [2, 2, 2] # rank of the token grid: 3 for ZYXC; a TZYXC experiment overrides to [1, 2, 2, 2]
 stages: [2, 6, 36, 4]
-mask_unit_size: [8, 8, 8]
+mask_unit_size: [8, 8, 8] # same rank rule as q_stride ([1, 8, 8, 8] under TZYXC)
 norm_layer: LayerNorm
-return_intermediates: true
 
-return_multiscale: true
+# Multiscale backbone mode: per-level channel equalization (no fusion heads).
+# Implies intermediates; MaskedHieraEncoder derives with_intermediates from this.
+# multiscale_level_indices defaults to all q_pool+1 levels.
+channel_proj_type: equalization
 multiscale_out_dim: 256
-multiscale_out_indices: null

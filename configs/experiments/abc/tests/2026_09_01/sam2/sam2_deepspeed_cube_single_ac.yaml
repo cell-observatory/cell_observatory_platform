@@ -1,0 +1,13 @@
+# @package _global_
+# Feature: selective activation checkpointing on the ViT-L encoder blocks (deepspeed backend).
+defaults:
+  - base_sam2_deepspeed
+  - _self_
+
+experiment_name: sam2_abc_deepspeed_single_cube_128_ac
+
+optimizations:
+  models:
+    sam:
+      activation_checkpoint:
+        enable: true

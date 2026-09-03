@@ -4,11 +4,6 @@ import torch
 from enum import Enum
 from typing import Tuple, Dict
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 
@@ -201,7 +196,7 @@ class MULTICHANNEL_HYPERCUBE(Enum):
         return tensor.permute(*perm)
 
     def to_channel_last(self, tensor: torch.Tensor) -> torch.Tensor:
-        if self is (MULTICHANNEL_HYPERCUBE.TYXC, MULTICHANNEL_HYPERCUBE.ZYXC, MULTICHANNEL_HYPERCUBE.TZYXC):
+        if self in (MULTICHANNEL_HYPERCUBE.TYXC, MULTICHANNEL_HYPERCUBE.ZYXC, MULTICHANNEL_HYPERCUBE.TZYXC):
             return tensor
 
         if self.is_3d():

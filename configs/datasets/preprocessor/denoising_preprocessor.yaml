@@ -1,4 +1,4 @@
-_target_: cell_observatory_platform.models.layers.preprocessor.DenoisingPreprocessor
+name: denoising
 
 with_masking: false
 mask_generator: ${datasets.masking.mask_generators.0}
@@ -9,7 +9,6 @@ transforms_list:
   # 0) Synthetic data needs to be convolved with PSF to simulate the effect of the microscope.
   - _target_: cell_observatory_platform.data.transforms.psf.ConvolveWithPSF
   # TODO: Make this configurable.
-    input_format: ${dataset_layout_order}
     input_shape: ${datasets.input_shape}
     input_pixel_size_um: [0.1, 0.1, 0.1]
     psf: /clusterfs/nvme/martinalvarez/psf-real/DSR/CamA_Arc_OMW.tif
@@ -18,10 +17,23 @@ transforms_list:
     psf_centered: true
     pad_type: reflect
 
-# 1) DeepCopyInputsAsTargets to create targets from inputs
+# 1) DeepCopyInputsAsTargets: snapshot the clean image as the target.
+#    UNITS (round-4 D-1, deliberate): the snapshot happens BEFORE the noise
+#    transform, i.e. in the PHOTON domain. The noise model below treats its
+#    input as photons and emits COUNTS (deterministic sensor gain
+#    ~ (QE/epc)*x + offset on top of the stochastic terms). The target is
+#    therefore the clean PHOTON image while the model input is a noisy COUNT
+#    image: the model deliberately learns denoising + sensor-gain inversion
+#    (predicting incident photons from camera counts).
+#
+#    REVISIT (round-4 D-1): if the target should instead be the clean COUNT
+#    image (predict what a noiseless sensor would read), map the target
+#    through the deterministic sensor chain with the same drawn per-sample
+#    parameters. Do NOT silently change one side without the other.
   - _target_: cell_observatory_platform.data.transforms.make_targets.DeepCopyInputsAsTargets
 
-# 2) MixedPoissonGaussianNoise to add noise to inputs (inplace)
+# 2) MixedPoissonGaussianNoise: photons in -> noisy counts out (inplace on the
+#    input only; the target snapshot above is untouched).
   - _target_: cell_observatory_platform.data.transforms.noise.MixedPoissonGaussianNoise
     quantum_efficiency: ${tasks.quantum_efficiency}
     electrons_per_count: ${tasks.electrons_per_count}
@@ -29,15 +41,30 @@ transforms_list:
     mean_background_offset: ${tasks.mean_background_offset}
     seed: ${seed}
 
-# 3) Normalize to normalize the data
+# 3) Normalize input AND the "denoising" target role with the same per-sample
+#    stats (normalize_target_roles): both are mapped through
+#    (x - mean_noisy) / std_noisy with stats computed from the noisy input.
+#    This puts input and target in ONE AFFINE FRAME -- which keeps the
+#    regression well-posed -- but does NOT equalize their physical units:
+#    per the step-1 note the target stays a (normalized) photon image while
+#    the input is a (normalized) count image, gain-inversion included in the
+#    learning task by design. Without it the loss would compare a z-scored
+#    input against raw values (scale/offset gap dominates). The role name must
+#    match DeepCopyInputsAsTargets(role=...) above (default "denoising").
   - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
     input_layout:
       _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
       value: ${dataset_layout_order}
+    normalize_target_roles: [denoising]
 
 patch_shape: ${datasets.patch_shape}
 input_format: ${dataset_layout_order}
 input_shape: ${datasets.train_shape}
-mask_channel_idx: ${datasets.mask_channel_idx}
+# Signal-channel count fed to the model (patchification sizing). The old
+# mask_channel_idx key was removed from every preprocessor signature; the
+# object channel is now identified by channel_mapping roles. VERIFY these
+# counts against each dataset's channel_mapping before real runs.
+max_data_channel_count: 1
+min_data_channel_count: 1
 
 seed: ${seed}

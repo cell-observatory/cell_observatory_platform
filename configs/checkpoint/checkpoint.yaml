@@ -23,3 +23,6 @@ checkpoint_manager:
   use_custom_state_dict_filter: true
   load_optimizer: true
   save_period: 1 # save every n epochs
+# Wall-clock cadence (e.g. a hard 4h job limit) is set on the hook, independent of save_period:
+#   hooks.hooks_list: - name: periodic_checkpointer
+#                       time_interval: 3h30m   # (job time limit - startup - save time)

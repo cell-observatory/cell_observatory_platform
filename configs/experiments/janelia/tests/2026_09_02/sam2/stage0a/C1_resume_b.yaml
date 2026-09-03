@@ -1,0 +1,14 @@
+# @package _global_
+# Stage 0a C1b: delete C1_resume_a/checkpoints/step-40, resume from step-20, run to 40.
+# Pass = start_iter 20, loss continuous with C1a, compile state stripped if compile is on.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/C1_resume_a
+  - _self_
+
+experiment_name: C1_resume_b
+
+checkpoint:
+  resume_run: true
+
+paths:
+  resume_checkpointdir: ${paths.data_path}/sam2_study/stage0a/C1_resume_a/checkpoints

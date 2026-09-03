@@ -1,0 +1,31 @@
+# @package _global_
+# Stage 0c B4: every lever that won in B1-B3, together, on the c512 max point (bs 2, mm 48; 2x bs only if
+# act-ckpt freed >= 30 % HBM). Flip each enable to the B-row result before launching. Production candidate; run twice.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: B4_stack_c512
+
+clusters:
+  batch_size: 16              # 2 per GPU = BS_512
+
+optimizations:
+  models:
+    sam:
+      torch_compile:
+        enable: true          # TODO(B1)
+      activation_checkpoint:
+        enable: false         # TODO(B2)
+
+models:
+  meta_arch:
+    sam:
+      use_act_ckpt_iterative_pt_sampling: false   # TODO(B2 acdec)
+
+parallelism:
+  quantize:
+    enable: false             # TODO(B3)
+    backend: mx
+    recipe: mxfp8_cublas
+    filter_fqns: []

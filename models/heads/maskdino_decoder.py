@@ -185,6 +185,7 @@ class MaskDINODecoder(nn.Module):
         N, S, C = memory.shape
 
         level_start_index, proposals = 0, []
+        num_levels = len(shapes)
         for lvl, (D, H, W) in enumerate(shapes):
             # (bs, SUM{dxhxw}) -> (bs, d_lvl*h_lvl*w_lvl) -> (bs, d_lvl, h_lvl, w_lvl, 1)
             level_padding_mask = memory_padding_mask[:, level_start_index : (level_start_index + D * H * W)].view(
@@ -214,8 +215,11 @@ class MaskDINODecoder(nn.Module):
             grid = (grid.unsqueeze(0).expand(N, -1, -1, -1, -1) + 0.5) / scale
 
             # all anchors at this level get same d,h,w in normalized units
-            # with different anchor locations given by grid centre positions
-            whd = torch.ones_like(grid) * 0.05 * (2.0**lvl)  # scale size by 0.05 × 2^level
+            # with different anchor locations given by grid centre positions.
+            # `shapes` arrives coarsest-first here; the 0.05 * 2^k prior assumes
+            # k=0 is the FINEST level (Deformable-DETR convention), so index
+            # from the fine end — else coarse levels get the smallest anchors.
+            whd = torch.ones_like(grid) * 0.05 * (2.0 ** (num_levels - 1 - lvl))
             # (N, W, H, D, 3) -> (N, W, H, D, 6) -> (N, D*H*W, 6)
             proposal = torch.cat((grid, whd), -1).view(N, -1, 6)
             proposals.append(proposal)
@@ -239,9 +243,15 @@ class MaskDINODecoder(nn.Module):
 
     # FIXME: legacy code, should be rewritten for clarity once tested
     def generate_denoising_queries(self, targets, target_query_embeddings, reference_point_embeddings, batch_size):
+        # Derive the device from the targets once
+        device = (
+            targets[0]["labels"].device
+            if targets and "labels" in targets[0]
+            else target_query_embeddings.device
+        )
         if self.training:
             labels_per_image = [
-                (torch.ones_like(target["labels"])).cuda() for target in targets
+                torch.ones_like(target["labels"], device=device) for target in targets
             ]
             label_indices_per_image = [
                 torch.nonzero(target) for target in labels_per_image
@@ -308,22 +318,22 @@ class MaskDINODecoder(nn.Module):
 
                 # randomly shift bbox coordinates ([-1,1] * bbox_deltas * noise_scale)
                 total_denoise_bboxes_copy += (
-                    torch.mul((torch.rand_like(total_denoise_bboxes_copy) * 2 - 1.0), denoise_bbox_deltas).cuda()
+                    torch.mul((torch.rand_like(total_denoise_bboxes_copy) * 2 - 1.0), denoise_bbox_deltas).to(device)
                     * self.noise_scale
                 )
                 total_denoise_bboxes_copy = total_denoise_bboxes_copy.clamp(
                     min=0.0, max=1.0
                 )  # clamp new bbox coordinates to [0,1] range
 
-            total_denoise_label_embeddings = self.label_embeddings(total_denoise_labels.long().cuda()).to(self.dtype)
+            total_denoise_label_embeddings = self.label_embeddings(total_denoise_labels.long().to(device)).to(self.dtype)
             total_denoise_bboxes_encoded = inverse_sigmoid(total_denoise_bboxes_copy)
 
             max_labels_per_image = int(max(num_labels_per_image))
             max_query_pad_size = int(max_labels_per_image * denoise_queries_per_label)
 
             # pad the number of denoise queries (labels per image * num queries per label)
-            denoise_labels_padded = torch.zeros(max_query_pad_size, self.hidden_dim, dtype=self.dtype).cuda()
-            denoise_bboxes_padded = torch.zeros(max_query_pad_size, 6).cuda()
+            denoise_labels_padded = torch.zeros(max_query_pad_size, self.hidden_dim, dtype=self.dtype, device=device)
+            denoise_bboxes_padded = torch.zeros(max_query_pad_size, 6, device=device)
 
             # combine the denoised labels and bboxes with target queries/bbox embeddings if they exist
             # TODO: check if branch based on both reference_point_embeddings and target_query_embeddings is necessary
@@ -342,7 +352,7 @@ class MaskDINODecoder(nn.Module):
             # each image has denoise_queries_per_label number of queries per label
             # hence we create a mapping from our denoise_label_embeddings/denoise_bboxes_encodings
             # to locations in our label_queries/bbox_queries tensors with padding logic below
-            denoise_target_indices_map = torch.tensor([]).cuda()
+            denoise_target_indices_map = torch.tensor([], device=device)
 
             if len(num_labels_per_image) > 0:
                 # for each image, create range [0, ..., num_labels_image_i-1] and cat them together
@@ -385,7 +395,7 @@ class MaskDINODecoder(nn.Module):
             attn_mask_size = max_query_pad_size + self.num_queries
             # first set all False => everyone can see everyone initially
             # TRUE = mask TRUE = cannot attend
-            attn_mask = torch.ones(attn_mask_size, attn_mask_size).cuda() < 0
+            attn_mask = torch.ones(attn_mask_size, attn_mask_size, device=device) < 0
 
             # the attention mask matrix is organized as follows:
             # [denoising queries Group 0 | denoising queries Group 1 | .... | regular queries]
@@ -497,18 +507,43 @@ class MaskDINODecoder(nn.Module):
         outputs_bboxes = torch.stack(outputs_bbox_list)
         return outputs_bboxes
 
-    def forward_prediction_heads(self, output_queries, pixel_decoder_output, predict_masks=True):
+    def forward_prediction_heads(
+        self,
+        output_queries,
+        pixel_decoder_output,
+        predict_masks=True,
+        return_mask_embeddings=False,
+    ):
+        """Run the per-layer prediction heads.
+
+        Args:
+            output_queries: ``(num_queries, bs, C)`` queries from a decoder layer.
+            pixel_decoder_output: ``(bs, mask_dim, d, h, w)`` finest pixel-decoder
+                feature map. Only consumed when ``predict_masks=True``.
+            predict_masks: if False, skip the per-pixel einsum entirely (the
+                caller is expected to materialize masks on its own, e.g. chunked
+                from the returned ``mask_embeddings``).
+            return_mask_embeddings: if True, return the projected mask
+                embeddings ``(bs, num_queries, mask_dim)`` so callers can
+                materialize masks lazily without re-running the MLP.
+        """
         decoder_output = self.decoder_norm(output_queries)
         decoder_output = decoder_output.transpose(0, 1)  # (bs, num_queries, C)
         outputs_class = self.class_predictor(decoder_output)  # (bs, num_queries, num_classes)
 
         outputs_mask = None
+        mask_embeddings = None
+        # Only project to mask space when we'll actually use it (loss/predict path
+        # or a downstream chunked materializer).
+        if predict_masks or return_mask_embeddings:
+            mask_embeddings = self.mask_embeddings(decoder_output)  # (bs, num_queries, mask_dim)
         if predict_masks:
-            mask_embeddings = self.mask_embeddings(decoder_output)
             # dot product between mask embeddings and pixel decoder output
             outputs_mask = torch.einsum(
                 "bqc, bcdhw->bqdhw", mask_embeddings, pixel_decoder_output
             )  # (bs, num_queries, d, h, w)
+        if return_mask_embeddings:
+            return outputs_class, outputs_mask, mask_embeddings
         return outputs_class, outputs_mask
 
     @torch.jit.unused
@@ -524,7 +559,7 @@ class MaskDINODecoder(nn.Module):
                 for a, b, c in zip(outputs_class[:-1], outputs_masks[:-1], out_bboxes[:-1])
             ]
 
-    def forward(self, x, pixel_decoder_output, masks, targets=None):
+    def forward(self, x, pixel_decoder_output, masks, targets=None, predict_mask: bool = True):
         assert len(x) == self.num_feature_levels, "The number of feature maps much match self.num_feature_levels"
         device = x[0].device
 
@@ -544,15 +579,25 @@ class MaskDINODecoder(nn.Module):
             ]
 
         x_flatten, mask_flatten, shapes = [], [], []
-        # iterate over feature levels in reverse order from coarsest to finest 
+        # Parallel PYTHON-int level shapes: consumers that iterate/unpack shapes
+        # (gen_encoder_output_proposals) would otherwise trigger one GPU->CPU
+        # sync per unpacked element per level per forward.
+        level_shapes: list[tuple] = []
+        valid_ratios_list = []
+        # iterate over feature levels in reverse order from coarsest to finest
         # (see PixelDecoder for more details on feature level ordering)
         for idx in range(self.num_feature_levels - 1, -1, -1):
             bs, c, d, h, w = x[idx].shape
             shapes.append(torch.as_tensor([d, h, w], dtype=torch.long, device=device))
+            level_shapes.append((int(d), int(h), int(w)))
             # Conv3d: (bs, c, d, h, w) -> (bs, d_model, d, h, w) → (bs, d_model, dxhxw) -> (bs, dxhxw, d_model)
             x_flatten.append(self.input_proj[idx](x[idx]).flatten(2).transpose(1, 2))
             # (bs, d, h, w) -> (bs, dxhxw)
             mask_flatten.append(masks[idx].flatten(1))
+            # SAME reversed loop: valid_ratios must follow the level order of
+            # shapes/x_flatten (coarsest->finest); stacking over `masks` in the
+            # original order mismatched every other per-level tensor.
+            valid_ratios_list.append(compute_unmasked_ratio(masks[idx]))
 
         # concatenate all feature levels
         x_flatten = torch.cat(x_flatten, 1)  # bs, SUM{dxhxw}, c
@@ -563,7 +608,7 @@ class MaskDINODecoder(nn.Module):
         # prod(1) => (num_feature_levels, ) = [d1*h1*w1, d2*h2*w2, ...], .cumsum(0) => CUMSUM([d1*h1*w1, d2*h2*w2, ...])
         level_start_index = torch.cat((shapes.new_zeros((1,)), shapes.prod(1).cumsum(0)[:-1]))  # (num_feature_levels, )
         # valid ratio: (bs, num_feature_levels, 3)
-        valid_ratios = torch.stack([compute_unmasked_ratio(m) for m in masks], 1)
+        valid_ratios = torch.stack(valid_ratios_list, 1)
         
         # queries_learned_topk is populated if learned query_features is used
         predictions_class, predictions_mask, queries_learned_topk = [], [], None
@@ -571,7 +616,9 @@ class MaskDINODecoder(nn.Module):
             # generate queries for topk query selection which will be used to initialize the decoder
             # note that output_memory and queries_learned are terminology used largely interchangeably
             # NOTE:  output_proposals are WHDWHD format
-            output_memory, output_proposals = self.gen_encoder_output_proposals(x_flatten, mask_flatten, shapes)
+            # pass the python-int shapes: the proposal generator unpacks
+            # (D, H, W) per level, which on a CUDA tensor is a sync per element.
+            output_memory, output_proposals = self.gen_encoder_output_proposals(x_flatten, mask_flatten, level_shapes)
             output_memory = self.encoder_output_norm(self.encoder_output_mlp(output_memory))
 
             # predict class logits and proposals from encoder memory
@@ -716,11 +763,32 @@ class MaskDINODecoder(nn.Module):
             target_mask=attn_mask,
         )
 
+        # Track the mask-projection of the last decoder layer so callers driving
+        # chunked materialization (see `MaskMaterializer`) can skip recomputing it.
+        last_mask_embeddings = None
         num_intermediates = len(intermediates)
         for idx, output in enumerate(intermediates):
-            outputs_class, outputs_mask = self.forward_prediction_heads(
-                output.transpose(0, 1), pixel_decoder_output, self.training or (idx == num_intermediates - 1)
-            )
+            is_last = (idx == num_intermediates - 1)
+            # Training: always compute low-res masks for deep supervision.
+            # Inference: by default still compute the last layer's masks (legacy
+            # callers depend on outputs["pred_masks"]); skip the einsum when
+            # `predict_mask=False` so a chunked materializer can drive it.
+            run_einsum = self.training or (is_last and predict_mask)
+            need_mask_embed = (not self.training) and is_last
+            if need_mask_embed:
+                outputs_class, outputs_mask, mask_embed = self.forward_prediction_heads(
+                    output.transpose(0, 1),
+                    pixel_decoder_output,
+                    predict_masks=run_einsum,
+                    return_mask_embeddings=True,
+                )
+                last_mask_embeddings = mask_embed
+            else:
+                outputs_class, outputs_mask = self.forward_prediction_heads(
+                    output.transpose(0, 1),
+                    pixel_decoder_output,
+                    predict_masks=run_einsum,
+                )
             predictions_class.append(outputs_class)
             predictions_mask.append(outputs_mask)
 
@@ -758,6 +826,13 @@ class MaskDINODecoder(nn.Module):
             "pred_boxes": predictions_boxes[-1],
             "auxiliary_outputs": self._set_aux_loss(predictions_class, predictions_mask, predictions_boxes),
         }
+
+        # Expose intermediates needed for chunked mask materialization at
+        # inference (e.g. `MaskMaterializer`). Cheap to keep around — they are
+        # the same tensors used by the einsum above; we just hold references.
+        if not self.training:
+            outputs["mask_embeddings"] = last_mask_embeddings  # (bs, num_queries, mask_dim)
+            outputs["pixel_decoder_output"] = pixel_decoder_output  # (bs, mask_dim, d, h, w)
 
         if self.two_stage_flag:
             outputs["intermediates"] = intermediate_outputs

@@ -1,0 +1,34 @@
+# @package _global_
+# Stage 0a B4: every lever that won in B1-B3, together, at the cube max point (2x bs if B2 won).
+# Flip each enable to the B-row result before launching. This row is the production candidate.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/local_base
+  - _self_
+
+experiment_name: B4_stack_cube
+
+clusters:
+  batch_size: 32              # TODO(A1/B2): 8 x BS_CUBE (x2 if act-ckpt won)
+
+trainer_loop:
+  max_steps: 200
+
+optimizations:
+  models:
+    sam:
+      torch_compile:
+        enable: true          # TODO(B1)
+      activation_checkpoint:
+        enable: false         # TODO(B2)
+
+models:
+  meta_arch:
+    sam:
+      use_act_ckpt_iterative_pt_sampling: false   # TODO(B2d)
+
+parallelism:
+  quantize:
+    enable: false             # TODO(B3)
+    backend: mx
+    recipe: mxfp8_cublas
+    filter_fqns: []

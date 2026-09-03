@@ -13,7 +13,6 @@ from cell_observatory_platform.models.layers.activation import get_activation
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
 from cell_observatory_platform.models.layers.positional_encoding import PosEmbedding, make_axial_rope_freqs
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -304,7 +303,7 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
 
     sig = inspect.signature(MaskedPredictor.__init__)
     allowed = set(sig.parameters.keys()) - {"self"}
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
 
     kwargs = {}
     for k, v in cfg.items():
@@ -314,6 +313,10 @@ def _extract_model_kwargs(cfg: Mapping[str, Any]) -> dict:
     return kwargs
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("head", "mae_decoder")
 def BUILD(cfg: Mapping[str, Any]) -> MaskedPredictor:
     """
     Hydra entrypoint for MaskedPredictor.

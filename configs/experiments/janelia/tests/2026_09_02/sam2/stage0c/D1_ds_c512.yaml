@@ -1,0 +1,25 @@
+# @package _global_
+# Stage 0c D1: DeepSpeed ZeRO-2 on the final torch setup (c512, bs 2, mm 48), run once at the end.
+# Epoch mode (no step mode in EpochBasedTrainer): 200 steps = 3200 rows.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/bench_base_ds
+  - _self_
+
+experiment_name: D1_ds_c512
+
+clusters:
+  launcher_type: local
+  batch_size: 16
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/stage0c/${experiment_name}
+
+datasets:
+  max_rows: 3200
+  buffer_capacity: 8
+  train_shape: [1, 128, 384, 512, 5]
+  input_shape: [1, 128, 384, 512, 6]
+  preprocessor:
+    max_masks: 48
+  databases:
+    in_bounds_only: true

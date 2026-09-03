@@ -1,0 +1,25 @@
+# @package _global_
+# Tile-resize 128x384x1024: today's tile path (whole tile squashed to input_shape; masks resampled).
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/bench_tile_base
+  - _self_
+
+experiment_name: sam2_bench_resize_128x384x1024
+
+datasets:
+  train_shape: [1, 128, 384, 1024, 5]
+  input_shape: [1, 128, 384, 1024, 6]
+  preprocessor:
+    transforms_list:
+      - _target_: cell_observatory_platform.data.transforms.resize.Resize
+        target_spatial_shape: [128, 384, 1024]
+        mode: trilinear
+        align_corners: false
+        dtype: ${quantization}
+        bbox_format: ${datasets.collate_fn.bbox_output_format}
+        boxes_normalized: ${datasets.collate_fn.normalize_bboxes}
+        crop_to_valid: true
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}

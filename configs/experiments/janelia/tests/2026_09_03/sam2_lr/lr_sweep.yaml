@@ -1,0 +1,17 @@
+# @package _global_
+# Stage 1: three lr runs, one B300 node each, submitted together (each run is its own job chain).
+#   python manager.py --config-name=experiments/janelia/tests/2026_09_03/sam2_lr/lr_sweep.yaml
+# Outputs: $DATA_DIR/sam2_study/01_lr/lr_sweep_optimizers_lr_<lr>/
+run_type: multi_run
+data_base_dir: sam2_study/01_lr
+wandb_tags: ["sam2_study", "step1", "lr"]
+
+sweep:
+  - optimizers:
+      lr: [2e-4, 4e-4, 1e-4]
+
+runs:
+  - cfg: experiments/janelia/tests/2026_09_03/sam2_lr/lr_base.yaml
+    name: lr.yaml
+    defaults_overrides: null
+    overrides: {}

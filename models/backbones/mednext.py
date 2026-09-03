@@ -25,11 +25,6 @@ import torch.utils.checkpoint as checkpoint
 import logging
 import sys
 
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 class MedNeXtBlock(nn.Module):
@@ -350,9 +345,20 @@ class MedNeXt(nn.Module):
             self.outside_block_checkpointing = True
         assert dim in ['2d', '3d'], f"Invalid dimension: {dim}. Must be '2d' or '3d'."
         
-        if kernel_size is not None:
+        # Per-half kernel sizes: kernel_size (default 7) is only a FALLBACK for
+        # whichever of enc/dec_kernel_size is unset. The old unconditional
+        # `if kernel_size is not None` overwrote both (kernel_size defaults to 7,
+        # so the branch always fired), silently ignoring any configured
+        # enc_kernel_size / dec_kernel_size.
+        if enc_kernel_size is None:
             enc_kernel_size = kernel_size
+        if dec_kernel_size is None:
             dec_kernel_size = kernel_size
+        if enc_kernel_size is None or dec_kernel_size is None:
+            raise ValueError(
+                "MedNeXt: kernel_size (fallback) or both enc_kernel_size and "
+                "dec_kernel_size must be set."
+            )
 
         if dim == '2d':
             conv = nn.Conv2d
@@ -390,7 +396,8 @@ class MedNeXt(nn.Module):
             kernel_size=enc_kernel_size,
             do_res=do_res_up_down,
             norm_type=norm_type,
-            dim=dim
+            dim=dim,
+            grn=grn,
         )
     
         self.enc_block_1 = nn.Sequential(*[
@@ -714,6 +721,11 @@ class MedNeXt(nn.Module):
         return features
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+from cell_observatory_platform.utils.config import build_kwargs as _build_kwargs
+
+
+@REGISTRY.register("backbone", "mednext")
 def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> nn.Module:
     if adapter_args is not None:
         raise NotImplementedError("Adapter is not supported for MedNeXt.")
@@ -726,4 +738,4 @@ def BUILD(backbone_wrapper_args: dict, adapter_args: Optional[dict] = None) -> n
             if isinstance(resolved, dict):
                 backbone_wrapper_args = resolved
         logger.info(f"Building MedNeXt with args: {backbone_wrapper_args}")
-        return MedNeXt(**backbone_wrapper_args)
+        return MedNeXt(**_build_kwargs(backbone_wrapper_args))

@@ -1,0 +1,13 @@
+# @package _global_
+# Stage 0a A2: DeepSpeed ZeRO-2 at the torch cube max (fallback: half). Backend decision.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/local_ds_base
+  - _self_
+
+experiment_name: A2_ds_cube
+
+clusters:
+  batch_size: 32              # TODO(A1): 8 x BS_CUBE
+
+datasets:
+  max_rows: 6400              # 200 steps x clusters.batch_size

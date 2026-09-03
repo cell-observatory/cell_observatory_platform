@@ -1,0 +1,14 @@
+# @package _global_
+# Stage 0a A5: does tile-crop 128x384x1024 fit (< 80 % HBM) at bs 1, mm 100.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/shapes/crop_128x384x1024
+  - _self_
+
+experiment_name: A5_crop_1024
+
+clusters:
+  batch_size: 8
+
+datasets:
+  preprocessor:
+    max_masks: 100

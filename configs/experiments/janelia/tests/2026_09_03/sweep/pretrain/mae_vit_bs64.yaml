@@ -1,0 +1,4 @@
+# @package _global_
+defaults: [/experiments/janelia/tests/2026_09_03/sweep/pretrain/mae_vit_base, _self_]
+experiment_name: mae_vit_bs64
+clusters: {batch_size: 512}

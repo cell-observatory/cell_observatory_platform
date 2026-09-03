@@ -7,25 +7,27 @@ event_writers_list:
   _target_: cell_observatory_platform.training.loggers.EventWriterList
   
 event_writers:
-    - _target_: cell_observatory_platform.training.loggers.LocalEventWriter
+    - name: local
       save_dir: ${loggers.logdir}
       step_scalars_prefix: step_logbook
       epoch_scalars_prefix: epoch_logbook
       scalars_save_format: csv
-    - _target_: cell_observatory_platform.training.loggers.WandBEventWriter
+    - name: wandb
       project: ${wandb_project}
       # entity: cell-observatory
       # save directory for W&B logs
       # will automatically append wandb folder
       # to the logdir
       dir: ${loggers.logdir}
-      name: ${experiment_name}
-      tags: 
+      run_name: ${experiment_name}
+      tags:
         - ${job_type}
         - ${trainer}
         - ${quantization}
-      # step to resume from if resuming a run 
-      # (if id is set to an existing run)
+      # wandb.init(resume=...) policy, NOT a step number: one of
+      # "allow" | "must" | "never" (or null). Takes effect only when `id`
+      # points at an existing run. Run-id lineage is also persisted in the
+      # checkpoint_meta sidecar (wandb_run_id) for resume tooling.
       resume_from: null
       # unique ID used for resuming a run
       # if not set, a new run will be created

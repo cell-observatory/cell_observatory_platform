@@ -541,11 +541,53 @@ jobs:
       REQUIRED_SHM_GB: 64
       RAY_OBJECT_STORE_ALLOW_SLOW_STORAGE: 1
     steps:
+      # This job bind-mounts ${{ github.workspace }} into the container and runs
+      # pytest against it, but (unlike docker-build) had NO checkout — so on a
+      # persistent self-hosted runner it tested whatever stale / wrong-branch
+      # code a previous run left behind. Force-sync the workspace to the tested
+      # commit here. clean: false is REQUIRED: a default clean (git clean -ffdx)
+      # would delete the build_SIF-produced *.sif (now gitignored) that the
+      # apptainer exec below bind-mounts; checkout --force still resets tracked
+      # files to the commit and adds any files missing from a stale workspace.
+      - name: Checkout tested commit into the persistent workspace
+        uses: actions/checkout@v6
+        with:
+          submodules: "recursive"
+          clean: false
+
       # - name: Cache pytest .testmondata
       #   uses: actions/cache@v4
       #   with:
       #     path: ${{ env.TESTMON_DATAFILE }}
       #     key: TESTMON_DATAFILE_${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}-app-${{ hashFiles('**/apptainerfile.def') }}-dockerfile-${{ hashFiles('**/Dockerfile') }}-branchname
+
+      - name: Resolve per-user scratch paths
+        run: |
+          : "${USER:=$(id -un)}"
+          SCRATCH_ROOT="/scratch/${USER}"
+          NODE_LOCAL_STORE_ROOT="${SCRATCH_ROOT}/node_local_store"
+          mkdir -p "${NODE_LOCAL_STORE_ROOT}"
+          echo "SCRATCH_ROOT=${SCRATCH_ROOT}" >> "$GITHUB_ENV"
+          echo "NODE_LOCAL_STORE_ROOT=${NODE_LOCAL_STORE_ROOT}" >> "$GITHUB_ENV"
+          echo "Resolved SCRATCH_ROOT=${SCRATCH_ROOT}"
+          echo "Resolved NODE_LOCAL_STORE_ROOT=${NODE_LOCAL_STORE_ROOT}"
+
+      - name: Parse local DB host and port from SUPABASE_LOCAL_URI
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_ENV"
+          import os
+          from urllib.parse import urlparse
+          uri = os.environ.get("SUPABASE_LOCAL_URI", "")
+          if not uri:
+              raise SystemExit("SUPABASE_LOCAL_URI is empty; set the secret")
+          u = urlparse(uri)
+          if not u.hostname or not u.port:
+              raise SystemExit(f"Could not parse host/port from URI: {uri!r}")
+          print(f"SUPABASE_LOCAL_HOST={u.hostname}")
+          print(f"SUPABASE_LOCAL_PORT={u.port}")
+          EOF
+          echo "Parsed SUPABASE_LOCAL_HOST=$(grep ^SUPABASE_LOCAL_HOST= "$GITHUB_ENV" | tail -1 | cut -d= -f2)"
+          echo "Parsed SUPABASE_LOCAL_PORT=$(grep ^SUPABASE_LOCAL_PORT= "$GITHUB_ENV" | tail -1 | cut -d= -f2)"
 
       - name: Copy postgres database ~/db_files/sandbox to repo
         run: |
@@ -567,6 +609,15 @@ jobs:
               sleep 2
             fi
           done
+
+      - name: Inspect sandbox tables
+        run: |
+          echo "=== prepared_cube_* ==="
+          psql "${SUPABASE_LOCAL_URI}" -c "\dt public.prepared_cube_*" || true
+          echo "=== prepared_tile_* ==="
+          psql "${SUPABASE_LOCAL_URI}" -c "\dt public.prepared_tile_*" || true
+          echo "=== all public tables ==="
+          psql "${SUPABASE_LOCAL_URI}" -c "\dt public.*" || true
 
       - name: List files in the repository
         run: |
@@ -597,19 +648,35 @@ jobs:
             echo "/dev/shm: $SHM"
           fi
 
+      - name: Prepare SCRATCH_ROOT cache dirs
+        run: |
+          mkdir -p "${SCRATCH_ROOT}/home" \
+                   "${SCRATCH_ROOT}/.triton" \
+                   "${SCRATCH_ROOT}/.matplotlib" \
+                   "${SCRATCH_ROOT}/.cache" \
+                   "${NODE_LOCAL_STORE_ROOT}"
+
       - name: Set APPTAINER_BINDS
         id: apptainer_binds
         run: |
-          echo "APPTAINER_BINDS=--bind ${{ github.workspace }}:/workspace/${{ env.REPO_NAME }} --bind ${{ env.STORAGE_SERVER_DIR }} --bind ~/.cache/ --cwd /workspace/${{ env.REPO_NAME }}" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_BINDS=--bind ${{ github.workspace }}:/workspace/${{ env.REPO_NAME }} --bind ${{ env.STORAGE_SERVER_DIR }} --bind ~/.cache/ --bind ${SCRATCH_ROOT}:${SCRATCH_ROOT}:rw --cwd /workspace/${{ env.REPO_NAME }}" >> "$GITHUB_OUTPUT"
 
       - name: Set APPTAINER_RUN command
         id: apptainer_run
         run: |
           rm -f test_results/* || true
-          echo "APPTAINER_RUN=apptainer exec --userns --no-home ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
+          echo "APPTAINER_RUN=apptainer exec --userns --home ${SCRATCH_ROOT}/home --env TRITON_CACHE_DIR=${SCRATCH_ROOT}/.triton --env MPLCONFIGDIR=${SCRATCH_ROOT}/.matplotlib --env XDG_CACHE_HOME=${SCRATCH_ROOT}/.cache --env SCRATCH_ROOT=${SCRATCH_ROOT} --env NODE_LOCAL_STORE_ROOT=${NODE_LOCAL_STORE_ROOT} --env PYTHONFAULTHANDLER=1 ${{ steps.apptainer_binds.outputs.APPTAINER_BINDS }} --nv ${{ github.workspace }}/${{ needs.sif_path.outputs.SIF_PATH }}_${{ env.TORCH_VERSION }}.sif" >> "$GITHUB_OUTPUT"
 
       - name: print environment variables
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} env
+
+      - name: Verify SCRATCH_ROOT writable inside container
+        run: |
+          ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} \
+            sh -c 'set -e; echo "Probing $NODE_LOCAL_STORE_ROOT"; \
+                   touch "$NODE_LOCAL_STORE_ROOT/.gha_writetest" && \
+                   rm "$NODE_LOCAL_STORE_ROOT/.gha_writetest" && \
+                   echo OK'
 
       # - name: print testmon
       #   run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ls -lhXRa ~/.cache/TESTMON
@@ -654,6 +721,11 @@ jobs:
         if: ${{ env.TESTING }}
         run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_training.xml tests/training
         timeout-minutes: 60
+
+      - name: pytest /tests/inference
+        if: ${{ env.TESTING }}
+        run: ${{ steps.apptainer_run.outputs.APPTAINER_RUN }} ${{ env.PYTEST }}_inference.xml tests/inference
+        timeout-minutes: 25
 
       - name: pytest /tests/evaluation
         if: ${{ env.TESTING }}

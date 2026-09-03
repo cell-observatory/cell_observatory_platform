@@ -1,18 +1,48 @@
+"""Inference visualization helpers.
+
+Architecture (kept deliberately layered so new plot types are cheap to add):
+
+  1. Shared low-level utils  -- ``_ensure_numpy*``, :func:`normalize_slice`,
+     :func:`mip_project`, :func:`instance_label_cmap`. These are format/layout
+     primitives with no plotting policy and are reused by every higher-level helper.
+
+  2. Per-plot-type helpers   -- :func:`save_prediction_plots` (dense MIP PDF),
+     :func:`save_instance_predictions` (box/mask overlays), :func:`save_semantic_predictions`
+     (per-class semantic panels), :func:`save_feature_visualizations` (PCA /
+     patch-cosine feature maps), and :func:`save_bbox_overlay` (predicted boxes).
+     Each owns exactly one artifact type and shares the layer-1 primitives.
+
+  3. Controller / dispatch   -- lives in ``inference/visualizer.py``: each handler
+     name (the config key under ``viz_worker.handler_configs``) is a registered
+     ``viz_handler`` wrapping one layer-2 helper, and ``VizWorker`` is the runtime
+     dispatcher (buffer materialization + batch unpack + per-sample naming).
+     Adding a plot type = add a layer-2 helper here + register a ``viz_handler``
+     wrapper there; the config surface stays declarative.
+
+All plotting uses the object-oriented matplotlib API (``matplotlib.figure.Figure``
+directly, never ``pyplot``): pyplot's global figure registry is not thread-safe and
+these helpers run inside the viz worker's thread pool.
+"""
+
 from tqdm import tqdm
 import hashlib
 from pathlib import Path
-from typing import Literal, Optional, Tuple, Union, Dict, Sequence, Any
-
+from typing import Any, Dict, Literal, Optional, Sequence, Tuple, Union, List
+from torch import Tensor
 import torch
 import numpy as np
 import torch.nn.functional as F
 
-import matplotlib.pyplot as plt
+from matplotlib import colormaps
+from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import ListedColormap, BoundaryNorm
 
+
 from cell_observatory_platform.data.io import save_file
+from cell_observatory_platform.data.data_types import OutputKind
+from cell_observatory_platform.data.datasets.buffers import BufferManager
 from cell_observatory_platform.data.structures import convert_bbox_format
 
 ArrayLike = Union[np.ndarray, torch.Tensor]
@@ -36,7 +66,17 @@ def tile_hash(tile_name: str) -> int:
     return stable_i64(tile_name)
 
 
-def _normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
+# ============================================================================
+# Layer 1: shared low-level utils (normalize / MIP / colormap / volume save)
+# ============================================================================
+
+
+def normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
+    """Percentile-normalize a 2D image to ``[0, 1]`` for display.
+
+    Falls back to min/max if the percentile window is degenerate and to an all-
+    zero image if the slice is constant. Shared by every PDF generator.
+    """
     img2d = np.asarray(img2d)
     lo, hi = np.percentile(img2d, [pmin, pmax])
     if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
@@ -45,6 +85,11 @@ def _normalize_slice(img2d, pmin: float = 1.0, pmax: float = 99.0):
             return np.zeros_like(img2d, dtype=np.float32)
     out = (img2d - lo) / (hi - lo)
     return np.clip(out, 0, 1)
+
+
+def mip_project(block: np.ndarray, axis: int = 0) -> np.ndarray:
+    """Max-intensity projection over ``axis`` (default: leading z-block axis)."""
+    return np.asarray(block).max(axis=axis)
 
 
 def _ensure_numpy(x: ArrayLike):
@@ -78,13 +123,27 @@ def _ensure_numpy_tzyxc(preds: ArrayLike) -> np.ndarray:
     """
     arr = _ensure_numpy(preds)
 
-    if arr.ndim == 4:  # Z,Y,X,C
+    if arr.ndim == 3:  # ZYX -> add T=1, C=1
+        arr = arr[None, ..., None]
+    elif arr.ndim == 4:  # ZYXC -> add T=1
         arr = arr[None, ...]
-
-    if arr.ndim != 5:
-        raise ValueError(f"Expected 4D ZYXC or 5D TZYXC, got shape {arr.shape}")
+    elif arr.ndim == 5:  # TZYXC -> no-op
+        pass
+    else:
+        raise ValueError(f"Expected 3D ZYX, 4D ZYXC, or 5D TZYXC, got shape {arr.shape}")
 
     return arr
+
+def _ensure_numpy_tnc(preds: ArrayLike) -> np.ndarray:
+    """
+    Ensures we have a numpy array in TNC:
+      - if input is NC -> add T=1
+      - if input is TNC -> no-op
+    """
+    arr = _ensure_numpy(preds)
+    if arr.ndim == 2:  # NC -> add T=1
+        arr = arr[None, ...]
+    return arr  
 
 
 def _tzyxc_to_tczyx_or_czyx(
@@ -166,6 +225,10 @@ def preds_dict_to_pdf(
     names = list(preds_tc_or_czyx.keys())
     num_types = len(names)
 
+    # One figure reused across all (t, z) pages (max_C x num_types is fixed).
+    fig = Figure(figsize=(5 * num_types, 4 * max_C))
+    axes_grid = fig.subplots(max_C, num_types, squeeze=False)
+
     with PdfPages(out_path) as pdf:
         for t in range(T_ref):
             for z0 in range(0, Z_ref, z_step):
@@ -173,12 +236,9 @@ def preds_dict_to_pdf(
                 if z1 <= z0:
                     continue
 
-                fig, axes_grid = plt.subplots(
-                    max_C,
-                    num_types,
-                    figsize=(5 * num_types, 4 * max_C),
-                    squeeze=False,
-                )
+                for row in range(max_C):
+                    for col in range(num_types):
+                        axes_grid[row, col].cla()
 
                 for col, name in enumerate(names):
                     vol = vols_tzyxc[name]
@@ -188,14 +248,14 @@ def preds_dict_to_pdf(
                             axes_grid[row, col].axis("off")
                         continue
 
-                    mip = block.max(axis=0)  # (Y,X,C)
+                    mip = mip_project(block)  # (Y,X,C)
                     _, _, C = mip.shape
 
                     for c in range(max_C):
                         ax = axes_grid[c, col]
                         if c < C:
                             img = mip[..., c]
-                            img_norm = _normalize_slice(img, pmin=pmin, pmax=pmax)
+                            img_norm = normalize_slice(img, pmin=pmin, pmax=pmax)
                             ax.imshow(img_norm, cmap="gray", interpolation="nearest")
                             ax.set_title(f"{name} | T={t}  Z∈[{z0},{z1})  C={c}")
                             ax.axis("off")
@@ -204,7 +264,6 @@ def preds_dict_to_pdf(
 
                 fig.tight_layout()
                 pdf.savefig(fig)
-                plt.close(fig)
 
 
 def preds_to_pdf(
@@ -239,6 +298,13 @@ def preds_to_pdf(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # One figure reused across all (t, z) pages (C is fixed): clearing axes each
+    # page avoids reallocating a figure per slice.
+    C = vol_tzyxc.shape[-1]
+    fig = Figure(figsize=(18, 7 * C))
+    axes_col = fig.subplots(C, 1, squeeze=False)
+    axes_col = axes_col[:, 0]
+
     with PdfPages(out_path) as pdf:
         for t in range(T):
             for z0 in range(0, Z, z_step):
@@ -249,70 +315,20 @@ def preds_to_pdf(
                     continue
 
                 # Max-intensity projection over z-axis
-                mip = block.max(axis=0)  # (Y, X, C)
-                _, _, C = mip.shape
-
-                # Channels stacked vertically: C rows x 1 column
-                fig, axes_col = plt.subplots(C, 1, figsize=(18, 7 * C), squeeze=False)
-                axes_col = axes_col[:, 0]
+                mip = mip_project(block)  # (Y, X, C)
 
                 for c in range(C):
                     img = mip[..., c]
-                    img_norm = _normalize_slice(img, pmin=pmin, pmax=pmax)
+                    img_norm = normalize_slice(img, pmin=pmin, pmax=pmax)
 
                     ax = axes_col[c]
+                    ax.cla()
                     ax.imshow(img_norm, cmap="gray", interpolation="nearest")
                     ax.set_title(f"T={t}  Z∈[{z0},{z1})  C={c}")
                     ax.axis("off")
 
                 fig.tight_layout()
                 pdf.savefig(fig)
-                plt.close(fig)
-
-
-def _save_tiff_volume(
-    predictions: np.ndarray,
-    axes: Literal["TCZYX", "CZYX"],
-    save_dir: Path,
-    name: str,
-):
-    """
-    Save as TIFF, always TCZYX or CZYX.
-    """
-    if axes not in ("TCZYX", "CZYX"):
-        raise ValueError(f"Unsupported axes for TIFF: {axes!r}")
-
-    save_path = save_dir / f"pred_{name}.tiff"
-    # OME TIFF typically wants float32
-    arr = predictions.astype(np.float32)
-    save_file(save_path, arr, axes=axes)
-
-
-def _save_zarr_volume(
-    predictions: np.ndarray,
-    axes: Literal["TCZYX", "CZYX"],
-    save_dir: Path,
-    name: str,
-    zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
-    zarr_shard_shape: Optional[Tuple[int, ...]] = None,
-):
-    """
-    Save as Zarr, also standardized to TCZYX or CZYX.
-    """
-    if axes not in ("TCZYX", "CZYX"):
-        raise ValueError(f"Unsupported axes for Zarr: {axes!r}")
-
-    save_path = save_dir / f"pred_{name}.zarr"
-    arr = predictions.astype(np.float16)
-
-    save_file(
-        save_path,
-        arr,
-        chunk_shape=zarr_chunk_shape,
-        shard_cube_shape=zarr_shard_shape,
-        input_format=axes,  # axes string encodes layout
-        dtype="float16",
-    )
 
 
 def pca_reduce(
@@ -489,6 +505,11 @@ def patch_cosine_sim_maps(
     return sims_gt.numpy()
 
 
+# ============================================================================
+# Layer 2: Per-plot-type helpers
+# ============================================================================
+
+
 def save_feature_visualizations(
     name: str,
     predictions: Dict[str, ArrayLike],
@@ -575,11 +596,8 @@ def save_feature_visualizations(
             for z in range(0, min(Zg, Zf), z_step_pdf):
 
                 if viz == "patch_cosine":
-                    fig, axes = plt.subplots(
-                        2 * Cg, 1,
-                        figsize=(10, 3 * (2 * Cg)),
-                        squeeze=False,
-                    )
+                    fig = Figure(figsize=(10, 3 * (2 * Cg)))
+                    axes = fig.subplots(2 * Cg, 1, squeeze=False)
                     axes = axes[:, 0]
 
                     # --- cosine sim maps (top) ---
@@ -595,17 +613,14 @@ def save_feature_visualizations(
                     for c in range(Cg):
                         ax = axes[Cg + c]
                         img = gt[t, z, :, :, c]
-                        ax.imshow(_normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
+                        ax.imshow(normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
                         ax.set_title(f"{gt_key} | t={t} z={z} c={c}")
                         ax.axis("off")
 
                 else:
                     # original PCA layout: 1 (rgb) + Cg rows
-                    fig, axes = plt.subplots(
-                        1 + Cg, 1,
-                        figsize=(10, 3 * (1 + Cg)),
-                        squeeze=False,
-                    )
+                    fig = Figure(figsize=(10, 3 * (1 + Cg)))
+                    axes = fig.subplots(1 + Cg, 1, squeeze=False)
                     axes = axes[:, 0]
 
                     ax0 = axes[0]
@@ -617,32 +632,30 @@ def save_feature_visualizations(
                     for c in range(Cg):
                         ax = axes[1 + c]
                         img = gt[t, z, :, :, c]
-                        ax.imshow(_normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
+                        ax.imshow(normalize_slice(img, pmin=pmin, pmax=pmax), cmap="gray", interpolation="nearest")
                         ax.set_title(f"{gt_key} | t={t} z={z} c={c}")
                         ax.axis("off")
 
                 fig.tight_layout()
                 pdf.savefig(fig)
-                plt.close(fig)
 
     print(f"[save_feature_visualizations] wrote {pdf_path}")
 
 
-def save_predictions(
+def save_prediction_plots(
     name: str,
     predictions: ArrayLike | dict[str, ArrayLike],
+    save_tensors: List[str],
     save_dir: Path | str,
-    save_as_volume: bool,
-    save_as_pdf: bool,
     z_step_pdf: int,
-    filetype: Literal["tiff", "zarr"],
     pmin: float = 1.0,
     pmax: float = 99.0,
-    zarr_chunk_shape: Optional[Tuple[int, ...]] = None,
-    zarr_shard_shape: Optional[Tuple[int, ...]] = None,
 ):
     """
-    Central helper for saving predictions.
+    Plotting helper: render predictions as a MIP PDF.
+
+    Volume writing (tiff/zarr) is NOT done here -- it lives in the save path
+    (``inference/saver.py`` -> ``data/io.py``). This helper is plot-only.
 
     Inputs:
       - predictions:
@@ -650,85 +663,46 @@ def save_predictions(
           * dict[name -> TZYXC/ZYXC array].
     Standardization:
       - Each array is converted to TCZYX (if T>1) or CZYX (if T==1).
-      - That same arr+axes is used for TIFF, Zarr, and PDF.
-      - If predictions is a dict:
-          * One PDF with all entries combined (columns = outputs).
-          * Separate volume files per entry, with suffix "_{key}".
+      - That same arr+axes is used for the PDF pages.
+      - If predictions is a dict, one PDF with all entries combined
+        (columns = outputs).
     """
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[save_predictions] Saving predictions for tile {name}...")
+    print(f"[save_prediction_plots] Plotting predictions for tile {name}...")
 
     # Dict case: multi-output
     if isinstance(predictions, dict):
         arr_map: dict[str, np.ndarray] = {}
         axes_map: dict[str, str] = {}
 
-        for key, arr in predictions.items():
+        for key in save_tensors:
+            arr = predictions[key]
             arr_tzyxc = _ensure_numpy_tzyxc(arr)
             arr_tc_or_czyx, axes = _tzyxc_to_tczyx_or_czyx(arr_tzyxc)
             arr_map[key] = arr_tc_or_czyx
             axes_map[key] = axes
 
         # Single PDF with all outputs on the same pages
-        if save_as_pdf:
-            pdf_path = save_dir / f"pred_{name}_MIP.pdf"
-            print(f"[save_predictions] Writing PDF to: {pdf_path}")
-            preds_dict_to_pdf(
-                arr_map,
-                axes_map,
-                out_path=pdf_path,
-                z_step=z_step_pdf,
-                pmin=pmin,
-                pmax=pmax,
-            )
-
-        # Separate volumes per output type
-        if save_as_volume:
-            for key, arr_tc_or_czyx in arr_map.items():
-                subname = f"{name}_{key}"
-                axes = axes_map[key]
-                if filetype == "tiff":
-                    _save_tiff_volume(arr_tc_or_czyx, axes=axes, save_dir=save_dir, name=subname)
-                elif filetype == "zarr":
-                    _save_zarr_volume(
-                        arr_tc_or_czyx,
-                        axes=axes,
-                        save_dir=save_dir,
-                        name=subname,
-                        zarr_chunk_shape=zarr_chunk_shape,
-                        zarr_shard_shape=zarr_shard_shape,
-                    )
-                else:
-                    raise ValueError(f"Unsupported save format: {filetype!r}")
-
+        pdf_path = save_dir / f"pred_{name}_MIP.pdf"
+        print(f"[save_prediction_plots] Writing PDF to: {pdf_path}")
+        preds_dict_to_pdf(
+            arr_map,
+            axes_map,
+            out_path=pdf_path,
+            z_step=z_step_pdf,
+            pmin=pmin,
+            pmax=pmax,
+        )
         return
 
     # Single-array case
     arr_tzyxc = _ensure_numpy_tzyxc(predictions)
     arr_tc_or_czyx, axes = _tzyxc_to_tczyx_or_czyx(arr_tzyxc)
 
-    # PDF pages
-    if save_as_pdf:
-        pdf_path = save_dir / f"pred_{name}_MIP.pdf"
-        preds_to_pdf(arr_tc_or_czyx, axes=axes, out_path=pdf_path, z_step=z_step_pdf)
-
-    # Volume
-    if save_as_volume:
-        if filetype == "tiff":
-            _save_tiff_volume(arr_tc_or_czyx, axes=axes, save_dir=save_dir, name=name)
-        elif filetype == "zarr":
-            _save_zarr_volume(
-                arr_tc_or_czyx,
-                axes=axes,
-                save_dir=save_dir,
-                name=name,
-                zarr_chunk_shape=zarr_chunk_shape,
-                zarr_shard_shape=zarr_shard_shape,
-            )
-        else:
-            raise ValueError(f"Unsupported save format: {filetype!r}")
+    pdf_path = save_dir / f"pred_{name}_MIP.pdf"
+    preds_to_pdf(arr_tc_or_czyx, axes=axes, out_path=pdf_path, z_step=z_step_pdf)
 
 
 def _boxes_in_z_slice(boxes_xyzxyz: np.ndarray, z: int) -> np.ndarray:
@@ -797,6 +771,20 @@ def _region_str(region: Optional[Dict[str, Any]]) -> str:
     return " | " + " ".join(parts)
 
 
+def _instance_cmap(n: int):
+    """Transparent background + one unique color per instance index 1..n."""
+    if n <= 20:
+        cols = colormaps["tab20"](np.linspace(0, 1, max(n, 1)))
+    else:
+        cols = colormaps["hsv"](np.linspace(0, 1, n, endpoint=False))
+    cols = np.vstack([[0, 0, 0, 0], cols])  # label 0 transparent
+    return ListedColormap(cols), BoundaryNorm(np.arange(n + 2) - 0.5, n + 1)
+
+
+def _empty_label_render():
+    return np.zeros((1, 1), np.int32), ListedColormap([[0, 0, 0, 0]]), BoundaryNorm([-0.5, 0.5], 1)
+
+
 def _label_and_cmap_from_instance_masks(masks_nyx: ArrayLike, thr: float = 0.5):
     """
     masks_nyx: (N,Y,X) binary or logits/probs.
@@ -806,7 +794,7 @@ def _label_and_cmap_from_instance_masks(masks_nyx: ArrayLike, thr: float = 0.5):
     """
     m = _ensure_numpy(masks_nyx)
     if m.size == 0:
-        return np.zeros((1, 1), np.int32), ListedColormap([[0, 0, 0, 0]]), BoundaryNorm([-0.5, 0.5], 1)
+        return _empty_label_render()
 
     # binarize if needed
     if m.dtype != np.bool_:
@@ -819,29 +807,100 @@ def _label_and_cmap_from_instance_masks(masks_nyx: ArrayLike, thr: float = 0.5):
     for i in range(N):
         label[m[i]] = i + 1
 
-    # background transparent + unique color per instance
-    if N <= 20:
-        cols = plt.get_cmap("tab20")(np.linspace(0, 1, max(N, 1)))
-    else:
-        cols = plt.get_cmap("hsv")(np.linspace(0, 1, N, endpoint=False))
-
-    cols = np.vstack([[0, 0, 0, 0], cols])  # label 0 transparent
-    cmap = ListedColormap(cols)
-    norm = BoundaryNorm(np.arange(N + 2) - 0.5, N + 1)
+    cmap, norm = _instance_cmap(N)
     return label, cmap, norm
+
+
+def _label_and_cmap_from_label_map(slice_yx: ArrayLike, ids: np.ndarray):
+    """Render one 2D slice of an integer instance label map directly.
+
+    ``ids`` are the volume's sorted non-zero ids (``np.unique``, computed ONCE per
+    volume by the caller) so an instance keeps the same dense index -- hence the
+    same color -- on every slice and ortho plane. ``searchsorted`` instead of a
+    LUT gather: ids can be sparse 64-bit tile-global values, so a max_id-sized
+    LUT is not safe to allocate. Memory O(Y*X + N), never O(N * Y*X).
+
+    Returns the same (label_yx {0..N}, cmap, norm) triple as
+    :func:`_label_and_cmap_from_instance_masks`; because that path also ordered
+    instances by ``np.unique``, the output is bit-identical to the old
+    explode-then-collapse render.
+    """
+    m = _ensure_numpy(slice_yx)
+    if ids.size == 0:
+        return _empty_label_render()
+    pos = np.minimum(np.searchsorted(ids, m), ids.size - 1)
+    label = np.where(ids[pos] == m, pos + 1, 0).astype(np.int32)  # miss (incl. 0) -> bg
+    cmap, norm = _instance_cmap(int(ids.size))
+    return label, cmap, norm
+
+
+def save_bbox_overlay(
+    pred_boxes_xyzxyz: ArrayLike,
+    image: ArrayLike,
+    save_dir: Path | str,
+    identifier: str,
+    *,
+    z_step: int = 10,
+    pmin: float = 1.0,
+    pmax: float = 99.0,
+    background_channel: int = 0,
+) -> None:
+    """
+    Draw predicted boxes (xyzxyz format) on background image slices and save as PDF.
+    Used by bbox_overlay viz handler.
+    """
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    img_tzyxc = _ensure_numpy_tzyxc(image)
+    T, Z, Y, X, C = img_tzyxc.shape
+    if not (0 <= background_channel < C):
+        raise ValueError(f"background_channel={background_channel} out of range for C={C}")
+    boxes = _ensure_numpy(pred_boxes_xyzxyz).reshape(-1, 6).astype(np.float32)
+
+    out_pdf = save_dir / f"{identifier}_bboxes.pdf"
+    with PdfPages(out_pdf) as pdf:
+        for t in range(T):
+            for z in range(0, Z, max(1, z_step)):
+                bg = normalize_slice(
+                    img_tzyxc[t, z, :, :, background_channel],
+                    pmin=pmin,
+                    pmax=pmax,
+                )
+                fig = Figure(figsize=(12, 8))
+                ax = fig.subplots(1, 1)
+                ax.imshow(bg, cmap="gray", interpolation="nearest")
+                ax.set_title(f"Pred boxes | T={t} Z={z}")
+                ax.axis("off")
+                for (x0, y0, z0, x1, y1, z1) in _boxes_in_z_slice(boxes, z=z):
+                    w = max(0.0, float(x1 - x0))
+                    h = max(0.0, float(y1 - y0))
+                    if w > 0 and h > 0:
+                        ax.add_patch(
+                            Rectangle(
+                                (float(x0), float(y0)),
+                                w,
+                                h,
+                                fill=False,
+                                linewidth=1.5,
+                                edgecolor="cyan",
+                            )
+                        )
+                fig.tight_layout()
+                pdf.savefig(fig)
 
 
 def save_instance_predictions(
     save_dir: Path | str,
-    identifiers: Sequence[str],
-    images: Sequence[ArrayLike],
-    preds: Sequence[Dict[str, Any]],
-    targets: Optional[Sequence[Dict[str, Any]]] = None,
-    regions: Optional[Sequence[Dict[str, Any]]] = None,
+    identifier: str,
+    image: ArrayLike,
+    preds: Dict[str, Any],
+    targets: Optional[Dict[str, Any]] = None,
+    region: Optional[Dict[str, Any]] = None,
     pred_boxes_key: str = "boxes",
     pred_masks_key: str = "masks",
     gt_boxes_key: str = "boxes",
     gt_masks_key: str = "masks",
+    kinds: Optional[Dict[str, Optional[str]]] = None,
     pred_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "xyzxyz",
     gt_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "cxcyczwhd",
     z_step: int = 10,
@@ -863,19 +922,22 @@ def save_instance_predictions(
     Drops row 2 if BOTH GT+Pred boxes missing/empty.
     Drops row 3 if BOTH GT+Pred masks missing/empty.
 
+    ``kinds`` (record.kinds, ``{name -> declared OutputKind value}``) selects the
+    pred-mask render path: ``instance_label_map`` preds are the raw integer volume
+    and render natively per slice; anything else is a per-object stack.
+
     Writes: <ident>_instances.pdf
     """
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    n = len(identifiers)
-    if targets is None:
-        targets = [{} for _ in range(n)]
-    if not (len(images) == len(preds) == len(targets) == n):
-        raise ValueError("identifiers/images/preds/targets must have same length")
-
-    if regions is not None and len(regions) != n:
-        raise ValueError("regions must be None or same length as identifiers")
+    # Single record: render over a length-1 batch (keeps the per-(t,z) renderer below).
+    identifiers = [identifier]
+    images = [image]
+    preds = [preds]
+    targets = [targets if targets is not None else {}]
+    regions = None if region is None else [region]
+    n = 1
 
     def _has_nonempty(x: Any) -> bool:
         if x is None:
@@ -919,21 +981,58 @@ def save_instance_predictions(
         # ---- Masks ----
         gt_masks = targets[i].get(gt_masks_key, None)
         pr_masks = preds[i].get(pred_masks_key, None)
+        pred_masks_kind = (kinds or {}).get(pred_masks_key)
 
-        # FIXME: we unsqueeze since downstream plotting logic
-        #       expects (N,T,Z,Y,X) shape, generalize later if needed
+        # TODO: fix this kind of shape juggling
+
+        # GT masks (when the preprocessor materialized them: dense-mask heads,
+        # SAM2) arrive as per-instance (N,Z,Y,X) stacks; unsqueeze the singleton
+        # time axis the per-slice renderer indexes. Labelmap-native heads
+        # (MaskDINO) carry "label_map" instead -> gt_masks stays None, no GT row.
+        # Pred masks are either an already-normalized (N,1,Z,Y,X) stack, or --
+        # for INSTANCE_LABEL_MAP -- the raw integer volume, rendered natively
+        # slice by slice (O(volume) memory, independent of instance count).
         if gt_masks is not None:
             gt_masks = _ensure_numpy(gt_masks)
             if gt_masks.ndim == 4:
                 gt_masks = gt_masks[:, None, ...]  # (N,Z,Y,X) -> (N,1,Z,Y,X)
-        if pr_masks is not None:
+
+        pr_labelmap = None                          # (T,Z,Y,X), label-map-native path
+        pr_ids = np.zeros(0, dtype=np.int64)
+        if pr_masks is not None and pred_masks_kind == OutputKind.INSTANCE_LABEL_MAP.value:
+            vol = _ensure_numpy(pr_masks)
+            if vol.ndim in (4, 5) and vol.shape[-1] == 1:
+                vol = vol[..., 0]                   # drop trailing channel
+            if vol.ndim == 3:
+                vol = vol[None]                     # (Z,Y,X) -> (T=1,Z,Y,X)
+            if vol.ndim != 4:
+                raise ValueError(
+                    f"instance_label_map pred must be (Z,Y,X[,1]) or (T,Z,Y,X[,1]), "
+                    f"got shape {vol.shape}"
+                )
+            pr_labelmap = vol
+            pr_ids = np.unique(vol)                 # ONE pass; reused for every slice
+            pr_ids = pr_ids[pr_ids != 0]
+            pr_masks = None                         # never enters the stack path
+        elif pr_masks is not None:
+            # already canonicalized to (N,1,Z,Y,X) by the record builder.
             pr_masks = _ensure_numpy(pr_masks)
-            if pr_masks.ndim == 4:
-                pr_masks = pr_masks[:, None, ...]  # (N,Z,Y,X) -> (N,1,Z,Y,X)
+
+        # Per-object stacks are (N,1,Z,Y,X) with a SINGLETON axis-1 -- the
+        # renderer indexes that axis with t, which is only correct for T=1.
+        # For multi-timepoint data fail loudly instead of mis-slicing Z as
+        # time (the label-map render path handles real T; use that).
+        for _masks, _side in ((gt_masks, "GT"), (pr_masks, "pred")):
+            if _masks is not None and T > 1 and _masks.shape[1] != T:
+                raise ValueError(
+                    f"{_side} instance stack has axis-1 size {_masks.shape[1]} but the "
+                    f"image has T={T}: (N,1,Z,Y,X) stacks cannot be indexed by time. "
+                    "Use the label-map render path for T>1, or supply (N,T,Z,Y,X) stacks."
+                )
 
         # --- plot ---
         has_boxes_row = _has_nonempty(gt_xyzxyz) or _has_nonempty(pr_xyzxyz)
-        has_masks_row = _has_nonempty(gt_masks) or _has_nonempty(pr_masks)
+        has_masks_row = _has_nonempty(gt_masks) or _has_nonempty(pr_masks) or pr_ids.size > 0
 
         row_kinds: list[str] = ["bg"]
         if has_boxes_row:
@@ -952,11 +1051,11 @@ def save_instance_predictions(
                     x_line = X // 2
 
                     # Precompute ortho background planes for this t (background channel)
-                    bg_xz = _normalize_slice(
+                    bg_xz = normalize_slice(
                         img_tzyxc[t, :, y_line, :, background_channel],  # (Z,X)
                         pmin=pmin, pmax=pmax
                     )
-                    bg_yz = _normalize_slice(
+                    bg_yz = normalize_slice(
                         img_tzyxc[t, :, :, x_line, background_channel].transpose(1, 0),  # (Y,Z)
                         pmin=pmin, pmax=pmax
                     )
@@ -986,13 +1085,14 @@ def save_instance_predictions(
                         fig_w = 12
                         fig_h = 4.8 * nrows
 
-                    fig, ax = plt.subplots(nrows, ncols, figsize=(fig_w, fig_h), squeeze=False)
+                    fig = Figure(figsize=(fig_w, fig_h))
+                    ax = fig.subplots(nrows, ncols, squeeze=False)
 
                     # Page header: ident + crop info
                     fig.suptitle(f"T={t} Z={z}{region_s}", fontsize=12)
 
                     # background slice (XY at this z)
-                    bg = _normalize_slice(
+                    bg = normalize_slice(
                         img_tzyxc[t, z, :, :, background_channel],
                         pmin=pmin,
                         pmax=pmax,
@@ -1103,10 +1203,18 @@ def save_instance_predictions(
                                     a_xy.set_title(f"{'GT' if side==0 else 'Pred'} | Boxes (t={t}, z={z})")
 
                             elif kind == "masks":
+                                use_labelmap = side == 1 and pr_labelmap is not None
                                 masks = gt_masks if side == 0 else pr_masks
-                                if masks is not None and masks.shape[0] > 0:
+                                if use_labelmap or (masks is not None and masks.shape[0] > 0):
                                     # XY @ z
-                                    lab_xy, cmap_xy, norm_xy = _label_and_cmap_from_instance_masks(masks[:, t, z])
+                                    if use_labelmap:
+                                        lab_xy, cmap_xy, norm_xy = _label_and_cmap_from_label_map(
+                                            pr_labelmap[t, z], pr_ids
+                                        )
+                                    else:
+                                        lab_xy, cmap_xy, norm_xy = _label_and_cmap_from_instance_masks(
+                                            masks[:, t, z]
+                                        )
                                     a_xy.imshow(
                                         lab_xy,
                                         cmap=cmap_xy,
@@ -1116,10 +1224,15 @@ def save_instance_predictions(
                                     )
 
                                     if ortho:
-                                        # XZ @ y_line: (N,Z,X)
-                                        lab_xz, cmap_xz, norm_xz = _label_and_cmap_from_instance_masks(
-                                            masks[:, t, :, y_line, :]
-                                        )
+                                        # XZ @ y_line: (Z,X)
+                                        if use_labelmap:
+                                            lab_xz, cmap_xz, norm_xz = _label_and_cmap_from_label_map(
+                                                pr_labelmap[t, :, y_line, :], pr_ids
+                                            )
+                                        else:
+                                            lab_xz, cmap_xz, norm_xz = _label_and_cmap_from_instance_masks(
+                                                masks[:, t, :, y_line, :]
+                                            )
                                         a_xz.imshow(
                                             lab_xz,
                                             cmap=cmap_xz,
@@ -1129,9 +1242,14 @@ def save_instance_predictions(
                                             aspect="auto",
                                         )
 
-                                        # YZ @ x_line: (N,Z,Y) -> (N,Y,Z)
-                                        m_yz = masks[:, t, :, :, x_line].transpose(0, 2, 1)
-                                        lab_yz, cmap_yz, norm_yz = _label_and_cmap_from_instance_masks(m_yz)
+                                        # YZ @ x_line: (Z,Y) -> (Y,Z)
+                                        if use_labelmap:
+                                            lab_yz, cmap_yz, norm_yz = _label_and_cmap_from_label_map(
+                                                pr_labelmap[t, :, :, x_line].transpose(1, 0), pr_ids
+                                            )
+                                        else:
+                                            m_yz = masks[:, t, :, :, x_line].transpose(0, 2, 1)
+                                            lab_yz, cmap_yz, norm_yz = _label_and_cmap_from_instance_masks(m_yz)
                                         a_yz.imshow(
                                             lab_yz,
                                             cmap=cmap_yz,
@@ -1159,6 +1277,192 @@ def save_instance_predictions(
 
                     fig.tight_layout(rect=[0, 0, 1, 0.96])
                     pdf.savefig(fig)
-                    plt.close(fig)
 
         print(f"[save_instance_predictions] wrote {out_pdf}")
+
+
+def visualize_semantic_labels(
+    image: ArrayLike,
+    pred: Dict[str, ArrayLike],
+    target: Dict[str, ArrayLike] | None,
+    out_path: Path | str,
+    *,
+    class_names: Sequence[str] | None = None,
+    z_step: int = 15,
+    pmin: float = 1.0,
+    pmax: float = 99.0,
+    mip_depth: int = 20,
+) -> None:
+    """
+    Visualize semantic segmentation labels with per-class columns, plus a column with merged integer labels.
+
+    Prediction: if pred_is_probabilities is False (default), values are treated as logits
+    and sigmoid is applied; if True, values are already in [0, 1] and only clipped.
+    GT is clipped to [0, 1]. Only the image column uses percentile normalization (raw image data).
+
+    Layout: Image | Pred_class_0 | ... | Pred_class_K | GT_class_0 | ... | GT_class_K | Merged
+
+    Args:
+        image: TZYXC or ZYXC array - real input image
+        pred_semantic: TZYXC or ZYXC with C in {1, num_classes} - per-class predictions (logits or probs)
+        targets: TZYXC/ZYXC with C in {1, num_classes}, or ZYX (class index), or None
+        out_path: Output PDF path
+        class_names: Optional list of class names (length num_classes)
+        z_step: Step size for z-slices
+        pmin: Percentile for image normalization (lower bound)
+        pmax: Percentile for image normalization (upper bound)
+        mip_depth: Depth for max-intensity projection
+    """
+    # Normalize inputs to TZYXC
+    image_tzyxc = _ensure_numpy_tzyxc(image)
+    pred_masks = _ensure_numpy_tzyxc(pred["pred_masks"])
+    pred_labels = _ensure_numpy_tnc(pred["pred_classes"])
+    masks_labelmap = _ensure_numpy_tzyxc(pred["masks_labelmap"])
+    num_classes = pred_labels.shape[-1]
+    
+    T, Z, Y, X, C_img = image_tzyxc.shape
+    T_pred, Z_pred, Y_pred, X_pred, C_pred = pred_masks.shape
+
+    # Validate spatial dimensions match
+    if (T, Z, Y, X) != (T_pred, Z_pred, Y_pred, X_pred):
+        raise ValueError(
+            f"Image and prediction must have same T,Z,Y,X. "
+            f"Got image {(T,Z,Y,X)} vs pred {(T_pred,Z_pred,Y_pred,X_pred)}"
+        )
+
+    # Handle gt_semantic. When there is no target we leave ``gt_masks`` as None
+    # (instead of allocating a full (T,Z,Y,X,C) zero volume just to render blank
+    # panels): the GT columns below simply render empty axes.
+    has_gt = target is not None
+    if has_gt:
+        gt_masks = _ensure_numpy_tzyxc(target["masks"])
+    else:
+        gt_masks = None
+
+    # Prepare class names
+    if class_names is None:
+        class_names = [f"class_{c}" for c in range(num_classes)]
+    elif len(class_names) != num_classes:
+        raise ValueError(
+            f"class_names length {len(class_names)} != num_classes {num_classes}"
+        )
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Layout: Image | Pred_c0 | ... | Pred_cK | GT_c0 | ... | GT_cK | Merged
+    num_cols = 1 + num_classes + num_classes + 1  # add 1 for merged mask labels column
+
+    # One figure reused across all (t, z) pages (num_cols is fixed).
+    fig = Figure(figsize=(5 * num_cols, 5))
+    axes_row = fig.subplots(1, num_cols, squeeze=False)
+    axes_row = axes_row[0, :]
+
+    with PdfPages(out_path) as pdf:
+        for t in range(T):
+            for z0 in range(0, Z, z_step):
+                z1 = min(z0 + mip_depth, Z)
+                if z1 <= z0:
+                    continue
+
+                for ax in axes_row:
+                    ax.cla()
+
+                # Column 0: Image
+                img_block = image_tzyxc[t, z0:z1]  # [z_block, Y, X, C_img]
+                img_mip = img_block.max(axis=0)  # [Y, X, C_img]
+                # Use first channel or mean across channels
+                if C_img == 1:
+                    img_2d = img_mip[..., 0]
+                else:
+                    img_2d = img_mip.mean(axis=-1)
+                img_norm = normalize_slice(img_2d, pmin=pmin, pmax=pmax)
+                axes_row[0].imshow(img_norm, cmap="gray", interpolation="nearest")
+                axes_row[0].set_title(f"Image | T={t}  Z∈[{z0},{z1})")
+                axes_row[0].axis("off")
+
+                # Columns 1 to num_classes: Pred per class (sigmoid already applied; clip to [0,1], no min-max)
+                for c in range(num_classes):
+                    col_idx = 1 + c
+                    pred_block = pred_masks[t, z0:z1, ..., c]  # [z_block, Y, X]
+                    pred_mip = pred_block.max(axis=0)  # [Y, X]
+                    pred_display = np.clip(pred_mip, 0, 1).astype(np.float32)
+                    axes_row[col_idx].imshow(pred_display, cmap="viridis", interpolation="nearest")
+                    axes_row[col_idx].set_title(f"Pred {class_names[c]}")
+                    axes_row[col_idx].axis("off")
+
+                # Columns num_classes+1 to 2*num_classes: GT per class (clip to [0,1], no min-max).
+                # With no target we render empty axes rather than zeros.
+                for c in range(num_classes):
+                    col_idx = 1 + num_classes + c
+                    if has_gt:
+                        gt_block = gt_masks[t, z0:z1, ..., c]  # [z_block, Y, X]
+                        gt_mip = gt_block.max(axis=0)  # [Y, X]
+                        gt_display = np.clip(gt_mip, 0, 1).astype(np.float32)
+                        axes_row[col_idx].imshow(gt_display, cmap="viridis", interpolation="nearest")
+                        axes_row[col_idx].set_title(f"GT {class_names[c]}")
+                    else:
+                        axes_row[col_idx].set_title(f"GT {class_names[c]} (n/a)")
+                    axes_row[col_idx].axis("off")
+
+                # New final column: merged integer labels using mask2former.py logic
+                # For pred_masks: 
+                # get mask_labels by taking argmax over channels (last axis) plus 1, times a foreground mask
+                # Ensure all ops are NumPy, not potentially torch
+                pred_block = np.asarray(masks_labelmap[t, z0:z1, ...])  # [z_block, Y, X]
+                # Center slice, NOT a max-projection
+                mask_labels = pred_block[pred_block.shape[0] // 2]  # [Y, X]
+
+                axes_row[-1].imshow(mask_labels, cmap="tab20", interpolation="nearest")  # Discrete color map
+                axes_row[-1].set_title(f"Masks labelmap: class labels {pred_labels[t]}")
+                axes_row[-1].axis("off")
+       
+
+                fig.tight_layout()
+                pdf.savefig(fig)
+
+
+def save_semantic_predictions(
+    name: str,
+    preds: Dict[str, ArrayLike],
+    image: ArrayLike,
+    save_dir: Path | str,
+    z_step_pdf: int,
+    targets: Dict[str, ArrayLike] | None = None,
+    pmin: float = 1.0,
+    pmax: float = 99.0,
+    mip_depth: int = 20,
+    class_names: Sequence[str] | None = None,
+) -> None:
+    """Plot one sample's semantic-segmentation prediction as a MIP PDF.
+
+    Volume writing lives in the save path (``inference/saver.py`` -> ``data/io.py``);
+    this helper is plot-only.
+
+    Args:
+        name: identifier for this prediction (drives output filenames).
+        preds: prediction dict for this sample (e.g. ``{"pred_masks": [Z,Y,X,C]/[T,Z,Y,X,C]}``).
+        image: input image ``[Z,Y,X,C]`` or ``[T,Z,Y,X,C]``.
+        targets: this sample's target dict, or None.
+        (remaining args: z_step_pdf, pmin/pmax, mip_depth, class_names.)
+    """
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    image = _ensure_numpy(image)
+    preds = {k: _ensure_numpy(v) for k, v in preds.items()}
+    if targets is not None:
+        targets = {k: _ensure_numpy(v) for k, v in targets.items()}
+
+    # pred is already probabilities from the reducer
+    visualize_semantic_labels(
+        image=image,
+        pred=preds,
+        target=targets,
+        out_path=save_dir / f"pred_{name}_semantic_MIP.pdf",
+        class_names=class_names,
+        z_step=z_step_pdf,
+        pmin=pmin,
+        pmax=pmax,
+        mip_depth=mip_depth,
+    )

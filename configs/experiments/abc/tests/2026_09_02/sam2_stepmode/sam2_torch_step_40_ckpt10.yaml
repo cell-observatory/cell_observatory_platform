@@ -1,0 +1,23 @@
+# @package _global_
+# Step mode, S2: a step budget that is not a multiple of the epoch (40 steps
+# over 16-step epochs). Expect: epochs 0 and 1 run in full, epoch 2 stops after
+# 8 steps at step 40; checkpoints at 10/20/30/40 (keep_latest_k 3 keeps 20/30/40;
+# 40 is also the last-step save, never saved twice); cosine horizon 40 steps
+# with no jump at the epoch boundaries. Also the resume source for S3.
+defaults:
+  - /experiments/abc/tests/2026_09_01/sam2/base_sam2_torch
+  - _self_
+
+experiment_name: sam2_abc_torch_step_40_ckpt10
+
+datasets:
+  max_rows: 128
+  row_sample_seed: 42
+
+trainer_loop:
+  iteration_mode: step
+  max_steps: 40
+  val_every_n_steps: null
+  checkpoint_save_period: 10
+  checkpoint_every_n_epochs: null
+  with_perf_metrics: false

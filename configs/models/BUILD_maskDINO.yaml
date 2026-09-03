@@ -1,2 +1,0 @@
-# build method for model
-BUILD: cell_observatory_platform.models.meta_arch.maskdino.BUILD

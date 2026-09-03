@@ -1,0 +1,26 @@
+# @package _global_
+# Stage 0c K2: capacity point after the cudnn fix. bs 1 = 108 GiB (F2) -> bs 2 predicted ~76 % HBM. 200 steps,
+# all timers + phase timers. OOM -> K2b at bs 1 is already measured (F2); pass -> bs 3 only if < 60 %.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: K2_c512_bs2_mm48
+
+clusters:
+  batch_size: 16              # 2 per GPU
+
+trainer_loop:
+  with_perf_metrics: true
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: torch_memory_stats
+    step_period: 10
+    epoch_period: 1
+    logdir: ${loggers.logdir}

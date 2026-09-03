@@ -1,0 +1,23 @@
+# @package _global_
+# Stage 0a B1_compile_crop: compile on the tile-crop max point
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/shapes/crop_128x384x512
+  - _self_
+
+experiment_name: B1_compile_crop
+
+clusters:
+  batch_size: 8               # TODO(A4): 8 x BS_CROP
+
+datasets:
+  preprocessor:
+    max_masks: 100
+
+trainer_loop:
+  max_steps: 200            # steady state = steps 50-200
+
+optimizations:
+  models:
+    sam:
+      torch_compile:
+        enable: true

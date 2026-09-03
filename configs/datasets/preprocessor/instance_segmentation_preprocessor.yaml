@@ -1,10 +1,10 @@
-_target_: cell_observatory_platform.models.layers.preprocessor.InstanceSegmentationPreprocessor
+name: instance_segmentation
 
 with_masking: false
 mask_generator: null
 dtype: ${quantization}
 
-# transforms_list:
+transforms_list: []
 #   # 1) Resize to Z=128, Y=256, X=512
 #   - _target_: cell_observatory_platform.data.transforms.resize.Resize
 #     input_format: ${dataset_layout_order}          # e.g. "ZYXC"
@@ -24,7 +24,6 @@ dtype: ${quantization}
 patch_shape: ${datasets.patch_shape}
 input_format: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
-mask_channel_idx: ${datasets.mask_channel_idx}
 
 seed: ${seed}
 
@@ -33,3 +32,11 @@ bbox_output_format: cxcyczwhd
 
 # debug_savepath: null
 require_targets: true #${datasets.collate_fn.require_targets}
+
+# When true, the preprocessor materializes per-instance binary masks
+# (targets[b]["masks"]) on-device from the integer label_map. Leave false
+# for labelmap-native heads (MaskDINO reads targets[b]["label_map"]) and for
+# PlainDETR (no mask loss). Only set true for a head whose matcher/loss reads
+# dense targets[b]["masks"] and is wired to THIS preprocessor. (Mask2Former
+# training uses the semantic-segmentation preprocessor, not this one.)
+materialize_binary_masks: false

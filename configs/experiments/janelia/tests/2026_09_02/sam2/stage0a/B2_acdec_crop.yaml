@@ -1,0 +1,19 @@
+# @package _global_
+# Stage 0a B2_acdec_crop: decoder act-ckpt on the tile-crop max point (mask-count term)
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/shapes/crop_128x384x512
+  - _self_
+
+experiment_name: B2_acdec_crop
+
+clusters:
+  batch_size: 8               # TODO(A4): 8 x BS_CROP
+
+datasets:
+  preprocessor:
+    max_masks: 100
+
+models:
+  meta_arch:
+    sam:
+      use_act_ckpt_iterative_pt_sampling: true   # act-ckpt inside the decoder correction loop

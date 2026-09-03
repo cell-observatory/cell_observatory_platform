@@ -31,9 +31,8 @@ class MaskData:
 
     def __init__(self, **kwargs) -> None:
         for v in kwargs.values():
-            assert isinstance(
-                v, (list, np.ndarray, torch.Tensor)
-            ), "MaskData only supports list, numpy arrays, and torch tensors."
+            if not isinstance(v, (list, np.ndarray, torch.Tensor)):  # survives python -O
+                raise TypeError("MaskData only supports list, numpy arrays, and torch tensors.")
         self._stats = dict(**kwargs)
 
     def to_cpu(self) -> None:
@@ -44,9 +43,8 @@ class MaskData:
                 self._stats[k] = v.detach().cpu()
 
     def __setitem__(self, key: str, item: Any) -> None:
-        assert isinstance(
-            item, (list, np.ndarray, torch.Tensor)
-        ), "MaskData only supports list, numpy arrays, and torch tensors."
+        if not isinstance(item, (list, np.ndarray, torch.Tensor)):  # survives python -O
+            raise TypeError("MaskData only supports list, numpy arrays, and torch tensors.")
         self._stats[key] = item
 
     def __delitem__(self, key: str) -> None:
@@ -160,6 +158,17 @@ def generate_crop_boxes_3d(
         crop_y = _crop_len(vol_y, n_crops_per_side, overlap)
         crop_z = _crop_len(vol_z, n_crops_per_side, overlap)
 
+        # Guard degenerate strides: overlap derives from the SHORT side but is
+        # applied to every axis, so a long-thin volume (or deep layer) can give
+        # crop_len - overlap <= 0 -> all starts collapse to 0 -> duplicate crops.
+        for axis, crop_len in (("x", crop_x), ("y", crop_y), ("z", crop_z)):
+            if crop_len - overlap <= 0:
+                raise ValueError(
+                    f"generate_crop_boxes_3d: overlap {overlap} >= crop length "
+                    f"{crop_len} on axis {axis} at layer {i_layer + 1} -- stride "
+                    "would be non-positive (duplicate crops). Reduce overlap_ratio "
+                    "or crop_n_layers for this volume shape."
+                )
         starts_x = [int((crop_x - overlap) * i) for i in range(n_crops_per_side)]
         starts_y = [int((crop_y - overlap) * i) for i in range(n_crops_per_side)]
         starts_z = [int((crop_z - overlap) * i) for i in range(n_crops_per_side)]
@@ -200,9 +209,11 @@ def calculate_stability_score_3d(
 # ---------------------------------------------------------------------------
 
 def batch_iterator(batch_size: int, *args) -> Generator[List[Any], None, None]:
-    assert len(args) > 0 and all(
-        len(a) == len(args[0]) for a in args
-    ), "Batched iteration must have inputs of all the same size."
+    # Load-bearing (survives python -O): per-object arrays are zipped by
+    # position downstream -- a length mismatch would silently misalign masks
+    # with their scores/points instead of failing.
+    if len(args) == 0 or any(len(a) != len(args[0]) for a in args):
+        raise ValueError("Batched iteration must have inputs of all the same size.")
     n = len(args[0])
     n_batches = (n + batch_size - 1) // batch_size
     for b in range(n_batches):
@@ -229,9 +240,12 @@ def remove_small_regions_3d(
     """
     import cc3d
 
-    assert mode in ("holes", "islands"), f"Mode {mode} not supported"
+    if mode not in ("holes", "islands"):  # survives python -O
+        raise ValueError(f"Mode {mode} not supported")
     correct_holes = mode == "holes"
-    working_mask = (correct_holes ^ mask).astype(np.uint8)
+    # Binarize BEFORE the XOR: on a uint8 {0,255} mask, `True ^ 255` is 254
+    # (bitwise, still truthy), so holes mode would see no background at all.
+    working_mask = (correct_holes ^ mask.astype(bool)).astype(np.uint8)
 
     labels, n_labels = cc3d.connected_components(working_mask, connectivity=26, return_N=True)
     if n_labels == 0:
@@ -255,21 +269,85 @@ def remove_small_regions_3d(
 
 def postprocess_sam_preds(
     preds: Dict[str, Any],
-    data_tensor: torch.Tensor,
-) -> Tuple[List[Dict[str, Any]], torch.Tensor]:
-    p = dict(preds)
+) -> Dict[str, Any]:
+    """Normalize SAM2 AMG ``predict()`` outputs for the inference save/viz path.
+
+    Returns a ``dict[str, Tensor]`` (NOT a list) so it matches the inferencer's
+    ``model.predict() -> dict`` contract. ``masks`` are reshaped to a leading
+    (object, channel, ...) layout and a fused ``instance_masks`` label volume is
+    added. 
+    """
+    # Coerce array-like outputs to torch tensors so they satisfy the inferencer
+    # save/viz path (dtype cast via .to(), host pinned-copy). SAM2.predict runs
+    # MaskData.to_numpy(), so values arrive as ndarrays here.
+    p: Dict[str, Any] = {}
+    for key, value in preds.items():
+        if isinstance(value, np.ndarray):
+            p[key] = torch.from_numpy(value)
+        else:
+            p[key] = value
+
     m = p.get("masks")
     if m is not None:
-        if isinstance(m, torch.Tensor):
-            m = m.float().detach().cpu().numpy()
-        elif not isinstance(m, np.ndarray):
-            m = np.asarray(m)
+        if not isinstance(m, torch.Tensor):
+            m = torch.as_tensor(np.asarray(m))
+        m = m.float()
+        # (N, Z, Y, X, 1) ZYXC -- the instance_stack contract declared in SAM2's
+        # output_metadata. 
         if m.ndim == 3:
-            p["masks"] = m[None, None, ...]
+            m = m[None, ..., None]
         elif m.ndim == 4:
-            p["masks"] = m[:, None, ...]
+            m = m[..., None]
+        p["masks"] = m
 
-    if data_tensor.dim() == 5:
-        data_tensor = data_tensor.permute(0, 2, 3, 4, 1)
+        # Fused instance label map for the dense save path. The per-object
+        # ``masks`` (N, 1, Z, Y, X) do not fit the batch-oriented save/buffer
+        # contract (N is a dynamic object count, not a batch axis), so collapse
+        # them into a single fixed-shape (1, Z, Y, X, 1) integer label volume
+        # (leading B=1, trailing C=1, ZYXC) where each voxel holds an object id
+        # in [1, N] (0 = background). Objects are painted in ascending score
+        # order so the highest-scoring object wins any overlap.
+        p["instance_masks"] = _fuse_masks_to_label_map(m, p)
 
-    return [p], data_tensor
+    return p
+
+
+def _fuse_masks_to_label_map(
+    masks: torch.Tensor,
+    preds: Dict[str, Any],
+) -> torch.Tensor:
+    """Collapse ``(N, Z, Y, X, 1)`` per-object masks into ``(1, Z, Y, X, 1)`` labels.
+
+    Object ids are assigned in ``[1, N]`` (0 = background). Objects are painted
+    in ascending score order (``stability_score`` if present, else ``iou_preds``,
+    else input order), so the highest-scoring object wins voxels claimed by more
+    than one mask. Returns a ``uint16`` tensor (object counts can exceed 255).
+    """
+    n = masks.shape[0]
+    if n > 65535:  # survives python -O (silent uint16 id wrapping otherwise)
+        raise ValueError(
+            f"_fuse_masks_to_label_map: object count {n} exceeds uint16 max (65535). "
+            "The fused instance_masks label map uses uint16 dtype; more than 65535 "
+            "objects would cause id wrapping."
+        )
+    z, y, x = masks.shape[1:4]
+    label_map = torch.zeros((z, y, x), dtype=torch.int32)
+
+    if n > 0:
+        binary = masks[..., 0] > 0.5  # (N, Z, Y, X, 1) -> (N, Z, Y, X) bool
+
+        scores = preds.get("stability_score")
+        if scores is None:
+            scores = preds.get("iou_preds")
+        if scores is not None and not isinstance(scores, torch.Tensor):
+            scores = torch.as_tensor(np.asarray(scores))
+        if scores is not None and scores.numel() == n:
+            order = torch.argsort(scores.flatten().float())  # ascending
+        else:
+            order = torch.arange(n)
+
+        for obj_id, idx in enumerate(order.tolist(), start=1):
+            label_map[binary[idx]] = obj_id
+
+    # (Z, Y, X) -> (1, Z, Y, X, 1): leading B=1, trailing C=1 (ZYXC).
+    return label_map.to(torch.uint16)[None, ..., None]

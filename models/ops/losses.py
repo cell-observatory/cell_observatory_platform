@@ -219,8 +219,7 @@ def calculate_uncertainty(logits):
             the most uncertain locations having the highest uncertainty score.
     """
     assert logits.shape[1] == 1
-    gt_class_logits = logits.clone()
-    return -(torch.abs(gt_class_logits))
+    return -(torch.abs(logits))
 
 
 def unsupervised_mse_loss(

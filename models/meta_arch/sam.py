@@ -11,12 +11,16 @@ from typing import Any, Dict, List, Mapping, Optional, Literal, Tuple
 import numpy as np
 
 import torch
+from cell_observatory_platform.training.phase_timer import PhaseTimer
 import torch.distributed
 import torch.nn.functional as F
 
 from hydra.utils import get_method
+from omegaconf import DictConfig
 from torch.nn.init import trunc_normal_
 
+from cell_observatory_platform.utils.shape_format import get_spatial_shape
+from cell_observatory_platform.models.meta_arch import utils as mo
 from cell_observatory_platform.models.layers.mlp import MLP
 from cell_observatory_platform.models.heads.sam_head import MaskDecoder
 from cell_observatory_platform.models.layers.activation import get_activation
@@ -25,12 +29,12 @@ from cell_observatory_platform.models.layers.prompt_encoders import PromptEncode
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
 from cell_observatory_platform.models.layers.attention import MemoryAttention, RopeAttention
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
+from cell_observatory_platform.models.ops.pooling import any_pool3d
 from cell_observatory_platform.models.layers.utils import (
     select_closest_cond_frames,
-    sample_random_points_from_errors,
-    sample_one_point_from_error_center,
     get_next_point,
     sample_box_points,
+    sample_box_points_from_boxes,
     concat_points
 )
 from cell_observatory_platform.data.structures import (
@@ -48,11 +52,27 @@ from cell_observatory_platform.inference.amg import (
     build_all_layer_point_grids_3d,
     calculate_stability_score_3d,
     generate_crop_boxes_3d,
+    postprocess_sam_preds,
     remove_small_regions_3d,
 )
 
 # a large negative value as a placeholder score for missing objects
 NO_OBJ_SCORE = -1024.0
+
+
+def low_res_cells_to_voxels(cells: torch.Tensor, stride: int) -> torch.Tensor:
+    """Map stride-``s`` cell coordinates to full-res voxel coordinates.
+
+    ``cells`` are (x, y, z) indices on the low-res (stride-``s``) grid, as
+    returned by :func:`get_next_point` when it is fed the max-pooled GT. The
+    click must be expressed in FULL-RES voxel coordinates for the prompt
+    encoder, so we take a uniformly random voxel inside the selected cell:
+    ``voxel = cell * s + U{0, ..., s-1}``. Sampling inside the cell (instead of
+    always its corner) keeps the click distribution unbiased within the cell,
+    which is the resolution the mask stream is supervised at anyway.
+    """
+    jitter = torch.randint(0, stride, cells.shape, device=cells.device)
+    return cells * stride + jitter.to(cells.dtype)
 
 
 class SAM2Base(torch.nn.Module):
@@ -147,6 +167,13 @@ class SAM2Base(torch.nn.Module):
         if self.input_fmt == "TZYXC":
             t, z, y, x, c = token_shape
             self.token_shape = [z, y, x]
+            # Per-axis token->voxel strides (full-volume shape / full-volume token
+            # grid). Crop-mode inputs encode crop-sized grids, so spatial frames
+            # are derived from the features in hand × these strides, never from
+            # self.input_shape directly.
+            self.token_strides = tuple(
+                s // t_ for s, t_ in zip(self.input_shape[1:4], self.token_shape)
+            )
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
@@ -227,7 +254,10 @@ class SAM2Base(torch.nn.Module):
         if self.fixed_no_obj_ptr:
             assert self.pred_obj_scores, "pred_obj_scores must be True when fixed_no_obj_ptr is True"
             assert self.use_obj_ptrs_in_encoder, "use_obj_ptrs_in_encoder must be True when fixed_no_obj_ptr is True"
-        if self.pred_obj_scores and self.use_obj_ptrs_in_encoder:
+        if self.pred_obj_scores:
+            # `no_obj_ptr` is consumed in `_forward_sam_heads` whenever
+            # `pred_obj_scores=True`, independent of `use_obj_ptrs_in_encoder`,
+            # so it must be created on the same condition.
             self.no_obj_ptr = torch.nn.Parameter(torch.zeros(1, self.hidden_dim))
             trunc_normal_(self.no_obj_ptr, std=0.02)
         self.use_mlp_for_obj_ptr_proj = use_mlp_for_obj_ptr_proj
@@ -263,6 +293,12 @@ class SAM2Base(torch.nn.Module):
         # disable memory encoder
         self.disable_memory_encoder = disable_memory_encoder
 
+        # Run the training correction loop entirely on the stride-4 mask
+        # stream (no full-res upsample, error sampling against max-pooled GT).
+        # SAM2.__init__ overrides this; SAM2Base keeps today's behaviour so any
+        # other subclass is unaffected.
+        self.correction_on_low_res = False
+
     @property
     def device(self):
         return next(self.parameters()).device
@@ -275,6 +311,7 @@ class SAM2Base(torch.nn.Module):
     def _init_model_weights(self, buffer_device: str | None = None):
         raise NotImplementedError
 
+    @PhaseTimer.timed("sam_heads")
     def _forward_sam_heads(
         self,
         backbone_features,
@@ -282,6 +319,7 @@ class SAM2Base(torch.nn.Module):
         mask_inputs=None,
         high_res_features=None,
         multimask_output=False,
+        with_high_res=True,
     ):
         """
         Forward SAM prompt encoders and mask heads.
@@ -325,9 +363,14 @@ class SAM2Base(torch.nn.Module):
         B = backbone_features.size(0)
         device = backbone_features.device
         if self.input_fmt == "TZYXC":
-            D, H, W = self.token_shape
+            # Derive the token grid from the features actually in hand: crop-mode
+            # inputs encode crop-sized grids, so asserting equality with the
+            # full-volume self.token_shape would reject valid crops.
+            # NOTE: PromptEncoder / MaskDownSampler / MaskDecoder.output_upscaling
+            # still size internal grids from the full-volume config — that rework
+            # is deferred until SAM runs with mask prompts or anisotropic patches.
+            D, H, W = backbone_features.shape[2:]
             assert backbone_features.size(1) == self.sam_prompt_embed_dim
-            assert backbone_features.size(2) == D and backbone_features.size(3) == H and backbone_features.size(4) == W
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
@@ -400,13 +443,20 @@ class SAM2Base(torch.nn.Module):
                 raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
         if self.input_fmt == "TZYXC":
-            high_res_multimasks = F.interpolate(
-                low_res_multimasks,
-                # TODO: less restrictive to upsample based on real image size
-                size=tuple(self.input_shape[1:4]),
-                mode="trilinear",
-                align_corners=False,
-            )
+            if with_high_res:
+                with PhaseTimer.phase("high_res_upsample"):
+                    high_res_multimasks = F.interpolate(
+                        low_res_multimasks,
+                        # High-res frame follows the token grid in hand (crop-sized
+                        # for crop-mode), not the full-volume config shape.
+                        size=tuple(t_ * s for t_, s in zip((D, H, W), self.token_strides)),
+                        mode="trilinear",
+                        align_corners=False,
+                    )
+            else:
+                # AMG filters on low-res proxies and upsamples survivors itself
+                # — materializing P×M full volumes here would be pure waste.
+                high_res_multimasks = None
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
@@ -416,7 +466,10 @@ class SAM2Base(torch.nn.Module):
             best_iou_inds = torch.argmax(ious, dim=-1)
             batch_inds = torch.arange(B, device=device)
             low_res_masks = low_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
-            high_res_masks = high_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
+            high_res_masks = (
+                high_res_multimasks[batch_inds, best_iou_inds].unsqueeze(1)
+                if high_res_multimasks is not None else None
+            )
             if sam_output_tokens.size(1) > 1:
                 sam_output_token = sam_output_tokens[batch_inds, best_iou_inds]
         else:
@@ -504,6 +557,7 @@ class SAM2Base(torch.nn.Module):
             object_score_logits,
         )
 
+    @PhaseTimer.timed("backbone")
     def forward_image(self, data_sample):
         """Get the image feature on the input batch."""
         backbone_out = self.image_encoder(data_sample)
@@ -858,6 +912,10 @@ class SAM2Base(torch.nn.Module):
                 mask_inputs=mask_inputs,
                 high_res_features=high_res_features,
                 multimask_output=multimask_output,
+                # With correction_on_low_res the whole training step lives on
+                # the stride-4 stream, so the full-res trilinear upsample (and
+                # its backward, and the retained full-res tensors) never happen.
+                with_high_res=not (self.correction_on_low_res and self.training),
             )
 
         return current_out, sam_outputs, high_res_features, pix_feat
@@ -873,6 +931,11 @@ class SAM2Base(torch.nn.Module):
         current_out,
     ):
         if run_mem_encoder and self.num_maskmem > 0:
+            assert high_res_masks is not None, (
+                "the memory encoder consumes the FULL-RES mask stream, which "
+                "correction_on_low_res=True does not produce; use it only with "
+                "num_maskmem=0 (single-frame training) or run_mem_encoder=False."
+            )
             high_res_masks_for_mem_enc = high_res_masks
             maskmem_features, maskmem_pos_enc = self._encode_new_memory(
                 current_vision_feats=current_vision_feats,
@@ -988,6 +1051,19 @@ class SAM2Base(torch.nn.Module):
         return pred_masks
 
 
+def _channel_ids_per_frame(data_sample: dict) -> Optional[torch.Tensor]:
+    """``metainfo["channel_ids"]`` expanded from per-video ``[B, C, 2]`` to the
+    flat frame batch ``[B*T, C, 2]`` (frame order ``b*T + t``), or ``None``."""
+    ids = (data_sample.get("metainfo") or {}).get("channel_ids")
+    if ids is None:
+        return None
+    x = data_sample["data_tensor"]
+    n_frames = int(x.shape[0]) * int(x.shape[1]) if x.dim() == 6 else int(x.shape[0])
+    if int(ids.shape[0]) != n_frames:
+        ids = ids.repeat_interleave(n_frames // int(ids.shape[0]), dim=0)
+    return ids
+
+
 class SAM2(SAM2Base):
     def __init__(
         self,
@@ -1050,8 +1126,14 @@ class SAM2(SAM2Base):
         use_m2m: bool = False,
         multimask_output_for_predict: bool = True,
         min_mask_region_area: int = 0,
+        # Keep the training correction loop on the stride-4 mask stream.
+        # Clicks land on a stride-4 cell (jittered uniformly inside it) and the
+        # IoU target is quantized to stride-4 cells; both are the resolution the
+        # mask stream is supervised at. Default False = today's behaviour.
+        correction_on_low_res: bool = False,
         debug: bool = False,
         buffer_device: str = "cuda",
+        output_metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         super().__init__(
@@ -1066,8 +1148,47 @@ class SAM2(SAM2Base):
 
         self.debug = debug
 
+        # Output metadata for AMG (unprompted, class-agnostic) volume inference.
+        # inference_step also returns auxiliary tensors (stability_score, points)
+        # that are not declared here; undeclared keys are simply not saved.
+        spatial_shape = get_spatial_shape(self.input_shape, self.input_fmt)
+        self.spatial_shape = spatial_shape
+        # Inference contract (see meta_arch/utils.py). The SAVEABLE artifact is the
+        # fused instance label map (fixed shape). AMG produces a DYNAMIC object count
+        # N, so the per-object mask stack, boxes, and iou_preds are host-side, never
+        # SHM (dynamic-N rule): they are declared with N=None.
+        self.output_metadata = mo.output_metadata(
+            instance_masks = mo.instance_label_map(spatial_shape),  # (Z,Y,X,1) uint16 — fused, saved
+            masks          = mo.instance_stack(None, spatial_shape),  # (N,Z,Y,X,1) — viz, host-side
+            boxes          = mo.boxes(None),                        # (N,6) variable, host-side
+            iou_preds      = mo.scores(None),                       # (N,) variable, host-side
+        )
+        if output_metadata is not None:
+            self.output_metadata.merge_with(output_metadata)
+
         self.use_act_ckpt_iterative_pt_sampling = use_act_ckpt_iterative_pt_sampling
         self.forward_backbone_per_frame_for_eval = forward_backbone_per_frame_for_eval
+
+        # `correction_on_low_res` is a COUPLED pair: with no full-res stream in training the
+        # criterion cannot read `multistep_pred_multimasks_high_res`, so
+        #   * focal/dice must already be on the low-res stream
+        #     (`criterion_args.low_res_multimasks=True`), and
+        #   * the IoU target must be the max-pooled GT
+        #     (`criterion_args.iou_on_low_res`), which we SET here so a config
+        #     cannot half-enable the feature.
+        self.correction_on_low_res = correction_on_low_res
+        if correction_on_low_res:
+            assert getattr(self.criterion, "low_res_multimasks", False), (
+                "correction_on_low_res=True requires "
+                "criterion_args.low_res_multimasks=True: training produces no "
+                "full-res mask stream for focal/dice to read."
+            )
+            if not getattr(self.criterion, "iou_on_low_res", False):
+                logging.info(
+                    "correction_on_low_res=True: forcing criterion.iou_on_low_res=True "
+                    "(the full-res IoU stream does not exist in training)."
+                )
+                self.criterion.iou_on_low_res = True
 
         # Point sampler and conditioning frames
         self.prob_to_use_pt_input_for_train = prob_to_use_pt_input_for_train
@@ -1159,7 +1280,30 @@ class SAM2(SAM2Base):
             {"params": no_decay, "weight_decay": 0.0},
         ]
 
+    @staticmethod
+    def _to_model_layout(images: torch.Tensor) -> torch.Tensor:
+        """(B, T, Z, Y, X, C) -> (B*T, C, Z, Y, X), row index ``b*T + t``.
+
+        The platform hands every model channels-last; the ported SAM2 backbone wants
+        torch conv layout. Convert here, at the model's own edge, so ``data_tensor``
+        has exactly one layout everywhere outside a model.
+
+        Permuting only the channel axis leaves B and T outermost with their original
+        strides, so ``flatten(0, 1)`` merges them as a VIEW -- no copy of the image
+        batch. Row order matches ``img_ids`` (flat_id = b*T + t) and ``labelmaps``;
+        they must agree or forward_tracking's ``x[:, img_ids]`` gathers the wrong
+        frames whenever B > 1 and T > 1.
+        """
+        return images.permute(0, 1, 5, 2, 3, 4).flatten(0, 1)
+
     def forward(self, data_sample: dict):
+        # Shallow copy: metainfo and every target tensor stay shared by reference;
+        # only the data_tensor binding is replaced with the model-layout view. The
+        # backbone reads data_sample["data_tensor"], so it has to travel as a dict.
+        data_sample = {
+            **data_sample,
+            "data_tensor": self._to_model_layout(data_sample["data_tensor"]),
+        }
         if self.training or not self.forward_backbone_per_frame_for_eval:
             # precompute image features on all frames before tracking
             backbone_out = self.forward_image(data_sample)
@@ -1168,8 +1312,13 @@ class SAM2(SAM2Base):
             backbone_out = {"backbone_fpn": None, "vision_pos_enc": None}
         backbone_out = self.prepare_prompt_inputs(backbone_out, data_sample)
         previous_stages_out = self.forward_tracking(backbone_out, data_sample)
-        gt_masks = torch.stack(data_sample["metainfo"]["targets"]["masks"]) 
-        loss = self.criterion(previous_stages_out, gt_masks)
+        # Pass the structured target view (labelmaps, instance_ids, valid,
+        # presence_t, boxes, masks, ...) directly to the criterion, which
+        # consumes the materialized dense `masks` plus `valid`/`presence_t`
+        # gates (single dense path).
+        target_view = data_sample["metainfo"]["sam2_views"]
+        with PhaseTimer.phase("loss"):
+            loss = self.criterion(previous_stages_out, target_view)
         return loss, previous_stages_out
 
     def _prepare_backbone_features_per_frame(self, data_sample, img_ids):
@@ -1184,7 +1333,11 @@ class SAM2(SAM2Base):
         # Compute the image features on those unique image ids
         # image = img_batch[unique_img_ids]
         image = data_sample["data_tensor"][unique_img_ids]
-        backbone_out = self.forward_image({"data_tensor": image})
+        frame_ids = _channel_ids_per_frame(data_sample)
+        backbone_out = self.forward_image({
+            "data_tensor": image,
+            "metainfo": {"channel_ids": None if frame_ids is None else frame_ids[unique_img_ids]},
+        })
         (
             _,
             vision_feats,
@@ -1205,21 +1358,36 @@ class SAM2(SAM2Base):
         Prepare input mask, point or box prompts. Optionally, we allow tracking from
         a custom `start_frame_idx` to the end of the video (for evaluation purposes).
         """
-        # Load the ground-truth masks on all frames (so that we can later
-        # sample correction points from them)
-        # gt_masks_per_frame = {
-        #     stage_id: targets.segments.unsqueeze(1)  # [B, 1, H_im, W_im]
-        #     for stage_id, targets in enumerate(input.find_targets)
-        # }
-        data_views = data_sample["metainfo"]["targets"]
+        data_views = data_sample["metainfo"]["sam2_views"]
 
-        # Per-frame GT masks from the preprocessor's SAM2 view
-        # sam2["masks"][t] is (N_obj, Z, Y, X) bool
+        # Per-frame GT masks for correction-point sampling. The preprocessor
+        # always materializes the K=max_masks binary-mask subset on-device, so
+        # we consume it directly (no labelmap rebuild here). Each entry is the
+        # per-frame `[N_obj, Z, Y, X]` tensor lifted to `[N_obj, 1, Z, Y, X]`.
         gt_masks_per_frame = {
             t: m.unsqueeze(1)          # -> (N_obj, 1, Z, Y, X)
             for t, m in enumerate(data_views["masks"])
         }
         backbone_out["gt_masks_per_frame"] = gt_masks_per_frame
+
+        # The stride-4 GT used by the correction sampler. A cell is
+        # foreground iff ANY voxel in it is (an OR over the 4^3 block), which
+        # is exactly the error region the low-res prediction is compared against.
+        # Built once per step per frame, only when the flag is on and training.
+        # `any_pool3d` is the max-pool reduction done in bool space: the
+        # `max_pool3d(m.float(), ...) > 0` spelling would allocate a full fp32
+        # copy of `m` (~4x the bool tensor, ~9 GiB at N=96 x 25 M voxels),
+        # which would eat a large slice of the memory the low-res loop frees.
+        if self.correction_on_low_res and self.training:
+            s = self.mask_downsample_factor
+            backbone_out["gt_masks_low_per_frame"] = {
+                t: any_pool3d(m, s)
+                for t, m in gt_masks_per_frame.items()
+            }
+        else:
+            backbone_out["gt_masks_low_per_frame"] = {}
+
+        # num_frames drives the per-frame prompt/correction loops below.
         num_frames = data_views["num_frames"]
         backbone_out["num_frames"] = num_frames
 
@@ -1288,22 +1456,36 @@ class SAM2(SAM2Base):
                 # During training # P(box) = prob_to_use_pt_input * prob_to_use_box_input
                 use_box_input = self.rng.random() < prob_to_use_box_input
                 if use_box_input:
-                    points, labels = sample_box_points(
-                        input_fmt=self.input_fmt,
-                        time_separable=True,
-                        masks=gt_masks_per_frame[t],
-                    )
+                    target_boxes_t = data_views.get("boxes")
+                    box_format = data_views.get("box_format")
+                    if target_boxes_t is not None and box_format is not None:
+                        # Per-row boxes come from the preprocessor; spatial
+                        # extents come from the materialized GT masks.
+                        Z, Y, X = gt_masks_per_frame[t].shape[-3:]
+                        points, labels = sample_box_points_from_boxes(
+                            boxes=target_boxes_t[t],
+                            box_format=box_format,
+                            image_shape=(Z, Y, X),
+                            valid=data_views["valid"][t],
+                        )
+                    else:
+                        points, labels = sample_box_points(
+                            input_fmt=self.input_fmt,
+                            time_separable=True,
+                            masks=gt_masks_per_frame[t],
+                        )
                 else:
-                    # (here we only sample **one initial point** on initial conditioning frames from the
-                    # ground-truth mask; we may sample more correction points on the fly)
+                    # Initial-prompt site: sample one click from the GT mask.
+                    # Masks are always materialized by the preprocessor, so we
+                    # sample directly from gt_masks_per_frame. Training: uniform;
+                    # eval: self.pt_sampling_for_eval (exact EDT when "center").
+                    method = "uniform" if self.training else self.pt_sampling_for_eval
                     points, labels = get_next_point(
                         input_fmt=self.input_fmt,
                         time_separable=True,
                         gt_masks=gt_masks_per_frame[t],
                         pred_masks=None,
-                        method=(
-                            "uniform" if self.training else self.pt_sampling_for_eval
-                        ),
+                        method=method,
                     )
 
                 point_inputs = {"point_coords": points, "point_labels": labels}
@@ -1330,6 +1512,7 @@ class SAM2(SAM2Base):
 
         return backbone_out
 
+    @PhaseTimer.timed("tracking")
     def forward_tracking(self, backbone_out, data_sample: dict, return_dict=False):
         """Forward video tracking on each frame (and sample correction clicks)."""
         img_feats_already_computed = backbone_out["backbone_fpn"] is not None
@@ -1344,7 +1527,7 @@ class SAM2(SAM2Base):
             ) = self._prepare_backbone_features(backbone_out)
 
         # Starting the stage loop
-        data_views = data_sample["metainfo"]["targets"]
+        data_views = data_sample["metainfo"]["sam2_views"]
         num_frames = backbone_out["num_frames"]
         init_cond_frames = backbone_out["init_cond_frames"]
         frames_to_add_correction_pt = backbone_out["frames_to_add_correction_pt"]
@@ -1389,6 +1572,7 @@ class SAM2(SAM2Base):
                 point_inputs=backbone_out["point_inputs_per_frame"].get(stage_id, None),
                 mask_inputs=backbone_out["mask_inputs_per_frame"].get(stage_id, None),
                 gt_masks=backbone_out["gt_masks_per_frame"].get(stage_id, None),
+                gt_masks_low=backbone_out["gt_masks_low_per_frame"].get(stage_id, None),
                 frames_to_add_correction_pt=frames_to_add_correction_pt,
                 output_dict=output_dict,
                 num_frames=num_frames,
@@ -1435,6 +1619,9 @@ class SAM2(SAM2Base):
         prev_sam_mask_logits=None,  # The previously predicted SAM mask logits.
         frames_to_add_correction_pt=None,
         gt_masks=None,
+        # The stride-4 max-pooled GT for this frame (None unless
+        # correction_on_low_res is on and we are training).
+        gt_masks_low=None,
     ):
         if frames_to_add_correction_pt is None:
             frames_to_add_correction_pt = []
@@ -1476,6 +1663,7 @@ class SAM2(SAM2Base):
                 is_init_cond_frame,
                 point_inputs,
                 gt_masks,
+                gt_masks_low,
                 high_res_features,
                 pix_feat,
                 low_res_multimasks,
@@ -1519,6 +1707,7 @@ class SAM2(SAM2Base):
         is_init_cond_frame,
         point_inputs,
         gt_masks,
+        gt_masks_low,
         high_res_features,
         pix_feat_with_mem,
         low_res_multimasks,
@@ -1530,6 +1719,19 @@ class SAM2(SAM2Base):
         current_out,
     ):
         assert gt_masks is not None, "gt_masks must not be None"
+        # Sample the correction clicks against the stride-4 streams instead
+        # of upsampling every round's K multimasks to full res just to threshold
+        # them. `low_res_masks` is already at stride `mask_downsample_factor`.
+        on_low_res = self.correction_on_low_res and self.training
+        if on_low_res:
+            assert gt_masks_low is not None, (
+                "correction_on_low_res=True requires the max-pooled GT "
+                "(gt_masks_low) for this frame"
+            )
+            assert gt_masks_low.shape[-3:] == low_res_masks.shape[-3:], (
+                f"stride-4 GT {tuple(gt_masks_low.shape[-3:])} does not match the "
+                f"low-res prediction grid {tuple(low_res_masks.shape[-3:])}"
+            )
         all_pred_masks = [low_res_masks]
         all_pred_high_res_masks = [high_res_masks]
         all_pred_multimasks = [low_res_multimasks]
@@ -1549,14 +1751,30 @@ class SAM2(SAM2Base):
                 sample_from_gt = False
 
             # if `pred_for_new_pt` is None, only GT masks will be used for point sampling
-            pred_for_new_pt = None if sample_from_gt else (high_res_masks > 0)
-            new_points, new_labels = get_next_point(
-                input_fmt=self.input_fmt,
-                time_separable=True,
-                gt_masks=gt_masks,
-                pred_masks=pred_for_new_pt,
-                method="uniform" if self.training else self.pt_sampling_for_eval,
-            )
+            if on_low_res:
+                pred_for_new_pt = None if sample_from_gt else (low_res_masks > 0)
+                new_cells, new_labels = get_next_point(
+                    input_fmt=self.input_fmt,
+                    time_separable=True,
+                    gt_masks=gt_masks_low,
+                    pred_masks=pred_for_new_pt,
+                    method="uniform" if self.training else self.pt_sampling_for_eval,
+                )
+                # cells -> full-res voxel coords (the prompt encoder works in
+                # full-res voxels); the jitter keeps the click uniform inside
+                # the selected 4^3 cell.
+                new_points = low_res_cells_to_voxels(
+                    new_cells, self.mask_downsample_factor
+                )
+            else:
+                pred_for_new_pt = None if sample_from_gt else (high_res_masks > 0)
+                new_points, new_labels = get_next_point(
+                    input_fmt=self.input_fmt,
+                    time_separable=True,
+                    gt_masks=gt_masks,
+                    pred_masks=pred_for_new_pt,
+                    method="uniform" if self.training else self.pt_sampling_for_eval,
+                )
             point_inputs = concat_points(point_inputs, new_points, new_labels)
 
             # Feed the mask logits of the previous SAM outputs in the next SAM decoder step.
@@ -1572,6 +1790,7 @@ class SAM2(SAM2Base):
                     mask_inputs=mask_inputs,
                     high_res_features=high_res_features,
                     multimask_output=multimask_output,
+                    with_high_res=not on_low_res,
                     use_reentrant=False,
                 )
             else:
@@ -1581,6 +1800,7 @@ class SAM2(SAM2Base):
                     mask_inputs=mask_inputs,
                     high_res_features=high_res_features,
                     multimask_output=multimask_output,
+                    with_high_res=not on_low_res,
                 )
             (
                 low_res_multimasks,
@@ -1599,12 +1819,10 @@ class SAM2(SAM2Base):
             all_point_inputs.append(point_inputs)
             all_object_score_logits.append(object_score_logits)
 
-        # Concatenate the masks along channel (to compute losses on all of them,
-        # using `MultiStepIteractiveMasks`)
-        current_out["multistep_pred_masks"] = torch.cat(all_pred_masks, dim=1)
-        current_out["multistep_pred_masks_high_res"] = torch.cat(
-            all_pred_high_res_masks, dim=1
-        )
+        # Per-round mask lists; nothing downstream reads a concatenated view
+        # (the criterion consumes the multimask lists), so no copies are made.
+        current_out["multistep_pred_masks"] = all_pred_masks
+        current_out["multistep_pred_masks_high_res"] = all_pred_high_res_masks
         current_out["multistep_pred_multimasks"] = all_pred_multimasks
         current_out["multistep_pred_multimasks_high_res"] = all_pred_high_res_multimasks
         current_out["multistep_pred_ious"] = all_pred_ious
@@ -1613,32 +1831,183 @@ class SAM2(SAM2Base):
 
         return point_inputs, sam_outputs
 
+    @torch.jit.ignore
+    def get_output_metadata(self):
+        return self.output_metadata
+
     @torch.no_grad()
-    def predict(self, data_sample: dict, type: Literal["volume", "video"] = "volume") -> dict:
-        """
-        Automatic mask generation for a single volume.
-        """
-        if type == "volume":
-            vol = data_sample["data_tensor"]
-            assert vol.shape[0] == 1, "predict() expects batch_size=1"
+    def inference_step(self, data_sample: dict) -> dict:
+        """Automatic mask generation (AMG) for a single volume.
 
-            mask_data = self._predict_generate_masks(vol)
-            mask_data.to_numpy()
+        Supported layout/shape (gated below): ``TZYXC`` input only, and a single
+        sample per call (``batch_size == 1``). The AMG pipeline encodes one
+        volume and sweeps a point grid; batching multiple volumes is not
+        supported. ``_predict_generate_masks`` raises for non-``TZYXC`` layouts.
 
-            return {
-                "masks": mask_data["masks"],
-                "boxes": mask_data["boxes"],
-                "iou_preds": mask_data["iou_preds"],
-                "stability_score": mask_data["stability_score"],
-                "points": mask_data["points"],
+        Owns the full output contract: calls ``postprocess_sam_preds`` to
+        normalise mask ranks and fuse per-object masks into ``instance_masks``,
+        and permutes ``data_sample["data_tensor"]`` from channels-first
+        ``(B, C, Z, Y, X)`` to channels-last ``(B, Z, Y, X, C)`` so the
+        inferencer save/viz path receives consistent channels-last data.
+
+        Returns a ``dict`` with at minimum ``masks (N, 1, Z, Y, X)`` and
+        ``instance_masks (1, Z, Y, X, 1)`` plus auxiliary keys (``boxes``,
+        ``iou_preds``, ``stability_score``, ``points``).
+        """
+        vol = self._to_model_layout(data_sample["data_tensor"])
+        assert vol.shape[0] == 1, (
+            "inference_step() expects a single volume (B*T == 1); AMG encodes one "
+            f"volume per call, got (B, T) = {tuple(data_sample['data_tensor'].shape[:2])}"
+        )
+
+        frame_ids = _channel_ids_per_frame(data_sample)
+        mask_data = (
+            self._predict_generate_masks(vol) if frame_ids is None
+            else self._predict_generate_masks(vol, channel_ids=frame_ids)
+        )
+        # Empty-detection guard: an image with no AMG masks yields a keyless MaskData,
+        # so mask_data["masks"] below would KeyError. Emit an all-background label map
+        # + empty (N=0) per-object tensors. The key set must match the non-empty path
+        # exactly, or consumers reading `masks`/`stability_score`/`points` break on
+        # empty volumes.
+        if len(mask_data) == 0:
+            zyx = tuple(int(s) for s in vol.shape[-3:])
+            dev = vol.device
+            preds = {
+                "instance_masks": torch.zeros((1, *zyx, 1), dtype=torch.uint16, device=dev),
+                "masks": torch.zeros((0, *zyx, 1), dtype=torch.float32, device=dev),
+                "boxes": torch.zeros((0, 6), dtype=torch.float32, device=dev),
+                "iou_preds": torch.zeros((0,), dtype=torch.float32, device=dev),
+                "stability_score": torch.zeros((0,), dtype=torch.float32, device=dev),
+                "points": torch.zeros((0, 3), dtype=torch.float32, device=dev),
             }
-        else:
+            return preds
+        mask_data.to_numpy()
+
+        raw = {
+            "masks": mask_data["masks"],
+            "boxes": mask_data["boxes"],
+            "iou_preds": mask_data["iou_preds"],
+            "stability_score": mask_data["stability_score"],
+            "points": mask_data["points"],
+        }
+
+        # Normalise mask ranks + fuse per-object masks into an instance label map.
+        # postprocess_sam_preds is a pure preds -> preds helper (no data_tensor arg).
+        preds = postprocess_sam_preds(raw)
+
+        # NOTE: data_sample belongs to the caller; the model does not mutate it. The
+        # inferencer already receives channels-last straight from the preprocessor --
+        # the channels-first layout exists only inside this model, between
+        # _to_model_layout and here.
+        return preds
+
+    @torch.no_grad()
+    def evaluate_step(
+        self, data_sample: dict, type: Literal["volume", "video"] = "volume"
+    ) -> List[Dict[str, Any]]:
+        """Unprompted AMG inference for the instance-segmentation evaluator.
+
+        Wraps the same automatic-mask-generation pipeline as :meth:`predict`
+        (``_predict_generate_masks``) but, unlike :meth:`predict`, it does NOT
+        call ``MaskData.to_numpy()`` -- it preserves CPU ``torch.Tensor`` outputs
+        and packages them into the per-image dict contract that
+        ``InstanceSegmentationEvaluator._process_one`` consumes.
+
+        SAM2 AMG is class-agnostic and produces binary masks directly (it has no
+        ``mask_embeddings`` / ``pixel_decoder_output``), so the returned dict
+        carries the masks under the ``pred_masks`` key (the evaluator's direct
+        bool-mask source) and uses a sentinel class id ``-1`` (configure the
+        evaluator with ``match_labels=False``).
+
+        ``predict()`` enforces ``batch_size == 1``, so the returned list always
+        has length 1.
+
+        Each per-image dict contains:
+            * ``topk_query_indices``: ``(N,)`` long -- ``arange(N)``, a direct
+              index into ``pred_masks`` (the evaluator's "slot index").
+            * ``topk_class_scores``: ``(N,)`` float32 -- ``stability_score``
+              (distinct from ``iou_preds`` so the predicted-IoU metric's
+              score-ranking differs from its pred-iou ranking).
+            * ``topk_class_ids``: ``(N,)`` long -- sentinel ``-1`` (class-agnostic).
+            * ``boxes``: ``(N, 6)`` float32 xyzxyz at orig volume scale.
+            * ``eval_frame_size``: tuple ``(Z, Y, X)`` ints.
+            * ``pred_masks``: ``(N, Z, Y, X)`` bool, CPU -- already-binarized,
+              full-resolution AMG masks (the SAM2 mask source).
+            * ``iou_preds``: ``(N,)`` float32 -- SAM mask-decoder IoU-head output
+              (the ``pred_ious`` consumed by ``PredictedIoUEvalMetric``).
+        """
+        if type != "volume":
             # TODO: implement video prediction
             raise NotImplementedError(f"type {type} not supported yet")
 
-    def _predict_generate_masks(self, vol: torch.Tensor) -> "MaskData":
+        vol = self._to_model_layout(data_sample["data_tensor"])
+        assert vol.shape[0] == 1, (
+            "evaluate_step() expects a single volume (B*T == 1); got (B, T) = "
+            f"{tuple(data_sample['data_tensor'].shape[:2])}"
+        )
+
+        was_training = self.training
+        self.eval()
+        frame_ids = _channel_ids_per_frame(data_sample)
+        try:
+            mask_data = (
+                self._predict_generate_masks(vol) if frame_ids is None
+                else self._predict_generate_masks(vol, channel_ids=frame_ids)
+            )
+        finally:
+            if was_training:
+                self.train()
+
+        # Evaluate at the PROCESSED resolution (the resized volume the model saw).
+        # eval_frame_size MUST equal the true pred_masks resolution, because the
+        # evaluator compares against GT at this size. The AMG pipeline
+        # (_predict_generate_masks) unconditionally uncrops masks to vol.shape
+        # [-3:], so derive it from that directly. Restoring predictions to
+        # the original tile size is an INFERENCE concern (handled by the
+        # inferencer's post-processor), not an evaluation one.
+        eval_frame_size: Tuple[int, int, int] = tuple(int(x) for x in vol.shape[-3:])  # (Z, Y, X)
+
+        # Pull tensors out of MaskData (CPU after the AMG pipeline's to_cpu()).
+        n = len(mask_data)
+        if n == 0:
+            pred_masks = torch.zeros((0, *eval_frame_size), dtype=torch.bool)
+            iou_preds = torch.zeros((0,), dtype=torch.float32)
+            stability = torch.zeros((0,), dtype=torch.float32)
+            boxes = torch.zeros((0, 6), dtype=torch.float32)
+        else:
+            pred_masks = mask_data["masks"].to(torch.bool).cpu()      # (N, Z, Y, X)
+            iou_preds = mask_data["iou_preds"].to(torch.float32).cpu()  # (N,)
+            stability = mask_data["stability_score"].to(torch.float32).cpu()  # (N,)
+            boxes = mask_data["boxes"].to(torch.float32).cpu()        # (N, 6)
+
+        # iou_preds must be in [0, 1] for PredictedIoUEvalMetric thresholds.
+        # If the IoU head does not apply sigmoid internally, clamp here.
+        if not self.iou_prediction_use_sigmoid:
+            iou_preds = iou_preds.clamp(0.0, 1.0)
+
+        n = pred_masks.shape[0]
+        topk_query_indices = torch.arange(n, dtype=torch.long)
+        topk_class_ids = torch.full((n,), -1, dtype=torch.long)
+
+        per_sample: List[Dict[str, Any]] = [{
+            "mask_source": "direct",
+            "topk_query_indices": topk_query_indices,
+            "topk_class_scores": stability,
+            "topk_class_ids": topk_class_ids,
+            "boxes": boxes,
+            "eval_frame_size": eval_frame_size,
+            "pred_masks": pred_masks,
+            "iou_preds": iou_preds,
+        }]
+        return per_sample
+
+    def _predict_generate_masks(
+        self, vol: torch.Tensor, channel_ids: Optional[torch.Tensor] = None
+    ) -> "MaskData":
         """
         Generate masks for the full volume, possibly with multi-scale crops.
+        ``channel_ids`` (``[1, C, 2]`` token ids) feed the channel-adaptive patch embed.
         """
         if self.input_fmt == "TZYXC":
             _, C, vol_z, vol_y, vol_x = vol.shape
@@ -1653,7 +2022,7 @@ class SAM2(SAM2Base):
             data = MaskData()
             for crop_box, layer_idx in zip(crop_boxes, layer_idxs):
                 crop_data = self._predict_process_crop(
-                    vol, crop_box, layer_idx, orig_size
+                    vol, crop_box, layer_idx, orig_size, channel_ids=channel_ids
                 )
                 data.cat(crop_data)
 
@@ -1687,6 +2056,7 @@ class SAM2(SAM2Base):
         crop_box: List[int],
         crop_layer_idx: int,
         orig_size: Tuple[int, int, int],
+        channel_ids: Optional[torch.Tensor] = None,
     ) -> "MaskData":
         """
         Process a single crop: encode image, run batched point prediction,
@@ -1698,7 +2068,7 @@ class SAM2(SAM2Base):
             crop_size = (z1 - z0, y1 - y0, x1 - x0)
 
             # Encode the crop
-            features = self._predict_encode_crop(cropped)
+            features = self._predict_encode_crop(cropped, channel_ids=channel_ids)
 
             # Build point grid scaled to crop pixel coords (x, y, z)
             # point_grids are in [0,1]^3; scale to pixel coords
@@ -1742,17 +2112,23 @@ class SAM2(SAM2Base):
         return data
 
     # Image encoding for a crop
-    def _predict_encode_crop(self, crop_vol: torch.Tensor) -> dict:
+    def _predict_encode_crop(
+        self, crop_vol: torch.Tensor, channel_ids: Optional[torch.Tensor] = None
+    ) -> dict:
         """
         Run image encoder + prepare backbone features for a single crop.
         """
-        backbone_out = self.forward_image({"data_tensor": crop_vol})
+        backbone_out = self.forward_image(
+            {"data_tensor": crop_vol, "metainfo": {"channel_ids": channel_ids}}
+        )
         _, vision_feats, vision_pos_embeds, feat_sizes = (
             self._prepare_backbone_features(backbone_out)
         )
 
-        # Add no_mem_embed for single-image SAM mode
-        if self.directly_add_no_mem_embed:
+        # no_mem_embed is only part of the training-path features when memory is
+        # in use (num_maskmem > 0); with memory disabled the training forward
+        # returns the raw backbone features, so inference must match.
+        if self.directly_add_no_mem_embed and self.num_maskmem > 0:
             vision_feats[-1] = vision_feats[-1] + self.no_mem_embed
 
         if self.input_fmt == "TZYXC":
@@ -1819,10 +2195,10 @@ class SAM2(SAM2Base):
 
         (
             low_res_multimasks,  # (P, M, D4, H4, W4)
-            high_res_multimasks, # (P, M, Z, Y, X)
+            _,                   # high-res skipped: filtered survivors are upsampled below
             ious,                # (P, M)
-            low_res_masks,       # (P, 1, D4, H4, W4)
-            high_res_masks,      # (P, 1, Z, Y, X)
+            _low_res_masks,
+            _,
             _obj_ptr,
             _obj_score,
         ) = self._forward_sam_heads(
@@ -1831,29 +2207,49 @@ class SAM2(SAM2Base):
             mask_inputs=None,
             high_res_features=high_res_expanded,
             multimask_output=self._amg_multimask_output,
+            # P×M full-resolution volumes would be materialized only to be
+            # discarded (m2m replaces them) or mostly filtered out (IoU
+            # threshold) — upsample survivors only, below.
+            with_high_res=False,
         )
 
         # Flatten multi-mask dim: (P, M, ...) -> (P*M, ...)
-        masks = high_res_multimasks.flatten(0, 1)      # (P*M, Z, Y, X)
         iou_preds = ious.flatten(0, 1)                  # (P*M,)
         low_res = low_res_multimasks.flatten(0, 1)      # (P*M, D4, H4, W4)
-        M = high_res_multimasks.shape[1]
+        M = low_res_multimasks.shape[1]
         pts_repeated = points_t.repeat_interleave(M, dim=0)  # (P*M, 3)
 
         data = MaskData(
-            masks=masks,
             iou_preds=iou_preds,
             points=pts_repeated,
             low_res_masks=low_res,
         )
 
         if self.debug:
-            print(f"data['masks'].shape: {data['masks'].shape}")
             print(f"data['iou_preds'].shape: {data['iou_preds'].shape}")
             print(f"IOU PREDS: {data['iou_preds']}")
             print(f"data['low_res_masks'].shape: {data['low_res_masks'].shape}")
 
-        # Optionally do mask-to-mask refinement
+        # The exact upsample _forward_sam_heads would have run for these
+        # features (crop-sized token grid × per-axis strides): applying it to
+        # the surviving subset gives bit-identical masks for those rows.
+        if self.input_fmt == "TZYXC":
+            _Dtok, _Htok, _Wtok = backbone_feats.shape[2:]
+            high_res_size = tuple(
+                t_ * s for t_, s in zip((_Dtok, _Htok, _Wtok), self.token_strides)
+            )
+        else:
+            raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
+
+        def _upsample(low: torch.Tensor) -> torch.Tensor:
+            # (K, D4, H4, W4) -> (K, Z, Y, X); channel-independent trilinear ==
+            # the (P, M, ...) interpolate the heads ran before this change.
+            return F.interpolate(
+                low[:, None], size=high_res_size, mode="trilinear", align_corners=False
+            ).squeeze(1)
+
+        # Optionally do mask-to-mask refinement (consumes ALL prompts' low-res
+        # masks, as before — its refined ious drive the IoU filter below).
         if self._amg_use_m2m:
             refined_masks, refined_ious = self._predict_refine_with_m2m(
                 data["points"], data["low_res_masks"], features
@@ -1861,13 +2257,25 @@ class SAM2(SAM2Base):
             data["masks"] = refined_masks.squeeze(1)
             data["iou_preds"] = refined_ious.squeeze(1)
 
-        # Filter by predicted IoU
-        if self._amg_pred_iou_thresh > 0.0:
-            keep = data["iou_preds"] > self._amg_pred_iou_thresh
-            data.filter(keep)
+            # Filter by predicted IoU (refined)
+            if self._amg_pred_iou_thresh > 0.0:
+                keep = data["iou_preds"] > self._amg_pred_iou_thresh
+                data.filter(keep)
 
-            if self.debug:
-                print(f"keep (after iou filter): {keep}")
+                if self.debug:
+                    print(f"keep (after iou filter): {keep}")
+        else:
+            # Filter by predicted IoU BEFORE materializing full volumes:
+            # iou_preds do not depend on the upsample, so outcomes are
+            # identical — only the survivors ever reach full resolution.
+            if self._amg_pred_iou_thresh > 0.0:
+                keep = data["iou_preds"] > self._amg_pred_iou_thresh
+                data.filter(keep)
+
+                if self.debug:
+                    print(f"keep (after iou filter): {keep}")
+
+            data["masks"] = _upsample(data["low_res_masks"])
 
         # Calculate and filter by stability score
         if self.input_fmt == "TZYXC":
@@ -2047,12 +2455,16 @@ def _extract_kwargs(
 ) -> Dict[str, Any]:
     """Drop Hydra/meta keys like ``_target_``, ``BUILD`` and any explicitly
     ignored keys, returning plain kwargs suitable for a constructor call."""
-    ignore = {"_target_", "BUILD"}
+    ignore = {"_target_", "BUILD", "name"}
     if extra_ignores:
         ignore.update(extra_ignores)
     return {k: v for k, v in cfg.items() if k not in ignore}
 
 
+from cell_observatory_platform.utils.registry import REGISTRY
+
+
+@REGISTRY.register("model", "sam")
 def BUILD(cfg: Mapping[str, Any]) -> SAM2:
     """
     Factory that builds a complete :class:`SAM2` model from a nested
@@ -2064,16 +2476,14 @@ def BUILD(cfg: Mapping[str, Any]) -> SAM2:
     # 0) Criterion
     # ------------------------------------------------------------------
     criterion_cfg = model_cfg["criterion_args"]
-    criterion = get_method(criterion_cfg.BUILD)
-    criterion = criterion(**_extract_kwargs(criterion_cfg))
+    criterion = REGISTRY.build("criterion", criterion_cfg.name, criterion_cfg)
 
     # ------------------------------------------------------------------
     # 1) Image encoder
     # ------------------------------------------------------------------
     bw_cfg = model_cfg["backbone_wrapper_args"]
-    build_backbone = get_method(bw_cfg.BUILD)
     adapter_cfg = model_cfg.get("adapter_args", None)
-    image_encoder = build_backbone(bw_cfg, adapter_cfg)
+    image_encoder = REGISTRY.build("backbone", bw_cfg.name, bw_cfg, adapter_args=adapter_cfg)
 
     # Derive hidden_dim for downstream component defaults
     hidden_dim = image_encoder.backbone_embed_dims[-1]

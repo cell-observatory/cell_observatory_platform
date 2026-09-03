@@ -1,4 +1,4 @@
-_target_: cell_observatory_platform.models.layers.preprocessor.SAM2VideoPreprocessor
+name: sam2_video
 
 with_masking: true
 mask_generator: null
@@ -26,9 +26,29 @@ input_format: ${dataset_layout_order}
 input_shape: ${datasets.input_shape}
 
 seed: ${seed}
-mask_idx: -1
 
 # debug_savepath: null
 expect_mask_channel: true # ${datasets.collate_fn.expect_mask_channel}
 require_targets: true #${datasets.collate_fn.require_targets}
 max_masks: 40 # 38 on single-gpu, 35 on multi-gpu
+# mask_rows: how many mask rows are materialized per step per rank.
+#   batch (default) = this rank's batch max; global_max = MAX all-reduced across
+#   ranks (removes rank imbalance); fixed = always max_masks (static shapes).
+# Padded rows are valid=False and gated out of the loss, so the objective and the
+# set of supervised instances are unchanged. NOT bit-identical to `batch`, though:
+# K_full is the row stride of the flat (B*K_full, ...) batch and the correction-click
+# sampler draws its RNG row-major, so changing K_full re-indexes that stream and
+# shifts clicks for every video after the first. Runs are statistically, not
+# bit-wise, comparable to a `batch` baseline.
+mask_rows: batch
+# Boxes as the collator emits them (format + normalization); the target view
+# denormalizes to voxels once so the box-prompt sampler sees real coordinates.
+bbox_format: ${datasets.collate_fn.bbox_output_format}
+boxes_normalized: ${datasets.collate_fn.normalize_bboxes}
+# Channel-token ids for the channel-adaptive patch embed (models.backbones.masked_encoder
+# patch_embed_type: channel_adaptive). null -> no ids are emitted. Set by data/channel_vocab.py
+# at dataloader construction (same table the encoder sizes its embeddings from).
+channel_vocab: null
+unknown_policy: error # error | unk: a token missing from the vocab at TRAIN time (inference always maps to <unk>)
+unk_token_p: 0.0 # training only: replace each (channel, kind) id by <unk> with this probability so the
+                 # <unk> rows are trained; an unseen token at inference then lands on a fitted embedding

@@ -1,0 +1,13 @@
+# @package _global_
+# Stage 0a A1. cube 128^3 bs ladder at mm 46 -> BS_CUBE. First point (bs 1) doubles as the smoke
+# Local mode runs the points sequentially; outdirs: <local_base outdir>/A1/<name>_sweep_<key>_<value>
+run_type: multi_run
+data_base_dir: A1
+wandb_tags: ["sam2_study", "bench", "stage0a", "A1"]
+
+sweep:
+  - clusters: {batch_size: [32, 128, 256, 512]}    # 4, 16, 32, 64 per GPU (bs 1 = S0 smoke: 5.9 GiB -> ~66/GPU predicted); bisect by hand on OOM
+runs:
+  - cfg: experiments/janelia/tests/2026_09_02/sam2/stage0a/local_base.yaml
+    name: cube128.yaml
+    overrides: {}

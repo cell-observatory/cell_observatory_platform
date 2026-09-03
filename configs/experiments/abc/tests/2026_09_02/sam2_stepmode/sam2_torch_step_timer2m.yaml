@@ -1,0 +1,35 @@
+# @package _global_
+# Step mode, S5: wall-clock checkpoint cadence together with a step cadence.
+# 1024 rows -> 128-step epochs; max_steps 200 (1 full epoch + 72 steps).
+# Expect: step-cadence saves at 100 and 200 (last step), plus wall-clock saves at the
+# first step boundary after each 2 min since trainer construction (~the dataloader
+# init eats most of the first interval); no step saved twice.
+defaults:
+  - /experiments/abc/tests/2026_09_01/sam2/base_sam2_torch
+  - _self_
+
+experiment_name: sam2_abc_torch_step_timer2m
+
+datasets:
+  max_rows: 1024
+  row_sample_seed: 42
+
+trainer_loop:
+  iteration_mode: step
+  max_steps: 200
+  val_every_n_steps: null
+  checkpoint_save_period: 100
+  checkpoint_every_n_epochs: null
+  with_perf_metrics: false
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: periodic_checkpointer
+    file_prefix: latest_model
+    backend: TORCHTITAN
+    time_interval: 2m

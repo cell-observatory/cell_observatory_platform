@@ -1,5 +1,6 @@
 import sys
 import logging
+import threading
 import warnings
 from typing import Dict, List
 
@@ -62,6 +63,9 @@ class NumaNodeAffinityScheduler:
 
         # current allocations per NUMA (how many loader actors placed)
         self.allocations = {n: 0 for n in self.numa_nodes}
+        # The actor runs with max_concurrency > 1: capacity check + record must
+        # be atomic or concurrent schedule_actor calls double-book a node.
+        self._lock = threading.Lock()
         self.remote_for_requested = {n: 0 for n in self.numa_nodes}
         self.total_for_requested = {n: 0 for n in self.numa_nodes}
 
@@ -133,34 +137,39 @@ class NumaNodeAffinityScheduler:
                 raise ValueError(f"Requested NUMA node {requested_numa} is not valid. "
                                  f"Available NUMA nodes: {self.numa_nodes}")
 
-            # if local node has capacity, use it
-            if self._has_capacity(requested_numa):
+            # Atomic check+record: without the lock, concurrent calls (the actor
+            # runs with max_concurrency > 1) both pass _has_capacity and
+            # double-book the node.
+            with self._lock:
+                # if local node has capacity, use it
+                if self._has_capacity(requested_numa):
+                    self._record_allocation(requested_numa, requested_numa)
+                    return requested_numa
+
+                # otherwise, find the closest node with capacity
+                candidates = sorted(
+                    (n for n in self.numa_nodes if n != requested_numa),
+                    # sort by distance, then by current load
+                    key=lambda n: (self.distance[requested_numa].get(n, 9999), self.allocations[n] / max(1, self.node_capacity[n]))
+                )
+
+                # only support CPU-only nodes as fallback
+                for n in [c for c in candidates if c in self.cpu_only_nodes]:
+                    if self._has_capacity(n):
+                        self._record_allocation(n, requested_numa)
+                        return n
+
+                # if no CPU-only node available, use local node again (oversubscribe if needed)
                 self._record_allocation(requested_numa, requested_numa)
                 return requested_numa
 
-            # otherwise, find the closest node with capacity
-            candidates = sorted(
-                (n for n in self.numa_nodes if n != requested_numa),
-                # sort by distance, then by current load
-                key=lambda n: (self.distance[requested_numa].get(n, 9999), self.allocations[n] / max(1, self.node_capacity[n]))
-            )
-
-            # only support CPU-only nodes as fallback
-            for n in [c for c in candidates if c in self.cpu_only_nodes]:
-                if self._has_capacity(n):
-                    self._record_allocation(n, requested_numa)
-                    return n
-
-            # if no CPU-only node available, use local node again (oversubscribe if needed)
-            self._record_allocation(requested_numa, requested_numa)
-            return requested_numa
-        
         else:
             raise ValueError(f"Unsupported scheduling policy: {self.policy}")
 
     def free(self, placed_numa: int):
         if placed_numa in self.numa_nodes:
-            self._record_free(placed_numa)
+            with self._lock:
+                self._record_free(placed_numa)
 
     def snapshot(self) -> Dict:
         return {

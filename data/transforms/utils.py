@@ -95,6 +95,7 @@ def parse_target_shape_range(
 def sample_target_shape(
     target_min: Tuple[int, int, int],
     target_max: Tuple[int, int, int],
+    rng: Optional["random.Random"] = None,
 ) -> Tuple[int, int, int]:
     """
     Sample target shape uniformly from range [target_min, target_max].
@@ -108,10 +109,11 @@ def sample_target_shape(
     Returns:
         Sampled shape (Z, Y, X)
     """
+    r = rng if rng is not None else random
     return (
-        random.randint(target_min[0], target_max[0]),
-        random.randint(target_min[1], target_max[1]),
-        random.randint(target_min[2], target_max[2]),
+        r.randint(target_min[0], target_max[0]),
+        r.randint(target_min[1], target_max[1]),
+        r.randint(target_min[2], target_max[2]),
     )
 
 
@@ -131,7 +133,8 @@ def resize_tensor_3d(
         tensor: Input tensor of shape (B, Z, Y, X, C) for ZYXC format
         target_shape: Target spatial shape (Z, Y, X)
         input_format: Data format, currently only "ZYXC" supported
-        mode: Interpolation mode for F.interpolate
+        mode: F.interpolate mode -- "trilinear" (default), "area" or "nearest-exact".
+            Plain "nearest" is rejected (edge-aligned; see comment below).
         align_corners: Whether to align corners in interpolation
         dtype: Optional dtype to cast to before resize
 
@@ -154,17 +157,62 @@ def resize_tensor_3d(
     # (B, Z, Y, X, C) -> (B, C, Z, Y, X)
     x_cf = tensor.permute(0, 4, 1, 2, 3).contiguous()
 
-    if mode in ("nearest", "area"):
+    # Image resize convention: voxel-CENTER aligned. `trilinear`/`area` with
+    # align_corners=False sample output voxel i at input coord (i + 0.5) * s - 0.5,
+    # and GT (label maps / masks) go through `_resize_nearest_exact_3d`, i.e.
+    # src = floor((i + 0.5) * s). Legacy `"nearest"` is src = floor(i * s): the
+    # LEFT EDGE of the voxel, i.e. shifted s/2 input voxels (= half an output
+    # voxel) toward the origin relative to GT. Using it for the image would
+    # misregister image and GT by up to one voxel at 2x downsample. We refuse it
+    # rather than rewriting it so the config says what actually runs.
+    if mode == "nearest":
+        raise ValueError(
+            "resize_tensor_3d: mode='nearest' is edge-aligned (floor(i*s)) and is "
+            "half a voxel off the center-aligned GT resize; use mode='nearest-exact' "
+            "(floor((i+0.5)*s)), which matches trilinear/align_corners=False and "
+            "the label-map/mask resize."
+        )
+
+    if mode in ("nearest-exact", "area"):
         x_cf = F.interpolate(x_cf, size=target_shape, mode=mode)
-    else:
+    else:  # linear family takes align_corners
         x_cf = F.interpolate(x_cf, size=target_shape, mode=mode, align_corners=align_corners)
 
-    # (B, C, Z, Y, X) -> (B, Z, Y, X, C)
-    resized = x_cf.permute(0, 2, 3, 4, 1).contiguous()
+    resized = x_cf.permute(0, 2, 3, 4, 1)
 
     scale_factors = (tZ / float(Z), tY / float(Y), tX / float(X))
 
     return resized, scale_factors
+
+
+def _nearest_exact_indices(in_size: int, out_size: int, device: torch.device) -> torch.Tensor:
+    """Source indices for a 1D nearest-exact resize (``F.interpolate``'s
+    ``mode="nearest-exact"``): ``floor((i + 0.5) * in/out)`` clamped -- the
+    voxel-center convention. Plain ``"nearest"`` uses ``floor(i * in/out)``,
+    which shifts GT by half a voxel relative to the (center-aligned) trilinear
+    image resize."""
+    scale = in_size / out_size
+    idx = ((torch.arange(out_size, device=device, dtype=torch.float64) + 0.5) * scale).floor()
+    return idx.long().clamp_(0, in_size - 1)
+
+
+def _resize_nearest_exact_3d(
+    vol: torch.Tensor,
+    target_shape: Tuple[int, int, int],
+) -> torch.Tensor:
+    """Nearest-exact resize of the trailing (Z, Y, X) axes via index gather.
+
+    Dtype-preserving for ANY dtype (int32/int64/bool/uint16 ids included):
+    ``F.interpolate`` has no integer kernels, and the old float round-trip both
+    cost a copy and risked precision on ids beyond float32's 24-bit mantissa.
+    Index selection is bit-exactly equivalent to ``mode="nearest-exact"``.
+    """
+    Z, Y, X = (int(s) for s in vol.shape[-3:])
+    tZ, tY, tX = (int(s) for s in target_shape)
+    iz = _nearest_exact_indices(Z, tZ, vol.device)
+    iy = _nearest_exact_indices(Y, tY, vol.device)
+    ix = _nearest_exact_indices(X, tX, vol.device)
+    return vol.index_select(-3, iz).index_select(-2, iy).index_select(-1, ix)
 
 
 def resize_masks(
@@ -172,24 +220,22 @@ def resize_masks(
     target_shape: Tuple[int, int, int],
 ) -> torch.Tensor:
     """
-    Resize binary masks with nearest neighbor interpolation.
+    Resize binary/stacked label masks with nearest-exact interpolation
+    (dtype-preserving; no float cast).
 
     Args:
-        masks: Tensor of shape (N, Z, Y, X) - N binary masks
+        masks: Tensor of shape (..., Z, Y, X) with at least one leading axis --
+            (N, Z, Y, X) binary masks / labelmap slices, or a (B, T, Z, Y, X)
+            padding mask under a TZYXC layout. Leading axes are untouched.
         target_shape: Target spatial shape (Z, Y, X)
 
     Returns:
-        Resized masks tensor of shape (N, tZ, tY, tX)
+        Resized masks tensor of shape (..., tZ, tY, tX)
     """
-    orig_dtype = masks.dtype
-    if masks.ndim == 4:
-        # (N, Z, Y, X) -> (N, 1, Z, Y, X)
-        m = masks.unsqueeze(1).float()
-        m = F.interpolate(m, size=target_shape, mode="nearest")
-        m = m.squeeze(1)
-        return m.to(orig_dtype)
+    if masks.ndim >= 4:
+        return _resize_nearest_exact_3d(masks, target_shape)
     else:
-        raise ValueError(f"Unsupported masks ndim={masks.ndim}; expected 4 dims.")
+        raise ValueError(f"Unsupported masks ndim={masks.ndim}; expected >= 4 dims (..., Z, Y, X).")
 
 
 def resize_label_map(
@@ -197,7 +243,8 @@ def resize_label_map(
     target_shape: Tuple[int, int, int],
 ) -> torch.Tensor:
     """
-    Resize label map with nearest neighbor interpolation to preserve integer labels.
+    Resize label map with nearest-exact interpolation, preserving integer labels
+    exactly (no float round-trip).
 
     Args:
         label_map: Tensor of shape (Z, Y, X) - single instance label map
@@ -206,13 +253,8 @@ def resize_label_map(
     Returns:
         Resized label map tensor of shape (tZ, tY, tX)
     """
-    orig_dtype = label_map.dtype
     if label_map.ndim == 3:
-        # (Z, Y, X) -> (1, 1, Z, Y, X)
-        m = label_map.unsqueeze(0).unsqueeze(0).float()
-        m = F.interpolate(m, size=target_shape, mode="nearest")
-        m = m.squeeze(0).squeeze(0)
-        return m.to(orig_dtype)
+        return _resize_nearest_exact_3d(label_map, target_shape)
     else:
         raise ValueError(f"Unsupported label_map ndim={label_map.ndim}; expected 3 dims.")
 

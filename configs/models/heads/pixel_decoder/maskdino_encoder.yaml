@@ -1,4 +1,3 @@
-BUILD: cell_observatory_platform.models.heads.pixel_decoders.MaskDINOEncoder.BUILD
 
 # no adapter
 input_shape_metadata:

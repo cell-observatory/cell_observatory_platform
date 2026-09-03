@@ -1,0 +1,180 @@
+# @package _global_
+defaults:
+  - /tasks/instance_segmentation
+  - /paths/local
+  - /hydra/overrides
+  - /clusters/janelia_a100
+  - /datasets/databases/base_database
+  - /datasets/transforms/ray_transforms
+  - /datasets/preprocessor/ray_preprocessor
+  - /datasets/pretrain_dataset_ray
+  - /datasets/preprocessor/sam2video_preprocessor
+  - /datasets/masking/mask_generator
+  - /models/meta_arch/sam/base_single_scale
+  - /models/backbones/masked_encoder/large
+  - /models/backbones/sam_backbone/sam_backbone
+  - /checkpoint/checkpoint
+  - /loggers/loggers
+  - /evaluation/base_evaluator
+  - /deepspeed/zero2
+  - /optimizers/adamw_torch
+  - /schedulers/warmup_cosine_decay
+  - /optimizations/models/mae/large
+  - /optimizations/optimizations
+  - /profiling/profiling
+  - _self_
+
+experiment_name: profiling_a100_sam2_baseline_128x384x512_new_mask_ids_to_masks_pointrend
+wandb_project: testing
+
+# debug_mode: true
+backend: DEEPSPEED
+distributed_framework: ray
+run_type: single_run
+job_type: train
+trainer: cell_observatory_platform.training.loops.EpochBasedTrainer
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+quantization: bfloat16
+dataset_dtype: float16
+storage_dtype: uint16
+dataset_layout_order: TZYXC
+seed: 42
+
+task: finetuning
+network: baseline
+engine: deepspeed
+
+# overrides
+# --------------------------------------------------------------------------------
+
+# Use the PointRend point-sampling loss path (labelmap-native).
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        use_point_sampling: true
+        num_points: 26000          # ~10% of 32x64x128 stride-4 grid
+        oversample_ratio: 3
+        importance_sample_ratio: 0.75
+        low_res_multimasks: true    # focal/dice on LOW-RES stream;
+                                     # dense iou_loss reads HIGH-RES forward-only
+
+clusters:
+  batch_size: 8 # gpus_per_worker (4) * worker_nodes (2)
+  worker_nodes: 2 # number of worker nodes
+  # gpus_per_worker: 8 # number of gpus per worker node
+  # cpus_per_gpu: 12 # number of cpu cores per gpu
+  # mem_per_cpu: 40000 # ram per cpu core
+  # ray_queue_memory: 0.2
+
+paths:
+  # base output directory for logs, checkpoints, etc.
+  outdir: ${paths.data_path}/testing/${experiment_name}
+  # server_path_override: /groups/betzig/betziglab/CellObservatoryData/synthetic_data/05052026_mem_cyto_1k_volumes_77_tiles/
+  server_path_override: /groups/betzig/betziglab/CellObservatoryData/synthetic_data/fixed/05052026_mem_cyto_1k_volumes_77_tiles/
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+
+datasets:
+  batch_size: ${clusters.batch_size_per_gpu}
+  train_shape: [1, 128, 384, 512, 5]
+  input_shape: [1, 128, 384, 512, 6]
+  patch_shape: [1, 16, 16, 16, null]
+  mask_channel_idx: 5
+  last_batch_policy: drop
+
+  split: 0.0
+  return_dataloader: true
+  distributed_sampler: true
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+
+  use_cached_hypercubes_dataframe: false
+  # tile_list:
+  #   - "000x_005y_001z.zarr"
+    # - "000x_005y_000z.zarr"
+  # roi_list: [314]
+  # timepoint_list: [0]
+  max_rows: 1000
+  cdf_threshold: null
+  cdf_target: null
+  selected_channel_localizations: ["membrane", "cytosol"]
+  has_annotations: true
+  synthetic_only: true
+
+  preprocessor:
+    # max_masks: 3 # For L4; 24GB VRAM
+    max_masks: 26 # For A100 / H100; 80GB VRAM
+    # max_masks: 42 # For H200; 128GB VRAM
+
+  databases:
+    dbname: local
+    protocol: cursor
+    verbose: true
+    diagnostic_verbose: true
+    sample_type: cube
+    data_channel_count: 6
+    # required_channel_key_patterns: {0: "membrane"}
+    required_channel_localizations: ["membrane", "cytosol"]
+    storage_location: abc
+
+  collate_fn:
+    _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.FinetuneCollatorActor
+    require_targets: true
+    dtype: ${dataset_dtype}
+    buffer_dtype: ${storage_dtype}
+    batch_size: ${clusters.batch_size_per_gpu}
+    input_shape: ${datasets.input_shape}
+    input_format: ${dataset_layout_order}
+    device_buffer_capacity: 2
+    pin_numa_node: ${datasets.pin_numa_node}
+    pin_pages: ${datasets.pin_memory}
+    bbox_data_format: zyxzyx
+    bbox_output_format: cxcyczwhd
+    debug: false
+    debug_device_idx: 0
+    normalize_bboxes: true
+    async_device_copy: false
+schedulers:
+  epochs: 10
+  # warmup: 30
+  # cooldown: 5
+
+optimizers:
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+  lr: 1e-4
+
+# hooks
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: DEEPSPEED
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: periodic_checkpointer
+    file_prefix: latest_model
+    backend: DEEPSPEED
+  # - name: best_checkpointer
+  #   checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  # - name: best_metric_saver
+  #   metric_name: ${evaluation.val_metric}
+  #   compare_fn: ${evaluation.val_mode}
+  #   eval_after_validation: true
+
+  # - name: torch_profiler
+  #   output_dir: ${paths.outdir}/profiler
+  #   schedule:
+  #     # skip_first: 10
+  #     warmup: 4
+  #     active: 2
+  #     repeat: 1
+  #     wait: 1
+  #   activities:
+  #     - CUDA
+  #     - CPU
+  #   save_tensorboard: true
+  #   shutdown_after_profile: true
+  #   save_memory_trace: true

@@ -91,11 +91,18 @@ class MSDeformAttnTransformerEncoderLayer(nn.Module):
                 )
             )
         else:
+            if padding_mask is not None and padding_mask.any():
+                raise NotImplementedError(
+                    "non-deformable fallback attention does not consume "
+                    "padding_mask -- with variable-size padding it would attend "
+                    "into padded voxels (the deformable path does not). Thread "
+                    "the mask in before enabling variable-size inputs here."
+                )
             x = x + self.dropout1(
                 # cross attention: query, key, value
                 self.attn(
-                    q, 
-                    q, 
+                    q,
+                    q,
                     x,
                     # TODO: support cross_attention_mask
                     # padding_mask,
@@ -377,23 +384,21 @@ class MaskDINOEncoder(nn.Module):
             features_list, masks, pos_embeddings_list
         )
 
-        # output from transformer is flattened, so we need to split per level
-        tokens_per_level = [None] * self.total_num_feature_levels
-        for i in range(self.total_num_feature_levels - 1):
-            # get number of tokens per level, i.e. D*H*W
-            tokens_per_level[i] = level_start_index[i + 1] - level_start_index[i]
-        tokens_per_level[self.total_num_feature_levels - 1] = (
-            transformer_features.shape[1] - level_start_index[self.total_num_feature_levels - 1]
-        )
+        # output from transformer is flattened, so we need to split per level.
+        # Use PYTHON ints for the split sizes: entries sliced from the CUDA
+        # level_start_index tensor are 0-dim CUDA tensors and torch.split would
+        # __index__-coerce each -> one GPU->CPU sync per level per forward.
+        level_shapes = [tuple(int(s) for s in f.shape[2:]) for f in features_list]
+        tokens_per_level = [d * h * w for (d, h, w) in level_shapes]
 
         # [bs, num_levels * tokens_per_level, embed_dim] -> List[Tensor[bs, tokens_in_level_i, C]]
         transformer_features = torch.split(transformer_features, tokens_per_level, dim=1)
 
         output_feature_maps = []
-        for transformer_feature, shape in zip(transformer_features, shapes):
+        for transformer_feature, (d, h, w) in zip(transformer_features, level_shapes):
             # unflatten sequence: [bs, tokens_in_level_i, C] -> [bs, C, tokens_in_level_i] -> [bs, C, D, H, W]
             output_map = transformer_feature.transpose(1, 2).view(
-                transformer_feature.shape[0], -1, shape[0], shape[1], shape[2]
+                transformer_feature.shape[0], -1, d, h, w
             )
             output_feature_maps.append(output_map)
 
@@ -552,13 +557,13 @@ class Mask2FormerPixelDecoder(nn.Module):
         lateral_convs, output_convs = [], []
         use_bias = norm == ""
         for in_channels in self.feature_maps_in_channels[: self.num_fpn_levels]:
-            # lateral_norm = get_norm(norm)(self.conv_dim)
-            # output_norm = get_norm(norm)(self.conv_dim)
-            # FIXME: How do we want to do this?
+            # Bind BEFORE the branch: with norm=None the names were previously
+            # unbound and the Conv3d construction below raised NameError.
+            lateral_norm = output_norm = None
             if norm not in [None, "LayerNorm"]:
                 raise NotImplementedError(f"Unsupported normalization layer: {norm}")
             elif norm == "LayerNorm":
-                lateral_norm = LayerNorm3D(self.conv_dim) 
+                lateral_norm = LayerNorm3D(self.conv_dim)
                 output_norm = LayerNorm3D(self.conv_dim)
             lateral_conv = Conv3d(
                 in_channels,
@@ -629,22 +634,21 @@ class Mask2FormerPixelDecoder(nn.Module):
         )
 
         # We are going to split the transformer features back into a feature
-        # pyramid of feature maps, here we determine the number of tokens per level
-        tokens_per_level = [None] * self.transformer_num_feature_levels
-        for i in range(self.transformer_num_feature_levels):
-            if i < self.transformer_num_feature_levels - 1:
-                tokens_per_level[i] = level_start_index[i + 1] - level_start_index[i]
-            else:
-                tokens_per_level[i] = transformer_features.shape[1] - level_start_index[i]
+        # pyramid of feature maps. Use PYTHON ints for the split sizes: entries
+        # sliced from the CUDA level_start_index tensor are 0-dim CUDA tensors
+        # and torch.split would __index__-coerce each -> one GPU->CPU sync per
+        # level per forward.
+        level_shapes = [tuple(int(s) for s in f.shape[2:]) for f in features_list]
+        tokens_per_level = [d * h * w for (d, h, w) in level_shapes]
 
         # [bs, sum(tokens_per_level), embed_dim] -> List[Tensor[bs, tokens_in_level_i, C]]
         transformer_features = torch.split(transformer_features, tokens_per_level, dim=1)
 
         output_map = []
-        for transformer_feature, shape in zip(transformer_features, spatial_shapes):
+        for transformer_feature, (d, h, w) in zip(transformer_features, level_shapes):
             output_map.append(
                 transformer_feature.transpose(1, 2).view(
-                    transformer_feature.shape[0], -1, shape[0], shape[1], shape[2]
+                    transformer_feature.shape[0], -1, d, h, w
                 )
             )
 
