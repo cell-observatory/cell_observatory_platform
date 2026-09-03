@@ -160,3 +160,41 @@ class TestRunStepContract:
         t, _, _ = _make_step_trainer()
         with pytest.raises(AttributeError, match="get"):
             t.run_step([_sample(0), _sample(1)])
+
+
+class TestTrainStateDict:
+    """The trainer is the DCP ``train_state`` Stateful: DCP plans a resume from
+    the keys ``state_dict()`` emits BEFORE the checkpoint is read, so the
+    best-metric lineage keys must be present even while unset."""
+
+    def _bare(self):
+        t = object.__new__(TorchNativeTrainer)
+        t._iter, t._epoch, t._hooks = 40, 2, []
+        return t
+
+    def test_lineage_keys_present_before_best_metric_exists(self):
+        sd = self._bare().state_dict()
+        assert sd == {"iteration": 40, "epoch": 2, "best_metric": None,
+                      "best_metric_epoch": None, "best_metric_iter": None}
+
+    def test_saved_lineage_round_trips_into_a_fresh_trainer(self):
+        src = self._bare()
+        src.best_metric, src.best_metric_epoch, src.best_metric_iter = 0.25, 1, 30
+        dst = self._bare()
+        dst.load_state_dict(src.state_dict())
+        assert (dst._iter, dst._epoch, dst.best_metric, dst.best_metric_epoch, dst.best_metric_iter) == (40, 2, 0.25, 1, 30)
+
+    def test_none_lineage_does_not_clobber(self):
+        dst = self._bare()
+        dst.best_metric = 0.5
+        dst.load_state_dict({"iteration": 1, "epoch": 0, "best_metric": None})
+        assert dst.best_metric == 0.5 and not hasattr(dst, "best_metric_epoch")
+
+
+def test_val_device_buffer_prefers_the_validation_collator():
+    from types import SimpleNamespace
+    from cell_observatory_platform.training.loops import _val_device_buffer
+    train_buf, val_buf = object(), object()
+    assert _val_device_buffer({"val_collate_fn": None}, train_buf) is train_buf
+    assert _val_device_buffer({}, train_buf) is train_buf
+    assert _val_device_buffer({"val_collate_fn": SimpleNamespace(device_buffer=val_buf)}, train_buf) is val_buf

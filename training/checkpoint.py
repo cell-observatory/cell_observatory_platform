@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Union
 
 import ray
 import torch
+from omegaconf import DictConfig, OmegaConf
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.stateful import Stateful
@@ -700,17 +701,64 @@ class DCPCheckpointManager:
         sd.update(self.states[MODEL].state_dict())
         return sd
 
+    def _load_planner(self, sd: Dict[str, Any], checkpoint_id: str):
+        """Compare the keys this load expects with the keys the checkpoint holds.
+
+        Optimizer state exists only for parameters that have received a
+        gradient by save time; a fresh optimizer at load time is initialized
+        for EVERY parameter first (torch's ``_init_optim_state``), so DCP would
+        demand ``optimizer.state.<param>.*`` for parameters the saved run never
+        updated and abort. Those entries are allowed to stay at their fresh
+        initialization (zero moments); every other missing key is an error.
+        """
+        from torch.distributed.checkpoint._nested_dict import flatten_state_dict
+        from torch.distributed.checkpoint.default_planner import DefaultLoadPlanner
+
+        plain = {k: (v.state_dict() if isinstance(v, Stateful) else v) for k, v in sd.items()}
+        expected, _ = flatten_state_dict(plain)
+        held = set(dcp.FileSystemReader(checkpoint_id).read_metadata().state_dict_metadata)
+        missing = sorted(k for k in expected if k not in held)
+        if not missing:
+            return None
+        prefix = f"{OPTIMIZER}.state."
+        # lineage keys the trainer emits as None until a validation improves;
+        # older checkpoints were written without them
+        optional = {f"{TRAIN_STATE}.best_metric_epoch", f"{TRAIN_STATE}.best_metric_iter"}
+        other = [k for k in missing if not k.startswith(prefix) and k not in optional]
+        if other:
+            raise RuntimeError(
+                f"checkpoint {checkpoint_id} lacks {len(other)} required key(s): "
+                f"{other[:20]}{' ...' if len(other) > 20 else ''}"
+            )
+        params = sorted({k[len(prefix):].rsplit(".", 1)[0] for k in missing if k.startswith(prefix)})
+        if params:
+            logger.warning(
+                f"[DCPCheckpointManager] {checkpoint_id} holds no optimizer state for "
+                f"{len(params)} parameter(s) that never received a gradient before the save; "
+                f"they resume with fresh optimizer state: {params}"
+            )
+        skipped = sorted(set(missing) & optional)
+        if skipped:
+            logger.info(f"[DCPCheckpointManager] {checkpoint_id} predates lineage key(s) {skipped}; left unset")
+        return DefaultLoadPlanner(allow_partial_load=True)
+
     def _build_metadata(self, curr_step: int) -> Dict[str, Any]:
         trainer = self.states.get(TRAIN_STATE, None)
         if trainer is None:
             return default_metadata(reason="no train_state registered")
+        live_cfg = getattr(trainer, "cfg", None)
         return build_metadata(
             model=self.model_parts[0],
-            cfg=getattr(trainer, "pristine_cfg", getattr(trainer, "cfg", {})),
+            cfg=getattr(trainer, "pristine_cfg", live_cfg or {}),
             epoch=getattr(trainer, "_epoch", None),
             iter_=curr_step,
             best_loss=getattr(trainer, "best_metric", None),
             trainer_state=trainer.state_dict(),
+            # the resolved (frozen) vocab lives in the live config, not the pristine copy
+            channel_vocab=(
+                OmegaConf.select(live_cfg, "datasets.preprocessor.channel_vocab")
+                if isinstance(live_cfg, DictConfig) else None
+            ),
         )
 
     def _should_save(self, curr_step: int, force: bool) -> bool:
@@ -812,9 +860,11 @@ class DCPCheckpointManager:
 
         if model_only:
             sd = self.states[MODEL].state_dict()
+            planner = None
         else:
             sd = self._flattened_sd(include_optimizer=include_optimizer)
-        dcp.load(sd, checkpoint_id=checkpoint_id)
+            planner = self._load_planner(sd, checkpoint_id)
+        dcp.load(sd, checkpoint_id=checkpoint_id, planner=planner)
         # DCP cannot route the flattened model keys back through a Stateful --
         # route them manually (torchtitan does the same).
         self.states[MODEL].load_state_dict(sd)

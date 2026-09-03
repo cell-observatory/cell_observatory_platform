@@ -383,7 +383,7 @@ class PatchEmbedding(nn.Module):
             return projections
 
 
-# FIXME: not fully supported by models and maskgenerator yet.
+# TODO: not fully supported by models and maskgenerator yet.
 class ChannelAdaptivePatchEmbedding(nn.Module):
     """
     Variable-channel patch embedding.
@@ -399,7 +399,23 @@ class ChannelAdaptivePatchEmbedding(nn.Module):
         channel_fusion: Literal["concat", "attn_pool"] = "concat",
         attn_pool_num_heads: int = 8,
         attn_drop: float = 0.0,
+        channel_embed: Literal["single", "localization", "fluorophore", "factorized"] = "single",
+        localization_vocab_size: Optional[int] = None,
+        fluorophore_vocab_size: Optional[int] = None,
+        channel_embed_init_std: float = 0.02,
     ):
+        """
+        Args:
+            channel_embed: what a channel id indexes.
+                ``single``: one ``nn.Embedding(max_channels)``; ids are ``[C]`` or
+                ``[B, C]`` ints (position-style ids).
+                ``localization`` / ``fluorophore`` / ``factorized``: ids are token ids
+                ``[C, 2]`` or ``[B, C, 2]`` (column 0 = localization id, column 1 =
+                fluorophore id, row 0 of each table is ``<unk>``); the named table(s)
+                are looked up and, for ``factorized``, summed.
+            localization_vocab_size / fluorophore_vocab_size: table sizes for the
+                token modes (vocab length + spare rows for tokens appended later).
+        """
         super().__init__()
 
         self.input_fmt = input_fmt
@@ -410,6 +426,7 @@ class ChannelAdaptivePatchEmbedding(nn.Module):
         self.max_channels = max_channels
         self.use_channel_embed = use_channel_embed
         self.channel_fusion = channel_fusion
+        self.channel_embed_mode = channel_embed
 
         self.temporal_patch_size, self.axial_patch_size, self.lateral_patch_size = get_patch_sizes(
             input_format=input_fmt,
@@ -427,10 +444,26 @@ class ChannelAdaptivePatchEmbedding(nn.Module):
         self.pixels_per_patch = int(P)
         self.proj = nn.Linear(self.pixels_per_patch, embed_dim)
 
+        self.channel_embed = None
+        self.localization_embed = None
+        self.fluorophore_embed = None
         if use_channel_embed:
-            self.channel_embed = nn.Embedding(max_channels, embed_dim)
-        else:
-            self.channel_embed = None
+            if channel_embed == "single":
+                self.channel_embed = nn.Embedding(max_channels, embed_dim)
+                nn.init.normal_(self.channel_embed.weight, std=channel_embed_init_std)
+            elif channel_embed in ("localization", "fluorophore", "factorized"):
+                if channel_embed in ("localization", "factorized"):
+                    if not localization_vocab_size:
+                        raise ValueError(f"channel_embed={channel_embed!r} needs localization_vocab_size")
+                    self.localization_embed = nn.Embedding(int(localization_vocab_size), embed_dim)
+                    nn.init.normal_(self.localization_embed.weight, std=channel_embed_init_std)
+                if channel_embed in ("fluorophore", "factorized"):
+                    if not fluorophore_vocab_size:
+                        raise ValueError(f"channel_embed={channel_embed!r} needs fluorophore_vocab_size")
+                    self.fluorophore_embed = nn.Embedding(int(fluorophore_vocab_size), embed_dim)
+                    nn.init.normal_(self.fluorophore_embed.weight, std=channel_embed_init_std)
+            else:
+                raise ValueError(f"Unsupported channel_embed: {channel_embed!r}")
 
         if channel_fusion == "attn_pool":
             self.pool_ln = nn.LayerNorm(embed_dim)
@@ -476,6 +509,57 @@ class ChannelAdaptivePatchEmbedding(nn.Module):
                 f"min={int(ids.min())}, max={int(ids.max())}"
             )
         return ids
+
+    def _resolve_token_ids(
+        self, B: int, C: int, device, channel_ids: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        """Token-mode ids: ``[C, 2]`` broadcast to ``[B, C, 2]`` or ``[B, C, 2]`` as is.
+
+        Column 0 is the localization id, column 1 the fluorophore id. There is no
+        implicit default: a token mode without ids would silently embed every
+        channel as ``<unk>``.
+        """
+        if channel_ids is None:
+            raise ValueError(
+                f"channel_embed={self.channel_embed_mode!r} requires channel_ids "
+                "([C, 2] or [B, C, 2] token ids); got None"
+            )
+        if channel_ids.ndim == 2:
+            if tuple(channel_ids.shape) != (C, 2):
+                raise ValueError(f"channel_ids must be [C,2]={(C, 2)}, got {tuple(channel_ids.shape)}")
+            ids = channel_ids.to(device=device, dtype=torch.long).unsqueeze(0).expand(B, -1, -1)
+        elif channel_ids.ndim == 3:
+            if tuple(channel_ids.shape) != (B, C, 2):
+                raise ValueError(f"channel_ids must be [B,C,2]={(B, C, 2)}, got {tuple(channel_ids.shape)}")
+            ids = channel_ids.to(device=device, dtype=torch.long)
+        else:
+            raise ValueError(f"channel_ids must be [C,2] or [B,C,2], got ndim={channel_ids.ndim}")
+        if ids.min().item() < 0:
+            raise ValueError(f"channel_ids must be non-negative, got min={int(ids.min())}")
+        for col, emb, kind in ((0, self.localization_embed, "localization"), (1, self.fluorophore_embed, "fluorophore")):
+            if emb is not None and ids[..., col].max().item() >= emb.num_embeddings:
+                raise ValueError(
+                    f"{kind} id out of range: max={int(ids[..., col].max())} >= "
+                    f"{kind}_vocab_size={emb.num_embeddings}"
+                )
+        return ids
+
+    def _channel_embedding(
+        self, B: int, C: int, device, channel_ids: Optional[torch.Tensor]
+    ) -> Optional[torch.Tensor]:
+        """``[B, C, D]`` additive channel embedding, or ``None`` when disabled."""
+        if not self.use_channel_embed:
+            return None
+        if self.channel_embed_mode == "single":
+            return self.channel_embed(self._resolve_channel_ids(B, C, device, channel_ids))
+        ids = self._resolve_token_ids(B, C, device, channel_ids)
+        ce = None
+        if self.localization_embed is not None:
+            ce = self.localization_embed(ids[..., 0])
+        if self.fluorophore_embed is not None:
+            fe = self.fluorophore_embed(ids[..., 1])
+            ce = fe if ce is None else ce + fe
+        return ce
 
     def patchify_per_channel(self, x: torch.Tensor) -> tuple[torch.Tensor, tuple]:
         """
@@ -597,9 +681,8 @@ class ChannelAdaptivePatchEmbedding(nn.Module):
         tokens = self.proj(patches)
 
         # add channel embedding: [B,C,D] -> broadcast over N
-        if self.channel_embed is not None:
-            ids = self._resolve_channel_ids(B, C, tokens.device, channel_ids)
-            ce = self.channel_embed(ids)              # [B,C,D]
+        ce = self._channel_embedding(B, C, tokens.device, channel_ids)
+        if ce is not None:
             tokens = tokens + ce.unsqueeze(1)         # [B,N,C,D]
 
         if self.channel_fusion == "concat":

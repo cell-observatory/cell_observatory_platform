@@ -22,6 +22,7 @@ import pyarrow as pa
 #   channel_idx     the zarr C-axis index for this position -- may be SPARSE
 #   channel_type    data | mask
 #   localization    biology; JSON null on mask channels (roi_channels XOR check)
+#   fluorophore     dye (COALESCE(resolved nk, free text)); JSON null on mask channels
 #   annotation_type instance | semantic; JSON null on data channels
 # so position k of each describes channel `channel_idx[k]`.
 LOADER_COLUMNS: Final[tuple[str, ...]] = (
@@ -30,7 +31,7 @@ LOADER_COLUMNS: Final[tuple[str, ...]] = (
     "z_start", "y_start", "x_start",
     "z_size", "y_size", "x_size",
     "channel_size", "data_channel_count",
-    "channel_idx", "channel_type", "localization", "annotation_type",
+    "channel_idx", "channel_type", "localization", "fluorophore", "annotation_type",
 )
 
 # Columns FinetuneCollatorActor needs to build per-instance targets and to read

@@ -136,3 +136,32 @@ def test_default_metadata_has_full_schema():
 
 def test_metadata_path_for_tag():
     assert metadata_path_for_tag("/tmp/ckpt", "best_model").name == CHECKPOINT_META_FILENAME
+
+
+def test_channel_vocab_is_surfaced_at_top_level():
+    """The frozen channel vocab travels in hydra_config; build_metadata also lifts it
+    to a top-level key so warm starts can read it without walking the config."""
+    table = {"localization": {"<unk>": 0, "membrane": 1}, "fluorophore": {"<unk>": 0}}
+    cfg = OmegaConf.create({"datasets": {"preprocessor": {"channel_vocab": table}}})
+    meta = build_metadata(nn.Linear(2, 2), cfg, epoch=0, iter_=0, best_loss=None)
+    assert meta["channel_vocab"] == table
+    meta_none = build_metadata(nn.Linear(2, 2), OmegaConf.create({}), epoch=0, iter_=0, best_loss=None)
+    assert meta_none["channel_vocab"] is None
+
+
+def test_explicit_channel_vocab_overrides_the_pristine_config():
+    """The resolver injects the frozen vocab into the LIVE config after the
+    trainer's pristine copy is taken, so the hook passes it explicitly."""
+    import torch
+    from omegaconf import OmegaConf
+    from cell_observatory_platform.training.checkpoint_metadata import build_metadata
+    cfg = OmegaConf.create({"experiment_name": "e", "wandb_project": "p",
+                            "datasets": {"preprocessor": {"channel_vocab": None}}})
+    vocab = {"localization": {"<unk>": 0, "membrane": 1}, "fluorophore": {"<unk>": 0},
+             "table_size": {"localization": 17, "fluorophore": 16}}
+    meta = build_metadata(model=torch.nn.Linear(2, 2), cfg=cfg, epoch=0, iter_=1, best_loss=None,
+                          channel_vocab=OmegaConf.create(vocab))
+    assert meta["channel_vocab"] == vocab
+    assert meta["hydra_config"]["datasets"]["preprocessor"]["channel_vocab"] is None
+    meta2 = build_metadata(model=torch.nn.Linear(2, 2), cfg=cfg, epoch=0, iter_=1, best_loss=None)
+    assert meta2["channel_vocab"] is None

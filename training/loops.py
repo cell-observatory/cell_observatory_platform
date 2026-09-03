@@ -112,6 +112,14 @@ def train_loop_per_worker(config):
             if hasattr(trainer_per_worker, 'best_metric') else None}
 
 
+def _val_device_buffer(dataloader_config: dict, device_buffer):
+    """The device buffer validation batches are freed into: the validation
+    collator's own buffer when the dataloader built one (step-cadence
+    validation), else the shared train buffer."""
+    val_collate_fn = dataloader_config.get("val_collate_fn")
+    return val_collate_fn.device_buffer if val_collate_fn is not None else device_buffer
+
+
 class BaseTrainer:
     """
     Base class for iterative trainer with hooks.
@@ -290,14 +298,17 @@ class BaseTrainer:
             h.after_test_step(*args, **kwargs)
 
     def state_dict(self):
-        ret = {"iteration": self._iter, "epoch": self._epoch}
-
-        if hasattr(self, "best_metric"):
-            ret["best_metric"] = self.best_metric
-        if hasattr(self, "best_metric_epoch"):
-            ret["best_metric_epoch"] = self.best_metric_epoch
-        if hasattr(self, "best_metric_iter"):
-            ret["best_metric_iter"] = self.best_metric_iter
+        # Always emit the best-metric lineage keys (None until they exist): DCP
+        # plans a load from THIS dict's keys, and on resume it runs before
+        # best_metric is assigned -- a key left out here is never read back
+        # from the checkpoint, however faithfully it was saved.
+        ret = {
+            "iteration": self._iter,
+            "epoch": self._epoch,
+            "best_metric": getattr(self, "best_metric", None),
+            "best_metric_epoch": getattr(self, "best_metric_epoch", None),
+            "best_metric_iter": getattr(self, "best_metric_iter", None),
+        }
 
         hooks_state = {}
         for h in self._hooks:
@@ -316,12 +327,9 @@ class BaseTrainer:
         self._iter = state_dict["iteration"]
         self._epoch = state_dict["epoch"]
 
-        if "best_metric" in state_dict:
-            self.best_metric = state_dict["best_metric"]
-        if "best_metric_epoch" in state_dict:
-            self.best_metric_epoch = state_dict["best_metric_epoch"]
-        if "best_metric_iter" in state_dict:
-            self.best_metric_iter = state_dict["best_metric_iter"]
+        for key in ("best_metric", "best_metric_epoch", "best_metric_iter"):
+            if state_dict.get(key) is not None:
+                setattr(self, key, state_dict[key])
 
         for key, value in state_dict.get("hooks", {}).items():
             for h in self._hooks:
@@ -470,6 +478,7 @@ class EpochBasedTrainer(ValidationLoopMixin, BaseTrainer):
 
         # initialize dataset and dataloader
         _, _, self.dataloader_config, self.host_buffer_actor, self.device_buffer, _ = get_dataloader(cfg)
+        self.val_device_buffer = _val_device_buffer(self.dataloader_config, self.device_buffer)
 
         self.steps_per_epoch, self.val_steps_per_epoch = get_steps_per_epoch(
             config=cfg,
@@ -934,6 +943,7 @@ class TorchNativeTrainer(ValidationLoopMixin, BaseTrainer):
         _, _, self.dataloader_config, self.host_buffer_actor, self.device_buffer, _ = get_dataloader(
             cfg, dp_degree=self.dp_degree, dp_rank=self.dp_rank
         )
+        self.val_device_buffer = _val_device_buffer(self.dataloader_config, self.device_buffer)
         self.steps_per_epoch, self.val_steps_per_epoch = get_steps_per_epoch(
             config=cfg,
             gradient_accumulation_steps=self.gradient_accumulation_steps,

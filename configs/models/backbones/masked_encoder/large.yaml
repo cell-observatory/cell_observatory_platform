@@ -27,3 +27,18 @@ weight_init_type: mae
 mlp_wide_silu: false
 
 out_layers: null
+
+# How the C signal channels enter the ViT.
+#   joint            one nn.Linear over the flattened C x patch (C baked into the weight)
+#   channel_adaptive per-channel patch tokens + token embedding (localization + fluorophore),
+#                    fused per patch (attn_pool: same token count as joint; concat: C x tokens)
+patch_embed_type: joint
+patch_embed_args: null
+# channel_adaptive example:
+# patch_embed_args:
+#   channel_fusion: attn_pool          # attn_pool | concat
+#   attn_pool_num_heads: 8
+#   channel_embed: factorized          # none | localization | fluorophore | factorized
+#   channel_vocab: null                # null -> derived from api.roi_channels at startup and frozen
+#                                      # into the checkpoint; or a table / path to channel_vocab.json
+#   vocab_extra_slots: 16              # spare embedding rows so appended tokens need no resize

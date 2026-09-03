@@ -201,6 +201,10 @@ class ResolvedSource:
     with_targets: bool
     location_id: int
     location_name: str
+    # cubes: dry_lab.cube_shapes.id of the requested shape. The training views
+    # compute the per-row sizes (clipped to the tile), so a size predicate alone
+    # cannot prune the shape-partitioned cube tables; the id can.
+    shape_id: Optional[int] = None
 
     @property
     def shape_key(self) -> str:
@@ -495,12 +499,18 @@ class FilterBuilder:
             "Y": resolved.requested_y_size,
             "X": resolved.requested_x_size,
         }
-        return [
+        out: list[tuple[str, str]] = []
+        if resolved.view.is_cube and resolved.shape_id is not None:
+            # partition key of the cube tables; the size equalities below are
+            # evaluated on the view's clipped sizes and cannot prune on their own
+            out.append((f"shape_id={int(resolved.shape_id)}", f"{alias}.shape_id = {int(resolved.shape_id)}"))
+        out.extend(
             (f"{_AXIS_COLUMN[ax]}={int(sizes[ax])}",
              f"{alias}.{_AXIS_COLUMN[ax]} = {int(sizes[ax])}")
             for ax in ("T", "Z", "Y", "X")
             if ax in resolved.view.fixed_axes
-        ]
+        )
+        return out
 
     @classmethod
     def _labeled_non_channel_clauses(
@@ -931,9 +941,14 @@ class TableResolver:
 
         location_name = cls._storage_location_name(config)
         location_id = -1
+        shape_id = None
         if db_client is not None:
             db_client.assert_relation_exists(view.view, schema=view.schema)
             location_id = resolve_location(db_client, location_name)
+            if view.is_cube:
+                shape_id = resolve_cube_shape_id(
+                    db_client, requested_time, requested_z, requested_y, requested_x
+                )
 
         return ResolvedSource(
             view=view,
@@ -945,6 +960,7 @@ class TableResolver:
             with_targets=bool(config.datasets.has_annotations),
             location_id=location_id,
             location_name=location_name,
+            shape_id=shape_id,
         )
 
 
@@ -957,6 +973,22 @@ def fetch_storage_locations(db_client) -> dict[str, int]:
         str(n): int(i)
         for i, n in zip(table["id"].to_pylist(), table["name"].to_pylist())
     }
+
+
+def resolve_cube_shape_id(db_client, t: int, z: int, y: int, x: int) -> int:
+    """``dry_lab.cube_shapes.id`` for an exact (T, Z, Y, X); loud when absent."""
+    table = db_client.execute_arrow(
+        "SELECT id, time_size, z_size, y_size, x_size FROM dry_lab.cube_shapes ORDER BY id"
+    )
+    rows = list(zip(*(table[c].to_pylist() for c in ("id", "time_size", "z_size", "y_size", "x_size"))))
+    for sid, ts, zs, ys, xs in rows:
+        if (int(ts), int(zs), int(ys), int(xs)) == (int(t), int(z), int(y), int(x)):
+            return int(sid)
+    known = ", ".join(f"{sid}: {ts}x{zs}x{ys}x{xs}" for sid, ts, zs, ys, xs in rows) or "none"
+    raise ValueError(
+        f"No dry_lab.cube_shapes row for the requested cube {t}x{z}x{y}x{x} (T x Z x Y x X); "
+        f"known shapes: {known}. datasets.input_shape must name a cut cube shape."
+    )
 
 
 def resolve_location(db_client, name: str) -> int:
@@ -1038,30 +1070,6 @@ class SqlQueryPlanner:
         where_sql = FilterBuilder.build_where_sql(resolved, query, alias=alias)
         order_sql = ", ".join(f"{alias}.{name}" for name in view.order_by)
 
-        if query.max_rows is not None and query.row_sample_seed is not None:
-            # Seeded pseudo-random subset: rank rows by md5(natural key || seed),
-            # keep max_rows, then restore natural order so row_id (and resume)
-            # are as stable as the unsampled query. Deterministic across
-            # restores, unlike TABLESAMPLE.
-            key_sql = ", ".join(f"{alias}.{name}::text" for name in view.order_by)
-            sampled_order = ", ".join(f"q.{name}" for name in view.order_by)
-            sql = f"""
-            SELECT
-                row_number() OVER (ORDER BY {sampled_order}) - 1 AS row_id,
-                q.*
-            FROM (
-                SELECT
-                    {select_sql}
-                FROM {view.qualified_name} {alias}
-                {cls._location_join(alias, resolved.location_id)}
-                WHERE {where_sql}
-                ORDER BY md5(concat_ws('/', {key_sql}) || '/{int(query.row_sample_seed)}')
-                LIMIT {int(query.max_rows)}
-            ) q
-            ORDER BY {sampled_order}
-            """
-            return sql
-
         sql = f"""
             SELECT
                 row_number() OVER (ORDER BY {order_sql}) - 1 AS row_id,
@@ -1071,9 +1079,99 @@ class SqlQueryPlanner:
             WHERE {where_sql}
             ORDER BY {order_sql}
         """
-        if query.max_rows is not None:
+        if query.max_rows is not None and query.row_sample_seed is None:
             sql += f"\nLIMIT {int(query.max_rows)}"
         return sql
+
+    @classmethod
+    def build_key_sample_sql(cls, resolved: ResolvedSource, query: QuerySpec) -> str:
+        """Phase 1 of a max_rows subset: the NARROW natural key of every candidate
+        row, first max_rows in natural key order, or ranked by md5(key || seed)
+        when ``row_sample_seed`` is set (deterministic across restores, unlike
+        TABLESAMPLE). Sorting only the key keeps this cheap; a LIMIT over the
+        full projection (JSONB annotations, channel arrays, the view's lateral
+        joins) of ~1e6 rows ran past the statement timeout in either order."""
+        alias, view = "s", resolved.view
+        where_sql = FilterBuilder.build_where_sql(resolved, query, alias=alias)
+        key_select = ", ".join(f"{alias}.{name}" for name in view.order_by)
+        if query.row_sample_seed is None:
+            order_sql = key_select
+        else:
+            key_sql = ", ".join(f"{alias}.{name}::text" for name in view.order_by)
+            order_sql = f"md5(concat_ws('/', {key_sql}) || '/{int(query.row_sample_seed)}')"
+        return f"""
+            SELECT {key_select}
+            FROM {view.qualified_name} {alias}
+            {cls._location_join(alias, resolved.location_id)}
+            WHERE {where_sql}
+            ORDER BY {order_sql}
+            LIMIT {int(query.max_rows)}
+        """
+
+    @classmethod
+    def build_sql_for_keys(cls, resolved: ResolvedSource, query: QuerySpec, keys: pa.Table) -> str:
+        """Phase 2 for ONE ROI: the full projection of exactly the sampled keys of
+        that ROI. ``roi_id = <id>`` (a single equality) is what the planner turns
+        into an index condition on the partitioned cube scans, so the view's
+        per-row lateral joins run only for that ROI's cubes; an ``IN (...)`` list
+        over several ROIs is planned as a full scan instead. The key-tuple VALUES
+        list then pins the rows. No row_id here: the caller numbers the
+        concatenated result in natural order."""
+        alias, view = "s", resolved.view
+        cols = list(view.order_by)
+        rows = list(zip(*(keys[c].to_pylist() for c in cols)))
+        if not rows:
+            raise ValueError("build_sql_for_keys: no keys")
+        roi_ids = {r[cols.index("roi_id")] for r in rows}
+        if len(roi_ids) != 1:
+            raise ValueError(f"build_sql_for_keys: keys must belong to one roi_id, got {sorted(roi_ids)}")
+        (roi_id,) = roi_ids
+        def lit(v):
+            return "NULL" if v is None else (f"'{str(v).replace(chr(39), chr(39)*2)}'" if isinstance(v, str) else str(int(v)))
+        values = ", ".join("(" + ", ".join(lit(v) for v in r) + ")" for r in rows)
+        select_sql = ",\n                ".join(cls._projection(resolved, alias))
+        where_sql = FilterBuilder.build_where_sql(resolved, query, alias=alias)
+        key_tuple = ", ".join(f"{alias}.{name}" for name in cols)
+        return f"""
+            SELECT
+                {select_sql}
+            FROM {view.qualified_name} {alias}
+            {cls._location_join(alias, resolved.location_id)}
+            WHERE {where_sql}
+              AND {alias}.roi_id = {int(roi_id)}
+              AND ({key_tuple}) IN (VALUES {values})
+        """
+
+    @classmethod
+    def fetch_rows(cls, db_client, resolved: ResolvedSource, query: QuerySpec) -> pa.Table:
+        """The training rows for (resolved, query): one query normally; for a
+        max_rows subset (natural order or seeded) a narrow key sample, then one
+        small query per sampled ROI, concatenated, natural-ordered and numbered
+        like the single query."""
+        if query.max_rows is None:
+            return db_client.execute_arrow(cls.build_sql(resolved, query))
+        t0 = time.perf_counter()
+        keys = db_client.execute_arrow(cls.build_key_sample_sql(resolved, query))
+        cols = list(resolved.view.order_by)
+        roi_col = keys["roi_id"].to_pylist()
+        roi_ids = sorted({r for r in roi_col if r is not None})
+        parts = []
+        for roi in roi_ids:
+            mask = pa.array([r == roi for r in roi_col])
+            parts.append(db_client.execute_arrow(cls.build_sql_for_keys(resolved, query, keys.filter(mask))))
+        logger.info(
+            "[MappedTable] max_rows subset: %s keys over %s ROIs fetched in %.1fs (seed %s)",
+            keys.num_rows, len(roi_ids), time.perf_counter() - t0, query.row_sample_seed,
+        )
+        if not parts:
+            empty = db_client.execute_arrow(cls.build_sql(resolved, query) + "\nLIMIT 0")
+            return empty
+        table = pa.concat_tables(parts)
+        table = table.sort_by([(c, "ascending") for c in cols])
+        row_id = pa.array(np.arange(table.num_rows, dtype=np.int64))
+        if "row_id" in table.column_names:
+            table = table.drop_columns(["row_id"])
+        return table.add_column(0, "row_id", row_id)
 
     @classmethod
     def build_missing_channel_metadata_diagnostic_sql(
@@ -1290,9 +1388,8 @@ class MappedTable:
                         "(set datasets.databases.diagnostic_verbose=true to enable)",
                         resolved.view.qualified_name,
                     )
-            sql = SqlQueryPlanner.build_sql(resolved, query)
             fetch_t0 = time.perf_counter()
-            table = db_client.execute_arrow(sql)
+            table = SqlQueryPlanner.fetch_rows(db_client, resolved, query)
             table = cls._apply_server_path_override(table, server_path_override)
             fetch_elapsed = time.perf_counter() - fetch_t0
             logger.info(

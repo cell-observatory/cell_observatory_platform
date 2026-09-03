@@ -1016,6 +1016,19 @@ class SAM2Base(torch.nn.Module):
         return pred_masks
 
 
+def _channel_ids_per_frame(data_sample: dict) -> Optional[torch.Tensor]:
+    """``metainfo["channel_ids"]`` expanded from per-video ``[B, C, 2]`` to the
+    flat frame batch ``[B*T, C, 2]`` (frame order ``b*T + t``), or ``None``."""
+    ids = (data_sample.get("metainfo") or {}).get("channel_ids")
+    if ids is None:
+        return None
+    x = data_sample["data_tensor"]
+    n_frames = int(x.shape[0]) * int(x.shape[1]) if x.dim() == 6 else int(x.shape[0])
+    if int(ids.shape[0]) != n_frames:
+        ids = ids.repeat_interleave(n_frames // int(ids.shape[0]), dim=0)
+    return ids
+
+
 class SAM2(SAM2Base):
     def __init__(
         self,
@@ -1258,7 +1271,11 @@ class SAM2(SAM2Base):
         # Compute the image features on those unique image ids
         # image = img_batch[unique_img_ids]
         image = data_sample["data_tensor"][unique_img_ids]
-        backbone_out = self.forward_image({"data_tensor": image})
+        frame_ids = _channel_ids_per_frame(data_sample)
+        backbone_out = self.forward_image({
+            "data_tensor": image,
+            "metainfo": {"channel_ids": None if frame_ids is None else frame_ids[unique_img_ids]},
+        })
         (
             _,
             vision_feats,
@@ -1726,7 +1743,11 @@ class SAM2(SAM2Base):
             f"volume per call, got (B, T) = {tuple(data_sample['data_tensor'].shape[:2])}"
         )
 
-        mask_data = self._predict_generate_masks(vol)
+        frame_ids = _channel_ids_per_frame(data_sample)
+        mask_data = (
+            self._predict_generate_masks(vol) if frame_ids is None
+            else self._predict_generate_masks(vol, channel_ids=frame_ids)
+        )
         # Empty-detection guard: an image with no AMG masks yields a keyless MaskData,
         # so mask_data["masks"] below would KeyError. Emit an all-background label map
         # + empty (N=0) per-object tensors. The key set must match the non-empty path
@@ -1811,8 +1832,12 @@ class SAM2(SAM2Base):
 
         was_training = self.training
         self.eval()
+        frame_ids = _channel_ids_per_frame(data_sample)
         try:
-            mask_data = self._predict_generate_masks(vol)
+            mask_data = (
+                self._predict_generate_masks(vol) if frame_ids is None
+                else self._predict_generate_masks(vol, channel_ids=frame_ids)
+            )
         finally:
             if was_training:
                 self.train()
@@ -1860,9 +1885,12 @@ class SAM2(SAM2Base):
         }]
         return per_sample
 
-    def _predict_generate_masks(self, vol: torch.Tensor) -> "MaskData":
+    def _predict_generate_masks(
+        self, vol: torch.Tensor, channel_ids: Optional[torch.Tensor] = None
+    ) -> "MaskData":
         """
         Generate masks for the full volume, possibly with multi-scale crops.
+        ``channel_ids`` (``[1, C, 2]`` token ids) feed the channel-adaptive patch embed.
         """
         if self.input_fmt == "TZYXC":
             _, C, vol_z, vol_y, vol_x = vol.shape
@@ -1877,7 +1905,7 @@ class SAM2(SAM2Base):
             data = MaskData()
             for crop_box, layer_idx in zip(crop_boxes, layer_idxs):
                 crop_data = self._predict_process_crop(
-                    vol, crop_box, layer_idx, orig_size
+                    vol, crop_box, layer_idx, orig_size, channel_ids=channel_ids
                 )
                 data.cat(crop_data)
 
@@ -1911,6 +1939,7 @@ class SAM2(SAM2Base):
         crop_box: List[int],
         crop_layer_idx: int,
         orig_size: Tuple[int, int, int],
+        channel_ids: Optional[torch.Tensor] = None,
     ) -> "MaskData":
         """
         Process a single crop: encode image, run batched point prediction,
@@ -1922,7 +1951,7 @@ class SAM2(SAM2Base):
             crop_size = (z1 - z0, y1 - y0, x1 - x0)
 
             # Encode the crop
-            features = self._predict_encode_crop(cropped)
+            features = self._predict_encode_crop(cropped, channel_ids=channel_ids)
 
             # Build point grid scaled to crop pixel coords (x, y, z)
             # point_grids are in [0,1]^3; scale to pixel coords
@@ -1966,11 +1995,15 @@ class SAM2(SAM2Base):
         return data
 
     # Image encoding for a crop
-    def _predict_encode_crop(self, crop_vol: torch.Tensor) -> dict:
+    def _predict_encode_crop(
+        self, crop_vol: torch.Tensor, channel_ids: Optional[torch.Tensor] = None
+    ) -> dict:
         """
         Run image encoder + prepare backbone features for a single crop.
         """
-        backbone_out = self.forward_image({"data_tensor": crop_vol})
+        backbone_out = self.forward_image(
+            {"data_tensor": crop_vol, "metainfo": {"channel_ids": channel_ids}}
+        )
         _, vision_feats, vision_pos_embeds, feat_sizes = (
             self._prepare_backbone_features(backbone_out)
         )

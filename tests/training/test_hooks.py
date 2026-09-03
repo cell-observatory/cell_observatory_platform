@@ -515,3 +515,30 @@ def test_gpu_hooks_smoke(config):
     assert m["mem_keys_ok"] is True
     assert m["epoch_log_bytes"] > 0
     assert m["profiler_closed"] is True and m["trace_files"] > 0
+
+
+class TestFreeDeviceBufferHook:
+    """Validation batches may be collated by a collator of their own (step-cadence
+    validation); the slot must go back to THAT buffer, never the train one."""
+
+    def _hook(self, trainer):
+        from cell_observatory_platform.training.hooks import FreeDeviceBufferHook
+        h = FreeDeviceBufferHook()
+        h.trainer = trainer
+        h.before_train()
+        return h
+
+    def test_val_step_frees_into_the_validation_buffer_when_present(self):
+        train_buf, val_buf = Mock(), Mock()
+        h = self._hook(SimpleNamespace(device_buffer=train_buf, val_device_buffer=val_buf, with_grad_accumulation=False))
+        h.after_val_step({"metainfo": {"device_buffer_idx": 3}}, None, None)
+        val_buf.put_free.assert_called_once_with(3)
+        train_buf.put_free.assert_not_called()
+        h.after_step(data_sample={"metainfo": {"device_buffer_idx": 1}}, outputs=None, loss_dict=None)
+        train_buf.put_free.assert_called_once_with(1)
+
+    def test_val_step_falls_back_to_the_shared_buffer(self):
+        train_buf = Mock()
+        h = self._hook(SimpleNamespace(device_buffer=train_buf, with_grad_accumulation=False))
+        h.after_val_step({"metainfo": {"device_buffer_idx": 0}}, None, None)
+        train_buf.put_free.assert_called_once_with(0)

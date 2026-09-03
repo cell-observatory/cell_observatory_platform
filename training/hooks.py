@@ -839,6 +839,8 @@ class PeriodicCheckpointer(HookBase):
             # Persist trainer/hook state (early-stop counters, best-metric
             # lineage) so resume restores it via resume_run().
             trainer_state=self.trainer.state_dict(),
+            # the resolved (frozen) vocab lives in the live config, not the pristine copy
+            channel_vocab=OmegaConf.select(self.trainer.cfg, "datasets.preprocessor.channel_vocab"),
         )
         self.trainer.checkpoint_manager.save(
             prefix=self.file_prefix,
@@ -1601,7 +1603,10 @@ class FreeDeviceBufferHook(HookBase):
     def after_val_step(self, data_sample, outputs, loss_dict):
         if not self.with_grad_accumulation:
             device_buffer_idx = data_sample["metainfo"]["device_buffer_idx"]
-            self.device_buffer.put_free(device_buffer_idx)
+            # validation batches may come from a collator of their own
+            # (step-cadence validation); free into THAT buffer
+            buffer = getattr(self.trainer, "val_device_buffer", None) or self.device_buffer
+            buffer.put_free(device_buffer_idx)
 
     def after_backward(self, **kwargs):
         if self.with_grad_accumulation:

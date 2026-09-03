@@ -106,8 +106,24 @@ class DeviceMemoryBuffer:
         for i in range(self.capacity):
             self._free.put(i)
 
+    # A slot wait that never returns is a consumer that never frees (e.g. a
+    # second iterator collating into this buffer while the first one's
+    # prefetch holds every slot). Fail loudly instead of hanging the worker.
+    slot_wait_timeout_s: float = 600.0
+
     def get_free(self) -> int:
-        return self._free.get()
+        try:
+            return self._free.get(timeout=self.slot_wait_timeout_s)
+        except queue.Empty:
+            raise RuntimeError(
+                f"{self.name}: no free device-buffer slot for {self.slot_wait_timeout_s:.0f}s "
+                f"(capacity {self.capacity}). Every slot is held by batches that were "
+                "collated but not stepped -- a second dataloader (validation) collating "
+                "into the same buffer while the train iterator's prefetch holds the "
+                "slots deadlocks like this; give validation its own collator "
+                "(dataloaders.get_dataloader does when trainer_loop.val_every_n_steps "
+                "is set) or raise device_buffer_capacity."
+            ) from None
 
     def put_free(self, slot: int) -> None:
         self._free.put(int(slot))

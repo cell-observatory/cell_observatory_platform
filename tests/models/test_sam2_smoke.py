@@ -46,6 +46,7 @@ def _compose_smoke_cfg(
     X: int = 32,
     C_in: int = 1,
     max_masks: int = 4,
+    masked_encoder_overrides: dict | None = None,
 ):
     """Programmatic OmegaConf compose that bypasses hydra search paths.
 
@@ -71,6 +72,10 @@ def _compose_smoke_cfg(
     masked_encoder_cfg.depth = 2
     masked_encoder_cfg.num_heads = 4
     masked_encoder_cfg.mlp_ratio = 2.0
+    if masked_encoder_overrides:
+        # applied BEFORE resolve: sam_backbone.backbone_args and the meta-arch's
+        # backbone_wrapper_args interpolate this node, so late edits would not propagate
+        masked_encoder_cfg = OmegaConf.merge(masked_encoder_cfg, OmegaConf.create(masked_encoder_overrides))
 
     # Train shape mirrors input shape sans mask channel; bbox channel added by
     # last index. dataset_layout_order = TZYXC -> [T, Z, Y, X, C].
@@ -321,3 +326,57 @@ def test_sam2_forward_smoke(flags):
         assert params, f"prefix {prefix!r} matched zero trainable params"
         assert any(p.grad is not None and torch.any(p.grad != 0).item() for _, p in params), \
             f"prefix {prefix!r} received no gradient on any of {len(params)} params"
+
+
+@pytest.mark.cuda
+def test_sam2_forward_smoke_channel_adaptive():
+    """End-to-end with the channel-adaptive patch embed: the preprocessor maps
+    channel_tokens to [B, C, 2] ids from the frozen vocab, SAM2 threads them
+    through the backbone, and the token embeddings receive gradient."""
+    import cell_observatory_platform.utils._register  # noqa: F401
+    from cell_observatory_platform.models.meta_arch.sam import BUILD as BUILD_SAM2
+    from cell_observatory_platform.models.layers.preprocessor import SAM2VideoPreprocessor
+
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    B, T, Z, Y, X, C_in, max_masks = 1, 1, 32, 32, 32, 2, 4
+    vocab = {
+        "localization": {"<unk>": 0, "cytosol": 1, "membrane": 2},
+        "fluorophore": {"<unk>": 0, "electra2": 1, "mstaygold": 2},
+    }
+
+    cfg, train_shape, input_shape, patch_shape = _compose_smoke_cfg(
+        T=T, Z=Z, Y=Y, X=X, C_in=C_in, max_masks=max_masks,
+        masked_encoder_overrides={
+            "patch_embed_type": "channel_adaptive",
+            "patch_embed_args": {
+                "channel_fusion": "attn_pool", "attn_pool_num_heads": 4,
+                "channel_embed": "factorized", "channel_vocab": vocab, "vocab_extra_slots": 2,
+            },
+        },
+    )
+    model = BUILD_SAM2(cfg).to(device).train()
+    pe = model.image_encoder.backbone.patch_embedding
+    assert pe.localization_embed is not None and pe.fluorophore_embed is not None
+
+    preprocessor = SAM2VideoPreprocessor(
+        transforms_list=None, with_masking=False, mask_generator=None,
+        patch_shape=tuple(patch_shape[:4]), dtype="float32", input_format="TZYXC",
+        input_shape=tuple(input_shape), seed=0, expect_mask_channel=True,
+        max_masks=max_masks, require_targets=True, bbox_format="zyxzyx",
+        channel_vocab=vocab, unknown_policy="error",
+    )
+    data_sample = _make_data_sample(B=B, T=T, Z=Z, Y=Y, X=X, C_in=C_in, max_masks=max_masks, device=device)
+    data_sample["metainfo"]["channel_tokens"] = [[["membrane", "mstaygold"], ["cytosol", "electra2"], None]]
+
+    processed = preprocessor.forward(data_sample, data_time=0.0, idx=0)
+    assert processed["metainfo"]["channel_ids"].tolist() == [[[2, 2], [1, 1]]]
+
+    losses, _ = model(processed)
+    total = losses[model.criterion.core_loss_key]
+    assert torch.isfinite(total).item()
+    total.backward()
+    assert pe.localization_embed.weight.grad is not None and pe.localization_embed.weight.grad.abs().sum() > 0
+    assert pe.fluorophore_embed.weight.grad is not None and pe.fluorophore_embed.weight.grad.abs().sum() > 0
+    # only the looked-up rows (2 and 1) receive gradient
+    assert pe.localization_embed.weight.grad[0].abs().sum() == 0

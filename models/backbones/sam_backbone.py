@@ -136,9 +136,16 @@ class SAMBackbone(nn.Module):
             return feats
 
         out = []
+        n_tokens = 1
+        for d in self.token_shape:
+            n_tokens *= int(d)
         for feat in feats:
             if feat.dim() == 3:  # [B, N, C]
                 B, N, C = feat.shape
+                if N != n_tokens and N % n_tokens == 0:
+                    # concat channel fusion: (patch, channel) token order, C_in tokens
+                    # per patch -> one feature map for SAM2 by averaging over channels
+                    feat = feat.view(B, n_tokens, N // n_tokens, C).mean(dim=2)
                 out.append(feat.transpose(1, 2).reshape(B, C, *self.token_shape))
             else:
                 out.append(feat)
@@ -189,10 +196,33 @@ class SAMBackbone(nn.Module):
         adapter's spatial prior module is purely spatial 3D."""
         return x.permute(0, 2, 3, 4, 1).contiguous()  # (B*T, C, Z, Y, X) -> (B*T, Z, Y, X, C)
 
+    @staticmethod
+    def _channel_ids_for(data_sample: dict, x: torch.Tensor) -> Optional[torch.Tensor]:
+        """``metainfo["channel_ids"]`` aligned to the flattened frame batch.
+
+        The SAM2 preprocessor emits ids per VIDEO ``[B, C, 2]``; the backbone sees
+        ``B*T`` frames, so expand each video's row over its T frames (frame order
+        is ``b*T + t``). Already-flat ids pass through.
+        """
+        ids = (data_sample.get("metainfo") or {}).get("channel_ids")
+        if ids is None:
+            return None
+        n = int(x.shape[0])
+        if int(ids.shape[0]) != n:
+            if n % int(ids.shape[0]) != 0:
+                raise ValueError(
+                    f"channel_ids batch {int(ids.shape[0])} does not divide the frame batch {n}"
+                )
+            ids = ids.repeat_interleave(n // int(ids.shape[0]), dim=0)
+        return ids.to(x.device)
+
     def forward(self, data_sample: dict):
-        feats = self.backbone.forward_features(
-            self._to_backbone_layout(data_sample["data_tensor"])
-        )
+        x = self._to_backbone_layout(data_sample["data_tensor"])
+        channel_ids = self._channel_ids_for(data_sample, x)
+        if channel_ids is not None:
+            feats = self.backbone.forward_features(x, channel_ids=channel_ids)
+        else:
+            feats = self.backbone.forward_features(x)
 
         adapter_keys = None
         # NOTE: SAM2 uses FPN neck to extract features from multi-scale backbone

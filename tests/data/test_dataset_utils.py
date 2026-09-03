@@ -10,6 +10,7 @@ land in the tail, and ``channel_idx`` must be dense so that "array position" and
 import pytest
 
 from cell_observatory_platform.data.datasets.utils import (
+    channel_tokens_for_selection,
     remap_channel_roles_to_selection,
     resolve_channel_indices,
 )
@@ -198,3 +199,47 @@ def test_json_list_serializes_numpy_scalars_and_nulls():
     assert _as_list(_json_list(loc)) == ["membrane", None, "cytosol"]
     assert _json_list(np.array(["data", "mask"])) == '["data","mask"]'
     assert _json_list(None) == "null" and _as_list("null") is None
+
+
+# --------------------------------------------------------------------------- #
+# channel_tokens_for_selection
+# --------------------------------------------------------------------------- #
+
+FLUORS = ["mstaygold", "Electra2", "mTFP1", None]
+
+
+def test_channel_tokens_follow_post_selection_order_and_null_on_masks():
+    """Selecting cytosol only emits [cytosol ch1, cytosol ch2, mask]; the token
+    list is keyed by those NEW positions and the mask slot is None."""
+    sel = resolve_channel_indices(IDX, TYPES, LOCS, ["cytosol"])
+    assert sel == [1, 2, 3]
+    toks = channel_tokens_for_selection(TYPES, LOCS, FLUORS, IDX, sel)
+    assert toks == [["cytosol", "electra2"], ["cytosol", "mtfp1"], None]
+
+
+def test_channel_tokens_are_normalized_like_the_db_filters():
+    toks = channel_tokens_for_selection(
+        TYPES, ["  Membrane ", "CYTOSOL", "cytosol", None], FLUORS, IDX, None
+    )
+    assert toks[0] == ["membrane", "mstaygold"]
+    assert toks[1] == ["cytosol", "electra2"]
+
+
+def test_channel_tokens_keep_a_null_column_as_none():
+    """A NULL fluorophore (free-text row not yet mapped) stays None so the
+    consumer's unknown-token policy decides, rather than a silent '' token."""
+    toks = channel_tokens_for_selection(TYPES, LOCS, [None, None, None, None], IDX, None)
+    assert toks[0] == ["membrane", None]
+
+
+def test_channel_tokens_none_selection_means_source_order():
+    toks = channel_tokens_for_selection(TYPES, LOCS, FLUORS, IDX, None)
+    assert len(toks) == 4 and toks[3] is None
+
+
+def test_channel_tokens_accept_json_serialized_arrays():
+    import ujson
+    toks = channel_tokens_for_selection(
+        ujson.dumps(TYPES), ujson.dumps(LOCS), ujson.dumps(FLUORS), ujson.dumps(IDX), [0, 3]
+    )
+    assert toks == [["membrane", "mstaygold"], None]

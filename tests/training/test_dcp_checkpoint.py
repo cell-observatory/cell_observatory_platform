@@ -19,11 +19,15 @@ from cell_observatory_platform.training.schedulers import build_lr_schedulers
 class _TrainState:
     """Minimal Stateful standing in for the trainer."""
 
-    def __init__(self):
+    def __init__(self, with_lineage_keys=False):
         self.iteration, self.epoch, self.best = 0, 0, float("inf")
+        self.with_lineage_keys = with_lineage_keys   # newer trainers emit these (None until set)
 
     def state_dict(self):
-        return {"iteration": self.iteration, "epoch": self.epoch, "best_metric": self.best}
+        sd = {"iteration": self.iteration, "epoch": self.epoch, "best_metric": self.best}
+        if self.with_lineage_keys:
+            sd.update({"best_metric_epoch": None, "best_metric_iter": None})
+        return sd
 
     def load_state_dict(self, sd):
         self.iteration, self.epoch, self.best = sd["iteration"], sd["epoch"], sd["best_metric"]
@@ -89,6 +93,87 @@ class TestDCPCheckpointManager:
             assert torch.allclose(v, want_weights[k]), f"weight mismatch: {k}"
         assert schedulers2.state_dict() == want_sched
         assert (train_state2.iteration, train_state2.epoch, train_state2.best) == (3, 1, 0.5)
+
+    def test_resume_into_fresh_optimizer_tolerates_params_without_saved_state(self, gloo_pg, tmp_path):
+        """A parameter that never receives a gradient (unused branch, T=1 memory
+        encodings, ...) has no optimizer state at save time. The real trainer
+        loads into a FRESH optimizer, which torch initializes for every parameter
+        before DCP plans the load -- the checkpoint must not be rejected for the
+        entries it never held, while any other missing key stays fatal."""
+        torch.manual_seed(0)
+
+        class WithUnused(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.used = nn.Linear(8, 4)
+                self.unused = nn.Parameter(torch.zeros(3))
+
+            def forward(self, x):
+                return self.used(x)
+
+        def build(resume_dir=None):
+            model = WithUnused()
+            optimizers = OptimizersContainer(
+                [model], torch.optim.AdamW,
+                {"lr": 1e-3, "betas": (0.9, 0.99), "eps": 1e-8, "weight_decay": 0.01,
+                 "fused": False, "foreach": True},
+            )
+            manager = DCPCheckpointManager(
+                model_parts=[model], optimizers=optimizers,
+                save_checkpointdir=tmp_path / "checkpoints", save_period=1,
+                resume_checkpointdir=resume_dir,
+            )
+            return model, optimizers, manager
+
+        model, optimizers, manager = build()
+        for _ in range(3):
+            optimizers.zero_grad()
+            model(torch.randn(4, 8)).sum().backward()
+            optimizers.step()
+        assert manager.save(curr_step=3, last_step=True)
+        want = {k: v.clone() for k, v in model.state_dict().items()}
+        want_used_state = {k: v.clone() for k, v in optimizers.optimizers[0].state[model.used.weight].items()}
+
+        model2, optimizers2, manager2 = build(resume_dir=tmp_path / "checkpoints")   # fresh: no state yet
+        loaded_step, _ = manager2.load()
+        assert loaded_step == 3
+        for k, v in model2.state_dict().items():
+            assert torch.allclose(v, want[k]), k
+        got = optimizers2.optimizers[0].state[model2.used.weight]
+        for k, v in want_used_state.items():
+            assert torch.allclose(got[k], v), f"optimizer state mismatch: {k}"
+        unused = optimizers2.optimizers[0].state[model2.unused]
+        assert torch.count_nonzero(unused["exp_avg"]) == 0 and torch.count_nonzero(unused["exp_avg_sq"]) == 0
+
+        # a checkpoint missing anything else is still rejected loudly
+        class Bigger(WithUnused):
+            def __init__(self):
+                super().__init__()
+                self.extra = nn.Linear(2, 2)
+
+        model3 = Bigger()
+        manager3 = DCPCheckpointManager(
+            model_parts=[model3],
+            optimizers=OptimizersContainer([model3], torch.optim.AdamW, {"lr": 1e-3, "fused": False, "foreach": True}),
+            save_checkpointdir=tmp_path / "other", save_period=1,
+            resume_checkpointdir=tmp_path / "checkpoints",
+        )
+        with pytest.raises(RuntimeError, match="required key"):
+            manager3.load()
+
+    def test_checkpoint_without_lineage_keys_still_resumes(self, gloo_pg, tmp_path):
+        """Checkpoints written before the trainer emitted best_metric_epoch/iter
+        load into a trainer that now plans for them (they stay unset)."""
+        model, optimizers, schedulers, train_state, manager = _build(tmp_path)
+        _train_steps(model, optimizers, schedulers)
+        train_state.iteration = 3
+        assert manager.save(curr_step=3, last_step=True)
+        model2, optimizers2, schedulers2, train_state2, manager2 = _build(
+            tmp_path, resume_dir=tmp_path / "checkpoints"
+        )
+        train_state2.with_lineage_keys = True
+        loaded_step, _ = manager2.load()
+        assert loaded_step == 3 and train_state2.iteration == 3
 
     def test_load_picks_latest_step_dir(self, gloo_pg, tmp_path):
         model, optimizers, schedulers, train_state, manager = _build(tmp_path)

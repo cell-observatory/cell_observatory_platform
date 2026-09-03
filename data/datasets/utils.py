@@ -200,6 +200,50 @@ def resolve_channel_indices(
     return data + masks
 
 
+def channel_tokens_for_selection(
+    channel_type: Sequence[str],
+    localization: Sequence[Optional[str]],
+    fluorophore: Sequence[Optional[str]],
+    channel_idx: Sequence[int],
+    selected_indices: Optional[Sequence[int]],
+) -> List[Optional[List[Optional[str]]]]:
+    """``[localization, fluorophore]`` per POST-selection position; ``None`` on masks.
+
+    Companion to :func:`remap_channel_roles_to_selection`: the emitted tensor's
+    channel ``k`` is source channel ``selected_indices[k]``, so the biology
+    tokens the channel embedding looks up must be keyed by the NEW positions
+    too. Tokens are normalized the same way the DB filters normalize them
+    (:func:`_normalize_channel_token`); a NULL column stays ``None`` so the
+    consumer can apply its own unknown-token policy.
+    """
+    channel_idx = _as_list(channel_idx) or []
+    channel_type = _as_list(channel_type) or []
+    localization = _as_list(localization) or []
+    fluorophore = _as_list(fluorophore) or []
+    assert_dense_channel_idx(channel_idx)
+    if len(channel_type) != len(channel_idx):
+        raise ValueError(
+            f"channel arrays are not aligned: channel_idx has {len(channel_idx)} "
+            f"entries, channel_type has {len(channel_type)}"
+        )
+
+    def _tok(seq, position):
+        if position >= len(seq) or seq[position] is None:
+            return None
+        return _normalize_channel_token(seq[position]) or None
+
+    by_source: dict[int, Optional[List[Optional[str]]]] = {}
+    for position, source in enumerate(channel_idx):
+        if _normalize_channel_token(channel_type[position]) == "mask":
+            by_source[int(source)] = None
+        else:
+            by_source[int(source)] = [_tok(localization, position), _tok(fluorophore, position)]
+
+    if selected_indices is None:
+        selected_indices = [int(i) for i in channel_idx]
+    return [by_source[int(source)] for source in selected_indices]
+
+
 def remap_channel_roles_to_selection(
     channel_type: Sequence[str],
     annotation_type: Sequence[Optional[str]],

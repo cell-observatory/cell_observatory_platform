@@ -12,6 +12,7 @@ if hasattr(OmegaConf, "has_resolver") and not OmegaConf.has_resolver("eval"):
     OmegaConf.register_new_resolver("eval", eval)
 
 from cell_observatory_platform.data.databases.local_database import LocalArrowDatabase
+from cell_observatory_platform.data.channel_vocab import resolve_channel_vocab
 from cell_observatory_platform.data.databases.local_metadata_store import (
     MappedTable,
     TableResolver,
@@ -61,6 +62,7 @@ def _build_dataloader_config(
     dp_degree: Optional[int],
     dp_rank: Optional[int],
     selected_channel_localizations: Optional[List[str]],
+    val_collate_fn=None,
 ) -> dict:
     """The kwargs dict the per-epoch rebuild passes to ``get_dataloader_ray``.
 
@@ -74,6 +76,7 @@ def _build_dataloader_config(
         "batch_size": config.clusters.batch_size_per_gpu,
         "last_batch_policy": config.datasets.last_batch_policy,
         "collate_fn": collate_fn,
+        "val_collate_fn": val_collate_fn,
         "sample_store_desc": sample_store_desc,
         "dp_degree": dp_degree,
         "dp_rank": dp_rank,
@@ -116,6 +119,12 @@ def get_dataloader(
     # the preprocessor's config node into its constructor, so a key only one of
     # the eight preprocessors accepts would break the other seven.
     object_type_names = fetch_object_type_names(db)
+
+    # Frozen channel-token vocab for the channel-adaptive patch embed: resolved
+    # here because this is the one place with a DB handle that runs BEFORE the
+    # model and the preprocessor are built (both trainers); a no-op for the
+    # joint patch embed.
+    resolve_channel_vocab(config, db_client=db, write=process_rank() == 0)
 
     query_spec = TableResolver.build_query_spec_from_config(config, db_client=db)
     selected_channel_localizations = TableResolver.build_loader_channel_selection_from_config(
@@ -213,9 +222,25 @@ def get_dataloader(
         object_type_names=object_type_names,
     )
 
+    # Step-cadence validation runs while the train iterator is live and its
+    # prefetch holds the collator's device-buffer slots; the validation
+    # iterator needs a collator (device buffer) of its own or it deadlocks on
+    # the slot wait. Epoch-cadence validation starts after the train iterator
+    # is exhausted and shares the collator (no extra device memory).
+    val_collate_fn = None
+    if OmegaConf.select(config, "trainer_loop.val_every_n_steps") and float(config.datasets.split or 0) > 0:
+        val_collate_fn = instantiate(
+            config.datasets.collate_fn,
+            node_id=node_id(),
+            input_shape=collator_input_shape,
+            debug=config.datasets.debug,
+            object_type_names=object_type_names,
+            device_buffer_capacity=int(config.datasets.get("val_device_buffer_capacity", 1)),
+        )
     dataloader_config = _build_dataloader_config(
         config=config,
         collate_fn=collate_fn,
+        val_collate_fn=val_collate_fn,
         sample_store_desc=sample_store_desc,
         dp_degree=dp_degree,
         dp_rank=dp_rank,
@@ -226,6 +251,7 @@ def get_dataloader(
         batch_size=config.clusters.batch_size_per_gpu,
         last_batch_policy=config.datasets.last_batch_policy,
         collate_fn=collate_fn,
+        val_collate_fn=val_collate_fn,
         sample_store_desc=sample_store_desc,
         dp_degree=dp_degree,
         dp_rank=dp_rank,

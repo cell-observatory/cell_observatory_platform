@@ -22,7 +22,8 @@ from cell_observatory_platform.data.data_types import (
 from cell_observatory_platform.data.io import read_file
 from cell_observatory_platform.data.structures import convert_bbox_format, mask_ids_to_masks
 from cell_observatory_platform.data.utils import create_na_masks, downsample, resize_mask
-from cell_observatory_platform.data.datasets.utils import _parse_channel_mapping
+from cell_observatory_platform.data.datasets.utils import _as_list, _parse_channel_mapping
+from cell_observatory_platform.data.channel_vocab import ChannelVocab
 from cell_observatory_platform.models.layers.patch_embeddings import PatchEmbedding, calc_num_patches
 from cell_observatory_platform.training.helpers import get_patch_sizes, make_timing_metric
 from cell_observatory_platform.utils.shape_format import get_spatial_shape
@@ -2278,6 +2279,9 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         boxes_normalized: bool = False,
         min_channel_count: int | None = None,
         max_channel_count: int | None = None,
+        channel_vocab: Mapping[str, Mapping[str, int]] | None = None,
+        unknown_policy: str = "error",
+        unk_token_p: float = 0.0,
     ):
         super().__init__(
             transforms_list=transforms_list,
@@ -2298,6 +2302,19 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             )
         self.expect_mask_channel = expect_mask_channel
         self.max_masks = max_masks
+        # Channel-token ids for the channel-adaptive patch embed: None -> no ids
+        # emitted (joint patch embed). The table is the frozen vocab resolved by
+        # data/channel_vocab.py; the encoder sizes its embeddings from the same one.
+        self.channel_vocab = None if channel_vocab is None else ChannelVocab.from_dict(channel_vocab)
+        if unknown_policy not in ("error", "unk"):
+            raise ValueError(f"unknown_policy must be 'error' or 'unk', got {unknown_policy!r}")
+        self.unknown_policy = unknown_policy
+        # Token dropout (training only): each (channel, kind) id is replaced by <unk>
+        # with this probability, so the <unk> rows are trained and an unseen token
+        # at inference lands on a fitted embedding instead of a random row.
+        if not 0.0 <= float(unk_token_p) <= 1.0:
+            raise ValueError(f"unk_token_p must be in [0, 1], got {unk_token_p}")
+        self.unk_token_p = float(unk_token_p)
         # When a mask channel is present (training/eval-with-GT), per-instance
         # binary masks are built on-device from the integer labelmap (last
         # channel of data_tensor); the collator never materializes masks on
@@ -2558,6 +2575,85 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
     # forward
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _channel_token_rows(tokens: Any) -> list:
+        """Per-sample rows out of ``metainfo["channel_tokens"]``.
+
+        The collator carries one entry per sample (a JSON string or a list of
+        ``[localization, fluorophore] | None``); a bare string or a bare
+        pair-list (one sample) is wrapped.
+        """
+        if isinstance(tokens, np.ndarray):
+            tokens = tokens.tolist()
+        if isinstance(tokens, (str, bytes)):
+            return [tokens]
+        rows = list(tokens)
+        first = next((r for r in rows if r is not None), None)
+        if first is not None and not isinstance(first, (str, bytes)):
+            head = list(first)
+            if head and all(h is None or isinstance(h, (str, bytes)) for h in head):
+                return [rows]                       # a single [loc, fl] pair-list
+        return rows
+
+    def _channel_ids_from_meta(
+        self, meta: Any, num_signal: int, batch_size: int, device: torch.device
+    ) -> Optional[torch.Tensor]:
+        """``(B, C_signal, 2)`` long token ids per emitted signal channel, or ``None``.
+
+        Column 0 is the localization id, column 1 the fluorophore id, looked up in
+        the frozen vocab. ``metainfo["channel_tokens"]`` is the loader's
+        post-selection ``[localization, fluorophore]`` list (JSON string or list
+        per sample; ``None`` on mask positions), so position ``k`` is emitted
+        signal channel ``k`` for ``k < num_signal``.
+        """
+        vocab = getattr(self, "channel_vocab", None)     # None: joint patch embed, no ids
+        if vocab is None:
+            return None
+        tokens = meta.get("channel_tokens") if isinstance(meta, Mapping) else None
+        if tokens is None:
+            raise ValueError(
+                "channel_vocab is set but metainfo has no 'channel_tokens'; the loader "
+                "emits it next to channel_mapping (data/datasets/pretrain_dataset_ray.py)"
+            )
+        rows = self._channel_token_rows(tokens)
+        if len(rows) == 1 and batch_size > 1:
+            rows = rows * batch_size
+        if len(rows) != batch_size:
+            raise ValueError(f"channel_tokens has {len(rows)} rows for a batch of {batch_size}")
+
+        ids = torch.zeros((batch_size, num_signal, 2), dtype=torch.long)
+        for b, raw in enumerate(rows):
+            row = _as_list(raw) or []
+            if len(row) < num_signal:
+                raise ValueError(
+                    f"channel_tokens row {b} has {len(row)} entries but {num_signal} signal "
+                    f"channels were emitted: {row!r}"
+                )
+            for pos in range(num_signal):
+                pair = _as_list(row[pos]) if row[pos] is not None else None
+                if pair is None:
+                    raise ValueError(
+                        f"channel_tokens row {b} position {pos} is a mask slot (None) but "
+                        f"position {pos} is a signal channel"
+                    )
+                for col, kind in enumerate(("localization", "fluorophore")):
+                    tok = pair[col] if col < len(pair) else None
+                    idx = vocab.lookup(kind, tok)
+                    if idx is None:
+                        if getattr(self, "unknown_policy", "error") == "error" and getattr(self, "training", True):
+                            raise ValueError(
+                                f"{kind} token {tok!r} (sample {b}, channel {pos}) is not in "
+                                f"channel_vocab {sorted(vocab.tables[kind])}; set "
+                                "unknown_policy: unk to map it to <unk>"
+                            )
+                        idx = 0
+                    ids[b, pos, col] = idx
+        p_unk = getattr(self, "unk_token_p", 0.0)
+        if p_unk > 0.0 and getattr(self, "training", True):
+            drop = torch.rand(ids.shape, generator=getattr(self, "rng", None)) < p_unk
+            ids = ids.masked_fill(drop, 0)
+        return ids.to(device)
+
     def forward(self, data_sample: dict, data_time: float, idx: int) -> dict:
         preprocess_t0 = time.time()
 
@@ -2569,6 +2665,14 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         # at inference (no mask channel -> no labelmap, no masks built).
         images, targets_by_role = self._split_channels(inputs, meta)
         mask_labelmap = targets_by_role.get(DataKind.INSTANCE_MASKS.value)
+
+        # Channel-token ids BEFORE the transforms so a channel permutation
+        # (ChannelDropout shuffle) can permute them in lockstep.
+        channel_ids = self._channel_ids_from_meta(
+            meta, num_signal=int(images.shape[-1]), batch_size=int(images.shape[0]), device=images.device
+        )
+        if channel_ids is not None:
+            meta["channel_ids"] = channel_ids
 
         # Attach the per-target labelmap BEFORE transforms so geometric ops
         # (Crop / Resize / flip) warp it in lockstep with the image and

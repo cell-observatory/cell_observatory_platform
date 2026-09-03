@@ -229,6 +229,91 @@ def test_channel_adaptive_channel_ids_rejected(ids, match):
         pe(x, channel_ids=ids)
 
 
+def _token_pe(channel_embed="factorized", fusion="attn_pool"):
+    return ChannelAdaptivePatchEmbedding(
+        input_fmt="ZYXC", patch_shape=(4, 8, 8, None), embed_dim=32,
+        channel_fusion=fusion, attn_pool_num_heads=4,
+        channel_embed=channel_embed, localization_vocab_size=4, fluorophore_vocab_size=6,
+    ).eval()
+
+
+def test_factorized_embedding_sums_localization_and_fluorophore_tables():
+    """Token ids are [C, 2]; the additive embedding is E_loc[id0] + E_fl[id1], so
+    two channels sharing a localization differ only through the fluorophore term."""
+    torch.manual_seed(0)
+    pe = _token_pe(fusion="concat")
+    x = torch.randn(1, 8, 8, 8, 3)
+    ids = torch.tensor([[2, 4], [1, 1], [1, 5]])         # ch1 and ch2 share localization 1
+    out = pe(x, channel_ids=ids)
+    assert out.shape == (1, 2 * 3, 32)
+
+    # Reference: project each channel patch, add the two table rows by hand.
+    patches, _ = pe.patchify_per_channel(x)              # [B, N, C, P]
+    ref = pe.proj(patches) + (pe.localization_embed(ids[:, 0]) + pe.fluorophore_embed(ids[:, 1])).unsqueeze(0).unsqueeze(0)
+    torch.testing.assert_close(out, ref.reshape(1, 6, 32))
+
+
+def test_factorized_ids_broadcast_or_apply_per_sample():
+    torch.manual_seed(0)
+    pe = _token_pe()
+    x = torch.randn(2, 8, 8, 8, 3)
+    shared = torch.tensor([[1, 1], [1, 2], [2, 3]])
+    per_sample = torch.stack([shared, torch.tensor([[3, 5], [3, 5], [3, 5]])])
+    out_shared = pe(x, channel_ids=shared)
+    out_per = pe(x, channel_ids=per_sample)
+    assert out_shared.shape == (2, 2, 32)
+    torch.testing.assert_close(out_per[0], out_shared[0])
+    assert not torch.allclose(out_per[1], out_shared[1])
+
+
+def test_single_kind_modes_use_only_their_column():
+    """channel_embed=localization ignores the fluorophore column and vice versa."""
+    torch.manual_seed(0)
+    x = torch.randn(1, 8, 8, 8, 2)
+    loc = _token_pe(channel_embed="localization")
+    assert loc.fluorophore_embed is None
+    a = loc(x, channel_ids=torch.tensor([[1, 0], [2, 0]]))
+    b = loc(x, channel_ids=torch.tensor([[1, 5], [2, 3]]))
+    torch.testing.assert_close(a, b)
+    fl = _token_pe(channel_embed="fluorophore")
+    assert fl.localization_embed is None
+    a = fl(x, channel_ids=torch.tensor([[0, 1], [0, 2]]))
+    b = fl(x, channel_ids=torch.tensor([[3, 1], [2, 2]]))
+    torch.testing.assert_close(a, b)
+
+
+@pytest.mark.parametrize(
+    "ids,match",
+    [
+        (None, "requires channel_ids"),
+        (torch.tensor([1, 2, 3]), r"must be \[C,2\] or \[B,C,2\]"),
+        (torch.tensor([[1, 1], [1, 1]]), r"must be \[C,2\]"),
+        (torch.tensor([[4, 0], [0, 0], [0, 0]]), "localization id out of range"),
+        (torch.tensor([[0, 6], [0, 0], [0, 0]]), "fluorophore id out of range"),
+        (torch.tensor([[0, -1], [0, 0], [0, 0]]), "non-negative"),
+    ],
+    ids=["none", "rank1", "wrong_C", "loc_oob", "fl_oob", "negative"],
+)
+def test_factorized_ids_rejected(ids, match):
+    pe = _token_pe()
+    with pytest.raises(ValueError, match=match):
+        pe(torch.randn(1, 8, 8, 8, 3), channel_ids=ids)
+
+
+def test_token_modes_require_their_vocab_sizes():
+    with pytest.raises(ValueError, match="needs localization_vocab_size"):
+        ChannelAdaptivePatchEmbedding(input_fmt="ZYXC", patch_shape=(4, 8, 8, None), embed_dim=32,
+                                      channel_embed="factorized", fluorophore_vocab_size=3)
+    with pytest.raises(ValueError, match="needs fluorophore_vocab_size"):
+        ChannelAdaptivePatchEmbedding(input_fmt="ZYXC", patch_shape=(4, 8, 8, None), embed_dim=32,
+                                      channel_embed="fluorophore")
+
+
+def test_single_mode_is_the_default_and_unchanged():
+    pe = ChannelAdaptivePatchEmbedding(input_fmt="ZYXC", patch_shape=(4, 8, 8, None), embed_dim=32, max_channels=8)
+    assert pe.channel_embed is not None and pe.localization_embed is None and pe.fluorophore_embed is None
+
+
 # ------------------------------------------------------
 # PatchEmbedding.patchify / _unpatchify layout contract
 # ------------------------------------------------------

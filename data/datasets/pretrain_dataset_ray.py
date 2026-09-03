@@ -51,6 +51,7 @@ from cell_observatory_platform.data.data_types import (
     parse_annotations_metadata,
 )
 from cell_observatory_platform.data.datasets.utils import (
+    channel_tokens_for_selection,
     remap_channel_roles_to_selection,
     _json_list,
     resolve_channel_indices,
@@ -133,8 +134,11 @@ class FinetuneCollatorActor:
             *required_columns(with_targets=True),
             # synthesized by LoaderActor.__call__ (not a DB column): the
             # post-selection {channel_idx -> role} table the preprocessor
-            # partitions signal vs. mask channels with.
+            # partitions signal vs. mask channels with, and the post-selection
+            # [localization, fluorophore] token per channel (null on masks) the
+            # channel embedding looks up.
             "channel_mapping",
+            "channel_tokens",
         ]
         self.debug_device_idx = debug_device_idx
 
@@ -701,8 +705,11 @@ class CollatorActor:
             *required_columns(with_targets=True),
             # synthesized by LoaderActor.__call__ (not a DB column): the
             # post-selection {channel_idx -> role} table the preprocessor
-            # partitions signal vs. mask channels with.
+            # partitions signal vs. mask channels with, and the post-selection
+            # [localization, fluorophore] token per channel (null on masks) the
+            # channel embedding looks up.
             "channel_mapping",
+            "channel_tokens",
         ]
         self.debug_device_idx = debug_device_idx
 
@@ -1211,6 +1218,7 @@ class LoaderActor:
         # the preprocessor partitions channels by exactly those indices.
         if "channel_idx" in batch and "channel_type" in batch:
             remapped_rows = []
+            token_rows = []
             for row in range(len(batch["channel_idx"])):
                 channel_indices = resolve_channel_indices(
                     batch["channel_idx"][row],
@@ -1228,12 +1236,24 @@ class LoaderActor:
                         )
                     )
                 )
+                token_rows.append(
+                    ujson.dumps(
+                        channel_tokens_for_selection(
+                            batch["channel_type"][row],
+                            batch["localization"][row] if "localization" in batch else None,
+                            batch["fluorophore"][row] if "fluorophore" in batch else None,
+                            batch["channel_idx"][row],
+                            channel_indices,
+                        )
+                    )
+                )
             batch["channel_mapping"] = np.array(remapped_rows, dtype=object)
+            batch["channel_tokens"] = np.array(token_rows, dtype=object)
             # The per-row channel arrays are lists; Ray Data cannot build an
             # Arrow column from object arrays of lists and falls back to pickling
             # (one traceback per batch). Downstream readers go through
             # _as_list, which parses JSON strings.
-            for key in ("channel_idx", "channel_type", "localization", "annotation_type"):
+            for key in ("channel_idx", "channel_type", "localization", "fluorophore", "annotation_type"):
                 if key in batch:
                     batch[key] = np.array([_json_list(v) for v in batch[key]], dtype=object)
 
@@ -1425,7 +1445,14 @@ def get_dataloader_ray(
     dp_rank: Optional[int] = None,
     selected_channel_localizations: Optional[List[str]] = None,
     skip_batches: int = 0,
+    val_collate_fn: Optional[Callable] = None,
 ):
+    """``val_collate_fn``: a collator of its own for the validation iterator.
+    Required whenever validation runs while the train iterator is still live
+    (step-cadence validation): both iterators finalize through the collator's
+    device buffer, and the train iterator's prefetch keeps its slots until the
+    trainer steps them, so a validation batch collating into the same buffer
+    waits forever. None -> the validation iterator shares ``collate_fn``."""
     assert hasattr(cfg, "seed"), "cfg.seed is required for Ray Dataloader."
     if sample_store_desc is None:
         raise ValueError("sample_store_desc is required.")
@@ -1470,7 +1497,7 @@ def get_dataloader_ray(
             batch_size=batch_size, _finalize_fn=collate_fn, batch_format="numpy"
         )
         val_dataloader = val_dataset.iterator()._iter_batches(
-            batch_size=batch_size, _finalize_fn=collate_fn, batch_format="numpy"
+            batch_size=batch_size, _finalize_fn=val_collate_fn or collate_fn, batch_format="numpy"
         )
         return train_dataloader, val_dataloader, None
 

@@ -514,3 +514,102 @@ def test_absolute_boxes_are_left_alone():
         targets=_targets(ids, boxes), num_frames=1, num_videos=1, device=torch.device("cpu"), mask_labelmap=lm
     )
     assert torch.equal(view["boxes"][0][0], boxes[0][0])
+
+
+# --------------------------------------------------------------------------- #
+# channel-token ids for the channel-adaptive patch embed
+# --------------------------------------------------------------------------- #
+
+_VOCAB = {
+    "localization": {"<unk>": 0, "cytosol": 1, "membrane": 2},
+    "fluorophore": {"<unk>": 0, "electra2": 1, "mstaygold": 2},
+}
+_TOKENS = [["membrane", "mstaygold"], ["cytosol", "electra2"], None]
+
+
+def _vocab_pp(vocab=_VOCAB, unknown_policy="error", training=True):
+    from cell_observatory_platform.data.channel_vocab import ChannelVocab
+    pp = _make_forward_pp(max_masks=4)
+    pp.channel_vocab = None if vocab is None else ChannelVocab.from_dict(vocab)
+    pp.unknown_policy = unknown_policy
+    pp.training = training
+    return pp
+
+
+def test_channel_ids_map_emitted_signal_positions_to_vocab_ids():
+    import json
+    pp = _vocab_pp()
+    ids = pp._channel_ids_from_meta({"channel_tokens": [_TOKENS, _TOKENS]}, num_signal=2, batch_size=2, device=torch.device("cpu"))
+    assert ids.shape == (2, 2, 2)
+    assert ids[0].tolist() == [[2, 2], [1, 1]]
+    # the collator's per-sample JSON strings parse the same way
+    ids_json = pp._channel_ids_from_meta({"channel_tokens": [json.dumps(_TOKENS)] * 2}, 2, 2, torch.device("cpu"))
+    assert torch.equal(ids, ids_json)
+    # a single row broadcasts over the batch
+    ids_one = pp._channel_ids_from_meta({"channel_tokens": _TOKENS}, 2, 2, torch.device("cpu"))
+    assert torch.equal(ids, ids_one)
+
+
+def test_channel_ids_none_without_vocab_and_missing_tokens_raise():
+    assert _vocab_pp(vocab=None)._channel_ids_from_meta({}, 2, 1, torch.device("cpu")) is None
+    with pytest.raises(ValueError, match="no 'channel_tokens'"):
+        _vocab_pp()._channel_ids_from_meta({}, 2, 1, torch.device("cpu"))
+    with pytest.raises(ValueError, match="mask slot"):
+        _vocab_pp()._channel_ids_from_meta({"channel_tokens": [_TOKENS]}, 3, 1, torch.device("cpu"))
+
+
+def test_unknown_token_policy():
+    toks = [[["golgi", "mstaygold"], ["cytosol", None]]]
+    with pytest.raises(ValueError, match="golgi.*not in channel_vocab"):
+        _vocab_pp()._channel_ids_from_meta({"channel_tokens": toks}, 2, 1, torch.device("cpu"))
+    ids = _vocab_pp(unknown_policy="unk")._channel_ids_from_meta({"channel_tokens": toks}, 2, 1, torch.device("cpu"))
+    assert ids[0].tolist() == [[0, 2], [1, 0]]                 # <unk> localization, <unk> fluorophore
+    # inference never raises: unknown -> <unk>
+    ids_eval = _vocab_pp(training=False)._channel_ids_from_meta({"channel_tokens": toks}, 2, 1, torch.device("cpu"))
+    assert torch.equal(ids, ids_eval)
+
+
+def test_forward_attaches_channel_ids_before_transforms():
+    """channel_ids are on metainfo when the transforms run (a shuffle permutes
+    them) and survive into the output."""
+    device = torch.device("cpu")
+    B, T, Z, Y, X, C = 1, 2, 2, 3, 4, 2
+    img = torch.randn(B, T, Z, Y, X, C)
+    lm = torch.zeros(B, T, Z, Y, X)
+    lm[0, 0, 0, 0, 0] = 7
+    inputs = torch.cat([img, lm.unsqueeze(-1)], dim=-1)
+    targets = [{"mask_ids": torch.tensor([7]), "boxes": torch.zeros((1, 6))}]
+
+    seen = {}
+
+    class _Spy:
+        def __call__(self, sample):
+            seen["ids"] = sample["metainfo"].get("channel_ids")
+            return sample
+
+    pp = _vocab_pp()
+    pp.transforms = [_Spy()]
+    out = pp.forward(
+        {"data_tensor": inputs, "metainfo": {"targets": targets, "channel_mapping": {C: "instance_masks"},
+                                             "channel_tokens": [_TOKENS]}},
+        0.0, 0,
+    )
+    assert seen["ids"] is not None and seen["ids"].shape == (B, C, 2)
+    assert torch.equal(out["metainfo"]["channel_ids"], seen["ids"])
+    assert out["metainfo"]["channel_ids"][0].tolist() == [[2, 2], [1, 1]]
+
+
+def test_unk_token_dropout_trains_the_unk_rows_only_in_training():
+    pp = _vocab_pp()
+    pp.unk_token_p = 1.0
+    ids = pp._channel_ids_from_meta({"channel_tokens": [_TOKENS]}, 2, 1, torch.device("cpu"))
+    assert ids.tolist() == [[[0, 0], [0, 0]]]                     # every id -> <unk>
+    pp.training = False
+    ids = pp._channel_ids_from_meta({"channel_tokens": [_TOKENS]}, 2, 1, torch.device("cpu"))
+    assert ids[0].tolist() == [[2, 2], [1, 1]]                    # inference: never dropped
+    pp.training = True
+    pp.unk_token_p = 0.5
+    torch.manual_seed(0)
+    many = torch.stack([pp._channel_ids_from_meta({"channel_tokens": [_TOKENS]}, 2, 1, torch.device("cpu")) for _ in range(200)])
+    frac = (many == 0).float().mean().item()
+    assert 0.35 < frac < 0.65                                     # seeded per-entry coin, not all-or-nothing

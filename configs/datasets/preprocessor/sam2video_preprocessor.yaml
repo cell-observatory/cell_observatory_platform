@@ -35,3 +35,10 @@ max_masks: 40 # 38 on single-gpu, 35 on multi-gpu
 # denormalizes to voxels once so the box-prompt sampler sees real coordinates.
 bbox_format: ${datasets.collate_fn.bbox_output_format}
 boxes_normalized: ${datasets.collate_fn.normalize_bboxes}
+# Channel-token ids for the channel-adaptive patch embed (models.backbones.masked_encoder
+# patch_embed_type: channel_adaptive). null -> no ids are emitted. Set by data/channel_vocab.py
+# at dataloader construction (same table the encoder sizes its embeddings from).
+channel_vocab: null
+unknown_policy: error # error | unk: a token missing from the vocab at TRAIN time (inference always maps to <unk>)
+unk_token_p: 0.0 # training only: replace each (channel, kind) id by <unk> with this probability so the
+                 # <unk> rows are trained; an unseen token at inference then lands on a fitted embedding

@@ -585,19 +585,48 @@ def test_validation_is_skipped_without_a_db_client():
 # seeded row sampling / tile shape bound
 # --------------------------------------------------------------------------- #
 
-def test_seeded_row_sample_ranks_by_md5_and_restores_natural_order():
-    sql = SqlQueryPlanner.build_sql(_resolved(), QuerySpec(max_rows=3, row_sample_seed=7))
-    compact = " ".join(sql.split())
-    assert "md5(concat_ws('/', s.source_kind::text" in compact and "/7')" in compact
-    assert "LIMIT 3" in compact
-    # outer query: row_id over the natural key of the sampled subset, natural order restored
-    assert "row_number() OVER (ORDER BY q.source_kind, q.roi_id" in compact
-    assert compact.rstrip().endswith("ORDER BY q.source_kind, q.roi_id, q.tile_id, q.time_start, q.z_start, q.y_start, q.x_start")
+def test_seeded_sample_is_two_queries_narrow_keys_then_pinned_rows():
+    r, q = _resolved(), QuerySpec(max_rows=3, row_sample_seed=7)
+    keys_sql = " ".join(SqlQueryPlanner.build_key_sample_sql(r, q).split())
+    assert keys_sql.startswith("SELECT s.source_kind, s.roi_id, s.tile_id, s.time_start, s.z_start, s.y_start, s.x_start FROM")
+    assert "md5(concat_ws('/', s.source_kind::text" in keys_sql and "/7')" in keys_sql and keys_sql.endswith("LIMIT 3")
+    assert "array_shape" not in keys_sql                       # narrow: no wide columns
+    keys = pa.table({"source_kind": ["synthetic", "synthetic"], "roi_id": [12, 12], "tile_id": [3, 9],
+                     "time_start": [0, 4], "z_start": [0, 0], "y_start": [0, 384], "x_start": [0, 512]})
+    rows_sql = " ".join(SqlQueryPlanner.build_sql_for_keys(r, q, keys).split())
+    assert "s.roi_id = 12" in rows_sql
+    assert "IN (VALUES ('synthetic', 12, 3, 0, 0, 0, 0), ('synthetic', 12, 9, 4, 0, 384, 512))" in rows_sql
+    assert "LIMIT" not in rows_sql and "md5(" not in rows_sql and "row_number" not in rows_sql
+    with pytest.raises(ValueError, match="one roi_id"):
+        SqlQueryPlanner.build_sql_for_keys(r, q, pa.table({"source_kind": ["a", "a"], "roi_id": [1, 2], "tile_id": [1, 1],
+                                                          "time_start": [0, 0], "z_start": [0, 0], "y_start": [0, 0], "x_start": [0, 0]}))
+    # the single-query path carries no LIMIT when the seed is set (the sample owns it)
+    assert "LIMIT" not in SqlQueryPlanner.build_sql(r, q)
 
 
 def test_unseeded_max_rows_keeps_natural_order_limit():
     sql = SqlQueryPlanner.build_sql(_resolved(), QuerySpec(max_rows=3))
     assert "md5(" not in sql and sql.rstrip().endswith("LIMIT 3")
+    # the fetch path samples narrow keys in natural order, then pins rows per ROI
+    key_sql = " ".join(SqlQueryPlanner.build_key_sample_sql(_resolved(), QuerySpec(max_rows=3)).split())
+    assert "md5(" not in key_sql
+    assert key_sql.endswith("ORDER BY s.source_kind, s.roi_id, s.tile_id, s.time_start, s.z_start, s.y_start, s.x_start LIMIT 3")
+
+
+def test_fetch_rows_unseeded_max_rows_is_two_phase_too():
+    class _Db:
+        calls: list[str] = []
+        def execute_arrow(self, sql):
+            self.calls.append(" ".join(sql.split()))
+            if "LIMIT 2" in sql:
+                return pa.table({"source_kind": ["synthetic"] * 2, "roi_id": [3, 3], "tile_id": [1, 2], "time_start": [0, 0],
+                                 "z_start": [0, 0], "y_start": [0, 0], "x_start": [0, 0]})
+            return pa.table({"source_kind": ["synthetic"] * 2, "roi_id": [3, 3], "tile_id": [1, 2], "time_start": [0, 0],
+                             "z_start": [0, 0], "y_start": [0, 0], "x_start": [0, 0], "payload": ["a", "b"]})
+    db = _Db()
+    t = SqlQueryPlanner.fetch_rows(db, _resolved(), QuerySpec(max_rows=2))
+    assert len(db.calls) == 2 and "md5(" not in db.calls[0] and "s.roi_id = 3" in db.calls[1]
+    assert t["row_id"].to_pylist() == [0, 1]
 
 
 def test_max_tile_shape_bounds_each_axis_on_tiles_only():
@@ -626,3 +655,47 @@ def test_in_bounds_clause_only_when_opted_in():
     assert "array_shape" not in FilterBuilder.build_where_sql(_resolved(SampleType.CUBE), QuerySpec())
     assert "s.y_start + s.y_size <= s.array_shape[3]" in FilterBuilder.build_where_sql(
         _resolved(SampleType.CUBE), QuerySpec(in_bounds_only=True))
+
+
+def test_cube_query_filters_on_the_shape_partition_key_when_resolved():
+    r = _resolved(SampleType.CUBE)
+    r_id = ResolvedSource(**{**r.__dict__, "shape_id": 6})
+    where = FilterBuilder.build_where_sql(r_id, QuerySpec())
+    assert where.startswith("s.shape_id = 6 AND s.time_size = 1")
+    assert "shape_id" not in FilterBuilder.build_where_sql(r, QuerySpec())
+
+
+def test_resolve_cube_shape_id_matches_exact_shape_or_raises():
+    from cell_observatory_platform.data.databases.local_metadata_store import resolve_cube_shape_id
+
+    class _Db:
+        def execute_arrow(self, sql):
+            return pa.table({"id": [1, 6], "time_size": [1, 1], "z_size": [128, 128],
+                             "y_size": [128, 384], "x_size": [128, 512]})
+    assert resolve_cube_shape_id(_Db(), 1, 128, 384, 512) == 6
+    with pytest.raises(ValueError, match=r"1x128x384x1024.*known shapes: 1: 1x128x128x128, 6: 1x128x384x512"):
+        resolve_cube_shape_id(_Db(), 1, 128, 384, 1024)
+
+
+def test_fetch_rows_seeded_concatenates_per_roi_in_natural_order_with_fresh_row_ids():
+    r, q = _resolved(), QuerySpec(max_rows=3, row_sample_seed=7)
+    cols = ["source_kind", "roi_id", "tile_id", "time_start", "z_start", "y_start", "x_start"]
+    keys = pa.table({"source_kind": ["synthetic"] * 3, "roi_id": [16, 12, 16], "tile_id": [9, 3, 1],
+                     "time_start": [0, 0, 0], "z_start": [0, 0, 0], "y_start": [0, 0, 0], "x_start": [0, 0, 0]})
+
+    class _Db:
+        calls: list[str] = []
+        def execute_arrow(self, sql):
+            self.calls.append(" ".join(sql.split()))
+            if "md5(" in sql:
+                return keys
+            roi = int(sql.split("s.roi_id = ")[1].split()[0])
+            tiles = [9, 1] if roi == 16 else [3]
+            return pa.table({"source_kind": ["synthetic"] * len(tiles), "roi_id": [roi] * len(tiles),
+                             "tile_id": tiles, "time_start": [0] * len(tiles), "z_start": [0] * len(tiles),
+                             "y_start": [0] * len(tiles), "x_start": [0] * len(tiles), "payload": [f"{roi}/{t}" for t in tiles]})
+    db = _Db()
+    t = SqlQueryPlanner.fetch_rows(db, r, q)
+    assert len(db.calls) == 3                                   # 1 key sample + 2 ROIs
+    assert t.column_names[0] == "row_id" and t["row_id"].to_pylist() == [0, 1, 2]
+    assert t["roi_id"].to_pylist() == [12, 16, 16] and t["tile_id"].to_pylist() == [3, 1, 9]   # natural order

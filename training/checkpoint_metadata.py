@@ -87,6 +87,7 @@ def build_metadata(
     wandb_run_id: Optional[str] = None,
     wandb_entity: Optional[str] = None,
     trainer_state: Optional[Dict[str, Any]] = None,
+    channel_vocab: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     saved_at = datetime.now(timezone.utc).isoformat()
     model_class_name = unwrap_model_for_class_name(model)
@@ -95,6 +96,21 @@ def build_metadata(
 
     hydra_config = _hydra_config_dict(cfg)
     hsh = hydra_config_hash(hydra_config)
+    # Frozen channel-token vocab (data/channel_vocab.py): surfaced at top level so
+    # a warm start can read it without walking hydra_config. The resolver injects
+    # it into the LIVE config at dataloader construction, after the pristine
+    # copy `cfg` was taken, so callers pass it explicitly; the config lookup is
+    # the fallback for a config that pinned it.
+    if channel_vocab is None:
+        try:
+            channel_vocab = hydra_config["datasets"]["preprocessor"]["channel_vocab"]
+        except (KeyError, TypeError):
+            channel_vocab = None
+    if channel_vocab is not None:
+        channel_vocab = _sanitize_for_json(
+            OmegaConf.to_container(channel_vocab, resolve=True)
+            if isinstance(channel_vocab, DictConfig) else dict(channel_vocab)
+        )
 
     experiment_name = ""
     wandb_project = ""
@@ -119,6 +135,7 @@ def build_metadata(
         "best_loss": best_loss,
         "hydra_config": hydra_config,
         "hydra_config_hash": hsh,
+        "channel_vocab": channel_vocab,
         # JSON-serializable BaseTrainer.state_dict() (includes hook sub-state:
         # early-stop counters, best-metric lineage); None for legacy sidecars.
         "trainer_state": trainer_state,
