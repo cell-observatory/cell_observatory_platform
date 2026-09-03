@@ -1,0 +1,15 @@
+# @package _global_
+# Stage 0c B2_acdec_c512: decoder act-ckpt (iterative point sampling): targets the mask-count memory term (bs = K max, TODO)
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: B2_acdec_c512
+
+clusters:
+  batch_size: 16              # 2 per GPU = BS_512 (K2: 78 % HBM)
+
+models:
+  meta_arch:
+    sam:
+      use_act_ckpt_iterative_pt_sampling: true   # act-ckpt inside the decoder correction loop

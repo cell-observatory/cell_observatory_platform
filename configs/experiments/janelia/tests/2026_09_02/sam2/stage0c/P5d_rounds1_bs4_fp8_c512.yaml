@@ -1,0 +1,27 @@
+# @package _global_
+# P5d: MX-FP8 (ViT only) re-check at low rounds.
+# choice itself is a Step-2 quality decision.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P5d_rounds1_bs4_fp8_c512
+
+clusters:
+  batch_size: 32              # 4 per GPU: rounds 1 used 92 GiB at bs 2 (~46 GiB/sample)
+
+models:
+  meta_arch:
+    sam:
+      num_correction_pt_per_frame: 1
+
+datasets:
+  buffer_capacity: 12
+
+parallelism:
+  quantize:
+    enable: true
+    backend: mx
+    recipe: mxfp8_cublas
+    filter_fqns: []
+    include_fqns: [image_encoder]

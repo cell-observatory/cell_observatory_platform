@@ -1,0 +1,21 @@
+# @package _global_
+# Channel-adaptive patch embed with concat fusion: 5x tokens (30 720 per volume). bs 2/GPU guess (attention is ~25x).
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/local_recipe_base
+  - _self_
+
+experiment_name: sam2_ch_concat_c512_bs2
+
+clusters:
+  batch_size: 16
+
+models:
+  backbones:
+    masked_encoder:
+      patch_embed_type: channel_adaptive
+      patch_embed_args:
+        channel_fusion: concat
+        attn_pool_num_heads: 8
+        channel_embed: factorized
+        channel_vocab: null
+        vocab_extra_slots: 16

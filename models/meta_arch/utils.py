@@ -16,7 +16,7 @@ Canonical kinds:
     features            (N,C) + level/grid   float32    non-spatial; NOT saved (VLM/downstream)
 
 A variable-length count (e.g. per-instance ``N``) is declared as ``None``; such outputs
-are small/sparse (host-side, never SHM) or eval-only — see the fix-sketches doc.
+are small/sparse (host-side, never SHM) or eval-only.
 """
 
 import math

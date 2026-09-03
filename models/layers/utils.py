@@ -13,6 +13,7 @@ import numpy as np
 from scipy.ndimage import distance_transform_edt
 
 import torch
+from cell_observatory_platform.training.phase_timer import PhaseTimer
 import torch.nn as nn
 from torch import Tensor
 from torch.nn import functional as F
@@ -905,8 +906,8 @@ def sample_random_points_from_errors(
     - gt_masks: [B, 1, D, H, W] masks, dtype=torch.bool
     - pred_masks: [B, 1, D, H, W] masks, dtype=torch.bool or None
     - num_pt: int, number of points to sample independently for each of the B error maps
-    - max_chunk_bytes: budget for the float32 sampling weights; rows are processed
-      in chunks that fit it (one multinomial launch per chunk, no host syncs)
+    - max_chunk_bytes: budget for the float32 sampling keys; rows are processed
+      in chunks that fit it (no host syncs)
 
     Outputs:
     - points: [B, num_pt, 3], dtype=torch.float, contains (x, y, z) coordinates of each sampled point
@@ -945,23 +946,27 @@ def sample_random_points_from_errors(
         if num_pt == 0:
             return points, labels
 
-        # Uniform draw over each row's pool via an integer prefix sum and
-        # searchsorted: exact for any V (torch.multinomial caps categories at
-        # 2^24 and float weights lose integer precision there). Degenerate rows
-        # (empty union) keep the historical result: voxel 0, label 0.
+        # Uniform draw over each row's pool: give every voxel an iid U(0,1) key,
+        # mask non-pool voxels to -1 and take the row argmax (the max of iid keys
+        # is uniform over the pool). Three memory passes per chunk and no
+        # per-row scan: a prefix-sum formulation ran one CUDA block per row and
+        # cost ~3 s/step at 128x384x512 (torch.multinomial caps categories at
+        # 2^24, so it is not an option at this V). Degenerate rows (empty union)
+        # argmax to voxel 0 with label pos[:, 0] == False: the historical result.
         rows_per_chunk = max(1, int(max_chunk_bytes // (V * 4)))
-        for lo in range(0, B, rows_per_chunk):
-            hi = min(B, lo + rows_per_chunk)
-            cdf = pool[lo:hi].cumsum(dim=1, dtype=torch.int32)             # (rows, V)
-            total = cdf[:, -1:]                                              # (rows, 1)
-            u = (torch.rand(hi - lo, num_pt, device=device) * total.clamp(min=1)).floor().to(torch.int32) + 1
-            idx = torch.searchsorted(cdf, u).clamp(max=V - 1)                # first voxel with cdf >= u
-            idx = torch.where(total > 0, idx, torch.zeros_like(idx)).long()
-            labels[lo:hi] = torch.gather(pos[lo:hi], 1, idx).to(torch.int32)
-            pts_x = idx % W_im
-            pts_y = (idx // W_im) % H_im
-            pts_z = idx // (W_im * H_im)
-            points[lo:hi] = torch.stack([pts_x, pts_y, pts_z], dim=-1).to(torch.float)
+        keep = ~pool                                                         # (B, V)
+        idx = torch.empty(B, num_pt, dtype=torch.long, device=device)
+        for j in range(num_pt):                                              # independent draws; points
+            for lo in range(0, B, rows_per_chunk):                           # outermost so the RNG is
+                hi = min(B, lo + rows_per_chunk)                             # consumed row-major
+                keys = torch.rand(hi - lo, V, device=device)                 # regardless of chunking
+                keys.masked_fill_(keep[lo:hi], -1.0)                         # float32: no ties at 25M voxels
+                idx[lo:hi, j] = keys.argmax(dim=1)
+        labels = torch.gather(pos, 1, idx).to(torch.int32)
+        pts_x = idx % W_im
+        pts_y = (idx // W_im) % H_im
+        pts_z = idx // (W_im * H_im)
+        points = torch.stack([pts_x, pts_y, pts_z], dim=-1).to(torch.float)
     else:
         raise NotImplementedError(f"Input format {input_fmt} not supported yet.")
     return points, labels
@@ -1075,6 +1080,7 @@ def sample_one_point_from_error_center(
     return points, labels
 
 
+@PhaseTimer.timed("next_point")
 def get_next_point(
     input_fmt: str,
     gt_masks: torch.Tensor,

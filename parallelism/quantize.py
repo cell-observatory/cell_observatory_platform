@@ -115,6 +115,10 @@ class Float8Converter:
             precompute_float8_dynamic_scale_for_fsdp(model)
 
 
+def _contiguous_inputs(module, args):
+    return tuple(a.contiguous() if torch.is_tensor(a) and not a.is_contiguous() else a for a in args)
+
+
 class MXConverter:
     """MX-format (block-scaled) linears via torchao prototype. Blackwell only.
 
@@ -141,6 +145,10 @@ class MXConverter:
         self.torchao_config = MXLinearConfig.from_recipe_name(recipe)
         self.block_size = int(self.torchao_config.block_size)
         self.filter_fqns = list(quantize_cfg.get("filter_fqns", []) or [])
+        # Only convert modules whose FQN contains one of these (empty = all). The MX scaled GEMM also
+        # needs the activation row count % 32 == 0, which SAM2's prompt encoder / mask decoder /
+        # hypernetwork linears violate (rows = masks x points); the ViT blocks (tokens x batch) are safe.
+        self.include_fqns = list(quantize_cfg.get("include_fqns", []) or [])
 
     def module_filter(self, module: nn.Module, fqn: str) -> bool:
         if type(module) is not nn.Linear:
@@ -151,13 +159,22 @@ class MXConverter:
             or module.out_features % self.block_size != 0
         ):
             return False
+        if self.include_fqns and not any(f in fqn for f in self.include_fqns):
+            return False
         return not any(f in fqn for f in self.filter_fqns)
 
     def convert(self, model: nn.Module) -> nn.Module:
         from torchao.quantization import quantize_
 
         quantize_(model, self.torchao_config, filter_fn=self.module_filter)
-        n_swapped = sum(1 for m in model.modules() if type(m).__name__ == "MXLinear")
+        n_swapped = 0
+        for m in model.modules():
+            if type(m).__name__ == "MXLinear":
+                n_swapped += 1
+                # torchao's MX cast asserts a contiguous input (`to_mx`: "unsupported"); SAM2 feeds
+                # several linears transposed/permuted views (decoder tokens, attention), so make
+                # the input contiguous at the module boundary. No-op when it already is.
+                m.register_forward_pre_hook(_contiguous_inputs)
         if n_swapped == 0:
             raise ValueError(
                 "MXConverter matched no Linear layers — check "

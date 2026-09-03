@@ -1,0 +1,38 @@
+# @package _global_
+# Multi-scale SAM2 = Hiera-L multiscale backbone + use_high_res_features_in_sam (mirrors
+# configs/experiments/abc/tests/2026_09_01/sam2/base_sam2_torch_multiscale.yaml). The bring-up base pulls its groups in
+# by path, so Hydra cannot `override` them from here: the multi-scale group files are merged on top instead, and the
+# recipe's model keys (which base_multi_scale resets) are restated below.
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/local_recipe_base
+  - /models/meta_arch/sam/base_multi_scale
+  - /models/backbones/masked_hiera_encoder/large_multiscale
+  - /models/backbones/sam_backbone/sam_backbone_hiera_multiscale
+  - /optimizations/models/sam/large_hiera
+  - _self_
+
+experiment_name: sam2_ms_base
+
+datasets:
+  patch_shape: [1, 16, 16, 16, null]
+
+models:
+  backbones:
+    masked_hiera_encoder:
+      q_stride: [1, 2, 2, 2]          # TZYXC rank rule
+      mask_unit_size: [1, 8, 8, 8]
+  meta_arch:
+    sam:
+      debug: false
+      num_correction_pt_per_frame: 1
+      correction_on_low_res: true
+      criterion_args:
+        use_point_sampling: true
+        num_points: 26000
+        low_res_multimasks: true
+        activation_checkpoint: false
+        iou_on_low_res: true
+      mask_decoder_args:
+        upscaling: linear_shuffle
+      prompt_encoder_args:
+        mask_downscaling: linear_shuffle

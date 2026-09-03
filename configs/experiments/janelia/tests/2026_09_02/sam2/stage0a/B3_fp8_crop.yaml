@@ -1,0 +1,21 @@
+# @package _global_
+# Stage 0a B3_fp8_crop: MX-FP8 on the tile-crop max point
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/shapes/crop_128x384x512
+  - _self_
+
+experiment_name: B3_fp8_crop
+
+clusters:
+  batch_size: 8               # TODO(A4): 8 x BS_CROP
+
+datasets:
+  preprocessor:
+    max_masks: 100
+
+parallelism:
+  quantize:
+    enable: true
+    backend: mx
+    recipe: mxfp8_cublas
+    filter_fqns: []

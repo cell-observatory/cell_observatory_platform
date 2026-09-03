@@ -1,0 +1,16 @@
+# @package _global_
+# Stage 0c B2_ac_c1024: encoder selective act-ckpt; recompute cost + freed HBM; if >= 30 % freed, one run at 2x bs (bs = K max, TODO)
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x1024
+  - _self_
+
+experiment_name: B2_ac_c1024
+
+clusters:
+  batch_size: 8               # 1 per GPU
+
+optimizations:
+  models:
+    sam:
+      activation_checkpoint:
+        enable: true

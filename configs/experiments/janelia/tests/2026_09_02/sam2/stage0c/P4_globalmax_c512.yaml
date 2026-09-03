@@ -1,0 +1,16 @@
+# @package _global_
+# Stage 0c P4a: equal mask rows across ranks via one MAX all-reduce of the local row count per step.
+# Semantics unchanged (padded rows are valid=False and gated out of the loss); this only removes the
+# rank imbalance that made the slowest rank set the step (0.3-0.5 s waits on the loss all-reduce).
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P4_globalmax_c512
+
+clusters:
+  batch_size: 16              # 2 per GPU
+
+datasets:
+  preprocessor:
+    mask_rows: global_max

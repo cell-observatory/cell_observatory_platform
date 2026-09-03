@@ -21,6 +21,7 @@ if not OmegaConf.has_resolver("now"):
     OmegaConf.register_new_resolver("now", lambda fmt: time.strftime(fmt))
 
 import torch
+from cell_observatory_platform.training.phase_timer import PhaseTimer
 # NOTE: `deepspeed` is imported lazily inside EpochBasedTrainer.__init__.
 # Save/viz/buffer Ray actors import modules that (transitively) import this
 # module's package; a module-scope deepspeed import cost every actor ~9s.
@@ -35,6 +36,7 @@ from cell_observatory_platform.training.helpers import (
     initial_best_metric,
     kill_stale_actor,
     resume_run,
+    write_training_done,
     set_global_seed,
     summarize_model,
     apply_compile,
@@ -207,6 +209,9 @@ class BaseTrainer:
         self.event_recorder._epoch = self._epoch
         for h in self._hooks:
             h.after_train()
+        # only reached when run() finished its budget (or an early-stop hook
+        # ended it): the marker tells the LSF job chain not to resubmit
+        write_training_done(self.cfg, iter=self._iter, epoch=self._epoch)
 
     def before_step(self):
         # maintain the invariant that 
@@ -1044,6 +1049,7 @@ class TorchNativeTrainer(ValidationLoopMixin, BaseTrainer):
         # Perf metrics (tps/tflops/MFU + fwd/bwd/step timings) — optional
         # ------------------------------------------------------------------ #
         if loop_cfg.get("with_perf_metrics", False):
+            PhaseTimer.enable(True)
             self.timers = _init_cuda_event_timers()
             self.metrics_processor = MetricsProcessor(
                 timers=self.timers,
@@ -1292,6 +1298,14 @@ class TorchNativeTrainer(ValidationLoopMixin, BaseTrainer):
             )
             for name, value in metrics.items():
                 self.event_recorder.put_scalar(name, value)
+            # per-phase CUDA-event timers (device already synced by process());
+            # median/max/min across ranks so the straggler is visible
+            phases = PhaseTimer.collect()
+            if phases:
+                self.event_recorder.put_scalars(
+                    scope="step", category="phase", reduce_method=["median", "max", "min"],
+                    **phases,
+                )
 
         self.after_step(
             data_sample={"metainfo": meta},

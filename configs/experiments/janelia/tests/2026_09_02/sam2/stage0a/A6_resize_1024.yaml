@@ -1,0 +1,14 @@
+# @package _global_
+# Stage 0a A6: today's tile-resize path, one reference point (bs 1, mm 100).
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/shapes/resize_128x384x1024
+  - _self_
+
+experiment_name: A6_resize_1024
+
+clusters:
+  batch_size: 8
+
+datasets:
+  preprocessor:
+    max_masks: 100

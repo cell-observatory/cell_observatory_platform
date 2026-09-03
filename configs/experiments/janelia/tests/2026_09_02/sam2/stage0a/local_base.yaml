@@ -1,0 +1,13 @@
+# @package _global_
+# Stage 0a: bench_base run from an interactive allocation on the b300 node.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/bench_base
+  - _self_
+
+experiment_name: bench_local
+
+clusters:
+  launcher_type: local        # manager.py -> cluster/ray_local_cluster.sh on this node (no bsub)
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/stage0a/${experiment_name}

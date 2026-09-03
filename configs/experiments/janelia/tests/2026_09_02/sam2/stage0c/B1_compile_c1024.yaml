@@ -1,0 +1,16 @@
+# @package _global_
+# Stage 0c B1_compile_c1024: per-block inductor compile on the ViT stack; keep if >= 8 % faster steady-state (bs = K max, TODO)
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x1024
+  - _self_
+
+experiment_name: B1_compile_c1024
+
+clusters:
+  batch_size: 8               # 1 per GPU
+
+optimizations:
+  models:
+    sam:
+      torch_compile:
+        enable: true

@@ -29,8 +29,7 @@ transforms_list:
 #    REVISIT (round-4 D-1): if the target should instead be the clean COUNT
 #    image (predict what a noiseless sensor would read), map the target
 #    through the deterministic sensor chain with the same drawn per-sample
-#    parameters -- sketch in docs/analysis/2026-07-23-fix-sketches-round4.md
-#    §5.1 option (a). Do NOT silently change one side without the other.
+#    parameters. Do NOT silently change one side without the other.
   - _target_: cell_observatory_platform.data.transforms.make_targets.DeepCopyInputsAsTargets
 
 # 2) MixedPoissonGaussianNoise: photons in -> noisy counts out (inplace on the

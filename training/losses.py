@@ -9,6 +9,7 @@ from omegaconf import DictConfig, OmegaConf
 from typing import Any, Callable, Dict, List, Tuple
 
 import torch
+from cell_observatory_platform.training.phase_timer import PhaseTimer
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
@@ -31,6 +32,7 @@ from cell_observatory_platform.models.layers.utils import (
     point_sample_labelmap_batched,
     point_sample,
 )
+from cell_observatory_platform.models.ops.pooling import any_pool3d
 from cell_observatory_platform.models.ops.losses import (
     batch_dice_loss,
     batch_sigmoid_ce_loss,
@@ -1727,6 +1729,14 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         # forward-only (the `> 0` threshold severs autograd, so no extra
         # upsample bwd is incurred through the IoU path).
         low_res_multimasks=False,
+        # Take the dense IoU loss off the full-res stream as well. The IoU
+        # prediction is then supervised against the max-pooled ("any voxel in
+        # the cell") GT at the low-res mask stride, and `src_masks_iou` aliases
+        # the low-res stream. This is what lets SAM2 skip the full-res upsample
+        # entirely in training (`models.meta_arch.sam.correction_on_low_res`),
+        # in which case `multistep_pred_multimasks_high_res` is absent/None.
+        # Requires low_res_multimasks=True.
+        iou_on_low_res=False,
     ):
         """
         Computes the multi-step multi-mask and IoU losses.
@@ -1748,6 +1758,8 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             importance_sample_ratio: fraction of points drawn from the uncertain pool
             low_res_multimasks: route focal/dice through the low-res prediction stream
                 (requires use_point_sampling=True)
+            iou_on_low_res: route the dense IoU loss through the low-res stream too,
+                against the max-pooled GT (requires low_res_multimasks=True)
         See inline comments above the signature for the use_point_sampling /
         low_res_multimasks / point-sampling sizing / activation_checkpoint rationale.
         """
@@ -1786,6 +1798,57 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
                 "(dense focal/dice cannot mix low-res preds with full-res GT)."
             )
 
+        self.iou_on_low_res = iou_on_low_res
+        if self.iou_on_low_res:
+            assert self.low_res_multimasks, (
+                "iou_on_low_res=True requires low_res_multimasks=True: with the "
+                "full-res stream gone there is nothing for focal/dice to read."
+            )
+
+    @property
+    def mask_stream_key(self) -> str:
+        """Output key the focal/dice stream is read from."""
+        return (
+            "multistep_pred_multimasks" if self.low_res_multimasks
+            else "multistep_pred_multimasks_high_res"
+        )
+
+    def _iou_stream(self, outputs, src_masks_list):
+        """The prediction stream the dense IoU loss reads.
+
+        With `iou_on_low_res` it ALIASES the focal/dice (low-res) stream, so the
+        full-res tensors never have to exist. Otherwise it is the high-res
+        stream, exactly as before.
+        """
+        if self.iou_on_low_res:
+            return src_masks_list
+        return outputs["multistep_pred_multimasks_high_res"]
+
+    def _iou_target(self, target_masks, ref_masks):
+        """GT for the dense IoU loss, matched to `ref_masks`' spatial grid.
+
+        Full-res when the IoU stream is full-res (a no-op). With
+        `iou_on_low_res` the GT is max-pooled down to the low-res grid, i.e. a
+        cell is foreground iff ANY voxel in it is -- the same quantization the
+        low-res mask stream is supervised at.
+        """
+        t_shape = tuple(target_masks.shape[-3:])
+        r_shape = tuple(ref_masks.shape[-3:])
+        if t_shape == r_shape:
+            return target_masks
+        strides = tuple(t // r for t, r in zip(t_shape, r_shape))
+        assert all(st >= 1 for st in strides) and tuple(
+            r * st for r, st in zip(r_shape, strides)
+        ) == t_shape, (
+            f"IoU target grid {t_shape} is not an integer multiple of the "
+            f"prediction grid {r_shape}"
+        )
+        # bool-space OR over each cell: identical to
+        # `max_pool3d(target_masks.float(), ...) > 0` but without the full fp32
+        # copy of the GT (~9 GiB at N=96 x 25 M voxels), which would cancel a
+        # large part of the memory the low-res correction loop frees.
+        return any_pool3d(target_masks, strides).to(target_masks.dtype)
+
     def forward(self, outs_batch: List[Dict], target_view: Dict):
         """
         Args:
@@ -1806,7 +1869,9 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         T = len(masks_list)
         assert len(outs_batch) == T, "outs_batch length must match num_frames"
 
-        device = outs_batch[0]["multistep_pred_multimasks_high_res"][0].device
+        # Probe the focal/dice stream: the high-res stream can be absent/None
+        # when SAM2 runs with correction_on_low_res=True.
+        device = outs_batch[0][self.mask_stream_key][0].device
 
         mask_gate_total = torch.zeros((), device=device, dtype=torch.float)
         cls_gate_total = torch.zeros((), device=device, dtype=torch.float)
@@ -1814,8 +1879,9 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             mask_gate_total = mask_gate_total + (v_t & p_t).sum().to(torch.float)
             cls_gate_total = cls_gate_total + v_t.sum().to(torch.float)
         if is_torch_dist_initialized():
-            dist.all_reduce(mask_gate_total)
-            dist.all_reduce(cls_gate_total)
+            with PhaseTimer.phase("loss_allreduce_wait"):
+                dist.all_reduce(mask_gate_total)
+                dist.all_reduce(cls_gate_total)
         mask_denom = torch.clamp(mask_gate_total / get_world_size(), min=1.0)
         cls_denom = torch.clamp(cls_gate_total / get_world_size(), min=1.0)
 
@@ -1891,17 +1957,14 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         with the lowest focal+dice loss between predicted mask and ground-truth.
         If `supervise_all_iou` is True, we backpropagate ious losses for all predicted masks.
         """
-        mask_stream_key = (
-            "multistep_pred_multimasks" if self.low_res_multimasks
-            else "multistep_pred_multimasks_high_res"
-        )
-        src_masks_list = outputs[mask_stream_key]
-        # Dense iou_loss always reads the high-res stream so
-        # `target_masks.expand_as(...)` stays shape-valid. When
-        # `low_res_multimasks=False` this aliases `src_masks_list`; when True it
-        # is a forward-only read (the `>0` threshold inside iou_loss severs
-        # autograd, so no extra upsample-bwd is incurred).
-        src_masks_iou_list = outputs["multistep_pred_multimasks_high_res"]
+        src_masks_list = outputs[self.mask_stream_key]
+        # Dense iou_loss reads the high-res stream so `target_masks.expand_as(...)`
+        # stays shape-valid. When `low_res_multimasks=False` this aliases
+        # `src_masks_list`; when True it is a forward-only read (the `>0`
+        # threshold inside iou_loss severs autograd, so no extra upsample-bwd is
+        # incurred). With `iou_on_low_res` it aliases the LOW-res stream instead
+        # and the GT is max-pooled to match.
+        src_masks_iou_list = self._iou_stream(outputs, src_masks_list)
         pred_dtype = src_masks_list[0].dtype
         pred_device = src_masks_list[0].device
         target_masks = targets.unsqueeze(1).to(device=pred_device, dtype=pred_dtype)
@@ -1924,12 +1987,19 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             k: target_masks.new_zeros(())
             for k in ("loss_mask","loss_dice","loss_iou","loss_class")
         }
+        # Only recompute the IoU target when the IoU stream left full res;
+        # the default path keeps the exact `target_masks` object it always used.
+        target_masks_iou_base = (
+            self._iou_target(target_masks, src_masks_iou_list[0])
+            if self.iou_on_low_res else target_masks
+        )
         for src_masks, src_masks_iou, ious, object_score_logits in zip(
             src_masks_list, src_masks_iou_list, ious_list, object_score_logits_list
         ):
             self._update_losses(
                 losses, src_masks, src_masks_iou, target_masks, ious, mask_denom, mask_gate,
                 cls_denom, cls_gate, object_score_logits,
+                target_masks_iou_base=target_masks_iou_base,
             )
         losses[self.core_loss_key] = self.reduce_loss(losses)
         # Cast step_loss to prediction dtype so backward matches model
@@ -1937,14 +2007,10 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         return losses
 
     def _forward_checkpoint(self, outputs, targets, mask_denom, mask_gate, cls_denom, cls_gate):
-        mask_stream_key = (
-            "multistep_pred_multimasks" if self.low_res_multimasks
-            else "multistep_pred_multimasks_high_res"
-        )
-        src_masks_list = outputs[mask_stream_key]
-        # Dense iou_loss always reads the high-res stream (aliases src_masks_list
-        # when low_res_multimasks=False).
-        src_masks_iou_list = outputs["multistep_pred_multimasks_high_res"]
+        src_masks_list = outputs[self.mask_stream_key]
+        # Dense iou_loss reads the high-res stream (aliases src_masks_list when
+        # low_res_multimasks=False), or the low-res stream with iou_on_low_res.
+        src_masks_iou_list = self._iou_stream(outputs, src_masks_list)
         ious_list = outputs["multistep_pred_ious"]
         object_score_logits_list = outputs["multistep_object_score_logits"]
 
@@ -1960,6 +2026,13 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             float(self.weight_dict.get("loss_class", 0.0)),
         ])
 
+        # Only recompute the IoU target when the IoU stream left full res;
+        # the default path keeps the exact `target_masks` object it always used.
+        target_masks_iou_base = (
+            self._iou_target(target_masks, src_masks_iou_list[0])
+            if self.iou_on_low_res else target_masks
+        )
+
         total = target_masks.new_zeros(())
         comp_sum_detached = target_masks.new_zeros(4)
 
@@ -1974,7 +2047,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
                 comps = checkpoint(
                     self._step_loss_components_points,
                     src_masks, src_masks_iou, pred_ious, obj_logits, target_masks, mask_denom, mask_gate,
-                    cls_denom, cls_gate, point_coords_flat, point_labels,
+                    cls_denom, cls_gate, point_coords_flat, point_labels, target_masks_iou_base,
                     use_reentrant=False,
                     preserve_rng_state=False,  # safe: no randomness inside checkpointed fn
                 )
@@ -2014,6 +2087,7 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         cls_gate,
         point_coords_flat,    # [N*M, P, 3]
         point_labels,         # [N, M, P]
+        target_masks_iou_base=None,  # [N, 1, *IoU-stream grid]; defaults to target_masks_base
     ):
         N, M, Z, Y, X = src_masks.shape
         P = point_labels.shape[-1]
@@ -2047,11 +2121,14 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             ).squeeze(-1)
             loss_class = (loss_class_row * cls_gate.to(loss_class_row.dtype)).sum()
 
-        # Dense hard IoU on the high-res stream. The shape matches the
-        # full-resolution target without resizing. With low_res_multimasks=True
-        # this is a forward-only read (the `> 0` threshold in iou_loss severs
-        # autograd through src_masks_iou).
-        target_masks_iou = target_masks_base.expand_as(src_masks_iou)
+        # Dense hard IoU on the IoU stream. Its target is the full-res GT when
+        # the stream is full-res, and the max-pooled GT when `iou_on_low_res`
+        # puts the IoU on the low-res stream. With low_res_multimasks=True and
+        # a high-res IoU stream this is a forward-only read (the `> 0` threshold
+        # in iou_loss severs autograd through src_masks_iou).
+        if target_masks_iou_base is None:
+            target_masks_iou_base = target_masks_base
+        target_masks_iou = target_masks_iou_base.expand_as(src_masks_iou)
         loss_multiiou = iou_loss(
             src_masks_iou, target_masks_iou, pred_ious, mask_denom,
             loss_on_multimask=True, use_l1_loss=self.iou_use_l1_loss,
@@ -2170,9 +2247,12 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
         cls_denom,
         cls_gate,
         object_score_logits,
+        target_masks_iou_base=None,   # defaults to the full-res target_masks
     ):
         # target_masks is [N,1,Z,Y,X]
         target_masks_base = target_masks
+        if target_masks_iou_base is None:
+            target_masks_iou_base = target_masks_base
 
         if self.use_point_sampling:
             # coords/labels are no_grad and depend on src_masks.detach()
@@ -2218,10 +2298,11 @@ class MultiStepMultiMasksAndIousLoss(nn.Module):
             ).squeeze(-1)  # [N]
             losses["loss_class"] += (loss_class_row * cls_gate.to(loss_class_row.dtype)).sum()
 
-        # Dense hard IoU on the high-res stream. When low_res_multimasks=False
-        # this aliases src_masks; when True the high-res tensor is read forward-
-        # only (the `> 0` threshold severs autograd through it).
-        target_masks_iou = target_masks_base.expand_as(src_masks_iou)
+        # Dense hard IoU on the IoU stream. When low_res_multimasks=False this
+        # aliases src_masks; when True the high-res tensor is read forward-only
+        # (the `> 0` threshold severs autograd through it). With iou_on_low_res
+        # the stream and its target are both at the low-res stride.
+        target_masks_iou = target_masks_iou_base.expand_as(src_masks_iou)
         loss_multiiou = iou_loss(
             src_masks_iou, target_masks_iou, ious, mask_denom,
             loss_on_multimask=True, use_l1_loss=self.iou_use_l1_loss,

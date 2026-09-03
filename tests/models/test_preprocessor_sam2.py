@@ -18,14 +18,18 @@ from cell_observatory_platform.models.layers.preprocessor import SAM2VideoPrepro
 
 
 def _make_preprocessor(
-    max_masks: int, bbox_format: str = "zyxzyx", boxes_normalized: bool = False
+    max_masks: int,
+    bbox_format: str = "zyxzyx",
+    boxes_normalized: bool = False,
+    mask_rows: str = "batch",
 ) -> SAM2VideoPreprocessor:
     # Bypass __init__: the data-view builder only needs max_masks, bbox_format,
-    # boxes_normalized, rng.
+    # boxes_normalized, mask_rows, rng.
     pp = SAM2VideoPreprocessor.__new__(SAM2VideoPreprocessor)
     pp.max_masks = max_masks
     pp.bbox_format = bbox_format
     pp.boxes_normalized = boxes_normalized
+    pp.mask_rows = mask_rows
     pp.rng = torch.Generator()
     pp.rng.manual_seed(0)
     return pp
@@ -215,6 +219,7 @@ def _make_forward_pp(
     pp.max_masks = max_masks
     pp.bbox_format = "zyxzyx"
     pp.boxes_normalized = False
+    pp.mask_rows = "batch"
     pp.rng = torch.Generator()
     pp.rng.manual_seed(0)
     pp.expect_mask_channel = expect_mask_channel
@@ -613,3 +618,84 @@ def test_unk_token_dropout_trains_the_unk_rows_only_in_training():
     many = torch.stack([pp._channel_ids_from_meta({"channel_tokens": [_TOKENS]}, 2, 1, torch.device("cpu")) for _ in range(200)])
     frac = (many == 0).float().mean().item()
     assert 0.35 < frac < 0.65                                     # seeded per-entry coin, not all-or-nothing
+
+
+# --------------------------------------------------------------------------- #
+# mask_rows -- how many mask rows K_full each rank materializes
+# --------------------------------------------------------------------------- #
+#
+# `batch` (default, today's behaviour) sizes K_full from THIS rank's batch, so
+# ranks do different amounts of per-round decoder work and the slowest rank sets
+# the step. `global_max` takes one MAX all-reduce of the local K so every rank
+# agrees; `fixed` pins K_full = max_masks so shapes are static across steps.
+# Extra rows are pure padding: valid=False, presence_t=False, id=-1, boxes=0.
+
+
+def _rows_view(mask_rows: str, max_masks: int, ids, B=2, T=1, Z=2, Y=4, X=8):
+    lm = _labelmap(B, T, Z, Y, X, ids)
+    return _make_preprocessor(max_masks=max_masks, mask_rows=mask_rows)._build_data_views(
+        targets=_targets(ids), num_frames=T, num_videos=B,
+        device=torch.device("cpu"), mask_labelmap=lm,
+    )
+
+
+def test_mask_rows_batch_is_todays_behaviour():
+    ids = [[1, 2, 3], [4, 5, 6, 7, 8]]
+    view = _rows_view("batch", max_masks=32, ids=ids)
+    assert view["masks"][0].shape[0] == 2 * 5       # largest batch count, not max_masks
+    assert view["valid"][0].sum().item() == 8
+
+
+def test_mask_rows_fixed_pads_to_max_masks_with_invalid_rows():
+    ids = [[1, 2, 3], [4, 5, 6, 7, 8]]
+    max_masks = 7
+    view = _rows_view("fixed", max_masks=max_masks, ids=ids)
+
+    assert view["masks"][0].shape[0] == 2 * max_masks
+    for key in ("img_ids", "instance_ids", "valid", "presence_t"):
+        assert view[key][0].shape[0] == 2 * max_masks
+    assert view["boxes"][0].shape == (2 * max_masks, 6)
+
+    valid = view["valid"][0]
+    inst = view["instance_ids"][0]
+    presence = view["presence_t"][0]
+    boxes = view["boxes"][0]
+    # 3 real rows for video 0, 5 for video 1; every other row is padding.
+    assert valid[:max_masks].sum().item() == 3
+    assert valid[max_masks:].sum().item() == 5
+    assert torch.equal(inst[~valid], torch.full((int((~valid).sum()),), -1, dtype=torch.int64))
+    assert not presence[~valid].any()
+    assert torch.all(boxes[~valid] == 0)
+    # the padded rows carry empty masks
+    assert not view["masks"][0][~valid].any()
+
+
+def test_mask_rows_fixed_still_caps_counts_above_max_masks():
+    ids = [[1, 2, 3, 4, 5, 6], [7, 8]]
+    view = _rows_view("fixed", max_masks=4, ids=ids)
+    assert view["masks"][0].shape[0] == 2 * 4
+    assert view["valid"][0][:4].sum().item() == 4    # capped
+    assert view["valid"][0][4:].sum().item() == 2
+
+
+def test_mask_rows_global_max_equals_batch_without_distributed():
+    """`global_max` only all-reduces when torch.distributed is initialized; the
+    tests run single-process, so it must reduce to exactly `batch`."""
+    import torch.distributed as dist
+    assert not (dist.is_available() and dist.is_initialized())
+
+    ids = [[1, 2, 3], [4, 5, 6, 7, 8]]
+    batch_view = _rows_view("batch", max_masks=32, ids=ids)
+    global_view = _rows_view("global_max", max_masks=32, ids=ids)
+
+    assert global_view["masks"][0].shape == batch_view["masks"][0].shape
+    assert global_view["valid"][0].sum() == batch_view["valid"][0].sum()
+    assert set(global_view["instance_ids"][0].tolist()) == set(
+        batch_view["instance_ids"][0].tolist()
+    )
+
+
+def test_mask_rows_unknown_value_raises():
+    ids = [[1, 2]]
+    with pytest.raises(ValueError):
+        _rows_view("bogus", max_masks=4, ids=ids, B=1)

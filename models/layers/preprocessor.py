@@ -9,6 +9,8 @@ from dataclasses import dataclass, asdict, field
 import numpy as np
 
 import torch
+import torch.distributed as dist
+from cell_observatory_platform.training.phase_timer import PhaseTimer
 
 from omegaconf import DictConfig
 from hydra.utils import get_method, instantiate
@@ -2225,6 +2227,7 @@ class _LazyFrameMasks:
         for t in range(self._T):
             yield self[t]
 
+    @PhaseTimer.timed("frame_masks")
     def __getitem__(self, t) -> torch.Tensor:
         t = int(t)
         if t < 0:
@@ -2275,6 +2278,19 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         expect_mask_channel: bool = True,
         max_masks: int | None = None,
         require_targets: bool = True,
+        # how many mask rows K_full every rank materializes per step.
+        #   "batch"      -> this rank's own batch max (today's behaviour)
+        #   "global_max" -> one MAX all-reduce so every rank agrees (equals
+        #                   "batch" when torch.distributed is not initialized)
+        #   "fixed"      -> always max_masks, so shapes are static across steps
+        # Extra rows are padding (valid=False) and are gated out of the loss, so
+        # the objective and the set of supervised instances are identical across
+        # modes (K = min(N_b, K_full) is the same either way). Results are NOT
+        # bit-identical, however: K_full is the row stride of the flat
+        # (B*K_full, ...) batch, and sample_random_points_from_errors consumes its
+        # RNG row-major, so changing K_full re-indexes the stream and every video
+        # at flat offset >= K_full gets different correction clicks. 
+        mask_rows: str = "batch",
         bbox_format: str = "zyxzyx",
         boxes_normalized: bool = False,
         min_channel_count: int | None = None,
@@ -2315,6 +2331,13 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
         if not 0.0 <= float(unk_token_p) <= 1.0:
             raise ValueError(f"unk_token_p must be in [0, 1], got {unk_token_p}")
         self.unk_token_p = float(unk_token_p)
+        if mask_rows not in ("batch", "global_max", "fixed"):
+            raise ValueError(
+                f"mask_rows must be 'batch', 'global_max' or 'fixed', got {mask_rows!r}"
+            )
+        if mask_rows == "fixed" and max_masks is None:
+            raise ValueError("mask_rows='fixed' requires max_masks")
+        self.mask_rows = mask_rows
         # When a mask channel is present (training/eval-with-GT), per-instance
         # binary masks are built on-device from the integer labelmap (last
         # channel of data_tensor); the collator never materializes masks on
@@ -2384,6 +2407,7 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             "box_format": self.bbox_format,
         }
 
+    @PhaseTimer.timed("mask_targets")
     def _build_data_views(
         self,
         targets: list[dict],
@@ -2431,7 +2455,27 @@ class SAM2VideoPreprocessor(BaseFinetunePreprocessor):
             for t in targets[:B]
             if t.get("mask_ids", None) is not None
         ]
-        K_full = max(1, max(counts)) if counts else 1
+        k_local = max(1, max(counts)) if counts else 1
+        # see `mask_rows` in __init__. Rows beyond a video's own instance
+        # count stay padding (valid=False), exactly as for the "batch" sizing.
+        mask_rows = self.mask_rows
+        if mask_rows == "batch":
+            K_full = k_local
+        elif mask_rows == "global_max":
+            if dist.is_available() and dist.is_initialized():
+                # one 8-byte all-reduce per step
+                k = torch.tensor(k_local, dtype=torch.int64, device=device)
+                dist.all_reduce(k, op=dist.ReduceOp.MAX)
+                K_full = int(k.item())
+            else:
+                K_full = k_local
+        elif mask_rows == "fixed":
+            K_full = max(1, int(self.max_masks))
+        else:
+            raise ValueError(
+                f"mask_rows must be 'batch', 'global_max' or 'fixed', got {mask_rows!r}"
+            )
+        PhaseTimer.count("mask_rows", B * K_full)
 
         if mask_labelmap.shape[0] != B or mask_labelmap.shape[1] != T:
             raise ValueError(

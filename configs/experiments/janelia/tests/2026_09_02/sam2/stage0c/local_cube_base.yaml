@@ -1,0 +1,23 @@
+# @package _global_
+# Stage 0c: DB-side cubes (cod_20260902 snapshot) on the b300 node in local mode. Study cap mm 48.
+# in_bounds_only drops the cubes whose window overflows their tile (the DB cube grid is broken on the
+# fringe for the big shapes) in SQL, with a warning.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/bench_base
+  - _self_
+
+experiment_name: bench_cube_local
+
+clusters:
+  launcher_type: local        # manager.py -> cluster/ray_local_cluster.sh on this node (no bsub)
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/stage0c/${experiment_name}
+
+datasets:
+  max_rows: 4096              # 200 steps x up to 2/GPU x 8 = 3200; wrapping is harmless for a perf probe
+  buffer_capacity: 8
+  preprocessor:
+    max_masks: 48             # ~50 (user); 48 keeps bs x K a multiple of 16 for the bf16 GEMMs
+  databases:
+    in_bounds_only: true

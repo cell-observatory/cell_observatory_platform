@@ -66,6 +66,10 @@ meta_arch:
       embed_dim: ${models.meta_arch.sam.sam_embed_dim}
       mask_in_chans: 16
       activation: GELU
+      # Mask-prompt downscaling implementation. "conv" (default) = today's
+      # Conv3d(k=s=2) stack; "linear_shuffle" = the identical space-to-depth +
+      # Linear, channels-last.
+      mask_downscaling: conv
 
     # SAM mask decoder (MaskDecoder) — transformer_* and iou_* popped in BUILD
     mask_decoder_args:
@@ -79,6 +83,10 @@ meta_arch:
       transformer_activation: ReLU
       transformer_attention_downsample_rate: 2
       activation: GELU
+      # Decoder upscaling implementation. "conv" (default) = today's
+      # ConvTranspose3d(k=s=2) stack; "linear_shuffle" = the mathematically
+      # identical Linear + depth-to-space, channels-last.
+      upscaling: conv
       dynamic_multimask_via_stability: false
       dynamic_multimask_stability_delta: 0.05
       dynamic_multimask_stability_thresh: 0.98
@@ -109,6 +117,11 @@ meta_arch:
       # reads the high-res stream forward-only (the `>0` threshold severs autograd).
       # Requires use_point_sampling=true.
       low_res_multimasks: false
+      # Dense IoU loss on the low-res stream against the max-pooled GT.
+      # Required (and force-set) when models.meta_arch.sam.correction_on_low_res
+      # is true, since training then produces no full-res mask stream at all.
+      # Requires low_res_multimasks=true.
+      iou_on_low_res: false
       focal_gamma_obj_score: 0.0
       focal_alpha_obj_score: -1
 
@@ -184,6 +197,11 @@ meta_arch:
     pt_sampling_for_eval: center
     prob_to_sample_from_gt_for_train: 0.1
     use_act_ckpt_iterative_pt_sampling: false
+    # Run the training correction loop entirely on the stride-4 mask stream:
+    # no full-res upsample per round, clicks sampled against the max-pooled GT
+    # (jittered inside the 4^3 cell), IoU target quantized to stride-4 cells.
+    # Requires criterion_args.low_res_multimasks=true; sets iou_on_low_res.
+    correction_on_low_res: false
     forward_backbone_per_frame_for_eval: true
 
     freeze_image_encoder: false

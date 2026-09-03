@@ -1,0 +1,12 @@
+# @package _global_
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/bench_base_ds
+  - _self_
+
+experiment_name: bench_local_ds
+
+clusters:
+  launcher_type: local        # manager.py -> cluster/ray_local_cluster.sh on this node (no bsub)
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/stage0a/${experiment_name}

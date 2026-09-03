@@ -31,6 +31,16 @@ seed: ${seed}
 expect_mask_channel: true # ${datasets.collate_fn.expect_mask_channel}
 require_targets: true #${datasets.collate_fn.require_targets}
 max_masks: 40 # 38 on single-gpu, 35 on multi-gpu
+# mask_rows: how many mask rows are materialized per step per rank.
+#   batch (default) = this rank's batch max; global_max = MAX all-reduced across
+#   ranks (removes rank imbalance); fixed = always max_masks (static shapes).
+# Padded rows are valid=False and gated out of the loss, so the objective and the
+# set of supervised instances are unchanged. NOT bit-identical to `batch`, though:
+# K_full is the row stride of the flat (B*K_full, ...) batch and the correction-click
+# sampler draws its RNG row-major, so changing K_full re-indexes that stream and
+# shifts clicks for every video after the first. Runs are statistically, not
+# bit-wise, comparable to a `batch` baseline.
+mask_rows: batch
 # Boxes as the collator emits them (format + normalization); the target view
 # denormalizes to voxels once so the box-prompt sampler sees real coordinates.
 bbox_format: ${datasets.collate_fn.bbox_output_format}

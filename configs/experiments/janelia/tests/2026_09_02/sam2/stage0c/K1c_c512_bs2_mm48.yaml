@@ -1,0 +1,11 @@
+# @package _global_
+# Stage 0c K1c_c512_bs2_mm48: step-up after K1 (bs 1 peaked ~113 GiB = 41 %): bs 2, mm 48; the VRAM law predicts ~80 % HBM
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: K1c_c512_bs2_mm48
+
+clusters:
+  batch_size: 16              # 2 per GPU
+

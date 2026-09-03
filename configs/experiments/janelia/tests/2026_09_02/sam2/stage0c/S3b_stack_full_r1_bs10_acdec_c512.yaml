@@ -1,0 +1,28 @@
+# @package _global_
+# S3b: S3 stack at bs 10 with decoder act-ckpt: does freed memory + batch beat bs 7 without it?
+
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: S3b_stack_full_r1_bs10_acdec_c512
+
+clusters:
+  batch_size: 80              # 10 per GPU with decoder act-ckpt (B2c: x0.5 decoder-loop memory at 7 clicks)
+
+datasets:
+  buffer_capacity: 16
+
+models:
+  meta_arch:
+    sam:
+      num_correction_pt_per_frame: 1
+      use_act_ckpt_iterative_pt_sampling: true
+      correction_on_low_res: true
+      criterion_args:
+        activation_checkpoint: false
+        iou_on_low_res: true
+      mask_decoder_args:
+        upscaling: linear_shuffle
+      prompt_encoder_args:
+        mask_downscaling: linear_shuffle

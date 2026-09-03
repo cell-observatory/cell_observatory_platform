@@ -28,6 +28,7 @@ quantize:
   recipe: mxfp8_cublas
   fsdp_float8_all_gather: true # float8/tensorwise only: FP8 param all-gather + post-step scale precompute (ignored for mx)
   filter_fqns: [] # substring excludes, on top of built-in guards (dims % 16, exact nn.Linear type)
+  include_fqns: [] # substring includes (empty = all); MX needs activation rows % 32 == 0, so SAM2 uses [image_encoder]
 
 # ----- Distributed comm settings -----
 comm:

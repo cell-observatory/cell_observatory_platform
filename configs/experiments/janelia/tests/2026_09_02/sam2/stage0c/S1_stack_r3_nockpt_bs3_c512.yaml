@@ -1,0 +1,21 @@
+# @package _global_
+# S1: stack of the measured winners so far on c512: rounds 3 (1.12 s @ bs 2, 133 GiB) + criterion act-ckpt off (-10 %),
+# at bs 3/GPU (rounds 3 freed ~40 % HBM). P-row winners get added once measured.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: S1_stack_r3_nockpt_bs3_c512
+
+clusters:
+  batch_size: 24              # 3 per GPU
+
+datasets:
+  buffer_capacity: 8
+
+models:
+  meta_arch:
+    sam:
+      num_correction_pt_per_frame: 3
+      criterion_args:
+        activation_checkpoint: false

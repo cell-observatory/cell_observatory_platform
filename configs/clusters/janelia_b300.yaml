@@ -14,7 +14,7 @@ defaults:
 
 job_name: ${experiment_name}
 launcher_type: lsf # type of launcher to use
-partition: b300   # partition to submit the job to (use `parallel` parition if `multijob_submission` is not used)
+partition: gpu_b300   # LSF queue name (bqueues); esub rejects GPU jobs on non-GPU queues
 qos: null   # qos for the job
 python_env: python # python executable to use (if not using apptainer)
 multijob_submission: false # each worker node will be submitted as a separate job
@@ -43,6 +43,8 @@ object_store_memory: ${eval:'${clusters.mem_per_worker} * 1024 * 1024 * ${cluste
 exclusive: null   # whether to use exclusive node allocation (not recommended)
 nodelist: null    # list of specific nodes to use
 dependency: null  # job dependency
+chain_jobs: 1     # > 1: resubmit-if-not-done job chain past the wall-clock limit (cluster/chain_lib.sh); upper bound on jobs
+chain_min_runtime: 1200  # s; a link that ends sooner without finishing stops the chain (crash guard)
 constraint: null  # constraint for the job
 timelimit: 04:00   # 4h max on the b300 queue
 max_worker_heartbeat_timeout: 2 # in minutes (to prevent indefinite hang if one process fails)

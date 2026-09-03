@@ -5,6 +5,7 @@ import math
 import os
 import random
 import re
+import time
 from collections import defaultdict
 from operator import attrgetter
 from pathlib import Path
@@ -389,6 +390,35 @@ def parse_duration(value: Union[int, float, str]) -> float:
     if seconds <= 0:
         raise ValueError(f"duration must be > 0, got {value!r}")
     return seconds
+
+
+TRAINING_DONE_MARKER = "TRAINING_DONE"
+
+
+def write_training_done(config: DictConfig, iter: int, epoch: int) -> Optional[Path]:
+    """Write ``<outdir>/TRAINING_DONE`` once the run's training budget is complete.
+
+    Rank 0 only. The LSF job chain (cluster/chain_lib.sh) reads the marker to
+    stop resubmitting; it must therefore only ever exist for a run that
+    finished for real (the trainers call this from ``after_train``, which a
+    crash or a kill never reaches). Never raises: a failed write must not turn
+    a finished run into a failed one.
+    """
+    from cell_observatory_platform.utils.context import is_main_process  # lazy: avoids an import cycle
+
+    outdir = config.paths.get("outdir", None) if "paths" in config else None
+    if not outdir or not is_main_process():
+        return None
+    try:
+        marker = Path(outdir) / TRAINING_DONE_MARKER
+        tmp = marker.with_suffix(".tmp")
+        tmp.write_text(ujson.dumps({"iter": int(iter), "epoch": int(epoch), "time": time.time()}))
+        tmp.replace(marker)  # atomic: the wrapper never sees a partial file
+        logger.info(f"[Trainer] training complete; wrote {marker}")
+        return marker
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[Trainer] could not write {TRAINING_DONE_MARKER} in {outdir}: {e}")
+        return None
 
 
 def resume_run(trainer, config: DictConfig):

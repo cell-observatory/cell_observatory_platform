@@ -539,7 +539,7 @@ def is_box_near_crop_edge_3d(
 # PARKED (planned return; do NOT delete): original masks_to_boxes
 # --------------------------------------------------------------------------- #
 # # (inclusive-max convention, differs from masks_to_boxes_v2's half-open +1;
-# #  see the 2026-07-21/22 reviews before reuse)
+# #  check the callers' convention before reuse)
 # def masks_to_boxes(masks: torch.Tensor) -> Tensor:
 #     """
 #     Compute the bounding boxes around the provided masks.

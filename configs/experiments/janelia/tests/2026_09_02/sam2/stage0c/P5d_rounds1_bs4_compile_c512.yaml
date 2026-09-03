@@ -1,0 +1,25 @@
+# @package _global_
+# P5d: compile re-check at low rounds (ViT share ~21 % of the step at rounds 1).
+# choice itself is a Step-2 quality decision.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P5d_rounds1_bs4_compile_c512
+
+clusters:
+  batch_size: 32              # 4 per GPU: rounds 1 used 92 GiB at bs 2 (~46 GiB/sample)
+
+models:
+  meta_arch:
+    sam:
+      num_correction_pt_per_frame: 1
+
+datasets:
+  buffer_capacity: 12
+
+optimizations:
+  models:
+    sam:
+      torch_compile:
+        enable: true

@@ -1,0 +1,20 @@
+# @package _global_
+# Stage 0c P2+P3: decoder upscaling AND mask-prompt downscaling as GEMM + (depth-to-space |
+# space-to-depth). Both are exact; P3 removes the tiny-channel (1/4/16) 3D convs the prompt encoder
+# runs on every correction round. Delta vs P2_upshuffle_c512 isolates P3.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P23_shuffle_c512
+
+clusters:
+  batch_size: 16              # 2 per GPU
+
+models:
+  meta_arch:
+    sam:
+      mask_decoder_args:
+        upscaling: linear_shuffle
+      prompt_encoder_args:
+        mask_downscaling: linear_shuffle

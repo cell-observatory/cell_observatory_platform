@@ -1,0 +1,19 @@
+# @package _global_
+# Stage 0c P4b: K_full pinned to max_masks, so every decoder/prompt shape is static across steps and
+# across ranks. That is the precondition for cudnn.benchmark, which the study base turned off because
+# the per-step re-search cost 0.5-1.3 s stalls -- so turn it back on here and measure the pair.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P4_fixed_cudnn_c512
+
+clusters:
+  batch_size: 16              # 2 per GPU
+
+datasets:
+  preprocessor:
+    mask_rows: fixed
+
+optimizations:
+  cudnn_benchmark: true

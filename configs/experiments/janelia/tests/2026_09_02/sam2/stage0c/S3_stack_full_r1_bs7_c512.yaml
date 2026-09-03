@@ -1,0 +1,27 @@
+# @package _global_
+# S3: full stack (P1+P2+P3, criterion ckpt off) at rounds 1, bs 7: rounds 1 bs 5 = 227 GiB without P1; P1 frees ~27 %.
+
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: S3_stack_full_r1_bs7_c512
+
+clusters:
+  batch_size: 56              # 7 per GPU
+
+datasets:
+  buffer_capacity: 16
+
+models:
+  meta_arch:
+    sam:
+      num_correction_pt_per_frame: 1
+      correction_on_low_res: true
+      criterion_args:
+        activation_checkpoint: false
+        iou_on_low_res: true
+      mask_decoder_args:
+        upscaling: linear_shuffle
+      prompt_encoder_args:
+        mask_downscaling: linear_shuffle

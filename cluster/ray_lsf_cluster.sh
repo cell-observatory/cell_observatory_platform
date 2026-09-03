@@ -16,6 +16,12 @@ export USER_POSTEXEC=/workspace/cell_observatory_platform/cluster/clean_shm.sh
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$DIR/args_parser.sh"
 
+############################## JOB CHAINING (clusters.chain_jobs > 1)
+# Exits immediately if the run is already complete; otherwise submits the
+# follower job (held until this one ends) and records this job's exit.
+source "$DIR/chain_lib.sh"
+chain_job_start "$outdir"
+
 tmpdir=/tmp/symlink_$(uuidgen | cut -d "-" -f5)
 echo "Create symlink: $outdir -> $tmpdir"
 

@@ -1,0 +1,37 @@
+# @package _global_
+# Diag P5: torch profiler on ONE GPU (no collectives) at the K1 setup (cube 128x384x512, bs 1, mm 48). 10 steps; profiler
+# skips 3, warms 1, records 2, then stops the run. Traces: <outdir>/logs/profiler/log/*.pt.trace.json
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P5_profile_1gpu_c512
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/diag/${experiment_name}
+
+clusters:
+  batch_size: 1
+  gpus_per_worker: 1
+  head_node_gpus: 1
+
+datasets:
+  max_rows: 256
+
+trainer_loop:
+  max_steps: 10
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: torch_profiler
+    output_dir: ${loggers.logdir}/profiler
+    schedule: {skip_first: 3, wait: 0, warmup: 1, active: 2, repeat: 1}
+    activities: [CPU, CUDA]
+    save_tensorboard: true
+    save_memory_trace: false
+    shutdown_after_profile: true

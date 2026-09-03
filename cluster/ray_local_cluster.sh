@@ -89,7 +89,23 @@ wait_for_local_db_from_training_image() {
 
 echo "Copying local database to head $head_node"
 rsync -avz --stats "$database_sandbox" "${SCRATCH_ROOT}/pgdb/sandbox.tar.zst"
-zstd -d -c "${SCRATCH_ROOT}/pgdb/sandbox.tar.zst" | tar -xf - -C "${SCRATCH_ROOT}/pgdb"
+# Extract once per tarball: the stamp records which tarball (path + mtime + size) populated
+# $sandbox_dir, so back-to-back local runs on the same node skip the multi-minute extract.
+sandbox_stamp="${sandbox_dir}/.extracted_from"
+sandbox_id="$(stat -c '%n %Y %s' "${SCRATCH_ROOT}/pgdb/sandbox.tar.zst")"
+if [ -d "${sandbox_dir}/var/lib/postgresql/data" ] && [ -f "$sandbox_stamp" ] && [ "$(cat "$sandbox_stamp")" = "$sandbox_id" ]; then
+  echo "Reusing extracted sandbox at ${sandbox_dir} (stamp matches)"
+else
+  rm -rf "$sandbox_dir"
+  zstd -d -c "${SCRATCH_ROOT}/pgdb/sandbox.tar.zst" | tar -xf - -C "${SCRATCH_ROOT}/pgdb"
+  echo "$sandbox_id" > "$sandbox_stamp"
+fi
+# Stale lock files (postmaster.pid in the data dir, the unix-socket lock under /var/run) from an
+# unclean stop -- of the machine that built the tarball, or of the previous run on this node -- make
+# postgres refuse to start ("lock file ... already exists"); nothing runs in this fresh instance yet.
+# NB: inside the image var/run is an absolute symlink to /run, which on the host resolves to the
+# node's own /run -- address the sandbox's run/ directly.
+rm -f "${sandbox_dir}/var/lib/postgresql/data/postmaster.pid" "${sandbox_dir}"/run/postgresql/.s.PGSQL.*
 
 SUPABASE_LOCAL_HOST="$head_node_ip"
 SUPABASE_LOCAL_URI="postgresql://postgres:postgres@${SUPABASE_LOCAL_HOST}:${SUPABASE_LOCAL_PORT}/postgres"

@@ -1,0 +1,77 @@
+# @package _global_
+# Stage 1 (LR sweep) base: the Stage-0 recipe (1 click, bs 8/GPU) on the full 2026-09-03 snapshot, 10 epochs, one B300 node,
+# chained 4 h jobs. Plan + budget: docs/analysis/2026-09-03-sam2-stage1-lr-plan.md. Only optimizers.lr varies (lr_sweep.yaml).
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/recipe_r1
+  - _self_
+
+experiment_name: sam2_lr
+wandb_project: sam2_study
+
+clusters:
+  worker_nodes: 1
+  gpus_per_worker: 8
+  batch_size: 64              # 8 per GPU (global 64; the old good run used global 40 at lr 1e-4)
+  timelimit: 04:00
+  chain_jobs: 12              # 10 epochs x 3.6 h = 36 h -> ~11 x 3.5 h links + 1 spare; stops at TRAINING_DONE
+  chain_min_runtime: 1200
+
+datasets:
+  split: 0.02                 # ~10 k val cubes (~5 min/epoch); train ~497 k of the 507,538 in-bounds cubes
+  max_rows: null              # full dataset
+  timepoint_list: null
+
+schedulers:
+  epochs: 10
+  warmup: 2                   # 20 % of the run, as in the old baseline
+  cooldown: 0
+  cos_min_ratio: 0.05
+
+optimizers:
+  lr: 1e-4                    # swept: 2e-4, 4e-4, 1e-4
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+
+evaluation:
+  val_begin: 0
+  val_interval: 1
+
+trainer_loop:
+  iteration_mode: epoch
+  checkpoint_every_n_epochs: 1
+  with_perf_metrics: false
+
+loggers:
+  event_writers:
+    - name: local
+      save_dir: ${loggers.logdir}
+      step_scalars_prefix: step_logbook
+      epoch_scalars_prefix: epoch_logbook
+      scalars_save_format: csv
+    - name: wandb
+      project: ${wandb_project}
+      dir: ${loggers.logdir}
+      run_name: ${experiment_name}
+      tags: [sam2_study, step1, lr]
+      id: ${experiment_name}   # one W&B run across all chained jobs
+      resume_from: allow
+      notes: "Stage 1 LR sweep on the 2026-09-03 snapshot"
+      force: true
+      env_path: ${paths.dotenv_path}
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: periodic_checkpointer
+    file_prefix: latest_model
+    backend: TORCHTITAN
+    time_interval: 3h30m      # wall-clock save before the 4 h limit; plus the per-epoch save above
+  - name: best_checkpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - name: best_metric_saver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true

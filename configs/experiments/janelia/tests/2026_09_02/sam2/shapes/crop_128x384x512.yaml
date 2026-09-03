@@ -1,0 +1,24 @@
+# @package _global_
+# Tile-crop 128x384x512: random window at native resolution (no resize) out of a whole tile.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/bench_tile_base
+  - _self_
+
+experiment_name: sam2_bench_crop_128x384x512
+
+datasets:
+  train_shape: [1, 128, 384, 512, 5]
+  input_shape: [1, 128, 384, 512, 6]
+  preprocessor:
+    transforms_list:
+      - _target_: cell_observatory_platform.data.transforms.crop.Crop
+        target_spatial_shape: [128, 384, 512]
+        crop_dims: YX                       # Z is 128 on every tile in max_tile_shape
+        crop_type: random
+        bbox_format: ${datasets.collate_fn.bbox_output_format}
+        boxes_normalized: ${datasets.collate_fn.normalize_bboxes}
+        seed: ${seed}
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}

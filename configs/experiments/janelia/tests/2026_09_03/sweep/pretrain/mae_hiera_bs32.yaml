@@ -1,0 +1,25 @@
+# @package _global_
+# MAE with the hierarchical (Hiera-L multiscale) backbone: mask units of 8^3 patches, hiera_mu masking. bs 32/GPU guess.
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/pretrain/mae_vit_base
+  - /models/meta_arch/mae/large_hiera
+  - /optimizations/models/mae/large_hiera
+  - _self_
+experiment_name: mae_hiera_bs32
+clusters: {batch_size: 256}
+datasets:
+  masking:
+    mask_generators:
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
+        mask_mode:
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "hiera_mu"
+        random_masking_ratio: 0.75
+        mask_unit_size: [8, 8, 8]
+        q_stride: [2, 2, 2]
+        q_pool: 2
+        skip_patch_mask_generation: true

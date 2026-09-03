@@ -1,0 +1,12 @@
+# @package _global_
+# ViT-H backbone (1280 x 32) on the recipe at 128x384x512. bs 5/GPU guess: ViT-L bs 8 = 237 GiB and the ViT share of
+# memory is small; H has 2.1x the encoder activations. backbone_native_channels follows masked_encoder.embed_dim.
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/local_recipe_base
+  - /models/backbones/masked_encoder/huge
+  - _self_
+
+experiment_name: sam2_vith_c512_bs5
+
+clusters:
+  batch_size: 40

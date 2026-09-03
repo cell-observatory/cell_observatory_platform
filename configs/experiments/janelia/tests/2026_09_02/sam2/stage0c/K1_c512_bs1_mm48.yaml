@@ -1,0 +1,11 @@
+# @package _global_
+# Stage 0c K1_c512_bs1_mm48: capacity point: bs 1, mm 48; its max_reserved sets the VRAM law for this shape
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: K1_c512_bs1_mm48
+
+clusters:
+  batch_size: 8               # 1 per GPU
+

@@ -1,0 +1,42 @@
+# @package _global_
+# SAM2 production recipe (2026-09-03), 1 correction click(s) per step. Measured on 8x B300, cube 128x384x512, mm 48:
+# every flag below was benchmarked on the 2026-09-03 snapshot. Inherit this and override only
+# data subset / lr / schedule / epochs. clusters.batch_size = 8 per GPU x 8 (S3 bs-8 row; bs 10 + decoder act-ckpt OOMs).
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/base_study
+  - _self_
+
+experiment_name: sam2_recipe_r1
+
+clusters:                     # 1 node x 8 B300 (janelia_b300: partition b300, 4 h limit, 12 cpus/GPU)
+  worker_nodes: 1
+  gpus_per_worker: 8
+  cpus_per_gpu: 12
+  mem_per_cpu: 16000
+  timelimit: 04:00
+  chain_jobs: 3               # upper bound on chained 4 h jobs (cluster/chain_lib.sh); Stage-1 configs raise it
+  batch_size: 64              # 8 per GPU: 237 GiB (86 %) at 1.68 s/step, 4.77 samples/s/GPU (bs 7: 209 GiB, 4.38)
+
+datasets:
+  buffer_capacity: 16
+  preprocessor:
+    max_masks: 48             # ~50 instances per cube; multiple of 16 for the GEMMs
+    mask_rows: global_max     # equal decoder batch dim on every rank: no straggler waits
+  databases:
+    in_bounds_only: true      # no-op on the 2026-09-03 snapshot (fringe grid fixed); safe to keep
+
+optimizations:
+  cudnn_benchmark: false      # decoder batch dim varies with the data -> benchmark re-tunes; heuristics are as fast
+
+models:
+  meta_arch:
+    sam:
+      num_correction_pt_per_frame: 1   # SAM2 default 7; each click is a full decoder pass (~0.17 s at bs 2)
+      correction_on_low_res: true         # click sampling + IoU target at stride 4: -29 % step, -27 % memory
+      criterion_args:
+        activation_checkpoint: false      # -10 % step, no memory cost
+        iou_on_low_res: true
+      mask_decoder_args:
+        upscaling: linear_shuffle         # ConvTranspose3d(k=s=2) as GEMM + depth-to-space (exact)
+      prompt_encoder_args:
+        mask_downscaling: linear_shuffle  # Conv3d(k=s=2) as space-to-depth + GEMM (exact)

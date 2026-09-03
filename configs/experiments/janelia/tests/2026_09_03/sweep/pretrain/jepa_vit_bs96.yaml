@@ -1,0 +1,4 @@
+# @package _global_
+defaults: [/experiments/janelia/tests/2026_09_03/sweep/pretrain/jepa_vit_base, _self_]
+experiment_name: jepa_vit_bs96
+clusters: {batch_size: 768}

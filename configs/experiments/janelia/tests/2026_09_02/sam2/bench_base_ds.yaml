@@ -1,0 +1,27 @@
+# @package _global_
+# DeepSpeed twin of bench_base. EpochBasedTrainer has no step mode: 1 epoch over
+# max_rows = 60 x clusters.batch_size rows (leaves override both together).
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/base_study_ds
+  - _self_
+
+experiment_name: sam2_bench_ds
+wandb_project: sam2_study_bench
+
+datasets:
+  max_rows: 1600              # 200 steps x 8 (bs 1/GPU); leaves scale with batch_size
+  timepoint_list: [0]
+
+schedulers: {epochs: 1}
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: DEEPSPEED
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: torch_memory_stats
+    step_period: 10
+    epoch_period: 1
+    logdir: ${loggers.logdir}

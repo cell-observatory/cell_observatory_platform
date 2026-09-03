@@ -1,0 +1,16 @@
+# @package _global_
+# A3: membrane-only input (C = 1) on the joint embed; same tokens, 1/5 the patch-embed input. Recipe, bs 8/GPU.
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/local_recipe_base
+  - _self_
+
+experiment_name: sam2_ch_membrane_c512_bs8
+
+clusters:
+  batch_size: 64
+
+datasets:
+  selected_channel_localizations: [membrane]
+  train_shape: [1, 128, 384, 512, 1]
+  input_shape: [1, 128, 384, 512, 2]
+  mask_channel_idx: 1

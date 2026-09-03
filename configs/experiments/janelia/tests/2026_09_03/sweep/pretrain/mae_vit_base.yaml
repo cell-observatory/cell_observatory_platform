@@ -1,0 +1,139 @@
+# @package _global_
+# MAE ViT-L pretraining, torch-native FSDP2, on the Janelia DB cubes at 128x384x512 (the SAM2 fine-tune shape, 6144 tokens),
+# 5 signal channels, unannotated + annotated synthetic cubes. 200-step perf probe in local mode (no val, no checkpoint).
+# Built from coreweave/legacy/exp_12_15_25_.../torch_native.yaml (torch-native MAE) + janelia/legacy/tests/
+# test_pretrain_jepa_histone_membrane_localdb.yaml (DB cube query) + the SAM2 study DB settings.
+defaults:
+  - /paths/janelia
+  - /hydra/overrides
+  - /clusters/janelia_b300
+  - /datasets/databases/base_database
+  - /datasets/preprocessor/ray_preprocessor
+  - /datasets/pretrain_dataset_ray
+  - /datasets/masking/mask_generator
+  - /models/meta_arch/mae/large
+  - /checkpoint/checkpoint_dcp
+  - /loggers/loggers
+  - /evaluation/base_evaluator
+  - /parallelism/mae
+  - /trainer/torch_native_trainer
+  - /optimizers/adamw_torch
+  - /schedulers/warmup_cosine_decay_torch
+  - /optimizations/models/mae/large
+  - /optimizations/optimizations
+  - /profiling/profiling
+  - _self_
+
+experiment_name: mae_vit_base
+wandb_project: sam2_study_bench
+
+distributed_framework: ray
+run_type: single_run
+job_type: train
+loop_per_worker_script: cell_observatory_platform.training.loops.train_loop_per_worker
+
+quantization: bfloat16
+dataset_dtype: bfloat16
+storage_dtype: uint16
+dataset_layout_order: ZYXC
+seed: 42
+
+clusters:
+  launcher_type: local
+  batch_size: 512             # 64 per GPU
+  worker_nodes: 1
+  gpus_per_worker: 8
+  cpus_per_gpu: 12
+  mem_per_cpu: 16000
+  ray_queue_memory: 0.35
+  chain_jobs: 1
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/sweep/${experiment_name}
+  resume_checkpointdir: null
+  pretrained_checkpointdir: null
+  server_path_override: /groups/betzig/betziglab/CellObservatoryData/forsynthetic/benchmark_tests/data/iteration_2/synthetic_data_iteration_2
+
+parallelism:
+  quantize:
+    enable: false
+
+datasets:
+  batch_size: ${clusters.batch_size_per_gpu}
+  input_shape: [128, 384, 512, 5]
+  train_shape: [128, 384, 512, 5]
+  patch_shape: [16, 16, 16, null]
+  mask_channel_idx: null
+  split: 0.0
+  return_dataloader: true
+  distributed_sampler: true
+  buffer_capacity: 16
+  num_actors_min: 4
+  num_actors_max: 12
+  max_rows: 32768             # > 200 steps x 64 x 8 / ... a step-mode probe must not cross an epoch boundary
+  timepoint_list: [0]
+  use_cached_hypercubes_dataframe: false
+  cdf_threshold: null
+  cdf_target: null
+  selected_channel_localizations: ["membrane", "cytosol"]
+  synthetic_only: true
+  has_annotations: false      # pretraining set = every synthetic cube of the shape, annotated or not
+  preserve_order: false
+  callback_strategy: grpc
+  async_device_copy: false
+  databases:
+    dbname: local
+    protocol: cursor
+    verbose: true
+    diagnostic_verbose: false
+    sample_type: cube
+    data_channel_count: 5
+    required_channel_localizations: ["membrane", "cytosol"]
+    storage_location: synthetic
+    in_bounds_only: true
+  masking:
+    mask_generators:
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
+        mask_mode:
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "random"
+        random_masking_ratio: 0.75
+
+models:
+  meta_arch:
+    mae:
+      abs_sincos_enc: true
+      rope_pos_enc: false
+      with_auxiliary_loss: false
+      loss_fn: l2_masked
+
+schedulers: {epochs: 1, warmup: 0, cooldown: 0}
+optimizers:
+  lr: 1e-3
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+
+optimizations:
+  cudnn_benchmark: false
+
+trainer_loop:
+  iteration_mode: step
+  max_steps: 200
+  checkpoint_every_n_epochs: null
+  checkpoint_save_period: 1000000
+  with_perf_metrics: true
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: torch_memory_stats
+    step_period: 10
+    epoch_period: 1
+    logdir: ${loggers.logdir}

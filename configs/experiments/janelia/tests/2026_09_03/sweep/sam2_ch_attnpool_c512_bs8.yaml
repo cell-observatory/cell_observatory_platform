@@ -1,0 +1,22 @@
+# @package _global_
+# Channel-adaptive patch embed: per-channel tokens + factorized (localization x fluorophore) embedding, attn_pool fusion
+# (same token count as joint). Recipe at 128x384x512, bs 8/GPU. Vocab derived from api.roi_channels at startup.
+defaults:
+  - /experiments/janelia/tests/2026_09_03/sweep/local_recipe_base
+  - _self_
+
+experiment_name: sam2_ch_attnpool_c512_bs8
+
+clusters:
+  batch_size: 64
+
+models:
+  backbones:
+    masked_encoder:
+      patch_embed_type: channel_adaptive
+      patch_embed_args:
+        channel_fusion: attn_pool
+        attn_pool_num_heads: 8
+        channel_embed: factorized
+        channel_vocab: null
+        vocab_extra_slots: 16

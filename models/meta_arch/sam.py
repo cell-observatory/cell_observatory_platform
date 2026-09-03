@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Mapping, Optional, Literal, Tuple
 import numpy as np
 
 import torch
+from cell_observatory_platform.training.phase_timer import PhaseTimer
 import torch.distributed
 import torch.nn.functional as F
 
@@ -28,6 +29,7 @@ from cell_observatory_platform.models.layers.prompt_encoders import PromptEncode
 from cell_observatory_platform.models.layers.patch_embeddings import calc_num_patches
 from cell_observatory_platform.models.layers.attention import MemoryAttention, RopeAttention
 from cell_observatory_platform.models.layers.positional_encoding import PositionalEmbeddingSinCos
+from cell_observatory_platform.models.ops.pooling import any_pool3d
 from cell_observatory_platform.models.layers.utils import (
     select_closest_cond_frames,
     get_next_point,
@@ -56,6 +58,21 @@ from cell_observatory_platform.inference.amg import (
 
 # a large negative value as a placeholder score for missing objects
 NO_OBJ_SCORE = -1024.0
+
+
+def low_res_cells_to_voxels(cells: torch.Tensor, stride: int) -> torch.Tensor:
+    """Map stride-``s`` cell coordinates to full-res voxel coordinates.
+
+    ``cells`` are (x, y, z) indices on the low-res (stride-``s``) grid, as
+    returned by :func:`get_next_point` when it is fed the max-pooled GT. The
+    click must be expressed in FULL-RES voxel coordinates for the prompt
+    encoder, so we take a uniformly random voxel inside the selected cell:
+    ``voxel = cell * s + U{0, ..., s-1}``. Sampling inside the cell (instead of
+    always its corner) keeps the click distribution unbiased within the cell,
+    which is the resolution the mask stream is supervised at anyway.
+    """
+    jitter = torch.randint(0, stride, cells.shape, device=cells.device)
+    return cells * stride + jitter.to(cells.dtype)
 
 
 class SAM2Base(torch.nn.Module):
@@ -276,6 +293,12 @@ class SAM2Base(torch.nn.Module):
         # disable memory encoder
         self.disable_memory_encoder = disable_memory_encoder
 
+        # Run the training correction loop entirely on the stride-4 mask
+        # stream (no full-res upsample, error sampling against max-pooled GT).
+        # SAM2.__init__ overrides this; SAM2Base keeps today's behaviour so any
+        # other subclass is unaffected.
+        self.correction_on_low_res = False
+
     @property
     def device(self):
         return next(self.parameters()).device
@@ -288,6 +311,7 @@ class SAM2Base(torch.nn.Module):
     def _init_model_weights(self, buffer_device: str | None = None):
         raise NotImplementedError
 
+    @PhaseTimer.timed("sam_heads")
     def _forward_sam_heads(
         self,
         backbone_features,
@@ -420,14 +444,15 @@ class SAM2Base(torch.nn.Module):
 
         if self.input_fmt == "TZYXC":
             if with_high_res:
-                high_res_multimasks = F.interpolate(
-                    low_res_multimasks,
-                    # High-res frame follows the token grid in hand (crop-sized
-                    # for crop-mode), not the full-volume config shape.
-                    size=tuple(t_ * s for t_, s in zip((D, H, W), self.token_strides)),
-                    mode="trilinear",
-                    align_corners=False,
-                )
+                with PhaseTimer.phase("high_res_upsample"):
+                    high_res_multimasks = F.interpolate(
+                        low_res_multimasks,
+                        # High-res frame follows the token grid in hand (crop-sized
+                        # for crop-mode), not the full-volume config shape.
+                        size=tuple(t_ * s for t_, s in zip((D, H, W), self.token_strides)),
+                        mode="trilinear",
+                        align_corners=False,
+                    )
             else:
                 # AMG filters on low-res proxies and upsamples survivors itself
                 # — materializing P×M full volumes here would be pure waste.
@@ -532,6 +557,7 @@ class SAM2Base(torch.nn.Module):
             object_score_logits,
         )
 
+    @PhaseTimer.timed("backbone")
     def forward_image(self, data_sample):
         """Get the image feature on the input batch."""
         backbone_out = self.image_encoder(data_sample)
@@ -886,6 +912,10 @@ class SAM2Base(torch.nn.Module):
                 mask_inputs=mask_inputs,
                 high_res_features=high_res_features,
                 multimask_output=multimask_output,
+                # With correction_on_low_res the whole training step lives on
+                # the stride-4 stream, so the full-res trilinear upsample (and
+                # its backward, and the retained full-res tensors) never happen.
+                with_high_res=not (self.correction_on_low_res and self.training),
             )
 
         return current_out, sam_outputs, high_res_features, pix_feat
@@ -901,6 +931,11 @@ class SAM2Base(torch.nn.Module):
         current_out,
     ):
         if run_mem_encoder and self.num_maskmem > 0:
+            assert high_res_masks is not None, (
+                "the memory encoder consumes the FULL-RES mask stream, which "
+                "correction_on_low_res=True does not produce; use it only with "
+                "num_maskmem=0 (single-frame training) or run_mem_encoder=False."
+            )
             high_res_masks_for_mem_enc = high_res_masks
             maskmem_features, maskmem_pos_enc = self._encode_new_memory(
                 current_vision_feats=current_vision_feats,
@@ -1091,6 +1126,11 @@ class SAM2(SAM2Base):
         use_m2m: bool = False,
         multimask_output_for_predict: bool = True,
         min_mask_region_area: int = 0,
+        # Keep the training correction loop on the stride-4 mask stream.
+        # Clicks land on a stride-4 cell (jittered uniformly inside it) and the
+        # IoU target is quantized to stride-4 cells; both are the resolution the
+        # mask stream is supervised at. Default False = today's behaviour.
+        correction_on_low_res: bool = False,
         debug: bool = False,
         buffer_device: str = "cuda",
         output_metadata: Optional[Dict[str, Any]] = None,
@@ -1128,6 +1168,27 @@ class SAM2(SAM2Base):
 
         self.use_act_ckpt_iterative_pt_sampling = use_act_ckpt_iterative_pt_sampling
         self.forward_backbone_per_frame_for_eval = forward_backbone_per_frame_for_eval
+
+        # `correction_on_low_res` is a COUPLED pair: with no full-res stream in training the
+        # criterion cannot read `multistep_pred_multimasks_high_res`, so
+        #   * focal/dice must already be on the low-res stream
+        #     (`criterion_args.low_res_multimasks=True`), and
+        #   * the IoU target must be the max-pooled GT
+        #     (`criterion_args.iou_on_low_res`), which we SET here so a config
+        #     cannot half-enable the feature.
+        self.correction_on_low_res = correction_on_low_res
+        if correction_on_low_res:
+            assert getattr(self.criterion, "low_res_multimasks", False), (
+                "correction_on_low_res=True requires "
+                "criterion_args.low_res_multimasks=True: training produces no "
+                "full-res mask stream for focal/dice to read."
+            )
+            if not getattr(self.criterion, "iou_on_low_res", False):
+                logging.info(
+                    "correction_on_low_res=True: forcing criterion.iou_on_low_res=True "
+                    "(the full-res IoU stream does not exist in training)."
+                )
+                self.criterion.iou_on_low_res = True
 
         # Point sampler and conditioning frames
         self.prob_to_use_pt_input_for_train = prob_to_use_pt_input_for_train
@@ -1256,7 +1317,8 @@ class SAM2(SAM2Base):
         # consumes the materialized dense `masks` plus `valid`/`presence_t`
         # gates (single dense path).
         target_view = data_sample["metainfo"]["sam2_views"]
-        loss = self.criterion(previous_stages_out, target_view)
+        with PhaseTimer.phase("loss"):
+            loss = self.criterion(previous_stages_out, target_view)
         return loss, previous_stages_out
 
     def _prepare_backbone_features_per_frame(self, data_sample, img_ids):
@@ -1307,6 +1369,23 @@ class SAM2(SAM2Base):
             for t, m in enumerate(data_views["masks"])
         }
         backbone_out["gt_masks_per_frame"] = gt_masks_per_frame
+
+        # The stride-4 GT used by the correction sampler. A cell is
+        # foreground iff ANY voxel in it is (an OR over the 4^3 block), which
+        # is exactly the error region the low-res prediction is compared against.
+        # Built once per step per frame, only when the flag is on and training.
+        # `any_pool3d` is the max-pool reduction done in bool space: the
+        # `max_pool3d(m.float(), ...) > 0` spelling would allocate a full fp32
+        # copy of `m` (~4x the bool tensor, ~9 GiB at N=96 x 25 M voxels),
+        # which would eat a large slice of the memory the low-res loop frees.
+        if self.correction_on_low_res and self.training:
+            s = self.mask_downsample_factor
+            backbone_out["gt_masks_low_per_frame"] = {
+                t: any_pool3d(m, s)
+                for t, m in gt_masks_per_frame.items()
+            }
+        else:
+            backbone_out["gt_masks_low_per_frame"] = {}
 
         # num_frames drives the per-frame prompt/correction loops below.
         num_frames = data_views["num_frames"]
@@ -1433,6 +1512,7 @@ class SAM2(SAM2Base):
 
         return backbone_out
 
+    @PhaseTimer.timed("tracking")
     def forward_tracking(self, backbone_out, data_sample: dict, return_dict=False):
         """Forward video tracking on each frame (and sample correction clicks)."""
         img_feats_already_computed = backbone_out["backbone_fpn"] is not None
@@ -1492,6 +1572,7 @@ class SAM2(SAM2Base):
                 point_inputs=backbone_out["point_inputs_per_frame"].get(stage_id, None),
                 mask_inputs=backbone_out["mask_inputs_per_frame"].get(stage_id, None),
                 gt_masks=backbone_out["gt_masks_per_frame"].get(stage_id, None),
+                gt_masks_low=backbone_out["gt_masks_low_per_frame"].get(stage_id, None),
                 frames_to_add_correction_pt=frames_to_add_correction_pt,
                 output_dict=output_dict,
                 num_frames=num_frames,
@@ -1538,6 +1619,9 @@ class SAM2(SAM2Base):
         prev_sam_mask_logits=None,  # The previously predicted SAM mask logits.
         frames_to_add_correction_pt=None,
         gt_masks=None,
+        # The stride-4 max-pooled GT for this frame (None unless
+        # correction_on_low_res is on and we are training).
+        gt_masks_low=None,
     ):
         if frames_to_add_correction_pt is None:
             frames_to_add_correction_pt = []
@@ -1579,6 +1663,7 @@ class SAM2(SAM2Base):
                 is_init_cond_frame,
                 point_inputs,
                 gt_masks,
+                gt_masks_low,
                 high_res_features,
                 pix_feat,
                 low_res_multimasks,
@@ -1622,6 +1707,7 @@ class SAM2(SAM2Base):
         is_init_cond_frame,
         point_inputs,
         gt_masks,
+        gt_masks_low,
         high_res_features,
         pix_feat_with_mem,
         low_res_multimasks,
@@ -1633,6 +1719,19 @@ class SAM2(SAM2Base):
         current_out,
     ):
         assert gt_masks is not None, "gt_masks must not be None"
+        # Sample the correction clicks against the stride-4 streams instead
+        # of upsampling every round's K multimasks to full res just to threshold
+        # them. `low_res_masks` is already at stride `mask_downsample_factor`.
+        on_low_res = self.correction_on_low_res and self.training
+        if on_low_res:
+            assert gt_masks_low is not None, (
+                "correction_on_low_res=True requires the max-pooled GT "
+                "(gt_masks_low) for this frame"
+            )
+            assert gt_masks_low.shape[-3:] == low_res_masks.shape[-3:], (
+                f"stride-4 GT {tuple(gt_masks_low.shape[-3:])} does not match the "
+                f"low-res prediction grid {tuple(low_res_masks.shape[-3:])}"
+            )
         all_pred_masks = [low_res_masks]
         all_pred_high_res_masks = [high_res_masks]
         all_pred_multimasks = [low_res_multimasks]
@@ -1652,14 +1751,30 @@ class SAM2(SAM2Base):
                 sample_from_gt = False
 
             # if `pred_for_new_pt` is None, only GT masks will be used for point sampling
-            pred_for_new_pt = None if sample_from_gt else (high_res_masks > 0)
-            new_points, new_labels = get_next_point(
-                input_fmt=self.input_fmt,
-                time_separable=True,
-                gt_masks=gt_masks,
-                pred_masks=pred_for_new_pt,
-                method="uniform" if self.training else self.pt_sampling_for_eval,
-            )
+            if on_low_res:
+                pred_for_new_pt = None if sample_from_gt else (low_res_masks > 0)
+                new_cells, new_labels = get_next_point(
+                    input_fmt=self.input_fmt,
+                    time_separable=True,
+                    gt_masks=gt_masks_low,
+                    pred_masks=pred_for_new_pt,
+                    method="uniform" if self.training else self.pt_sampling_for_eval,
+                )
+                # cells -> full-res voxel coords (the prompt encoder works in
+                # full-res voxels); the jitter keeps the click uniform inside
+                # the selected 4^3 cell.
+                new_points = low_res_cells_to_voxels(
+                    new_cells, self.mask_downsample_factor
+                )
+            else:
+                pred_for_new_pt = None if sample_from_gt else (high_res_masks > 0)
+                new_points, new_labels = get_next_point(
+                    input_fmt=self.input_fmt,
+                    time_separable=True,
+                    gt_masks=gt_masks,
+                    pred_masks=pred_for_new_pt,
+                    method="uniform" if self.training else self.pt_sampling_for_eval,
+                )
             point_inputs = concat_points(point_inputs, new_points, new_labels)
 
             # Feed the mask logits of the previous SAM outputs in the next SAM decoder step.
@@ -1675,6 +1790,7 @@ class SAM2(SAM2Base):
                     mask_inputs=mask_inputs,
                     high_res_features=high_res_features,
                     multimask_output=multimask_output,
+                    with_high_res=not on_low_res,
                     use_reentrant=False,
                 )
             else:
@@ -1684,6 +1800,7 @@ class SAM2(SAM2Base):
                     mask_inputs=mask_inputs,
                     high_res_features=high_res_features,
                     multimask_output=multimask_output,
+                    with_high_res=not on_low_res,
                 )
             (
                 low_res_multimasks,

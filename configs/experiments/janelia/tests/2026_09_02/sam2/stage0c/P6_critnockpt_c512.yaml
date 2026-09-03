@@ -1,0 +1,16 @@
+# @package _global_
+# P6: criterion activation checkpoint off (the loss body ran twice per round: 216 ms fwd + recompute in bwd). Memory cost expected small at bs 2.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: P6_critnockpt_c512
+
+clusters:
+  batch_size: 16
+
+models:
+  meta_arch:
+    sam:
+      criterion_args:
+        activation_checkpoint: false

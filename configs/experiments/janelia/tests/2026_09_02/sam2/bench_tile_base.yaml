@@ -1,0 +1,17 @@
+# @package _global_
+# Tile-mode variant: api.tiles_training rows, pinned buffer bounded to the 128x512x3328 family.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/bench_base
+  - _self_
+
+experiment_name: sam2_bench_tile
+
+clusters:
+  batch_size: 8               # 1/GPU unless a leaf raises it
+
+datasets:
+  max_rows: 2048              # 200 steps x up to 8/GPU x 8 = 12800 would not wrap; wrapping is harmless for a perf probe
+  buffer_capacity: 4          # ~2.6 GB host slot per tile
+  databases:
+    sample_type: tile
+    max_tile_shape: [128, 512, 3328]

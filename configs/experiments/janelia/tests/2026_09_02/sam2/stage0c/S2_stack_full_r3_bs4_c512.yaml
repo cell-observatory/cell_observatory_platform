@@ -1,0 +1,27 @@
+# @package _global_
+# S2: full stack of measured winners on c512: P1 (low-res correction loop + IoU), P2+P3 (GEMM+shuffle up/down),
+# criterion act-ckpt off, rounds 3, at bs 4/GPU (P1 at rounds 7 bs 2 = 157 GiB; rounds 3 ~ -40 % -> bs 4 ~ 80 %).
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0c/cube_128x384x512
+  - _self_
+
+experiment_name: S2_stack_full_r3_bs4_c512
+
+clusters:
+  batch_size: 32              # 4 per GPU
+
+datasets:
+  buffer_capacity: 12
+
+models:
+  meta_arch:
+    sam:
+      num_correction_pt_per_frame: 3
+      correction_on_low_res: true
+      criterion_args:
+        activation_checkpoint: false
+        iou_on_low_res: true
+      mask_decoder_args:
+        upscaling: linear_shuffle
+      prompt_encoder_args:
+        mask_downscaling: linear_shuffle

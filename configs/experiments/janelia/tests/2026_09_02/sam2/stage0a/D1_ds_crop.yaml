@@ -1,0 +1,33 @@
+# @package _global_
+# Stage 0a D1 (was A7): DeepSpeed ZeRO-2 on the FINAL torch setup (crop-512, BS_CROP, mm 100), run once at the end.
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/stage0a/local_ds_base
+  - _self_
+
+experiment_name: D1_ds_crop
+
+clusters:
+  batch_size: 8               # TODO(A4): 8 x BS_CROP
+
+datasets:
+  max_rows: 2048
+  buffer_capacity: 8
+  train_shape: [1, 128, 384, 512, 5]
+  input_shape: [1, 128, 384, 512, 6]
+  databases:
+    sample_type: tile
+    max_tile_shape: [128, 512, 3328]
+  preprocessor:
+    max_masks: 100
+    transforms_list:
+      - _target_: cell_observatory_platform.data.transforms.crop.Crop
+        target_spatial_shape: [128, 384, 512]
+        crop_dims: YX
+        crop_type: random
+        bbox_format: ${datasets.collate_fn.bbox_output_format}
+        boxes_normalized: ${datasets.collate_fn.normalize_bboxes}
+        seed: ${seed}
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}

@@ -1,0 +1,41 @@
+# @package _global_
+# 2026-09-03 setup sweep: the production recipe (recipe_r1: 1 click, low-res click loop, GEMM up/down-scaling,
+# criterion ckpt off, mask_rows global_max, cudnn benchmark off) run as a 200-step perf probe on this node in
+# local mode. Leaves change shape / bs / model variant only. Rows: python scripts/utils/bench_table.py $DATA_DIR/sam2_study/sweep
+defaults:
+  - /experiments/janelia/tests/2026_09_02/sam2/recipe_r1
+  - _self_
+
+experiment_name: sweep_base
+wandb_project: sam2_study_bench
+
+clusters:
+  launcher_type: local        # manager.py -> cluster/ray_local_cluster.sh on this node (no bsub)
+  chain_jobs: 1
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/sweep/${experiment_name}
+
+datasets:
+  max_rows: 16384             # > 200 steps x bs; a step-mode run must not cross an epoch boundary (Ray Data re-create -> GetTimeoutError)
+  timepoint_list: [0]
+  buffer_capacity: 16
+
+trainer_loop:
+  iteration_mode: step
+  max_steps: 200              # medians over steps >= 50
+  checkpoint_every_n_epochs: null
+  checkpoint_save_period: 1000000
+  with_perf_metrics: true
+
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: torch_memory_stats
+    step_period: 10
+    epoch_period: 1
+    logdir: ${loggers.logdir}

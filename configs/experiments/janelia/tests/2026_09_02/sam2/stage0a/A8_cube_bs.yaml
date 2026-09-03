@@ -1,0 +1,40 @@
+# @package _global_
+# Stage 0a A8. bigger DB-side cubes, torch only: bs ladder per shape
+# Local mode runs the points sequentially; outdirs: <local_base outdir>/A8/<name>_sweep_<key>_<value>
+run_type: multi_run
+data_base_dir: A8
+wandb_tags: ["sam2_study", "bench", "stage0a", "A8"]
+
+sweep:
+  - clusters: {batch_size: [32, 64]}                 # TODO: seed from the VRAM law (0.6 x predicted OOM bs), then x2
+runs:
+  # NEEDS the next sandbox (DB-side cubes 128x256x256, 128x384x384, 128x384x512, 128x384x1024).
+  # One launcher run per shape; comment out the shapes not being laddered right now.
+  - cfg: experiments/janelia/tests/2026_09_02/sam2/stage0a/local_base.yaml
+    name: cube128x256x256.yaml
+    overrides:
+      datasets:
+        train_shape: [1, 128, 256, 256, 5]
+        input_shape: [1, 128, 256, 256, 6]
+        preprocessor: {max_masks: 50}       # 100 only if a shape holds > 50 instances; else raise bs
+  - cfg: experiments/janelia/tests/2026_09_02/sam2/stage0a/local_base.yaml
+    name: cube128x384x384.yaml
+    overrides:
+      datasets:
+        train_shape: [1, 128, 384, 384, 5]
+        input_shape: [1, 128, 384, 384, 6]
+        preprocessor: {max_masks: 50}
+  - cfg: experiments/janelia/tests/2026_09_02/sam2/stage0a/local_base.yaml
+    name: cube128x384x512.yaml
+    overrides:
+      datasets:
+        train_shape: [1, 128, 384, 512, 5]
+        input_shape: [1, 128, 384, 512, 6]
+        preprocessor: {max_masks: 50}
+  - cfg: experiments/janelia/tests/2026_09_02/sam2/stage0a/local_base.yaml
+    name: cube128x384x1024.yaml
+    overrides:
+      datasets:
+        train_shape: [1, 128, 384, 1024, 5]
+        input_shape: [1, 128, 384, 1024, 6]
+        preprocessor: {max_masks: 50}
