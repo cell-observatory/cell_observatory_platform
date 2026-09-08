@@ -1215,6 +1215,15 @@ class SAM2(SAM2Base):
         self.add_all_frames_to_correct_as_cond = add_all_frames_to_correct_as_cond
         self.num_correction_pt_per_frame = num_correction_pt_per_frame
         self.pt_sampling_for_eval = pt_sampling_for_eval
+        if self.pt_sampling_for_eval == "center":
+            # the centre sampler runs two CPU distance transforms per object on the full-resolution
+            # mask volume: minutes per validation step on 128x384x512 cubes, and rank-dependent, so
+            # distributed validation desynchronises and times out. "uniform" samples on the GPU.
+            logging.getLogger(__name__).warning(
+                "pt_sampling_for_eval='center' runs CPU distance transforms per object on full-resolution "
+                "masks at every evaluation step; on large volumes this takes minutes per step and stalls "
+                "distributed validation. Prefer pt_sampling_for_eval='uniform'."
+            )
         self.prob_to_sample_from_gt_for_train = prob_to_sample_from_gt_for_train
         
         # A random number generator with a fixed initial seed across GPUs

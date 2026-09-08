@@ -112,9 +112,21 @@ class DeviceMemoryBuffer:
     slot_wait_timeout_s: float = 600.0
 
     def get_free(self) -> int:
-        try:
-            return self._free.get(timeout=self.slot_wait_timeout_s)
-        except queue.Empty:
+        # wait in 30 s slices and warn on each so a slow consumer is visible in the log long
+        # before the hard timeout raises
+        waited = 0.0
+        while True:
+            slice_s = min(30.0, self.slot_wait_timeout_s - waited)
+            try:
+                return self._free.get(timeout=slice_s)
+            except queue.Empty:
+                waited += slice_s
+                if waited < self.slot_wait_timeout_s:
+                    logging.getLogger(__name__).warning(
+                        "%s: waiting for a free device-buffer slot (%.0f s so far, capacity %d)",
+                        self.name, waited, self.capacity,
+                    )
+                    continue
             raise RuntimeError(
                 f"{self.name}: no free device-buffer slot for {self.slot_wait_timeout_s:.0f}s "
                 f"(capacity {self.capacity}). Every slot is held by batches that were "

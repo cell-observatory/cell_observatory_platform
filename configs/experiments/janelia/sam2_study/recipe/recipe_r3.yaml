@@ -66,7 +66,10 @@ models:
   meta_arch:
     sam:
       num_correction_pt_per_frame: 3   # SAM2 default 7; each click is a full decoder pass (~0.17 s at bs 2)
-      correction_on_low_res: true         # click sampling + IoU target at stride 4: -29 % step, -27 % memory
+      correction_on_low_res: true
+      pt_sampling_for_eval: uniform      # eval-mode click sampling on the GPU; the default 'center' runs CPU distance
+                                          # transforms per object on full-res masks (minutes per validation step) and
+                                          # stalled every validation epoch of the LR sweep on 2026-09-08         # click sampling + IoU target at stride 4: -29 % step, -27 % memory
       criterion_args:
         activation_checkpoint: false      # -10 % step, no memory cost
         iou_on_low_res: true

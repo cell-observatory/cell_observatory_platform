@@ -149,5 +149,5 @@ Also written: `chain_smoke.yaml` (recipe on 8 k rows, 4 epochs, 16 min limit, `c
 chaining test; run it before the sweep: `python manager.py --config-name=experiments/janelia/tests/2026_09_03/sam2_lr/chain_smoke.yaml`.
 
 Before submitting: the resume gate (`stage0c/C1_resume_a` → `C1_resume_b`) must pass once on the recipe; the chaining
-(`2026-09-03-lsf-chaining-sketch.md`, implemented, needs its LSF smoke test); `eval/test_heldout` must exist; `pt_sampling_for_eval` must be
-`uniform` (or the center sampler ported) before the first validation.
+(`2026-09-03-lsf-chaining-sketch.md`, implemented, needs its LSF smoke test); `eval/test_heldout` must exist; `pt_sampling_for_eval` is
+`uniform` in the recipes since 2026-09-08 (the `center` sampler stalled every validation epoch of attempt 2).
