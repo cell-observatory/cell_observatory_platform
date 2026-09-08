@@ -222,13 +222,16 @@ def get_dataloader(
         object_type_names=object_type_names,
     )
 
-    # Step-cadence validation runs while the train iterator is live and its
-    # prefetch holds the collator's device-buffer slots; the validation
-    # iterator needs a collator (device buffer) of its own or it deadlocks on
-    # the slot wait. Epoch-cadence validation starts after the train iterator
-    # is exhausted and shares the collator (no extra device memory).
+    # Validation always gets a collator (device buffer) of its own. The train
+    # iterator's prefetch can still hold every slot of the shared buffer when
+    # the validation iterator starts collating -- with step-cadence validation
+    # by construction, and at an epoch boundary as well (batches collated ahead
+    # of the last step are only released when they are stepped): the
+    # validation collator then waits the full slot timeout, raises, and the
+    # other ranks time out in the next collective. One extra buffer of
+    # val_device_buffer_capacity batches is a small price.
     val_collate_fn = None
-    if OmegaConf.select(config, "trainer_loop.val_every_n_steps") and float(config.datasets.split or 0) > 0:
+    if float(config.datasets.split or 0) > 0:
         val_collate_fn = instantiate(
             config.datasets.collate_fn,
             node_id=node_id(),
