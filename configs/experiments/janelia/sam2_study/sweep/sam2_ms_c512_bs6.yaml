@@ -1,0 +1,10 @@
+# @package _global_
+# Multi-scale SAM2 back-off: bs 8 OOMs at 264+ GiB (~35 GiB per sample at Hiera patch 4); bs 6 predicted ~210 GiB (76 %).
+defaults:
+  - /experiments/janelia/sam2_study/sweep/sam2_ms_base
+  - _self_
+
+experiment_name: sam2_ms_c512_bs6
+
+clusters:
+  batch_size: 48

@@ -78,10 +78,15 @@ class JEPA(nn.Module):
         multiscale_level_indices: Optional[List[int]] = None,
         target_only_predictor: bool = False,
         output_metadata: Dict[str, Any] = None,
+        # how the C signal channels enter the ViT encoders (input AND target):
+        # see models/backbones/maskedencoder.py / configs/models/backbones/masked_encoder/large.yaml
+        patch_embed_type: Literal["joint", "channel_adaptive"] = "joint",
+        patch_embed_args: Optional[Mapping[str, Any]] = None,
         **kwargs,
     ):
         super().__init__()
 
+        self.patch_embed_type = patch_embed_type
         self.depth = depth
         self.predictor_depth = predictor_depth
         self.embed_dim = embed_dim
@@ -161,8 +166,15 @@ class JEPA(nn.Module):
                 rope_type=self.rope_type,
                 rope_theta=self.rope_theta,
                 mlp_wide_silu=mlp_wide_silu,
-                dtype=dtype
+                dtype=dtype,
+                patch_embed_type=patch_embed_type,
+                patch_embed_args=patch_embed_args,
             )
+            if self.input_encoder.tokens_per_patch != 1:
+                raise NotImplementedError(
+                    "JEPA masking indexes one token per patch; channel_fusion=concat "
+                    "emits C tokens per patch. Use channel_fusion=attn_pool."
+                )
             self.target_predictor = MaskedPredictor(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
@@ -194,6 +206,11 @@ class JEPA(nn.Module):
                 da_n_levels=1,
             )
         elif backbone_type == "hiera":
+            if patch_embed_type != "joint":
+                raise NotImplementedError(
+                    "patch_embed_type=channel_adaptive is a MaskedEncoder (vit) option; "
+                    "the Hiera backbone has its own patch embed"
+                )
             self.multiscale = multiscale
             self.target_only_predictor = target_only_predictor
             self.multiscale_level_indices = multiscale_level_indices
@@ -489,6 +506,21 @@ class JEPA(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone type: {self.backbone_type}")
 
+    def _channel_ids(self, meta: dict) -> Optional[torch.Tensor]:
+        """``metainfo["channel_ids"]`` ([B, C, 2] token ids from the preprocessor's
+        channel_vocab lookup) for a channel-adaptive patch embed; ``None`` for the
+        joint embed (nothing to look up)."""
+        if getattr(self, "patch_embed_type", "joint") != "channel_adaptive":
+            return None
+        ids = (meta or {}).get("channel_ids")
+        if ids is None:
+            raise ValueError(
+                "patch_embed_type=channel_adaptive needs metainfo['channel_ids'] "
+                "([B, C, 2] localization/fluorophore token ids); the preprocessor emits "
+                "them from metainfo['channel_tokens'] when its channel_vocab is set"
+            )
+        return ids
+
     @staticmethod
     def _select_tokens(x: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
         """
@@ -539,26 +571,34 @@ class JEPA(nn.Module):
         context_masks, patches_used = meta["context_masks"][0], meta["patches_used"][0]
         target_masks, original_patch_indices = meta["target_masks"][0], meta["original_patch_indices"][0]
 
-        embedding, patches = self.input_encoder(
+        channel_ids = self._channel_ids(meta)
+        if patches_used is not None:
+            target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
+        else:
+            target_idx_in_patches_used = target_masks
+
+        # JEPA never reads the raw pixel patches: return_patches=False keeps the
+        # [B, N, pixels_per_patch] copy out of both encoder passes.
+        embedding, _ = self.input_encoder(
             inputs, masks=context_masks, spatial_kwargs=spatial_kwargs,
+            channel_ids=channel_ids, return_patches=False,
         )
+        # per-token norm + output projection run on the target rows only
         predictions = self.target_predictor(
             embedding,
             original_patch_indices=original_patch_indices,
             target_masks=target_masks,
             patches_used=patches_used,
             spatial_kwargs=spatial_kwargs,
+            output_masks=target_idx_in_patches_used,
         )
 
         with torch.no_grad():
-            targets, _ = self.target_encoder(inputs, spatial_kwargs=spatial_kwargs)
+            targets, _ = self.target_encoder(
+                inputs, spatial_kwargs=spatial_kwargs, channel_ids=channel_ids, return_patches=False,
+            )
 
-        if patches_used is not None:
-            target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
-        else:
-            target_idx_in_patches_used = target_masks
         targets = apply_masks(targets, masks=target_masks)
-        predictions = apply_masks(predictions, masks=target_idx_in_patches_used)
         loss, aux_losses = self.loss_fn(targets, predictions, masks.sum())
 
         loss_dict = {"step_loss": loss, **(aux_losses or {})}

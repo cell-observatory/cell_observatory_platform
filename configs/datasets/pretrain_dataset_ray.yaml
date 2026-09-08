@@ -47,6 +47,10 @@ server_folder_path: ${paths.server_folder_path}
 split: 0.2
 # "drop" = drop last incomplete batch; "pad" = pad last batch with zeros, set batch_size_actual and valid_mask
 last_batch_policy: "drop"
+# What LoaderActor does when tensorstore cannot read a sample's region (e.g. corrupt blosc chunk on disk).
+# "zero_fill" = zero the whole sample region (image + mask channels together), warn once per (tile, region),
+# count in LoaderActor.read_failure_count, continue; "raise" = abort the run (old behaviour).
+read_failure_policy: "zero_fill"
 
 collate_fn:
   _target_: cell_observatory_platform.data.datasets.pretrain_dataset_ray.CollatorActor

@@ -127,12 +127,11 @@ def L2_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
     if isinstance(targets, (list, tuple)) and isinstance(predictions, (list, tuple)):
         total_loss = 0.0
         for t, p in zip(targets, predictions):
-            total_loss = total_loss + ((t - p) ** 2).mean(dim=-1).sum()
+            total_loss = total_loss + _per_patch_mean_sum(t, p, "l2")
         return total_loss / num_patches, None
     elif isinstance(targets, torch.Tensor) and isinstance(predictions, torch.Tensor):
-        loss = (targets - predictions) ** 2
-        loss = loss.mean(dim=-1) # mean loss per patch
-        loss = loss.sum() / num_patches
+        # == ((targets - predictions) ** 2).mean(dim=-1).sum() / num_patches
+        loss = _per_patch_mean_sum(targets, predictions, "l2") / num_patches
         return loss, None
     else:
         raise TypeError(
@@ -141,16 +140,30 @@ def L2_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
         )
 
 
+def _per_patch_mean_sum(targets, predictions, kind: str):
+    """``((targets - predictions) ** 2).mean(-1).sum()`` (``l2``) or the ``abs``
+    twin (``l1``) as a single fused reduction: no [B, M, D] difference/square
+    temporaries. Mixed dtypes are promoted exactly as the subtraction would."""
+    dtype = torch.result_type(targets, predictions)
+    t, p = targets.to(dtype), predictions.to(dtype)
+    if kind == "l2":
+        total = F.mse_loss(p, t, reduction="sum")
+    elif kind == "l1":
+        total = F.l1_loss(p, t, reduction="sum")
+    else:
+        raise ValueError(f"unknown kind {kind!r}")
+    return total / torch.broadcast_shapes(t.shape, p.shape)[-1]
+
+
 def L1_masked_loss(targets, predictions, num_patches, aux_loss_meta=None):
     if isinstance(targets, (list, tuple)) and isinstance(predictions, (list, tuple)):
         total_loss = 0.0
         for t, p in zip(targets, predictions):
-            total_loss = total_loss + torch.abs(t - p).mean(dim=-1).sum()
+            total_loss = total_loss + _per_patch_mean_sum(t, p, "l1")
         return total_loss / num_patches, None
     elif isinstance(targets, torch.Tensor) and isinstance(predictions, torch.Tensor):
-        loss = torch.abs(targets - predictions)
-        loss = loss.mean(dim=-1)
-        loss = loss.sum() / num_patches
+        # == torch.abs(targets - predictions).mean(dim=-1).sum() / num_patches
+        loss = _per_patch_mean_sum(targets, predictions, "l1") / num_patches
         return loss, None
     else:
         raise TypeError(

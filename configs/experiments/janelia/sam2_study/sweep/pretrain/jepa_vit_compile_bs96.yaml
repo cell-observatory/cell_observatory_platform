@@ -1,0 +1,5 @@
+# @package _global_
+# Lever: torch.compile on JEPA (context length varies per step under blocked masking -> expect recompiles; measured, not assumed).
+defaults: [/experiments/janelia/sam2_study/sweep/pretrain/jepa_vit_base, _self_]
+experiment_name: jepa_vit_compile_bs96
+optimizations: {models: {jepa: {torch_compile: {enable: true}}}}

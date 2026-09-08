@@ -337,6 +337,11 @@ do_cleanup() {
     # (e.g. parse error from editing this script mid-run) the workers'
     # backgrounded blaunches can keep the allocation in RUN until runlimit.
     sleep 120
+    # Record this link's outcome for the job chain BEFORE the bkill below: the
+    # kill ends the shell, so an EXIT trap would never get to write it.
+    if type chain_record_exit >/dev/null 2>&1; then
+        chain_record_exit "${JOB_RC:-0}" "$outdir"
+    fi
     echo "Shutting down the job"
     bkill "$LSB_JOBID"
 }
@@ -403,8 +408,8 @@ done
 
 ############################## RUN WORKLOAD
 
-trap 'do_cleanup; exit 130' INT  # SIGINT
-trap 'do_cleanup; exit 143' TERM # SIGTERM / TERM_RUNLIMIT
+trap 'JOB_RC=130; do_cleanup; exit 130' INT  # SIGINT
+trap 'JOB_RC=143; do_cleanup; exit 143' TERM # SIGTERM / TERM_RUNLIMIT
 
 # Multi-node ray cluster status gate.
 wait_for_ray_cluster "$nodes"
@@ -444,9 +449,10 @@ if [ "$db_failed" -ne 0 ]; then
 fi
 
 run_user_task
+JOB_RC=$?   # the training task's exit status: propagated as the job's, recorded for the chain
 
 ############################## CLEANUP
 
-echo "User tasks completed, starting cleanup"
+echo "User tasks completed (rc=$JOB_RC), starting cleanup"
 do_cleanup
-exit 0
+exit "$JOB_RC"

@@ -12,7 +12,8 @@
 #     (training/helpers.py: write_training_done). A link that finds it exits
 #     in seconds without starting anything -- the one "excess" launch.
 #   - Crash guard: every link records "<rc> <runtime_s> <jobid>" in
-#     <outdir>/chain_last_exit at exit; a follower whose predecessor ran for
+#     <outdir>/chain_last_exit (written by ray_lsf_cluster.sh's cleanup before
+#     it bkills the allocation, and by an EXIT trap as fallback); a follower whose predecessor ran for
 #     less than CHAIN_MIN_RUNTIME seconds (default 1200) without finishing
 #     stops the chain (a config error must not burn chain_jobs slots).
 #   - To stop a chain by hand: touch <outdir>/CHAIN_STOP, then bkill the
@@ -24,8 +25,10 @@
 
 CHAIN_JOB_START_TS=$(date +%s)
 
-chain_record_exit() {  # <rc> <outdir>
+chain_record_exit() {  # <rc> <outdir>; idempotent: the first record of a job wins
     local rc=$1 outdir=$2
+    [ "${CHAIN_EXIT_RECORDED:-0}" = 1 ] && return 0
+    CHAIN_EXIT_RECORDED=1
     echo "$rc $(( $(date +%s) - CHAIN_JOB_START_TS )) ${LSB_JOBID:-none}" > "$outdir/chain_last_exit"
 }
 

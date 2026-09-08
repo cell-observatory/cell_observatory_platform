@@ -963,12 +963,24 @@ class LoaderActor:
         pad_mode: Literal["zero"] = "zero",
         last_batch_policy: str = "drop",
         save_mode: Optional[Literal["overwrite", "append"]] = None,
+        read_failure_policy: Literal["zero_fill", "raise"] = "zero_fill",
     ):
         self.dim = dim
         self.input_format = input_format.upper()
         self.pad_mode = pad_mode
         self.last_batch_policy = last_batch_policy
         self.save_mode = save_mode
+
+        # What to do when tensorstore cannot materialise a sample's region
+        # (e.g. a corrupt/undecodable chunk on disk). "zero_fill": the WHOLE
+        # sample region (all selected channels, image and mask alike -- they
+        # come from one array read) is zero-filled, a rate-limited warning is
+        # emitted and the batch continues. "raise": propagate, as before.
+        if read_failure_policy not in ("zero_fill", "raise"):
+            raise ValueError(f"read_failure_policy must be 'zero_fill' or 'raise', got {read_failure_policy!r}")
+        self.read_failure_policy = read_failure_policy
+        self.read_failure_count = 0  # per-process counter of zero-filled sample regions
+        self._read_failure_warned: set = set()  # (path, region) keys already warned about
 
         self.node_id, self.local_rank, self.global_rank = node_id, local_rank, global_rank
         self.driver_process_numa_node = numa_node
@@ -1082,6 +1094,47 @@ class LoaderActor:
             self._handles[path] = h
         return h
 
+    @staticmethod
+    def _region_str(meta: Dict[str, Any]) -> str:
+        c = meta.get("channel_idx")  # raw row value: list / ndarray / JSON string
+        c = f"c={_json_list(c)}" if c is not None else f"c[0:{meta['channel_size']}]"
+        return (
+            f"t[{meta['time_start']}:{meta['time_start'] + meta['time_size']}] "
+            f"z[{meta['z_start']}:{meta['z_start'] + meta['z_size']}] "
+            f"y[{meta['y_start']}:{meta['y_start'] + meta['y_size']}] "
+            f"x[{meta['x_start']}:{meta['x_start'] + meta['x_size']}] {c}"
+        )
+
+    def _zero_fill_failed_read(self, dst_region: np.ndarray, path: str, meta: Dict[str, Any], err: Exception) -> None:
+        """read_failure_policy == "zero_fill": one sample region could not be read.
+
+        Granularity is the whole sample read (t, z, y, x, selected channels):
+        the loader issues ONE tensorstore read per sample, so image and mask
+        channels fail (and are zeroed) together. A zero mask means "no
+        instances", which downstream handles like any empty sample.
+        """
+        # tensorstore may have written some chunks before the failing one -- reset all.
+        dst_region.fill(0)
+        self.read_failure_count += 1
+        region = self._region_str(meta)
+        key = (path, region)
+        if key not in self._read_failure_warned:
+            if len(self._read_failure_warned) >= 10_000:
+                self._read_failure_warned.clear()
+            self._read_failure_warned.add(key)
+            logger.warning(
+                "[LOADER] unreadable region %s @%s: %s -> zero-filled whole sample region "
+                "(rank=%s, read_failures=%s)",
+                path,
+                region,
+                err,
+                self.global_rank,
+                self.read_failure_count,
+            )
+
+    def get_read_failure_count(self) -> int:
+        return self.read_failure_count
+
     def __call__(self, batch):
         actual_len = len(batch["tile_relative_path"])
         if actual_len > self.batch_size:
@@ -1138,7 +1191,7 @@ class LoaderActor:
                     else:
                         raise NotImplementedError(f"Input format {self.input_format} not implemented for 4D data")
 
-                write_futs.append(ts.array(dst[i][dst_slice]).write(src_view))
+                write_futs.append((i, ts.array(dst[i][dst_slice]).write(src_view), dst_slice, p, meta))
 
                 # NOTE: pad the tail after write, currently we only support zero padding
                 if self.pad_mode == "zero":
@@ -1174,8 +1227,13 @@ class LoaderActor:
                 else:
                     raise NotImplementedError(f"Pad mode {self.pad_mode} not implemented")
 
-        for f in write_futs:
-            f.result()
+        for i, f, dst_slice, p, meta in write_futs:
+            try:
+                f.result()
+            except Exception as err:  # tensorstore raises ValueError/RuntimeError on decode failure
+                if self.read_failure_policy == "raise":
+                    raise
+                self._zero_fill_failed_read(dst[i][dst_slice], p, meta, err)
 
         batch["buffer_name"] = np.array([buffer["name"]] * self.batch_size)
         batch["buffer_idx"] = np.full((self.batch_size,), buffer["slot"], dtype=np.int32)
@@ -1334,6 +1392,7 @@ def _build_loader_dataset(
             "input_format": cfg.dataset_layout_order,
             "last_batch_policy": cfg.datasets.last_batch_policy,
             "save_mode": save_mode,
+            "read_failure_policy": cfg.datasets.get("read_failure_policy", "zero_fill"),
         },
         compute=ray.data.ActorPoolStrategy(
             min_size=cfg.datasets.num_actors_min,

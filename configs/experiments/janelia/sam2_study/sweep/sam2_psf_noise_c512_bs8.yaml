@@ -1,0 +1,39 @@
+# @package _global_
+# Recipe + synthetic-to-real image formation: PSF convolution then a mixed Poisson-Gaussian sensor model, before Normalize
+# (the denoising preprocessor's order; configs/datasets/preprocessor/denoising_preprocessor.yaml). The finetune preprocessor
+# splits the instance-mask channel off before the transforms, so only the 5 signal channels are blurred/noised.
+# PSF: no real light-sheet PSF exists on the Janelia filesystem (the ABC precedent used /clusterfs/nvme/martinalvarez/psf-real/
+# DSR/CamA_Arc_OMW.tif); this is a light-sheet-like Gaussian at 0.1 um voxels, FWHM 0.32 um lateral / 0.80 um axial
+# (65^3, generated 2026-09-03; /groups/betzig/betziglab/hph/data/test_psf.tif is an isotropic FWHM-0.3-um test PSF).
+# Sensor parameters = configs/tasks/denoising.yaml (QE 0.82, 0.22 e-/count, read noise 40, offset 100 counts).
+# Voxel size 0.1 um isotropic assumed for the synthetic data (not recorded in the sandbox DB).
+defaults:
+  - /experiments/janelia/sam2_study/sweep/local_recipe_base
+  - _self_
+
+experiment_name: sam2_psf_noise_c512_bs8
+
+clusters:
+  batch_size: 64
+
+datasets:
+  preprocessor:
+    transforms_list:
+      - _target_: cell_observatory_platform.data.transforms.psf.ConvolveWithPSF
+        input_shape: [128, 384, 512, 5]   # per-frame ZYXC (the class indexes Z/Y/X from a 4-element shape; T is folded into the batch)
+        input_pixel_size_um: [0.1, 0.1, 0.1]
+        psf: ${paths.data_path}/psf/CamA_Arc_OMW_centered.tif
+        psf_pixel_size_um: [0.1, 0.1, 0.1]
+        psf_format: ZYX
+        psf_centered: true
+        pad_type: reflect
+      - _target_: cell_observatory_platform.data.transforms.noise.MixedPoissonGaussianNoise
+        quantum_efficiency: 0.82
+        electrons_per_count: 0.22
+        sigma_background_noise: 40
+        mean_background_offset: 100
+        seed: ${seed}
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}

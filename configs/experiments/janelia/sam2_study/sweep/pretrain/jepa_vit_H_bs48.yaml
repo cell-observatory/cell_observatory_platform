@@ -1,0 +1,6 @@
+# @package _global_
+# JEPA ViT-H: bs 48/GPU guess (half of L's 96).
+defaults: [/experiments/janelia/sam2_study/sweep/pretrain/jepa_vit_base, /models/meta_arch/jepa/huge, /optimizations/models/jepa/huge, _self_]
+experiment_name: jepa_vit_H_bs48
+clusters: {batch_size: 384}
+models: {meta_arch: {jepa: {abs_sincos_enc: true, rope_pos_enc: false}}}

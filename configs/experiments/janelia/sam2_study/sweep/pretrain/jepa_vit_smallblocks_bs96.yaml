@@ -1,0 +1,19 @@
+# @package _global_
+# Masking-ablation memory corner for JEPA: small target blocks (scale 0.3-0.5 x 2 blocks) -> largest context -> most encoder tokens; bs 96.
+defaults: [/experiments/janelia/sam2_study/sweep/pretrain/jepa_vit_base, _self_]
+experiment_name: jepa_vit_smallblocks_bs96
+datasets:
+  masking:
+    mask_generators:
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
+        lateral_mask_scale: [0.3, 0.5]
+        axial_mask_scale: [0.3, 0.5]
+        aspect_ratio_scale_hw: [0.75, 1.5]
+        num_blocks: 2
+        mask_mode:
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "blocked"

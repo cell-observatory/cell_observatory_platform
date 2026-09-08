@@ -66,3 +66,6 @@ max_tile_shape: null
 # 384-wide cubes on 512-wide tiles; such rows would fail at the zarr read).
 # true: drop those cubes in SQL and warn.
 in_bounds_only: false
+# drop rows whose tile_relative_path contains any of these substrings (SQL LIKE): use it to
+# fence off a tile with a corrupt zarr chunk instead of letting the loader abort the run
+exclude_tile_path_patterns: null

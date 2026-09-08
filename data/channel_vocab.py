@@ -263,9 +263,31 @@ def write_vocab_file(outdir: str | Path, vocab: ChannelVocab) -> Path:
 ENCODER_NODE = "models.backbones.masked_encoder"
 
 
+def encoder_node_path(cfg: DictConfig) -> str:
+    """Dotted path of the node that owns ``patch_embed_type`` / ``patch_embed_args``.
+
+    The pretraining meta-archs (``models.meta_arch.mae`` / ``.jepa``, selected by
+    ``models.model``) build their own encoder and carry the patch-embed keys
+    themselves; the fine-tune stacks (SAM) carry them on the shared
+    ``models.backbones.masked_encoder`` node. The meta-arch node wins only when
+    it is channel-adaptive, so a SAM config is unaffected.
+    """
+    model = OmegaConf.select(cfg, "models.model")
+    if model is not None:
+        path = f"models.meta_arch.{model}"
+        node = OmegaConf.select(cfg, path)
+        if node is not None and node.get("patch_embed_type", "joint") == "channel_adaptive":
+            return path
+    return ENCODER_NODE
+
+
+def encoder_node(cfg: DictConfig) -> Optional[DictConfig]:
+    return OmegaConf.select(cfg, encoder_node_path(cfg))
+
+
 def channel_embed_enabled(cfg: DictConfig) -> bool:
     """True when the encoder is channel-adaptive with a token embedding."""
-    node = OmegaConf.select(cfg, ENCODER_NODE)
+    node = encoder_node(cfg)
     if node is None or node.get("patch_embed_type", "joint") != "channel_adaptive":
         return False
     args = node.get("patch_embed_args") or {}
@@ -289,7 +311,7 @@ def resolve_channel_vocab(
     """
     if not channel_embed_enabled(cfg):
         return None
-    enc = OmegaConf.select(cfg, ENCODER_NODE)
+    enc = encoder_node(cfg)
     args = enc.get("patch_embed_args") or {}
     extra_slots = int(args.get("vocab_extra_slots", 16))
     training = str(cfg.get("job_type", "train")) == "train"

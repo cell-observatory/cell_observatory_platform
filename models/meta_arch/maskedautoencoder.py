@@ -175,10 +175,15 @@ class MaskedAutoEncoder(nn.Module):
         da_n_levels: int = 1,
         buffer_device: str = "cuda",
         output_metadata: Dict[str, Any] = None,
+        # how the C signal channels enter the ViT encoder:
+        # see models/backbones/maskedencoder.py / configs/models/backbones/masked_encoder/large.yaml
+        patch_embed_type: Literal["joint", "channel_adaptive"] = "joint",
+        patch_embed_args: Optional[Mapping[str, Any]] = None,
         **kwargs,
     ):
         super().__init__()
 
+        self.patch_embed_type = patch_embed_type
         if model_template in CONFIGS.keys():
             config = CONFIGS[model_template]
             self.depth = config["depth"]
@@ -284,13 +289,31 @@ class MaskedAutoEncoder(nn.Module):
                 use_deformable_attn=use_deformable_attn,
                 da_n_points=da_n_points,
                 da_n_levels=da_n_levels,
+                patch_embed_type=patch_embed_type,
+                patch_embed_args=patch_embed_args,
             )
+            # pixels the decoder reconstructs per patch: the joint embed flattens
+            # C into pixels_per_patch; the channel-adaptive embed keeps C separate
+            # ([B, N, C, P] patches), so its target row is C * P.
+            target_dim = self.masked_encoder.patch_embedding.pixels_per_patch
+            if patch_embed_type == "channel_adaptive":
+                if self.masked_encoder.tokens_per_patch != 1:
+                    raise NotImplementedError(
+                        "MAE masking indexes one token per patch; channel_fusion=concat "
+                        "emits C tokens per patch. Use channel_fusion=attn_pool."
+                    )
+                if with_auxiliary_loss:
+                    raise NotImplementedError(
+                        "with_auxiliary_loss (FourierLoss unpatchify) assumes the joint "
+                        "patch layout; not supported with patch_embed_type=channel_adaptive"
+                    )
+                target_dim *= self.in_chans
             self.masked_decoder = MaskedPredictor(
                 input_fmt=self.input_fmt,
                 input_shape=self.input_shape,
                 patch_shape=self.patch_shape,
                 input_embed_dim=self.embed_dim,
-                output_embed_dim=self.masked_encoder.patch_embedding.pixels_per_patch,
+                output_embed_dim=target_dim,
                 embed_dim=self.decoder_embed_dim,
                 depth=self.decoder_depth,
                 num_heads=self.decoder_num_heads,
@@ -315,6 +338,11 @@ class MaskedAutoEncoder(nn.Module):
                 da_n_levels=da_n_levels,
             )
         elif backbone_type == "hiera":
+            if patch_embed_type != "joint":
+                raise NotImplementedError(
+                    "patch_embed_type=channel_adaptive is a MaskedEncoder (vit) option; "
+                    "the Hiera backbone has its own patch embed"
+                )
             # MAE Hiera: encoder -> fuse (BlockFusionHeadND) -> single-level predictor -> pixels -> loss
             # Multiscale / return_intermediates not supported; only single-level DA or SA.
             self.masked_encoder = MaskedHieraEncoder(
@@ -483,6 +511,21 @@ class MaskedAutoEncoder(nn.Module):
     #         raise ValueError(f"Unsupported device for flops/nparams calculation: {device}")
     #     return model_param_count, num_flops_per_token
 
+    def _channel_ids(self, meta: dict) -> Optional[torch.Tensor]:
+        """``metainfo["channel_ids"]`` ([B, C, 2] token ids from the preprocessor's
+        channel_vocab lookup) for a channel-adaptive patch embed; ``None`` for the
+        joint embed (nothing to look up)."""
+        if getattr(self, "patch_embed_type", "joint") != "channel_adaptive":
+            return None
+        ids = (meta or {}).get("channel_ids")
+        if ids is None:
+            raise ValueError(
+                "patch_embed_type=channel_adaptive needs metainfo['channel_ids'] "
+                "([B, C, 2] localization/fluorophore token ids); the preprocessor emits "
+                "them from metainfo['channel_tokens'] when its channel_vocab is set"
+            )
+        return ids
+
     @torch.jit.ignore
     def get_patch_embedding(self):
         return self.masked_encoder.patch_embedding
@@ -539,21 +582,31 @@ class MaskedAutoEncoder(nn.Module):
 
         x, patches = self.masked_encoder(
             inputs, masks=context_masks, spatial_kwargs=spatial_kwargs,
-        )
-        x = self.masked_decoder(
-            x,
-            original_patch_indices=original_patch_indices,
-            target_masks=target_masks,
-            patches_used=patches_used,
-            spatial_kwargs=spatial_kwargs,
+            channel_ids=self._channel_ids(meta),
         )
 
         if patches_used is not None:
             target_idx_in_patches_used = torch.searchsorted(patches_used, target_masks)
         else:
             target_idx_in_patches_used = target_masks
+
+        # The pixel head (Linear decoder_dim -> pixels_per_patch) is per-token: let
+        # the decoder project ONLY the target rows unless the auxiliary loss needs
+        # the full-sequence prediction.
+        x = self.masked_decoder(
+            x,
+            original_patch_indices=original_patch_indices,
+            target_masks=target_masks,
+            patches_used=patches_used,
+            spatial_kwargs=spatial_kwargs,
+            output_masks=None if self.with_auxiliary_loss else target_idx_in_patches_used,
+        )
+
+        if patches.dim() == 4:
+            # channel-adaptive embed: [B, N, C, P] -> one C * P pixel row per patch
+            patches = patches.flatten(2)
         targets = apply_masks(patches, masks=target_masks)
-        predictions = apply_masks(x, masks=target_idx_in_patches_used)
+        predictions = apply_masks(x, masks=target_idx_in_patches_used) if self.with_auxiliary_loss else x
 
         if self.with_auxiliary_loss:
             aux_loss_meta = {

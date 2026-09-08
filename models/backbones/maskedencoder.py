@@ -331,20 +331,39 @@ class MaskedEncoder(nn.Module):
         concat_masks=True,
         spatial_kwargs: Optional[dict] = None,
         channel_ids: Optional[torch.Tensor] = None,
+        return_patches: bool = True,
     ):
+        """Returns ``(tokens, patches)``; ``patches`` (raw pixel rows, [B, N, P]) is
+        ``None`` when ``return_patches=False`` so callers that never read them
+        (JEPA) do not keep the full copy alive."""
         if self.patch_embed_type == "channel_adaptive":
             x, patches, _ = self.patch_embedding(inputs, return_patches=True, channel_ids=channel_ids)
+
+            if self.abs_sincos_enc:
+                pos = self.pos_embedding(inputs)
+                if self.tokens_per_patch > 1:
+                    pos = pos.repeat_interleave(self.tokens_per_patch, dim=1)
+                x = x + pos
+
+            if masks is not None:
+                x = apply_masks(x, masks, concat=concat_masks)
         else:
-            x, patches = self.patch_embedding(inputs, return_patches=True)
+            # joint Linear is per-token: gather the kept patch rows FIRST, then
+            # project (and add the matching positional rows), so the projection
+            # and its saved-for-backward input cover only the context tokens.
+            patches = self.patch_embedding._patchify(inputs)
+            if masks is not None:
+                x = self.patch_embedding.proj(apply_masks(patches, masks, concat=concat_masks))
+                if self.abs_sincos_enc:
+                    pos = self.pos_embedding(inputs).expand(patches.shape[0], -1, -1)
+                    x = x + apply_masks(pos, masks, concat=concat_masks)
+            else:
+                x = self.patch_embedding.proj(patches)
+                if self.abs_sincos_enc:
+                    x = x + self.pos_embedding(inputs)
 
-        if self.abs_sincos_enc:
-            pos = self.pos_embedding(inputs)
-            if self.tokens_per_patch > 1:
-                pos = pos.repeat_interleave(self.tokens_per_patch, dim=1)
-            x += pos
-
-        if masks is not None:
-            x = apply_masks(x, masks, concat=concat_masks)
+        if not return_patches:
+            patches = None
 
         x = self.encoder(x, masks=masks, pos_enc=self.freqs_cis, spatial_kwargs=spatial_kwargs)
 

@@ -1,0 +1,16 @@
+# @package _global_
+# Masking-ablation memory corner: random ratio 0.6 (40 % visible tokens vs 25 % at 0.75) -> more encoder work/memory; bs 64.
+defaults: [/experiments/janelia/sam2_study/sweep/pretrain/mae_vit_base, _self_]
+experiment_name: mae_vit_mask0p6_bs64
+datasets:
+  masking:
+    mask_generators:
+      - _target_: cell_observatory_platform.data.masking.mask_generator.MaskGenerator
+        layout: ${datasets.dataset.input_layout}
+        input_shape: ${datasets.input_shape}
+        patch_shape: ${datasets.patch_shape}
+        input_format: ${dataset_layout_order}
+        mask_mode:
+          _target_: cell_observatory_platform.data.masking.mask_generator.MaskModes
+          value: "random"
+        random_masking_ratio: 0.6

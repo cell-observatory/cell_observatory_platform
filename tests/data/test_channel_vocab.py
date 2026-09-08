@@ -291,3 +291,55 @@ def test_checkpoint_without_sidecar_vocab_refuses_to_rederive(tmp_path):
     pinned = ChannelVocab.empty().frozen(2)
     assert resolve_channel_vocab(_cfg(tmp_path, pretrained=str(ckdir), channel_vocab=pinned.to_dict()),
                                  None, write=False) == pinned
+
+
+# --------------------------------------------------------------------------- #
+# encoder node resolution: pretraining meta-arch (mae / jepa) vs the SAM backbone
+# --------------------------------------------------------------------------- #
+
+
+def _pretrain_cfg(model, patch_embed_type="channel_adaptive", backbone=None):
+    from cell_observatory_platform.data.channel_vocab import ENCODER_NODE
+    cfg = {
+        "paths": {"outdir": None, "resume_checkpointdir": None, "pretrained_checkpointdir": None},
+        "datasets": {"preprocessor": {"name": "ray", "channel_vocab": None}},
+        "models": {"model": model, "meta_arch": {model: {
+            "patch_embed_type": patch_embed_type,
+            "patch_embed_args": {"channel_embed": "factorized", "channel_vocab": None, "vocab_extra_slots": 4},
+        }}},
+    }
+    if backbone is not None:
+        cfg["models"]["backbones"] = {"masked_encoder": backbone}
+    return OmegaConf.create(cfg)
+
+
+@pytest.mark.parametrize("model", ["mae", "jepa"])
+def test_pretrain_meta_arch_node_is_resolved_and_injected(model):
+    from cell_observatory_platform.data.channel_vocab import encoder_node_path
+    cfg = _pretrain_cfg(model)
+    assert encoder_node_path(cfg) == f"models.meta_arch.{model}"
+    assert channel_embed_enabled(cfg)
+    vocab = resolve_channel_vocab(cfg, _FakeDb(SYNTH), write=False)
+    table = vocab.to_dict()
+    assert OmegaConf.to_container(cfg.models.meta_arch[model].patch_embed_args.channel_vocab) == table
+    assert OmegaConf.to_container(cfg.datasets.preprocessor.channel_vocab) == table
+    assert vocab.capacity("localization") == vocab.size("localization") + 4
+
+
+def test_joint_pretrain_meta_arch_falls_back_to_sam_backbone_node():
+    from cell_observatory_platform.data.channel_vocab import ENCODER_NODE, encoder_node_path
+    # mae joint, no backbone node -> disabled
+    cfg = _pretrain_cfg("mae", patch_embed_type="joint")
+    assert encoder_node_path(cfg) == ENCODER_NODE and not channel_embed_enabled(cfg)
+    assert resolve_channel_vocab(cfg, _FakeDb(SYNTH), write=False) is None
+    # SAM stack: models.model=sam has no patch-embed keys, the backbone node owns them
+    sam = OmegaConf.create({
+        "paths": {"outdir": None, "resume_checkpointdir": None, "pretrained_checkpointdir": None},
+        "datasets": {"preprocessor": {"name": "sam2_video", "channel_vocab": None}},
+        "models": {"model": "sam", "meta_arch": {"sam": {"embed_dim": 8}},
+                   "backbones": {"masked_encoder": {"patch_embed_type": "channel_adaptive",
+                                                    "patch_embed_args": {"channel_embed": "factorized"}}}},
+    })
+    assert encoder_node_path(sam) == ENCODER_NODE and channel_embed_enabled(sam)
+    resolve_channel_vocab(sam, _FakeDb(SYNTH), write=False)
+    assert sam.models.backbones.masked_encoder.patch_embed_args.channel_vocab is not None

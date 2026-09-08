@@ -699,3 +699,42 @@ def test_fetch_rows_seeded_concatenates_per_roi_in_natural_order_with_fresh_row_
     assert len(db.calls) == 3                                   # 1 key sample + 2 ROIs
     assert t.column_names[0] == "row_id" and t["row_id"].to_pylist() == [0, 1, 2]
     assert t["roi_id"].to_pylist() == [12, 16, 16] and t["tile_id"].to_pylist() == [3, 1, 9]   # natural order
+
+
+# --------------------------------------------------------------------------- #
+# exclude_tile_path_patterns -- fence off a tile with a corrupt zarr chunk
+# --------------------------------------------------------------------------- #
+def test_exclude_tile_path_patterns_adds_a_not_like_clause():
+    spec = QuerySpec(exclude_tile_path_patterns=("a/b/roi4/000x_001y_000z.zarr", "bad'tile"))
+    sql = SqlQueryPlanner.build_sql(_resolved(), spec)
+    assert "NOT (" in sql
+    assert "tile_relative_path LIKE '%a/b/roi4/000x_001y_000z.zarr%'" in sql
+    # quotes are escaped, patterns are OR-ed inside one NOT
+    assert "tile_relative_path LIKE '%bad''tile%'" in sql
+    assert sql.count("tile_relative_path LIKE") == 2
+
+
+def test_exclude_tile_path_patterns_absent_by_default():
+    sql = SqlQueryPlanner.build_sql(_resolved(), QuerySpec())
+    assert "tile_relative_path LIKE" not in sql
+
+
+def test_exclude_tile_path_patterns_is_read_from_config():
+    from omegaconf import OmegaConf
+
+    cfg = OmegaConf.create(
+        {
+            "datasets": {
+                "tile_list": None,
+                "timepoint_list": None,
+                "max_rows": None,
+                "cdf_threshold": None,
+                "cdf_target": "90",
+                "synthetic_only": False,
+                "databases": {"exclude_tile_path_patterns": ["x/y.zarr"], "in_bounds_only": True},
+            }
+        }
+    )
+    spec = TableResolver.build_query_spec_from_config(cfg)
+    assert spec.exclude_tile_path_patterns == ("x/y.zarr",)
+    assert spec.in_bounds_only is True

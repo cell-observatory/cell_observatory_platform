@@ -18,8 +18,8 @@ import pandas as pd
 from omegaconf import OmegaConf
 
 REPO = Path(__file__).resolve().parents[2]
-LEAF_DIRS = [f"experiments/janelia/tests/2026_09_02/sam2/{d}" for d in ("diag", "stage0c", "stage0a")] + [
-    "experiments/janelia/tests/2026_09_03/sweep", "experiments/janelia/tests/2026_09_03/sweep/pretrain"
+LEAF_DIRS = [f"experiments/janelia/sam2_study/recipe/{d}" for d in ("diag", "stage0c", "stage0a")] + [
+    "experiments/janelia/sam2_study/sweep", "experiments/janelia/sam2_study/sweep/pretrain"
 ]
 HBM_GIB = 275.0
 

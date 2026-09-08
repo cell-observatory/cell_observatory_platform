@@ -1,0 +1,5 @@
+# @package _global_
+# Lever: torch.compile on the MAE encoder/decoder blocks (static token counts under random masking).
+defaults: [/experiments/janelia/sam2_study/sweep/pretrain/mae_vit_base, _self_]
+experiment_name: mae_vit_compile_bs64
+optimizations: {models: {mae: {torch_compile: {enable: true}}}}

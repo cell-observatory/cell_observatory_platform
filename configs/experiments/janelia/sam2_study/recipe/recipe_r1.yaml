@@ -1,0 +1,78 @@
+# @package _global_
+# SAM2 production recipe (2026-09-03), 1 correction click(s) per step. Measured on 8x B300, cube 128x384x512, mm 48:
+# every flag below was benchmarked on the 2026-09-03 snapshot. Inherit this and override only
+# data subset / lr / schedule / epochs. clusters.batch_size = 8 per GPU x 8 (S3 bs-8 row; bs 10 + decoder act-ckpt OOMs).
+defaults:
+  - /experiments/janelia/sam2_study/recipe/base_study
+  - _self_
+
+experiment_name: sam2_recipe_r1
+
+clusters:                     # 1 node x 8 B300 (janelia_b300: partition b300, 4 h limit, 12 cpus/GPU)
+  worker_nodes: 1
+  gpus_per_worker: 8
+  cpus_per_gpu: 12
+  mem_per_cpu: 16000
+  timelimit: 04:00
+  chain_jobs: 3               # upper bound on chained 4 h jobs (cluster/chain_lib.sh); Stage-1 configs raise it
+  batch_size: 64              # 8 per GPU: 237 GiB (86 %) at 1.68 s/step, 4.77 samples/s/GPU (bs 7: 209 GiB, 4.38)
+
+datasets:
+  # The recipe's shape. The bring-up base leaves train_shape at 128^3; without these two lines every config inheriting
+  # the recipe (Stage-1 lr, sweep leaves) silently trains on 128^3 cubes (found 2026-09-03 19:10).
+  train_shape: [1, 128, 384, 512, 5]
+  input_shape: [1, 128, 384, 512, 6]
+  buffer_capacity: 16
+  preprocessor:
+    max_masks: 48             # ~50 instances per cube; multiple of 16 for the GEMMs
+    mask_rows: global_max     # equal decoder batch dim on every rank: no straggler waits
+    # Image formation on the synthetic cubes (they are stored as clean rendered intensities): PSF convolution, then the
+    # mixed Poisson-Gaussian sensor model, then Normalize -- the denoising preprocessor's order. The finetune preprocessor
+    # splits the instance-mask channel off before the transforms, so only the 5 signal channels are blurred/noised.
+    # Measured on the recipe (sweep/sam2_psf_noise_c512_bs8, 2026-09-03): 1.57 s/step, 235 GiB at bs 8 = no cost.
+    # PSF: the measured DSR light-sheet PSF CamA_Arc_OMW.tif (75x52x286 voxels, FWHM ~6/3/5 voxels Z/Y/X), stored
+    # centred (peak at shape//2) and uncompressed as CamA_Arc_OMW_centered.tif (the LZW original is unreadable in the
+    # container). PSF and data pixel size 0.1 um isotropic, as the denoising task config assumes for this PSF; the file
+    # carries no pixel-size tags. Sensor parameters as configs/tasks/denoising.yaml. The PSF must live under
+    # paths.data_path: the local launcher binds only that tree into the container.
+    transforms_list:
+      - _target_: cell_observatory_platform.data.transforms.psf.ConvolveWithPSF
+        input_shape: [128, 384, 512, 5]   # per-frame ZYXC (T folded into the batch); only seeds the OTF, which is re-prepared per incoming spatial shape, so 1024-wide and 1-channel configs inherit this unchanged
+        input_pixel_size_um: [0.1, 0.1, 0.1]
+        psf: ${paths.data_path}/psf/CamA_Arc_OMW_centered.tif
+        psf_pixel_size_um: [0.1, 0.1, 0.1]
+        psf_format: ZYX
+        psf_centered: true
+        pad_type: reflect
+      - _target_: cell_observatory_platform.data.transforms.noise.MixedPoissonGaussianNoise
+        quantum_efficiency: 0.82
+        electrons_per_count: 0.22
+        sigma_background_noise: 40
+        mean_background_offset: 100
+        seed: ${seed}
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}
+  databases:
+    in_bounds_only: true      # no-op on the 2026-09-03 snapshot (fringe grid fixed); safe to keep
+    # tile with a corrupt blosc chunk (c/0/0/1/14/0 unreadable): aborted every LR-sweep job on 2026-09-03
+    exclude_tile_path_patterns:
+      - 20250311_mem_histone/fish1_24hpf/roi4/000x_001y_000z.zarr
+      - 20250528_mem-histone/fish3/roi2_spine/000x_009y_001z.zarr   # unreadable shard found by scan_zarr_chunks.py 2026-09-03 22:15
+
+optimizations:
+  cudnn_benchmark: false      # decoder batch dim varies with the data -> benchmark re-tunes; heuristics are as fast
+
+models:
+  meta_arch:
+    sam:
+      num_correction_pt_per_frame: 1   # SAM2 default 7; each click is a full decoder pass (~0.17 s at bs 2)
+      correction_on_low_res: true         # click sampling + IoU target at stride 4: -29 % step, -27 % memory
+      criterion_args:
+        activation_checkpoint: false      # -10 % step, no memory cost
+        iou_on_low_res: true
+      mask_decoder_args:
+        upscaling: linear_shuffle         # ConvTranspose3d(k=s=2) as GEMM + depth-to-space (exact)
+      prompt_encoder_args:
+        mask_downscaling: linear_shuffle  # Conv3d(k=s=2) as space-to-depth + GEMM (exact)

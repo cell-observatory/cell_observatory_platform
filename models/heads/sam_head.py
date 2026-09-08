@@ -370,14 +370,16 @@ class MaskDecoder(nn.Module):
         assert (
             image_pe.size(0) == 1
         ), "image_pe should have size 1 in batch dim (from `get_dense_pe()`)"
-        pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
-        
+        # TwoWayTransformer only READS image_pe (flatten/permute + adds), so a
+        # stride-0 batch expand of the single cast row replaces the
+        # repeat_interleave copy (and its per-row dtype cast).
+        pos_src = image_pe.to(src.dtype).expand(tokens.shape[0], *image_pe.shape[1:])
+
         if self.input_fmt == "TZYXC":
             b, c, z, y, x = src.shape
         else:
             raise NotImplementedError(f"Input format {self.input_fmt} not supported yet.")
 
-        pos_src = pos_src.to(src.dtype)
         tokens = tokens.to(src.dtype)
 
         # Run the transformer

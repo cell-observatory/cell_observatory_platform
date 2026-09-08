@@ -166,6 +166,10 @@ class QuerySpec:
     # array extent is an error at attach time (the DB grid is broken). True:
     # such cubes are dropped in SQL, with a warning.
     in_bounds_only: bool = False
+    # drop rows whose tile_relative_path contains any of these substrings
+    # (e.g. a tile with a corrupt zarr chunk that aborts the loader); matched
+    # with SQL LIKE, so '%' and '_' in a pattern act as wildcards
+    exclude_tile_path_patterns: Optional[Sequence[str]] = None
 
     def validate(self) -> None:
         for name in ("data_channel_count", "min_data_channel_count", "max_data_channel_count"):
@@ -425,6 +429,10 @@ class FilterBuilder:
         return "'" + value.replace("'", "''") + "'"
 
     @staticmethod
+    def _sql_literal(value: str) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    @staticmethod
     def _sql_list(values: Sequence[object]) -> str:
         encoded = []
         for value in values:
@@ -560,6 +568,16 @@ class FilterBuilder:
             out.append((
                 f"timepoint_list={list(query.timepoint_list)}",
                 f"{alias}.time_start IN {cls._sql_list(query.timepoint_list)}",
+            ))
+
+        if query.exclude_tile_path_patterns:
+            likes = " OR ".join(
+                f"{alias}.tile_relative_path LIKE {cls._sql_literal('%' + str(p) + '%')}"
+                for p in query.exclude_tile_path_patterns
+            )
+            out.append((
+                f"exclude_tile_path_patterns ({len(query.exclude_tile_path_patterns)} patterns)",
+                f"NOT ({likes})",
             ))
 
         if query.holdout_split == "train":
@@ -874,6 +892,7 @@ class TableResolver:
             row_sample_seed=config.datasets.get("row_sample_seed", None),
             max_tile_shape=cls._to_tuple(getattr(db, "max_tile_shape", None)),
             in_bounds_only=bool(getattr(db, "in_bounds_only", False)),
+            exclude_tile_path_patterns=cls._to_tuple(getattr(db, "exclude_tile_path_patterns", None)),
             cdf_threshold=config.datasets.cdf_threshold,
             cdf_target=config.datasets.cdf_target,
             cdf_threshold_channel_localizations=cls._to_tuple(

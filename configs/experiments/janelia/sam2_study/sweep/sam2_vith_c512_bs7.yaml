@@ -1,0 +1,12 @@
+# @package _global_
+# ViT-H step-up: bs 5 = 171 GiB (62 %), 1.39 s; bs 7 predicted ~235 GiB (85 %).
+# memory is small; H has 2.1x the encoder activations. backbone_native_channels follows masked_encoder.embed_dim.
+defaults:
+  - /experiments/janelia/sam2_study/sweep/local_recipe_base
+  - /models/backbones/masked_encoder/huge
+  - _self_
+
+experiment_name: sam2_vith_c512_bs7
+
+clusters:
+  batch_size: 56

@@ -212,12 +212,28 @@ class PromptEncoder(nn.Module):
             raise NotImplementedError(f"Input format {self.input_format} not supported yet.")
         self.no_mask_embed = nn.Embedding(1, embed_dim)
 
-    def get_dense_pe(self) -> torch.Tensor:
+    def get_dense_pe(self, dtype: Optional[torch.dtype] = None) -> torch.Tensor:
         """
         Returns the positional encoding used to encode point prompts,
         applied to a dense set of points the shape of the image encoding.
+
+        The PE is a pure function of (token_shape, gaussian buffer) -- no
+        parameters -- so it is computed once (fp32, autocast off) and cached per
+        (token_shape, device, dtype); the cache is a plain attribute (not a
+        buffer/state) and is rebuilt whenever the shape or device changes.
         """
-        return self.pe_layer(self.token_shape).unsqueeze(0)
+        gm = self.pe_layer.positional_encoding_gaussian_matrix
+        out_dtype = gm.dtype if dtype is None else dtype
+        key = (tuple(int(s) for s in self.token_shape), gm.device, out_dtype)
+        cache = self.__dict__.setdefault("_dense_pe_cache", {})
+        pe = cache.get(key)
+        if pe is None:
+            if any(k[:2] != key[:2] for k in cache):
+                cache.clear()  # shape/device changed: drop stale entries
+            with torch.no_grad(), torch.autocast(device_type=gm.device.type, enabled=False):
+                pe = self.pe_layer(self.token_shape).unsqueeze(0).to(out_dtype)
+            cache[key] = pe
+        return pe
 
     def _embed_points(
         self,

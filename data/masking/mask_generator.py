@@ -268,9 +268,11 @@ class MaskGenerator(object):
         w = min(w, self.width)
         return (t, d, h, w)
 
-    def _sample_block_mask(self, block_size):
+    def _sample_block_mask(self, block_size, generator=None):
+        # drawn from the SEEDED generator like every neighbouring draw, so all
+        # ranks sample the same block starts
         starts = [
-            None if dim in (None, 1) else torch.randint(0, dim - sz + 1, ()).item()
+            None if dim in (None, 1) else torch.randint(0, dim - sz + 1, (), generator=generator).item()
             for dim, sz in zip(self.input_shape_patches, block_size)
         ]
 
@@ -320,7 +322,7 @@ class MaskGenerator(object):
                     )
 
                 for _ in range(self.num_blocks):
-                    mask_ctx *= self._sample_block_mask(block_size)
+                    mask_ctx *= self._sample_block_mask(block_size, generator=generator)
                 mask_ctx = mask_ctx.flatten()
 
                 # we include this step to ensure we maintain the same
