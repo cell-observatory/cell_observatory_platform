@@ -82,6 +82,8 @@ prepended to `data_base_dir` by multi_run, hence the doubled prefix). W&B `sam2_
 | `lr_sweep_optimizers_lr_0p0002` | 2e-4 | 153964933 | **killed 19:44** (attempt 1) | 0 | | | | 25 min | corrupt zarr chunk, see below |
 | `lr_sweep_optimizers_lr_0p0004` | 4e-4 | 153964934 | **killed 19:44** (attempt 1) | 0 | | | | 25 min | same |
 | `lr_sweep_optimizers_lr_0p0001` | 1e-4 | 153964935 | **killed 19:44** (attempt 1) | 0 | | | | 25 min | same |
+| attempt 2, all three | | 154088034/35/36 (09-08 14:17) | **died at ~2 h 45 min**, followers killed 17:25 | 0 | | | | ~3 h × 3 nodes | end-of-epoch-1 crash: validation collator starved of device-buffer slots → NCCL timeout (`setup_sweep.md` G8); no checkpoint (3.5 h wall-clock save) |
+| attempt 3 | | after `chain_smoke` 154088842 passes | pending | | | | | | fix dbac0fc: own validation collator, hourly checkpoints; worktree tag `runs/sam2-stage1-2026-09-08b` |
 
 Attempt 1 (19:14–19:44): all three runs died at ~25 min on the same unreadable chunk
 (`20250311_mem_histone/fish1_24hpf/roi4/000x_001y_000z.zarr/c/0/0/1/14/0`, tensorstore "Invalid blosc-compressed data";

@@ -122,6 +122,9 @@ class FinetuneCollatorActor:
         # CONTIGUOUS class index, and forwarded into metainfo for the semantic
         # preprocessor, which needs the NAMES. None means class-agnostic.
         object_type_names: Optional[dict] = None,
+        # seconds a collator waits for a free device-buffer slot before raising (a
+        # consumer that never frees a slot otherwise hangs the worker silently)
+        slot_wait_timeout_s: float = 600.0,
         # with_resize: bool = False,
         debug: bool = False,
         debug_device_idx: Optional[int] = None,
@@ -231,6 +234,7 @@ class FinetuneCollatorActor:
             dtype=buffer_dtype,
             device_idx=idx,
         )
+        self.device_buffer.slot_wait_timeout_s = float(slot_wait_timeout_s)
 
         # TODO: deprecate
         # self.with_resize = with_resize
@@ -695,6 +699,9 @@ class CollatorActor:
         # no class taxonomy. Declared so dataloaders can pass the catalog to
         # whichever collator the config names without branching on its _target_.
         object_type_names: Optional[dict] = None,
+        # seconds a collator waits for a free device-buffer slot before raising (a
+        # consumer that never frees a slot otherwise hangs the worker silently)
+        slot_wait_timeout_s: float = 600.0,
         columns: Optional[List[str]] = None,
         debug: bool = False,
         debug_device_idx: Optional[int] = None,
@@ -777,6 +784,7 @@ class CollatorActor:
             dtype=buffer_dtype,
             device_idx=idx,
         )
+        self.device_buffer.slot_wait_timeout_s = float(slot_wait_timeout_s)
 
         ray.logger.info(
             f"CollatorActor on rank {self.global_rank} and Numa Node {self.numa_node} "
