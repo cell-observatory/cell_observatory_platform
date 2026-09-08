@@ -1,0 +1,28 @@
+# @package _global_
+# Minimal reproduction of the epoch-boundary failure: 512 rows (8 steps per epoch on 8 GPUs at bs 8), 3 epochs with a
+# validation epoch each, 15-min link, short NCCL and device-buffer-slot timeouts so a hang prints its error inside the
+# link. Command-line overrides do not reach the training workers of an LSF job (they re-compose from the config name), so
+# every debugging knob lives in this file.
+defaults:
+  - /experiments/janelia/sam2_study/stage1_lr/chain_smoke
+  - _self_
+
+experiment_name: chain_smoke_mini
+
+clusters:
+  timelimit: 00:15
+  chain_jobs: 1
+
+datasets:
+  max_rows: 512
+  split: 0.1
+  collate_fn:
+    slot_wait_timeout_s: 60
+
+schedulers:
+  epochs: 3
+  warmup: 1
+
+parallelism:
+  comm:
+    train_timeout_seconds: 120
