@@ -1,5 +1,6 @@
 # @package _global_
-# Minimal reproduction of the epoch-boundary failure: 512 rows (8 steps per epoch on 8 GPUs at bs 8), 3 epochs with a
+# Minimal reproduction of the epoch-boundary failure: 1024 rows, 25 % validation (12 train + 4 validation steps per epoch on
+# 8 GPUs at bs 8; fewer validation rows than one batch per rank trips the validation-steps guard), 3 epochs with a
 # validation epoch each, 15-min link, short NCCL and device-buffer-slot timeouts so a hang prints its error inside the
 # link. Command-line overrides do not reach the training workers of an LSF job (they re-compose from the config name), so
 # every debugging knob lives in this file.
@@ -14,8 +15,8 @@ clusters:
   chain_jobs: 1
 
 datasets:
-  max_rows: 512
-  split: 0.1
+  max_rows: 1024
+  split: 0.25
   collate_fn:
     slot_wait_timeout_s: 60
 
