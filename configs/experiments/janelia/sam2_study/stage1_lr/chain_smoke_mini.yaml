@@ -18,7 +18,7 @@ datasets:
   max_rows: 1024
   split: 0.25
   collate_fn:
-    slot_wait_timeout_s: 60
+    slot_wait_timeout_s: 300   # the first training step (FSDP/NCCL warm-up, PSF OTF) can exceed 60 s while the prefetch holds both slots
 
 schedulers:
   epochs: 3
