@@ -636,11 +636,22 @@ class DCPCheckpointManager:
         model: Optional[torch.nn.Module] = None,
     ):
         if resume_checkpointdir is not None and pretrained_checkpointdir is not None:
-            # survives python -O (mirrors the DeepSpeed manager's guard)
-            raise ValueError(
-                "Cannot specify both `resume_checkpointdir` and `pretrained_checkpointdir`. "
-                "Please choose one of them or neither."
-            )
+            # A chained fine-tuning run carries both: every link points at the run's
+            # own checkpoint dir to resume, and the first link, which finds nothing
+            # there, starts from the pretrained weights. Once a checkpoint exists the
+            # resume wins (weights, optimizer, schedulers, counters).
+            if self._checkpoint_steps(Path(resume_checkpointdir)):
+                logger.info(
+                    "[DCPCheckpointManager] resuming from %s; the pretrained checkpoint %s "
+                    "is ignored", resume_checkpointdir, pretrained_checkpointdir,
+                )
+                pretrained_checkpointdir = None
+            else:
+                logger.info(
+                    "[DCPCheckpointManager] no checkpoint under %s yet; starting from the "
+                    "pretrained checkpoint %s", resume_checkpointdir, pretrained_checkpointdir,
+                )
+                resume_checkpointdir = None
         if model_parts is None:
             if model is None:
                 raise ValueError("DCPCheckpointManager requires model_parts (or model=).")

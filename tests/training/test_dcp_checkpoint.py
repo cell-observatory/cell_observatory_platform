@@ -221,15 +221,35 @@ class TestDCPCheckpointManager:
         assert not resumed.save(curr_step=3)               # first before_step after resume
         assert resumed.save(curr_step=4)
 
-    def test_both_resume_and_pretrained_dirs_raise(self, tmp_path):
-        model = nn.Linear(4, 4)
-        with pytest.raises(ValueError, match="Cannot specify both"):
-            DCPCheckpointManager(
-                model_parts=[model],
-                save_checkpointdir=tmp_path,
-                resume_checkpointdir=tmp_path,
-                pretrained_checkpointdir=tmp_path,
-            )
+    def test_both_dirs_resume_wins_once_a_checkpoint_exists(self, gloo_pg, tmp_path):
+        """Chained fine-tuning: every link passes the run's own checkpoint dir as
+        resume next to the pretrained dir. Empty resume dir -> pretrained, model
+        only; a saved step there -> resume with optimizer state."""
+        model, optimizers, schedulers, train_state, manager = _build(tmp_path)
+        _train_steps(model, optimizers, schedulers)
+        train_state.iteration = 3
+        manager.save(curr_step=3, last_step=True)
+        pretrained = tmp_path / "checkpoints"
+
+        run_dir = tmp_path / "run" / "checkpoints"  # does not exist yet: first link
+        model2 = nn.Sequential(nn.Linear(8, 8), nn.Linear(8, 4))
+        first = DCPCheckpointManager(
+            model_parts=[model2], states={"train_state": _TrainState()},
+            save_checkpointdir=run_dir, resume_checkpointdir=run_dir, pretrained_checkpointdir=pretrained,
+        )
+        assert first.resume_checkpointdir is None and first.pretrained_checkpointdir == pretrained
+        assert first.load_optimizer is False
+        assert first.load()[0] == 3
+
+        run_dir.mkdir(parents=True)
+        (run_dir / "step-7").mkdir()
+        (run_dir / "step-7" / ".metadata").write_text("")
+        later = DCPCheckpointManager(
+            model_parts=[model2], states={"train_state": _TrainState()},
+            save_checkpointdir=run_dir, resume_checkpointdir=run_dir, pretrained_checkpointdir=pretrained,
+        )
+        assert later.pretrained_checkpointdir is None and later.resume_checkpointdir == run_dir
+        assert later.load_optimizer is True
 
     def test_pretrained_dir_loads_model_only(self, gloo_pg, tmp_path):
         model, optimizers, schedulers, train_state, manager = _build(tmp_path)
