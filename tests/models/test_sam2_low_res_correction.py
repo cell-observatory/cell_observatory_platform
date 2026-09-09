@@ -355,3 +355,17 @@ def test_iou_target_is_max_pooled_to_the_prediction_grid():
 
     # full-res reference grid -> untouched (identity)
     assert crit._iou_target(target, torch.zeros(2, 1, 8, 8, 16)) is target
+
+
+def test_zero_correction_rounds_keep_the_prompt_only_prediction():
+    """`num_correction_pt_per_frame: 0` (prompt-only protocol) must run: the
+    correction loop never executes, so the initial prediction is final."""
+    model, pp, ds, _ = _build(True, set_flag=True, rounds=0)
+    losses, outs = _run(model, pp, ds)
+    out = outs[0]
+    assert len(out["multistep_pred_multimasks"]) == 1
+    assert len(out["multistep_point_inputs"]) == 1
+    assert out["pred_masks"] is out["multistep_pred_masks"][0]
+    total = losses[model.criterion.core_loss_key]
+    assert torch.isfinite(total).item()
+    total.backward()

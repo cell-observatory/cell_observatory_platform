@@ -1683,15 +1683,16 @@ class SAM2(SAM2Base):
                 object_score_logits,
                 current_out,
             )
-            (
-                _,
-                _,
-                _,
-                low_res_masks,
-                high_res_masks,
-                obj_ptr,
-                object_score_logits,
-            ) = final_sam_outputs
+            if final_sam_outputs is not None:  # None when no correction click was sampled
+                (
+                    _,
+                    _,
+                    _,
+                    low_res_masks,
+                    high_res_masks,
+                    obj_ptr,
+                    object_score_logits,
+                ) = final_sam_outputs
 
         # Use the final prediction (after all correction steps for output and eval)
         current_out["pred_masks"] = low_res_masks
@@ -1748,7 +1749,11 @@ class SAM2(SAM2Base):
         all_pred_ious = [ious]
         all_point_inputs = [point_inputs]
         all_object_score_logits = [object_score_logits]
-        
+
+        # With `num_correction_pt_per_frame == 0` the loop below never runs and the
+        # prompt-only prediction passed in stays final: `sam_outputs` is returned as
+        # None and the caller keeps the masks / object pointer it already holds.
+        sam_outputs = None
         for _ in range(self.num_correction_pt_per_frame):
             # sample a new point from the error between prediction and ground-truth
             # (with a small probability, directly sample from GT masks instead of errors)
