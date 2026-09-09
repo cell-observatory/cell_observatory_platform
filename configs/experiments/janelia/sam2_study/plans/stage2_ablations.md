@@ -52,6 +52,9 @@ win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
 | `S2_baseline` | 1 | 0.801 | 0.467 | 1.49 | 2.26 h/epoch | val iou 0.130 |
 | `A3_membrane_only` | 1 | 0.740 | 0.440 | 1.35 | 1.93 h/epoch | val iou 0.125 |
 | `A3_cytosol_only` | 1 | 1.098 | 0.683 | 1.78 | 2.17 h/epoch | val iou 0.175; no membrane = large loss |
+| `B_dropout_0p5_shuffle` | 1 | 0.739 | 0.446 | 1.37 | 2.32 h/epoch | val iou 0.127; attn_pool + factorized, same cost as joint |
+| `D_gtprob0p0` | 1 | 0.821 | 0.498 | 1.50 | 2.27 h/epoch | val iou 0.148 |
+| `D_clicks0` | 1 | 0.510 | 0.300 | 0.88 | 1.80 h/epoch | val iou 0.094; NOT comparable: the loss is a SUM over prediction rounds (1 here, 2 for 1 click, 4 for 3 clicks) -> mAP decides D |
 
 Launch log (2026-09-09, tag `runs/sam2-stage2-2026-09-09`, one LSF chain per leaf, outdirs `$DATA_DIR/sam2_study/stage2_ablations/abl_*`):
 
