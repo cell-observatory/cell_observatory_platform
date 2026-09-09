@@ -229,9 +229,6 @@ class ConvolveWithPSF:
         """
         Convolve data with PSF.
         """
-        # Move OTF to same device as data
-        self.otf = self.otf.to(device=data.device)
-
         # DEBUG: Plot data before and after convolution
         if self.visualization_dir is not None:
             logger.warning(f"Visualization directory set to {self.visualization_dir}. Original image batch will be cloned and images will be saved to this directory.")
@@ -281,6 +278,10 @@ class ConvolveWithPSF:
                 + f"\n\tPadded data shape: {tuple(data.shape)} (spatial dims: {tuple(data.shape[1:4])})"
                 + f"\n\tCommon real space shape: {tuple(self.common_real_space_shape)}"
             )
+
+        # The OTF lives on the data's device; done after the rebuild above, which
+        # re-creates it on the CPU from the PSF.
+        self.otf = self.otf.to(device=data.device)
 
         # FFT, multiply by OTF, inverse FFT
         data = torch.fft.rfftn(
