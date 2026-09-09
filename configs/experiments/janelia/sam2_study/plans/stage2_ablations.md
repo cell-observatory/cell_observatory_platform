@@ -48,6 +48,14 @@ win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
 
 | run | epochs | val total @6 | val dice @6 | train @6 | wall-clock | notes |
 |---|---|---|---|---|---|---|
-| (fill) | | | | | | |
+| (fill per epoch from `logs/scalars/epoch_logbook.csv`) | | | | | | |
+
+Launch log (2026-09-09, tag `runs/sam2-stage2-2026-09-09`, one LSF chain per leaf, outdirs `$DATA_DIR/sam2_study/stage2_ablations/abl_*`):
+
+| when | what | fix |
+|---|---|---|
+| 16:35 | `mini_clicks0`: `sam_outputs` unbound with 0 correction clicks | 9721380: loop skipped -> prompt-only prediction is final |
+| 16:57 | `A1_attnpool_factorized`, `B_dropout_0p25_shuffle` link 1: channel_vocab refused the empty `<outdir>/checkpoints` resume dir | 49ae779: empty resume dir = fresh start; relaunched |
+| 17:00 | all 11 chains submitted (10 + `D_clicks0` after its smoke); 8 nodes -> ~half queued, links interleave | – |
 
 Reflections: (fill)

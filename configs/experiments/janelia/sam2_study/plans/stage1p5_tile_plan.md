@@ -73,7 +73,12 @@ evaluation config with X-sliding windows (tile rows are 128×512×{2560…3328};
 | run | init | bs/GPU | s/step | samples/s/node | GiB | steps | val loss (end) | mAP tile (zero-shot → adapted) | mAP 512 (before → after) | wall-clock |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `sweep/sam2_c1024_bs4` (bench) | – | 4 | 2.00 | 16 | 237 | 200 | – | – | – | 9 min |
-| `tile_adapt` | Stage-1 best | BS_1024 | | | | | | | | |
+| `tile_adapt_mini` (smoke, 512 rows) | lr 2e-4 step-26922 | 4 | – | – | OOM (mm 96) | – | – | – | – | – |
+| `tile_adapt` | lr 2e-4 step-26922 | 2 | | | | ~8.9k | | | | ~4.5 h (2 links) |
+
+Launch log (2026-09-09): DCP load of the 512-trained checkpoint into the 1024 model re-initialises only `pos_embed` (6144 -> 12288 tokens)
+and `memory_attention.freqs_cis_q` (8f2c7c2); the PSF OTF rebuilt for 1024-wide tiles stayed on the CPU (e88b5ef); 4 per GPU OOMs at
+96 masks -> 2 per GPU (the sweep's measured tile point). Real run launches after the smoke passes.
 
 Reflections: (fill after the runs)
 
