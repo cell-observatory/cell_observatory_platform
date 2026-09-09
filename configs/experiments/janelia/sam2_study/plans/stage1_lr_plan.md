@@ -83,7 +83,7 @@ prepended to `data_base_dir` by multi_run, hence the doubled prefix). W&B `sam2_
 | `lr_sweep_optimizers_lr_0p0004` | 4e-4 | 153964934 | **killed 19:44** (attempt 1) | 0 | | | | 25 min | same |
 | `lr_sweep_optimizers_lr_0p0001` | 1e-4 | 153964935 | **killed 19:44** (attempt 1) | 0 | | | | 25 min | same |
 | attempt 2, all three | | 154088034/35/36 (09-08 14:17) | **died at ~2 h 45 min**, followers killed 17:25 | 0 | | | | ~3 h × 3 nodes | end-of-epoch-1 crash: validation collator starved of device-buffer slots → NCCL timeout (`setup_sweep.md` G8); no checkpoint (3.5 h wall-clock save) |
-| attempt 3 | | after `chain_smoke` 154088842 passes | pending | | | | | | fix dbac0fc: own validation collator, hourly checkpoints; worktree tag `runs/sam2-stage1-2026-09-08b` |
+| attempt 3 | all | 154089019 (2e-4), 154089020 (4e-4), 154089021 (1e-4), 09-08 19:00 | submitted | | | | | | fixes 30726a7: `pt_sampling_for_eval: uniform` (root cause), own validation collator, hourly checkpoints; verified by `chain_smoke_mini_fix` (validation step 0.95 s, val loss 2.59 at epoch 0, checkpoint at the epoch end); worktree tag `runs/sam2-stage1-2026-09-08c` |
 
 Attempt 1 (19:14–19:44): all three runs died at ~25 min on the same unreadable chunk
 (`20250311_mem_histone/fish1_24hpf/roi4/000x_001y_000z.zarr/c/0/0/1/14/0`, tensorstore "Invalid blosc-compressed data";
@@ -93,7 +93,7 @@ the dev branch: `datasets.databases.exclude_tile_path_patterns` (SQL `NOT LIKE`,
 `tests/data/test_local_metadata_store.py`); the LSF wrapper now records the chain exit before its self-`bkill` and propagates
 the task's exit code; `scripts/utils/scan_zarr_chunks.py` scans a data root for further unreadable chunks (run on a node).
 
-Reflections: (fill after the runs)
+Reflections: epoch 1 (2026-09-08 21:30): all three train and validate cleanly; ordering 4e-4 < 2e-4 < 1e-4 on val loss, no divergence at 4e-4 (warm-up runs to epoch 4, so the aggressive lr has not yet been tested at full rate). GPU step 1.37 s but 2.1–2.3 s wall-clock per step: ~35 % of the time is the data path at full-dataset scale (the 200-step probes hid it). Validation step 0.95 s after the uniform-sampler fix.
 
 ## 5. Configs (written; compose-checked 2026-09-08 with the real PSF: shape 128×384×512, bs 64 = 8/GPU, 20 epochs, warm-up 4, lr {2e-4, 4e-4, 1e-4}, chain_jobs 14, transforms PSF→noise→Normalize, two excluded tiles)
 
