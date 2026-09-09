@@ -48,7 +48,10 @@ win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
 
 | run | epochs | val total @6 | val dice @6 | train @6 | wall-clock | notes |
 |---|---|---|---|---|---|---|
-| (fill per epoch from `logs/scalars/epoch_logbook.csv`) | | | | | | |
+| (per epoch: `python scripts/utils/epoch_table.py --runs $DATA_DIR/sam2_study/stage2_ablations/abl_* --md`) | | | | | | |
+| `S2_baseline` | 1 | 0.801 | 0.467 | 1.49 | 2.26 h/epoch | val iou 0.130 |
+| `A3_membrane_only` | 1 | 0.740 | 0.440 | 1.35 | 1.93 h/epoch | val iou 0.125 |
+| `A3_cytosol_only` | 1 | 1.098 | 0.683 | 1.78 | 2.17 h/epoch | val iou 0.175; no membrane = large loss |
 
 Launch log (2026-09-09, tag `runs/sam2-stage2-2026-09-09`, one LSF chain per leaf, outdirs `$DATA_DIR/sam2_study/stage2_ablations/abl_*`):
 
