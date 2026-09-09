@@ -861,6 +861,26 @@ class DCPCheckpointManager:
         if model_only:
             sd = self.states[MODEL].state_dict()
             planner = None
+            # A pretrained (model-only) load tolerates architecture drift: tensors the checkpoint
+            # lacks, or holds at another shape, keep their fresh initialization. DCP writes into the
+            # destination tensors in place, so such keys must leave the request before dcp.load;
+            # the shape-changing case in practice is the sincos position buffer when a model
+            # trained at one cube size is fine-tuned at another. Resume loads stay strict.
+            held = dcp.FileSystemReader(checkpoint_id).read_metadata().state_dict_metadata
+            dropped = []
+            for k in list(sd.keys()):
+                m = held.get(k)
+                ck_shape = tuple(getattr(m, "size", ())) if m is not None else None
+                if m is None or (hasattr(sd[k], "shape") and ck_shape != tuple(sd[k].shape)):
+                    dropped.append((k, tuple(sd[k].shape) if hasattr(sd[k], "shape") else None, ck_shape))
+                    del sd[k]
+            if dropped:
+                logger.warning(
+                    "[DCPCheckpointManager] pretrained load keeps the fresh initialization of %d tensor(s) "
+                    "(missing from the checkpoint or of another shape):\n%s",
+                    len(dropped),
+                    "\n".join(f"  - {k}: model {ms} vs checkpoint {cs}" for k, ms, cs in dropped[:20]),
+                )
         else:
             sd = self._flattened_sd(include_optimizer=include_optimizer)
             planner = self._load_planner(sd, checkpoint_id)

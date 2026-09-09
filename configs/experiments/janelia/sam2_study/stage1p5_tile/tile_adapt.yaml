@@ -1,8 +1,8 @@
 # @package _global_
 # Stage 1.5: adapt the Stage-1 winner (lr 2e-4, epoch-7 checkpoint) to 128x384x1024 cubes so tile-size inference works.
 # One epoch over all 142k big cubes (~2.5 h at 16 samples/s/node), batch 4/GPU, 96 masks, lr = half the Stage-1 lr.
-# The checkpoint loads permissively (translate map): the sincos position buffer is re-initialised at the new shape, every
-# other tensor is identical. Plan: plans/stage1p5_tile_plan.md.
+# The checkpoint loads with the position buffer re-initialised at the new shape (DCP model-only load drops shape-mismatched
+# tensors); every other tensor is identical. Plan: plans/stage1p5_tile_plan.md.
 defaults:
   - /experiments/janelia/sam2_study/recipe/recipe_r1
   - _self_
@@ -13,9 +13,8 @@ wandb_project: sam2_study
 paths:
   outdir: ${paths.data_path}/sam2_study/stage1p5_tile/${experiment_name}
   pretrained_checkpointdir: /groups/betzig/betziglab/hph/cell_observatory_project/sam2_study/sam2_lr/sam2_study/01_lr/lr_sweep_optimizers_lr_0p0002/checkpoints
-checkpoint:
-  checkpoint_manager:
-    ckpt_translate_map: {"image_encoder": "image_encoder"}   # identity map -> permissive load (drops only the mismatched pos-embed)
+# The DCP pretrained load keeps the fresh initialization of tensors the checkpoint holds at another shape (here only the
+# sincos position buffer, re-initialised for 1024-wide cubes) and loads everything else strictly.
 
 datasets:
   train_shape: [1, 128, 384, 1024, 5]
