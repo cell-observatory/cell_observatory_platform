@@ -1,0 +1,9 @@
+# @package _global_
+# Stage-1 evaluation base: the Stage-1 training config (same query, seed and split ⇒ the runs' own held-out validation
+# cubes) + the test overlay (unprompted SAM2 automatic mask generation → instance evaluator, 8 GPUs, one cube per GPU per
+# step, 16 cubes/GPU). Leaves set experiment_name + paths.pretrained_checkpointdir only. See README.md.
+defaults:
+  - /experiments/janelia/sam2_study/stage1_lr/lr_base
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: sam2_eval_base

@@ -1,0 +1,9 @@
+# @package _global_
+# Stage 2 (channel parametrisation): per-channel tokens concatenated (5x tokens).
+defaults:
+  - /experiments/janelia/sam2_study/sweep/sam2_ch_concat_c512_bs2
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_ch_concat
+paths:
+  pretrained_checkpointdir: null   # the concat run's checkpoint dir; replace the first default with that run's training config

@@ -1,0 +1,9 @@
+# @package _global_
+# Stage 2 (channel dropout): evaluated with the training-time channel dropout transform still in place; drop it from datasets.preprocessor.transforms_list here to score on all channels.
+defaults:
+  - /experiments/janelia/sam2_study/sweep/sam2_ch_dropout_c512_bs8
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_ch_dropout
+paths:
+  pretrained_checkpointdir: null   # the channel-dropout run's checkpoint dir; replace the first default with that run's training config

@@ -1,0 +1,22 @@
+# @package _global_
+# 10-min gate for tile_adapt: 512 big cubes, 25 % validation, 2 epochs, 15-min link; checks the permissive checkpoint load
+# (only the position buffer may be dropped) and the validation path at 128x384x1024.
+defaults:
+  - /experiments/janelia/sam2_study/stage1p5_tile/tile_adapt
+  - _self_
+experiment_name: sam2_tile_adapt_mini
+datasets: {max_rows: 512, split: 0.25, collate_fn: {slot_wait_timeout_s: 300}}
+schedulers: {epochs: 2, warmup: 0.5}
+clusters: {timelimit: 00:15, chain_jobs: 1}
+parallelism: {comm: {train_timeout_seconds: 120}}
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: periodic_checkpointer
+    file_prefix: latest_model
+    backend: TORCHTITAN
+    time_interval: 5m

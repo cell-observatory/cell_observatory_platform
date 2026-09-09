@@ -1,0 +1,9 @@
+# @package _global_
+# Stage 2 (channel parametrisation): channel-adaptive patch embed with attention pooling.
+defaults:
+  - /experiments/janelia/sam2_study/sweep/sam2_ch_attnpool_c512_bs8
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_ch_attnpool
+paths:
+  pretrained_checkpointdir: null   # the attn_pool run's checkpoint dir; replace the first default with that run's training config

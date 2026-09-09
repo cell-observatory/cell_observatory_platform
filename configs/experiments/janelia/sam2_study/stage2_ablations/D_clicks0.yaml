@@ -1,0 +1,5 @@
+# @package _global_
+# D: no correction clicks (initial prompt only).
+defaults: [/experiments/janelia/sam2_study/stage2_ablations/abl_base, _self_]
+experiment_name: abl_D_clicks0
+models: {meta_arch: {sam: {num_correction_pt_per_frame: 0}}}

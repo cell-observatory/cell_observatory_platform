@@ -1,0 +1,35 @@
+# @package _global_
+# B: channel dropout p 0.5 with per-sample shuffle of the cytosol channels (membrane always kept), on A1 attn_pool + factorized (channel ids follow the permutation).
+defaults: [/experiments/janelia/sam2_study/stage2_ablations/abl_base, _self_]
+experiment_name: abl_B_dropout_0p5_shuffle
+models:
+  backbones:
+    masked_encoder:
+      patch_embed_type: channel_adaptive
+      patch_embed_args: {channel_fusion: attn_pool, attn_pool_num_heads: 8, channel_embed: factorized, channel_vocab: null, vocab_extra_slots: 16}
+datasets:
+  preprocessor:
+    transforms_list:
+      - _target_: cell_observatory_platform.data.transforms.psf.ConvolveWithPSF
+        input_shape: [128, 384, 512, 5]
+        input_pixel_size_um: [0.1, 0.1, 0.1]
+        psf: ${paths.data_path}/psf/CamA_Arc_OMW_centered.tif
+        psf_pixel_size_um: [0.1, 0.1, 0.1]
+        psf_format: ZYX
+        psf_centered: true
+        pad_type: reflect
+      - _target_: cell_observatory_platform.data.transforms.noise.MixedPoissonGaussianNoise
+        quantum_efficiency: 0.82
+        electrons_per_count: 0.22
+        sigma_background_noise: 40
+        mean_background_offset: 100
+        seed: ${seed}
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}
+      - _target_: cell_observatory_platform.data.transforms.channel_dropout.ChannelDropout
+        p: 0.5
+        always_keep: [membrane]
+        shuffle: true
+        seed: ${seed}

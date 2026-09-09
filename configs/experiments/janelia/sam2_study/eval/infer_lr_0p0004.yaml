@@ -1,0 +1,8 @@
+# @package _global_
+# Stage-1 lr sweep run lr_sweep_optimizers_lr_0p0004, epoch-6 checkpoint (step 23076).
+defaults:
+  - /experiments/janelia/sam2_study/eval/infer_base
+  - _self_
+experiment_name: infer_lr_0p0004_ep6
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/lr_0p0004/checkpoints

@@ -1,6 +1,6 @@
 # Stage 1.5 — tile-scale adaptation at 128×384×1024
 
-2026-09-03 · status: **PROPOSAL; bench row landed: bs 4/GPU, 2.00 s/step, 237 GiB (86 %), 16 samples/s/node** · configs: `configs/experiments/janelia/tests/2026_09_03/sam2_tile/` (to write once the bs row lands) · recipe: `…/2026_09_02/sam2/recipe_r1.yaml`
+2026-09-03 · status: **APPROVED 2026-09-09; configs `stage1p5_tile/tile_adapt{,_mini}.yaml`; init = Stage-1 lr 2e-4 epoch-7 checkpoint (step 26922); gate mini launched** · configs: `configs/experiments/janelia/tests/2026_09_03/sam2_tile/` (to write once the bs row lands) · recipe: `…/2026_09_02/sam2/recipe_r1.yaml`
 
 ## 1. What we are investigating and why
 

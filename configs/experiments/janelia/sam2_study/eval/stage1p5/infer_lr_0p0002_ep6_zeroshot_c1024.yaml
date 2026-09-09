@@ -1,0 +1,9 @@
+# @package _global_
+# Plots for the zero-shot 1024-wide evaluation above.
+defaults:
+  - /experiments/janelia/sam2_study/sweep/sam2_c1024_bs4
+  - /experiments/janelia/sam2_study/eval/predict_overlay
+  - _self_
+experiment_name: infer_lr_0p0002_ep6_zeroshot_c1024
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/lr_0p0002/checkpoints

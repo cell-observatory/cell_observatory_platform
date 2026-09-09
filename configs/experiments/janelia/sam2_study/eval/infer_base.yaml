@@ -1,0 +1,8 @@
+# @package _global_
+# Stage-1 inference base (plots only): the Stage-1 training config + the predict overlay (one PDF per cube under
+# <outdir>/visualizations, 4 cubes/GPU). Leaves set experiment_name + paths.pretrained_checkpointdir only. See README.md.
+defaults:
+  - /experiments/janelia/sam2_study/stage1_lr/lr_base
+  - /experiments/janelia/sam2_study/eval/predict_overlay
+  - _self_
+experiment_name: sam2_infer_base

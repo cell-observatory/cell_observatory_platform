@@ -1,0 +1,13 @@
+# @package _global_
+# Recall probe: the 2e-4 epoch-6 checkpoint scored with a 16x16x16 click lattice (4,096 clicks per cube, one every
+# 8x24x32 voxels) instead of the default 8x8x8 (512, one every 16x48x64). If match recall rises at equal precision, the
+# default lattice, not the model, limits the mAP of the sweep evaluations. ~8x the decoder work of eval_lr_0p0002.
+defaults:
+  - /experiments/janelia/sam2_study/eval/eval_lr_0p0002
+  - _self_
+experiment_name: eval_lr_0p0002_ep6_pps16
+models:
+  meta_arch:
+    sam:
+      points_per_side: 16
+      points_per_batch: 64      # 4x fewer decoder launches; the refinement stack is 64 x 25 M voxels x 4 B = 6.4 GB

@@ -1,0 +1,58 @@
+# @package _global_
+# Stage 1.5: adapt the Stage-1 winner (lr 2e-4, epoch-7 checkpoint) to 128x384x1024 cubes so tile-size inference works.
+# One epoch over all 142k big cubes (~2.5 h at 16 samples/s/node), batch 4/GPU, 96 masks, lr = half the Stage-1 lr.
+# The checkpoint loads permissively (translate map): the sincos position buffer is re-initialised at the new shape, every
+# other tensor is identical. Plan: plans/stage1p5_tile_plan.md.
+defaults:
+  - /experiments/janelia/sam2_study/recipe/recipe_r1
+  - _self_
+
+experiment_name: sam2_tile_adapt
+wandb_project: sam2_study
+
+paths:
+  outdir: ${paths.data_path}/sam2_study/stage1p5_tile/${experiment_name}
+  pretrained_checkpointdir: /groups/betzig/betziglab/hph/cell_observatory_project/sam2_study/sam2_lr/sam2_study/01_lr/lr_sweep_optimizers_lr_0p0002/checkpoints
+checkpoint:
+  checkpoint_manager:
+    ckpt_translate_map: {"image_encoder": "image_encoder"}   # identity map -> permissive load (drops only the mismatched pos-embed)
+
+datasets:
+  train_shape: [1, 128, 384, 1024, 5]
+  input_shape: [1, 128, 384, 1024, 6]
+  split: 0.02
+  buffer_capacity: 12
+  preprocessor:
+    max_masks: 96             # ~2x the instances of a 512-wide cube; cap <= 100
+
+clusters:
+  worker_nodes: 1
+  gpus_per_worker: 8
+  batch_size: 32              # 4 per GPU: 237 GiB (86 %), 2.0 s/step
+  timelimit: 04:00
+  chain_jobs: 2               # one link covers the epoch; the second is the crash guard
+
+schedulers: {epochs: 1, warmup: 0.1, cooldown: 0, cos_min_ratio: 0.05}
+optimizers:
+  lr: 1e-4
+  wd: ${eval:'${optimizers.lr} * 0.1'}
+evaluation: {val_begin: 0, val_interval: 1}
+trainer_loop: {iteration_mode: epoch, checkpoint_every_n_epochs: 1, with_perf_metrics: false}
+loggers: {event_writers: [{name: scalars}, {name: wandb, id: "${experiment_name}", resume_from: allow}]}
+hooks:
+  hooks_list:
+  - name: free_device_buffer
+  - name: lr_scheduler
+    backend: TORCHTITAN
+  - name: iteration_timer
+  - name: periodic_writer
+  - name: periodic_checkpointer
+    file_prefix: latest_model
+    backend: TORCHTITAN
+    time_interval: 55m
+  - name: best_checkpointer
+    checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
+  - name: best_metric_saver
+    metric_name: ${evaluation.val_metric}
+    compare_fn: ${evaluation.val_mode}
+    eval_after_validation: true

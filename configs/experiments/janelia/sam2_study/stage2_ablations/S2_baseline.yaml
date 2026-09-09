@@ -1,0 +1,5 @@
+# @package _global_
+# Stage 2 baseline: the recipe itself on the 6-epoch schedule (joint embed, 1 click, gt-prob 0.1).
+defaults: [/experiments/janelia/sam2_study/stage2_ablations/abl_base, _self_]
+experiment_name: abl_baseline
+

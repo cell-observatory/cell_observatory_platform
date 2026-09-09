@@ -1,0 +1,9 @@
+# @package _global_
+# Stage-1 lr sweep run lr_sweep_optimizers_lr_0p0002, epoch-6 checkpoint (step 23076, copied out of the live run dir
+# because the trainer keeps only its 3 newest saves).
+defaults:
+  - /experiments/janelia/sam2_study/eval/eval_base
+  - _self_
+experiment_name: eval_lr_0p0002_ep6
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/lr_0p0002/checkpoints

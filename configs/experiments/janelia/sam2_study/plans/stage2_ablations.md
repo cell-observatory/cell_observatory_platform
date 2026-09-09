@@ -1,0 +1,53 @@
+# Stage 2 — channel parametrisation, channel dropout, interaction protocol
+
+2026-09-09 · status: **configs written, gate minis launched** · configs: `stage2_ablations/` · base: `recipe/recipe_r1` + lr 2e-4, 6 epochs
+
+## 1. What we are investigating and why
+
+Which way of feeding the 5 channels to the ViT, whether dropping channels at train time helps robustness, and how many simulated
+clicks the training protocol needs. Now because the LR sweep is settled (`stage1_lr_plan.md`: 2e-4 / 4e-4 / 1e-4 all reach val
+0.40–0.41 by epoch 7; Hugo picked 2e-4 for its faster early convergence) and the sweep plateaued by epoch ~6, so ablations get a
+**6-epoch** schedule instead of 20. Evidence for the variants: setup sweep (`setup_sweep.md`): attn-pool costs the same as the
+joint embed, concat 5.4× (deferred), dropout free, 3 clicks = bs 5/GPU.
+
+## 2. Runs
+
+Variable per run (one change each vs the baseline); one B300 node per run, chains of 4 h links:
+
+| run | change | bs/GPU |
+|---|---|---|
+| `abl_baseline` | none: joint embed, 1 click, gt-prob 0.1 | 8 |
+| `abl_A1_attnpool_factorized` | per-channel tokens + factorized (localization × fluorophore) embedding, attn-pool fusion | 8 |
+| `abl_A1_attnpool_none` | per-channel tokens, no channel identity | 8 |
+| `abl_A3_membrane_only` | C = 1 (membrane) | 8 |
+| `abl_A3_cytosol_only` | C = 4 (cytosol) | 8 |
+| `abl_B_dropout_0p25_shuffle` | ChannelDropout p 0.25 + shuffle on A1-factorized | 8 |
+| `abl_B_dropout_0p5_shuffle` | ChannelDropout p 0.5 + shuffle on A1-factorized | 8 |
+| `abl_D_clicks0` | 0 correction clicks | 8 |
+| `abl_D_clicks3` | 3 correction clicks | 5 |
+| `abl_D_gtprob0p0` | correction click never from GT | 8 |
+| `abl_D_gtprob0p3` | correction click from GT with p 0.3 | 8 |
+
+Deferred: concat fusion (5.4× cost, only if A1 wins), no-shuffle dropout variants, box prompts (needs the collator box format).
+
+Held constant: recipe_r1 (1 click, low-res click loop, GEMM up/down-scaling, criterion ckpt off, mm 48, uniform eval sampling,
+PSF + sensor noise, 2 excluded tiles), lr 2e-4, wd 2e-5, warm-up 1 epoch, cosine to 5 %, **6 epochs**, split 0.02, seed 42,
+full 128×384×512 set (30,768 rows per rank), 55-min + per-epoch checkpoints, `chain_jobs: 6`.
+
+Budget: 6 epochs × 2.4 h = 14.5 h per run (4 links) × 11 runs ≈ 160 node-hours. Gate minis (`mini_channel`, `mini_clicks3`,
+`mini_clicks0`, `mini_membrane`; 1024 rows, 2 epochs, 15-min links) run first, one per new code path.
+
+## 3. How we evaluate
+
+Val loss (total and dice) per epoch, decision at epoch 6 vs the baseline; Δ = 0.01–0.02 is noise (the LR sweep's spread at
+convergence). Held-out mAP (`eval/test_heldout`, being written) on the epoch-6 checkpoints for the top candidates. Rules: A
+winner = lowest val at 6 (attn-pool must beat joint by > Δ to justify the vocab machinery); B is judged on top of A1; D: fewer clicks
+win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
+
+## 4. Data
+
+| run | epochs | val total @6 | val dice @6 | train @6 | wall-clock | notes |
+|---|---|---|---|---|---|---|
+| (fill) | | | | | | |
+
+Reflections: (fill)

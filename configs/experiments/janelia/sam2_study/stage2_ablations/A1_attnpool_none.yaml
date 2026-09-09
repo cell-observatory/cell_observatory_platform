@@ -1,0 +1,9 @@
+# @package _global_
+# A1 control: per-channel tokens with NO channel identity embedding (does knowing which channel matter?).
+defaults: [/experiments/janelia/sam2_study/stage2_ablations/abl_base, _self_]
+experiment_name: abl_A1_attnpool_none
+models:
+  backbones:
+    masked_encoder:
+      patch_embed_type: channel_adaptive
+      patch_embed_args: {channel_fusion: attn_pool, attn_pool_num_heads: 8, channel_embed: none, channel_vocab: null, vocab_extra_slots: 16}

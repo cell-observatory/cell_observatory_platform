@@ -1,0 +1,9 @@
+# @package _global_
+# Tile-path evaluation, resize variant (whole tile resized to 128x384x1024; predictions restored to tile size only by the inference saver, the evaluator scores at the processed resolution).
+defaults:
+  - /experiments/janelia/sam2_study/sweep/sam2_tile_resize1024_bs2
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_tile_resize1024
+paths:
+  pretrained_checkpointdir: null   # checkpoint to score on whole tiles (resize path)

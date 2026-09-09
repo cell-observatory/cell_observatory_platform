@@ -1,0 +1,9 @@
+# @package _global_
+# Stage 3 (scale): ViT-H checkpoint at 128x384x512; the first default builds the ViT-H model, the overlay adds the test loop.
+defaults:
+  - /experiments/janelia/sam2_study/sweep/sam2_vith_c512_bs7
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_vith
+paths:
+  pretrained_checkpointdir: null   # the ViT-H run's checkpoint dir; replace the first default with that run's training config
