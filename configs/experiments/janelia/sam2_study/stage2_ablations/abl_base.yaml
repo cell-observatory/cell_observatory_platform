@@ -20,7 +20,20 @@ optimizers:
 evaluation: {val_begin: 0, val_interval: 1}
 trainer_loop: {iteration_mode: epoch, checkpoint_every_n_epochs: 1, with_perf_metrics: false}
 clusters: {worker_nodes: 1, gpus_per_worker: 8, batch_size: 64, timelimit: "04:00", chain_jobs: 6}   # 6 x 2.4 h = 14.5 h -> 4 links + spares
-loggers: {event_writers: [{name: scalars}, {name: wandb, id: "${experiment_name}", resume_from: allow}]}
+loggers:
+  event_writers:
+    - name: local
+      save_dir: ${loggers.logdir}
+      step_scalars_prefix: step_logbook
+      epoch_scalars_prefix: epoch_logbook
+      scalars_save_format: csv
+    - name: wandb
+      project: ${wandb_project}
+      dir: ${loggers.logdir}
+      run_name: ${experiment_name}
+      tags: [sam2_study, stage2]
+      id: ${experiment_name}   # one W&B run across all chained jobs
+      resume_from: allow
 hooks:
   hooks_list:
   - name: free_device_buffer
