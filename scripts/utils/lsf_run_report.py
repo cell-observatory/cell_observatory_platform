@@ -87,13 +87,15 @@ def summarize(run: Path, stall_min: float, light: bool = False) -> tuple[str, li
     parts.append(
         "job " + ", ".join(f"{j[0]} {j[1]} on {j[2]}" for j in running) if running else ("finished" if done else "NO RUNNING JOB")
     )
-    if pending:
+    if running and pending:
         parts.append(f"{len(pending)} follower pending")
     elif running and not done:
         problems.append(f"{name}: running link has no pending follower (chain will not continue)")
+    elif pending:
+        parts.append("queued (first link pending, not started yet)")
     if stopped:
         problems.append(f"{name}: CHAIN_STOP marker present")
-    if not running and not done:
+    if not running and not pending and not done:
         problems.append(f"{name}: no running job and TRAINING_DONE absent")
 
     d = None if light else logbook(run, "step_logbook")
