@@ -281,6 +281,17 @@ def test_inference_never_grows_the_vocab(tmp_path):
     assert vocab.lookup("localization", "cytosol") is None
 
 
+def test_empty_resume_dir_is_a_fresh_start(tmp_path):
+    """A chained run points every link at <outdir>/checkpoints; on the first link the
+    dir is missing or empty and the vocab is derived as for any fresh run."""
+    missing = tmp_path / "checkpoints"
+    vocab = resolve_channel_vocab(_cfg(tmp_path, resume=str(missing)), _FakeDb(SYNTH), write=False)
+    assert vocab.size("localization") > 0
+    missing.mkdir()
+    vocab2 = resolve_channel_vocab(_cfg(tmp_path, resume=str(missing)), _FakeDb(SYNTH), write=False)
+    assert vocab2.tables == vocab.tables
+
+
 def test_checkpoint_without_sidecar_vocab_refuses_to_rederive(tmp_path):
     ckdir = tmp_path / "ckpt"
     (ckdir / "step-3").mkdir(parents=True)

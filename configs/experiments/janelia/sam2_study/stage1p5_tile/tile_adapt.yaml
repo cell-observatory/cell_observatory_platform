@@ -27,7 +27,7 @@ datasets:
 clusters:
   worker_nodes: 1
   gpus_per_worker: 8
-  batch_size: 32              # 4 per GPU: 237 GiB (86 %), 2.0 s/step
+  batch_size: 16              # 2 per GPU with max_masks 96: 214 GiB, 1.74 s/step (4 per GPU OOMs at 96 masks; the 237 GiB c1024 probe used 48)
   timelimit: 04:00
   chain_jobs: 2               # one link covers the epoch; the second is the crash guard
 

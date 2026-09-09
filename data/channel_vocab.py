@@ -294,6 +294,12 @@ def channel_embed_enabled(cfg: DictConfig) -> bool:
     return str(args.get("channel_embed", "factorized")) != "none"
 
 
+def _holds_a_checkpoint(checkpoint_dir: str | Path) -> bool:
+    """True when the dir exists and has at least one entry (a step-N or tag dir)."""
+    root = Path(checkpoint_dir)
+    return root.is_dir() and any(root.iterdir())
+
+
 def resolve_channel_vocab(
     cfg: DictConfig,
     db_client=None,
@@ -317,7 +323,12 @@ def resolve_channel_vocab(
     training = str(cfg.get("job_type", "train")) == "train"
 
     paths = cfg.get("paths") or {}
-    ckpt_dirs = [d for d in (paths.get("resume_checkpointdir"), paths.get("pretrained_checkpointdir")) if d]
+    resume_dir = paths.get("resume_checkpointdir")
+    if resume_dir and not _holds_a_checkpoint(resume_dir):
+        # A chained run points every link at its own checkpoint dir; on the first
+        # link it is still empty, which is a fresh start, not a load.
+        resume_dir = None
+    ckpt_dirs = [d for d in (resume_dir, paths.get("pretrained_checkpointdir")) if d]
     ckpt = None
     for d in ckpt_dirs:
         ckpt = read_sidecar_vocab(d)
