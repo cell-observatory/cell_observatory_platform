@@ -93,7 +93,7 @@ the dev branch: `datasets.databases.exclude_tile_path_patterns` (SQL `NOT LIKE`,
 `tests/data/test_local_metadata_store.py`); the LSF wrapper now records the chain exit before its self-`bkill` and propagates
 the task's exit code; `scripts/utils/scan_zarr_chunks.py` scans a data root for further unreadable chunks (run on a node).
 
-Reflections: epoch 1 (2026-09-08 21:30): all three train and validate cleanly; ordering 4e-4 < 2e-4 < 1e-4 on val loss, no divergence at 4e-4 (warm-up runs to epoch 4, so the aggressive lr has not yet been tested at full rate). GPU step 1.37 s but 2.1–2.3 s wall-clock per step: ~35 % of the time is the data path at full-dataset scale (the 200-step probes hid it). Validation step 0.95 s after the uniform-sampler fix.
+Reflections: epoch 4 (end of warm-up, 2026-09-09 06:31): the three lrs have converged to 0.52 / 0.51 / 0.50 (2e-4 / 4e-4 / 1e-4), inside the Δ = 0.01–0.02 noise band; the early lead of 4e-4 was a warm-up-speed effect. The decision will come from the cosine-decay phase (epochs 5–20) and the held-out mAP, not from the loss curves so far. Epoch 1 (2026-09-08 21:30): all three train and validate cleanly; ordering 4e-4 < 2e-4 < 1e-4 on val loss, no divergence at 4e-4 (warm-up runs to epoch 4, so the aggressive lr has not yet been tested at full rate). GPU step 1.37 s but 2.1–2.3 s wall-clock per step: ~35 % of the time is the data path at full-dataset scale (the 200-step probes hid it). Validation step 0.95 s after the uniform-sampler fix.
 
 ## 5. Configs (written; compose-checked 2026-09-08 with the real PSF: shape 128×384×512, bs 64 = 8/GPU, 20 epochs, warm-up 4, lr {2e-4, 4e-4, 1e-4}, chain_jobs 14, transforms PSF→noise→Normalize, two excluded tiles)
 

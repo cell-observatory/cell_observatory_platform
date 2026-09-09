@@ -68,7 +68,7 @@ hooks:
   - name: periodic_checkpointer
     file_prefix: latest_model
     backend: TORCHTITAN
-    time_interval: 58m        # wall-clock saves at 0:58, 1:56, 2:54, 3:52 after trainer init: the last one lands ~8 min before the 4 h link limit, so a handover loses minutes, not the 55 min a 1 h cadence lost (2026-09-08); plus the per-epoch save above
+    time_interval: 55m        # wall-clock saves at 0:55, 1:50, 2:45, 3:40 after trainer init (init is ~3 min after job start): the last one lands ~15 min before the 4 h link limit; 58 min put it at the limit and it was skipped (2026-09-09); plus the per-epoch save above
   - name: best_checkpointer
     checkpointdir: ${checkpoint.checkpoint_manager.save_checkpointdir}
   - name: best_metric_saver
