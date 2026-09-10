@@ -1,0 +1,29 @@
+# @package _global_
+# E: signal-to-noise. photon_scale 0.1: membrane median 70-140 photons = ~250-500 counts of signal, SNR ~5-8 (the low end of the 500-5000 count range).
+# The rendered cube intensities are treated as incident photons; the sensor model (QE 0.82, 0.22 e-/count, read noise 40
+# counts = 8.8 e-, offset 100) maps them to counts at ~3.73 counts/photon. Baseline membrane median after the PSF is
+# 670-1370 photons = 2500-5100 counts of signal (SNR 22-32, shot-noise limited); photon_scale lowers the signal level.
+defaults: [/experiments/janelia/sam2_study/stage2_ablations/abl_base, _self_]
+experiment_name: abl_E_snr_500
+datasets:
+  preprocessor:
+    transforms_list:
+      - _target_: cell_observatory_platform.data.transforms.psf.ConvolveWithPSF
+        input_shape: [128, 384, 512, 5]
+        input_pixel_size_um: [0.1, 0.1, 0.1]
+        psf: ${paths.data_path}/psf/CamA_Arc_OMW_centered.tif
+        psf_pixel_size_um: [0.1, 0.1, 0.1]
+        psf_format: ZYX
+        psf_centered: true
+        pad_type: reflect
+      - _target_: cell_observatory_platform.data.transforms.noise.MixedPoissonGaussianNoise
+        quantum_efficiency: 0.82
+        electrons_per_count: 0.22
+        sigma_background_noise: 40
+        mean_background_offset: 100
+        photon_scale: 0.1
+        seed: ${seed}
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}

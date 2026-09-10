@@ -19,6 +19,7 @@ class MixedPoissonGaussianNoise:
         mean_background_offset: int| tuple[int, int] | float | tuple[float, float],
         seed: int | None = None,
         *,
+        photon_scale: float | tuple[float, float] = 1.0,
         visualization_dir: str | None = None,
     ):
         """
@@ -41,6 +42,9 @@ class MixedPoissonGaussianNoise:
             electrons_per_count: float or tuple[float, float] representing the conversion factor from electrons to counts
             sigma_background_noise: float or tuple[float, float] representing read noise from the camera in counts
             mean_background_offset: float or tuple[float, float] representing the camera background offset in counts
+            photon_scale: multiplies the incident photons before the sensor (an exposure / brightness factor). It sets
+                the signal-to-noise ratio: shot-noise-limited SNR scales with sqrt(photon_scale). A tuple samples a
+                factor per batch element (SNR augmentation).
 
         If tuple, sample uniformly from the range [min, max] giving a random value for each batch element.
 
@@ -69,6 +73,10 @@ class MixedPoissonGaussianNoise:
             raise ValueError("mean_background_offset must be a float or tuple of two floats")
         
 
+        if not isinstance(photon_scale, (float, int)) and not (isinstance(photon_scale, (tuple, list)) and len(photon_scale) == 2):
+            raise ValueError("photon_scale must be a float or tuple of two floats")
+
+        self.photon_scale = photon_scale
         self.quantum_efficiency = quantum_efficiency
         self.electrons_per_count = electrons_per_count
         self.sigma_background_noise = sigma_background_noise
@@ -165,6 +173,13 @@ class MixedPoissonGaussianNoise:
 
         # sensor pipeline with noise: photons → noisy counts
         # 1. Convert photons → electrons
+        if isinstance(self.photon_scale, (tuple, list)):
+            scale = torch.empty(B, device=device)
+            scale.uniform_(*self.photon_scale, generator=rng)
+            image_batch *= scale.view(-1, *[1] * (image_batch.ndim - 1))
+        elif float(self.photon_scale) != 1.0:
+            image_batch *= float(self.photon_scale)
+
         image_batch *= qe
 
         # 2. Compute shot noised electrons (Poisson thinned by QE) 

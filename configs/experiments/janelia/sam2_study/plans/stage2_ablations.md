@@ -28,6 +28,22 @@ Variable per run (one change each vs the baseline); one B300 node per run, chain
 | `abl_D_gtprob0p0` | correction click never from GT | 8 |
 | `abl_D_gtprob0p3` | correction click from GT with p 0.3 | 8 |
 
+**E: signal-to-noise (added 2026-09-09 evening, Hugo: 500-5000 counts is the realistic low-to-high signal range).** The rendered
+intensities are treated as photons; the sensor model gives ~3.73 counts/photon + 100 offset and 8.8 e⁻ read noise, so the
+baseline sits at the high end: membrane median 670-1370 photons = 2500-5100 counts (SNR 22-32), membrane floor ~220 photons
+(SNR 11), cytosol median ~400 photons (SNR 16); SNR = QE·S / sqrt(QE·S + 8.8²). `MixedPoissonGaussianNoise.photon_scale` (new)
+scales the photons before the sensor (the two sanity cubes of `psf_noise_check_realpsf/stats.txt` give the photon numbers).
+
+| run | photon_scale | membrane median signal | SNR (membrane median / floor) |
+|---|---|---|---|
+| `abl_baseline` (= high) | 1 | 2500-5100 counts | 22-32 / 11 |
+| `abl_E_snr_1500` | 0.35 | 900-1800 counts | 11-17 / 4.7 |
+| `abl_E_snr_500` | 0.1 | 250-500 counts | 5-8 / 1.8 |
+| `abl_E_snr_rand` | U[0.1, 1.0] per sample | 250-5100 counts | augmentation |
+
+Evaluation for E: every checkpoint (baseline, the three E runs) is evaluated at photon_scale 1 / 0.35 / 0.1 (eval-only, cheap)
+-> a 4×3 mAP matrix: does low-SNR training hurt at high SNR, and does the range-augmented model cover all three.
+
 Deferred: concat fusion (5.4× cost, only if A1 wins), no-shuffle dropout variants, box prompts (needs the collator box format).
 
 Held constant: recipe_r1 (1 click, low-res click loop, GEMM up/down-scaling, criterion ckpt off, mm 48, uniform eval sampling,

@@ -141,3 +141,29 @@ def test_mixed_poisson_gaussian_noise_rejects_non_numeric_quantum_efficiency():
             quantum_efficiency="invalid", electrons_per_count=0.22,
             sigma_background_noise=40.0, mean_background_offset=100.0, seed=42,
         )
+
+
+def test_photon_scale_sets_the_signal_level_and_snr():
+    """photon_scale multiplies the incident photons: the mean output follows the sensor gain times the scaled
+    signal, and the relative noise grows as the scale drops (shot-noise limit: SNR ~ sqrt(scale))."""
+    inputs = torch.full((1, 1, 64, 64), 1000.0)
+    kwargs = dict(quantum_efficiency=0.82, electrons_per_count=0.22, sigma_background_noise=40,
+                  mean_background_offset=100, seed=7)
+    gain = 0.82 / 0.22
+    full = MixedPoissonGaussianNoise(**kwargs)(inputs.clone())
+    tenth = MixedPoissonGaussianNoise(**kwargs, photon_scale=0.1)(inputs.clone())
+    assert abs(full.mean().item() - (gain * 1000 + 100)) < 0.03 * gain * 1000
+    assert abs(tenth.mean().item() - (gain * 100 + 100)) < 0.05 * gain * 100
+    snr_full = (full.mean() - 100) / full.std()
+    snr_tenth = (tenth.mean() - 100) / tenth.std()
+    # SNR = qe*S / sqrt(qe*S + sigma_e^2) with sigma_e = 40 counts * 0.22 e-/count = 8.8 e-
+    sig2 = (40 * 0.22) ** 2
+    want = (820 / (820 + sig2) ** 0.5) / (82 / (82 + sig2) ** 0.5)   # ~4.2 (read noise matters at 100 photons)
+    assert abs((snr_full / snr_tenth).item() - want) < 0.15 * want
+
+    ranged = MixedPoissonGaussianNoise(**kwargs, photon_scale=(0.1, 1.0))
+    outs = ranged(torch.full((8, 1, 16, 16), 1000.0))
+    means = outs.mean(dim=(1, 2, 3))
+    assert means.min() < gain * 400 + 100 < means.max()   # the per-element factors spread across the range
+    with pytest.raises(ValueError, match="photon_scale"):
+        MixedPoissonGaussianNoise(**kwargs, photon_scale=(0.1, 0.5, 1.0))
