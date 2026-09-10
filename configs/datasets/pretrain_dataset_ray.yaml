@@ -45,6 +45,11 @@ hypercubes_dataframe_path: ${paths.outdir}/database/hypercubes_dataframe.csv # p
 server_folder_path: ${paths.server_folder_path}
 
 split: 0.2
+# Which rows the eval-time trainers (job_type test / predict) iterate: "train" = the training
+# rows; "val" = the validation rows of the same query + seed + split, i.e. the cubes a training
+# run with identical data settings held out (the split is a pure function of the row count and
+# the seed). "val" requires split > 0.
+eval_split: train
 # "drop" = drop last incomplete batch; "pad" = pad last batch with zeros, set batch_size_actual and valid_mask
 last_batch_policy: "drop"
 # What LoaderActor does when tensorstore cannot read a sample's region (e.g. corrupt blosc chunk on disk).

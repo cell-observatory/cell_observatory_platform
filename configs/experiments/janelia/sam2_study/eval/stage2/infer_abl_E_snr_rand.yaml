@@ -1,0 +1,9 @@
+# @package _global_
+# Final checkpoint of abl_E_snr_rand: unprompted AMG, one PDF per held-out validation cube (GT vs predicted boxes and masks).
+defaults:
+  - /experiments/janelia/sam2_study/stage2_ablations/E_snr_rand
+  - /experiments/janelia/sam2_study/eval/predict_overlay
+  - _self_
+experiment_name: infer_abl_E_snr_rand_final
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/stage2/abl_E_snr_rand/checkpoints   # copied final step dir

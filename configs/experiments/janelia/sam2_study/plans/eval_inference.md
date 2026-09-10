@@ -50,6 +50,8 @@ honoured by TestTrainer/Inferencer, the Inferencer drops the SAM2 model-private 
 | `eval_lr_0p0002_ep6` | step 23076 | 128 | 5.5 (max 30) | **0.624** | 0.934 | 0.706 | 0.407 | 0.774 | 0.127 | 0.60 (Spearman 0.90) | 4,908 predictions; precision@0.5 0.99, coverage@0.5 1.00 |
 | `eval_lr_0p0004_ep6` | step 23076 | 128 | 5.5 | **0.625** | 0.939 | 0.704 | 0.417 | 0.772 | 0.136 | 0.58 (Spearman 0.89) | 5,139 predictions; precision@0.5 0.99 |
 | `eval_lr_0p0001_ep6` | step 23076 | 128 | 5.5 | **0.624** | 0.931 | 0.706 | 0.412 | 0.778 | 0.115 | 0.60 (Spearman 0.90) | 4,818 predictions; precision@0.5 0.99 |
+| `stage1p5/eval_lr_0p0002_ep6_zeroshot_c1024` (512-trained, scored on 128×384×1024 cubes) | step 23076 | 128 | 7.7 | **0.265** | 0.861 | **0.383** | 0.050 | 0.222 | 0.114 | Spearman 0.56 | zero-shot at 2× width fails: recall halves, matched IoU 0.93 → 0.86, precision 0.99 → 0.96 (the 8³ lattice also has half the click density at 1024, so part of the recall drop is the lattice) |
+| `eval_lr_0p0002_ep6_pps16` (16³ clicks, batches of 64) | step 23076 | 128 | 38.8 | **0.701** | 0.922 | **0.890** | 0.396 | 0.784 | 0.136 | Spearman 0.91 | 7,010 predictions; precision@0.5 0.98: the lattice, not the model, sets the recall |
 
 Attempts:
 
@@ -63,6 +65,29 @@ Attempts:
 | 6 | `eval_lr_0p0001` | killed at start (15:1x) | the node allocation (i04u02) ended; relaunched 15:20 on i01u02 (`queue6`, followed by `infer_lr_0p0002`) |
 | 7 | `eval_lr_0p0001` | **passed** 15:30 | table complete: the three checkpoints are indistinguishable (mAP 0.624/0.624/0.625, recall 0.706 each) |
 | 8 | `infer_lr_0p0002` | ran to completion 15:40 (4 cubes/GPU, 8–13 s/cube) but **0 of 32 plots written** | every viz handler call failed with `'numpy.ndarray' object has no attribute 'unbind'`: the overlay converts GT boxes with a tensor-only helper while the viz worker receives numpy. Fix in `save_instance_predictions` (+ test). Note: the run still exits 0 — viz failures are logged, not fatal; check `visualize_successful` / the PDF count. |
-| 9 | `infer_lr_0p0002` | launched 15:42 | GT-box fix |
+| 9 | `infer_lr_0p0002` | **passed** 15:50: 32 PDFs | then `infer_lr_0p0004` (16:00) and `infer_lr_0p0001` (16:10): 32 PDFs each, no viz failures |
+| 10 | `eval_lr_0p0002_pps16` | **passed** 16:30 (38.8 s/cube) | recall 0.706 → 0.890 with the 16³ lattice |
+| 11 | `stage1p5/eval_lr_0p0002_ep6_zeroshot_c1024` | died at the checkpoint load (16:33) | DCP model-only load was shape-strict (`pos_embed` 6144 vs 12288 tokens); commit 8f2c7c2 (16:32, other agent) makes it drift-tolerant; relaunched 16:41 |
+| 12 | same | died at the first step (16:42) | checkpoint loads (drops `pos_embed` + `freqs_cis_q`, as planned), then `ConvolveWithPSF` mixed devices: the OTF rebuilt for the 1024 shape stayed on the CPU (the 1024 probes predate the PSF transform). Fix: move the OTF to the data device after the rebuild (`data/transforms/psf.py`), verified at 512/1024/512 on the GPU; relaunched 16:47 |
+| 13 | same | **passed** 16:57 (7.7 s/cube) | zero-shot 1024 row in the table |
 
-Reflections: (fill after the runs)
+Reflections (2026-09-09 16:30):
+- The three lrs are indistinguishable at epoch 6 under unprompted AMG (mask mAP 0.624–0.625, recall 0.706 each); the
+  val-loss ordering (2e-4 ≈ 1e-4 < 4e-4) does not show up in mAP yet. Decide on the final checkpoints; the eval costs
+  ~8 min per checkpoint (start-up included), so evaluating every epoch-end save of the winner is affordable.
+- Precision is ~0.99 at IoU 0.5 and the matched-mask IoU 0.93: what AMG segments, it segments as well as the prompted
+  validation dice (0.24) suggests. The gap is recall: 512 clicks (one per 16×48×64 voxels) reach ~71 % of the ~50
+  instances per cube; 4,096 clicks reach 89 % at 7× the time (39 s/cube). For tile-scale inference the click density
+  (or a cheaper proposal source: e.g. clicks seeded from a low-res objectness map) is the lever, not the lr.
+- The IoU head ranks masks well (Spearman 0.90) but under-/over-estimates by 0.12–0.14 absolute: usable for NMS
+  ordering, not as a calibrated confidence.
+- Zero-shot at 128×384×1024 (Stage 1.5 gate): mask mAP 0.27, recall 0.38, matched IoU 0.86 vs 0.62 / 0.71 / 0.93 at the
+  native 512 width. The checkpoint loads with only the sincos position buffer and the rotary frequencies re-initialised
+  (commit 8f2c7c2), so this is the real transfer gap, not a load error — the tile-adaptation run is justified. Caveat: the
+  cubic click lattice gives half the click density at 1024; a fair comparison needs an anisotropic lattice (8×8×16).
+- Plots: predicted masks follow the membranes tightly; misses are whole cells without a click; no systematic boundary
+  errors visible at z = 64 in the cubes inspected. Predicted boxes are not drawn (dynamic-count outputs are not routed
+  to the viz worker yet).
+- Bugs fixed on the way (all uncommitted, for review): fp32/bf16 mismatch at eval (autocast), quadratic mask-stack copy in
+  AMG (minutes → seconds per cube), evaluator on the GPU + CPU/GPU device mix, GT boxes as numpy in the overlay, GT
+  label-map rendering in the overlay, SAM2 model-private view shipped to CPU actors, inherited `training_metrics` key.

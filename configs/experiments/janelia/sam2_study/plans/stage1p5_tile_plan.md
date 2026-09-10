@@ -80,6 +80,12 @@ Launch log (2026-09-09): DCP load of the 512-trained checkpoint into the 1024 mo
 and `memory_attention.freqs_cis_q` (8f2c7c2); the PSF OTF rebuilt for 1024-wide tiles stayed on the CPU (e88b5ef); 4 per GPU OOMs at
 96 masks -> 2 per GPU (the sweep's measured tile point). Real run launches after the smoke passes.
 
+Done 2026-09-10 10:10: 1 epoch in 2 links (8,686 steps, 2.0 s/step at 2 per GPU), val total 0.288 / dice 0.175 on 1024-wide validation
+tiles (prompted; the 512 baseline ends at 0.330 / 0.200). Final checkpoint copied to `$DATA_DIR/sam2_study/eval/ckpts/stage2/sam2_tile_adapt`.
+Follow-up (Hugo, 09-10): `tile_adapt_chattn.yaml` = the same adaptation of the channel-adaptive model (attention-pool fusion +
+factorized channel embedding), initialised from that Stage-2 ablation's final checkpoint once it lands; eval/inference at 1024
+via `eval/stage2/{eval,infer}_sam2_tile_adapt*.yaml`.
+
 Reflections: (fill after the runs)
 
 ## 5. Config sketch

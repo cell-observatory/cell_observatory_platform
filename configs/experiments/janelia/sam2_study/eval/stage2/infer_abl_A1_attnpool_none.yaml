@@ -1,0 +1,9 @@
+# @package _global_
+# Final checkpoint of abl_A1_attnpool_none: unprompted AMG, one PDF per held-out validation cube (GT vs predicted boxes and masks).
+defaults:
+  - /experiments/janelia/sam2_study/stage2_ablations/A1_attnpool_none
+  - /experiments/janelia/sam2_study/eval/predict_overlay
+  - _self_
+experiment_name: infer_abl_A1_attnpool_none_final
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/stage2/abl_A1_attnpool_none/checkpoints   # copied final step dir

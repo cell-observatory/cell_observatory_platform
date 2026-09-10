@@ -1,0 +1,30 @@
+# @package _global_
+# Final checkpoint of abl_B_dropout_0p5_shuffle: unprompted AMG + instance mAP on the run's own held-out validation cubes.
+defaults:
+  - /experiments/janelia/sam2_study/stage2_ablations/B_dropout_0p5_shuffle
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_abl_B_dropout_0p5_shuffle_final
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/stage2/abl_B_dropout_0p5_shuffle/checkpoints   # copied final step dir
+datasets:
+  preprocessor:
+    transforms_list:                # training list minus ChannelDropout: score on all five channels
+      - _target_: cell_observatory_platform.data.transforms.psf.ConvolveWithPSF
+        input_shape: [128, 384, 512, 5]
+        input_pixel_size_um: [0.1, 0.1, 0.1]
+        psf: ${paths.data_path}/psf/CamA_Arc_OMW_centered.tif
+        psf_pixel_size_um: [0.1, 0.1, 0.1]
+        psf_format: ZYX
+        psf_centered: true
+        pad_type: reflect
+      - _target_: cell_observatory_platform.data.transforms.noise.MixedPoissonGaussianNoise
+        quantum_efficiency: 0.82
+        electrons_per_count: 0.22
+        sigma_background_noise: 40
+        mean_background_offset: 100
+        seed: ${seed}
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}

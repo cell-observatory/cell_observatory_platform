@@ -69,7 +69,20 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         gt_mask_source: str = "label_map",
         gt_box_format: str = "cxcyczwhd",
         gt_boxes_normalized: bool = True,
+        # Accepted and ignored: an experiment config that inherits a training
+        # base carries the base (loss) evaluator's `training_metrics` entry when
+        # this evaluator's group is merged on top (Hydra merges mappings, so
+        # the key cannot be removed from a leaf). Prediction-based evaluation
+        # has no loss dict to reduce.
+        training_metrics: Optional[List[Any]] = None,
+        # Device the per-image IoU work runs on. None = the device of the model's
+        # ``topk_query_indices`` (a model that hands over CPU tensors, e.g. SAM2
+        # AMG, is then scored on the CPU: one full-volume bincount per prediction,
+        # single-threaded -- tens of seconds per 128x384x512 cube). "cuda" moves
+        # the label map once and streams the bool mask chunks to the GPU instead.
+        compute_device: Optional[str] = None,
     ):
+        self.compute_device = torch.device(compute_device) if compute_device else None
         if gt_mask_source not in ("label_map", "masks"):
             raise ValueError(
                 f"gt_mask_source must be 'label_map' or 'masks'; got {gt_mask_source!r}"
@@ -173,7 +186,11 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
 
     def _process_one(self, sample: Dict[str, Any], target: Dict[str, Any]) -> None:
         image_id = self._image_id_counter
-        device = sample["topk_query_indices"].device
+        device = (
+            self.compute_device
+            if self.compute_device is not None
+            else sample["topk_query_indices"].device
+        )
 
         # ---- 0. Rank gate: instance IoU is strictly 3D. ----
         # ``eval_frame_size`` is the (D, H, W) target resolution; a 4D (T,Z,Y,X)
@@ -205,7 +222,7 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
         # tensors must therefore co-locate with the mask we index them with.
         topk_scores = sample["topk_class_scores"].to(device)
         topk_class_ids = sample["topk_class_ids"].to(device)
-        topk_query_idx = sample["topk_query_indices"]  # defines ``device``
+        topk_query_idx = sample["topk_query_indices"].to(device)  # defines ``device`` unless compute_device is set
         topk_boxes = sample["boxes"].to(device)
 
         if (
@@ -420,6 +437,13 @@ class InstanceSegmentationEvaluator(DatasetEvaluator):
                         ))
                         del pred_bin
                     del gt_chunks
+            # From here on everything is host-side: the IoU rows come back on
+            # the CPU, and the streaming metrics keep their state on the CPU
+            # (gather() pickles it across ranks), whatever ``device`` did the
+            # per-voxel work above.
+            pred_scores_c = pred_scores_c.cpu()
+            if pred_ious_c is not None:
+                pred_ious_c = pred_ious_c.cpu()
             if ious_rows:
                 ious_c = torch.cat(ious_rows, dim=0)
             else:

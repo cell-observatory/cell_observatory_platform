@@ -1,0 +1,14 @@
+# @package _global_
+# Tile-mode adaptation (128x384x1024) of the channel-adaptive model: per-channel patch tokens fused by attention pooling
+# with the factorized (localization x fluorophore) channel embedding, initialised from that ablation's final 512-wide
+# checkpoint (the channel vocabulary comes from the checkpoint's sidecar). Same schedule and budget as tile_adapt;
+# attention-pool fusion costs the same as the joint embed, so 2 per GPU with 96 masks holds.
+defaults: [/experiments/janelia/sam2_study/stage1p5_tile/tile_adapt, _self_]
+experiment_name: sam2_tile_adapt_chattn
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/stage2/abl_A1_attnpool_factorized/checkpoints   # copied final step dir
+models:
+  backbones:
+    masked_encoder:
+      patch_embed_type: channel_adaptive
+      patch_embed_args: {channel_fusion: attn_pool, attn_pool_num_heads: 8, channel_embed: factorized, channel_vocab: null, vocab_extra_slots: 16}

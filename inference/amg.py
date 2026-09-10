@@ -90,6 +90,31 @@ class MaskData:
             else:
                 raise TypeError(f"MaskData key {k} has an unsupported type {type(v)}.")
 
+    @classmethod
+    def concat(cls, parts: List["MaskData"]) -> "MaskData":
+        """One MaskData holding the rows of ``parts`` in order, with a single
+        concatenation per key. Repeated ``cat`` while accumulating N batches
+        copies the growing mask stack N times (quadratic in the number of
+        proposals; minutes per volume once the stack holds hundreds of
+        full-resolution masks), so batch loops collect parts and concatenate
+        once at the end. Empty parts are skipped."""
+        parts = [p for p in parts if len(p) > 0]
+        if not parts:
+            return cls()
+        out = cls()
+        for k in parts[0]._stats:
+            vals = [p._stats[k] for p in parts]
+            v0 = vals[0]
+            if isinstance(v0, torch.Tensor):
+                out._stats[k] = torch.cat(vals, dim=0)
+            elif isinstance(v0, np.ndarray):
+                out._stats[k] = np.concatenate(vals, axis=0)
+            elif isinstance(v0, list):
+                out._stats[k] = [x for v in vals for x in deepcopy(v)]
+            else:
+                raise TypeError(f"MaskData key {k} has an unsupported type {type(v0)}.")
+        return out
+
     def to_numpy(self) -> None:
         for k, v in self._stats.items():
             if isinstance(v, torch.Tensor):

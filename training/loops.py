@@ -51,7 +51,7 @@ from cell_observatory_platform.training.loggers import EventRecorder, MetricsPro
 from cell_observatory_platform.training.optimizers import build_optimizers, get_optimizer
 # quantize -> AC -> compile -> fully_shard for the torch-native trainer;
 # imports torch only at module scope (torchao/torchtitan stay lazy)
-from cell_observatory_platform.parallelism.parallelize import parallelize
+from cell_observatory_platform.parallelism.parallelize import parallelize, TORCH_DTYPE_MAP
 from cell_observatory_platform.data.datasets.pretrain_dataset_ray import get_dataloader_ray
 from cell_observatory_platform.utils.context import (
     inference_context,
@@ -120,6 +120,63 @@ def _val_device_buffer(dataloader_config: dict, device_buffer):
     validation), else the shared train buffer."""
     val_collate_fn = dataloader_config.get("val_collate_fn")
     return val_collate_fn.device_buffer if val_collate_fn is not None else device_buffer
+
+
+def _eval_dataloader(cfg: DictConfig):
+    """The loader (and the device buffer its batches are freed into) that the
+    eval-time trainers (TestTrainer / Inferencer) iterate.
+
+    ``datasets.eval_split`` selects it: ``train`` (default) is the loader over the
+    training rows; ``val`` is the validation loader, i.e. the rows a training run
+    with the same query, ``seed`` and ``split`` held out (the split is a pure
+    function of the row count and the seed, see SampleIndexPlanner.split_train_val),
+    so a checkpoint can be scored on cubes it never trained on. ``val`` requires
+    ``datasets.split > 0``.
+    """
+    train_loader, val_loader, dataloader_config, host_buffer_actor, device_buffer, _ = get_dataloader(cfg)
+    split = str(OmegaConf.select(cfg, "datasets.eval_split", default="train") or "train")
+    if split == "train":
+        return train_loader, dataloader_config, host_buffer_actor, device_buffer
+    if split == "val":
+        if val_loader is None:
+            raise ValueError(
+                "datasets.eval_split='val' needs a validation split: set datasets.split > 0 "
+                "(the same value the training run used reproduces its held-out rows)."
+            )
+        return (
+            val_loader,
+            dataloader_config,
+            host_buffer_actor,
+            _val_device_buffer(dataloader_config, device_buffer),
+        )
+    raise ValueError(f"datasets.eval_split must be 'train' or 'val', got {split!r}")
+
+
+def _eval_autocast(cfg: DictConfig):
+    """Autocast context for the eval-time trainers, matching the training
+    compute dtype. The torch-native trainer keeps fp32 master weights and lets
+    FSDP cast parameters to ``parallelism.training.mixed_precision_param`` per
+    forward; TestTrainer / Inferencer run the raw fp32 module on inputs the
+    preprocessor already narrowed to ``quantization`` (bf16), which trips
+    "mat1 and mat2 must have the same dtype" in the first linear layer. Casting
+    the module itself is not equivalent (fp32 buffers such as the positional
+    encodings would then promote activations back to fp32); autocast casts
+    per op exactly as the training forward saw it."""
+    if str(cfg.get("backend", "")).upper() == "TORCHTITAN":
+        dtype_name = str(OmegaConf.select(cfg, "parallelism.training.mixed_precision_param", default="float32"))
+    else:
+        dtype_name = str(cfg.get("quantization", "float32"))
+    dtype = TORCH_DTYPE_MAP[dtype_name]
+    return torch.autocast(device_type="cuda", dtype=dtype, enabled=dtype != torch.float32)
+
+
+def _eval_max_steps(cfg: DictConfig) -> Optional[int]:
+    """Per-rank cap on eval-time steps (``trainer_loop.max_steps``); None = the
+    whole loader. Every rank holds the same number of batches (the sampler
+    truncates to a multiple of the world size), so a uniform cap keeps the ranks
+    in lockstep for the collectives that follow the loop."""
+    max_steps = OmegaConf.select(cfg, "trainer_loop.max_steps", default=None)
+    return int(max_steps) if max_steps is not None else None
 
 
 class BaseTrainer:
@@ -1344,7 +1401,8 @@ class TestTrainer(BaseTrainer):
         self.with_grad_accumulation = False
 
         # initialize dataset and dataloader
-        self.test_dataloader, _, _, self.host_buffer_actor, self.device_buffer, _ = get_dataloader(cfg)
+        self.test_dataloader, _, self.host_buffer_actor, self.device_buffer = _eval_dataloader(cfg)
+        self.max_steps = _eval_max_steps(cfg)
 
         # initialize model
         model = REGISTRY.build("model", cfg.models.model, cfg)
@@ -1394,13 +1452,22 @@ class TestTrainer(BaseTrainer):
         self.before_test()
 
         with inference_context(self.model):
-            with torch.no_grad():
+            with torch.no_grad(), _eval_autocast(self.cfg):
                 end = time.perf_counter()
                 for idx, data_sample in enumerate(self.test_dataloader):
                     data_time = time.perf_counter() - end
                     data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time, idx=idx)
                     self.run_test_step(idx, data_sample)
+                    step_time = time.perf_counter() - end
                     end = time.perf_counter()
+                    logger.info(
+                        f"[TestTrainer] step {idx + 1}"
+                        f"{'/' + str(self.max_steps) if self.max_steps is not None else ''}"
+                        f": {step_time:.1f} s (data {data_time:.1f} s)"
+                    )
+                    if self.max_steps is not None and idx + 1 >= self.max_steps:
+                        logger.info(f"[TestTrainer] stopping after trainer_loop.max_steps={self.max_steps} steps")
+                        break
 
         metrics = self.evaluator.evaluate()
         self.event_recorder.put_scalars(
@@ -1455,7 +1522,8 @@ class Inferencer(BaseTrainer):
         self.with_grad_accumulation = False
 
         # initialize dataset and dataloader
-        self.test_dataloader, _, dataloader_config, self.host_buffer_actor, self.device_buffer, database_df = get_dataloader(cfg)
+        self.test_dataloader, dataloader_config, self.host_buffer_actor, self.device_buffer = _eval_dataloader(cfg)
+        self.max_steps = _eval_max_steps(cfg)
 
         self.steps_per_epoch, val_steps_per_epoch = get_steps_per_epoch(
             config=cfg
@@ -1603,13 +1671,22 @@ class Inferencer(BaseTrainer):
         # exception without this finally leaked actors + segments across runs.
         try:
             with inference_context(self.model):
-                with torch.no_grad():
+                with torch.no_grad(), _eval_autocast(self.cfg):
                     end = time.perf_counter()
                     for idx, data_sample in enumerate(self.test_dataloader):
                         data_time = time.perf_counter() - end
                         data_sample = self.preprocessor(data_sample=data_sample, data_time=data_time, idx=idx)
                         self.run_inference_step(idx, data_sample)
+                        step_time = time.perf_counter() - end
                         end = time.perf_counter()
+                        ray.logger.info(
+                            f"[Inferencer] step {idx + 1}"
+                            f"{'/' + str(self.max_steps) if self.max_steps is not None else ''}"
+                            f": {step_time:.1f} s (data {data_time:.1f} s)"
+                        )
+                        if self.max_steps is not None and idx + 1 >= self.max_steps:
+                            ray.logger.info(f"[Inferencer] stopping after trainer_loop.max_steps={self.max_steps} steps")
+                            break
             # Success path: drain outstanding saves (finalize raises on dropped/
             # failed saves -- "output is INCOMPLETE"), THEN dispatch after_test
             # while the detached actors are still alive: InferenceMetricsHook
@@ -1655,6 +1732,13 @@ class Inferencer(BaseTrainer):
         Iterate one prediction step.
         """
         self.before_test_step()
+
+        # The SAM2 preprocessor publishes a model-private per-frame GT view
+        # (metainfo["sam2_views"]) for the prompted training forward: lazily
+        # built CUDA mask blocks plus a full-resolution labelmap. AMG inference
+        # never reads it, and the inferencer ships metainfo to the CPU save/viz
+        # actors, which cannot receive CUDA tensors -- drop it here.
+        data_sample["metainfo"].pop("sam2_views", None)
 
         self.inferencer_worker.predict(data_sample=data_sample)
 

@@ -1,0 +1,31 @@
+# @package _global_
+# Cross-SNR matrix: the final checkpoint of abl_E_snr_rand scored at photon_scale 0.1 (membrane median ~250-500 counts).
+defaults:
+  - /experiments/janelia/sam2_study/stage2_ablations/E_snr_rand
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_abl_E_snr_rand_at_snr500
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/stage2/abl_E_snr_rand/checkpoints
+datasets:
+  preprocessor:
+    transforms_list:                # training list with the photon scale pinned for the cross-SNR matrix
+      - _target_: cell_observatory_platform.data.transforms.psf.ConvolveWithPSF
+        input_shape: [128, 384, 512, 5]
+        input_pixel_size_um: [0.1, 0.1, 0.1]
+        psf: ${paths.data_path}/psf/CamA_Arc_OMW_centered.tif
+        psf_pixel_size_um: [0.1, 0.1, 0.1]
+        psf_format: ZYX
+        psf_centered: true
+        pad_type: reflect
+      - _target_: cell_observatory_platform.data.transforms.noise.MixedPoissonGaussianNoise
+        quantum_efficiency: 0.82
+        electrons_per_count: 0.22
+        sigma_background_noise: 40
+        mean_background_offset: 100
+        photon_scale: 0.1
+        seed: ${seed}
+      - _target_: cell_observatory_platform.data.transforms.normalize.Normalize
+        input_layout:
+          _target_: cell_observatory_platform.data.data_shapes.MULTICHANNEL_HYPERCUBE
+          value: ${dataset_layout_order}

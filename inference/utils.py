@@ -900,6 +900,10 @@ def save_instance_predictions(
     pred_masks_key: str = "masks",
     gt_boxes_key: str = "boxes",
     gt_masks_key: str = "masks",
+    # How targets[gt_masks_key] is laid out: a per-instance stack (N,Z,Y,X) or an integer
+    # instance label map (Z,Y,X) / (T,Z,Y,X) -- the form label-map-native pipelines (SAM2,
+    # MaskDINO) publish as `label_map`, rendered natively slice by slice like the pred path.
+    gt_masks_kind: Literal["instance_stack", "instance_label_map"] = "instance_stack",
     kinds: Optional[Dict[str, Optional[str]]] = None,
     pred_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "xyzxyz",
     gt_boxes_format: Literal["xyzxyz", "cxcyczwhd"] = "cxcyczwhd",
@@ -924,7 +928,8 @@ def save_instance_predictions(
 
     ``kinds`` (record.kinds, ``{name -> declared OutputKind value}``) selects the
     pred-mask render path: ``instance_label_map`` preds are the raw integer volume
-    and render natively per slice; anything else is a per-object stack.
+    and render natively per slice; anything else is a per-object stack. GT uses
+    ``gt_masks_kind`` the same way.
 
     Writes: <ident>_instances.pdf
     """
@@ -963,7 +968,10 @@ def save_instance_predictions(
         if gt_boxes is None:
             gt_xyzxyz = np.zeros((0, 6), dtype=np.float32)
         else:
-            # convert to "xyzxyz" and apply scale factors if given
+            # convert to "xyzxyz" and apply scale factors if given. The viz
+            # worker receives targets as numpy (Ray transport); the converter
+            # works on tensors.
+            gt_boxes = torch.as_tensor(_ensure_numpy(gt_boxes), dtype=torch.float32).reshape(-1, 6)
             gt_boxes = convert_bbox_format(
                 gt_boxes,
                 bbox_input_format=gt_boxes_format,
@@ -992,7 +1000,27 @@ def save_instance_predictions(
         # Pred masks are either an already-normalized (N,1,Z,Y,X) stack, or --
         # for INSTANCE_LABEL_MAP -- the raw integer volume, rendered natively
         # slice by slice (O(volume) memory, independent of instance count).
-        if gt_masks is not None:
+        def _as_labelmap(vol: ArrayLike, side: str):
+            """(Z,Y,X[,1]) / (T,Z,Y,X[,1]) integer volume -> ((T,Z,Y,X), sorted non-zero ids)."""
+            vol = _ensure_numpy(vol)
+            if vol.ndim in (4, 5) and vol.shape[-1] == 1:
+                vol = vol[..., 0]                   # drop trailing channel
+            if vol.ndim == 3:
+                vol = vol[None]                     # (Z,Y,X) -> (T=1,Z,Y,X)
+            if vol.ndim != 4:
+                raise ValueError(
+                    f"instance_label_map {side} must be (Z,Y,X[,1]) or (T,Z,Y,X[,1]), "
+                    f"got shape {vol.shape}"
+                )
+            ids = np.unique(vol)                    # ONE pass; reused for every slice
+            return vol, ids[ids != 0]
+
+        gt_labelmap = None                          # (T,Z,Y,X), label-map-native GT
+        gt_ids = np.zeros(0, dtype=np.int64)
+        if gt_masks is not None and gt_masks_kind == "instance_label_map":
+            gt_labelmap, gt_ids = _as_labelmap(gt_masks, "GT")
+            gt_masks = None                         # never enters the stack path
+        elif gt_masks is not None:
             gt_masks = _ensure_numpy(gt_masks)
             if gt_masks.ndim == 4:
                 gt_masks = gt_masks[:, None, ...]  # (N,Z,Y,X) -> (N,1,Z,Y,X)
@@ -1000,19 +1028,7 @@ def save_instance_predictions(
         pr_labelmap = None                          # (T,Z,Y,X), label-map-native path
         pr_ids = np.zeros(0, dtype=np.int64)
         if pr_masks is not None and pred_masks_kind == OutputKind.INSTANCE_LABEL_MAP.value:
-            vol = _ensure_numpy(pr_masks)
-            if vol.ndim in (4, 5) and vol.shape[-1] == 1:
-                vol = vol[..., 0]                   # drop trailing channel
-            if vol.ndim == 3:
-                vol = vol[None]                     # (Z,Y,X) -> (T=1,Z,Y,X)
-            if vol.ndim != 4:
-                raise ValueError(
-                    f"instance_label_map pred must be (Z,Y,X[,1]) or (T,Z,Y,X[,1]), "
-                    f"got shape {vol.shape}"
-                )
-            pr_labelmap = vol
-            pr_ids = np.unique(vol)                 # ONE pass; reused for every slice
-            pr_ids = pr_ids[pr_ids != 0]
+            pr_labelmap, pr_ids = _as_labelmap(pr_masks, "pred")
             pr_masks = None                         # never enters the stack path
         elif pr_masks is not None:
             # already canonicalized to (N,1,Z,Y,X) by the record builder.
@@ -1032,7 +1048,9 @@ def save_instance_predictions(
 
         # --- plot ---
         has_boxes_row = _has_nonempty(gt_xyzxyz) or _has_nonempty(pr_xyzxyz)
-        has_masks_row = _has_nonempty(gt_masks) or _has_nonempty(pr_masks) or pr_ids.size > 0
+        has_masks_row = (
+            _has_nonempty(gt_masks) or _has_nonempty(pr_masks) or pr_ids.size > 0 or gt_ids.size > 0
+        )
 
         row_kinds: list[str] = ["bg"]
         if has_boxes_row:
@@ -1203,13 +1221,14 @@ def save_instance_predictions(
                                     a_xy.set_title(f"{'GT' if side==0 else 'Pred'} | Boxes (t={t}, z={z})")
 
                             elif kind == "masks":
-                                use_labelmap = side == 1 and pr_labelmap is not None
+                                labelmap, ids = (gt_labelmap, gt_ids) if side == 0 else (pr_labelmap, pr_ids)
+                                use_labelmap = labelmap is not None
                                 masks = gt_masks if side == 0 else pr_masks
                                 if use_labelmap or (masks is not None and masks.shape[0] > 0):
                                     # XY @ z
                                     if use_labelmap:
                                         lab_xy, cmap_xy, norm_xy = _label_and_cmap_from_label_map(
-                                            pr_labelmap[t, z], pr_ids
+                                            labelmap[t, z], ids
                                         )
                                     else:
                                         lab_xy, cmap_xy, norm_xy = _label_and_cmap_from_instance_masks(
@@ -1227,7 +1246,7 @@ def save_instance_predictions(
                                         # XZ @ y_line: (Z,X)
                                         if use_labelmap:
                                             lab_xz, cmap_xz, norm_xz = _label_and_cmap_from_label_map(
-                                                pr_labelmap[t, :, y_line, :], pr_ids
+                                                labelmap[t, :, y_line, :], ids
                                             )
                                         else:
                                             lab_xz, cmap_xz, norm_xz = _label_and_cmap_from_instance_masks(
@@ -1245,7 +1264,7 @@ def save_instance_predictions(
                                         # YZ @ x_line: (Z,Y) -> (Y,Z)
                                         if use_labelmap:
                                             lab_yz, cmap_yz, norm_yz = _label_and_cmap_from_label_map(
-                                                pr_labelmap[t, :, :, x_line].transpose(1, 0), pr_ids
+                                                labelmap[t, :, :, x_line].transpose(1, 0), ids
                                             )
                                         else:
                                             m_yz = masks[:, t, :, :, x_line].transpose(0, 2, 1)

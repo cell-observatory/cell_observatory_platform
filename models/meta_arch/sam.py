@@ -2089,8 +2089,11 @@ class SAM2(SAM2Base):
             scale = np.array([crop_size[2], crop_size[1], crop_size[0]])[None, :]  # (1, 3) as x, y, z
             points_for_crop = self._amg_point_grids[crop_layer_idx] * scale  # (N_pts, 3)
 
-            # Process in batches
-            data = MaskData()
+            # Process in batches; the survivors of every batch are offloaded to
+            # the CPU and concatenated ONCE at the end (MaskData.concat) -- a
+            # running cat would copy the growing full-resolution mask stack on
+            # every batch.
+            batches: List[MaskData] = []
             for (points_batch,) in batch_iterator(
                 self._amg_points_per_batch, points_for_crop
             ):
@@ -2098,8 +2101,10 @@ class SAM2(SAM2Base):
                     points_batch, features, crop_size, crop_box, orig_size
                 )
                 batch_data.to_cpu()  # offload before accumulation
-                data.cat(batch_data)
+                batches.append(batch_data)
                 del batch_data
+            data = MaskData.concat(batches)
+            del batches
 
             if len(data) == 0:
                 return data

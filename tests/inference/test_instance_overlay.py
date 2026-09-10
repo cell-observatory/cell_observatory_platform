@@ -185,6 +185,27 @@ class TestSaveInstancePredictionsIntegration:
                 input_format="TZYXC",
             )
 
+    def test_gt_label_map_renders_masks_row(self, tmp_path, subplot_rows):
+        """GT published as an integer label map (``gt_masks_kind: instance_label_map``,
+        the SAM2 / MaskDINO target contract) renders the masks row with no pred
+        masks at all; the default stack kind leaves the row out for the same input
+        (a (Z,Y,X) label map is not a per-object stack)."""
+        gt = {"label_map": _labelmap((0, 0, 0, 5), (2, 3, 3, 7))}
+        self._run(tmp_path, preds={}, kinds={}, targets=gt,
+                  gt_masks_key="label_map", gt_masks_kind="instance_label_map")
+        assert set(subplot_rows) == {2}                      # bg + masks on every page
+        subplot_rows.clear()
+        self._run(tmp_path, preds={}, kinds={}, targets={"label_map": np.zeros((3, 8, 8), np.int32)},
+                  gt_masks_key="label_map", gt_masks_kind="instance_label_map")
+        assert set(subplot_rows) == {1}                      # empty label map: no masks row
+
+    def test_numpy_gt_boxes_render_boxes_row(self, tmp_path, subplot_rows):
+        """GT boxes reach the viz worker as numpy (Ray transport) in the collator's
+        normalized cxcyczwhd format; the boxes row renders from them."""
+        gt = {"boxes": np.array([[0.5, 0.5, 0.5, 0.25, 0.25, 0.5]], dtype=np.float32)}
+        self._run(tmp_path, preds={}, kinds={}, targets=gt, scale_gt_boxes=True)
+        assert set(subplot_rows) == {2}                      # bg + boxes
+
     def test_bad_labelmap_rank_raises(self, tmp_path):
         vol = np.zeros((2, 1, 3, 8, 8, 1), dtype=np.int32)  # rank 6: not a label map
         with pytest.raises(ValueError, match="instance_label_map"):

@@ -1,0 +1,9 @@
+# @package _global_
+# Final checkpoint of abl_baseline: unprompted AMG + instance mAP on the run's own held-out validation cubes.
+defaults:
+  - /experiments/janelia/sam2_study/stage2_ablations/S2_baseline
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_abl_baseline_final
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/stage2/abl_baseline/checkpoints   # copied final step dir
