@@ -1,0 +1,14 @@
+# @package _global_
+# Diagnostic for the 0-click model's zero predictions: no mask-to-mask refinement AND the IoU / stability filters
+# switched off, so every lattice candidate reaches NMS. Tells whether the IoU head (trained on the prompt round only)
+# scores lattice clicks below the 0.5 threshold or whether the masks themselves are empty.
+defaults:
+  - /experiments/janelia/sam2_study/eval/stage2/eval_abl_D_clicks0
+  - _self_
+experiment_name: eval_abl_D_clicks0_final_nofilter
+models:
+  meta_arch:
+    sam:
+      use_m2m: false
+      pred_iou_thresh: 0.0
+      stability_score_thresh: 0.0
