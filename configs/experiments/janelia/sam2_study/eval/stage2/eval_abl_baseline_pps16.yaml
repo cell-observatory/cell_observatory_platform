@@ -1,0 +1,11 @@
+# @package _global_
+# Denser click lattice (16x16x16 = 4,096 clicks per cube instead of 512): baseline at 512 for the like-for-like lattice comparison.
+defaults:
+  - /experiments/janelia/sam2_study/eval/stage2/eval_abl_baseline
+  - _self_
+experiment_name: eval_abl_baseline_final_pps16
+models:
+  meta_arch:
+    sam:
+      points_per_side: 16
+      points_per_batch: 64      # 4x fewer decoder launches; refinement stack 64 x (25-50 M voxels) x 4 B = 6-13 GB
