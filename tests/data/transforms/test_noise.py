@@ -167,3 +167,7 @@ def test_photon_scale_sets_the_signal_level_and_snr():
     assert means.min() < gain * 400 + 100 < means.max()   # the per-element factors spread across the range
     with pytest.raises(ValueError, match="photon_scale"):
         MixedPoissonGaussianNoise(**kwargs, photon_scale=(0.1, 0.5, 1.0))
+    # a yaml range arrives from Hydra as an omegaconf ListConfig, not a list
+    from omegaconf import OmegaConf
+    cfg = OmegaConf.create({"photon_scale": [0.1, 1.0]})
+    assert MixedPoissonGaussianNoise(**kwargs, photon_scale=cfg.photon_scale).photon_scale == (0.1, 1.0)

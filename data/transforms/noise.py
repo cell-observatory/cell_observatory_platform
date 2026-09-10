@@ -1,4 +1,5 @@
 import torch
+from collections.abc import Sequence
 from pathlib import Path
 import logging
 
@@ -73,7 +74,10 @@ class MixedPoissonGaussianNoise:
             raise ValueError("mean_background_offset must be a float or tuple of two floats")
         
 
-        if not isinstance(photon_scale, (float, int)) and not (isinstance(photon_scale, (tuple, list)) and len(photon_scale) == 2):
+        # Hydra hands a yaml range over as an omegaconf ListConfig (a Sequence, not a list)
+        if not isinstance(photon_scale, (float, int)):
+            photon_scale = tuple(float(v) for v in photon_scale) if isinstance(photon_scale, Sequence) else photon_scale
+        if not isinstance(photon_scale, (float, int)) and not (isinstance(photon_scale, tuple) and len(photon_scale) == 2):
             raise ValueError("photon_scale must be a float or tuple of two floats")
 
         self.photon_scale = photon_scale
