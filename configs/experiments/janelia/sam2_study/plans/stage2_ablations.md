@@ -83,7 +83,7 @@ win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
 | `A3_membrane_only` | 3 | 0.464 | 0.276 | 0.43 | | val iou 0.092 |
 | `S2_baseline` | 6 (final) | 0.330 | 0.200 | 0.27 | 6 ep = ~14 h + queue | val iou 0.061; final ckpt step-23076 |
 | `A3_membrane_only` | 6 (final) | 0.329 | 0.197 | 0.26 | | val iou 0.063; = baseline |
-| `D_clicks0` | 5 | 0.186 | 0.107 | 0.20 | | 1 round |
+| `D_clicks0` | 6 (final) | 0.171 | 0.101 | 0.17 | | 1 round; final ckpt step-23076, eval submitted |
 | epoch-4 dice | | | | | | baseline 0.247, membrane 0.221, gtprob0 0.229, dropout0.5 0.232, gtprob0.3 0.254, cytosol 0.328 |
 | epoch-3 dice | | | | | | baseline 0.267, A1 factorized 0.239, dropout0.25 0.241, snr1500 0.295, A1 none (ep 2) 0.315 |
 
