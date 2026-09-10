@@ -1,0 +1,12 @@
+# @package _global_
+# 0-click model scored WITHOUT AMG's mask-to-mask refinement: with use_m2m the eval returned zero predictions. The
+# refinement feeds each candidate's low-res mask back as a mask prompt, and a model trained with no correction rounds
+# never received a mask prompt, so the refined candidates all fail the IoU / stability filters.
+defaults:
+  - /experiments/janelia/sam2_study/eval/stage2/eval_abl_D_clicks0
+  - _self_
+experiment_name: eval_abl_D_clicks0_final_nom2m
+models:
+  meta_arch:
+    sam:
+      use_m2m: false
