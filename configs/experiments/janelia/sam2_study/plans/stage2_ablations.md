@@ -90,6 +90,7 @@ win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
 | **held-out mAP (final ckpt, 128 val cubes, AMG 8³ lattice)** | | | | | | baseline **0.645** (recall 0.695, mIoU 0.948); membrane-only **0.651** (recall 0.700); gt-prob 0.3 **0.644** (recall 0.697); gt-prob 0.0 **0.640**; cytosol-only **0.608**; Stage-1 epoch-6 reference 0.624; **16³ lattice**: baseline 0.741 (recall 0.884, 39 s/cube); **0-click: 0.000, zero predictions** (AMG's mask-to-mask refinement feeds a mask prompt the 0-click model never saw in training -> every candidate filtered; re-scored: filters off + no m2m -> **0.623**, recall 0.69, precision 0.99, 18k preds, IoU-head Spearman 0.74 (baseline 0.91): the masks are fine, m2m off + default filters -> **0.617**, recall 0.68, 4,955 preds: the culprit is the mask-to-mask refinement, which feeds a mask prompt the 0-click model never trained on; the correction round buys the mask-prompt path and ~0.03 mAP) |
 | epoch-4 dice | | | | | | baseline 0.247, membrane 0.221, gtprob0 0.229, dropout0.5 0.232, gtprob0.3 0.254, cytosol 0.328 |
 | epoch-3 dice | | | | | | baseline 0.267, A1 factorized 0.239, dropout0.25 0.241, snr1500 0.295, A1 none (ep 2) 0.315 |
+| epoch-1 dice, SNR family (each validated at its own noise level) | | | | | | baseline 0.467, snr1500 0.488, snr500 0.500, snr-range 0.511 |
 
 Launch log (2026-09-09, tag `runs/sam2-stage2-2026-09-09`, one LSF chain per leaf, outdirs `$DATA_DIR/sam2_study/stage2_ablations/abl_*`):
 
