@@ -73,6 +73,9 @@ win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
 | `D_gtprob0p3` | 1 | 0.823 | 0.466 | 1.52 | 2.27 h/epoch | val iou 0.149; 0.0 / 0.1 / 0.3 within noise at epoch 1 |
 | `D_clicks0` | 1 | 0.510 | 0.300 | 0.88 | 1.80 h/epoch | val iou 0.094; NOT comparable: the loss is a SUM over prediction rounds (1 here, 2 for 1 click, 4 for 3 clicks) -> mAP decides D |
 | `D_clicks3` | 1 | 1.163 | 0.712 | 2.14 | 3.41 h/epoch | val iou 0.208; 4 rounds summed = 0.29/round vs 0.40 (1 click) and 0.51 (0 clicks); bs 40, 1.45 s/step -> 6 epochs = 20 h |
+| `S2_baseline` | 2 | 0.523 | 0.319 | 0.54 | | val iou 0.098 |
+| `A3_membrane_only` | 2 | 0.520 | 0.305 | 0.49 | | val iou 0.110; tied with the baseline |
+| `D_clicks0` | 2 | 0.322 | 0.183 | 0.39 | | val iou 0.065 (1 round) |
 
 Launch log (2026-09-09, tag `runs/sam2-stage2-2026-09-09`, one LSF chain per leaf, outdirs `$DATA_DIR/sam2_study/stage2_ablations/abl_*`):
 
