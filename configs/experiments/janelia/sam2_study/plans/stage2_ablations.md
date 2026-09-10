@@ -85,6 +85,7 @@ win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
 | `A3_membrane_only` | 6 (final) | 0.329 | 0.197 | 0.26 | | val iou 0.063; = baseline |
 | `D_clicks0` | 6 (final) | 0.171 | 0.101 | 0.17 | | 1 round; final ckpt step-23076, eval submitted |
 | `D_gtprob0p0` | 6 (final) | 0.333 | 0.198 | 0.27 | | = baseline (0.330 / 0.200); eval submitted |
+| `A3_cytosol_only` | 6 (final) | 0.426 | 0.259 | 0.39 | | no membrane channel; eval submitted |
 | **held-out mAP (final ckpt, 128 val cubes, AMG 8³ lattice)** | | | | | | baseline **0.645** (recall 0.695, mIoU 0.948); membrane-only **0.651** (recall 0.700); Stage-1 epoch-6 reference 0.624 |
 | epoch-4 dice | | | | | | baseline 0.247, membrane 0.221, gtprob0 0.229, dropout0.5 0.232, gtprob0.3 0.254, cytosol 0.328 |
 | epoch-3 dice | | | | | | baseline 0.267, A1 factorized 0.239, dropout0.25 0.241, snr1500 0.295, A1 none (ep 2) 0.315 |
