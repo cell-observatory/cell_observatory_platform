@@ -79,6 +79,8 @@ win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
 | `A3_cytosol_only` | 2 | 0.754 | 0.462 | 0.77 | | val iou 0.134 |
 | `B_dropout_0p5_shuffle` | 2 | 0.534 | 0.301 | 0.50 | | val iou 0.116 |
 | `D_gtprob0p0` | 2 | 0.532 | 0.304 | 0.54 | | val iou 0.122 |
+| `A1_attnpool_factorized` | 1 | 0.750 | 0.467 | 1.33 | 2.31 h/epoch | val iou 0.126; same cost as joint |
+| `A3_membrane_only` | 3 | 0.464 | 0.276 | 0.43 | | val iou 0.092 |
 
 Launch log (2026-09-09, tag `runs/sam2-stage2-2026-09-09`, one LSF chain per leaf, outdirs `$DATA_DIR/sam2_study/stage2_ablations/abl_*`):
 
