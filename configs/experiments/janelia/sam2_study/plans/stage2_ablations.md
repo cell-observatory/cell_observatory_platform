@@ -76,6 +76,9 @@ win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
 | `S2_baseline` | 2 | 0.523 | 0.319 | 0.54 | | val iou 0.098 |
 | `A3_membrane_only` | 2 | 0.520 | 0.305 | 0.49 | | val iou 0.110; tied with the baseline |
 | `D_clicks0` | 2 | 0.322 | 0.183 | 0.39 | | val iou 0.065 (1 round) |
+| `A3_cytosol_only` | 2 | 0.754 | 0.462 | 0.77 | | val iou 0.134 |
+| `B_dropout_0p5_shuffle` | 2 | 0.534 | 0.301 | 0.50 | | val iou 0.116 |
+| `D_gtprob0p0` | 2 | 0.532 | 0.304 | 0.54 | | val iou 0.122 |
 
 Launch log (2026-09-09, tag `runs/sam2-stage2-2026-09-09`, one LSF chain per leaf, outdirs `$DATA_DIR/sam2_study/stage2_ablations/abl_*`):
 
