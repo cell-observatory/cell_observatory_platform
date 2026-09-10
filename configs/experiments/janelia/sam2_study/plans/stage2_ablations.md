@@ -81,6 +81,11 @@ win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
 | `D_gtprob0p0` | 2 | 0.532 | 0.304 | 0.54 | | val iou 0.122 |
 | `A1_attnpool_factorized` | 1 | 0.750 | 0.467 | 1.33 | 2.31 h/epoch | val iou 0.126; same cost as joint |
 | `A3_membrane_only` | 3 | 0.464 | 0.276 | 0.43 | | val iou 0.092 |
+| `S2_baseline` | 6 (final) | 0.330 | 0.200 | 0.27 | 6 ep = ~14 h + queue | val iou 0.061; final ckpt step-23076 |
+| `A3_membrane_only` | 6 (final) | 0.329 | 0.197 | 0.26 | | val iou 0.063; = baseline |
+| `D_clicks0` | 5 | 0.186 | 0.107 | 0.20 | | 1 round |
+| epoch-4 dice | | | | | | baseline 0.247, membrane 0.221, gtprob0 0.229, dropout0.5 0.232, gtprob0.3 0.254, cytosol 0.328 |
+| epoch-3 dice | | | | | | baseline 0.267, A1 factorized 0.239, dropout0.25 0.241, snr1500 0.295, A1 none (ep 2) 0.315 |
 
 Launch log (2026-09-09, tag `runs/sam2-stage2-2026-09-09`, one LSF chain per leaf, outdirs `$DATA_DIR/sam2_study/stage2_ablations/abl_*`):
 
