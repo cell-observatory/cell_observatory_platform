@@ -1,0 +1,9 @@
+# @package _global_
+# Final checkpoint of sam2_tile_adapt_chattn (channel-adaptive model adapted to 1024-wide tiles): unprompted AMG + instance mAP on its own validation tiles.
+defaults:
+  - /experiments/janelia/sam2_study/stage1p5_tile/tile_adapt_chattn
+  - /experiments/janelia/sam2_study/eval/test_overlay
+  - _self_
+experiment_name: eval_sam2_tile_adapt_chattn_final
+paths:
+  pretrained_checkpointdir: ${paths.data_path}/sam2_study/eval/ckpts/stage2/sam2_tile_adapt_chattn/checkpoints   # copied final step dir

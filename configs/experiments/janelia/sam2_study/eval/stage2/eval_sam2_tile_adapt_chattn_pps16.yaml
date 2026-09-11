@@ -1,0 +1,11 @@
+# @package _global_
+# Denser click lattice (16x16x16) for the channel-adaptive tile model, as for the joint tile model.
+defaults:
+  - /experiments/janelia/sam2_study/eval/stage2/eval_sam2_tile_adapt_chattn
+  - _self_
+experiment_name: eval_sam2_tile_adapt_chattn_final_pps16
+models:
+  meta_arch:
+    sam:
+      points_per_side: 16
+      points_per_batch: 64
