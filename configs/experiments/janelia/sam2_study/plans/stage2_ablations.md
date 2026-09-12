@@ -91,6 +91,10 @@ win if within Δ (they are cheaper: 0 clicks ≈ 0.76 s/step vs 1.68).
 | `A1_attnpool_factorized` | 6 (final) | 0.323 | 0.196 | 0.26 | | eval submitted; seeds `tile_adapt_chattn` |
 | `B_dropout_0p5_shuffle` | 6 (final) | 0.324 | 0.196 | 0.26 | | eval submitted |
 | `A1_attnpool_none` | 6 (final) | 0.333 | 0.200 | 0.26 | | no channel identity; eval submitted |
+| `D_clicks3` | 6 (final) | 0.629 | 0.392 | 0.41 | 6 x 3.4 h | 4 rounds summed (0.16/round vs baseline 0.165/round); eval submitted 09-12 |
+| `E_snr_1500` | 6 (final) | 0.323 | 0.195 | 0.28 | | validated at its own noise level; eval submitted 09-12 |
+| `E_snr_500` | 6 (final) | 0.348 | 0.211 | 0.29 | | validated at its own noise level |
+| `E_snr_rand` | 6 (final) | 0.344 | 0.205 | 0.27 | | validated at random noise levels |
 | **held-out mAP (final ckpt, 128 val cubes, AMG 8³ lattice)** | | | | | | baseline **0.645** (recall 0.695, mIoU 0.948); membrane-only **0.651** (recall 0.700); gt-prob 0.3 **0.644** (recall 0.697); gt-prob 0.0 **0.640**; cytosol-only **0.608**; attn-pool + factorized embed **0.641**; dropout 0.25 (attn-pool, scored on all channels) **0.646**; dropout 0.5 **0.643**; Stage-1 epoch-6 reference 0.624; **16³ lattice**: baseline 0.741 (recall 0.884, 39 s/cube); **0-click: 0.000, zero predictions** (AMG's mask-to-mask refinement feeds a mask prompt the 0-click model never saw in training -> every candidate filtered; re-scored: filters off + no m2m -> **0.623**, recall 0.69, precision 0.99, 18k preds, IoU-head Spearman 0.74 (baseline 0.91): the masks are fine, m2m off + default filters -> **0.617**, recall 0.68, 4,955 preds: the culprit is the mask-to-mask refinement, which feeds a mask prompt the 0-click model never trained on; the correction round buys the mask-prompt path and ~0.03 mAP) |
 | epoch-4 dice | | | | | | baseline 0.247, membrane 0.221, gtprob0 0.229, dropout0.5 0.232, gtprob0.3 0.254, cytosol 0.328 |
 | epoch-3 dice | | | | | | baseline 0.267, A1 factorized 0.239, dropout0.25 0.241, snr1500 0.295, A1 none (ep 2) 0.315 |

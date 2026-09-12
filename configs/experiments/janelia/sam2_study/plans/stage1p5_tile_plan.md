@@ -74,6 +74,7 @@ evaluation config with X-sliding windows (tile rows are 128×512×{2560…3328};
 |---|---|---|---|---|---|---|---|---|---|---|
 | `sweep/sam2_c1024_bs4` (bench) | – | 4 | 2.00 | 16 | 237 | 200 | – | – | – | 9 min |
 | `tile_adapt_mini` (smoke, 512 rows) | lr 2e-4 step-26922 | 4 | – | – | OOM (mm 96) | – | – | – | – | – |
+| `tile_adapt_chattn` (attn-pool + factorized) | abl_A1_attnpool_factorized final | 2 | 2.0 | 8 | – | 8,686 | 0.283 / dice 0.178 | (eval submitted 09-12) | | 4.7 h |
 | `tile_adapt` | lr 2e-4 step-26922 | 2 | 2.0 | 8 | – | 8,686 | 0.288 / dice 0.175 | 0.265 → **0.463** (recall 0.38 → 0.51, mIoU 0.95; 8³ lattice on 2× width = half the click density; 16³ lattice: **0.592**, recall 0.83, 60 s/tile; baseline at 512 with 16³: 0.741, recall 0.88) | (baseline 512: 0.645) | 4.7 h (2 links) |
 
 Launch log (2026-09-09): DCP load of the 512-trained checkpoint into the 1024 model re-initialises only `pos_embed` (6144 -> 12288 tokens)
